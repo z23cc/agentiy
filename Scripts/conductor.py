@@ -184,6 +184,9 @@ IMPLEMENTED_OPERATIONS = {
     "cargo-audit",
     "cargo-fuzz",
     "xcode-rust-link-validate",
+    "rust-ffi-swift-baseline-export",
+    "rust-ffi-swift-baseline-check",
+    "rust-ffi-swift-baseline-measure",
     "format",
     "format-check",
     "lint",
@@ -237,6 +240,9 @@ Operation commands:
   ./conductor cargo-audit
   ./conductor cargo-fuzz [--target envelope_decode] [--seconds 1..300]
   ./conductor xcode-rust-link-validate
+  ./conductor rust-ffi-swift-baseline-export    # release test binary; never launches the app
+  ./conductor rust-ffi-swift-baseline-check     # two deterministic release test-binary exports
+  ./conductor rust-ffi-swift-baseline-measure   # release test-binary measurement
   ./conductor format                 # mutates first-party Swift files
   ./conductor format-check           # non-mutating SwiftFormat check
   ./conductor lint                   # non-mutating format-check + SwiftLint strict
@@ -2884,6 +2890,9 @@ def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -
         "provider-test",
         "install-debug-cli",
         "xcode-rust-link-validate",
+        "rust-ffi-swift-baseline-export",
+        "rust-ffi-swift-baseline-check",
+        "rust-ffi-swift-baseline-measure",
     }:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
@@ -3340,6 +3349,15 @@ class OperationRegistry:
             env = self._cargo_env(env)
             command = [sys.executable, script("generate_xcode_workspace.py"), "build-for-testing"]
             return self._rust_archive_then_command(command, "debug"), ["build"], cwd, env, effective_timeout
+        if operation in {
+            "rust-ffi-swift-baseline-export",
+            "rust-ffi-swift-baseline-check",
+            "rust-ffi-swift-baseline-measure",
+        }:
+            mode = operation.removeprefix("rust-ffi-swift-baseline-")
+            env = self._cargo_env(env)
+            command = [sys.executable, script("measure_rust_search_baseline.py"), mode]
+            return self._rust_archive_then_command(command, "release"), ["build"], cwd, env, effective_timeout
         if operation == "format":
             return [script("swift_style.sh"), "format"], ["style", "build"], cwd, env, effective_timeout
         if operation == "format-check":
@@ -8418,6 +8436,9 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "cargo-deny",
         "cargo-audit",
         "xcode-rust-link-validate",
+        "rust-ffi-swift-baseline-export",
+        "rust-ffi-swift-baseline-check",
+        "rust-ffi-swift-baseline-measure",
     }:
         parse_no_args(f"conductor {operation}", rest)
     elif operation in {"cargo-build", "cargo-archive"}:

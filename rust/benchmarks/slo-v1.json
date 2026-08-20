@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "status": "absolute-caps-frozen-swift-baseline-pending",
+  "status": "absolute-caps-frozen-swift-baseline-captured",
   "environment": {
     "architecture": "aarch64",
     "target": "aarch64-apple-darwin",
@@ -10,9 +10,21 @@
     "sampleIterations": 10000
   },
   "caps": [
-    {"operation": "admit", "percentile": 99, "maximumMilliseconds": 5},
-    {"operation": "cancel", "percentile": 99, "maximumMilliseconds": 5},
-    {"operation": "emptyDrain", "percentile": 99, "maximumMilliseconds": 5},
+    {
+      "operation": "admit",
+      "percentile": 99,
+      "maximumMilliseconds": 5
+    },
+    {
+      "operation": "cancel",
+      "percentile": 99,
+      "maximumMilliseconds": 5
+    },
+    {
+      "operation": "emptyDrain",
+      "percentile": 99,
+      "maximumMilliseconds": 5
+    },
     {
       "operation": "drain64EventsUpTo64KiB",
       "percentile": 99,
@@ -26,7 +38,12 @@
       "maximumMilliseconds": 25
     }
   ],
-  "syntheticPayloadBytes": [0, 256, 65536, 1048577],
+  "syntheticPayloadBytes": [
+    0,
+    256,
+    65536,
+    1048577
+  ],
   "ffiFastPathProhibitions": [
     "sleep",
     "await-tokio-task",
@@ -39,16 +56,32 @@
     "transcript"
   ],
   "swiftBaseline": {
-    "status": "pending",
-    "requiredBefore": ["phase-8-representative-payload-gate", "phase-10-ci-slo-gate"],
+    "status": "captured",
+    "requiredBefore": [
+      "phase-8-representative-payload-gate",
+      "phase-10-ci-slo-gate"
+    ],
     "requiredMetrics": [
       "wall-time",
       "cpu-time",
-      "instruments-allocations",
+      "allocations-count",
       "malloc-bytes",
       "peak-rss",
       "decode-apply-signpost"
     ],
-    "mayRelaxAbsoluteCaps": false
+    "mayRelaxAbsoluteCaps": false,
+    "referenceReport": {
+      "path": "rust/benchmarks/results/v1/swift-search-reference.json",
+      "sha256": "7cb06ef6961b4f1f03cafc66cfd595caeb8749be3b6ae5853ce0ebfe7352e37d",
+      "sourceImplementation": "swift-search-pre-p1"
+    },
+    "candidateGate": {
+      "allocationsCountMaximumReferenceRatio": 1.25,
+      "cpuP99MaximumReferenceRatio": 1.1,
+      "jitActiveRequiredForEligiblePatterns": true,
+      "mallocBytesMaximumReferenceRatio": 1.25,
+      "peakRSSMaximumReferenceRatio": 1.25,
+      "wallP99MaximumReferenceRatio": 1.1
+    }
   }
 }

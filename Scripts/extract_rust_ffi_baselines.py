@@ -14,6 +14,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_ROOT = ROOT / "rust/benchmarks/fixtures/v1"
+SWIFT_BASELINE_ROOT = FIXTURE_ROOT / "swift-baseline"
+P1_CONTRACT = ROOT / "docs/architecture/rust-search-leaf-v1.md"
+SWIFT_SOURCE_IMPLEMENTATION = "swift-search-pre-p1"
 SWIFT_FIXTURE_NAMES = {
     "file-tree-batch.json": "file-tree-batch",
     "codemap.json": "codemap",
@@ -174,19 +177,27 @@ def imported_swift_outputs(source: Path) -> dict[Path, bytes]:
         if value.get("redacted") is not True:
             raise ValueError(f"{source_path}: redacted must be true")
         validate_redacted(value)
-        outputs[FIXTURE_ROOT / "swift-baseline" / name] = canonical_json(value)
+        outputs[SWIFT_BASELINE_ROOT / name] = canonical_json(value)
 
     entries = []
     for path, content in sorted(outputs.items(), key=lambda item: item[0].as_posix()):
+        name = path.name
         entries.append(
             {
-                "bytes": len(content),
+                "canonicalSizeBytes": len(content),
+                "kind": SWIFT_FIXTURE_NAMES[name],
                 "path": path.relative_to(ROOT).as_posix(),
                 "sha256": hashlib.sha256(content).hexdigest(),
+                "sourceImplementation": SWIFT_SOURCE_IMPLEMENTATION,
             }
         )
-    outputs[FIXTURE_ROOT / "swift-baseline" / "manifest.json"] = canonical_json(
-        {"schemaVersion": 1, "source": "pre-redacted-swift-export", "files": entries}
+    outputs[SWIFT_BASELINE_ROOT / "manifest.json"] = canonical_json(
+        {
+            "schemaVersion": 1,
+            "source": "pre-redacted-swift-export",
+            "sourceImplementation": SWIFT_SOURCE_IMPLEMENTATION,
+            "files": entries,
+        }
     )
     return outputs
 
@@ -216,6 +227,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="import four already-redacted JSON exports using the frozen v1 format",
     )
+    parser.add_argument(
+        "--require-swift-baseline",
+        action="store_true",
+        help="require and verify the committed pre-P1 Swift baseline",
+    )
     return parser.parse_args()
 
 
@@ -225,6 +241,8 @@ def main() -> int:
     try:
         if args.swift_export_dir is not None:
             outputs.update(imported_swift_outputs(args.swift_export_dir.resolve()))
+        elif args.require_swift_baseline or (args.check and P1_CONTRACT.is_file()):
+            outputs.update(imported_swift_outputs(SWIFT_BASELINE_ROOT))
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"fixture import failed: {error}", file=sys.stderr)
         return 1

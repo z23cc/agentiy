@@ -1,0 +1,1 @@
+{"fixtureKind":"codemap","payload":{"content":"File: fixture-root/Sources/BaselineSearchFixture.swift\nstruct BaselineSearchFixture\n  func baselineNeedle(value: String) -> String","file_count":1},"redacted":true,"schemaVersion":1}

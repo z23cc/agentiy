@@ -1,4 +1,4 @@
-.PHONY: help doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status codex-acquire codex-status codex-update-candidate resolve build run test guardrails codex-schema-check conductor-selftest ci-app-test-runner-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production xcode xcode-open xcode-generate xcode-check xcode-validate xcode-rust-link-validate xcode-generator-test xcode-clean dev-status dev-build dev-swift-build dev-cargo-build dev-cargo-test dev-cargo-codegen dev-cargo-codegen-check dev-cargo-archive dev-cargo-deny dev-cargo-audit dev-cargo-fuzz dev-run dev-launch-existing dev-codex-schema-check dev-test dev-provider-test dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
+.PHONY: help doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status codex-acquire codex-status codex-update-candidate resolve build run test guardrails codex-schema-check conductor-selftest ci-app-test-runner-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production xcode xcode-open xcode-generate xcode-check xcode-validate xcode-rust-link-validate xcode-generator-test xcode-clean dev-status dev-build dev-swift-build dev-cargo-build dev-cargo-test dev-cargo-codegen dev-cargo-codegen-check dev-cargo-archive dev-cargo-deny dev-cargo-audit dev-cargo-fuzz dev-rust-ffi-swift-baseline-export dev-rust-ffi-swift-baseline-check dev-rust-ffi-swift-baseline-measure dev-run dev-launch-existing dev-codex-schema-check dev-test dev-provider-test dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
 
 PRODUCT ?= all
 CODEX_ARCH ?= all
@@ -29,6 +29,9 @@ help:
 	@printf '  %-30s %s\n' 'dev-cargo-deny' 'Coordinated Cargo dependency/license policy check'
 	@printf '  %-30s %s\n' 'dev-cargo-audit' 'Coordinated Cargo advisory audit'
 	@printf '  %-30s %s\n' 'dev-cargo-fuzz' 'Coordinated bounded fuzz smoke; FUZZ_TARGET=envelope_decode FUZZ_SECONDS=1..300'
+	@printf '  %-38s %s\n' 'dev-rust-ffi-swift-baseline-export' 'Export canonical pre-P1 Swift fixtures from the release test binary'
+	@printf '  %-38s %s\n' 'dev-rust-ffi-swift-baseline-check' 'Regenerate pre-P1 Swift fixtures twice and verify committed bytes'
+	@printf '  %-38s %s\n' 'dev-rust-ffi-swift-baseline-measure' 'Measure pre-P1 Swift fixtures in the release test binary'
 	@printf '  %-30s %s\n' 'dev-run' 'Coordinated debug app build and launch'
 	@printf '  %-30s %s\n' 'dev-launch-existing' 'Launch existing coordinated debug app without building'
 	@printf '  %-30s %s\n' 'dev-codex-schema-check' 'Coordinated Codex app-server schema validation'
@@ -237,6 +240,15 @@ dev-cargo-audit:
 
 dev-cargo-fuzz:
 	./conductor cargo-fuzz --target $(FUZZ_TARGET) --seconds $(FUZZ_SECONDS)
+
+dev-rust-ffi-swift-baseline-export:
+	./conductor rust-ffi-swift-baseline-export
+
+dev-rust-ffi-swift-baseline-check:
+	./conductor rust-ffi-swift-baseline-check
+
+dev-rust-ffi-swift-baseline-measure:
+	./conductor rust-ffi-swift-baseline-measure
 
 dev-run:
 	./conductor run
