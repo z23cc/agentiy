@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "c784b6b962a2096972d9755ec1bfedc3c6294be9d2effeeab44efd0426cd50a3",
+  "buildFingerprint": "1f2d4d71082982547bd6bb7eb1305da9f09fbcd506f3d8155225f1d91c07a893",
   "bindingChecksum": "54d7dfed23a633cc9cf10e566f213952868a41f022016c1e20ee3d651fbefa64",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:e24b87f024446c5ad8fcf18045f2d2b7058fc5aa738ca7ec10e1748989f859cc",
+    "rustSourceRevision": "git:34fca71d3396cbf6532683e112330c1dad0a7750",
     "cargoLockDigest": "a9bc106edb7de7ca44d4b4ec81f1ae35e49b642f3a268f7b8a21220214c17f5d",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "70888564aa2bee35c0276568573296ed17b602244c5381804a6312f2684e1bad",
+  "archiveSha256": "c99de88adc5ce9cd6ae9ee3a3bfcc582b3d4ee80af6288a48a2731691b8c87a5",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -41,7 +41,7 @@
   ],
   "artifactSha256": {
     "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "e927c8d4f75a54d7612a245197e6f57b0fe093bc8c7344ed4df07e7d3763e2ef",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "b9b43d43744060a7236262a91b2b7d29b6983b23e9c80a3baaf4cd7297dd8895",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "83c94093d01f7e46b26e9241dcbbd9c2b703825eb0683c9c76fd243229dcd1e3",
     "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "e7d02bbe849e4baae4bdf57ef09cbb0b2fa114635fc9d3d4c50fa99757f7ebc7",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"

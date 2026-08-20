@@ -412,12 +412,23 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.GeneratorError, "Rust FFI dependency chain drifted"):
             generator.validate_manifest(broken_rust_chain, generator.REPO_ROOT)
 
-        app_imports_bridge = deepcopy(self.manifest)
-        for target in app_imports_bridge["targets"]:
+        app_missing_bridge = deepcopy(self.manifest)
+        for target in app_missing_bridge["targets"]:
             if target["name"] == "RepoPromptApp":
-                target["dependencies"].append({"byName": ["AgentryCoreBridge", None]})
-        with self.assertRaisesRegex(generator.GeneratorError, "must not depend on private Rust FFI"):
-            generator.validate_manifest(app_imports_bridge, generator.REPO_ROOT)
+                target["dependencies"] = [
+                    dependency
+                    for dependency in target["dependencies"]
+                    if dependency.get("byName", [None])[0] != "AgentryCoreBridge"
+                ]
+        with self.assertRaisesRegex(generator.GeneratorError, "must depend exactly once on AgentryCoreBridge"):
+            generator.validate_manifest(app_missing_bridge, generator.REPO_ROOT)
+
+        app_imports_raw = deepcopy(self.manifest)
+        for target in app_imports_raw["targets"]:
+            if target["name"] == "RepoPromptApp":
+                target["dependencies"].append({"byName": ["AgentryUniFFIRaw", None]})
+        with self.assertRaisesRegex(generator.GeneratorError, "must not depend on raw Rust FFI"):
+            generator.validate_manifest(app_imports_raw, generator.REPO_ROOT)
 
         exposed_bridge_product = deepcopy(self.manifest)
         exposed_bridge_product["products"].append(

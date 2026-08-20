@@ -47,6 +47,7 @@ var packageDependencies: [Package.Dependency] = [
 ]
 
 var repoPromptAppDependencies: [Target.Dependency] = [
+    "AgentryCoreBridge",
     "RepoPromptDomainRuntime",
     "RepoPromptCodeMapCore",
     "RepoPromptRegexCore",

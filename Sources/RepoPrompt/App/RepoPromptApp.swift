@@ -56,6 +56,7 @@ struct RepoPromptFileLogHandler: LogHandler {
 
 struct RepoPromptSwiftUIApp: App {
     init() {
+        appDelegate.agentryCoreService = AgentryCoreService.shared
         LoggingSystem.bootstrap { label in
             var handler = RepoPromptFileLogHandler(label: label)
             #if DEBUG

@@ -219,12 +219,20 @@ for product in package.get("products", []):
 app_by_name_dependencies = [dependency["byName"][0] for dependency in repo_prompt_app_dependencies if dependency.get("byName")]
 if app_by_name_dependencies.count("RepoPromptWorkspaceCore") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptWorkspaceCore")
-for forbidden_consumer in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
-    dependencies = [dependency["byName"][0] for dependency in targets.get(forbidden_consumer, {}).get("dependencies", []) if dependency.get("byName")]
-    if forbidden_consumer != "RepoPromptApp" and "RepoPromptWorkspaceCore" in dependencies:
-        errors.append(f"{forbidden_consumer} must not directly depend on RepoPromptWorkspaceCore")
-    if any(name in dependencies for name in ("CAgentryRustCore", "AgentryUniFFIRaw", "AgentryCoreBridge")):
-        errors.append(f"{forbidden_consumer} must not consume Phase 0 Rust FFI targets")
+if app_by_name_dependencies.count("AgentryCoreBridge") != 1:
+    errors.append("RepoPromptApp must depend exactly once on AgentryCoreBridge")
+for consumer in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
+    dependencies = [dependency["byName"][0] for dependency in targets.get(consumer, {}).get("dependencies", []) if dependency.get("byName")]
+    if consumer != "RepoPromptApp" and "RepoPromptWorkspaceCore" in dependencies:
+        errors.append(f"{consumer} must not directly depend on RepoPromptWorkspaceCore")
+    if any(name in dependencies for name in ("CAgentryRustCore", "AgentryUniFFIRaw")):
+        errors.append(f"{consumer} must not consume raw Rust FFI targets")
+    if consumer in ("RepoPrompt", "RepoPromptMCP", "RepoPromptShared") and "AgentryCoreBridge" in dependencies:
+        errors.append(f"{consumer} must not directly depend on AgentryCoreBridge")
+for source in Path("Sources/RepoPrompt").rglob("*.swift"):
+    text = source.read_text()
+    if re.search(r"^\s*import\s+(?:AgentryUniFFIRaw|CAgentryRustCore)\b", text, re.MULTILINE):
+        errors.append(f"RepoPromptApp source must not import raw Rust FFI modules: {source}")
 for product in package.get("products", []):
     if "RepoPromptWorkspaceCore" in product.get("targets", []): errors.append("RepoPromptWorkspaceCore must not be exposed as a package product")
 

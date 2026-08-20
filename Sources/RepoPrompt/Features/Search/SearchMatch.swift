@@ -3161,3 +3161,273 @@ actor FileSearchActor {
             .joined(separator: "\\s+")
     }
 }
+
+#if DEBUG
+    struct RustSearchLegacyByteRange: Equatable {
+        let start: UInt64
+        let end: UInt64
+    }
+
+    struct RustSearchLegacyHit: Equatable {
+        let lineNumber: UInt32
+        let lineByteRange: RustSearchLegacyByteRange
+        let matchByteRange: RustSearchLegacyByteRange
+        let contextBeforeByteRanges: [RustSearchLegacyByteRange]
+        let contextAfterByteRanges: [RustSearchLegacyByteRange]
+    }
+
+    enum RustSearchLegacyRepairKind: Equatable {
+        case none
+        case doubleEscapeCompression
+        case normalise
+        case normaliseThenCompression
+    }
+
+    enum RustSearchLegacyError: Error, Equatable {
+        case patternTooComplex
+        case invalidEscape
+        case unmatchedBrackets
+        case unmatchedParentheses
+        case invalidQuantifier
+        case variableLengthLookbehind
+        case invalidPattern
+        case matchLimitExceeded
+        case depthLimitExceeded
+        case heapLimitExceeded
+    }
+
+    struct RustSearchLegacyResult: Equatable {
+        let hits: [RustSearchLegacyHit]
+        let matchingLineCount: UInt64
+        let repairKind: RustSearchLegacyRepairKind
+    }
+
+    /// DEBUG-only pre-cutover oracle used by Rust search differential tests.
+    /// It deliberately executes the existing Swift line table and vendored PCRE2 adapter.
+    enum RustSearchLegacyOracle {
+        static func search(
+            pattern: String,
+            subject: String,
+            caseInsensitive: Bool = false,
+            wholeWord: Bool = false,
+            multilineAnchors: Bool = false,
+            collectMatches: Bool = true,
+            maxCollectedMatches: UInt32? = nil,
+            contextLines: UInt16 = 0,
+            matchPolicy: CoreSearchLegacyMatchPolicy = .fullBuffer
+        ) throws -> RustSearchLegacyResult {
+            do {
+                if Task.isCancelled { throw CancellationError() }
+                try RegexToolkit.validateComplexity(pattern, isRegex: true)
+                let compiled = try RepoPromptPCRE2Adapter.compileSearchRegexWithRepairsResult(
+                    pattern: pattern,
+                    caseInsensitive: caseInsensitive,
+                    wholeWord: wholeWord,
+                    multilineAnchors: multilineAnchors,
+                    jitMode: .disabled
+                )
+                let lineIndex = SearchLineIndex(content: subject)
+                var seenLines: Set<Int> = []
+                var hits: [RustSearchLegacyHit] = []
+                try compiled.regex.enumerateMatches(
+                    in: subject,
+                    matchLimits: matchPolicy.limits
+                ) { match in
+                    if Task.isCancelled { return false }
+                    let lineNumber = lineIndex.lineNumber(forUTF8Offset: match.byteRange.lowerBound)
+                    guard lineNumber >= 0, seenLines.insert(lineNumber).inserted else { return true }
+                    if collectMatches,
+                       maxCollectedMatches.map({ hits.count < Int($0) }) ?? true
+                    {
+                        hits.append(hit(
+                            lineNumber: lineNumber,
+                            matchRange: match.byteRange,
+                            subject: subject,
+                            lineIndex: lineIndex,
+                            contextLines: Int(contextLines)
+                        ))
+                    }
+                    return true
+                }
+                if Task.isCancelled { throw CancellationError() }
+                return RustSearchLegacyResult(
+                    hits: hits,
+                    matchingLineCount: UInt64(seenLines.count),
+                    repairKind: repairKind(
+                        original: pattern,
+                        compiled: compiled.compiledPattern,
+                        wholeWord: wholeWord
+                    )
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw classify(error, pattern: pattern)
+            }
+        }
+
+        private static func hit(
+            lineNumber: Int,
+            matchRange: Range<Int>,
+            subject: String,
+            lineIndex: SearchLineIndex,
+            contextLines: Int
+        ) -> RustSearchLegacyHit {
+            func byteRange(for line: Int) -> RustSearchLegacyByteRange {
+                let start = lineIndex.lineStartsUTF8[line]
+                let text = (subject as NSString).substring(with: lineIndex.lineRanges[line])
+                return RustSearchLegacyByteRange(
+                    start: UInt64(start),
+                    end: UInt64(start + text.utf8.count)
+                )
+            }
+
+            let beforeStart = max(0, lineNumber - contextLines)
+            let afterEnd = min(lineIndex.lineRanges.count, lineNumber + contextLines + 1)
+            return RustSearchLegacyHit(
+                lineNumber: UInt32(lineNumber),
+                lineByteRange: byteRange(for: lineNumber),
+                matchByteRange: RustSearchLegacyByteRange(
+                    start: UInt64(matchRange.lowerBound),
+                    end: UInt64(matchRange.upperBound)
+                ),
+                contextBeforeByteRanges: contextLines > 0
+                    ? (beforeStart ..< lineNumber).map(byteRange(for:))
+                    : [],
+                contextAfterByteRanges: contextLines > 0 && lineNumber + 1 < afterEnd
+                    ? ((lineNumber + 1) ..< afterEnd).map(byteRange(for:))
+                    : []
+            )
+        }
+
+        private static func repairKind(
+            original: String,
+            compiled: String,
+            wholeWord: Bool
+        ) -> RustSearchLegacyRepairKind {
+            var candidate = compiled
+            if wholeWord, candidate.hasPrefix("\\b"), candidate.hasSuffix("\\b") {
+                candidate.removeFirst(2)
+                candidate.removeLast(2)
+            }
+            if candidate == original { return .none }
+
+            let compressed = RepoPromptPCRE2Adapter.compressDoubleEscapesBeforeMeta(original)
+            if candidate == compressed { return .doubleEscapeCompression }
+
+            guard let normalised = try? RegexToolkit.normalise(original).text else {
+                return .normalise
+            }
+            if candidate == normalised { return .normalise }
+            if candidate == RepoPromptPCRE2Adapter.compressDoubleEscapesBeforeMeta(normalised) {
+                return .normaliseThenCompression
+            }
+            return .normalise
+        }
+
+        private static func classify(_ error: Error, pattern: String) -> RustSearchLegacyError {
+            if error is SearchPatternTooComplexError { return .patternTooComplex }
+            if let patternError = error as? SearchPatternError {
+                let classification = classify(patternError, pattern: pattern)
+                if classification != .invalidPattern { return classification }
+                if hasInvalidPCRE2Escape(pattern) { return .invalidEscape }
+                do {
+                    try RegexToolkit.validate(pattern)
+                } catch let friendlyError as SearchPatternError {
+                    return classify(friendlyError, pattern: pattern)
+                } catch {}
+                return classification
+            }
+            if let pcreError = error as? PCRE2Error {
+                switch pcreError {
+                case let .matchLimitExceeded(kind, _, _):
+                    return switch kind {
+                    case .match, .jitStack: .matchLimitExceeded
+                    case .depth: .depthLimitExceeded
+                    case .heap: .heapLimitExceeded
+                    }
+                case let .compile(_, _, _, details):
+                    return RepoPromptPCRE2Adapter.isVariableLengthLookbehindError(
+                        pattern: pattern,
+                        details: details
+                    ) ? .variableLengthLookbehind : .invalidPattern
+                case .match, .jitRequiredButUnavailable, .internalInvariant:
+                    return .invalidPattern
+                }
+            }
+            if hasInvalidPCRE2Escape(pattern) { return .invalidEscape }
+            do {
+                try RegexToolkit.validate(pattern)
+            } catch let patternError as SearchPatternError {
+                return classify(patternError, pattern: pattern)
+            } catch {}
+            return .invalidPattern
+        }
+
+        private static func hasInvalidPCRE2Escape(_ pattern: String) -> Bool {
+            let validAlphabeticEscapes = Set("aAbBcCdDeEfFgGhHkKNnopPQrRsStTuUvVwWxXzZ")
+            let characters = Array(pattern)
+            var index = 0
+            while index < characters.count {
+                guard characters[index] == "\\", index + 1 < characters.count else {
+                    index += 1
+                    continue
+                }
+                let escaped = characters[index + 1]
+                if escaped.isLetter, !validAlphabeticEscapes.contains(escaped) {
+                    return true
+                }
+                index += 2
+            }
+            return false
+        }
+
+        private static func classify(
+            _ error: SearchPatternError,
+            pattern: String
+        ) -> RustSearchLegacyError {
+            switch error {
+            case .invalidEscape: return .invalidEscape
+            case .unmatchedBrackets: return .unmatchedBrackets
+            case .unmatchedParentheses: return .unmatchedParentheses
+            case .invalidQuantifier: return .invalidQuantifier
+            case let .invalidRegex(_, details):
+                if RepoPromptPCRE2Adapter.isVariableLengthLookbehindError(
+                    pattern: pattern,
+                    details: details
+                ) {
+                    return .variableLengthLookbehind
+                }
+                let normalized = details.lowercased()
+                if normalized.contains("missing terminating ]")
+                    || normalized.contains("character class") && normalized.contains("missing")
+                {
+                    return .unmatchedBrackets
+                }
+                if normalized.contains("parenthes") { return .unmatchedParentheses }
+                if normalized.contains("quantifier") || normalized.contains("nothing to repeat") {
+                    return .invalidQuantifier
+                }
+                if normalized.contains("escape") || normalized.contains("unrecognized character follows") {
+                    return .invalidEscape
+                }
+                return .invalidPattern
+            case .emptyAlternative: return .invalidPattern
+            }
+        }
+    }
+
+    enum CoreSearchLegacyMatchPolicy {
+        case fullBuffer
+        case line
+        case path
+
+        fileprivate var limits: PCRE2MatchLimits? {
+            switch self {
+            case .fullBuffer: RepoPromptPCRE2MatchPolicy.fileSearchFullBuffer
+            case .line: RepoPromptPCRE2MatchPolicy.fileSearchLine
+            case .path: RepoPromptPCRE2MatchPolicy.pathSearchShortSubject
+            }
+        }
+    }
+#endif

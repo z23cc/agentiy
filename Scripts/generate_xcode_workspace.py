@@ -182,15 +182,21 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
             dependency_text = " → ".join([name, *dependencies]) if dependencies else f"{name} (none)"
             raise GeneratorError(f"Rust FFI dependency chain drifted at {dependency_text}")
 
-    forbidden_app_dependencies = {"CAgentryRustCore", "AgentryUniFFIRaw", "AgentryCoreBridge"}
+    if _by_name_dependencies(repo_prompt_app).count("AgentryCoreBridge") != 1:
+        raise GeneratorError("RepoPromptApp must depend exactly once on AgentryCoreBridge")
+
+    forbidden_raw_dependencies = {"CAgentryRustCore", "AgentryUniFFIRaw"}
     for name in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptTests"):
-        leaked = forbidden_app_dependencies.intersection(_by_name_dependencies(targets[name]))
+        leaked = forbidden_raw_dependencies.intersection(_by_name_dependencies(targets[name]))
         if leaked:
             raise GeneratorError(
-                f"Target '{name}' must not depend on private Rust FFI target '{sorted(leaked)[0]}'"
+                f"Target '{name}' must not depend on raw Rust FFI target '{sorted(leaked)[0]}'"
             )
+    for name in ("RepoPrompt", "RepoPromptMCP"):
+        if "AgentryCoreBridge" in _by_name_dependencies(targets[name]):
+            raise GeneratorError(f"Target '{name}' must not directly depend on AgentryCoreBridge")
     for product in products.values():
-        leaked = forbidden_app_dependencies.intersection(product.get("targets", []))
+        leaked = set(rust_ffi_targets).intersection(product.get("targets", []))
         if leaked:
             raise GeneratorError(
                 f"Rust FFI target '{sorted(leaked)[0]}' must not be exposed as a package product"

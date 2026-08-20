@@ -7,6 +7,38 @@ import SwiftUI
 
 private let appDelegateLog = Logger(label: "com.repoprompt.app.delegate")
 
+private final class AppTerminationDeadlineSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if completed {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func signal() {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return
+        }
+        completed = true
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
 #if DEBUG
     private var appDelegateDebugLoggingEnabled = false
     private func appDelegateDebugLog(_ message: @autoclosure () -> String) {
@@ -36,6 +68,9 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
     private var domainRuntimeShutdownOperation: DomainRuntimeShutdownOperation = {
         _ = await AppDomainRuntimeComposition.shared.runtime.shutdown()
     }
+
+    var agentryCoreService = AgentryCoreService.shared
+    private var agentryCoreShutdownDeadline: Duration = .seconds(2)
 
     // MARK: - Global references
 
@@ -116,6 +151,14 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
 
         func shutdownDomainRuntimeForTerminationForTesting() async {
             await shutdownDomainRuntimeForTermination()
+        }
+
+        func shutdownAgentryCoreForTerminationForTesting() async {
+            await shutdownAgentryCoreForTermination()
+        }
+
+        func setAgentryCoreShutdownDeadlineForTesting(_ deadline: Duration) {
+            agentryCoreShutdownDeadline = deadline
         }
     #endif
 
@@ -218,6 +261,7 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
             await WindowStatesManager.shared.shutdownAllAgentSessions()
             await WindowStatesManager.shared.stopAllServers()
             await shutdownDomainRuntimeForTermination()
+            await shutdownAgentryCoreForTermination()
             sender.reply(toApplicationShouldTerminate: true)
         }
 
@@ -235,6 +279,10 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
         if !AppLaunchConfiguration.current.suppressesWindowPersistence {
             WindowStatesManager.shared.persistWindowSession(reason: "appWillTerminate")
         }
+        let coreService = agentryCoreService
+        Task {
+            await coreService.shutdown()
+        }
     }
 
     // MARK: - App Teardown
@@ -242,6 +290,22 @@ class AppDelegate: NSObject, ObservableObject, NSApplicationDelegate {
     private func shutdownDomainRuntimeForTermination() async {
         domainRuntimeStartupTask?.cancel()
         await domainRuntimeShutdownOperation()
+    }
+
+    private func shutdownAgentryCoreForTermination() async {
+        let signal = AppTerminationDeadlineSignal()
+        let service = agentryCoreService
+        let shutdownTask = Task {
+            await service.shutdown()
+            signal.signal()
+        }
+        let deadlineTask = Task {
+            try? await Task.sleep(for: agentryCoreShutdownDeadline)
+            signal.signal()
+        }
+        await signal.wait()
+        shutdownTask.cancel()
+        deadlineTask.cancel()
     }
 
     func tearDown() async {
