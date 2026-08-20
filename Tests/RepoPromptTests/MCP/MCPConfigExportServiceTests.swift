@@ -4,12 +4,12 @@ import RepoPromptShared
 import XCTest
 
 final class MCPConfigExportServiceTests: XCTestCase {
-    func testStableWrapperConfigLivesUnderCEOwnedDirectory() async throws {
+    func testStableWrapperConfigLivesUnderAgentryOwnedDirectory() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let configDirectory = root.appendingPathComponent("RepoPrompt CE/MCP", isDirectory: true)
+        let configDirectory = root.appendingPathComponent("Agentry/MCP", isDirectory: true)
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             configDirectoryURL: configDirectory,
             renderServerConfig: { "{\"mcpServers\":{\"RepoPromptCE\":{\"command\":\"/tmp/repoprompt-mcp\"}}}" }
         )
@@ -25,7 +25,7 @@ final class MCPConfigExportServiceTests: XCTestCase {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.release),
+            identity: .agentry(.release),
             configDirectoryURL: root.appendingPathComponent("MCP", isDirectory: true),
             renderServerConfig: { "{\"mcpServers\":{}}" }
         )
@@ -48,7 +48,7 @@ final class MCPConfigExportServiceTests: XCTestCase {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             configDirectoryURL: root.appendingPathComponent("MCP", isDirectory: true),
             renderServerConfig: { "{\"mcpServers\":{}}" }
         )
@@ -67,7 +67,7 @@ final class MCPConfigExportServiceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let configDirectory = root.appendingPathComponent("MCP", isDirectory: true)
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             configDirectoryURL: configDirectory,
             renderServerConfig: { "{\"mcpServers\":{}}" }
         )
@@ -89,11 +89,11 @@ final class MCPConfigExportServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let redirectedDirectory = root.appendingPathComponent("redirected", isDirectory: true)
         try FileManager.default.createDirectory(at: redirectedDirectory, withIntermediateDirectories: false)
-        let productDirectory = root.appendingPathComponent("RepoPrompt CE", isDirectory: true)
+        let productDirectory = root.appendingPathComponent("Agentry", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: productDirectory, withDestinationURL: redirectedDirectory)
         let configDirectory = productDirectory.appendingPathComponent("MCP", isDirectory: true)
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             configDirectoryURL: configDirectory,
             renderServerConfig: { "{\"mcpServers\":{}}" }
         )
@@ -116,7 +116,7 @@ final class MCPConfigExportServiceTests: XCTestCase {
             withDestinationURL: redirectedDirectory
         )
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             configDirectoryURL: configDirectory,
             renderServerConfig: { "{\"mcpServers\":{}}" }
         )
@@ -137,7 +137,7 @@ final class MCPConfigExportServiceTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
         }
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.release),
+            identity: .agentry(.release),
             configDirectoryURL: configDirectory,
             renderServerConfig: { "{\"mcpServers\":{}}" }
         )
@@ -155,7 +155,7 @@ final class MCPConfigExportServiceTests: XCTestCase {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let service = MCPConfigExportService(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             configDirectoryURL: root.appendingPathComponent("MCP", isDirectory: true),
             renderServerConfig: { "unused" }
         )

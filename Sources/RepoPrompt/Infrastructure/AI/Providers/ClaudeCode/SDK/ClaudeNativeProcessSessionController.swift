@@ -1966,7 +1966,7 @@ final actor ClaudeNativeProcessSessionController {
     /// never shed. Empty/whitespace-only values are ignored by the CLI, so this must be a real token,
     /// and it deliberately avoids the trigger words ("Claude"/"Anthropic"/"agent"/"SDK") so it cannot
     /// reintroduce the shedding. See https://github.com/repoprompt/repoprompt-ce/issues/295.
-    private static let glmZAIAppendSystemPrompt = "Running within RepoPrompt CE."
+    private static let glmZAIAppendSystemPrompt = "Running within this desktop app."
 
     private func buildArguments(
         existingSessionID: String?,

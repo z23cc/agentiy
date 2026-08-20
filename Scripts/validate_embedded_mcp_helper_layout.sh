@@ -19,10 +19,10 @@ from pathlib import Path
 
 app = Path(sys.argv[1])
 label = sys.argv[2]
-helper = app / "Contents" / "MacOS" / "repoprompt-mcp"
+helper = app / "Contents" / "MacOS" / "agentry-mcp"
 links = {
-    app / "Contents" / "Resources" / "repoprompt-mcp": "../MacOS/repoprompt-mcp",
-    app / "Contents" / "Resources" / "bin" / "repoprompt-mcp": "../../MacOS/repoprompt-mcp",
+    app / "Contents" / "Resources" / "agentry-mcp": "../MacOS/agentry-mcp",
+    app / "Contents" / "Resources" / "bin" / "agentry-mcp": "../../MacOS/agentry-mcp",
 }
 
 

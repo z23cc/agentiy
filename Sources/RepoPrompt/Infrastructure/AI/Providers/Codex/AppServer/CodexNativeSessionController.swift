@@ -3986,7 +3986,7 @@ final class CodexNativeSessionController {
                 method: method,
                 kind: .dynamicToolCallUnsupported,
                 code: -32001,
-                message: "Codex requested item/tool/call, but RepoPrompt does not implement dynamic client-side tool execution."
+                message: "Codex requested item/tool/call, but Agentry does not implement dynamic client-side tool execution."
             )
         case .unknownUnsupported:
             let message = "Unsupported Codex server request method: \(method)"
@@ -4052,7 +4052,7 @@ final class CodexNativeSessionController {
                 method: method,
                 kind: .authTokensRefreshUnavailable,
                 code: -32001,
-                message: "Codex requested account/chatgptAuthTokens/refresh, but RepoPrompt is not managing external Codex ChatGPT auth tokens. Reconnect Codex authentication and retry."
+                message: "Codex requested account/chatgptAuthTokens/refresh, but Agentry is not managing external Codex ChatGPT auth tokens. Reconnect Codex authentication and retry."
             )
             return
         }
@@ -4062,7 +4062,7 @@ final class CodexNativeSessionController {
         } catch {
             let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             let suffix = detail.isEmpty ? "" : " \(detail)"
-            let message = "Codex requested account/chatgptAuthTokens/refresh, but RepoPrompt failed to provide refreshed ChatGPT tokens.\(suffix)"
+            let message = "Codex requested account/chatgptAuthTokens/refresh, but Agentry failed to provide refreshed ChatGPT tokens.\(suffix)"
             await emitServerRequestIssue(
                 requestID: requestID,
                 method: method,

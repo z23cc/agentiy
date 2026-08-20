@@ -15,8 +15,8 @@ final class ChatHistoryJSONOnlyTests: XCTestCase {
         let fileURL = try await service.saveChatSession(session, for: workspace)
         defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent().deletingLastPathComponent()) }
 
-        XCTAssertTrue(fileURL.path.contains("/Application Support/RepoPrompt CE/Workspaces/"), fileURL.path)
-        XCTAssertFalse(fileURL.path.contains("/Application Support/RepoPrompt/Workspaces/"), fileURL.path)
+        XCTAssertTrue(fileURL.path.contains("/Application Support/Agentry/Workspaces/"), fileURL.path)
+        XCTAssertFalse(fileURL.path.contains("/Application Support/RepoPrompt CE/Workspaces/"), fileURL.path)
 
         let loaded = try await service.loadChatSession(from: fileURL)
         XCTAssertEqual(loaded.name, "Current Session")

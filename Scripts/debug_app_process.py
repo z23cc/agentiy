@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Identify and terminate only the configured RepoPrompt CE debug executable."""
+"""Identify and terminate only the configured Agentry debug executable."""
 
 from __future__ import annotations
 

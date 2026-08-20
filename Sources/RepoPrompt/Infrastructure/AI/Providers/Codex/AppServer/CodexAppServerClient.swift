@@ -103,7 +103,7 @@ actor CodexAppServerClient {
             else {
                 return message
             }
-            return "\(message) The active Codex runtime rejected RepoPrompt's required \(method) request shape. Reinstall or update RepoPrompt CE; if REPOPROMPT_CODEX_EXECUTABLE is set, update or remove that explicit override."
+            return "\(message) The active Codex runtime rejected Agentry's required \(method) request shape. Reinstall or update Agentry; if AGENTRY_CODEX_EXECUTABLE is set, update or remove that explicit override."
         }
     }
 
@@ -476,13 +476,13 @@ actor CodexAppServerClient {
             throw ClientError.executableUnavailable(resolution.userMessage)
         }
         guard let runtime = resolution.runtime else {
-            throw ClientError.executableUnavailable("RepoPrompt could not start Codex: runtime resolution completed without runtime metadata.")
+            throw ClientError.executableUnavailable("Agentry could not start Codex: runtime resolution completed without runtime metadata.")
         }
         do {
             try runtime.prepareState()
         } catch {
             throw ClientError.executableUnavailable(
-                "RepoPrompt could not start Codex: unable to prepare its isolated state directories (\(error.localizedDescription))."
+                "Agentry could not start Codex: unable to prepare its isolated state directories (\(error.localizedDescription))."
             )
         }
         environment.merge(resolution.environmentOverrides) { _, ownedValue in ownedValue }
@@ -1312,8 +1312,8 @@ actor CodexAppServerClient {
             return
         }
         let clientInfo: [String: Any] = [
-            "name": "repoprompt",
-            "title": "RepoPrompt",
+            "name": "agentry",
+            "title": "Agentry",
             "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         ]
         let capabilities: [String: Any] = [
@@ -1363,11 +1363,11 @@ actor CodexAppServerClient {
         return switch failure.code {
         case Int(ENOENT):
             .executableUnavailable(
-                "RepoPrompt could not start Codex: the selected runtime could not be started. Reinstall RepoPrompt CE or configure a valid explicit override."
+                "Agentry could not start Codex: the selected runtime could not be started. Reinstall Agentry or configure a valid explicit override."
             )
         case Int(EACCES):
             .executableUnavailable(
-                "RepoPrompt could not start Codex: permission was denied when starting the selected runtime. Reinstall RepoPrompt CE or configure a valid explicit override."
+                "Agentry could not start Codex: permission was denied when starting the selected runtime. Reinstall Agentry or configure a valid explicit override."
             )
         default:
             nil
@@ -1377,7 +1377,7 @@ actor CodexAppServerClient {
     private func startProcess(startupAuthority: UInt64) async throws {
         let runtime = try await prepareRuntimeForLaunch()
         guard let launchContext = preparedRuntimeLaunchContext else {
-            throw ClientError.executableUnavailable("RepoPrompt could not start Codex: prepared runtime launch context was unavailable.")
+            throw ClientError.executableUnavailable("Agentry could not start Codex: prepared runtime launch context was unavailable.")
         }
         let environment = Self.processEnvironmentForCurrentLaunch(launchContext.environment)
         let resolution = launchContext.resolution
@@ -1385,7 +1385,7 @@ actor CodexAppServerClient {
             let provisioning = CodexIntegrationConfiguration.ensureServerForDiscovery(runtime: runtime)
             guard provisioning.success else {
                 throw ClientError.executableUnavailable(
-                    provisioning.errorMessage ?? "RepoPrompt could not prepare its owned Codex configuration."
+                    provisioning.errorMessage ?? "Agentry could not prepare its owned Codex configuration."
                 )
             }
         }

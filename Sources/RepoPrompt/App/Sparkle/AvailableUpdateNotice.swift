@@ -75,8 +75,8 @@ struct AvailableUpdateNotice: Equatable {
                 components.append("Build \(normalizedBuildNumber)")
             }
             return components.joined(separator: " · ")
-        case .tip:
-            var components = [normalizedBuildNumber.map { "Tip build \($0)" } ?? "Tip update"]
+        case .beta:
+            var components = [normalizedBuildNumber.map { "Beta build \($0)" } ?? "Beta update"]
             components.append("Version \(versionLabel)")
             if let normalizedShortCommitSHA {
                 components.append("Commit \(normalizedShortCommitSHA)")
@@ -89,8 +89,8 @@ struct AvailableUpdateNotice: Equatable {
         switch channel {
         case .stable:
             "Update \(versionLabel)"
-        case .tip:
-            normalizedBuildNumber.map { "Tip build \($0)" } ?? "Tip \(versionLabel)"
+        case .beta:
+            normalizedBuildNumber.map { "Beta build \($0)" } ?? "Beta \(versionLabel)"
         }
     }
 
@@ -123,13 +123,13 @@ struct AvailableUpdateNotice: Equatable {
         case .stable:
             guard let normalizedBuildNumber else { return "Install Update \(versionLabel)…" }
             return "Install Update \(versionLabel) (build \(normalizedBuildNumber))…"
-        case .tip:
+        case .beta:
             var context = [versionLabel]
             if let normalizedShortCommitSHA {
                 context.append("commit \(normalizedShortCommitSHA)")
             }
-            let tipBuild = normalizedBuildNumber.map { "Tip Build \($0)" } ?? "Tip Update"
-            return "Install \(tipBuild) (\(context.joined(separator: ", ")))…"
+            let betaBuild = normalizedBuildNumber.map { "Beta Build \($0)" } ?? "Beta Update"
+            return "Install \(betaBuild) (\(context.joined(separator: ", ")))…"
         }
     }
 
@@ -137,14 +137,14 @@ struct AvailableUpdateNotice: Equatable {
         switch channel {
         case .stable:
             "Install Update"
-        case .tip:
-            normalizedBuildNumber.map { "Install Tip Build \($0)" } ?? "Install Tip Update"
+        case .beta:
+            normalizedBuildNumber.map { "Install Beta Build \($0)" } ?? "Install Beta Update"
         }
     }
 
-    static func marketingVersion(fromTipTitle title: String?) -> String? {
+    static func marketingVersion(fromBetaTitle title: String?) -> String? {
         guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
-              title.lowercased().hasPrefix("tip build "),
+              title.lowercased().hasPrefix("beta build "),
               let versionSeparator = title.range(of: " · v", options: .caseInsensitive),
               let commitSeparator = title.range(
                   of: " · commit ",
@@ -162,7 +162,7 @@ struct AvailableUpdateNotice: Equatable {
         return candidate
     }
 
-    static func shortCommitSHA(fromTipTitle title: String?) -> String? {
+    static func shortCommitSHA(fromBetaTitle title: String?) -> String? {
         guard let title,
               let separator = title.range(of: " · commit ", options: .caseInsensitive)
         else { return nil }

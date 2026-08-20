@@ -22,7 +22,7 @@ enum CodexIntegrationConfiguration {
     // user-authored TOML is preserved; ambiguous/conflicting code-mode layouts fail
     // before any write.
 
-    /// Serializes in-process read-modify-write access to RepoPrompt's owned Codex config across concurrent
+    /// Serializes in-process read-modify-write access to Agentry's owned Codex config across concurrent
     /// Codex startup/provisioning paths. Cross-process writers remain outside this lock's scope.
     private static let fileLock = NSLock()
     private static let tomlBareKeyCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
@@ -215,7 +215,7 @@ enum CodexIntegrationConfiguration {
             return (true, mutation.wasRepoPromptServerPresent, nil)
         } catch {
             print("CodexIntegrationConfiguration – Codex install failed: \(error)")
-            return (false, false, "RepoPrompt could not update its isolated Codex config: \(error.localizedDescription)")
+            return (false, false, "Agentry could not update its isolated Codex config: \(error.localizedDescription)")
         }
     }
 
@@ -267,7 +267,7 @@ enum CodexIntegrationConfiguration {
             return (true, mutation.wasRepoPromptServerPresent, nil)
         } catch {
             print("CodexIntegrationConfiguration – Codex discovery ensure failed: \(error)")
-            return (false, false, "RepoPrompt could not update its isolated Codex config: \(error.localizedDescription)")
+            return (false, false, "Agentry could not update its isolated Codex config: \(error.localizedDescription)")
         }
     }
 
@@ -886,14 +886,14 @@ enum CodexIntegrationConfiguration {
         supportsDirectOnlyToolNamespaces: Bool
     ) -> String? {
         guard supportsDirectOnlyToolNamespaces else {
-            return "RepoPrompt did not update Codex config because this external Codex version predates RepoPrompt's app-server contract (minimum \(CodexRuntimeAuthority.minimumExternalVersion)). Update the explicit override or use the bundled runtime."
+            return "Agentry did not update Codex config because this external Codex version predates Agentry's app-server contract (minimum \(CodexRuntimeAuthority.minimumExternalVersion)). Update the explicit override or use the bundled runtime."
         }
 
         let codeModePath = ["features", "code_mode"]
         let ownedKeys = Set(["enabled", "direct_only_tool_namespaces", "non_prefixed_mcp_tool_names"])
         let blocks = blockRanges(in: lines, whereHeaderMatches: isCodeModeHeader)
         if blocks.count > 1 {
-            return "RepoPrompt did not update Codex config because multiple [features.code_mode] blocks exist. Merge them, then retry."
+            return "Agentry did not update Codex config because multiple [features.code_mode] blocks exist. Merge them, then retry."
         }
 
         var currentTablePath: [String] = []
@@ -903,13 +903,13 @@ enum CodexIntegrationConfiguration {
                 if header.isArrayTable,
                    currentTablePath == ["features"] || currentTablePath.starts(with: codeModePath)
                 {
-                    return "RepoPrompt did not update Codex config because an array-table definition conflicts with RepoPrompt's owned [features.code_mode] policy. Preserve the setting in a regular table layout, then retry."
+                    return "Agentry did not update Codex config because an array-table definition conflicts with Agentry's owned [features.code_mode] policy. Preserve the setting in a regular table layout, then retry."
                 }
                 if currentTablePath.count > codeModePath.count,
                    currentTablePath.starts(with: codeModePath),
                    ownedKeys.contains(currentTablePath[codeModePath.count])
                 {
-                    return "RepoPrompt did not update Codex config because a table definition redefines an owned [features.code_mode] key. Remove the conflicting table, then retry."
+                    return "Agentry did not update Codex config because a table definition redefines an owned [features.code_mode] key. Remove the conflicting table, then retry."
                 }
                 continue
             }
@@ -924,13 +924,13 @@ enum CodexIntegrationConfiguration {
             if currentTablePath == codeModePath {
                 if let key = localPath.first, ownedKeys.contains(key) {
                     guard localPath.count == 1 else {
-                        return "RepoPrompt did not update Codex config because a dotted definition redefines the owned [features.code_mode].\(key) key. Preserve that key as a scalar or array, then retry."
+                        return "Agentry did not update Codex config because a dotted definition redefines the owned [features.code_mode].\(key) key. Preserve that key as a scalar or array, then retry."
                     }
                     if key == "non_prefixed_mcp_tool_names" {
-                        return "RepoPrompt did not update Codex config because [features.code_mode].non_prefixed_mcp_tool_names conflicts with the owned direct-only RepoPrompt namespace policy. Remove that key, then retry."
+                        return "Agentry did not update Codex config because [features.code_mode].non_prefixed_mcp_tool_names conflicts with the owned direct-only Agentry namespace policy. Remove that key, then retry."
                     }
                     if inlineTableValue {
-                        return "RepoPrompt did not update Codex config because an inline table redefines the owned [features.code_mode].\(key) key. Preserve that key as a scalar or array, then retry."
+                        return "Agentry did not update Codex config because an inline table redefines the owned [features.code_mode].\(key) key. Preserve that key as a scalar or array, then retry."
                     }
                 }
                 continue
@@ -939,7 +939,7 @@ enum CodexIntegrationConfiguration {
             if fullPath == ["features"] || fullPath == codeModePath ||
                 (fullPath.count > codeModePath.count && fullPath.starts(with: codeModePath))
             {
-                return "RepoPrompt did not update Codex config because a dotted or inline definition conflicts with RepoPrompt's owned [features.code_mode] table. Convert it to a regular [features.code_mode] block, then retry."
+                return "Agentry did not update Codex config because a dotted or inline definition conflicts with Agentry's owned [features.code_mode] table. Convert it to a regular [features.code_mode] block, then retry."
             }
         }
         return nil

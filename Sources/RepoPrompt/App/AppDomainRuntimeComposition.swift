@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptShared
 
 private enum AppDomainRuntimeMetrics {
     static let editFlowSink = DomainRuntimeMetricsSink { metric in
@@ -55,11 +56,7 @@ final class AppDomainRuntimeComposition: Sendable {
     }
 
     private init() {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        let root = applicationSupport.appendingPathComponent("RepoPrompt CE", isDirectory: true)
+        let root = AgentryProductIdentity.applicationSupportRootURL()
         let defaults = UserDefaults.standard
         let customStoragePath = defaults.string(forKey: "GlobalCustomStorageURL")
         var legacyRuntimeDefaults = Self.collectLegacyRuntimeDefaults(from: defaults)
@@ -78,8 +75,7 @@ final class AppDomainRuntimeComposition: Sendable {
                 storageDirectory: root,
                 workspaceStorageDirectory: workspaceStorageDirectory,
                 eventDirectory: root.appendingPathComponent("Events", isDirectory: true),
-                temporaryDirectory: FileManager.default.temporaryDirectory
-                    .appendingPathComponent("RepoPrompt CE", isDirectory: true),
+                temporaryDirectory: AgentryProductIdentity.temporaryRootURL(),
                 legacyRuntimeDefaults: legacyRuntimeDefaults,
                 metrics: AppDomainRuntimeMetrics.editFlowSink
             )

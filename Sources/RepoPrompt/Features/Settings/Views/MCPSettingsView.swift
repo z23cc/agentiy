@@ -159,7 +159,7 @@ struct MCPSettingsView: View {
             Text("Feature")
                 .font(fontPreset.headlineFont)
 
-            Text("MCP Server integration is available in RepoPrompt CE")
+            Text("MCP Server integration is available in Agentry")
                 .font(fontPreset.captionFont)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -215,7 +215,7 @@ struct MCPSettingsView: View {
             HStack {
                 Toggle("Auto-Start", isOn: autoStartServerBinding)
                     .font(fontPreset.font)
-                    .hoverTooltip("Automatically start the MCP server when RepoPrompt launches")
+                    .hoverTooltip("Automatically start the MCP server when Agentry launches")
 
                 Spacer()
 
@@ -490,7 +490,7 @@ struct MCPSettingsView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(CustomButtonStyle())
-                .hoverTooltip("Install the RepoPrompt MCP server in another application")
+                .hoverTooltip("Install the Agentry MCP server in another application")
 
                 Menu {
                     Section {
@@ -584,7 +584,7 @@ struct MCPSettingsView: View {
                     }
 
                     Section {
-                        Text("RepoPrompt Codex (isolated prompts)")
+                        Text("Agentry Codex (isolated prompts)")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -635,7 +635,7 @@ struct MCPSettingsView: View {
             Text("CLI Tools")
                 .font(fontPreset.subHeadlineBoldFont)
 
-            // RepoPrompt CE CLI
+            // Agentry CLI
             HStack {
                 cliStatusIcon(for: cliInstallStatus)
                 VStack(alignment: .leading, spacing: 2) {
@@ -665,7 +665,7 @@ struct MCPSettingsView: View {
                 claudeRPActionButton(for: claudeRPInstallStatus, install: installClaudeRP, uninstall: uninstallClaudeRP)
             }
 
-            Text("\(MCPIntegrationHelper.cliCommandName) lets you run MCP commands from your terminal. \(CLIPathInstaller.claudeRPCommandName) is a Claude Code wrapper that uses RepoPrompt's MCP tools.")
+            Text("\(MCPIntegrationHelper.cliCommandName) lets you run MCP commands from your terminal. \(CLIPathInstaller.claudeRPCommandName) is a Claude Code wrapper that uses Agentry's MCP tools.")
                 .font(fontPreset.captionFont)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -702,7 +702,7 @@ struct MCPSettingsView: View {
                     let configString = """
                     {
                       "mcpServers": {
-                        "RepoPrompt": {
+                        "Agentry": {
                           "command": "\(serverCommand)",
                           "args": ["--backend", "app"]
                         }

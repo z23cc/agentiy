@@ -103,10 +103,10 @@ struct RuntimeSecureStorageDecision: Equatable {
 }
 
 enum RuntimeCodeSigningPolicy {
-    static let developerIDBundleIdentifier = "com.pvncher.repoprompt.ce"
-    static let appleDevelopmentDebugBundleIdentifier = "com.pvncher.repoprompt.ce.debug"
+    static let developerIDBundleIdentifier = "io.github.z23cc.agentry"
+    static let appleDevelopmentDebugBundleIdentifier = "io.github.z23cc.agentry.debug"
     static let signingTeamIdentifier = "648A27MST5"
-    static let localSelfSignedCertificateName = "RepoPrompt CE Local Self-Signed Code Signing"
+    static let localSelfSignedCertificateName = "Agentry Local Self-Signed Code Signing"
 
     static let developerIDRequirement =
         "anchor apple generic and identifier \"\(developerIDBundleIdentifier)\" and certificate leaf[subject.OU] = \"\(signingTeamIdentifier)\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
@@ -114,10 +114,10 @@ enum RuntimeCodeSigningPolicy {
     static let appleDevelopmentDebugRequirement =
         "anchor apple generic and identifier \"\(appleDevelopmentDebugBundleIdentifier)\" and certificate leaf[subject.OU] = \"\(signingTeamIdentifier)\" and certificate leaf[field.1.2.840.113635.100.6.1.12] exists"
 
-    private static let signingModePlistKey = "RepoPromptSigningMode"
-    private static let debugStoragePlistKey = "RepoPromptDebugSecureStorageBackend"
-    private static let localSigningFingerprintPlistKey = "RepoPromptLocalSigningCertificateSHA256"
-    private static let localServiceGenerationPlistKey = "RepoPromptLocalSecureStorageGeneration"
+    private static let signingModePlistKey = "AgentrySigningMode"
+    private static let debugStoragePlistKey = "AgentryDebugSecureStorageBackend"
+    private static let localSigningFingerprintPlistKey = "AgentryLocalSigningCertificateSHA256"
+    private static let localServiceGenerationPlistKey = "AgentryLocalSecureStorageGeneration"
 
     static func currentLocalSigningContext(
         bundle: Bundle = .main,

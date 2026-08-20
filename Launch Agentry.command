@@ -7,7 +7,7 @@ FULL_XCODE_RESOLVER="$ROOT_DIR/Scripts/resolve_full_xcode_developer_dir.sh"
 APP_ARGS=("$@")
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "RepoPrompt CE's safe coordinated launcher requires Python 3."
+    echo "Agentry's safe coordinated launcher requires Python 3."
     echo "No uncoordinated fallback is provided because app lifecycle actions must validate the exact debug executable path."
     echo
     echo "Install Python 3, then reopen this launcher."
@@ -40,26 +40,26 @@ export DEVELOPER_DIR
 
 launch_app() {
     echo
-    echo "Building and relaunching RepoPrompt CE..."
+    echo "Building and relaunching Agentry..."
     echo "This run becomes the active launch; any older build or launch jobs still in flight are canceled."
     echo
     if (( ${#APP_ARGS[@]} > 0 )); then
         if "$CONDUCTOR" app relaunch -- "${APP_ARGS[@]}"; then
             echo
-            echo "RepoPrompt CE has been relaunched."
+            echo "Agentry has been relaunched."
         else
             echo
-            echo "RepoPrompt CE was not relaunched."
+            echo "Agentry was not relaunched."
             echo "Check the result above to see whether the build failed or this run was canceled/replaced."
             echo "If the build failed, fix the errors (or let in-flight edits settle), then press r to retry."
             echo "Press s to check the current app and job state."
         fi
     elif "$CONDUCTOR" app relaunch; then
         echo
-        echo "RepoPrompt CE has been relaunched."
+        echo "Agentry has been relaunched."
     else
         echo
-        echo "RepoPrompt CE was not relaunched."
+        echo "Agentry was not relaunched."
         echo "Check the result above to see whether the build failed or this run was canceled/replaced."
         echo "If the build failed, fix the errors (or let in-flight edits settle), then press r to retry."
         echo "Press s to check the current app and job state."
@@ -68,7 +68,7 @@ launch_app() {
 
 show_status() {
     echo
-    echo "Current RepoPrompt CE app status:"
+    echo "Current Agentry app status:"
     echo
     if ! "$CONDUCTOR" app status --full-log; then
         echo
@@ -86,7 +86,7 @@ show_status() {
 
 stop_app() {
     echo
-    echo "Stopping RepoPrompt CE..."
+    echo "Stopping Agentry..."
     echo "Older build or launch jobs that could reopen it are canceled too."
     echo
     if ! "$CONDUCTOR" app stop --full-log; then
@@ -123,7 +123,7 @@ APPLESCRIPT
 }
 
 clear 2>/dev/null || true
-echo "RepoPrompt CE — local debug launcher"
+echo "Agentry — local debug launcher"
 echo
 echo "Project: $ROOT_DIR"
 echo "Mode:    coordinated (builds and launches run through the dev daemon)"
@@ -135,7 +135,7 @@ launch_app
 while true; do
     echo
     echo "Choose an action:"
-    echo "  r  Rebuild and relaunch RepoPrompt CE"
+    echo "  r  Rebuild and relaunch Agentry"
     echo "  s  Show app status and pending daemon jobs"
     echo "  x  Stop the app (also cancels older build/launch jobs)"
     echo "  q  Close this launcher tab only (leaves the app running)"

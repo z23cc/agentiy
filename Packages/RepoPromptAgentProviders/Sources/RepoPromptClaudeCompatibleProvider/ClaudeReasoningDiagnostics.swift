@@ -6,9 +6,16 @@ enum ClaudeReasoningExtractionFeature {
 
 #if DEBUG
     enum ClaudeReasoningDebugLog {
-        static let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
-            .appendingPathComponent("claude-reasoning-debug.log", isDirectory: false)
+        static let fileURL: URL = {
+            let hostProductName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let temporaryDirectoryName = hostProductName.flatMap { $0.isEmpty ? nil : $0 }
+                ?? ProcessInfo.processInfo.processName
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent(temporaryDirectoryName, isDirectory: true)
+                .appendingPathComponent("claude-reasoning-debug.log", isDirectory: false)
+        }()
+
         private static let lock = NSLock()
 
         static func emit(_ line: String) {

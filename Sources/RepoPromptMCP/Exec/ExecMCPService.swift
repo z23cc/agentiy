@@ -1,6 +1,6 @@
 //
 //  ExecMCPService.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  ServiceLifecycle service for exec mode.
 //  Runs commands non-interactively and exits.

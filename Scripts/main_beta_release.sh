@@ -16,25 +16,25 @@ load_release_metadata "$ROOT_DIR"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-TIP_COMMIT="${TIP_COMMIT:-$(git rev-parse HEAD)}"
-TIP_SHORT_SHA="${TIP_SHORT_SHA:-${TIP_COMMIT:0:12}}"
-if [[ -z "${TIP_BUILD_NUMBER:-}" ]]; then
-    TIP_BUILD_SEQUENCE="${TIP_BUILD_SEQUENCE:-$(git rev-list --count "$TIP_COMMIT")}"
-    TIP_BUILD_SEQUENCE="${TIP_BUILD_SEQUENCE//[[:space:]]/}"
-    [[ "$TIP_BUILD_SEQUENCE" =~ ^[0-9]+$ ]] || fail "TIP_BUILD_SEQUENCE must be numeric"
-    (( TIP_BUILD_SEQUENCE <= 9999 )) || fail "TIP_BUILD_SEQUENCE must not exceed 9999"
-    TIP_BUILD_NUMBER="$BUILD_NUMBER.$((TIP_BUILD_SEQUENCE / 100)).$((TIP_BUILD_SEQUENCE % 100))"
+BETA_COMMIT="${BETA_COMMIT:-$(git rev-parse HEAD)}"
+BETA_SHORT_SHA="${BETA_SHORT_SHA:-${BETA_COMMIT:0:12}}"
+if [[ -z "${BETA_BUILD_NUMBER:-}" ]]; then
+    BETA_BUILD_SEQUENCE="${BETA_BUILD_SEQUENCE:-$(git rev-list --count "$BETA_COMMIT")}"
+    BETA_BUILD_SEQUENCE="${BETA_BUILD_SEQUENCE//[[:space:]]/}"
+    [[ "$BETA_BUILD_SEQUENCE" =~ ^[0-9]+$ ]] || fail "BETA_BUILD_SEQUENCE must be numeric"
+    (( BETA_BUILD_SEQUENCE <= 9999 )) || fail "BETA_BUILD_SEQUENCE must not exceed 9999"
+    BETA_BUILD_NUMBER="$BUILD_NUMBER.$((BETA_BUILD_SEQUENCE / 100)).$((BETA_BUILD_SEQUENCE % 100))"
 fi
-TIP_BUILD_NUMBER="${TIP_BUILD_NUMBER//[[:space:]]/}"
-TIP_TAG="${TIP_TAG:-tip-$TIP_SHORT_SHA}"
-TIP_UPDATE_REPOSITORY="${TIP_UPDATE_REPOSITORY:-repoprompt/repoprompt-ce-tip-updates}"
-TIP_DOWNLOAD_URL_PREFIX="${TIP_DOWNLOAD_URL_PREFIX:-https://github.com/$TIP_UPDATE_REPOSITORY/releases/download/$TIP_TAG/}"
-TIP_GH_TOKEN="${TIP_GH_TOKEN:-${GH_TOKEN:-}}"
+BETA_BUILD_NUMBER="${BETA_BUILD_NUMBER//[[:space:]]/}"
+BETA_TAG="${BETA_TAG:-beta-$BETA_SHORT_SHA}"
+BETA_UPDATE_REPOSITORY="${BETA_UPDATE_REPOSITORY:-}"
+BETA_DOWNLOAD_URL_PREFIX="${BETA_DOWNLOAD_URL_PREFIX:-https://github.com/$BETA_UPDATE_REPOSITORY/releases/download/$BETA_TAG/}"
+BETA_GH_TOKEN="${BETA_GH_TOKEN:-${GH_TOKEN:-}}"
 
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 APP_BUNDLE="$ROOT_DIR/.build/release/$APP_NAME.app"
 DISTRIBUTION_APP_BUNDLE_NAME="$DISPLAY_NAME.app"
-ARCHIVE_BASENAME="$APP_NAME-tip-$TIP_SHORT_SHA-$TIP_BUILD_NUMBER"
+ARCHIVE_BASENAME="$APP_NAME-beta-$BETA_SHORT_SHA-$BETA_BUILD_NUMBER"
 UPDATE_ZIP="$DIST_DIR/$ARCHIVE_BASENAME.zip"
 DMG="$DIST_DIR/$ARCHIVE_BASENAME.dmg"
 APPCAST="$DIST_DIR/appcast.xml"
@@ -61,16 +61,27 @@ prepare_dist() {
     mkdir -p "$DIST_DIR"
 }
 
-write_tip_version_env() {
+write_beta_version_env() {
     local output="$1"
     cat > "$output" <<VERSION_ENV
 APP_NAME=$APP_NAME
 DISPLAY_NAME="$DISPLAY_NAME"
 MARKETING_VERSION=$MARKETING_VERSION
-BUILD_NUMBER=$TIP_BUILD_NUMBER
+BUILD_NUMBER=$BETA_BUILD_NUMBER
 BUNDLE_ID=$BUNDLE_ID
 SIGNING_TEAM_ID=$SIGNING_TEAM_ID
+AGENTRY_SPARKLE_STABLE_FEED_URL=$AGENTRY_SPARKLE_STABLE_FEED_URL
+AGENTRY_SPARKLE_BETA_FEED_URL=$AGENTRY_SPARKLE_BETA_FEED_URL
+AGENTRY_SPARKLE_PUBLIC_ED_KEY=$AGENTRY_SPARKLE_PUBLIC_ED_KEY
 VERSION_ENV
+}
+
+validate_beta_sparkle_configuration() {
+    require_env BETA_UPDATE_REPOSITORY
+    validate_agentry_sparkle_metadata ||
+        fail "Beta release requires provisioned Agentry Sparkle configuration"
+    [[ "$AGENTRY_SPARKLE_BETA_FEED_URL" == "https://github.com/$BETA_UPDATE_REPOSITORY/releases/latest/download/appcast.xml" ]] ||
+        fail "BETA_UPDATE_REPOSITORY does not match AGENTRY_SPARKLE_BETA_FEED_URL"
 }
 
 validate_public_app() {
@@ -79,10 +90,10 @@ validate_public_app() {
     local label="$3"
     local signed_team_identifier="${4:-}"
     "$CONTROL_PLANE_SCRIPTS_DIR/validate_embedded_mcp_helper_layout.sh" "$app_bundle" "$label MCP helper layout"
-    "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$app_bundle" "arm64,x86_64" "$label architectures"
+    "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$app_bundle" "$label architectures"
     local codex_verification_args=(
         --manifest "$CODEX_MANIFEST" verify-bundle
-        --arch all
+        --arch arm64
         --bundle "$app_bundle/Contents/Resources/BundledRuntimes/Codex"
     )
     if [[ -n "$signed_team_identifier" ]]; then
@@ -92,7 +103,7 @@ validate_public_app() {
     "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" verify \
         --app "$app_bundle" \
         --manifest "$manifest" \
-        --expected-architectures "arm64,x86_64"
+        --expected-architectures "arm64"
 }
 
 validate_distribution_zip() {
@@ -127,26 +138,26 @@ validate_packaged_legal() {
         "$CONTROL_PLANE_SCRIPTS_DIR/validate_packaged_legal.sh" "$1"
 }
 
-write_tip_metadata() {
+write_beta_metadata() {
     cat > "$FINAL_METADATA" <<JSON
-{"commit":"$TIP_COMMIT","short_sha":"$TIP_SHORT_SHA","tag":"$TIP_TAG","marketing_version":"$MARKETING_VERSION","build_number":"$TIP_BUILD_NUMBER"}
+{"commit":"$BETA_COMMIT","short_sha":"$BETA_SHORT_SHA","tag":"$BETA_TAG","marketing_version":"$MARKETING_VERSION","build_number":"$BETA_BUILD_NUMBER"}
 JSON
 }
 
-require_tip_sentry_configuration() {
+require_beta_sentry_configuration() {
     release_sentry_linking_enabled ||
-        fail "Official Tip signing requires REPOPROMPT_ENABLE_SENTRY=1"
+        fail "Official Beta signing requires AGENTRY_ENABLE_SENTRY=1"
     require_env SENTRY_DSN
     require_env REPOPROMPT_SENTRY_AUTH_TOKEN_FILE
     require_file "$REPOPROMPT_SENTRY_AUTH_TOKEN_FILE"
-    [[ -s "$REPOPROMPT_SENTRY_AUTH_TOKEN_FILE" ]] || fail "Tip Sentry auth token file must not be empty"
+    [[ -s "$REPOPROMPT_SENTRY_AUTH_TOKEN_FILE" ]] || fail "Beta Sentry auth token file must not be empty"
     require_env REPOPROMPT_SENTRY_ORG
     require_env REPOPROMPT_SENTRY_PROJECT
     require_command sentry-cli
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh"
 }
 
-assert_tip_manifest_telemetry_enabled() {
+assert_beta_manifest_telemetry_enabled() {
     python3 - "$FINAL_ARTIFACT_MANIFEST" <<'PYTHON'
 import json
 import sys
@@ -154,16 +165,17 @@ from pathlib import Path
 
 manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 if manifest.get("bundle", {}).get("telemetry_enabled") is not True:
-    raise SystemExit("ERROR: final Tip artifact manifest must record telemetry_enabled=true")
+    raise SystemExit("ERROR: final Beta artifact manifest must record telemetry_enabled=true")
 PYTHON
 }
 
-stage_tip() {
+stage_beta() {
     require_command ditto
     require_command git
+    validate_beta_sparkle_configuration
     require_command shasum
-    [[ "$TIP_BUILD_NUMBER" =~ ^[0-9]{1,4}\.[0-9]{1,2}\.[0-9]{1,2}$ ]] ||
-        fail "TIP_BUILD_NUMBER must be a three-component numeric build version"
+    [[ "$BETA_BUILD_NUMBER" =~ ^[0-9]{1,4}\.[0-9]{1,2}\.[0-9]{1,2}$ ]] ||
+        fail "BETA_BUILD_NUMBER must be a three-component numeric build version"
     resolve_without_lockfile_drift
     "$CONTROL_PLANE_SCRIPTS_DIR/release.sh" preflight
     prepare_dist
@@ -171,40 +183,40 @@ stage_tip() {
         REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR="$CONTROL_PLANE_SCRIPTS_DIR" \
         MARKETING_VERSION="$MARKETING_VERSION" \
-        REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER" \
-        REPOPROMPT_ENABLE_SENTRY=1 \
+        REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$BETA_BUILD_NUMBER" \
+        AGENTRY_ENABLE_SENTRY=1 \
         RELEASE_ALLOW_ADHOC_SIGNING=1 \
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     "$CONTROL_PLANE_SCRIPTS_DIR/release.sh" preflight
     validate_packaged_legal "$APP_BUNDLE"
-    validate_public_app "$APP_BUNDLE" "$BUILD_ARTIFACT_MANIFEST" "Tip staging"
-    REPOPROMPT_ENABLE_SENTRY=1 require_release_sentry_symbols_when_enabled \
+    validate_public_app "$APP_BUNDLE" "$BUILD_ARTIFACT_MANIFEST" "Beta staging"
+    AGENTRY_ENABLE_SENTRY=1 require_release_sentry_symbols_when_enabled \
         "$SENTRY_SYMBOLS_DIR" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
 
     TMP_DIR="$(mktemp -d)"
-    local stage_root="$TMP_DIR/tip-stage"
+    local stage_root="$TMP_DIR/beta-stage"
     mkdir -p "$stage_root/.build/release"
     ditto "$APP_BUNDLE" "$stage_root/.build/release/$APP_NAME.app"
     cp "$BUILD_ARTIFACT_MANIFEST" "$stage_root/.build/release/$APP_NAME-artifact-manifest.json"
-    REPOPROMPT_ENABLE_SENTRY=1 stage_release_sentry_symbols \
+    AGENTRY_ENABLE_SENTRY=1 stage_release_sentry_symbols \
         "$SENTRY_SYMBOLS_DIR" \
         "$stage_root/.build/sentry-symbols/release" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
-    write_tip_version_env "$stage_root/version.env"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
+    write_beta_version_env "$stage_root/version.env"
     cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_root/"
     cp -R "$ROOT_DIR/ThirdPartyLicenses" "$stage_root/"
-    printf '%s\n' "$TIP_COMMIT" > "$stage_root/RELEASE_COMMIT"
-    write_tip_metadata
+    printf '%s\n' "$BETA_COMMIT" > "$stage_root/RELEASE_COMMIT"
+    write_beta_metadata
     ditto -c -k --norsrc "$stage_root" "$STAGE_ARCHIVE"
     (cd "$DIST_DIR" && shasum -a 256 "$(basename "$STAGE_ARCHIVE")" > "$(basename "$STAGE_ARCHIVE_CHECKSUM")")
-    printf 'OK: staged tip build %s (%s) for %s.\n' "$TIP_TAG" "$TIP_BUILD_NUMBER" "$TIP_COMMIT"
+    printf 'OK: staged beta build %s (%s) for %s.\n' "$BETA_TAG" "$BETA_BUILD_NUMBER" "$BETA_COMMIT"
 }
 
 submit_notarization() {
@@ -220,8 +232,8 @@ derive_sparkle_public_key() {
     xcrun swift "$CONTROL_PLANE_SCRIPTS_DIR/derive_sparkle_public_key.swift" "$1"
 }
 
-label_generated_tip_appcast() {
-    python3 - "$APPCAST" "$MARKETING_VERSION" "$TIP_BUILD_NUMBER" "$TIP_SHORT_SHA" <<'PYTHON'
+label_generated_beta_appcast() {
+    python3 - "$APPCAST" "$MARKETING_VERSION" "$BETA_BUILD_NUMBER" "$BETA_SHORT_SHA" <<'PYTHON'
 import sys
 import xml.etree.ElementTree as ET
 
@@ -231,7 +243,7 @@ tree = ET.parse(sys.argv[1])
 root = tree.getroot()
 items = root.findall("./channel/item")
 if len(items) != 1:
-    raise SystemExit(f"tip appcast must contain exactly one item, got {len(items)}")
+    raise SystemExit(f"beta appcast must contain exactly one item, got {len(items)}")
 
 item = items[0]
 marketing_version, build_number, short_sha = sys.argv[2:]
@@ -240,18 +252,18 @@ def singleton_or_create(element_name, qualified_name):
     elements = item.findall(qualified_name)
     if len(elements) > 1:
         raise SystemExit(
-            f"tip appcast item must contain at most one {element_name}, got {len(elements)}"
+            f"beta appcast item must contain at most one {element_name}, got {len(elements)}"
         )
     return elements[0] if elements else ET.SubElement(item, qualified_name)
 
 title = singleton_or_create("title", "title")
-title.text = f"Tip build {build_number} · v{marketing_version} · commit {short_sha}"
+title.text = f"Beta build {build_number} · v{marketing_version} · commit {short_sha}"
 short_version = singleton_or_create(
     "sparkle:shortVersionString", f"{{{sparkle}}}shortVersionString"
 )
 short_version.text = marketing_version
 # Sparkle embeds releaseNotesLink targets inside its stock update window.
-# Tip releases intentionally keep that dialog compact instead of loading a full
+# Beta releases intentionally keep that dialog compact instead of loading a full
 # GitHub release page as web content.
 for release_notes_link in item.findall(f"{{{sparkle}}}releaseNotesLink"):
     item.remove(release_notes_link)
@@ -262,8 +274,8 @@ tree.write(sys.argv[1], encoding="utf-8", xml_declaration=True)
 PYTHON
 }
 
-validate_generated_tip_appcast() {
-    local appcast_values="$TMP_DIR/tip-appcast-values.tsv"
+validate_generated_beta_appcast() {
+    local appcast_values="$TMP_DIR/beta-appcast-values.tsv"
     python3 - "$APPCAST" > "$appcast_values" <<'PYTHON'
 import sys
 import xml.etree.ElementTree as ET
@@ -272,10 +284,10 @@ sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 root = ET.parse(sys.argv[1]).getroot()
 items = root.findall("./channel/item")
 if len(items) != 1:
-    raise SystemExit(f"tip appcast must contain exactly one item, got {len(items)}")
+    raise SystemExit(f"beta appcast must contain exactly one item, got {len(items)}")
 enclosures = items[0].findall("enclosure")
 if len(enclosures) != 1:
-    raise SystemExit(f"tip appcast item must contain exactly one enclosure, got {len(enclosures)}")
+    raise SystemExit(f"beta appcast item must contain exactly one enclosure, got {len(enclosures)}")
 item = items[0]
 enclosure = enclosures[0]
 titles = item.findall("title")
@@ -284,22 +296,22 @@ short_versions = item.findall(f"{{{sparkle}}}shortVersionString")
 release_notes_links = item.findall(f"{{{sparkle}}}releaseNotesLink")
 descriptions = item.findall("description")
 if len(titles) != 1:
-    raise SystemExit(f"tip appcast item must contain exactly one title, got {len(titles)}")
+    raise SystemExit(f"beta appcast item must contain exactly one title, got {len(titles)}")
 if len(versions) != 1:
     raise SystemExit(
-        f"tip appcast item must contain exactly one sparkle:version, got {len(versions)}"
+        f"beta appcast item must contain exactly one sparkle:version, got {len(versions)}"
     )
 if len(short_versions) != 1:
     raise SystemExit(
-        "tip appcast item must contain exactly one "
+        "beta appcast item must contain exactly one "
         f"sparkle:shortVersionString, got {len(short_versions)}"
     )
 if release_notes_links:
     raise SystemExit(
-        "tip appcast item must not contain sparkle:releaseNotesLink"
+        "beta appcast item must not contain sparkle:releaseNotesLink"
     )
 if descriptions:
-    raise SystemExit("tip appcast item must not contain description")
+    raise SystemExit("beta appcast item must not contain description")
 values = [
     enclosure.attrib.get("url", ""),
     enclosure.attrib.get(f"{{{sparkle}}}edSignature", ""),
@@ -314,21 +326,21 @@ PYTHON
     local appcast_field_count enclosure_url enclosure_signature enclosure_length appcast_build appcast_marketing appcast_title
     IFS=$'\x1f' read -r appcast_field_count enclosure_url enclosure_signature enclosure_length appcast_build appcast_marketing appcast_title < "$appcast_values"
     [[ "$appcast_field_count" == "6" ]] ||
-        fail "Tip appcast metadata field count mismatch: expected 6, got $appcast_field_count"
-    [[ "$enclosure_url" == "$TIP_DOWNLOAD_URL_PREFIX$(basename "$UPDATE_ZIP")" ]] ||
-        fail "Tip appcast enclosure URL mismatch: $enclosure_url"
-    [[ -n "$enclosure_signature" ]] || fail "Tip appcast enclosure is missing an EdDSA signature"
+        fail "Beta appcast metadata field count mismatch: expected 6, got $appcast_field_count"
+    [[ "$enclosure_url" == "$BETA_DOWNLOAD_URL_PREFIX$(basename "$UPDATE_ZIP")" ]] ||
+        fail "Beta appcast enclosure URL mismatch: $enclosure_url"
+    [[ -n "$enclosure_signature" ]] || fail "Beta appcast enclosure is missing an EdDSA signature"
     [[ "$enclosure_length" == "$(stat -f %z "$UPDATE_ZIP")" ]] ||
-        fail "Tip appcast enclosure length does not match $(basename "$UPDATE_ZIP")"
-    [[ "$appcast_build" == "$TIP_BUILD_NUMBER" ]] ||
-        fail "Tip appcast build mismatch: expected $TIP_BUILD_NUMBER, got $appcast_build"
+        fail "Beta appcast enclosure length does not match $(basename "$UPDATE_ZIP")"
+    [[ "$appcast_build" == "$BETA_BUILD_NUMBER" ]] ||
+        fail "Beta appcast build mismatch: expected $BETA_BUILD_NUMBER, got $appcast_build"
     [[ "$appcast_marketing" == "$MARKETING_VERSION" ]] ||
-        fail "Tip appcast marketing version mismatch: expected $MARKETING_VERSION, got $appcast_marketing"
-    [[ "$appcast_title" == "Tip build $TIP_BUILD_NUMBER · v$MARKETING_VERSION · commit $TIP_SHORT_SHA" ]] ||
-        fail "Tip appcast presentation title mismatch: $appcast_title"
+        fail "Beta appcast marketing version mismatch: expected $MARKETING_VERSION, got $appcast_marketing"
+    [[ "$appcast_title" == "Beta build $BETA_BUILD_NUMBER · v$MARKETING_VERSION · commit $BETA_SHORT_SHA" ]] ||
+        fail "Beta appcast presentation title mismatch: $appcast_title"
 
-    local private_key_file="$TMP_DIR/tip-sparkle-private-key"
-    local public_key_file="$TMP_DIR/tip-sparkle-public-key"
+    local private_key_file="$TMP_DIR/beta-sparkle-private-key"
+    local public_key_file="$TMP_DIR/beta-sparkle-public-key"
     umask 077
     printf '%s' "$SPARKLE_PRIVATE_KEY" > "$private_key_file"
 
@@ -336,19 +348,19 @@ PYTHON
     derived_public_key="$(derive_sparkle_public_key "$private_key_file")"
     committed_public_key="$(plutil -extract SUPublicEDKey raw "$APP_BUNDLE/Contents/Info.plist")"
     [[ "$derived_public_key" == "$committed_public_key" ]] ||
-        fail "Tip Sparkle private key does not match the app bundle SUPublicEDKey"
+        fail "Beta Sparkle private key does not match the app bundle SUPublicEDKey"
     reproduced_signature="$(printf '%s' "$SPARKLE_PRIVATE_KEY" |
         "$SIGN_UPDATE" --ed-key-file - -p "$UPDATE_ZIP" |
         tr -d '\r\n')"
     [[ "$reproduced_signature" == "$enclosure_signature" ]] ||
-        fail "Tip Sparkle private key does not reproduce the generated appcast signature"
+        fail "Beta Sparkle private key does not reproduce the generated appcast signature"
 
     printf '%s' "$committed_public_key" > "$public_key_file"
     xcrun swift "$CONTROL_PLANE_SCRIPTS_DIR/verify_sparkle_signature.swift" \
         "$public_key_file" "$enclosure_signature" "$UPDATE_ZIP"
 }
 
-sign_tip() {
+sign_beta() {
     require_command ditto
     require_command hdiutil
     require_command plutil
@@ -367,21 +379,22 @@ sign_tip() {
     require_env NOTARYTOOL_ISSUER_ID
     require_env RELEASE_COMMIT
     require_env REPOPROMPT_APPROVED_SOURCE_ROOT
-    require_tip_sentry_configuration
-    [[ "$RELEASE_COMMIT" == "$TIP_COMMIT" ]] || fail "RELEASE_COMMIT must match TIP_COMMIT"
-    [[ -d "$APP_BUNDLE" ]] || fail "Missing staged tip app bundle: $APP_BUNDLE"
+    validate_beta_sparkle_configuration
+    require_beta_sentry_configuration
+    [[ "$RELEASE_COMMIT" == "$BETA_COMMIT" ]] || fail "RELEASE_COMMIT must match BETA_COMMIT"
+    [[ -d "$APP_BUNDLE" ]] || fail "Missing staged beta app bundle: $APP_BUNDLE"
     REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
-        REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER" \
+        REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$BETA_BUILD_NUMBER" \
         "$CONTROL_PLANE_SCRIPTS_DIR/validate_staged_release.sh"
     verify_release_sentry_symbol_uuids_before_signing \
         "$SENTRY_SYMBOLS_DIR" \
         "$APP_BUNDLE" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
     REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
-        REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER" \
+        REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$BETA_BUILD_NUMBER" \
         "$CONTROL_PLANE_SCRIPTS_DIR/sign_staged_release.sh"
     prepare_dist
     TMP_DIR="$(mktemp -d)"
@@ -393,24 +406,24 @@ sign_tip() {
     "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" write \
         --app "$APP_BUNDLE" \
         --output "$FINAL_ARTIFACT_MANIFEST" \
-        --expected-architectures "arm64,x86_64"
-    assert_tip_manifest_telemetry_enabled
-    write_tip_metadata
-    validate_public_app "$APP_BUNDLE" "$FINAL_ARTIFACT_MANIFEST" "Final tip Developer ID app" "$SIGNING_TEAM_ID"
+        --expected-architectures "arm64"
+    assert_beta_manifest_telemetry_enabled
+    write_beta_metadata
+    validate_public_app "$APP_BUNDLE" "$FINAL_ARTIFACT_MANIFEST" "Final beta Developer ID app" "$SIGNING_TEAM_ID"
     upload_release_sentry_symbols \
         "$SENTRY_SYMBOLS_DIR" \
         "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
 
     local distribution_dir="$TMP_DIR/distribution"
     mkdir -p "$distribution_dir"
     ditto "$APP_BUNDLE" "$distribution_dir/$DISTRIBUTION_APP_BUNDLE_NAME"
     ditto -c -k --norsrc --keepParent "$distribution_dir/$DISTRIBUTION_APP_BUNDLE_NAME" "$UPDATE_ZIP"
-    validate_distribution_zip "$UPDATE_ZIP" "$FINAL_ARTIFACT_MANIFEST" "Final tip distribution" "$SIGNING_TEAM_ID"
-    hdiutil create -volname "$DISPLAY_NAME Tip" -srcfolder "$distribution_dir" -ov -format UDZO "$DMG"
+    validate_distribution_zip "$UPDATE_ZIP" "$FINAL_ARTIFACT_MANIFEST" "Final beta distribution" "$SIGNING_TEAM_ID"
+    hdiutil create -volname "$DISPLAY_NAME Beta" -srcfolder "$distribution_dir" -ov -format UDZO "$DMG"
     submit_notarization "$DMG"
     xcrun stapler staple "$DMG"
     xcrun stapler validate "$DMG"
@@ -421,11 +434,11 @@ sign_tip() {
     printf '%s' "$SPARKLE_PRIVATE_KEY" |
         "$TRUSTED_ROOT/Vendor/Sparkle/bin/generate_appcast" \
             --ed-key-file - \
-            --download-url-prefix "$TIP_DOWNLOAD_URL_PREFIX" \
+            --download-url-prefix "$BETA_DOWNLOAD_URL_PREFIX" \
             -o "$APPCAST" \
             "$appcast_dir"
-    label_generated_tip_appcast
-    validate_generated_tip_appcast
+    label_generated_beta_appcast
+    validate_generated_beta_appcast
     (cd "$DIST_DIR" && shasum -a 256 \
         "$(basename "$UPDATE_ZIP")" \
         "$(basename "$DMG")" \
@@ -433,40 +446,41 @@ sign_tip() {
         "$(basename "$FINAL_ARTIFACT_MANIFEST")" \
         "$(basename "$FINAL_METADATA")" \
         > "$(basename "$CHECKSUMS")")
-    printf 'OK: signed and notarized tip artifact %s.\n' "$TIP_TAG"
+    printf 'OK: signed and notarized beta artifact %s.\n' "$BETA_TAG"
 }
 
-publish_tip() {
+publish_beta() {
     require_command gh
-    require_env TIP_GH_TOKEN
-    case "$TIP_UPDATE_REPOSITORY" in
+    require_env BETA_GH_TOKEN
+    validate_beta_sparkle_configuration
+    case "$BETA_UPDATE_REPOSITORY" in
         repoprompt/repoprompt-ce|repoprompt/repoprompt-ce-updates)
-            fail "TIP_UPDATE_REPOSITORY must not target the source or stable update repository"
+            fail "BETA_UPDATE_REPOSITORY must not target the source or stable update repository"
             ;;
     esac
     for path in "$UPDATE_ZIP" "$DMG" "$APPCAST" "$CHECKSUMS" "$FINAL_ARTIFACT_MANIFEST" "$FINAL_METADATA"; do
-        [[ -f "$path" ]] || fail "Missing tip publish asset: $path"
+        [[ -f "$path" ]] || fail "Missing beta publish asset: $path"
     done
-    GH_TOKEN="$TIP_GH_TOKEN" gh release create "$TIP_TAG" \
+    GH_TOKEN="$BETA_GH_TOKEN" gh release create "$BETA_TAG" \
         "$UPDATE_ZIP" \
         "$DMG" \
         "$APPCAST" \
         "$CHECKSUMS" \
         "$FINAL_ARTIFACT_MANIFEST" \
         "$FINAL_METADATA" \
-        --repo "$TIP_UPDATE_REPOSITORY" \
+        --repo "$BETA_UPDATE_REPOSITORY" \
         --target main \
         --latest \
-        --title "$DISPLAY_NAME Tip $TIP_SHORT_SHA" \
-        --notes "Tip build from main commit \`$TIP_COMMIT\` with build number \`$TIP_BUILD_NUMBER\`."
-    printf 'OK: published tip update release %s to %s.\n' "$TIP_TAG" "$TIP_UPDATE_REPOSITORY"
+        --title "$DISPLAY_NAME Beta $BETA_SHORT_SHA" \
+        --notes "Beta build from main commit \`$BETA_COMMIT\` with build number \`$BETA_BUILD_NUMBER\`."
+    printf 'OK: published beta update release %s to %s.\n' "$BETA_TAG" "$BETA_UPDATE_REPOSITORY"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "$MODE" in
-        stage) stage_tip ;;
-        sign) sign_tip ;;
-        publish-tip) publish_tip ;;
-        *) fail "Usage: $0 stage|sign|publish-tip" ;;
+        stage) stage_beta ;;
+        sign) sign_beta ;;
+        publish-beta) publish_beta ;;
+        *) fail "Usage: $0 stage|sign|publish-beta" ;;
     esac
 fi

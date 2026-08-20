@@ -1,4 +1,4 @@
 interface:
-  display_name: "RepoPrompt CE Contribution Check"
-  short_description: "Validate RepoPrompt CE changes before commit or push"
-  default_prompt: "Use $rpce-contribution-check to validate this RepoPrompt CE contribution before committing or pushing."
+  display_name: "Agentry Contribution Check"
+  short_description: "Validate Agentry changes before commit or push"
+  default_prompt: "Use $rpce-contribution-check to validate this Agentry contribution before committing or pushing."

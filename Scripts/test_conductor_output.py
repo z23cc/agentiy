@@ -62,11 +62,11 @@ class OutputSummarizerTests(unittest.TestCase):
     def test_success_package_summary_omits_raw_build_noise(self) -> None:
         lines = ["==> Building RepoPrompt\n"]
         lines.extend(f"CompileSwift noisy file {index}\n" for index in range(200))
-        lines.append("Created: /tmp/RepoPrompt.app\n")
+        lines.append("Created: /tmp/Agentry.app\n")
 
         summary = summarize("build", "completed", 0, lines)
 
-        self.assertIn("Created: /tmp/RepoPrompt.app", section(summary, "Artifacts"))
+        self.assertIn("Created: /tmp/Agentry.app", section(summary, "Artifacts"))
         rendered = "\n".join(line for item in summary["sections"] for line in item["lines"])
         self.assertNotIn("CompileSwift noisy file", rendered)
 
@@ -145,12 +145,12 @@ class OutputSummarizerTests(unittest.TestCase):
 
     def test_app_lifecycle_summary_and_progress_prioritize_confirmed_transition(self) -> None:
         lines = [
-            "==> Stopping existing RepoPrompt CE debug app instance\n",
-            "==> Waiting for existing RepoPrompt CE debug app process to exit\n",
-            "RepoPrompt CE debug app stop confirmed.\n",
-            "==> Launching /tmp/RepoPrompt.app\n",
-            "==> Confirming launched RepoPrompt CE debug app process\n",
-            "Observed launched RepoPrompt CE debug PID(s): 123\n",
+            "==> Stopping existing Agentry debug app instance\n",
+            "==> Waiting for existing Agentry debug app process to exit\n",
+            "Agentry debug app stop confirmed.\n",
+            "==> Launching /tmp/Agentry.app\n",
+            "==> Confirming launched Agentry debug app process\n",
+            "Observed launched Agentry debug PID(s): 123\n",
         ]
 
         summary = summarize("run", "completed", 0, lines)
@@ -158,17 +158,17 @@ class OutputSummarizerTests(unittest.TestCase):
         titles = [item["title"] for item in summary["sections"]]
         progress = conductor.select_progress_lines(
             "run",
-            ["RepoPrompt CE debug app stop confirmed.\n", "Observed launched RepoPrompt CE debug PID(s): 123\n"],
+            ["Agentry debug app stop confirmed.\n", "Observed launched Agentry debug PID(s): 123\n"],
         )
 
-        self.assertIn("RepoPrompt CE debug app stop confirmed.", lifecycle)
-        self.assertIn("Observed launched RepoPrompt CE debug PID(s): 123", lifecycle)
+        self.assertIn("Agentry debug app stop confirmed.", lifecycle)
+        self.assertIn("Observed launched Agentry debug PID(s): 123", lifecycle)
         self.assertTrue(summary["launchLifecycle"]["transitionStarted"])
         self.assertTrue(summary["launchLifecycle"]["launchRequested"])
         self.assertTrue(summary["launchLifecycle"]["launchConfirmed"])
         self.assertLess(titles.index("App lifecycle"), titles.index("Phases"))
-        self.assertIn("RepoPrompt CE debug app stop confirmed.", progress)
-        self.assertIn("Observed launched RepoPrompt CE debug PID(s): 123", progress)
+        self.assertIn("Agentry debug app stop confirmed.", progress)
+        self.assertIn("Observed launched Agentry debug PID(s): 123", progress)
 
     def test_app_operation_display_name_is_precise(self) -> None:
         self.assertEqual(conductor.operation_display_name("app", {"subcommand": "stop"}), "app stop")
@@ -191,7 +191,7 @@ class OutputSummarizerTests(unittest.TestCase):
         self.assertFalse(summary["launchLifecycle"]["transitionStarted"])
         self.assertTrue(summary["launchLifecycle"]["sourceChangedDuringBuild"])
         self.assertIn("Rebuild/package failed before this relaunch ticket reached app stop/open.", rendered)
-        self.assertIn("This ticket did not stop or reopen RepoPrompt.", rendered)
+        self.assertIn("This ticket did not stop or reopen Agentry.", rendered)
         self.assertIn("source files changed during the build", rendered)
         self.assertIn("retry after edits settle", rendered)
         self.assertNotIn("superseded", rendered)
@@ -203,7 +203,7 @@ class OutputSummarizerTests(unittest.TestCase):
             1,
             [
                 "==> Packaging debug app\n",
-                "==> Stopping existing RepoPrompt CE debug app instance\n",
+                "==> Stopping existing Agentry debug app instance\n",
                 "ERROR: open failed\n",
             ],
         )

@@ -6,8 +6,8 @@ Use the coordinated developer daemon from `AGENTS.md`. Do not bypass a queued gl
 
 ```bash
 make doctor
-make dev-swift-build PRODUCT=RepoPrompt
-make dev-swift-build PRODUCT=repoprompt-mcp
+make dev-swift-build PRODUCT=Agentry
+make dev-swift-build PRODUCT=agentry-mcp
 make dev-test
 make dev-provider-test
 ```
@@ -19,14 +19,14 @@ Record conductor ticket and log paths in the migration inventory.
 Root app/product:
 
 ```bash
-make dev-swift-build PRODUCT=RepoPrompt
+make dev-swift-build PRODUCT=Agentry
 make dev-test FILTER=<AffectedSuite>
 ```
 
 MCP:
 
 ```bash
-make dev-swift-build PRODUCT=repoprompt-mcp
+make dev-swift-build PRODUCT=agentry-mcp
 make dev-test FILTER=<AffectedSuite>
 ```
 

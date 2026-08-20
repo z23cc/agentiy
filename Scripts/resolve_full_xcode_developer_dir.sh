@@ -84,4 +84,4 @@ selection_note=""
 if [[ -n "$SELECTED_DEVELOPER_DIR" ]]; then
     selection_note=" Current xcode-select path: $SELECTED_DEVELOPER_DIR."
 fi
-fail "RepoPrompt CE requires a full Xcode with the macOS $MINIMUM_MACOS_SDK_MAJOR SDK or newer.$selection_note Install Xcode in /Applications or set DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer and retry."
+fail "Agentry requires a full Xcode with the macOS $MINIMUM_MACOS_SDK_MAJOR SDK or newer.$selection_note Install Xcode in /Applications or set DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer and retry."

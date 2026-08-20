@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inventory and resolve the RepoPrompt CE local code-signing identity.
+"""Inventory and resolve the Agentry local code-signing identity.
 
 The production inventory reads command output from ``security`` and ``openssl``.
 Tests may pass an offline JSON fixture so no Keychain command is executed.

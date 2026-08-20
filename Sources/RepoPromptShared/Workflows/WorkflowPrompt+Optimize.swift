@@ -17,7 +17,7 @@ extension RepoPromptWorkflowPrompts {
 		case .agent: suffix = ""; title = "Optimizer"
 		case .mcp: suffix = ""; title = "MCP Optimizer"
 		}
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 
 		return """
 \(frontmatter(name: "rp-optimize", description: "Iterative performance optimization loop using \(toolDesc): instrument with debug-only metrics, establish a baseline, then plan → delegate one optimize+harden cycle → re-measure → ask oracle for next plan, looping until the oracle is satisfied or the target metric is met", variant: variant))
@@ -123,10 +123,10 @@ Use `detach:true` so they run concurrently:
 	cli: """
 ```bash
 # The Bottleneck candidates explore — full prose, since this is the heart of Phase 1
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Bottleneck candidates: <area>" message="Scout for performance bottlenecks around <translated target>. Look at the target AND surrounding context: callers, data dependencies, adjacent operations, shared infrastructure. Hunt for tight loops with per-iteration allocations, redundant computation, locking, expensive transformations, sync I/O on hot paths, O(n²), unbatched updates. Report 2–3 ranked candidates with file:line and one-sentence rationale per candidate. No fixes yet." detach=true'
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Conventions: AGENTS.md" message="Read AGENTS.md. Report how to run unit tests, benchmarks, debug harness, sanctioned measurement commands. Quote exact commands." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Bottleneck candidates: <area>" message="Scout for performance bottlenecks around <translated target>. Look at the target AND surrounding context: callers, data dependencies, adjacent operations, shared infrastructure. Hunt for tight loops with per-iteration allocations, redundant computation, locking, expensive transformations, sync I/O on hot paths, O(n²), unbatched updates. Report 2–3 ranked candidates with file:line and one-sentence rationale per candidate. No fixes yet." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Conventions: AGENTS.md" message="Read AGENTS.md. Report how to run unit tests, benchmarks, debug harness, sanctioned measurement commands. Quote exact commands." detach=true'
 # Repeat the same shape for the remaining 3 explores in the table above (Target & call graph, Prior perf work, Scope), each with detach=true.
-rpce-cli -w <window_id> -e 'agent_run op=wait session_ids=["<id1>","<id2>","<id3>","<id4>","<id5>"] timeout=180'
+agentry-cli -w <window_id> -e 'agent_run op=wait session_ids=["<id1>","<id2>","<id3>","<id4>","<id5>"] timeout=180'
 ```
 """))
 
@@ -171,7 +171,7 @@ Now that the surface is mapped and bottleneck candidates are in hand, route the 
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task>Design the setup for an iterative optimization loop targeting <metric> on <scope>.
+agentry-cli -w <window_id> -e 'builder "<task>Design the setup for an iterative optimization loop targeting <metric> on <scope>.
 
 Return an actionable plan with:
 1. Instrumentation strategy: which file to add/extend (must be a test/support file, not production code), the debug-build gate matching this repo, and the smallest hook the production code needs to expose.
@@ -217,7 +217,7 @@ You don't run measurements. Dispatch a single `pair` agent to execute the setup 
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Optimize setup" message="Read the setup plan at <plan path> with read_file first. Execute the setup phase only: land instrumentation in a test/support file gated behind the debug build flag; verify release builds strip it; capture 3–5 baseline samples per AGENTS.md; create prompt-exports/optimize-<slug>-runs.md and fill the baseline row (median, p95, variance, env, commit). Report files touched, command used, baseline numbers, variance, and any reliability concerns. Do not optimize anything yet."'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Optimize setup" message="Read the setup plan at <plan path> with read_file first. Execute the setup phase only: land instrumentation in a test/support file gated behind the debug build flag; verify release builds strip it; capture 3–5 baseline samples per AGENTS.md; create prompt-exports/optimize-<slug>-runs.md and fill the baseline row (median, p95, variance, env, commit). Report files touched, command used, baseline numbers, variance, and any reliability concerns. Do not optimize anything yet."'
 ```
 """))
 
@@ -257,8 +257,8 @@ The Phase 2 plan listed first-pass candidates. For iteration 1, pick the top-ran
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'select set <target source files> <benchmark or test> prompt-exports/optimize-<slug>-runs.md <setup plan path>'
-rpce-cli -w <window_id> -e 'builder "<task>Propose the single next optimization to pursue for <metric>. One change, not a list. Include the change, why it moves the metric, risks, and how to verify no regressions.</task>
+agentry-cli -w <window_id> -e 'select set <target source files> <benchmark or test> prompt-exports/optimize-<slug>-runs.md <setup plan path>'
+agentry-cli -w <window_id> -e 'builder "<task>Propose the single next optimization to pursue for <metric>. One change, not a list. Include the change, why it moves the metric, risks, and how to verify no regressions.</task>
 
 <context>Baseline and prior runs in prompt-exports/optimize-<slug>-runs.md. Setup plan with first-pass candidates at <setup plan path>. Target: <threshold>. Scope: <modules>.</context>" --response-type plan --export'
 ```
@@ -283,7 +283,7 @@ Dispatch **one `pair` agent** for the selected change. The brief covers landing 
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Optimize <N>: <change summary>" message="Read the plan at <plan path> with read_file first. Implement the change in <files>; run the project test command per AGENTS.md and fix breaks; re-run the baseline measurement command with matching sample count and append a new row to prompt-exports/optimize-<slug>-runs.md; if regressed, revert or iterate once to fix; then report changes, new metric value, updated tests, and concerns. Stay inside <scope>. Skip oracle review."'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Optimize <N>: <change summary>" message="Read the plan at <plan path> with read_file first. Implement the change in <files>; run the project test command per AGENTS.md and fix breaks; re-run the baseline measurement command with matching sample count and append a new row to prompt-exports/optimize-<slug>-runs.md; if regressed, revert or iterate once to fix; then report changes, new metric value, updated tests, and concerns. Stay inside <scope>. Skip oracle review."'
 ```
 """))
 
@@ -320,8 +320,8 @@ After a successful iteration, refresh the selection and ask the oracle both ques
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'select set <files changed this iteration> <benchmark or test> prompt-exports/optimize-<slug>-runs.md'
-rpce-cli -w <window_id> -e 'chat "Plan: We just landed <change summary>. Metric moved from <baseline> to <new>. Scoreboard is in the selection. Given the stop criterion (<criterion>), should we run another iteration? If yes, what is the single best next optimization. If no, explain why we have hit diminishing returns or the target." --mode plan'
+agentry-cli -w <window_id> -e 'select set <files changed this iteration> <benchmark or test> prompt-exports/optimize-<slug>-runs.md'
+agentry-cli -w <window_id> -e 'chat "Plan: We just landed <change summary>. Metric moved from <baseline> to <new>. Scoreboard is in the selection. Given the stop criterion (<criterion>), should we run another iteration? If yes, what is the single best next optimization. If no, explain why we have hit diminishing returns or the target." --mode plan'
 ```
 """))
 
@@ -410,7 +410,7 @@ agent_run op=steer  session_id="..."         wait=true         # correct
 
 ---
 
-Now begin with Phase 0.\(variant == .cli ? " First run `rpce-cli -e 'windows'` to find the correct window." : "")
+Now begin with Phase 0.\(variant == .cli ? " First run `agentry-cli -e 'windows'` to find the correct window." : "")
 """
 	}
 

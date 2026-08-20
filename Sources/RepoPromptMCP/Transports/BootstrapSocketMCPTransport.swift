@@ -1,6 +1,6 @@
 //
 //  BootstrapSocketMCPTransport.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  CLI-side MCP Transport implementation over an already-connected UNIX socket FD.
 //  Uses DispatchSourceRead for event-driven I/O to avoid blocking the actor executor.
@@ -71,7 +71,7 @@ public actor BootstrapSocketMCPTransport: Transport {
     private nonisolated let messageStream: AsyncThrowingStream<Data, Swift.Error>
     private var messageContinuation: AsyncThrowingStream<Data, Swift.Error>.Continuation
 
-    private let readQueue = DispatchQueue(label: "com.repoprompt.ce.mcp.cli.socket.read", qos: .userInitiated)
+    private let readQueue = DispatchQueue(label: "io.github.z23cc.agentry.mcp.cli.socket.read", qos: .userInitiated)
     private var nextReadSourceToken: UInt64 = 0
 
     private struct ReaderIdentity: Hashable {

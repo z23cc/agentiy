@@ -40,7 +40,7 @@ enum WindowTitleFormatter {
         let resolved = candidates
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
-        return resolved ?? "RepoPrompt CE"
+        return resolved ?? "Agentry"
     }()
 
     static func compose(
@@ -1403,7 +1403,7 @@ class WindowState: ObservableObject {
             return // ← we handled the prompt command
         }
 
-        // Require host == "open" to match canonical repoprompt-ce://open/~/MyProject links
+        // Require host == "open" to match canonical agentry://open/~/MyProject links
         guard let host = comps.host?.lowercased(), host == "open" else {
             return
         }

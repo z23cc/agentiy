@@ -690,6 +690,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
             WindowStatesManager.shared.registerWindowState(window)
             defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            await window.workspaceManager.awaitInitialized()
 
             let root = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ContextBuilderCleanupCommitTests-\(UUID().uuidString)")
@@ -701,11 +702,12 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                 repoPaths: [root.path],
                 ephemeral: true
             )
-            await window.workspaceManager.switchWorkspace(
+            let switchResult = await window.workspaceManager.switchWorkspace(
                 to: workspace,
                 saveState: false,
                 reason: "ContextBuilderRunLifecycleTests.realCleanup"
             )
+            XCTAssertTrue(switchResult.didSwitch)
 
             let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
             let tabID = try XCTUnwrap(
@@ -806,6 +808,11 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                 workspaceID: activeWorkspace.id,
                 windowID: window.windowID,
                 runID: transitioningRunID
+            )
+            // This fixture mutates the virtual context directly to isolate teardown/commit.
+            // Disable the unrelated live-UI mirror, including already-enqueued deliveries.
+            window.mcpServer.debugStopTabContextMirroringForTesting(
+                connectionID: transitioningConnectionID
             )
             var transitioningContext = try XCTUnwrap(
                 window.mcpServer.tabContextByConnectionID[transitioningConnectionID]

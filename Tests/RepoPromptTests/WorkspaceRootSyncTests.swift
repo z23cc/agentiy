@@ -204,14 +204,14 @@ final class WorkspaceRootSyncTests: XCTestCase {
         XCTAssertTrue(viewModel.getAllFileViewModels(in: conflictingRoleScope).isEmpty)
     }
 
-    func testDefaultWorkspaceAndWindowRootsUseCESupportRoot() {
+    func testDefaultWorkspaceAndWindowRootsUseAgentrySupportRoot() {
         let workspaceRoot = WorkspaceStoragePaths.defaultRoot.path
-        XCTAssertTrue(workspaceRoot.contains("/Application Support/RepoPrompt CE/Workspaces"), workspaceRoot)
-        XCTAssertFalse(workspaceRoot.contains("/Application Support/RepoPrompt/Workspaces"), workspaceRoot)
+        XCTAssertTrue(workspaceRoot.contains("/Application Support/Agentry/Workspaces"), workspaceRoot)
+        XCTAssertFalse(workspaceRoot.contains("/Application Support/RepoPrompt CE/Workspaces"), workspaceRoot)
 
         let windowPath = WindowSessionStore.sessionFileURL().path
-        XCTAssertTrue(windowPath.contains("/Application Support/RepoPrompt CE/windowSessions.json"), windowPath)
-        XCTAssertFalse(windowPath.contains("/Application Support/RepoPrompt/windowSessions.json"), windowPath)
+        XCTAssertTrue(windowPath.contains("/Application Support/Agentry/windowSessions.json"), windowPath)
+        XCTAssertFalse(windowPath.contains("/Application Support/RepoPrompt CE/windowSessions.json"), windowPath)
     }
 
     func testWorkspaceDecodeCreatesDefaultComposeTabAndIgnoresRemovedLegacyFields() throws {

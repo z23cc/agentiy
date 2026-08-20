@@ -50,14 +50,14 @@ grep -F "codex-resources/zsh/bin/zsh" THIRD_PARTY_NOTICES.md >/dev/null ||
     fail "THIRD_PARTY_NOTICES.md is missing the bundled Zsh notice"
 grep -F "rust-v0.147.0" docs/releasing.md >/dev/null ||
     fail "docs/releasing.md is missing the pinned Codex release"
-grep -F 'Contents/Resources/BundledRuntimes/Codex/<target>/' docs/releasing.md >/dev/null ||
-    fail "docs/releasing.md is missing the target-specific bundled Codex layout"
-grep -F 'CODEX_BUNDLE_ARCH="all"' Scripts/package_app.sh >/dev/null ||
-    fail "public packaging must select all pinned Codex targets"
+grep -F 'Contents/Resources/BundledRuntimes/Codex/aarch64-apple-darwin/' docs/releasing.md >/dev/null ||
+    fail "docs/releasing.md is missing the arm64 bundled Codex layout"
+grep -F 'CODEX_BUNDLE_ARCH="${AGENTRY_CODEX_ARCH:-arm64}"' Scripts/package_app.sh >/dev/null ||
+    fail "Agentry packaging must default to the arm64 Codex target"
 grep -F 'stage-bundle' Scripts/package_app.sh >/dev/null ||
     fail "packaging must use the authoritative Codex bundle staging helper"
 for script in \
-    Scripts/main_tip_release.sh \
+    Scripts/main_beta_release.sh \
     Scripts/promote_release.sh \
     Scripts/publish_public_update_test.sh \
     Scripts/release.sh \
@@ -65,14 +65,14 @@ for script in \
     Scripts/validate_staged_release.sh; do
     grep -F 'verify-bundle' "$script" >/dev/null ||
         fail "$script must verify the target-specific Codex bundle contract"
-    grep -F -- '--arch all' "$script" >/dev/null ||
-        fail "$script must require both pinned Codex targets"
-    if grep -F -- '--arch aarch64-apple-darwin' "$script" >/dev/null; then
-        fail "$script must not validate only the arm64 Codex package"
+    grep -F -- '--arch arm64' "$script" >/dev/null ||
+        fail "$script must require the pinned arm64 Codex target"
+    if grep -F -- '--arch all' "$script" >/dev/null; then
+        fail "$script must not package or validate the x86_64 Codex target"
     fi
 done
 
-grep -F 'list-bundle-signing-plan --arch all' Scripts/sign_staged_release.sh >/dev/null ||
+grep -F 'list-bundle-signing-plan --arch arm64' Scripts/sign_staged_release.sh >/dev/null ||
     fail "Developer ID signing must enumerate every manifest-owned Codex Mach-O with its entitlement profile"
 grep -F 'sign_path "$CODEX_BUNDLE/$relative_path"' Scripts/sign_staged_release.sh >/dev/null ||
     fail "Developer ID signing must sign each enumerated Codex Mach-O at its final bundle path"
@@ -112,7 +112,7 @@ if plist != V8_PROFILE:
     sys.exit("AppBundle/CodexV8JIT.entitlements must contain exactly the two approved V8 entitlements")
 PYTHON
 for script in \
-    Scripts/main_tip_release.sh \
+    Scripts/main_beta_release.sh \
     Scripts/promote_release.sh \
     Scripts/publish_public_update_test.sh \
     Scripts/release.sh \

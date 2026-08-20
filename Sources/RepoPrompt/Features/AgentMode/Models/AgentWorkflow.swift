@@ -117,7 +117,7 @@ extension AgentWorkflow {
 ///
 /// Related:
 /// - Built-in catalog: `AgentWorkflow` enum (above)
-/// - Storage: `AgentWorkflowStore` loads custom workflows from `~/Library/Application Support/RepoPrompt CE/Workflows/`
+/// - Storage: `AgentWorkflowStore` loads custom workflows from `~/Library/Application Support/Agentry/Workflows/`
 /// - UI: `AgentWorkflowsPopoverView` displays both built-in and custom workflows
 public struct AgentWorkflowDefinition: Sendable, Identifiable, Equatable, Hashable {
     // MARK: Source

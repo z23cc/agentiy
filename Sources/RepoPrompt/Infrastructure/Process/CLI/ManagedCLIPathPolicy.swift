@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import RepoPromptShared
 
-/// Shared ownership classifier for CE-managed CLI links and wrapper scripts.
+/// Shared ownership classifier for Agentry-managed CLI links and wrapper scripts.
 /// Missing and dangling symlinks are inspected with lstat/readlink rather than
 /// FileManager.fileExists, which follows the target.
 enum ManagedCLIPathPolicy {
@@ -20,11 +20,7 @@ enum ManagedCLIPathPolicy {
         case unmanaged
     }
 
-    static let currentClaudeWrapperMarker = "# claude-rpce: Claude Code wrapper configured for RepoPrompt CE"
-    static let legacyClaudeWrapperMarkers = [
-        "# claude-rp-ce: Claude Code wrapper configured for RepoPrompt CE",
-        "# claude-rp: Claude Code wrapper configured for RepoPrompt"
-    ]
+    static let currentClaudeWrapperMarker = "# claude-agentry: Claude Code wrapper configured for Agentry"
 
     static func classifySymlink(
         at path: String,
@@ -70,8 +66,7 @@ enum ManagedCLIPathPolicy {
 
     static func isManagedWrapper(_ content: String) -> Bool {
         let lines = content.split(whereSeparator: \.isNewline).prefix(8).map(String.init)
-        let markers = [currentClaudeWrapperMarker] + legacyClaudeWrapperMarkers
-        return markers.contains { marker in lines.contains(marker) }
+        return lines.contains(currentClaudeWrapperMarker)
     }
 
     static func managedDestinations(
@@ -79,40 +74,19 @@ enum ManagedCLIPathPolicy {
         fileManager: FileManager = .default
     ) -> Set<String> {
         let home = fileManager.homeDirectoryForCurrentUser
-        let legacyAppSupport = home
-            .appendingPathComponent("Library/Application Support/RepoPrompt CE", isDirectory: true)
+        let debugAppHelper = AgentryProductIdentity.applicationSupportRootURL(fileManager: fileManager)
+            .appendingPathComponent("DebugApps/Agentry.app/Contents/MacOS/agentry-mcp").path
         var paths: Set<String> = [
-            MCPFilesystemIdentity.repoPromptCE(.debug).userSpaceCLIURL(fileManager: fileManager).path,
-            MCPFilesystemIdentity.repoPromptCE(.release).userSpaceCLIURL(fileManager: fileManager).path,
-            legacyAppSupport.appendingPathComponent("repoprompt_ce_cli_debug").path,
-            legacyAppSupport.appendingPathComponent("repoprompt_ce_cli").path,
-            legacyAppSupport.appendingPathComponent("repoprompt_cli_debug").path,
-            legacyAppSupport.appendingPathComponent("repoprompt_cli").path,
-            legacyAppSupport.appendingPathComponent("DebugApps/RepoPrompt.app/Contents/MacOS/repoprompt-mcp").path,
-            "/Applications/RepoPrompt.app/Contents/MacOS/repoprompt-mcp",
-            home.appendingPathComponent("Applications/RepoPrompt.app/Contents/MacOS/repoprompt-mcp").path
+            MCPFilesystemIdentity.agentry(.debug).userSpaceCLIURL(fileManager: fileManager).path,
+            MCPFilesystemIdentity.agentry(.release).userSpaceCLIURL(fileManager: fileManager).path,
+            debugAppHelper,
+            "/Applications/Agentry.app/Contents/MacOS/agentry-mcp",
+            home.appendingPathComponent("Applications/Agentry.app/Contents/MacOS/agentry-mcp").path
         ]
         if let currentBundledCLIPath {
             paths.insert(currentBundledCLIPath)
         }
         return Set(paths.map(standardized))
-    }
-
-    static func isRecognizedCECommand(
-        _ command: String,
-        currentBundledCLIPath: String?,
-        fileManager: FileManager = .default
-    ) -> Bool {
-        managedDestinations(currentBundledCLIPath: currentBundledCLIPath, fileManager: fileManager)
-            .contains(standardized(command))
-    }
-
-    static var exactLegacyPathCommandNames: [String] {
-        ["rp-cli-ce-debug", "rp-ce-cli", "rp-ce-cli-debug"]
-    }
-
-    static var exactLegacyWrapperCommandNames: [String] {
-        ["claude-rp-ce", "claude-rp-ce-debug"]
     }
 
     private static func fileType(atPath path: String) -> mode_t? {
@@ -152,7 +126,7 @@ enum ManagedCLIPathPolicy {
     }
 
     /// Returns the portion of a path from its last `*.app` component to the end
-    /// (e.g. `RepoPrompt CE.app/Contents/MacOS/repoprompt-mcp`), or nil when the
+    /// (e.g. `Agentry.app/Contents/MacOS/agentry-mcp`), or nil when the
     /// path has no app-bundle component.
     private static func appBundleRelativeSuffix(_ path: String) -> String? {
         let components = (path as NSString).pathComponents

@@ -47,7 +47,7 @@ actor DirectHeadlessMCPService {
     private let currentDirectory: URL
 
     init(
-        logger: Logger = Logger(label: "com.repoprompt.ce.mcp.headless"),
+        logger: Logger = Logger(label: "io.github.z23cc.agentry.mcp.headless"),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     ) {
@@ -59,10 +59,10 @@ actor DirectHeadlessMCPService {
     func run() async throws {
         let prepared = try await prepareRuntime()
         let server = Server(
-            name: "RepoPrompt CE",
+            name: "Agentry",
             version: CLI_VERSION,
-            title: "RepoPrompt CE Headless",
-            instructions: "Direct AppKit-free RepoPrompt MCP domain runtime.",
+            title: "Agentry Headless",
+            instructions: "Direct AppKit-free Agentry MCP domain runtime.",
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .init(strict: true, responseSendTimeout: .seconds(5))
         )
@@ -379,10 +379,10 @@ actor DirectHeadlessMCPService {
             ephemeralGrantedOperations: []
         )
         let server = Server(
-            name: "RepoPrompt CE",
+            name: "Agentry",
             version: CLI_VERSION,
-            title: "RepoPrompt CE Headless Child",
-            instructions: "Private run-scoped RepoPrompt MCP domain endpoint.",
+            title: "Agentry Headless Child",
+            instructions: "Private run-scoped Agentry MCP domain endpoint.",
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .init(strict: true, responseSendTimeout: .seconds(5))
         )

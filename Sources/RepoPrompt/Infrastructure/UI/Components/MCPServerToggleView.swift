@@ -282,7 +282,7 @@ struct MCPServerPopoverContent: View {
             Button("OK") {}
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("MCP Server integration is available in RepoPrompt CE.")
+            Text("MCP Server integration is available in Agentry.")
         }
     }
 
@@ -328,7 +328,7 @@ struct MCPServerPopoverContent: View {
             Text("Feature")
                 .font(fontPreset.headlineFont)
 
-            Text("MCP Server integration is available in RepoPrompt CE")
+            Text("MCP Server integration is available in Agentry")
                 .font(fontPreset.captionFont)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -401,7 +401,7 @@ struct MCPServerPopoverContent: View {
             HStack {
                 Toggle("Auto-Start", isOn: autoStartServerBinding)
                     .font(fontPreset.font)
-                    .hoverTooltip("Automatically start the MCP server when RepoPrompt launches")
+                    .hoverTooltip("Automatically start the MCP server when Agentry launches")
 
                 Spacer()
 
@@ -763,7 +763,7 @@ struct MCPServerPopoverContent: View {
                 }
                 .buttonStyle(CustomButtonStyle())
                 .frame(minHeight: buttonMinHeight)
-                .hoverTooltip("Install the RepoPrompt MCP server or CLI")
+                .hoverTooltip("Install the Agentry MCP server or CLI")
 
                 // Skills menu
                 Menu {
@@ -858,7 +858,7 @@ struct MCPServerPopoverContent: View {
                     }
 
                     Section {
-                        Text("RepoPrompt Codex (isolated prompts)")
+                        Text("Agentry Codex (isolated prompts)")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -1044,7 +1044,7 @@ struct MCPServerPopoverContent: View {
     // MARK: – Clipboard helper
 
     /// Copies a JSON configuration block that points to the **stable user-space
-    /// symlink** (~/Library/Application Support/RepoPrompt/RepoPrompt) so editor
+    /// symlink** (~/Library/Application Support/Agentry/Agentry) so editor
     /// integrations keep working after the app moves or updates.
     private func copyMCPConfigToClipboard() {
         MCPIntegrationHelper.copyConfigToClipboard()
@@ -1057,7 +1057,7 @@ struct MCPServerPopoverContent: View {
         MCPIntegrationHelper.installInCursor()
     }
 
-    /// Attempts to merge RepoPrompt MCP entry into Claude Desktop config.
+    /// Attempts to merge Agentry MCP entry into Claude Desktop config.
     /// Returns true on success.  Will NOT create the \"Claude\" directory if missing.
     private func installInClaude() -> Bool {
         MCPIntegrationHelper.installInClaude()

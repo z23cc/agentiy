@@ -34,6 +34,13 @@ struct LicenseUpdatesSettingsView: View {
                                 closeAction?()
                             }
                             .buttonStyle(.bordered)
+                            .disabled(!sparkleManager.sparkleConfigurationValid)
+                        }
+
+                        if let disabledMessage = sparkleManager.updatesDisabledMessage {
+                            Text(disabledMessage)
+                                .font(.caption)
+                                .foregroundColor(.orange)
                         }
 
                         if let availableUpdate = sparkleManager.availableUpdate {
@@ -61,8 +68,8 @@ struct LicenseUpdatesSettingsView: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 
-                            if sparkleManager.updateChannel == .tip {
-                                Text("Tip builds are signed and notarized builds from the latest passing main branch. Returning to Stable takes effect with the next stable release; reinstall Stable to switch immediately.")
+                            if sparkleManager.updateChannel == .beta {
+                                Text("Beta releases are signed and notarized previews. Returning to Stable takes effect with the next stable release; reinstall Stable to switch immediately.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -75,6 +82,7 @@ struct LicenseUpdatesSettingsView: View {
                                 set: { SparkleUpdaterManager.shared.automaticallyChecksForUpdates = $0 }
                             )
                         )
+                        .disabled(!sparkleManager.sparkleConfigurationValid)
                     }
                 }
 

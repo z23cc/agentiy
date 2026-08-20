@@ -16,7 +16,7 @@ let CLI_VERSION = "1.3.0"
 var cliVerboseMode = false
 
 let log: Logger = {
-    var logger = Logger(label: "com.repoprompt.ce.mcp.cli") {
+    var logger = Logger(label: "io.github.z23cc.agentry.mcp.cli") {
         StreamLogHandler.standardError(label: $0)
     }
     // Default to warning level - --verbose will enable more output
@@ -25,13 +25,13 @@ let log: Logger = {
 }()
 
 /// File-based debug logging for socket proxy debugging
-/// Enable via: defaults write com.repoprompt.ce.mcp enableSocketDebugLog -bool true
+/// Enable via: defaults write io.github.z23cc.agentry.mcp enableSocketDebugLog -bool true
 private let enableSocketDebugLog: Bool = ProcessInfo.processInfo.environment["MCP_SOCKET_DEBUG"] == "1" ||
     UserDefaults.standard.bool(forKey: "enableSocketDebugLog")
 
 private let debugLogURL: URL = {
-    let url = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/RepoPrompt CE/socket-proxy-debug.log")
+    let url = AgentryProductIdentity.applicationSupportRootURL()
+        .appendingPathComponent("socket-proxy-debug.log", isDirectory: false)
     guard enableSocketDebugLog else { return url }
     // Create directory if needed
     try? FileManager.default.createDirectory(
@@ -438,9 +438,9 @@ enum SocketProxyError: Swift.Error, LocalizedError {
             if errno == EPERM || errno == EACCES {
                 return "Permission denied (errno \(errno)). If running in a sandboxed environment (e.g., Codex), disable sandbox or grant Unix socket access."
             } else if errno == ENOENT {
-                return "Socket not found. Is RepoPrompt running with MCP enabled?"
+                return "Socket not found. Is Agentry running with MCP enabled?"
             } else if errno == ECONNREFUSED {
-                return "Connection refused. RepoPrompt may need to be restarted."
+                return "Connection refused. Agentry may need to be restarted."
             }
             return "Failed to connect: \(errno)"
         case .notListening:
@@ -450,11 +450,11 @@ enum SocketProxyError: Swift.Error, LocalizedError {
         case .connectionTimeout:
             return "Connection timeout"
         case .bootstrapResponseTimeout:
-            return "Timed out waiting for RepoPrompt bootstrap response"
+            return "Timed out waiting for Agentry bootstrap response"
         case .connectionReset:
             return "Connection reset"
         case .connectionRefused:
-            return "Connection refused. RepoPrompt may be busy or restarting; try again."
+            return "Connection refused. Agentry may be busy or restarting; try again."
         case let .writeFailed(errno):
             return "Write failed: \(errno)"
         case let .readFailed(errno):
@@ -480,7 +480,7 @@ enum SocketProxyError: Swift.Error, LocalizedError {
             let message = reason ?? "Rejected by server"
             return "Handshake rejected (\(code)): \(message)"
         case .protocolVersionMismatch:
-            return "Protocol version mismatch. Update the CLI or RepoPrompt app."
+            return "Protocol version mismatch. Update the CLI or Agentry app."
         case .hostDisconnected:
             return "Host disconnected"
         }
@@ -2518,15 +2518,15 @@ func handleRuntimeError(_ err: CLIRuntimeError) -> Never {
     switch err {
     case let .connectionFailed(underlying):
         log.error("Connection failed: \(underlying)")
-        fputs("RepoPrompt MCP: connection failed – \(underlying)\n", stderr)
+        fputs("Agentry MCP: connection failed – \(underlying)\n", stderr)
         exit(exitCode.rawValue)
     case .approvalDenied:
-        fputs("RepoPrompt MCP: connection closed immediately. Approval was likely denied or the server is disabled. Check the RepoPrompt approval dialog or MCP settings.\n", stderr)
+        fputs("Agentry MCP: connection closed immediately. Approval was likely denied or the server is disabled. Check the Agentry approval dialog or MCP settings.\n", stderr)
         exit(exitCode.rawValue)
     case let .terminatedByServer(provenance):
         // Clean exit - server explicitly terminated this connection
         log.notice("CLI exiting: \(provenance.humanMessage)")
-        fputs("RepoPrompt MCP: \(provenance.humanMessage)\n", stderr)
+        fputs("Agentry MCP: \(provenance.humanMessage)\n", stderr)
         exit(exitCode.rawValue)
     case let .hostDisconnected(provenance):
         // Host process died - exit cleanly without retry
@@ -2854,12 +2854,12 @@ func parseCLIMode() -> CLIMode {
             exit(0)
 
         case "--launch-app":
-            launchRepoPromptApp()
+            launchAgentryApp()
             exit(0)
 
         default:
             // Check if this looks like a command (tool name or alias) without -e flag
-            // This allows: rpce-cli tree, rpce-cli search "pattern", etc.
+            // This allows: agentry-cli tree, agentry-cli search "pattern", etc.
             if !isExec, !isInteractive, !arg.hasPrefix("-") {
                 // Check if it's a known command/tool alias
                 let resolved = MCPCommandParser.resolveToolAlias(arg)
@@ -2929,11 +2929,11 @@ private func stdinHasImmediateDisconnect() -> Bool {
 
 func cliDisplayCommand() -> String {
     let invokedName = URL(fileURLWithPath: CommandLine.arguments.first ?? "").lastPathComponent
-    if invokedName == "repoprompt-mcp" || invokedName.isEmpty {
+    if invokedName == "agentry-mcp" || invokedName.isEmpty {
         #if DEBUG
-            return "rpce-cli-debug"
+            return "agentry-cli-debug"
         #else
-            return "rpce-cli"
+            return "agentry-cli"
         #endif
     }
     return invokedName
@@ -2941,26 +2941,26 @@ func cliDisplayCommand() -> String {
 
 func printUsage() {
     let usage = """
-    RepoPrompt MCP CLI - Execute commands against RepoPrompt workspaces
+    Agentry MCP CLI - Execute commands against Agentry workspaces
 
     USAGE:
-        __RPCE_CLI__ -e '<command>'           Run a command
-        __RPCE_CLI__ -e '<cmd1> && <cmd2>'    Chain commands
-        __RPCE_CLI__ -w <id> -e '<command>'   Target specific window
-        __RPCE_CLI__ -w <id> -t <tab> -e ...  Target window and tab
+        __AGENTRY_CLI__ -e '<command>'           Run a command
+        __AGENTRY_CLI__ -e '<cmd1> && <cmd2>'    Chain commands
+        __AGENTRY_CLI__ -w <id> -e '<command>'   Target specific window
+        __AGENTRY_CLI__ -w <id> -t <tab> -e ...  Target window and tab
 
     EXAMPLES:
-        __RPCE_CLI__ -e 'tree'                          Show file tree
-        __RPCE_CLI__ -e 'workspace list'                List workspaces
-        __RPCE_CLI__ -e 'select set src/ && context'    Select files, get context
-        __RPCE_CLI__ -e 'search "TODO" --extensions .swift'
-        __RPCE_CLI__ -e 'chat How does auth work?'      Send to AI chat
+        __AGENTRY_CLI__ -e 'tree'                          Show file tree
+        __AGENTRY_CLI__ -e 'workspace list'                List workspaces
+        __AGENTRY_CLI__ -e 'select set src/ && context'    Select files, get context
+        __AGENTRY_CLI__ -e 'search "TODO" --extensions .swift'
+        __AGENTRY_CLI__ -e 'chat How does auth work?'      Send to AI chat
 
     QUICK START:
-        __RPCE_CLI__ --launch-app                       Launch RepoPrompt app
-        __RPCE_CLI__ -e 'windows'                       List open windows (get ID)
-        __RPCE_CLI__ -w 1 -e 'select set src/'          Select files for context
-        __RPCE_CLI__ -w 1 -e 'chat "Explain this code" --new'   Start new chat
+        __AGENTRY_CLI__ --launch-app                       Launch Agentry app
+        __AGENTRY_CLI__ -e 'windows'                       List open windows (get ID)
+        __AGENTRY_CLI__ -w 1 -e 'select set src/'          Select files for context
+        __AGENTRY_CLI__ -w 1 -e 'chat "Explain this code" --new'   Start new chat
 
     CORE CONCEPTS:
         The tab's file selection is part of the current context. Use `manage_selection`
@@ -3043,7 +3043,7 @@ func printUsage() {
           prompt export ~/context.md                   Export full LLM context
           prompt presets                               List copy presets
 
-        app_settings - Read/update allowlisted app-wide RepoPrompt preferences
+        app_settings - Read/update allowlisted app-wide Agentry preferences
           app_settings op=list [group=<g>]             Catalog with current values
           app_settings op=get key=<k>|group=<g>        Read one key or a whole group
           app_settings op=set key=<k> value=<v>        Write; use JSON for fractions/null
@@ -3052,23 +3052,23 @@ func printUsage() {
           Groups: ui, prompt_packaging, editing, models, context_builder, mcp, code_maps
 
         apply_edits - Find/replace in files (JSON args required)
-          __RPCE_CLI__ -c apply_edits -j '{"path":"f.ts","search":"old","replace":"new"}'
-          __RPCE_CLI__ -c apply_edits -j '{"path":"f.ts","search":"line1\\nline2","replace":"new"}'
-          __RPCE_CLI__ -c apply_edits -j '{"path":"f.ts","edits":[{"search":"a","replace":"b"}]}'
-          __RPCE_CLI__ -c apply_edits -j '{"path":"f.ts","rewrite":"new content"}'
-          __RPCE_CLI__ -c apply_edits -j @edits.json         (from file with @ prefix)
-          __RPCE_CLI__ -c apply_edits -j edits.json           (auto-detected .json file)
-          echo '...' | __RPCE_CLI__ -c apply_edits -j @-      (from stdin)
+          __AGENTRY_CLI__ -c apply_edits -j '{"path":"f.ts","search":"old","replace":"new"}'
+          __AGENTRY_CLI__ -c apply_edits -j '{"path":"f.ts","search":"line1\\nline2","replace":"new"}'
+          __AGENTRY_CLI__ -c apply_edits -j '{"path":"f.ts","edits":[{"search":"a","replace":"b"}]}'
+          __AGENTRY_CLI__ -c apply_edits -j '{"path":"f.ts","rewrite":"new content"}'
+          __AGENTRY_CLI__ -c apply_edits -j @edits.json         (from file with @ prefix)
+          __AGENTRY_CLI__ -c apply_edits -j edits.json           (auto-detected .json file)
+          echo '...' | __AGENTRY_CLI__ -c apply_edits -j @-      (from stdin)
           Note: Raw newlines/tabs in JSON strings are auto-repaired.
 
         file_actions - Create/delete/move files (JSON args required)
-          __RPCE_CLI__ -c file_actions -j '{"action":"create","path":"src/new.ts"}'
-          __RPCE_CLI__ -c file_actions -j '{"action":"create","path":"f.ts","content":"line1\\nline2"}'
-          __RPCE_CLI__ -c file_actions -j '{"action":"delete","path":"/absolute/path/file.ts"}'
-          __RPCE_CLI__ -c file_actions -j '{"action":"move","path":"old.ts","new_path":"new.ts"}'
-          __RPCE_CLI__ -c file_actions -j @create-file.json    (from file with @ prefix)
-          __RPCE_CLI__ -c file_actions -j create-file.json      (auto-detected .json file)
-          echo '...' | __RPCE_CLI__ -c file_actions -j @-       (from stdin)
+          __AGENTRY_CLI__ -c file_actions -j '{"action":"create","path":"src/new.ts"}'
+          __AGENTRY_CLI__ -c file_actions -j '{"action":"create","path":"f.ts","content":"line1\\nline2"}'
+          __AGENTRY_CLI__ -c file_actions -j '{"action":"delete","path":"/absolute/path/file.ts"}'
+          __AGENTRY_CLI__ -c file_actions -j '{"action":"move","path":"old.ts","new_path":"new.ts"}'
+          __AGENTRY_CLI__ -c file_actions -j @create-file.json    (from file with @ prefix)
+          __AGENTRY_CLI__ -c file_actions -j create-file.json      (auto-detected .json file)
+          echo '...' | __AGENTRY_CLI__ -c file_actions -j @-       (from stdin)
           Note: Raw newlines/tabs in JSON strings are auto-repaired.
 
         oracle_utils (oracle, models, chats) - Oracle helpers
@@ -3140,12 +3140,12 @@ func printUsage() {
                       create_session, resume_session, stop_session, list_workflows
 
         Raw tool calls with JSON (for tools without shorthand syntax):
-          __RPCE_CLI__ -c <tool> -j '{"param":"value"}'
-          __RPCE_CLI__ -c manage_worktree -j '{"op":"list","include_graph":true,"graph_limit":8}'
+          __AGENTRY_CLI__ -c <tool> -j '{"param":"value"}'
+          __AGENTRY_CLI__ -c manage_worktree -j '{"op":"list","include_graph":true,"graph_limit":8}'
 
         Direct raw tool calls with key=value args:
-          __RPCE_CLI__ manage_worktree op=list include_graph=true graph_limit=8
-          __RPCE_CLI__ -e 'manage_worktree op=preview session_id="<uuid>" target="@main"'
+          __AGENTRY_CLI__ manage_worktree op=list include_graph=true graph_limit=8
+          __AGENTRY_CLI__ -e 'manage_worktree op=preview session_id="<uuid>" target="@main"'
 
     OPTIONS:
         -e, --exec <cmd>       Execute command(s)
@@ -3161,7 +3161,7 @@ func printUsage() {
         --tools-schema=git       Print git and manage_worktree schemas only
         --tools-schema=settings  Print app_settings schema only
         -q, --quiet            Suppress non-essential output
-        --launch-app           Launch RepoPrompt app
+        --launch-app           Launch Agentry app
         --raw-json             Raw JSON output (for scripting)
         --verbose              Show debug/timing info
         --fail-fast            Stop on first error in chain
@@ -3169,10 +3169,10 @@ func printUsage() {
     MULTI-WINDOW ROUTING:
         With one window: -w is optional. With multiple: bind or disambiguate explicitly.
 
-        __RPCE_CLI__ -e 'windows'                          List windows, tabs, and context_id values
-        __RPCE_CLI__ -w <id> -e 'context'                  Bind a window for this invocation
-        __RPCE_CLI__ --context-id <uuid> -e 'context'      Bind a compose context directly
-        __RPCE_CLI__ -w <id> -t <tab-or-uuid> -e 'context' Resolve/bind a tab in one step
+        __AGENTRY_CLI__ -e 'windows'                          List windows, tabs, and context_id values
+        __AGENTRY_CLI__ -w <id> -e 'context'                  Bind a window for this invocation
+        __AGENTRY_CLI__ --context-id <uuid> -e 'context'      Bind a compose context directly
+        __AGENTRY_CLI__ -w <id> -t <tab-or-uuid> -e 'context' Resolve/bind a tab in one step
 
         Prefer --context-id for compose-context targeting.
         Use -w only when you want window scope without a tab pin.
@@ -3183,44 +3183,44 @@ func printUsage() {
         --help-advanced        Tab targeting, routing parameters
 
     TOOL SCHEMAS - Use -d <tool> to see complete parameter documentation:
-        __RPCE_CLI__ -d manage_selection    Show selection params
-        __RPCE_CLI__ -d file_search         See filter options and valid values
-        __RPCE_CLI__ -d ask_oracle          See mode options and chat workflow
-        __RPCE_CLI__ -d app_settings        App-wide preferences operations
-        __RPCE_CLI__ -d manage_worktree     Worktree management and merge operations
-        __RPCE_CLI__ -d agent_run           Agent run control operations
-        __RPCE_CLI__ -d agent_manage        Session/workflow management operations
+        __AGENTRY_CLI__ -d manage_selection    Show selection params
+        __AGENTRY_CLI__ -d file_search         See filter options and valid values
+        __AGENTRY_CLI__ -d ask_oracle          See mode options and chat workflow
+        __AGENTRY_CLI__ -d app_settings        App-wide preferences operations
+        __AGENTRY_CLI__ -d manage_worktree     Worktree management and merge operations
+        __AGENTRY_CLI__ -d agent_run           Agent run control operations
+        __AGENTRY_CLI__ -d agent_manage        Session/workflow management operations
 
         Output includes: parameter names, types (string, array, object),
         required vs optional, allowed values (enums), and descriptions.
         Add --verbose to also see the raw JSON schema.
 
     MACHINE-READABLE SCHEMAS:
-        __RPCE_CLI__ --tools-schema                 All tools as JSON (MCP tools/list format)
-        __RPCE_CLI__ --tools-schema=explore         Only tools in the "explore" group
-        __RPCE_CLI__ --tools-schema=git             Only git and manage_worktree
-        __RPCE_CLI__ --tools-schema=settings        Only app_settings
-        __RPCE_CLI__ -e 'tools --schema'            Same via exec mode
-        __RPCE_CLI__ -e 'tools explore --schema'    Filter by group via exec mode
-        __RPCE_CLI__ -e 'tools git --schema'        git/manage_worktree schemas via exec mode
-        __RPCE_CLI__ -e 'tools settings --schema'   app_settings schema via exec mode
-    """.replacingOccurrences(of: "__RPCE_CLI__", with: cliDisplayCommand())
+        __AGENTRY_CLI__ --tools-schema                 All tools as JSON (MCP tools/list format)
+        __AGENTRY_CLI__ --tools-schema=explore         Only tools in the "explore" group
+        __AGENTRY_CLI__ --tools-schema=git             Only git and manage_worktree
+        __AGENTRY_CLI__ --tools-schema=settings        Only app_settings
+        __AGENTRY_CLI__ -e 'tools --schema'            Same via exec mode
+        __AGENTRY_CLI__ -e 'tools explore --schema'    Filter by group via exec mode
+        __AGENTRY_CLI__ -e 'tools git --schema'        git/manage_worktree schemas via exec mode
+        __AGENTRY_CLI__ -e 'tools settings --schema'   app_settings schema via exec mode
+    """.replacingOccurrences(of: "__AGENTRY_CLI__", with: cliDisplayCommand())
     print(usage)
 }
 
 func printInteractiveUsage() {
     let usage = """
-    RepoPrompt MCP CLI - Interactive Mode
+    Agentry MCP CLI - Interactive Mode
 
     USAGE:
-        __RPCE_CLI__ -i                  Start REPL
-        __RPCE_CLI__ -i -w <id>          Start with window pre-selected
+        __AGENTRY_CLI__ -i                  Start REPL
+        __AGENTRY_CLI__ -i -w <id>          Start with window pre-selected
 
-    Interactive mode provides a shell-like REPL for exploring the RepoPrompt
+    Interactive mode provides a shell-like REPL for exploring the Agentry
     workspace and calling tools. Commands use natural syntax instead of JSON.
 
     IMPORTANT: When multiple windows are open, you must select a window:
-        __RPCE_CLI__ -i -w <id>          Pre-select window at startup
+        __AGENTRY_CLI__ -i -w <id>          Pre-select window at startup
         windows                    List available windows (inside REPL)
         use <id>                   Select window for session (inside REPL)
 
@@ -3256,45 +3256,45 @@ func printInteractiveUsage() {
     JSON ARGUMENTS (-j / --json):
         Inline JSON:     -j '{"path":"file.txt"}'
         From file:       -j @/path/to/args.json    or   -j /path/to/args.json
-        From stdin:      echo '{"path":"..."}' | __RPCE_CLI__ -c tool -j @-
+        From stdin:      echo '{"path":"..."}' | __AGENTRY_CLI__ -c tool -j @-
         Auto-repair:     Multiline strings with raw newlines are auto-escaped
 
     EXAMPLES:
         # Explore available tools
-        __RPCE_CLI__ -l
-        __RPCE_CLI__ --list-tools=explore
-        __RPCE_CLI__ --tools-schema > tools.json
-        __RPCE_CLI__ --tools-schema=settings
-        __RPCE_CLI__ --tools-schema=git
-        __RPCE_CLI__ -d file_search
-        __RPCE_CLI__ -d manage_worktree              # Worktree management/merge schemas
-        __RPCE_CLI__ -d agent_run                    # Agent run control schemas
-        __RPCE_CLI__ -d agent_manage                 # Session/workflow schemas
+        __AGENTRY_CLI__ -l
+        __AGENTRY_CLI__ --list-tools=explore
+        __AGENTRY_CLI__ --tools-schema > tools.json
+        __AGENTRY_CLI__ --tools-schema=settings
+        __AGENTRY_CLI__ --tools-schema=git
+        __AGENTRY_CLI__ -d file_search
+        __AGENTRY_CLI__ -d manage_worktree              # Worktree management/merge schemas
+        __AGENTRY_CLI__ -d agent_run                    # Agent run control schemas
+        __AGENTRY_CLI__ -d agent_manage                 # Session/workflow schemas
 
         # Call a tool directly
-        __RPCE_CLI__ -c read_file -j '{"path":"/tmp/test.txt"}'
-        __RPCE_CLI__ -c manage_worktree -j '{"op":"list","include_graph":true,"graph_limit":8}'
-        __RPCE_CLI__ -e 'manage_worktree op=list include_graph=true graph_limit=8'
-        __RPCE_CLI__ -c read_file -j args.json
-        __RPCE_CLI__ -c read_file -j @args.json
+        __AGENTRY_CLI__ -c read_file -j '{"path":"/tmp/test.txt"}'
+        __AGENTRY_CLI__ -c manage_worktree -j '{"op":"list","include_graph":true,"graph_limit":8}'
+        __AGENTRY_CLI__ -e 'manage_worktree op=list include_graph=true graph_limit=8'
+        __AGENTRY_CLI__ -c read_file -j args.json
+        __AGENTRY_CLI__ -c read_file -j @args.json
 
         # Save tool snapshot for documentation
-        __RPCE_CLI__ -s ~/tools.json
+        __AGENTRY_CLI__ -s ~/tools.json
 
     OUTPUT OPTIONS:
         --raw-json                 Raw JSON output (for scripting)
         --verbose                  Show debug/timing info
 
-    """.replacingOccurrences(of: "__RPCE_CLI__", with: cliDisplayCommand())
+    """.replacingOccurrences(of: "__AGENTRY_CLI__", with: cliDisplayCommand())
     print(usage)
 }
 
 func printScriptingUsage() {
     let usage = """
-    RepoPrompt MCP CLI - Scripting & Workflow Flags
+    Agentry MCP CLI - Scripting & Workflow Flags
 
     SCRIPT FILES (.rp):
-        __RPCE_CLI__ --exec-file ~/scripts/export.rp
+        __AGENTRY_CLI__ --exec-file ~/scripts/export.rp
 
         Script files contain one command per line. Lines starting with # are comments.
         Commands can use output redirection (> file.txt).
@@ -3306,16 +3306,16 @@ func printScriptingUsage() {
             context --all > output.md
 
     LAUNCHING THE APP:
-        __RPCE_CLI__ --launch-app                       Launch RepoPrompt app
+        __AGENTRY_CLI__ --launch-app                       Launch Agentry app
 
     READING FROM STDIN:
-        echo 'tree' | __RPCE_CLI__ --exec-stdin
-        cat commands.txt | __RPCE_CLI__ --exec-stdin
+        echo 'tree' | __AGENTRY_CLI__ --exec-stdin
+        cat commands.txt | __AGENTRY_CLI__ --exec-stdin
 
     MULTIPLE EXEC FLAGS:
         Multiple -e flags run in order (each is a separate command):
 
-        __RPCE_CLI__ -e 'workspace MyProject' \\
+        __AGENTRY_CLI__ -e 'workspace MyProject' \\
                        -e 'select set src/' \\
                        -e 'context > out.md'
 
@@ -3331,10 +3331,10 @@ func printScriptingUsage() {
         --builder <instructions> → builder <instructions>
 
         Example:
-        __RPCE_CLI__ --workspace MyProject --select-set src/ --export-context ~/out.md
+        __AGENTRY_CLI__ --workspace MyProject --select-set src/ --export-context ~/out.md
 
         Is equivalent to:
-        __RPCE_CLI__ -e 'workspace switch "MyProject" && select set src/ && context --all > "~/out.md"'
+        __AGENTRY_CLI__ -e 'workspace switch "MyProject" && select set src/ && context --all > "~/out.md"'
 
     EXEC OPTIONS:
         -w, --window <id>        Bind a window at startup (disambiguate when needed)
@@ -3346,13 +3346,13 @@ func printScriptingUsage() {
         -q, --quiet              Suppress non-essential output
         --verbose                Show debug/timing info
         --raw-json               Raw JSON output (for scripting)
-        --launch-app             Launch RepoPrompt app
+        --launch-app             Launch Agentry app
 
     MULTI-WINDOW NOTE:
         Scripts should bind explicitly with -w and/or --context-id for deterministic behavior.
 
         Example:
-        __RPCE_CLI__ -w 1 -t MyTab -e 'select set src/ && context > out.md'
+        __AGENTRY_CLI__ -w 1 -t MyTab -e 'select set src/ && context > out.md'
 
     EXIT CODES:
         0    Success
@@ -3362,27 +3362,27 @@ func printScriptingUsage() {
         75   Script file not found
         78   Parse error
 
-    """.replacingOccurrences(of: "__RPCE_CLI__", with: cliDisplayCommand())
+    """.replacingOccurrences(of: "__AGENTRY_CLI__", with: cliDisplayCommand())
     print(usage)
 }
 
 func printAdvancedUsage() {
     let usage = """
-    RepoPrompt MCP CLI - Advanced Options
+    Agentry MCP CLI - Advanced Options
 
     TAB TARGETING:
         Workspaces can have multiple compose tabs, each with different file selections
         and prompts. `context_id` is the canonical compose-context handle.
 
         # List available tabs / context_id values
-        __RPCE_CLI__ -e 'windows'
+        __AGENTRY_CLI__ -e 'windows'                    # Discover windows and context_id values
 
         # Target a specific tab with -t flag or --context-id (recommended)
-        __RPCE_CLI__ -w 1 -t MyTab -e 'context'
-        __RPCE_CLI__ --context-id <uuid> -e 'chat Hello'
+        __AGENTRY_CLI__ -w 1 -t MyTab -e 'context'
+        __AGENTRY_CLI__ --context-id <uuid> -e 'chat Hello'
 
         # Or pass hidden routing params directly to any tool call
-        __RPCE_CLI__ -e 'call get_file_tree {"_windowID":1,"context_id":"<uuid>"}'
+        __AGENTRY_CLI__ -e 'call get_file_tree {"_windowID":1,"context_id":"<uuid>"}'
 
     HIDDEN ROUTING PARAMETERS:
         These parameters can be passed to any tool call for explicit routing:
@@ -3392,7 +3392,7 @@ func printAdvancedUsage() {
         _tabID       Legacy low-level tab routing override (advanced/manual control)
 
         Example:
-        __RPCE_CLI__ -e 'call read_file {"path":"src/main.swift","_windowID":2,"context_id":"<uuid>"}'
+        __AGENTRY_CLI__ -e 'call read_file {"path":"src/main.swift","_windowID":2,"context_id":"<uuid>"}'
 
     CONNECTION BINDING VS PARAMETER PASSING:
         - Interactive mode (-i): Use 'use <id>' or bind_context to bind
@@ -3406,8 +3406,8 @@ func printAdvancedUsage() {
           When multiple windows exist, prefer --context-id for compose-context work.
 
           Example workflow:
-          __RPCE_CLI__ -e 'windows'                    # Discover windows and context_id values
-          __RPCE_CLI__ --context-id <uuid> -e 'context' # Get context from a specific tab
+          __AGENTRY_CLI__ -e 'windows'                    # Discover windows and context_id values
+          __AGENTRY_CLI__ --context-id <uuid> -e 'context' # Get context from a specific tab
 
     MULTI-ROOT WORKSPACES:
         Workspaces can have multiple root folders. File paths in tool responses
@@ -3416,36 +3416,34 @@ func printAdvancedUsage() {
         MyProject/src/main.swift    (from MyProject root)
         OtherRoot/src/main.swift    (from OtherRoot)
 
-    """.replacingOccurrences(of: "__RPCE_CLI__", with: cliDisplayCommand())
+    """.replacingOccurrences(of: "__AGENTRY_CLI__", with: cliDisplayCommand())
     print(usage)
 }
 
 func printVersion() {
-    print("\(cliDisplayCommand()) (repoprompt-mcp) \(CLI_VERSION)")
+    print("\(cliDisplayCommand()) (agentry-mcp) \(CLI_VERSION)")
 }
 
-private let repoPromptCEReleaseBundleIdentifier = "com.pvncher.repoprompt.ce"
-private let repoPromptCEDebugBundleIdentifier = "com.pvncher.repoprompt.ce.debug"
-private let repoPromptCEBundleIdentifier: String = {
+private let agentryBundleIdentifier: String = {
     #if DEBUG
-        return repoPromptCEDebugBundleIdentifier
+        return AgentryProductIdentity.debugBundleIdentifier
     #else
-        return repoPromptCEReleaseBundleIdentifier
+        return AgentryProductIdentity.releaseBundleIdentifier
     #endif
 }()
 
-/// Launches the RepoPrompt app that contains this CLI, falling back to Launch Services.
-func launchRepoPromptApp() {
+/// Launches the Agentry app that contains this CLI, falling back to Launch Services.
+func launchAgentryApp() {
     let executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     let appURL = executableURL
         .deletingLastPathComponent() // MacOS
         .deletingLastPathComponent() // Contents
-        .deletingLastPathComponent() // RepoPrompt.app
+        .deletingLastPathComponent() // Agentry.app
 
     let targetPath: String = if appURL.pathExtension == "app" && FileManager.default.fileExists(atPath: appURL.path) {
         appURL.path
     } else {
-        "-b \(repoPromptCEBundleIdentifier)"
+        "-b \(agentryBundleIdentifier)"
     }
 
     let process = Process()
@@ -3457,7 +3455,7 @@ func launchRepoPromptApp() {
         try process.run()
         process.waitUntilExit()
     } catch {
-        fputs("Error: Failed to launch RepoPrompt CE app: \(error)\n", stderr)
+        fputs("Error: Failed to launch Agentry app: \(error)\n", stderr)
         exit(1)
     }
 }
@@ -3604,7 +3602,7 @@ if DirectHeadlessChildBridge.isRequested() {
         try await DirectHeadlessChildBridge.run()
         exit(MCPCLIExitCode.ok.rawValue)
     } catch {
-        fputs("RepoPrompt MCP private child bridge: \(error)\n", stderr)
+        fputs("Agentry MCP private child bridge: \(error)\n", stderr)
         exit(MCPCLIExitCode.connectionFailed.rawValue)
     }
 }
@@ -3618,18 +3616,18 @@ if case .proxy = mode {
     let hasNoUserArgs = CommandLine.arguments.count <= 1
     if stdinIsTTY || stdoutIsTTY || (hasNoUserArgs && (!stdinLooksLikeMCPTransport() || stdinHasImmediateDisconnect())) {
         let usage = """
-        RepoPrompt MCP CLI
+        Agentry MCP CLI
 
         This command is designed to be used as an MCP server by host applications
         (Claude Desktop, Cursor, etc.) or with explicit mode flags.
 
         Quick start:
-          __RPCE_CLI__ -l                    # List available tools
-          __RPCE_CLI__ -e 'tree'             # Execute a command
-          __RPCE_CLI__ -i                    # Interactive REPL
-          __RPCE_CLI__ --help                # Full help
+          __AGENTRY_CLI__ -l                    # List available tools
+          __AGENTRY_CLI__ -e 'tree'             # Execute a command
+          __AGENTRY_CLI__ -i                    # Interactive REPL
+          __AGENTRY_CLI__ --help                # Full help
 
-        """.replacingOccurrences(of: "__RPCE_CLI__", with: cliDisplayCommand())
+        """.replacingOccurrences(of: "__AGENTRY_CLI__", with: cliDisplayCommand())
         fputs(usage, stderr)
         exit(0)
     }
@@ -3661,17 +3659,17 @@ if case let .exec(options) = mode {
     } catch let err as CLIRuntimeError {
         handleRuntimeError(err)
     } catch let err as InteractiveSessionError {
-        fputs("RepoPrompt MCP: \(err.description)\n", stderr)
+        fputs("Agentry MCP: \(err.description)\n", stderr)
         exit(MCPCLIExitCode.connectionFailed.rawValue)
     } catch let err as ExecError {
         switch err {
         case .commandFailed:
             exit(ExecExitCode.commandFailed.rawValue)
         case let .scriptNotFound(path):
-            fputs("RepoPrompt MCP: Script not found: \(path)\n", stderr)
+            fputs("Agentry MCP: Script not found: \(path)\n", stderr)
             exit(ExecExitCode.scriptNotFound.rawValue)
         case let .scriptReadError(underlying):
-            fputs("RepoPrompt MCP: Failed to read script: \(underlying)\n", stderr)
+            fputs("Agentry MCP: Failed to read script: \(underlying)\n", stderr)
             exit(ExecExitCode.scriptNotFound.rawValue)
         }
     } catch {
@@ -3685,7 +3683,7 @@ if resolvedBackend == .headless {
         try await DirectHeadlessMCPService(logger: log).run()
         exit(MCPCLIExitCode.ok.rawValue)
     } catch {
-        fputs("RepoPrompt MCP headless: \(error)\n", stderr)
+        fputs("Agentry MCP headless: \(error)\n", stderr)
         exit(MCPCLIExitCode.unknownError.rawValue)
     }
 }
@@ -3725,7 +3723,7 @@ do {
     handleRuntimeError(err)
 } catch let err as InteractiveSessionError {
     // Handle interactive mode errors
-    fputs("RepoPrompt MCP: \(err.description)\n", stderr)
+    fputs("Agentry MCP: \(err.description)\n", stderr)
     exit(MCPCLIExitCode.connectionFailed.rawValue)
 } catch let err as ExecError {
     // Handle exec mode errors
@@ -3733,10 +3731,10 @@ do {
     case .commandFailed:
         exit(ExecExitCode.commandFailed.rawValue)
     case let .scriptNotFound(path):
-        fputs("RepoPrompt MCP: Script not found: \(path)\n", stderr)
+        fputs("Agentry MCP: Script not found: \(path)\n", stderr)
         exit(ExecExitCode.scriptNotFound.rawValue)
     case let .scriptReadError(underlying):
-        fputs("RepoPrompt MCP: Failed to read script: \(underlying)\n", stderr)
+        fputs("Agentry MCP: Failed to read script: \(underlying)\n", stderr)
         exit(ExecExitCode.scriptNotFound.rawValue)
     }
 } catch {

@@ -1048,7 +1048,7 @@ struct AgentMessageBubble: View {
                 let authenticated = try await codexManagedLoginAction.deviceCode { code, shouldOpenVerificationURL in
                     guard codexManagedLoginOperationID == operationID else { return }
                     codexManagedDeviceCode = code
-                    codexManagedLoginFeedback = "Enter the code above; RepoPrompt CE will keep checking this separate Codex sign-in."
+                    codexManagedLoginFeedback = "Enter the code above; Agentry will keep checking this separate Codex sign-in."
                     if shouldOpenVerificationURL {
                         NSWorkspace.shared.open(code.verificationURL)
                     }

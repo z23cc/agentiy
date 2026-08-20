@@ -4,7 +4,7 @@ Current as of 2026-05-13. This document is contributor-facing: use it when you a
 
 ## Scope and goals
 
-RepoPrompt CE keeps a small, provider-neutral runtime contract in the app and pushes provider-specific protocol/codec/runtime logic into a Swift package product. The first plugin product is `RepoPromptClaudeCompatibleProvider`, which owns the Claude-compatible family (Claude Code, GLM/Zai, Kimi, custom Claude-compatible). The seam preserves:
+Agentry keeps a small, provider-neutral runtime contract in the app and pushes provider-specific protocol/codec/runtime logic into a Swift package product. The first plugin product is `RepoPromptClaudeCompatibleProvider`, which owns the Claude-compatible family (Claude Code, GLM/Zai, Kimi, custom Claude-compatible). The seam preserves:
 
 - public `AgentProviderKind` raw values;
 - `AgentProviderBindingID.claude` settings/permission grouping;
@@ -76,7 +76,7 @@ The package target is Foundation-only and intentionally does **not** import any 
 
 ```bash
 # Root app builds and tests (includes the package transitively):
-swift build --product RepoPrompt
+swift build --product Agentry
 swift test
 
 # Package-only tests (faster iteration on codec / translator / catalog DTOs):
@@ -106,7 +106,7 @@ The remote-by-default policy avoids breaking checkouts that do not have a siblin
 | `AgentProviderKind`, `AgentProviderBindingID`, runtime kind strings | core |
 | Persisted settings (`UserDefaults`, secure store, `.claude` documents) | core |
 | `ClaudeAgentToolPreferences`, `ClaudeCodeCompatibleBackendConfig`, `ClaudeCodeCompatibleBackendStore` | core |
-| MCP permission policies, RepoPrompt MCP auto-approval, tool tracking | core |
+| MCP permission policies, Agentry MCP auto-approval, tool tracking | core |
 | Agent Mode transcript mutation, tool-card UI, run-state ownership | core |
 | Native process control (`ClaudeNativeProcessSessionController`) | core (this wave) |
 | Provider-neutral runtime contract (`NativeAgentRuntimeControlling`) | core |
@@ -216,11 +216,11 @@ The associated event/session/turn types are currently `typealias`es over the Cla
 
 ## ACP provider MCP tool-call timeouts
 
-RepoPrompt CE cannot impose one MCP tool-call timeout across external ACP providers; configure the provider where supported.
+Agentry cannot impose one MCP tool-call timeout across external ACP providers; configure the provider where supported.
 
-- **OpenCode:** Timeout values are milliseconds. For a 10,000-second call, set `"timeout": 10000000` on the existing RepoPrompt MCP server entry, preserving its `type`, `command`, and `environment` fields.
-- **Cursor Agent:** Current builds expose no supported ACP, CLI, environment, or configuration override that RepoPrompt CE can set to 10,000 seconds. Do not add a speculative CE timeout control; add one only if Cursor documents a supported configuration surface.
-- **Grok Build:** The session-injected RepoPrompt MCP server follows Grok's default MCP timeout. To pin one, add `tool_timeout_sec` under `[mcp_servers.RepoPromptCE]` in `~/.grok/config.toml` (Grok's per-server MCP config; seconds).
+- **OpenCode:** Timeout values are milliseconds. For a 10,000-second call, set `"timeout": 10000000` on the existing Agentry MCP server entry, preserving its `type`, `command`, and `environment` fields.
+- **Cursor Agent:** Current builds expose no supported ACP, CLI, environment, or configuration override that Agentry can set to 10,000 seconds. Do not add a speculative CE timeout control; add one only if Cursor documents a supported configuration surface.
+- **Grok Build:** The session-injected Agentry MCP server follows Grok's default MCP timeout. To pin one, add `tool_timeout_sec` under `[mcp_servers.RepoPromptCE]` in `~/.grok/config.toml` (Grok's per-server MCP config; seconds).
 
 ### Grok Build provider notes
 
@@ -277,7 +277,7 @@ Standard checks for changes that touch the seam:
 
 ```bash
 # Root build (includes the path-dependency package)
-swift build --product RepoPrompt
+swift build --product Agentry
 
 # Focused suites used during Work Items 1–9
 swift test --filter 'ClaudeSDKNDJSONTranslatorTests|ClaudeCompatibleBackendEnvironmentTests|ClaudeNativeApprovalAndResumeTests|ClaudeCompatibleModelCatalogTests|ClaudeCompatiblePluginBridgeTests'

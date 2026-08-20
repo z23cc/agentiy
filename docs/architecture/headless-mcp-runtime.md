@@ -1,11 +1,11 @@
 # Headless MCP domain runtime
 
-The RepoPrompt CE MCP executable supports three session backends:
+The Agentry MCP executable supports three session backends:
 
 ```bash
-repoprompt-mcp --backend app
-repoprompt-mcp --backend headless
-repoprompt-mcp --backend auto
+agentry-mcp --backend app
+agentry-mcp --backend headless
+agentry-mcp --backend auto
 ```
 
 `app` remains the default for MCP stdio mode until explicit live and release validation supports a later cutover. `auto` is an explicit preview mode: it performs one bounded connect-only probe of the well-known app bootstrap socket before reading `initialize`, then fixes the selected backend for the process lifetime. It never probes private headless child endpoints and never switches an initialized session. `app` preserves proxy reconnect/replay behavior; `headless` composes the direct runtime. Interactive and exec modes are app-only and reject both `--backend headless` and `--backend auto`.
@@ -30,11 +30,11 @@ Long-running Agent and Context Builder providers receive an explicit run-scoped 
 
 ## State roots and security defaults
 
-The default headless session reads the same canonical RepoPrompt CE application-support and workspace persistence roots as the app. It does not derive state from the process current working directory and does not silently create a foreign `Headless/default` profile. This preserves canonical workspace identities, selection persistence, and durable state across app and direct sessions.
+The default headless session reads the same canonical Agentry application-support and workspace persistence roots as the app. It does not derive state from the process current working directory and does not silently create a foreign `Headless/default` profile. This preserves canonical workspace identities, selection persistence, and durable state across app and direct sessions.
 
-When every `REPOPROMPT_MCP_WORKING_DIRS` entry is an existing Git worktree of exactly one saved workspace root, direct mode binds that canonical saved workspace and keeps an in-memory canonical-to-physical root map for the process lifetime. `agent_run` existing-worktree selectors replace one physical root in a session-local overlay; nested runs and provider-backed conversations inherit that overlay unless `inherit_worktree=false`. Physical tool execution and root fencing use the selected roots; mappings that carry worktree identity revalidate that Git identity before later use, while workspace documents retain their canonical roots. Direct mode never persists these overlays or a temporary workspace, never creates a worktree, and fails closed on unknown or ambiguous workspace, repository, root, or worktree identity. App-backed routing is unchanged.
+When every `AGENTRY_MCP_WORKING_DIRS` entry is an existing Git worktree of exactly one saved workspace root, direct mode binds that canonical saved workspace and keeps an in-memory canonical-to-physical root map for the process lifetime. `agent_run` existing-worktree selectors replace one physical root in a session-local overlay; nested runs and provider-backed conversations inherit that overlay unless `inherit_worktree=false`. Physical tool execution and root fencing use the selected roots; mappings that carry worktree identity revalidate that Git identity before later use, while workspace documents retain their canonical roots. Direct mode never persists these overlays or a temporary workspace, never creates a worktree, and fails closed on unknown or ambiguous workspace, repository, root, or worktree identity. App-backed routing is unchanged.
 
-`REPOPROMPT_MCP_HEADLESS_PROFILE_DIR` is an explicit isolation boundary for tests and automation. A nondefault `REPOPROMPT_MCP_HEADLESS_PROFILE` requires that directory instead of inventing storage. Explicit roots may bootstrap a synthetic workspace only inside such an isolated profile. Protected mutations default to deny until the selected persistence policy authorizes the verified principal; long-running provider costs remain decorated and auditable. Direct mode has no AppKit, SwiftUI, window, view-model, live-app, or UI-presentation dependency.
+`AGENTRY_MCP_HEADLESS_PROFILE_DIR` is an explicit isolation boundary for tests and automation. A nondefault `AGENTRY_MCP_HEADLESS_PROFILE` requires that directory instead of inventing storage. Explicit roots may bootstrap a synthetic workspace only inside such an isolated profile. Protected mutations default to deny until the selected persistence policy authorizes the verified principal; long-running provider costs remain decorated and auditable. Direct mode has no AppKit, SwiftUI, window, view-model, live-app, or UI-presentation dependency.
 
 ## Validation owners
 

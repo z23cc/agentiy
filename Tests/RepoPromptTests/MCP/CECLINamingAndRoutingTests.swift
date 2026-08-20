@@ -3,22 +3,22 @@ import Foundation
 import XCTest
 
 final class CECLINamingAndRoutingTests: XCTestCase {
-    func testCanonicalCECLICommandsAndStableConfigUseCEIdentity() {
+    func testCanonicalAgentryCLICommandsAndStableConfigUseAgentryIdentity() {
         do {
-            let caseLabel = "testCanonicalCEPathCommandNames"
+            let caseLabel = "testCanonicalAgentryPathCommandNames"
             #if DEBUG
-                XCTAssertEqual(CLIPathInstaller.cliCommandName, "rpce-cli-debug", caseLabel)
-                XCTAssertEqual(CLIPathInstaller.claudeRPCommandName, "claude-rpce-debug", caseLabel)
+                XCTAssertEqual(CLIPathInstaller.cliCommandName, "agentry-cli-debug", caseLabel)
+                XCTAssertEqual(CLIPathInstaller.claudeRPCommandName, "claude-agentry-debug", caseLabel)
             #else
-                XCTAssertEqual(CLIPathInstaller.cliCommandName, "rpce-cli", caseLabel)
-                XCTAssertEqual(CLIPathInstaller.claudeRPCommandName, "claude-rpce", caseLabel)
+                XCTAssertEqual(CLIPathInstaller.cliCommandName, "agentry-cli", caseLabel)
+                XCTAssertEqual(CLIPathInstaller.claudeRPCommandName, "claude-agentry", caseLabel)
             #endif
         }
 
         do {
-            let caseLabel = "testConfigExporterUsesCEOwnedStablePath"
+            let caseLabel = "testConfigExporterUsesAgentryOwnedStablePath"
             let path = MCPConfigExportService.stableWrapperConfigURL.path
-            XCTAssertTrue(path.contains("Library/Application Support/RepoPrompt CE/MCP"), caseLabel + ": " + path)
+            XCTAssertTrue(path.contains("Library/Application Support/Agentry/MCP"), caseLabel + ": " + path)
             #if DEBUG
                 XCTAssertTrue(CLIPathInstaller.test_claudeRPScriptContent().contains(path), caseLabel)
             #endif
@@ -28,26 +28,26 @@ final class CECLINamingAndRoutingTests: XCTestCase {
     func testUserSpaceSymlinkPathUsesStableNoSpaceDirectory() {
         let path = CLISymlinkManagerUserSpace.userSymlinkPath
         let expectedDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("RepoPrompt", isDirectory: true)
+            .appendingPathComponent("Agentry", isDirectory: true)
         XCTAssertEqual(URL(fileURLWithPath: path).deletingLastPathComponent(), expectedDirectory, path)
         XCTAssertFalse(path.contains(" "), path)
         #if DEBUG
-            XCTAssertTrue(path.hasSuffix("repoprompt_ce_cli_debug"), path)
+            XCTAssertTrue(path.hasSuffix("agentry_cli_debug"), path)
         #else
-            XCTAssertTrue(path.hasSuffix("repoprompt_ce_cli"), path)
+            XCTAssertTrue(path.hasSuffix("agentry_cli"), path)
         #endif
     }
 
     #if DEBUG
-        func testClaudeRPCEWrapperMarkerDetection() {
+        func testClaudeAgentryWrapperMarkerDetection() {
             let generated = CLIPathInstaller.test_claudeRPScriptContent()
-            XCTAssertTrue(generated.contains("# claude-rpce: Claude Code wrapper configured for RepoPrompt CE"))
+            XCTAssertTrue(generated.contains("# claude-agentry: Claude Code wrapper configured for Agentry"))
             XCTAssertTrue(generated.contains("command -v claude"))
             XCTAssertTrue(generated.contains("$HOME/.claude/local/claude"))
             XCTAssertTrue(generated.contains("exec \"$claude_bin\""))
             XCTAssertTrue(CLIPathInstaller.test_isManagedClaudeRPScript(generated))
-            XCTAssertTrue(CLIPathInstaller.test_isManagedClaudeRPScript("# claude-rp-ce: Claude Code wrapper configured for RepoPrompt CE\n"))
-            XCTAssertFalse(CLIPathInstaller.test_isManagedClaudeRPScript("#!/bin/bash\necho '# claude-rpce: Claude Code wrapper configured for RepoPrompt CE'\n"))
+            XCTAssertFalse(CLIPathInstaller.test_isManagedClaudeRPScript("# claude-rpce: Claude Code wrapper configured for RepoPrompt CE\n"))
+            XCTAssertFalse(CLIPathInstaller.test_isManagedClaudeRPScript("#!/bin/bash\necho '# claude-agentry: Claude Code wrapper configured for Agentry'\n"))
             XCTAssertFalse(CLIPathInstaller.test_isManagedClaudeRPScript("#!/bin/bash\necho unrelated\n"))
         }
     #endif

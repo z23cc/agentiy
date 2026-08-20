@@ -1,9 +1,9 @@
 ---
 name: rpce-maintainer-guidance
-description: Apply evidence-led RepoPrompt CE maintainership principles distilled from documented project guidance. Use when planning, scoping, implementing, reviewing, triaging, or sequencing RPCE changes; deciding whether work should be an investigation, issue, PR, or follow-up; checking compatibility, migrations, performance, observability, model defaults, or release risk; or asking how a proposed change fits the project's intended direction.
+description: Apply evidence-led Agentry maintainership principles distilled from documented project guidance. Use when planning, scoping, implementing, reviewing, triaging, or sequencing RPCE changes; deciding whether work should be an investigation, issue, PR, or follow-up; checking compatibility, migrations, performance, observability, model defaults, or release risk; or asking how a proposed change fits the project's intended direction.
 ---
 
-# RepoPrompt CE Maintainer Guidance
+# Agentry Maintainer Guidance
 
 Use this skill as a project decision guide, not as an imitation of a person. Do not attribute inferred opinions to any individual. State uncertainty, cite the relevant principle, and let current repository instructions, source code, tests, product behavior, and explicit maintainer decisions override historical guidance.
 
@@ -82,7 +82,7 @@ Read [references/guidance-sources.md](references/guidance-sources.md) when the t
 
 ### Use evidence proportionally
 
-- Reproduce on the CE app and `rpce-cli-debug`, not an analogous production app, when CE behavior is at issue.
+- Reproduce on the Agentry app and `agentry-cli-debug`, not an analogous production app, when Agentry behavior is at issue.
 - Capture the smallest evidence that distinguishes competing explanations.
 - Use focused tests for the owning boundary, then real UI or live MCP validation for cross-layer behavior.
 - If a report mixes deterministic triggers, races, and downstream symptoms, split it before implementing.

@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptShared
 
 enum RuntimePolicyAdministration {
     enum CommandError: Error, LocalizedError {
@@ -111,7 +112,7 @@ enum RuntimePolicyAdministration {
                 throw CommandError.invalidArguments(usage)
             }
         } catch {
-            fputs("RepoPrompt MCP policy: \(error.localizedDescription)\n", stderr)
+            fputs("Agentry MCP policy: \(error.localizedDescription)\n", stderr)
             return 2
         }
     }
@@ -160,27 +161,22 @@ enum RuntimePolicyAdministration {
     }
 
     private static func makeRuntime() -> MCPDomainRuntime {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        let root = applicationSupport.appendingPathComponent("RepoPrompt CE", isDirectory: true)
+        let root = AgentryProductIdentity.applicationSupportRootURL()
         return MCPDomainRuntime(configuration: DomainRuntimeConfiguration(
             mode: .standalone,
             profileIdentifier: "default",
             storageDirectory: root,
             eventDirectory: root.appendingPathComponent("Events", isDirectory: true),
-            temporaryDirectory: FileManager.default.temporaryDirectory
-                .appendingPathComponent("RepoPrompt CE", isDirectory: true),
+            temporaryDirectory: AgentryProductIdentity.temporaryRootURL(),
             externalReloadInterval: nil
         ))
     }
 
     private static let usage = """
     Usage:
-      rpce-cli policy list
-      rpce-cli policy grant --principal-fingerprint <verified-identity-fingerprint> --operation <tool.action> [--operation ...] [--root <path>] [--provider <name>] [--expires-in <seconds>]
-      rpce-cli policy revoke --id <uuid>
+      agentry-cli policy list
+      agentry-cli policy grant --principal-fingerprint <verified-identity-fingerprint> --operation <tool.action> [--operation ...] [--root <path>] [--provider <name>] [--expires-in <seconds>]
+      agentry-cli policy revoke --id <uuid>
     Policy administration requires interactive stdin and stderr TTYs; mutation commands require immediate confirmation.
     """
 }

@@ -71,7 +71,7 @@ enum CodexManagedSignOutConfirmation {
     }
 
     static let title = "Stop Codex Sessions and Sign Out?"
-    static let message = "Active Codex work in all RepoPrompt CE windows will stop. Conversations and unsent drafts will be preserved."
+    static let message = "Active Codex work in all Agentry windows will stop. Conversations and unsent drafts will be preserved."
     static let confirmTitle = "Stop Sessions & Sign Out"
     static let cancelTitle = "Cancel"
 

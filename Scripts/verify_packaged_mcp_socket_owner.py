@@ -15,8 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-RELEASE_SOCKET_PATTERN = re.compile(r"^repoprompt-ce-[0-9]+\.sock$")
-BOUND_IDENTITY_RECORD_PREFIX = "repoprompt-ce-socket-identity-v1"
+RELEASE_SOCKET_PATTERN = re.compile(r"^agentry-[0-9]+\.sock$")
+BOUND_IDENTITY_RECORD_PREFIX = "agentry-socket-identity-v1"
 BOUND_IDENTITY_RECORD_PATTERN = re.compile(
     re.escape(BOUND_IDENTITY_RECORD_PREFIX).encode() + rb" ([0-9]+) ([0-9]+)\n"
 )
@@ -647,8 +647,8 @@ def selftest() -> None:
     with tempfile.TemporaryDirectory(prefix="rp-mcp-owner.", dir="/tmp") as temporary:
         directory = Path(temporary)
         directory.chmod(0o700)
-        listening_path = directory / "repoprompt-ce-1.sock"
-        bound_path = directory / "repoprompt-ce-2.sock"
+        listening_path = directory / "agentry-1.sock"
+        bound_path = directory / "agentry-2.sock"
         listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         bound = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:

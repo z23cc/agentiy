@@ -56,7 +56,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         )
 
         let canonicalRoot = home.appendingPathComponent(
-            "Library/Application Support/RepoPrompt CE",
+            "Library/Application Support/Agentry",
             isDirectory: true
         )
         XCTAssertEqual(locations.profileIdentifier, "default")
@@ -66,8 +66,53 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
             canonicalRoot.appendingPathComponent("Workspaces", isDirectory: true)
         )
         XCTAssertEqual(locations.workingDirectories, [])
+        XCTAssertEqual(
+            locations.temporaryDirectory,
+            temporary.appendingPathComponent("Agentry", isDirectory: true)
+        )
         XCTAssertFalse(locations.storageDirectory.path.contains("/Headless/"))
         XCTAssertFalse(locations.mayBootstrapIsolatedWorkspace)
+    }
+
+    func testDefaultProfileIgnoresExistingLegacyRootWithoutReadingOrMutatingIt() throws {
+        let home = temporaryDirectory("legacy-home")
+        let temporary = temporaryDirectory("legacy-tmp")
+        let legacyRoot = home.appendingPathComponent(
+            "Library/Application Support/RepoPrompt CE",
+            isDirectory: true
+        )
+        let legacyWorkspaceDirectory = legacyRoot.appendingPathComponent("Workspaces", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: legacyWorkspaceDirectory,
+            withIntermediateDirectories: true
+        )
+        let legacyMarker = legacyWorkspaceDirectory.appendingPathComponent("workspacesIndex.json")
+        let legacyBytes = Data("[{\"name\":\"Legacy workspace\"}]".utf8)
+        try legacyBytes.write(to: legacyMarker)
+
+        let locations = try DirectHeadlessRuntimeLocationResolver.resolve(
+            environment: [:],
+            currentDirectory: home,
+            homeDirectory: home,
+            temporaryDirectory: temporary,
+            customWorkspaceStoragePath: nil
+        )
+
+        let agentryRoot = home.appendingPathComponent(
+            "Library/Application Support/Agentry",
+            isDirectory: true
+        )
+        XCTAssertEqual(locations.storageDirectory, agentryRoot.standardizedFileURL)
+        XCTAssertEqual(
+            locations.workspaceStorageDirectory,
+            agentryRoot.appendingPathComponent("Workspaces", isDirectory: true).standardizedFileURL
+        )
+        XCTAssertEqual(try Data(contentsOf: legacyMarker), legacyBytes)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: legacyWorkspaceDirectory.path),
+            ["workspacesIndex.json"]
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: agentryRoot.path))
     }
 
     func testDefaultProfileUsesCanonicalCustomWorkspaceStorage() throws {
@@ -91,9 +136,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         let root = temporaryDirectory("root")
         let locations = try DirectHeadlessRuntimeLocationResolver.resolve(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "test-profile",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": root.path
+                "AGENTRY_MCP_HEADLESS_PROFILE": "test-profile",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": root.path
             ],
             currentDirectory: profile,
             homeDirectory: profile
@@ -106,9 +151,34 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         XCTAssertTrue(locations.mayBootstrapIsolatedWorkspace)
     }
 
+    func testLegacyRepoPromptEnvironmentAliasesAreIgnored() throws {
+        let home = temporaryDirectory("legacy-env-home")
+        let legacyProfile = temporaryDirectory("legacy-profile")
+        let legacyRoot = temporaryDirectory("legacy-root")
+        let locations = try DirectHeadlessRuntimeLocationResolver.resolve(
+            environment: [
+                "REPOPROMPT_MCP_HEADLESS_PROFILE": "legacy-profile",
+                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": legacyProfile.path,
+                "REPOPROMPT_MCP_WORKING_DIRS": legacyRoot.path
+            ],
+            currentDirectory: home,
+            homeDirectory: home,
+            customWorkspaceStoragePath: nil
+        )
+
+        XCTAssertEqual(locations.profileIdentifier, "default")
+        XCTAssertEqual(locations.workingDirectories, [])
+        XCTAssertFalse(locations.usesExplicitProfileDirectory)
+        XCTAssertEqual(
+            locations.storageDirectory,
+            home.appendingPathComponent("Library/Application Support/Agentry", isDirectory: true)
+                .standardizedFileURL
+        )
+    }
+
     func testNonDefaultProfileRequiresExplicitDirectory() throws {
         XCTAssertThrowsError(try DirectHeadlessRuntimeLocationResolver.resolve(
-            environment: ["REPOPROMPT_MCP_HEADLESS_PROFILE": "other"],
+            environment: ["AGENTRY_MCP_HEADLESS_PROFILE": "other"],
             currentDirectory: FileManager.default.temporaryDirectory,
             customWorkspaceStoragePath: nil
         )) { error in
@@ -149,7 +219,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         let root = temporaryDirectory("root")
         for value in ["\(root.path):\(root.path)", ""] {
             XCTAssertThrowsError(try DirectHeadlessRuntimeLocationResolver.resolve(
-                environment: ["REPOPROMPT_MCP_WORKING_DIRS": value],
+                environment: ["AGENTRY_MCP_WORKING_DIRS": value],
                 currentDirectory: root,
                 homeDirectory: root,
                 customWorkspaceStoragePath: nil
@@ -480,9 +550,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-routing-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": fixture.launchWorktree.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "worktree-routing-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": fixture.launchWorktree.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -897,9 +967,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         let alternateRoot = fixture.alternateWorktree.appendingPathComponent(relativeRoot, isDirectory: true)
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-subdirectory-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": launchRoot.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "worktree-subdirectory-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": launchRoot.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1012,9 +1082,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
 
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "overlapping-selection-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": [fixture.launchWorktree, launchRoot]
+                "AGENTRY_MCP_HEADLESS_PROFILE": "overlapping-selection-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": [fixture.launchWorktree, launchRoot]
                     .map(\.path)
                     .joined(separator: ":"),
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
@@ -1090,9 +1160,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
 
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "selection-symlink-name-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": fixture.launchWorktree.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "selection-symlink-name-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": fixture.launchWorktree.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1175,9 +1245,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: alternateRoot, withDestinationURL: fixture.alternateWorktree)
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-symlink-fence-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": launchRoot.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "worktree-symlink-fence-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": launchRoot.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1210,9 +1280,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         let alternateRoot = fixture.alternateWorktree.appendingPathComponent(relativeRoot, isDirectory: true)
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-symlink-revalidation-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": launchRoot.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "worktree-symlink-revalidation-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": launchRoot.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1265,9 +1335,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         let processRoots = [fixture.launchWorktree, secondary.launchWorktree]
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "multi-root-overlay-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": processRoots.map(\.path).joined(separator: ":"),
+                "AGENTRY_MCP_HEADLESS_PROFILE": "multi-root-overlay-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": processRoots.map(\.path).joined(separator: ":"),
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1480,9 +1550,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "terminal-reconciliation-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": fixture.launchWorktree.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "terminal-reconciliation-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": fixture.launchWorktree.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1536,9 +1606,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-state-safety-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": fixture.launchWorktree.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "worktree-state-safety-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": fixture.launchWorktree.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1647,9 +1717,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-rootless-create-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": fixture.launchWorktree.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "worktree-rootless-create-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": fixture.launchWorktree.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
@@ -1714,9 +1784,9 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-revalidation-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": fixture.launchWorktree.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "worktree-revalidation-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": fixture.profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": fixture.launchWorktree.path,
                 "REPOPROMPT_CODEX_COMMAND": fixture.provider.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],

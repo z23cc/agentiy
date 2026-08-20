@@ -108,9 +108,9 @@ for path in [
     root / "THIRD_PARTY_NOTICES.md",
     root / "RELEASE_COMMIT",
     app / "Contents" / "Info.plist",
-    root / ".build" / "release" / "RepoPrompt-artifact-manifest.json",
-    app / "Contents" / "MacOS" / "RepoPrompt",
-    app / "Contents" / "MacOS" / "repoprompt-mcp",
+    root / ".build" / "release" / "Agentry-artifact-manifest.json",
+    app / "Contents" / "MacOS" / "Agentry",
+    app / "Contents" / "MacOS" / "agentry-mcp",
 ]:
     require_regular_file(path)
 
@@ -120,8 +120,8 @@ if top_level != expected_top_level:
     fail(f"unexpected staged top-level entries: {sorted(top_level ^ expected_top_level)}")
 
 cli_links = {
-    app / "Contents" / "Resources" / "repoprompt-mcp": "../MacOS/repoprompt-mcp",
-    app / "Contents" / "Resources" / "bin" / "repoprompt-mcp": "../../MacOS/repoprompt-mcp",
+    app / "Contents" / "Resources" / "agentry-mcp": "../MacOS/agentry-mcp",
+    app / "Contents" / "Resources" / "bin" / "agentry-mcp": "../../MacOS/agentry-mcp",
 }
 sparkle = app / "Contents" / "Frameworks" / "Sparkle.framework"
 resolved_sparkle = sparkle.resolve(strict=False)
@@ -142,15 +142,15 @@ PYTHON
 
 "$SCRIPT_DIR/validate_required_swiftpm_resource_bundles.sh" "$APP_BUNDLE" "Staged app SwiftPM resource bundle layout"
 "$SCRIPT_DIR/validate_embedded_mcp_helper_layout.sh" "$APP_BUNDLE" "Staged app MCP helper layout"
-"$SCRIPT_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "arm64,x86_64" "Staged public app"
+"$SCRIPT_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "Staged public app"
 python3 "$SCRIPT_DIR/codex_runtime_artifact.py" \
     --manifest "$APPROVED_SOURCE_ROOT/Vendor/Codex/manifest.json" verify-bundle \
-    --arch all \
+    --arch arm64 \
     --bundle "$APP_BUNDLE/Contents/Resources/BundledRuntimes/Codex"
 "$SCRIPT_DIR/write_app_artifact_manifest.py" verify \
     --app "$APP_BUNDLE" \
     --manifest "$ROOT_DIR/.build/release/$APP_NAME-artifact-manifest.json" \
-    --expected-architectures "arm64,x86_64"
+    --expected-architectures "arm64"
 
 [[ "$(cat "$ROOT_DIR/RELEASE_COMMIT")" == "$RELEASE_COMMIT" ]] ||
     fail "Staged release commit does not match approved commit"
@@ -164,15 +164,28 @@ REPOPROMPT_RELEASE_SOURCE_ROOT="$APPROVED_SOURCE_ROOT" \
     "$SCRIPT_DIR/validate_packaged_legal.sh" "$APP_BUNDLE"
 
 python3 - "$APPROVED_SOURCE_ROOT/AppBundle/Info.plist.template" "$APP_BUNDLE/Contents/Info.plist" \
-    "$APP_NAME" "$DISPLAY_NAME" "$BUNDLE_ID" "$MARKETING_VERSION" "$BUILD_NUMBER" <<'PYTHON'
+    "$APP_NAME" "$DISPLAY_NAME" "$BUNDLE_ID" "$MARKETING_VERSION" "$BUILD_NUMBER" \
+    "$AGENTRY_SPARKLE_STABLE_FEED_URL" "$AGENTRY_SPARKLE_BETA_FEED_URL" "$AGENTRY_SPARKLE_PUBLIC_ED_KEY" <<'PYTHON'
 import plistlib
 import sys
 from pathlib import Path
 
-template, actual, app_name, display_name, bundle_id, version, build = sys.argv[1:]
+(
+    template,
+    actual,
+    app_name,
+    display_name,
+    bundle_id,
+    version,
+    build,
+    stable_feed,
+    beta_feed,
+    public_key,
+) = sys.argv[1:]
 text = Path(template).read_text(encoding="utf-8")
 for key, value in {
     "__APP_NAME__": app_name,
+    "__APP_BUNDLE_NAME__": f"{app_name}.app",
     "__DISPLAY_NAME__": display_name,
     "__BUNDLE_ID__": bundle_id,
     "__MARKETING_VERSION__": version,
@@ -181,6 +194,9 @@ for key, value in {
     "__SIGNING_MODE__": "release-candidate-adhoc",
     "__LOCAL_SIGNING_CERTIFICATE_SHA256__": "",
     "__LOCAL_SECURE_STORAGE_GENERATION__": "",
+    "__AGENTRY_SPARKLE_STABLE_FEED_URL__": stable_feed,
+    "__AGENTRY_SPARKLE_BETA_FEED_URL__": beta_feed,
+    "__AGENTRY_SPARKLE_PUBLIC_ED_KEY__": public_key,
 }.items():
     text = text.replace(key, value)
 if plistlib.loads(text.encode("utf-8")) != plistlib.loads(Path(actual).read_bytes()):

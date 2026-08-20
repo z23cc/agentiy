@@ -2,12 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEBUG_APP_ROOT="${REPOPROMPT_DEBUG_APP_ROOT:-$HOME/Library/Application Support/RepoPrompt CE/DebugApps}"
-APP_BUNDLE="${REPOPROMPT_DEBUG_APP_BUNDLE:-$DEBUG_APP_ROOT/RepoPrompt.app}"
-BUNDLED_CLI="$APP_BUNDLE/Contents/MacOS/repoprompt-mcp"
-USER_LINK="$HOME/RepoPrompt/repoprompt_ce_cli_debug"
-LEGACY_USER_LINK="$HOME/Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug"
-PATH_LINK="${REPOPROMPT_DEBUG_CLI_INSTALL_PATH:-/usr/local/bin/rpce-cli-debug}"
+DEBUG_APP_ROOT="${AGENTRY_DEBUG_APP_ROOT:-$HOME/Library/Application Support/Agentry/DebugApps}"
+APP_BUNDLE="${AGENTRY_DEBUG_APP_BUNDLE:-$DEBUG_APP_ROOT/Agentry.app}"
+BUNDLED_CLI="$APP_BUNDLE/Contents/MacOS/agentry-mcp"
+USER_LINK="$HOME/Agentry/agentry_cli_debug"
+PATH_LINK="${AGENTRY_DEBUG_CLI_INSTALL_PATH:-/usr/local/bin/agentry-cli-debug}"
 INSTALL_DIR="$(dirname "$PATH_LINK")"
 COMMAND_NAME="$(basename "$PATH_LINK")"
 
@@ -26,7 +25,7 @@ while (( $# > 0 )); do
 			cat <<EOF
 Usage: $0 [status|install|uninstall] [--build]
 
-Installs the RepoPrompt CE debug CLI command:
+Installs the Agentry debug CLI command:
   $PATH_LINK -> $USER_LINK -> $BUNDLED_CLI
 
 Options:
@@ -45,14 +44,14 @@ is_managed_path_link(){
 	local path="${1:-$PATH_LINK}" target
 	[[ -L "$path" ]] || return 1
 	target="$(readlink "$path" 2>/dev/null || true)"
-	[[ "$target" == "$USER_LINK" || "$target" == "$LEGACY_USER_LINK" || "$target" == "$BUNDLED_CLI" ]]
+	[[ "$target" == "$USER_LINK" || "$target" == "$BUNDLED_CLI" ]]
 }
 
 is_managed_user_link(){
 	local path="${1:-$USER_LINK}" target canonical_debug_cli
 	[[ -L "$path" ]] || return 1
 	target="$(readlink "$path" 2>/dev/null || true)"
-	canonical_debug_cli="$HOME/Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app/Contents/MacOS/repoprompt-mcp"
+	canonical_debug_cli="$HOME/Library/Application Support/Agentry/DebugApps/Agentry.app/Contents/MacOS/agentry-mcp"
 	[[ "$target" == "$BUNDLED_CLI" || "$target" == "$canonical_debug_cli" ]]
 }
 
@@ -116,17 +115,19 @@ ensure_user_link(){
 }
 
 install_path_link(){
-	ensure_user_link
-
+	# Refuse unmanaged PATH entries before creating or repairing the canonical
+	# user-space link. A failed install must not partially adopt the new chain.
+	ensure_bundled_cli
 	if [[ ! -d "$INSTALL_DIR" ]]; then
 		fail "Install directory does not exist: $INSTALL_DIR"
 	fi
-
 	if [[ -e "$PATH_LINK" || -L "$PATH_LINK" ]]; then
 		if ! is_managed_path_link; then
 			fail "Refusing to replace unmanaged file at $PATH_LINK"
 		fi
 	fi
+
+	ensure_user_link
 
 	if [[ -w "$INSTALL_DIR" ]]; then
 		if [[ -e "$PATH_LINK" || -L "$PATH_LINK" ]]; then
@@ -196,7 +197,7 @@ uninstall_path_link(){
 }
 
 print_status(){
-	echo "RepoPrompt CE debug CLI status"
+	echo "Agentry debug CLI status"
 	echo "  Debug app bundle: $APP_BUNDLE"
 	if [[ -x "$BUNDLED_CLI" ]]; then
 		echo "  Bundled CLI: OK ($BUNDLED_CLI)"

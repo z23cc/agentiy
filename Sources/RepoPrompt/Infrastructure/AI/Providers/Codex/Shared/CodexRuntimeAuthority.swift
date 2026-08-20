@@ -1,14 +1,15 @@
 import Foundation
+import RepoPromptShared
 
-/// The single source of truth for RepoPrompt-managed Codex runtime selection and state.
+/// The single source of truth for Agentry-managed Codex runtime selection and state.
 ///
 /// Production defaults to the verified bundled package for the running architecture. The
 /// only user-configurable external fallback is an absolute path supplied through
-/// `REPOPROMPT_CODEX_EXECUTABLE`; ordinary PATH lookup is intentionally not consulted.
+/// `AGENTRY_CODEX_EXECUTABLE`; ordinary PATH lookup is intentionally not consulted.
 enum CodexRuntimeAuthority {
     static let bundledVersion = Version(major: 0, minor: 147, patch: 0)
     static let minimumExternalVersion = bundledVersion
-    static let externalExecutableOverrideEnvironmentKey = "REPOPROMPT_CODEX_EXECUTABLE"
+    static let externalExecutableOverrideEnvironmentKey = "AGENTRY_CODEX_EXECUTABLE"
 
     enum Source: Equatable {
         case bundled(target: String)
@@ -65,27 +66,27 @@ enum CodexRuntimeAuthority {
         var errorDescription: String? {
             switch self {
             case let .unsupportedArchitecture(architecture):
-                "RepoPrompt could not start Codex: architecture `\(architecture)` is unsupported. Supported macOS architectures are arm64 and x86_64."
+                "Agentry could not start Codex: architecture `\(architecture)` is unsupported. Supported macOS architectures are arm64 and x86_64."
             case .bundledResourcesUnavailable:
-                "RepoPrompt could not start Codex: the app's bundled runtime resources are unavailable. Reinstall RepoPrompt CE."
+                "Agentry could not start Codex: the app's bundled runtime resources are unavailable. Reinstall Agentry."
             case let .bundledPackageMissing(target):
-                "RepoPrompt could not start Codex: the bundled \(target) package is missing. Reinstall RepoPrompt CE; RepoPrompt will not fall back to PATH."
+                "Agentry could not start Codex: the bundled \(target) package is missing. Reinstall Agentry; Agentry will not fall back to PATH."
             case let .bundledMetadataUnreadable(target):
-                "RepoPrompt could not start Codex: the bundled \(target) package metadata is missing or corrupt. Reinstall RepoPrompt CE; RepoPrompt will not fall back to PATH."
+                "Agentry could not start Codex: the bundled \(target) package metadata is missing or corrupt. Reinstall Agentry; Agentry will not fall back to PATH."
             case let .bundledMetadataMismatch(expectedTarget, actualTarget, actualVersion):
-                "RepoPrompt could not start Codex: bundled package identity mismatch (expected target \(expectedTarget), version \(bundledVersion); found target \(actualTarget ?? "unknown"), version \(actualVersion ?? "unknown")). Reinstall RepoPrompt CE."
+                "Agentry could not start Codex: bundled package identity mismatch (expected target \(expectedTarget), version \(bundledVersion); found target \(actualTarget ?? "unknown"), version \(actualVersion ?? "unknown")). Reinstall Agentry."
             case let .bundledLayoutIncomplete(target, component):
-                "RepoPrompt could not start Codex: the bundled \(target) package is incomplete at `\(component)`. Reinstall RepoPrompt CE."
+                "Agentry could not start Codex: the bundled \(target) package is incomplete at `\(component)`. Reinstall Agentry."
             case .externalOverrideMustBeAbsolute:
-                "RepoPrompt could not start Codex: \(externalExecutableOverrideEnvironmentKey) must be an absolute executable path. PATH lookup is not used."
+                "Agentry could not start Codex: \(externalExecutableOverrideEnvironmentKey) must be an absolute executable path. PATH lookup is not used."
             case let .externalOverrideMissing(path):
-                "RepoPrompt could not start Codex: the configured external override does not exist at `\(path)`. Fix or remove \(externalExecutableOverrideEnvironmentKey)."
+                "Agentry could not start Codex: the configured external override does not exist at `\(path)`. Fix or remove \(externalExecutableOverrideEnvironmentKey)."
             case let .externalOverrideNotExecutable(path):
-                "RepoPrompt could not start Codex: the configured external override is not an executable file at `\(path)`. Fix or remove \(externalExecutableOverrideEnvironmentKey)."
+                "Agentry could not start Codex: the configured external override is not an executable file at `\(path)`. Fix or remove \(externalExecutableOverrideEnvironmentKey)."
             case let .externalOverrideVersionUnreadable(path):
-                "RepoPrompt could not start Codex: the external override at `\(path)` did not report a compatible Codex version. Version \(minimumExternalVersion) or newer is required by RepoPrompt's app-server contract."
+                "Agentry could not start Codex: the external override at `\(path)` did not report a compatible Codex version. Version \(minimumExternalVersion) or newer is required by Agentry's app-server contract."
             case let .externalOverrideTooOld(actual, minimum):
-                "RepoPrompt could not start Codex: external override version \(actual) is too old. Version \(minimum) or newer is required by RepoPrompt's app-server contract; update the explicit override or remove \(externalExecutableOverrideEnvironmentKey) to use bundled Codex \(bundledVersion)."
+                "Agentry could not start Codex: external override version \(actual) is too old. Version \(minimum) or newer is required by Agentry's app-server contract; update the explicit override or remove \(externalExecutableOverrideEnvironmentKey) to use bundled Codex \(bundledVersion)."
             }
         }
     }
@@ -214,7 +215,7 @@ enum CodexRuntimeAuthority {
             let buildChannel = "Release"
         #endif
         let root = support
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            .appendingPathComponent(AgentryProductIdentity.applicationSupportDirectoryName, isDirectory: true)
             .appendingPathComponent("Codex", isDirectory: true)
             .appendingPathComponent(buildChannel, isDirectory: true)
         return StatePaths(

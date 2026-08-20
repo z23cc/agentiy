@@ -702,7 +702,9 @@ extension MCPServerViewModel {
             .receive(on: RunLoop.main)
             .sink { [weak self] snapshot in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self,
+                          self.tabContextCancellablesByConnectionID[connectionID] != nil
+                    else { return }
 
                     // 1) Skip stale snapshots by lastModified
                     if let live = manager.composeTab(with: context.tabID),
@@ -781,6 +783,13 @@ extension MCPServerViewModel {
         tabContextCancellablesByConnectionID[connectionID]?.forEach { $0.cancel() }
         tabContextCancellablesByConnectionID.removeValue(forKey: connectionID)
     }
+
+    #if DEBUG
+        @MainActor
+        func debugStopTabContextMirroringForTesting(connectionID: UUID) {
+            endMirroringForConnection(connectionID)
+        }
+    #endif
 
     @MainActor
     private func pushVirtualContextToUI(_ context: TabContextSnapshot) async {

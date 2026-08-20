@@ -1,6 +1,6 @@
 //
 //  MCPCommandParser.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Extracted command grammar from InteractiveREPL.
 //  Handles parsing of shell-like commands into structured operations.

@@ -1,13 +1,13 @@
 @testable import RepoPromptApp
 import XCTest
 
-#if REPOPROMPT_SENTRY_ENABLED
+#if AGENTRY_SENTRY_ENABLED
     @_spi(Private) import Sentry
 #endif
 
 final class SentryTelemetryPrivacyTests: XCTestCase {
     func testSerializedEventScrubsTypedStacktracesMechanismsDebugImagesAndDist() throws {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             let event = makeTypedEvent(level: .error, mechanismType: "NSError")
             let payload = try scrubAndSerialize(event)
 
@@ -19,12 +19,12 @@ final class SentryTelemetryPrivacyTests: XCTestCase {
             XCTAssertTrue(eventStrings.contains("/System/Library/Frameworks/AppKit.framework/AppKit"))
             XCTAssertFalse(eventStrings.contains { $0.contains("private-plugin.bundle") })
         #else
-            throw XCTSkip("Requires REPOPROMPT_ENABLE_SENTRY=1")
+            throw XCTSkip("Requires AGENTRY_ENABLE_SENTRY=1")
         #endif
     }
 
     func testSerializedCrashShapedEventRemovesPathsAndPreservesSymbolication() throws {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             let event = makeTypedEvent(level: .fatal, mechanismType: "signal")
             event.exceptions?.first?.mechanism?.handled = false
             let payload = try scrubAndSerialize(event)
@@ -34,12 +34,12 @@ final class SentryTelemetryPrivacyTests: XCTestCase {
             XCTAssertTrue(payload.envelopeString.contains("DEBUG-ID-ALICE"))
             XCTAssertTrue(payload.envelopeString.contains("0x0000000100001234"))
         #else
-            throw XCTSkip("Requires REPOPROMPT_ENABLE_SENTRY=1")
+            throw XCTSkip("Requires AGENTRY_ENABLE_SENTRY=1")
         #endif
     }
 
     func testSerializedHangShapedEventRemovesPathsAndPreservesSymbolication() throws {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             let event = makeTypedEvent(level: .error, mechanismType: "AppHang")
             event.exceptions?.first?.type = "AppHangNonFullyBlocking"
             event.exceptions?.first?.value = "App hanging while reading /Users/alice/customer-project"
@@ -51,12 +51,12 @@ final class SentryTelemetryPrivacyTests: XCTestCase {
             XCTAssertTrue(payload.envelopeString.contains("DEBUG-ID-ALICE"))
             XCTAssertTrue(payload.envelopeString.contains("AppHang"))
         #else
-            throw XCTSkip("Requires REPOPROMPT_ENABLE_SENTRY=1")
+            throw XCTSkip("Requires AGENTRY_ENABLE_SENTRY=1")
         #endif
     }
 }
 
-#if REPOPROMPT_SENTRY_ENABLED
+#if AGENTRY_SENTRY_ENABLED
     private extension SentryTelemetryPrivacyTests {
         struct SerializedPayload {
             let eventJSON: [String: Any]

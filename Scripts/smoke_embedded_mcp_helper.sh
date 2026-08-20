@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 app = Path(sys.argv[1]).resolve(strict=True)
-helper = (app / "Contents" / "MacOS" / "repoprompt-mcp").resolve(strict=True)
+helper = (app / "Contents" / "MacOS" / "agentry-mcp").resolve(strict=True)
 if not helper.is_relative_to(app):
     raise SystemExit(f"ERROR: canonical MCP helper escapes app bundle: {helper}")
 mode = helper.lstat().st_mode

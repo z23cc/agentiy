@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "$#" != 3 ]]; then
     printf '%s\n' \
-        'GitHub public tip lookup classification=invalid-input status=000 request_id=unavailable rate_limit_remaining=unavailable rate_limit_reset=unavailable retry_after=unavailable' \
+        'GitHub public beta lookup classification=invalid-input status=000 request_id=unavailable rate_limit_remaining=unavailable rate_limit_reset=unavailable retry_after=unavailable' \
         >&2
     exit 1
 fi
@@ -11,7 +11,7 @@ fi
 REPOSITORY="$1"
 TAG="$2"
 ARCHIVE_BASENAME="$3"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/repoprompt-tip-lookup.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentry-beta-lookup.XXXXXX")"
 RESPONSE_BODY="$TMP_DIR/response.json"
 RESPONSE_HEADERS="$TMP_DIR/response.headers"
 
@@ -96,8 +96,8 @@ curl_headers=(
     --header 'Accept: application/vnd.github+json'
     --header 'X-GitHub-Api-Version: 2022-11-28'
 )
-if [[ -n "${TIP_GH_TOKEN:-}" ]]; then
-    curl_headers+=(--header "Authorization: Bearer $TIP_GH_TOKEN")
+if [[ -n "${BETA_GH_TOKEN:-}" ]]; then
+    curl_headers+=(--header "Authorization: Bearer $BETA_GH_TOKEN")
 fi
 
 classification=transport-failure
@@ -149,7 +149,7 @@ for attempt in 1 2 3; do
     fi
 
     printf '%s\n' \
-        "GitHub public tip lookup classification=$classification status=$status request_id=$request_id rate_limit_remaining=$rate_limit_remaining rate_limit_reset=$rate_limit_reset retry_after=$retry_after" \
+        "GitHub public beta lookup classification=$classification status=$status request_id=$request_id rate_limit_remaining=$rate_limit_remaining rate_limit_reset=$rate_limit_reset retry_after=$retry_after" \
         >&2
 
     case "$classification" in

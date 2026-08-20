@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hermetic tests for RepoPrompt CE debug app process identity checks."""
+"""Hermetic tests for Agentry debug app process identity checks."""
 
 from __future__ import annotations
 
@@ -51,11 +51,11 @@ class DebugAppProcessTests(unittest.TestCase):
     def test_only_exact_debug_executable_is_included(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            debug = self.make_executable(root, "Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app/Contents/MacOS/RepoPrompt")
-            production = self.make_executable(root, "Applications/RepoPrompt.app/Contents/MacOS/RepoPrompt")
+            debug = self.make_executable(root, "Library/Application Support/Agentry/DebugApps/Agentry.app/Contents/MacOS/Agentry")
+            production = self.make_executable(root, "Applications/Agentry.app/Contents/MacOS/Agentry")
             ce_release = self.make_executable(root, "Applications/RepoPrompt CE.app/Contents/MacOS/RepoPrompt")
             inspector = FakeInspector(
-                {101: "RepoPrompt", 102: "RepoPrompt", 103: "RepoPrompt", 104: "Other"},
+                {101: "Agentry", 102: "Agentry", 103: "RepoPrompt", 104: "Other"},
                 {101: debug, 102: production, 103: ce_release, 104: debug},
             )
 
@@ -66,9 +66,9 @@ class DebugAppProcessTests(unittest.TestCase):
     def test_termination_revalidates_identity_and_rejects_pid_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            debug = self.make_executable(root, "Debug/RepoPrompt.app/Contents/MacOS/RepoPrompt")
-            production = self.make_executable(root, "Production/RepoPrompt.app/Contents/MacOS/RepoPrompt")
-            inspector = FakeInspector({201: "RepoPrompt"}, {201: [debug, production]})
+            debug = self.make_executable(root, "Debug/Agentry.app/Contents/MacOS/Agentry")
+            production = self.make_executable(root, "Production/Agentry.app/Contents/MacOS/Agentry")
+            inspector = FakeInspector({201: "Agentry"}, {201: [debug, production]})
             signals: list[tuple[int, int]] = []
 
             with self.assertRaisesRegex(debug_app_process.ProcessIdentityError, "executable changed"):
@@ -82,8 +82,8 @@ class DebugAppProcessTests(unittest.TestCase):
 
     def test_matching_identity_is_revalidated_then_signaled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            debug = self.make_executable(Path(tmp), "Debug/RepoPrompt.app/Contents/MacOS/RepoPrompt")
-            inspector = FakeInspector({301: "RepoPrompt"}, {301: [debug, debug]})
+            debug = self.make_executable(Path(tmp), "Debug/Agentry.app/Contents/MacOS/Agentry")
+            inspector = FakeInspector({301: "Agentry"}, {301: [debug, debug]})
             signals: list[tuple[int, int]] = []
 
             signaled = debug_app_process.terminate_matching_processes(
@@ -97,8 +97,8 @@ class DebugAppProcessTests(unittest.TestCase):
 
     def test_missing_target_is_normal_not_installed_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            missing = Path(tmp) / "DebugApps" / "RepoPrompt.app" / "Contents" / "MacOS" / "RepoPrompt"
-            inspector = FakeInspector({101: "RepoPrompt"}, {})
+            missing = Path(tmp) / "DebugApps" / "Agentry.app" / "Contents" / "MacOS" / "Agentry"
+            inspector = FakeInspector({101: "Agentry"}, {})
             signals: list[tuple[int, int]] = []
 
             matches = debug_app_process.matching_processes(missing, inspector)
@@ -114,9 +114,9 @@ class DebugAppProcessTests(unittest.TestCase):
 
     def test_unresolvable_named_candidate_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            debug = self.make_executable(Path(tmp), "Debug/RepoPrompt.app/Contents/MacOS/RepoPrompt")
+            debug = self.make_executable(Path(tmp), "Debug/Agentry.app/Contents/MacOS/Agentry")
             inspector = FakeInspector(
-                {401: "RepoPrompt"},
+                {401: "Agentry"},
                 {401: debug_app_process.ProcessIdentityError("identity unavailable")},
             )
 
@@ -127,14 +127,14 @@ class DebugAppProcessTests(unittest.TestCase):
 class LifecycleSurfaceTests(unittest.TestCase):
     @staticmethod
     def copy_finder_launcher(root: Path) -> Path:
-        launcher = root / "Launch RepoPrompt CE.command"
+        launcher = root / "Launch Agentry.command"
         launcher.write_text((SCRIPT_DIR.parent / launcher.name).read_text(encoding="utf-8"), encoding="utf-8")
         return launcher
 
     def test_lifecycle_surfaces_have_no_process_name_kill_fallback(self) -> None:
         run_script = (SCRIPT_DIR / "run.sh").read_text(encoding="utf-8")
         conductor_script = (SCRIPT_DIR / "conductor.py").read_text(encoding="utf-8")
-        finder_launcher = (SCRIPT_DIR.parent / "Launch RepoPrompt CE.command").read_text(encoding="utf-8")
+        finder_launcher = (SCRIPT_DIR.parent / "Launch Agentry.command").read_text(encoding="utf-8")
 
         for source in [run_script, conductor_script, finder_launcher]:
             self.assertNotIn("pgrep -x RepoPrompt", source)

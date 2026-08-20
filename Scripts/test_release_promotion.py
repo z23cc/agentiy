@@ -34,7 +34,7 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         for call in calls:
             self.assertIn("--manifest", call)
-            self.assertIn("Vendor/Codex/manifest.json verify-bundle --arch all --bundle", call)
+            self.assertIn("Vendor/Codex/manifest.json verify-bundle --arch arm64 --bundle", call)
             self.assertTrue(
                 call.endswith(
                     "Contents/Resources/BundledRuntimes/Codex "
@@ -64,7 +64,7 @@ class ReleasePromotionTests(unittest.TestCase):
         publish_update = next(
             index
             for index, line in enumerate(calls)
-            if "release edit v1.0.0 --repo repoprompt/repoprompt-ce-updates" in line
+            if "release edit v1.0.0 --repo example/agentry-updates" in line
         )
         publish_source = next(
             index
@@ -76,7 +76,7 @@ class ReleasePromotionTests(unittest.TestCase):
         sentry_calls = [line for line in tools.read_text(encoding="utf-8").splitlines() if line.startswith("sentry ")]
         self.assertEqual(sum(" GET " in call for call in sentry_calls), 2)
         self.assertEqual(sum(" POST " in call for call in sentry_calls), 1)
-        self.assertTrue(all("com.pvncher.repoprompt.ce%401.0.0%2B1" in call for call in sentry_calls))
+        self.assertTrue(all("io.github.z23cc.agentry%401.0.0%2B1" in call for call in sentry_calls))
 
     def test_promote_resumes_matching_updater_draft_without_reupload(self) -> None:
         result, capture, _tools = self.run_promotion("promote", update_state="draft")
@@ -84,7 +84,7 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = capture.read_text(encoding="utf-8")
         self.assertNotIn("release create v1.0.0", calls)
-        self.assertIn("release edit v1.0.0 --repo repoprompt/repoprompt-ce-updates", calls)
+        self.assertIn("release edit v1.0.0 --repo example/agentry-updates", calls)
 
     def test_verify_allows_published_source_for_partial_promotion_recovery(self) -> None:
         result, _capture, _tools = self.run_promotion("verify", source_is_draft=False)
@@ -187,7 +187,7 @@ class ReleasePromotionTests(unittest.TestCase):
     def test_verify_rejects_source_appcast_without_public_updater_url(self) -> None:
         result, _capture, _tools = self.run_promotion(
             "verify",
-            enclosure_url="https://github.com/repoprompt/repoprompt-ce/releases/download/v1.0.0/RepoPrompt-1.0.0-1.zip",
+            enclosure_url="https://github.com/repoprompt/repoprompt-ce/releases/download/v1.0.0/Agentry-1.0.0-1.zip",
         )
 
         self.assertNotEqual(result.returncode, 0)
@@ -205,10 +205,10 @@ class ReleasePromotionTests(unittest.TestCase):
         *,
         source_is_draft: bool = True,
         update_state: str = "absent",
-        derived_public_key: str = "fixture-public-key",
+        derived_public_key: str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         enclosure_url: str = (
-            "https://github.com/repoprompt/repoprompt-ce-updates/"
-            "releases/download/v1.0.0/RepoPrompt-1.0.0-1.zip"
+            "https://github.com/example/agentry-updates/"
+            "releases/download/v1.0.0/Agentry-1.0.0-1.zip"
         ),
         duplicate_appcast_item: bool = False,
         extra_source_asset: bool = False,
@@ -231,8 +231,8 @@ class ReleasePromotionTests(unittest.TestCase):
         vendor_bin = root / "Vendor" / "Sparkle" / "bin"
         assets = temp_dir / "assets"
         fake_bin = temp_dir / "bin"
-        app = temp_dir / "fixture" / "RepoPrompt CE.app"
-        dmg_app = temp_dir / "dmg-fixture" / "RepoPrompt CE.app"
+        app = temp_dir / "fixture" / "Agentry.app"
+        dmg_app = temp_dir / "dmg-fixture" / "Agentry.app"
         for directory in (
             scripts,
             vendor_bin,
@@ -241,7 +241,6 @@ class ReleasePromotionTests(unittest.TestCase):
             app / "Contents" / "MacOS",
             app / "Contents" / "Resources" / "bin",
             app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "aarch64-apple-darwin",
-            app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "x86_64-apple-darwin",
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -254,7 +253,7 @@ class ReleasePromotionTests(unittest.TestCase):
         shutil.copy2(SCRIPT_DIR / "load_release_metadata.sh", scripts / "load_release_metadata.sh")
         shutil.copy2(SCRIPT_DIR / "verify_sparkle_signature.swift", scripts / "verify_sparkle_signature.swift")
         (scripts / "codex_runtime_artifact.py").write_text(
-            "#!/usr/bin/env python3\nimport os\nimport sys\nfrom pathlib import Path\n\nargs = sys.argv[1:]\nexpected_manifest = Path(os.environ[\"FAKE_CODEX_MANIFEST\"])\nif len(args) != 9 or args[:6] != [\n    \"--manifest\",\n    str(expected_manifest),\n    \"verify-bundle\",\n    \"--arch\",\n    \"all\",\n    \"--bundle\",\n] or args[7:] != [\"--signed-team-identifier\", \"648A27MST5\"]:\n    print(f\"ERROR: unexpected Codex verifier arguments: {args!r}\", file=sys.stderr)\n    raise SystemExit(64)\nbundle = Path(args[6])\nif not expected_manifest.is_file():\n    print(f\"ERROR: missing approved Codex manifest: {expected_manifest}\", file=sys.stderr)\n    raise SystemExit(65)\nexpected_targets = {\"aarch64-apple-darwin\", \"x86_64-apple-darwin\"}\nif not bundle.is_dir() or {path.name for path in bundle.iterdir()} != expected_targets:\n    print(f\"ERROR: missing embedded Codex package targets: {bundle}\", file=sys.stderr)\n    raise SystemExit(66)\nexpected_suffix = Path(\"Contents/Resources/BundledRuntimes/Codex\")\nif tuple(bundle.parts[-len(expected_suffix.parts):]) != expected_suffix.parts:\n    print(f\"ERROR: unexpected embedded Codex bundle path: {bundle}\", file=sys.stderr)\n    raise SystemExit(67)\nwith Path(os.environ[\"FAKE_TOOL_CAPTURE\"]).open(\"a\", encoding=\"utf-8\") as handle:\n    handle.write(\"codex \" + \" \".join(args) + \"\\n\")\nprint(\"OK: fixture Codex bundle contract.\")\n",
+            "#!/usr/bin/env python3\nimport os\nimport sys\nfrom pathlib import Path\n\nargs = sys.argv[1:]\nexpected_manifest = Path(os.environ[\"FAKE_CODEX_MANIFEST\"])\nif len(args) != 9 or args[:6] != [\n    \"--manifest\",\n    str(expected_manifest),\n    \"verify-bundle\",\n    \"--arch\",\n    \"arm64\",\n    \"--bundle\",\n] or args[7:] != [\"--signed-team-identifier\", \"648A27MST5\"]:\n    print(f\"ERROR: unexpected Codex verifier arguments: {args!r}\", file=sys.stderr)\n    raise SystemExit(64)\nbundle = Path(args[6])\nif not expected_manifest.is_file():\n    print(f\"ERROR: missing approved Codex manifest: {expected_manifest}\", file=sys.stderr)\n    raise SystemExit(65)\nexpected_targets = {\"aarch64-apple-darwin\"}\nif not bundle.is_dir() or {path.name for path in bundle.iterdir()} != expected_targets:\n    print(f\"ERROR: missing embedded Codex package targets: {bundle}\", file=sys.stderr)\n    raise SystemExit(66)\nexpected_suffix = Path(\"Contents/Resources/BundledRuntimes/Codex\")\nif tuple(bundle.parts[-len(expected_suffix.parts):]) != expected_suffix.parts:\n    print(f\"ERROR: unexpected embedded Codex bundle path: {bundle}\", file=sys.stderr)\n    raise SystemExit(67)\nwith Path(os.environ[\"FAKE_TOOL_CAPTURE\"]).open(\"a\", encoding=\"utf-8\") as handle:\n    handle.write(\"codex \" + \" \".join(args) + \"\\n\")\nprint(\"OK: fixture Codex bundle contract.\")\n",
             encoding="utf-8",
         )
         codex_vendor = root / "Vendor" / "Codex"
@@ -267,17 +266,20 @@ class ReleasePromotionTests(unittest.TestCase):
         (scripts / "validate_packaged_legal.sh").chmod(0o755)
         self.write_stub(scripts, "verify_remote_release_commit.sh", "printf 'OK: fixture remote tag remains bound.\\n'\n")
         self.write_stub(scripts, "verify_sparkle_vendor.sh", "printf 'OK: fixture Sparkle payload matches.\\n'\n")
-        self.write_stub(scripts, "validate_app_architectures.sh", "printf 'OK: fixture universal architectures.\\n'\n")
+        self.write_stub(scripts, "validate_app_architectures.sh", "printf 'OK: fixture arm64 architectures.\\n'\n")
         self.write_stub(scripts, "write_app_artifact_manifest.py", "printf 'OK: fixture artifact manifest.\\n'\n")
         (root / "version.env").write_text(
             textwrap.dedent(
                 """\
-                APP_NAME=RepoPrompt
-                DISPLAY_NAME="RepoPrompt CE"
+                APP_NAME=Agentry
+                DISPLAY_NAME="Agentry"
                 MARKETING_VERSION=1.0.0
                 BUILD_NUMBER=1
-                BUNDLE_ID=com.pvncher.repoprompt.ce
+                BUNDLE_ID=io.github.z23cc.agentry
                 SIGNING_TEAM_ID=648A27MST5
+AGENTRY_SPARKLE_STABLE_FEED_URL=https://github.com/example/agentry-updates/releases/latest/download/appcast.xml
+AGENTRY_SPARKLE_BETA_FEED_URL=https://github.com/example/agentry-beta-updates/releases/latest/download/appcast.xml
+AGENTRY_SPARKLE_PUBLIC_ED_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
                 """
             ),
             encoding="utf-8",
@@ -285,24 +287,24 @@ class ReleasePromotionTests(unittest.TestCase):
         (app / "Contents" / "Info.plist").write_text("fixture plist\n", encoding="utf-8")
         self.write_stub(
             app / "Contents" / "MacOS",
-            "repoprompt-mcp",
+            "agentry-mcp",
             "printf 'ERROR: fixture packaged helper must not execute\\n' >&2\nexit 137\n",
         )
-        (app / "Contents" / "Resources" / "repoprompt-mcp").symlink_to("../MacOS/repoprompt-mcp")
-        (app / "Contents" / "Resources" / "bin" / "repoprompt-mcp").symlink_to("../../MacOS/repoprompt-mcp")
+        (app / "Contents" / "Resources" / "agentry-mcp").symlink_to("../MacOS/agentry-mcp")
+        (app / "Contents" / "Resources" / "bin" / "agentry-mcp").symlink_to("../../MacOS/agentry-mcp")
         self.write_legal_tree(root, app)
         shutil.copytree(app, dmg_app, symlinks=True)
         if missing_codex_package:
-            shutil.rmtree(app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "x86_64-apple-darwin")
-            shutil.rmtree(dmg_app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "x86_64-apple-darwin")
+            shutil.rmtree(app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "aarch64-apple-darwin")
+            shutil.rmtree(dmg_app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "aarch64-apple-darwin")
         if mismatched_dmg_app:
             (dmg_app / "Contents" / "dmg-only-drift.txt").write_text("drift\n", encoding="utf-8")
 
-        zip_path = assets / "RepoPrompt-1.0.0-1.zip"
-        dmg_path = assets / "RepoPrompt-1.0.0-1.dmg"
+        zip_path = assets / "Agentry-1.0.0-1.zip"
+        dmg_path = assets / "Agentry-1.0.0-1.dmg"
         appcast_path = assets / "appcast.xml"
         checksums_path = assets / "SHA256SUMS"
-        artifact_manifest_path = assets / "RepoPrompt-1.0.0-1-artifact-manifest.json"
+        artifact_manifest_path = assets / "Agentry-1.0.0-1-artifact-manifest.json"
         previous_appcast = assets / "previous-appcast.xml"
         zip_path.write_text("fixture zip\n", encoding="utf-8")
         dmg_path.write_text("fixture dmg\n", encoding="utf-8")
@@ -362,14 +364,14 @@ class ReleasePromotionTests(unittest.TestCase):
             "gh",
             """\
             printf '%s\\n' "$*" >> "$FAKE_GH_CAPTURE"
-            source_assets='[{"name":"RepoPrompt-1.0.0-1.zip"},{"name":"RepoPrompt-1.0.0-1.dmg"},{"name":"appcast.xml"},{"name":"SHA256SUMS"},{"name":"RepoPrompt-1.0.0-1-artifact-manifest.json"}]'
+            source_assets='[{"name":"Agentry-1.0.0-1.zip"},{"name":"Agentry-1.0.0-1.dmg"},{"name":"appcast.xml"},{"name":"SHA256SUMS"},{"name":"Agentry-1.0.0-1-artifact-manifest.json"}]'
             if [[ "$FAKE_EXTRA_SOURCE_ASSET" == "true" ]]; then
-                source_assets='[{"name":"RepoPrompt-1.0.0-1.zip"},{"name":"RepoPrompt-1.0.0-1.dmg"},{"name":"appcast.xml"},{"name":"SHA256SUMS"},{"name":"RepoPrompt-1.0.0-1-artifact-manifest.json"},{"name":"unexpected.txt"}]'
+                source_assets='[{"name":"Agentry-1.0.0-1.zip"},{"name":"Agentry-1.0.0-1.dmg"},{"name":"appcast.xml"},{"name":"SHA256SUMS"},{"name":"Agentry-1.0.0-1-artifact-manifest.json"},{"name":"unexpected.txt"}]'
             fi
-            update_assets='[{"name":"RepoPrompt-1.0.0-1.zip"},{"name":"appcast.xml"},{"name":"SHA256SUMS"},{"name":"RepoPrompt-1.0.0-1-artifact-manifest.json"}]'
+            update_assets='[{"name":"Agentry-1.0.0-1.zip"},{"name":"appcast.xml"},{"name":"SHA256SUMS"},{"name":"Agentry-1.0.0-1-artifact-manifest.json"}]'
             if [[ "$1" == "release" && "$2" == "view" && "$*" == *"--repo repoprompt/repoprompt-ce "* ]]; then
                 printf '{"tagName":"v1.0.0","isDraft":%s,"isPrerelease":false,"assets":%s,"body":"Release-Commit: `fixture-release-commit`"}\\n' "$FAKE_SOURCE_IS_DRAFT" "$source_assets"
-            elif [[ "$1" == "release" && "$2" == "view" && "$*" == *"--repo repoprompt/repoprompt-ce-updates "* ]]; then
+            elif [[ "$1" == "release" && "$2" == "view" && "$*" == *"--repo example/agentry-updates "* ]]; then
                 if [[ "$FAKE_UPDATE_STATE" == "absent" ]] && ! grep -q 'release create v1.0.0' "$FAKE_GH_CAPTURE"; then
                     exit 1
                 fi
@@ -388,12 +390,12 @@ class ReleasePromotionTests(unittest.TestCase):
                     fi
                     shift || true
                 done
-                cp "$FAKE_ASSET_DIR"/RepoPrompt-1.0.0-1.zip "$target/"
+                cp "$FAKE_ASSET_DIR"/Agentry-1.0.0-1.zip "$target/"
                 cp "$FAKE_ASSET_DIR"/appcast.xml "$target/"
                 cp "$FAKE_ASSET_DIR"/SHA256SUMS "$target/"
-                cp "$FAKE_ASSET_DIR"/RepoPrompt-1.0.0-1-artifact-manifest.json "$target/"
-                if [[ "$*" != *"--repo repoprompt/repoprompt-ce-updates "* ]]; then
-                    cp "$FAKE_ASSET_DIR"/RepoPrompt-1.0.0-1.dmg "$target/"
+                cp "$FAKE_ASSET_DIR"/Agentry-1.0.0-1-artifact-manifest.json "$target/"
+                if [[ "$*" != *"--repo example/agentry-updates "* ]]; then
+                    cp "$FAKE_ASSET_DIR"/Agentry-1.0.0-1.dmg "$target/"
                 fi
             elif [[ "$1" == "repo" && "$2" == "view" ]]; then
                 printf 'PUBLIC\\n'
@@ -407,7 +409,7 @@ class ReleasePromotionTests(unittest.TestCase):
             printf 'ditto\\n' >> "$FAKE_TOOL_CAPTURE"
             target="${@: -1}"
             mkdir -p "$target"
-            cp -R "$FAKE_APP_SOURCE" "$target/RepoPrompt CE.app"
+            cp -R "$FAKE_APP_SOURCE" "$target/Agentry.app"
             """,
         )
         self.write_stub(
@@ -417,7 +419,7 @@ class ReleasePromotionTests(unittest.TestCase):
             printf 'hdiutil\\n' >> "$FAKE_TOOL_CAPTURE"
             if [[ "$1" == "attach" ]]; then
                 target="${@: -1}"
-                cp -R "$FAKE_DMG_APP_SOURCE" "$target/RepoPrompt CE.app"
+                cp -R "$FAKE_DMG_APP_SOURCE" "$target/Agentry.app"
             fi
             """,
         )
@@ -435,11 +437,11 @@ class ReleasePromotionTests(unittest.TestCase):
             "plutil",
             """\
             case "$2" in
-                CFBundleIdentifier) printf 'com.pvncher.repoprompt.ce\\n' ;;
+                CFBundleIdentifier) printf 'io.github.z23cc.agentry\\n' ;;
                 CFBundleShortVersionString) printf '1.0.0\\n' ;;
                 CFBundleVersion) printf '1\\n' ;;
-                SUFeedURL) printf 'https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml\\n' ;;
-                SUPublicEDKey) printf 'fixture-public-key\\n' ;;
+                SUFeedURL) printf 'https://github.com/example/agentry-updates/releases/latest/download/appcast.xml\\n' ;;
+                SUPublicEDKey) printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\\n' ;;
                 *) exit 1 ;;
             esac
             """,
@@ -478,7 +480,7 @@ class ReleasePromotionTests(unittest.TestCase):
             done
             printf 'curl %s %s\n' "$method" "$url" >> "$FAKE_TOOL_CAPTURE"
             case "$url" in
-                https://sentry.io/api/0/organizations/repoprompt/releases/com.pvncher.repoprompt.ce%401.0.0%2B1/deploys/)
+                https://sentry.io/api/0/organizations/repoprompt/releases/io.github.z23cc.agentry%401.0.0%2B1/deploys/)
                     printf 'sentry %s %s\n' "$method" "$url" >> "$FAKE_TOOL_CAPTURE"
                     [[ "$args" != *"fixture-sentry-token"* ]] || { printf 'token leaked in curl args\n' >&2; exit 1; }
                     [[ -n "$config" && "$(stat -f %Lp "$config")" == "600" ]] || {
@@ -506,7 +508,7 @@ class ReleasePromotionTests(unittest.TestCase):
                             printf 'Sentry deploy POST preceded anonymous verification\n' >&2
                             exit 1
                         }
-                        grep -q 'release edit v1.0.0 --repo repoprompt/repoprompt-ce-updates' "$FAKE_GH_CAPTURE"
+                        grep -q 'release edit v1.0.0 --repo example/agentry-updates' "$FAKE_GH_CAPTURE"
                         grep -q 'release edit v1.0.0 --repo repoprompt/repoprompt-ce ' "$FAKE_GH_CAPTURE"
                         body="${body#@}"
                         jq -e '.environment == "production" and .name == "v1.0.0" and .projects == ["repoprompt"]' "$body" >/dev/null
@@ -515,7 +517,7 @@ class ReleasePromotionTests(unittest.TestCase):
                         $write_status && printf '201'
                     fi
                     ;;
-                https://api.github.com/repos/repoprompt/repoprompt-ce-updates/releases/latest)
+                https://api.github.com/repos/example/agentry-updates/releases/latest)
                     if [[ "$FAKE_PROMOTION_ALREADY_PUBLISHED" == "true" ]]; then
                         printf '{"tag_name":"v1.0.0"}\n' > "$output"
                         printf '200'
@@ -525,7 +527,7 @@ class ReleasePromotionTests(unittest.TestCase):
                     elif [[ -n "$FAKE_LATEST_BUILD" && ! -f "$FAKE_PROMOTION_PUBLISHED" ]]; then
                         printf '{"tag_name":"v0.9.0"}\\n' > "$output"
                         $write_status && printf '200'
-                    elif grep -q 'release edit v1.0.0 --repo repoprompt/repoprompt-ce-updates' "$FAKE_GH_CAPTURE" 2>/dev/null; then
+                    elif grep -q 'release edit v1.0.0 --repo example/agentry-updates' "$FAKE_GH_CAPTURE" 2>/dev/null; then
                         if $write_status; then
                             printf '{"tag_name":"v1.0.0"}\\n' > "$output"
                             printf '200'
@@ -536,14 +538,14 @@ class ReleasePromotionTests(unittest.TestCase):
                         $write_status && printf '%s' "$FAKE_LATEST_HTTP_STATUS"
                     fi
                     ;;
-                https://github.com/repoprompt/repoprompt-ce-updates/releases/latest)
-                    $write_status && printf 'https://github.com/repoprompt/repoprompt-ce-updates/releases/tag/v1.0.0'
+                https://github.com/example/agentry-updates/releases/latest)
+                    $write_status && printf 'https://github.com/example/agentry-updates/releases/tag/v1.0.0'
                     ;;
                 https://github.com/repoprompt/repoprompt-ce/releases/latest)
                     touch "$FAKE_ANONYMOUS_VERIFIED"
                     $write_status && printf 'https://github.com/repoprompt/repoprompt-ce/releases/tag/v1.0.0'
                     ;;
-                https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml)
+                https://github.com/example/agentry-updates/releases/latest/download/appcast.xml)
                     if [[ "$FAKE_ANONYMOUS_FAILURE" == "true" ]]; then
                         printf 'corrupt anonymous appcast\n' > "$output"
                         exit 0
@@ -552,10 +554,10 @@ class ReleasePromotionTests(unittest.TestCase):
                     ;;
                 */v0.9.0/appcast.xml) cp "$FAKE_ASSET_DIR/previous-appcast.xml" "$output" ;;
                 */appcast.xml) cp "$FAKE_ASSET_DIR/appcast.xml" "$output" ;;
-                */RepoPrompt-1.0.0-1.zip) cp "$FAKE_ASSET_DIR/RepoPrompt-1.0.0-1.zip" "$output" ;;
-                */RepoPrompt-1.0.0-1.dmg) cp "$FAKE_ASSET_DIR/RepoPrompt-1.0.0-1.dmg" "$output" ;;
+                */Agentry-1.0.0-1.zip) cp "$FAKE_ASSET_DIR/Agentry-1.0.0-1.zip" "$output" ;;
+                */Agentry-1.0.0-1.dmg) cp "$FAKE_ASSET_DIR/Agentry-1.0.0-1.dmg" "$output" ;;
                 */SHA256SUMS) cp "$FAKE_ASSET_DIR/SHA256SUMS" "$output" ;;
-                */RepoPrompt-1.0.0-1-artifact-manifest.json) cp "$FAKE_ASSET_DIR/RepoPrompt-1.0.0-1-artifact-manifest.json" "$output" ;;
+                */Agentry-1.0.0-1-artifact-manifest.json) cp "$FAKE_ASSET_DIR/Agentry-1.0.0-1-artifact-manifest.json" "$output" ;;
                 *) printf 'unexpected curl URL: %s\\n' "$url" >&2; exit 1 ;;
             esac
             """,
@@ -577,6 +579,7 @@ class ReleasePromotionTests(unittest.TestCase):
                 "SOURCE_GITHUB_REPOSITORY": "repoprompt/repoprompt-ce",
                 "SOURCE_GH_TOKEN": "source-token",
                 "PUBLIC_UPDATE_GH_TOKEN": "update-token",
+                "PUBLIC_UPDATE_REPOSITORY": "example/agentry-updates",
                 "REVIEWED_CHECKSUMS_SHA256": reviewed_checksums_sha256 or self.sha256(checksums_path),
                 "SPARKLE_PRIVATE_KEY": "fixture-private-key",
                 "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE": str(sentry_token_file),

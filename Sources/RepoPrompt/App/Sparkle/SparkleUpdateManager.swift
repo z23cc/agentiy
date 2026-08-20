@@ -6,6 +6,7 @@
 //
 
 import Combine
+import CryptoKit
 import Sparkle
 import SwiftUI
 
@@ -23,9 +24,10 @@ import SwiftUI
 final class SparkleUpdaterManager: ObservableObject {
     /// Singleton instance - set by AppDelegate on launch
     static var shared: SparkleUpdaterManager!
-    private static let stableFeedURL = SecurityObfuscation.decode(SecurityObfuscation.stableFeedURLEncoded)
-    private static let tipFeedURL = SecurityObfuscation.decode(SecurityObfuscation.tipFeedURLEncoded)
-    private static let expectedPublicEdKey = SecurityObfuscation.decode(SecurityObfuscation.expectedPublicEdKeyEncoded)
+    static let unprovisionedConfigurationMessage =
+        "Agentry update configuration is not provisioned. Update checks are disabled."
+    private static let legacyRepoPromptPublicEdKeySHA256 =
+        "baffc4fc73168247f232f8f9d79d09abfdfca5c0b46651ccf78f436e17e2cdee"
 
     private struct CanonicalURL: Hashable {
         let scheme: String
@@ -35,6 +37,7 @@ final class SparkleUpdaterManager: ObservableObject {
     }
 
     private struct AcceptedSparkleConfiguration {
+        let channel: UpdateChannel
         let feed: CanonicalURL
         let publicEdKey: String
     }
@@ -48,9 +51,17 @@ final class SparkleUpdaterManager: ObservableObject {
     }
 
     private static func canonicalizeFeedURL(_ raw: String) -> CanonicalURL? {
-        guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-        guard let scheme = url.scheme?.lowercased(),
-              let host = url.host?.lowercased() else { return nil }
+        guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              !host.isEmpty,
+              url.port == nil,
+              url.user == nil,
+              url.password == nil,
+              url.query == nil,
+              url.fragment == nil,
+              !url.path.isEmpty
+        else { return nil }
 
         // Normalize trailing slash
         var path = url.path
@@ -58,15 +69,106 @@ final class SparkleUpdaterManager: ObservableObject {
             path.removeLast()
         }
 
-        let port = url.port
-        return CanonicalURL(scheme: scheme, host: host, port: port, path: path)
+        return CanonicalURL(scheme: "https", host: host, port: nil, path: path)
     }
 
-    private static var acceptedConfigurations: [AcceptedSparkleConfiguration] {
-        [stableFeedURL, tipFeedURL].compactMap { rawFeed in
+    private static func acceptedConfigurations(
+        infoDictionary: [String: Any]
+    ) -> [AcceptedSparkleConfiguration] {
+        guard let publicEdKey = configuredString("SUPublicEDKey", in: infoDictionary) else { return [] }
+        return UpdateChannel.allCases.compactMap { channel in
+            let rawFeed = UpdateChannel.feedURLString(for: channel, infoDictionary: infoDictionary)
             guard let canonical = canonicalizeFeedURL(rawFeed) else { return nil }
-            return AcceptedSparkleConfiguration(feed: canonical, publicEdKey: expectedPublicEdKey)
+            return AcceptedSparkleConfiguration(
+                channel: channel,
+                feed: canonical,
+                publicEdKey: publicEdKey
+            )
         }
+    }
+
+    private static func configuredString(_ key: String, in infoDictionary: [String: Any]) -> String? {
+        guard let value = infoDictionary[key] as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.hasPrefix("__"),
+              !trimmed.hasSuffix("__")
+        else { return nil }
+        return trimmed
+    }
+
+    private static func isLegacyRepoPromptFeed(_ feed: CanonicalURL) -> Bool {
+        guard feed.host == "github.com" else { return false }
+        let normalizedPath = feed.path.lowercased()
+        return normalizedPath.hasPrefix("/repoprompt/repoprompt-ce-updates/") ||
+            normalizedPath.hasPrefix("/repoprompt/repoprompt-ce-tip-updates/")
+    }
+
+    private static func isValidPublicEdKey(
+        _ value: String,
+        rejectedPublicEdKeySHA256: String
+    ) -> Bool {
+        let digest = SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return digest != rejectedPublicEdKeySHA256 && Data(base64Encoded: value)?.count == 32
+    }
+
+    static func validateSparkleConfiguration(
+        infoDictionary: [String: Any],
+        selectedChannel: UpdateChannel
+    ) -> (isValid: Bool, message: String?) {
+        validateSparkleConfiguration(
+            infoDictionary: infoDictionary,
+            selectedChannel: selectedChannel,
+            rejectedPublicEdKeySHA256: legacyRepoPromptPublicEdKeySHA256
+        )
+    }
+
+    private static func validateSparkleConfiguration(
+        infoDictionary: [String: Any],
+        selectedChannel: UpdateChannel,
+        rejectedPublicEdKeySHA256: String
+    ) -> (isValid: Bool, message: String?) {
+        let stableRaw = UpdateChannel.feedURLString(for: .stable, infoDictionary: infoDictionary)
+        let betaRaw = UpdateChannel.feedURLString(for: .beta, infoDictionary: infoDictionary)
+        guard let publicEdKey = configuredString("SUPublicEDKey", in: infoDictionary),
+              configuredString(UpdateChannel.stableFeedInfoDictionaryKey, in: infoDictionary) != nil,
+              configuredString(UpdateChannel.betaFeedInfoDictionaryKey, in: infoDictionary) != nil,
+              let standardFeedRaw = configuredString("SUFeedURL", in: infoDictionary)
+        else {
+            return (false, unprovisionedConfigurationMessage)
+        }
+
+        guard isValidPublicEdKey(
+            publicEdKey,
+            rejectedPublicEdKeySHA256: rejectedPublicEdKeySHA256
+        ),
+            let stableFeed = canonicalizeFeedURL(stableRaw),
+            let betaFeed = canonicalizeFeedURL(betaRaw),
+            let standardFeed = canonicalizeFeedURL(standardFeedRaw),
+            stableFeed != betaFeed,
+            standardFeed == stableFeed,
+            !isLegacyRepoPromptFeed(stableFeed),
+            !isLegacyRepoPromptFeed(betaFeed)
+        else {
+            return (false, unprovisionedConfigurationMessage)
+        }
+
+        let selectedRaw = UpdateChannel.feedURLString(for: selectedChannel, infoDictionary: infoDictionary)
+        guard let selectedFeed = canonicalizeFeedURL(selectedRaw) else {
+            return (false, unprovisionedConfigurationMessage)
+        }
+        let accepted = acceptedConfigurations(infoDictionary: infoDictionary)
+        guard accepted.count == UpdateChannel.allCases.count,
+              accepted.contains(where: {
+                  $0.channel == selectedChannel && $0.feed == selectedFeed && $0.publicEdKey == publicEdKey
+              })
+        else {
+            return (false, unprovisionedConfigurationMessage)
+        }
+
+        return (true, nil)
     }
 
     /// Cleans corrupt Sparkle preferences that may cause crashes
@@ -97,8 +199,8 @@ final class SparkleUpdaterManager: ObservableObject {
     /// UserDefaults key for last passive appcast check timestamp
     private static let lastCheckKey = "SparkleLastUpdateCheck"
 
-    /// UserDefaults key for RepoPrompt's passive appcast-check preference.
-    private static let passiveAppcastChecksKey = "RepoPromptPassiveAppcastChecksEnabled"
+    /// UserDefaults key for Agentry's passive appcast-check preference.
+    private static let passiveAppcastChecksKey = "AgentryPassiveAppcastChecksEnabled"
 
     /// Expose updater for settings UI
     var updater: SPUUpdater {
@@ -156,7 +258,10 @@ final class SparkleUpdaterManager: ObservableObject {
         UserDefaults.standard.set(automaticallyChecksForUpdates, forKey: Self.passiveAppcastChecksKey)
         updaterController.updater.automaticallyChecksForUpdates = false
 
-        let validation = validateSparkleConfiguration()
+        let validation = Self.validateSparkleConfiguration(
+            infoDictionary: Bundle.main.infoDictionary ?? [:],
+            selectedChannel: updateChannel
+        )
         sparkleConfigurationValid = validation.isValid
         updatesDisabledMessage = validation.message
 
@@ -312,10 +417,13 @@ final class SparkleUpdaterManager: ObservableObject {
         request == activeRequest && request.channel == selectedChannel
     }
 
-    static func updateChannel(forAppcastItemURL url: URL?) -> UpdateChannel? {
+    static func updateChannel(
+        forAppcastItemURL url: URL?,
+        infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:]
+    ) -> UpdateChannel? {
         guard let url,
               url.scheme?.lowercased() == "https",
-              url.host?.lowercased() == "github.com",
+              url.host != nil,
               url.port == nil,
               url.user == nil,
               url.password == nil,
@@ -324,9 +432,11 @@ final class SparkleUpdaterManager: ObservableObject {
         else { return nil }
 
         return UpdateChannel.allCases.first { channel in
-            guard let feedURL = URL(string: channel.feedURLString),
+            let feedURLString = UpdateChannel.feedURLString(for: channel, infoDictionary: infoDictionary)
+            guard let feedURL = URL(string: feedURLString),
                   feedURL.scheme?.lowercased() == url.scheme?.lowercased(),
                   feedURL.host?.lowercased() == url.host?.lowercased(),
+                  feedURL.port == url.port,
                   let releasesRange = feedURL.path.range(of: "/releases/")
             else { return false }
 
@@ -411,7 +521,7 @@ final class SparkleUpdaterManager: ObservableObject {
                 channel: checkedChannel,
                 version: presentationVersion,
                 buildNumber: appcastInfo.latestBuildNumber,
-                shortCommitSHA: AvailableUpdateNotice.shortCommitSHA(fromTipTitle: appcastInfo.title),
+                shortCommitSHA: AvailableUpdateNotice.shortCommitSHA(fromBetaTitle: appcastInfo.title),
                 date: appcastInfo.date,
                 description: appcastInfo.releaseNotes
             )
@@ -486,7 +596,7 @@ final class SparkleUpdaterManager: ObservableObject {
                             title: appcastItem.title
                         ),
                         buildNumber: appcastItem.versionString,
-                        shortCommitSHA: AvailableUpdateNotice.shortCommitSHA(fromTipTitle: appcastItem.title),
+                        shortCommitSHA: AvailableUpdateNotice.shortCommitSHA(fromBetaTitle: appcastItem.title),
                         date: appcastItem.date,
                         description: appcastItem.releaseNotesURL?.absoluteString ?? appcastItem.itemDescription
                     )
@@ -537,14 +647,14 @@ final class SparkleUpdaterManager: ObservableObject {
         title: String?
     ) -> String {
         let fallbackVersion = sanitizeVersionString(displayVersion)
-        guard channel == .tip else { return fallbackVersion }
-        return AvailableUpdateNotice.marketingVersion(fromTipTitle: title) ?? fallbackVersion
+        guard channel == .beta else { return fallbackVersion }
+        return AvailableUpdateNotice.marketingVersion(fromBetaTitle: title) ?? fallbackVersion
     }
 
     static func sanitizeVersionString(_ version: String) -> String {
         var version = version.trimmingCharacters(in: .whitespacesAndNewlines)
-        if version.lowercased().hasPrefix("tip build") {
-            version.removeFirst("tip build".count)
+        if version.lowercased().hasPrefix("beta build") {
+            version.removeFirst("beta build".count)
             version = version.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if version.lowercased().hasPrefix("v") {
@@ -673,28 +783,6 @@ final class SparkleUpdaterManager: ObservableObject {
 
     // MARK: - Sparkle Integrity
 
-    private func validateSparkleConfiguration() -> (isValid: Bool, message: String?) {
-        guard let edKeyRaw = Bundle.main.infoDictionary?["SUPublicEDKey"] as? String else {
-            return (false, "Updates are disabled because the Sparkle signing key is missing from Info.plist.")
-        }
-
-        guard let canonical = Self.canonicalizeFeedURL(updateChannel.feedURLString) else {
-            return (false, "Updates are disabled because the selected Sparkle feed URL is invalid.")
-        }
-
-        let edKey = edKeyRaw.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let matches = Self.acceptedConfigurations.contains { accepted in
-            accepted.feed == canonical && accepted.publicEdKey == edKey
-        }
-
-        if matches {
-            return (true, nil)
-        }
-
-        return (false, "Updates are disabled because the update feed/signing key failed integrity validation. Please reinstall from the official website.")
-    }
-
     private func disableUpdatesForIntegrityFailure() {
         clearUpdateState()
         cancelUserInitiatedSparkleCheck()
@@ -704,7 +792,7 @@ final class SparkleUpdaterManager: ObservableObject {
 
         // Ensure there is always a user-visible reason if we disable updates
         if updatesDisabledMessage == nil {
-            updatesDisabledMessage = "Updates are disabled due to an integrity validation failure."
+            updatesDisabledMessage = Self.unprovisionedConfigurationMessage
         }
     }
 }
@@ -720,16 +808,29 @@ final class SparkleUpdaterManager: ObservableObject {
         }
 
         static var debugExpectedFeedURL: String {
-            stableFeedURL
+            UpdateChannel.stable.feedURLString
         }
 
-        static var debugTipFeedURL: String {
-            tipFeedURL
+        static var debugBetaFeedURL: String {
+            UpdateChannel.beta.feedURLString
         }
 
         static func debugFeedURLMatchesExpected(_ raw: String) -> Bool {
             guard let canonical = canonicalizeFeedURL(raw) else { return false }
-            return acceptedConfigurations.contains { $0.feed == canonical }
+            return acceptedConfigurations(infoDictionary: Bundle.main.infoDictionary ?? [:])
+                .contains { $0.feed == canonical }
+        }
+
+        static func debugValidateSparkleConfiguration(
+            infoDictionary: [String: Any],
+            selectedChannel: UpdateChannel,
+            rejectedPublicEdKeySHA256: String
+        ) -> (isValid: Bool, message: String?) {
+            validateSparkleConfiguration(
+                infoDictionary: infoDictionary,
+                selectedChannel: selectedChannel,
+                rejectedPublicEdKeySHA256: rejectedPublicEdKeySHA256
+            )
         }
 
         static func debugIsVersion(_ lhs: String, newerThan rhs: String) -> Bool {

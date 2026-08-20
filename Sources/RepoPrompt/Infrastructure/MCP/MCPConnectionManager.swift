@@ -1146,7 +1146,7 @@ actor ServerNetworkManager {
     }
 
     /// Same-process live reconnect affinity keyed by MCP client name + capability token.
-    /// The capability token identifies one `repoprompt-mcp` helper process lease. While the
+    /// The capability token identifies one `agentry-mcp` helper process lease. While the
     /// matching run policy remains live, that token is pinned to the run and may only reconnect
     /// to the same run. A different run must use a fresh helper/token.
     private struct LiveRunAffinity {
@@ -6907,7 +6907,7 @@ actor ServerNetworkManager {
         }
 
         // PID-gated ownership is resolved atomically at policy consumption. This covers
-        // helper bootstrap identities (for example repoprompt_ce_cli_debug) that transition
+        // helper bootstrap identities (for example agentry_cli_debug) that transition
         // to an authoritative provider identity before the ACP parent PID is registered.
         if hasPIDGatedPendingPolicy(for: clientName) {
             return .ready
@@ -12191,7 +12191,7 @@ actor ServerNetworkManager {
                                         let limitReached = busyContext.reason == .releasedProviderLimitReached
                                         let abandoned = busyContext.reason == .abandoned
                                         if limitReached {
-                                            message = "Window \(windowID) reached its limit of one released cancellation-ignoring structure provider. Wait for it to settle or restart RepoPrompt CE."
+                                            message = "Window \(windowID) reached its limit of one released cancellation-ignoring structure provider. Wait for it to settle or restart Agentry."
                                         } else if abandoned {
                                             message = "A prior canceled MCP operation for window \(windowID) is still settling. Retry after the bounded recovery wait."
                                         } else {

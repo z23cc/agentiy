@@ -50,7 +50,7 @@ actor PartitionStore {
         return try body()
     }
 
-    /// <AppSupport>/RepoPrompt CE/Partitions
+    /// <AppSupport>/Agentry/Partitions
     private static func partitionsBaseURL() -> URL {
         MCPFilesystemConstants.identity.applicationSupportRootURL()
             .appendingPathComponent("Partitions", isDirectory: true)
@@ -194,7 +194,7 @@ actor PartitionStore {
         try Task.checkCancellation()
         let url = partitionURL(forRoot: rootPath, scope: scope)
 
-        // Ensure directories exist: .../Application Support/RepoPrompt CE/Partitions/<repoKey>/
+        // Ensure directories exist: .../Application Support/Agentry/Partitions/<repoKey>/
         let dirURL = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true, attributes: nil)
 

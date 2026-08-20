@@ -618,7 +618,7 @@ final class CodexIntegrationConfigurationTests: XCTestCase {
 
     func testCodexConfigUsesRepoPromptOwnedBuildSeparatedState() {
         let path = CodexIntegrationConfiguration.configURL().path
-        XCTAssertTrue(path.contains("/RepoPrompt CE/Codex/"))
+        XCTAssertTrue(path.contains("/Agentry/Codex/"))
         #if DEBUG
             XCTAssertTrue(path.contains("/Debug/home/config.toml"))
         #else

@@ -131,7 +131,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             "User goal:",
             rawObjective,
             "",
-            "RepoPrompt workflow context:",
+            "Agentry workflow context:",
             "Workflow: \(selectedWorkflow.displayName)"
         ]
         if let description, !description.isEmpty {
@@ -831,7 +831,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     private func hardLocalToolLivenessReasons(for session: AgentTabSession) -> [String] {
         var reasons: [String] = []
         if hasActiveRepoPromptTools(for: session) {
-            reasons.append("repoprompt-mcp")
+            reasons.append("agentry-mcp")
         }
         if hasActiveAgentRunWaits(for: session) {
             reasons.append("agent-run-wait")

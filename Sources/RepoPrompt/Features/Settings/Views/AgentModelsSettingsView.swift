@@ -708,7 +708,7 @@ struct AgentModelsSettingsView: View {
 
     private var builtinChatRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            sectionHeader(title: "Built-in Chat Model", subtitle: "Used by RepoPrompt's built-in chat UI (not Agent Mode). Defaults to the Oracle Model unless overridden here.")
+            sectionHeader(title: "Built-in Chat Model", subtitle: "Used by Agentry's built-in chat UI (not Agent Mode). Defaults to the Oracle Model unless overridden here.")
 
             HStack(alignment: .center, spacing: 12) {
                 AIModelDropdown(

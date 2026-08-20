@@ -1286,7 +1286,7 @@ struct AgentComposerView: View, Equatable {
 
                 Section {
                     if codexTools.mcpServerEntries.isEmpty {
-                        Text("No servers in RepoPrompt's isolated Codex config")
+                        Text("No servers in Agentry's isolated Codex config")
                             .foregroundStyle(.tertiary)
                     } else {
                         ForEach(codexTools.mcpServerEntries, id: \.normalizedName) { entry in

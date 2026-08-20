@@ -7,10 +7,10 @@ final class PresetJSONOnlyPersistenceTests: XCTestCase {
         let workflowPath = PresetFileStore.defaultWorkflowFileURL().path
         let modelPath = PresetFileStore.defaultModelFileURL().path
 
-        XCTAssertTrue(workflowPath.contains("/Application Support/RepoPrompt CE/Presets/workflowPresets.json"), workflowPath)
-        XCTAssertTrue(modelPath.contains("/Application Support/RepoPrompt CE/Presets/modelPresets.json"), modelPath)
-        XCTAssertFalse(workflowPath.contains("/Application Support/RepoPrompt/Presets/workflowPresets.json"), workflowPath)
-        XCTAssertFalse(modelPath.contains("/Application Support/RepoPrompt/Presets/modelPresets.json"), modelPath)
+        XCTAssertTrue(workflowPath.contains("/Application Support/Agentry/Presets/workflowPresets.json"), workflowPath)
+        XCTAssertTrue(modelPath.contains("/Application Support/Agentry/Presets/modelPresets.json"), modelPath)
+        XCTAssertFalse(workflowPath.contains("/Application Support/RepoPrompt CE/Presets/workflowPresets.json"), workflowPath)
+        XCTAssertFalse(modelPath.contains("/Application Support/RepoPrompt CE/Presets/modelPresets.json"), modelPath)
     }
 
     func testMissingPresetJSONCreatesEmptyDocumentsAndIgnoresLegacyDefaults() throws {

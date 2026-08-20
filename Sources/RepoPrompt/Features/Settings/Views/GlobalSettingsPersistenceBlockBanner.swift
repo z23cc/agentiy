@@ -6,7 +6,7 @@ import SwiftUI
 /// that backs up the offending file and writes current-schema settings. Shown only
 /// while `GlobalSettingsStore.shared.persistenceBlockReason` is non-nil.
 ///
-/// RepoPrompt never auto-recovers from foreign, future, or unverifiable content; this banner
+/// Agentry never auto-recovers from foreign, future, or unverifiable content; this banner
 /// exposes the explicit backup/recovery action that clears the block.
 struct GlobalSettingsPersistenceBlockBanner: View {
     let allowsSessionDismissal: Bool
@@ -107,7 +107,7 @@ struct GlobalSettingsPersistenceBlockBanner: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text(
-                    "RepoPrompt will move the current globalSettings.json to the Backups folder, then import the settings this build understands into a fresh current-schema file. Settings from the other schema that this build does not understand remain in the backup."
+                    "Agentry will move the current globalSettings.json to the Backups folder, then import the settings this build understands into a fresh current-schema file. Settings from the other schema that this build does not understand remain in the backup."
                 )
             }
             .confirmationDialog(
@@ -134,7 +134,7 @@ struct GlobalSettingsPersistenceBlockBanner: View {
     private func resetConfirmationMessage(for reason: GlobalSettingsPersistenceBlockReason) -> String {
         switch reason {
         case .saveFailed:
-            "If retrying after fixing permissions or disk space does not work, RepoPrompt can move the current globalSettings.json to the Backups folder and write your current in-memory settings to a fresh current-schema file. This cannot be undone."
+            "If retrying after fixing permissions or disk space does not work, Agentry can move the current globalSettings.json to the Backups folder and write your current in-memory settings to a fresh current-schema file. This cannot be undone."
         case .unsupportedFutureSchema, .incompatibleSchema, .corruptUnrecoverable,
              .automaticSchemaNormalizationFailed:
             "The current globalSettings.json will be moved to the Backups folder and your current in-memory settings will be written to a fresh current-schema file. Your settings will then save normally. This cannot be undone."
@@ -144,15 +144,15 @@ struct GlobalSettingsPersistenceBlockBanner: View {
     private func message(for reason: GlobalSettingsPersistenceBlockReason) -> String {
         switch reason {
         case let .unsupportedFutureSchema(onDiskVersion, supportedVersion):
-            "Global settings can't be saved: this settings file was written by a newer RepoPrompt CE build (schema v\(onDiskVersion); this build supports v\(supportedVersion)). The file is preserved and won't be modified. Use that newer build, or explicitly reset if you want this build to take over the settings file."
+            "Global settings can't be saved: this settings file was written by a newer Agentry build (schema v\(onDiskVersion); this build supports v\(supportedVersion)). The file is preserved and won't be modified. Use that newer build, or explicitly reset if you want this build to take over the settings file."
         case .incompatibleSchema:
-            "Global settings can't be saved: this settings file was written by a different or unrecognized RepoPrompt settings schema. The file is preserved and won't be modified. Changes won't persist until you import or recover."
+            "Global settings can't be saved: this settings file was written by a different or unrecognized Agentry settings schema. The file is preserved and won't be modified. Changes won't persist until you import or recover."
         case .corruptUnrecoverable:
             "Global settings can't be saved: the settings file is unreadable and couldn't be backed up. Changes won't persist until you recover."
         case .saveFailed:
-            "Global settings can't be saved: RepoPrompt couldn't write globalSettings.json. Check file permissions or available disk space, then try again."
+            "Global settings can't be saved: Agentry couldn't write globalSettings.json. Check file permissions or available disk space, then try again."
         case .automaticSchemaNormalizationFailed:
-            "Global settings can't be saved: RepoPrompt identified a same-lineage schema v4 file that may only require schema v2, but couldn't safely verify, back up, and atomically normalize it. The original file is preserved. You can show the file or explicitly reset after a backup."
+            "Global settings can't be saved: Agentry identified a same-lineage schema v4 file that may only require schema v2, but couldn't safely verify, back up, and atomically normalize it. The original file is preserved. You can show the file or explicitly reset after a backup."
         }
     }
 

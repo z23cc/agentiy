@@ -129,7 +129,7 @@ enum CodexGoalSupport {
 
 enum CodexComputerUseWorkflow {
     static let commandName = "computer-use"
-    static let disabledMessage = "Codex computer-use is currently disabled in RepoPrompt because it requires additional computer permissions/accessibility setup."
+    static let disabledMessage = "Codex computer-use is currently disabled in Agentry because it requires additional computer permissions/accessibility setup."
 
     static var isEnabled: Bool {
         CodexNativeFeatureGate.computerUse.isEnabled(persistedValue: false)
@@ -161,7 +161,7 @@ enum CodexComputerUseWorkflow {
 
         return """
         <computer_use_workflow>
-        The user explicitly requested a Codex computer-use workflow in RepoPrompt Agent Mode.
+        The user explicitly requested a Codex computer-use workflow in Agentry Agent Mode.
 
         Use Codex's computer-use, tool-search, plugin, and MCP tools only when they are available in this session. If exact computer-use tool names are not already visible, use tool search first; useful searches include "computer use", "browser", "screen", "click", "type", or app/site-specific terms from the user's request. If no computer-use tools are available, say so plainly and ask the user to enable or install the required Codex computer-use capability instead of hallucinating tool calls.
 

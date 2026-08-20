@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic process harness for the DEBUG repoprompt-mcp parser hook."""
+"""Deterministic process harness for the DEBUG agentry-mcp parser hook."""
 
 from __future__ import annotations
 
@@ -74,24 +74,24 @@ def main() -> int:
     parser.add_argument(
         "binary",
         nargs="?",
-        default=Path(".build/debug/repoprompt-mcp"),
+        default=Path(".build/debug/agentry-mcp"),
         type=Path,
-        help="path to the coordinated DEBUG repoprompt-mcp artifact (default: .build/debug/repoprompt-mcp)",
+        help="path to the coordinated DEBUG agentry-mcp artifact (default: .build/debug/agentry-mcp)",
     )
     args = parser.parse_args()
     binary = args.binary.expanduser()
     if not binary.is_file():
-        print(f"ERROR: repoprompt-mcp binary not found: {binary}", file=sys.stderr)
+        print(f"ERROR: agentry-mcp binary not found: {binary}", file=sys.stderr)
         return 1
     if not os.access(binary, os.X_OK):
-        print(f"ERROR: repoprompt-mcp binary is not executable: {binary}", file=sys.stderr)
+        print(f"ERROR: agentry-mcp binary is not executable: {binary}", file=sys.stderr)
         return 1
     try:
         run(binary)
     except HarnessError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print("repoprompt-mcp --test-parse harness passed")
+    print("agentry-mcp --test-parse harness passed")
     return 0
 
 

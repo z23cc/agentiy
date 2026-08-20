@@ -32,9 +32,8 @@ STAGE_ARCHIVE="$DIST_DIR/$ARCHIVE_BASENAME-stage.zip"
 STAGE_ARCHIVE_CHECKSUM="$STAGE_ARCHIVE.sha256"
 RELEASE_TAG="${RELEASE_TAG:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-repoprompt/repoprompt-ce}"
-PUBLIC_UPDATE_REPOSITORY="${PUBLIC_UPDATE_REPOSITORY:-repoprompt/repoprompt-ce-updates}"
+PUBLIC_UPDATE_REPOSITORY="${PUBLIC_UPDATE_REPOSITORY:-}"
 DOWNLOAD_URL_PREFIX="${DOWNLOAD_URL_PREFIX:-https://github.com/$PUBLIC_UPDATE_REPOSITORY/releases/download/$RELEASE_TAG/}"
-EXPECTED_FEED_URL="https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml"
 SPARKLE_FRAMEWORK_INFO="$ROOT_DIR/Vendor/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/Info.plist"
 TMP_DIR=""
 RUN_WITHOUT_GITHUB_TOKENS="$CONTROL_PLANE_SCRIPTS_DIR/run_without_github_tokens.sh"
@@ -83,8 +82,8 @@ run_preflight() {
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/codex_vendor_guardrails.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_packaged_legal.sh"
     require_file "$ROOT_DIR/AppBundle/Info.plist.template"
-    require_file "$ROOT_DIR/AppBundle/RepoPrompt.entitlements.template"
-    require_file "$ROOT_DIR/AppBundle/RepoPrompt.local-self-signed.entitlements.template"
+    require_file "$ROOT_DIR/AppBundle/Agentry.entitlements.template"
+    require_file "$ROOT_DIR/AppBundle/Agentry.local-self-signed.entitlements.template"
     require_file "$ROOT_DIR/Vendor/Sparkle/LICENSE"
     require_file "$ROOT_DIR/Vendor/Sparkle/PROVENANCE.md"
     require_file "$ROOT_DIR/Vendor/Sparkle/SHA256SUMS"
@@ -92,7 +91,6 @@ run_preflight() {
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/release_sentry_symbols.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/build_swiftpm_release_products.sh"
-    require_file "$CONTROL_PLANE_SCRIPTS_DIR/compare_swiftpm_release_resources.py"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/smoke_embedded_mcp_helper.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/smoke_packaged_mcp_roundtrip.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/verify_packaged_mcp_socket_owner.py"
@@ -116,12 +114,15 @@ run_preflight() {
     require_file "$TRUSTED_ROOT/Vendor/Sparkle/INSTALLED_MANIFEST.tsv"
     require_file "$TRUSTED_ROOT/Vendor/Sparkle/bin/generate_appcast"
     require_file "$SPARKLE_FRAMEWORK_INFO"
+    validate_agentry_sparkle_metadata ||
+        fail "Release preflight requires provisioned Agentry Sparkle configuration"
 
     local sparkle_version feed_url
     sparkle_version="$(plutil -extract CFBundleShortVersionString raw "$SPARKLE_FRAMEWORK_INFO")"
     feed_url="$(plutil -extract SUFeedURL raw "$ROOT_DIR/AppBundle/Info.plist.template")"
     [[ "$sparkle_version" == "2.9.2" ]] || fail "Expected vendored Sparkle 2.9.2, got $sparkle_version"
-    [[ "$feed_url" == "$EXPECTED_FEED_URL" ]] || fail "Expected CE Sparkle feed $EXPECTED_FEED_URL, got $feed_url"
+    [[ "$feed_url" == "__AGENTRY_SPARKLE_STABLE_FEED_URL__" ]] ||
+        fail "Info.plist.template SUFeedURL must remain the Agentry stable-feed placeholder"
     REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         "$CONTROL_PLANE_SCRIPTS_DIR/verify_sparkle_vendor.sh"
     REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
@@ -164,10 +165,10 @@ validate_public_app() {
     local label="$3"
     local signed_team_identifier="${4:-}"
     "$CONTROL_PLANE_SCRIPTS_DIR/validate_embedded_mcp_helper_layout.sh" "$app_bundle" "$label MCP helper layout"
-    "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$app_bundle" "arm64,x86_64" "$label architectures"
+    "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$app_bundle" "$label architectures"
     local codex_verification_args=(
         --manifest "$CODEX_MANIFEST" verify-bundle
-        --arch all
+            --arch arm64
         --bundle "$app_bundle/Contents/Resources/BundledRuntimes/Codex"
     )
     if [[ -n "$signed_team_identifier" ]]; then
@@ -177,7 +178,7 @@ validate_public_app() {
     "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" verify \
         --app "$app_bundle" \
         --manifest "$manifest" \
-        --expected-architectures "arm64,x86_64"
+        --expected-architectures "arm64"
 }
 
 validate_distribution_zip() {
@@ -198,7 +199,7 @@ write_final_artifact_manifest() {
     "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" write \
         --app "$APP_BUNDLE" \
         --output "$FINAL_ARTIFACT_MANIFEST" \
-        --expected-architectures "arm64,x86_64"
+        --expected-architectures "arm64"
 }
 
 require_sentry_publish_configuration() {
@@ -397,8 +398,8 @@ upload_required_sentry_symbols() {
         "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
 }
 
 package_release_candidate() {
@@ -410,7 +411,7 @@ package_release_candidate() {
     "$RUN_WITHOUT_GITHUB_TOKENS" env -u SIGN_IDENTITY \
         REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR="$CONTROL_PLANE_SCRIPTS_DIR" \
-        REPOPROMPT_ENABLE_SENTRY=1 \
+        AGENTRY_ENABLE_SENTRY=1 \
         RELEASE_ALLOW_ADHOC_SIGNING=1 \
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     run_preflight
@@ -435,7 +436,7 @@ package_release_candidate() {
 
 verify_publish_inputs() {
     sentry_linking_enabled ||
-        fail "Official release publishing requires REPOPROMPT_ENABLE_SENTRY=1"
+        fail "Official release publishing requires AGENTRY_ENABLE_SENTRY=1"
     require_env RELEASE_TAG
     require_env RELEASE_COMMIT
     require_env SIGN_IDENTITY
@@ -445,6 +446,9 @@ verify_publish_inputs() {
     require_env NOTARYTOOL_KEY_ID
     require_env NOTARYTOOL_ISSUER_ID
     require_env GH_TOKEN
+    require_env PUBLIC_UPDATE_REPOSITORY
+    [[ "$AGENTRY_SPARKLE_STABLE_FEED_URL" == "https://github.com/$PUBLIC_UPDATE_REPOSITORY/releases/latest/download/appcast.xml" ]] ||
+        fail "PUBLIC_UPDATE_REPOSITORY does not match AGENTRY_SPARKLE_STABLE_FEED_URL"
     require_release_tag_matches_metadata
     require_file "$REPOPROMPT_PROVISIONING_PROFILE"
     require_file "$NOTARYTOOL_PRIVATE_KEY"
@@ -464,7 +468,7 @@ submit_notarization() {
 
 stage_publish_release() {
     sentry_linking_enabled ||
-        fail "Official release staging requires REPOPROMPT_ENABLE_SENTRY=1"
+        fail "Official release staging requires AGENTRY_ENABLE_SENTRY=1"
     require_env RELEASE_TAG
     require_env RELEASE_COMMIT
     require_command ditto
@@ -477,7 +481,7 @@ stage_publish_release() {
     "$RUN_WITHOUT_GITHUB_TOKENS" env -u SIGN_IDENTITY \
         REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR="$CONTROL_PLANE_SCRIPTS_DIR" \
-        REPOPROMPT_ENABLE_SENTRY=1 \
+        AGENTRY_ENABLE_SENTRY=1 \
         RELEASE_ALLOW_ADHOC_SIGNING=1 \
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     run_preflight
@@ -487,8 +491,8 @@ stage_publish_release() {
         "$SENTRY_SYMBOLS_DIR" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
     TMP_DIR="$(mktemp -d)"
     local stage_root="$TMP_DIR/release-stage"
     mkdir -p "$stage_root/.build/release"
@@ -499,8 +503,8 @@ stage_publish_release() {
         "$stage_root/.build/sentry-symbols/release" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
     cp "$ROOT_DIR/version.env" "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_root/"
     cp -R "$ROOT_DIR/ThirdPartyLicenses" "$stage_root/"
     printf '%s\n' "$RELEASE_COMMIT" > "$stage_root/RELEASE_COMMIT"
@@ -531,8 +535,8 @@ publish_staged_release() {
         "$APP_BUNDLE" \
         "$APP_NAME.dSYM" \
         "$APP_NAME" \
-        "repoprompt-mcp.dSYM" \
-        "repoprompt-mcp"
+        "agentry-mcp.dSYM" \
+        "agentry-mcp"
     REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         "$CONTROL_PLANE_SCRIPTS_DIR/sign_staged_release.sh"
     prepare_dist

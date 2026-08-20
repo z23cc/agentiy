@@ -49,7 +49,7 @@ struct AgentModeWorkflowsSettingsView: View {
             Button("Create") { createNewWorkflow() }
             Button("Cancel", role: .cancel) { workflowNameDraft = "" }
         } message: {
-            Text("Create a markdown workflow in RepoPrompt's Workflows folder. You can edit the file afterwards.")
+            Text("Create a markdown workflow in Agentry's Workflows folder. You can edit the file afterwards.")
         }
         .alert("Clone Built-in Workflow", isPresented: $showCloneWorkflowPrompt) {
             TextField("New name", text: $workflowNameDraft)
@@ -68,7 +68,7 @@ struct AgentModeWorkflowsSettingsView: View {
             Button("Cancel", role: .cancel) { workflowPendingDeletion = nil }
         } message: {
             if let workflowPendingDeletion {
-                Text("This deletes \"\(workflowPendingDeletion.displayName)\" from the Workflows folder. This can't be undone from RepoPrompt.")
+                Text("This deletes \"\(workflowPendingDeletion.displayName)\" from the Workflows folder. This can't be undone from Agentry.")
             }
         }
         .alert("Workflow Error", isPresented: errorAlertBinding) {
@@ -99,7 +99,7 @@ struct AgentModeWorkflowsSettingsView: View {
                 sectionHeader(
                     icon: "text.append",
                     title: "Prompt Behavior",
-                    detail: "Controls text RepoPrompt appends to built-in Agent Mode workflows. Custom workflows and external slash skills aren't affected."
+                    detail: "Controls text Agentry appends to built-in Agent Mode workflows. Custom workflows and external slash skills aren't affected."
                 )
 
                 Toggle(isOn: showBuiltInWorkflowCleanupGuidanceBinding) {
@@ -150,7 +150,7 @@ struct AgentModeWorkflowsSettingsView: View {
                 sectionHeader(
                     icon: "rectangle.stack.fill",
                     title: "Built-in Workflows",
-                    detail: "Show, hide, feature, or clone RepoPrompt's built-in Agent Mode workflows. Hiding a built-in workflow also removes it from the featured list."
+                    detail: "Show, hide, feature, or clone Agentry's built-in Agent Mode workflows. Hiding a built-in workflow also removes it from the featured list."
                 )
 
                 VStack(spacing: 0) {

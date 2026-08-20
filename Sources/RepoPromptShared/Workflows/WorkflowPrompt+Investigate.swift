@@ -70,7 +70,7 @@ Dispatch explore agents in parallel for external facts. As each returns, write a
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="<kind>: <question>" message="<question>. Report commits/links and summary." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="<kind>: <question>" message="<question>. Report commits/links and summary." detach=true'
 ```
 """))
 
@@ -107,7 +107,7 @@ mcp__RepoPrompt__context_builder:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task>Investigate: specific issue</task>
+agentry-cli -w <window_id> -e 'builder "<task>Investigate: specific issue</task>
 
 <context>
 See investigation report at <absolute/path/to/investigation-report.md> for symptoms, hypotheses, and prior research.
@@ -158,7 +158,7 @@ Its brief should include:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Investigate: <hypothesis>" message="Investigate <hypothesis>. See <report-path> for context. Trace <flow>. Fan out explore agents; candidate checks: <check 1>, <check 2>, <check 3>. Append findings to ## Investigator Findings in the report." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Investigate: <hypothesis>" message="Investigate <hypothesis>. See <report-path> for context. Trace <flow>. Fan out explore agents; candidate checks: <check 1>, <check 2>, <check 3>. Append findings to ## Investigator Findings in the report." detach=true'
 ```
 """))
 
@@ -174,7 +174,7 @@ rpce-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Inves
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=wait session_id=<pair_uuid> timeout=60'
+agentry-cli -w <window_id> -e 'agent_run op=wait session_id=<pair_uuid> timeout=60'
 ```
 """))
 
@@ -221,10 +221,10 @@ mcp__RepoPrompt__\(chatTool):
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'select add <files surfaced by the pair>'
-rpce-cli -w <window_id> -e 'select add Root/large/file.swift:100-250'
+agentry-cli -w <window_id> -e 'select add <files surfaced by the pair>'
+agentry-cli -w <window_id> -e 'select add Root/large/file.swift:100-250'
 
-rpce-cli -w <window_id> -t '<tab_id>' -e 'chat "Here is what the pair found:
+agentry-cli -w <window_id> -t '<tab_id>' -e 'chat "Here is what the pair found:
 - <evidence 1 with file:line>
 - <evidence 2 with file:line>
 
@@ -333,7 +333,7 @@ Create a findings report as you investigate:
 
 ---
 
-Now begin. \(variant == .cli ? "First run `rpce-cli -e 'windows'` to find the correct window. " : "")Follow the phases above: assess → (if needed) gather external facts → \(builderName) → pair investigator → refresh selection → \(chatLabel) synthesis → report. You orchestrate, they investigate.
+Now begin. \(variant == .cli ? "First run `agentry-cli -e 'windows'` to find the correct window. " : "")Follow the phases above: assess → (if needed) gather external facts → \(builderName) → pair investigator → refresh selection → \(chatLabel) synthesis → report. You orchestrate, they investigate.
 """
 	}
 
@@ -345,7 +345,7 @@ Now begin. \(variant == .cli ? "First run `rpce-cli -e 'windows'` to find the co
 	/// Generate rp-investigate for a specific variant.
 	static func rpInvestigate(variant: WorkflowPromptVariant, includeSessionCleanupGuidance: Bool = true) -> String {
 		let suffix = variant == .cli ? " (CLI)" : ""
-		let toolDesc = variant == .cli ? "rpce-cli commands" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli commands" : "RepoPrompt MCP tools"
 
 		return """
 \(frontmatter(name: "rp-investigate", description: "Deep investigation with \(toolDesc): tools gather evidence, follow-up reasoning synthesizes selected context", variant: variant))

@@ -1667,7 +1667,7 @@ class ConductorCheckpointThreeTests(LifecycleTestCase):
             coordinator._remove_own_waiter()
 
     def test_two_fair_slots_admit_first_two_and_hold_third_in_fifo(self) -> None:
-        env = {"REPOPROMPT_DEV_HEAVY_SLOTS": "2"}
+        env = {"AGENTRY_DEV_HEAVY_SLOTS": "2"}
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             conductor, "machine_lock_dir", return_value=Path(tmp)
         ), mock.patch.object(conductor, "process_start_token", return_value="owner"):
@@ -2143,7 +2143,7 @@ class LifecycleQueueTests(LifecycleTestCase):
             nonmutators = (
                 {"operation": "app", "args": {"subcommand": "stop"}},
                 {"operation": "app", "args": {"subcommand": "launch-existing"}},
-                {"operation": "smoke", "args": {"packagedApp": "/tmp/RepoPrompt CE.app"}},
+                {"operation": "smoke", "args": {"packagedApp": "/tmp/Agentry.app"}},
             )
             mutator_lanes = [registry.prepare(request)[1] for request in mutators]
             nonmutator_lanes = [registry.prepare(request)[1] for request in nonmutators]
@@ -2219,7 +2219,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             argv, lanes, _cwd, _env, _timeout = registry.prepare(
-                {"operation": "smoke", "args": {"packagedApp": "/tmp/RepoPrompt CE.app"}}
+                {"operation": "smoke", "args": {"packagedApp": "/tmp/Agentry.app"}}
             )
 
         self.assertEqual(lanes, ["liveApp"])
@@ -3081,20 +3081,20 @@ time.sleep(60)
 
         with mock.patch.object(conductor, "machine_lock_dir", return_value=lock_root), mock.patch.dict(
             os.environ,
-            {"REPOPROMPT_DEV_HEAVY_SLOTS": "2"},
+            {"AGENTRY_DEV_HEAVY_SLOTS": "2"},
         ):
             payload_a = state_a.enqueue(
                 {
                     "operation": "fake-sleep",
                     "args": {"seconds": 0.25, "lanes": ["build"], "message": "daemon-a"},
-                    "env": {"REPOPROMPT_DEV_HEAVY_SLOTS": "2"},
+                    "env": {"AGENTRY_DEV_HEAVY_SLOTS": "2"},
                 }
             )
             payload_b = state_b.enqueue(
                 {
                     "operation": "fake-sleep",
                     "args": {"seconds": 0.25, "lanes": ["build"], "message": "daemon-b"},
-                    "env": {"REPOPROMPT_DEV_HEAVY_SLOTS": "2"},
+                    "env": {"AGENTRY_DEV_HEAVY_SLOTS": "2"},
                 }
             )
             job_a = self.wait_for_terminal_job(state_a, payload_a["ticket"])
@@ -4213,7 +4213,7 @@ class SmokeOperationTests(unittest.TestCase):
             calls.append((name, argv))
             return 0, "", ""
 
-        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
+        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/agentry-cli-debug"), mock.patch.object(
             conductor, "run_operation_command", side_effect=record_command
         ):
             code = conductor.operation_smoke(Path.cwd(), {"windowId": "7", "workspace": "test-workspace"})
@@ -4222,14 +4222,14 @@ class SmokeOperationTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("windows", ["/tmp/rpce-cli-debug", "-e", "windows"]),
-                ("workspace switch", ["/tmp/rpce-cli-debug", "-w", "7", "-e", "workspace switch test-workspace"]),
-                ("tree roots", ["/tmp/rpce-cli-debug", "-w", "7", "-e", "tree --type roots"]),
-                ("manage_worktree list", ["/tmp/rpce-cli-debug", "-w", "7", "-e", "manage_worktree op=list"]),
+                ("windows", ["/tmp/agentry-cli-debug", "-e", "windows"]),
+                ("workspace switch", ["/tmp/agentry-cli-debug", "-w", "7", "-e", "workspace switch test-workspace"]),
+                ("tree roots", ["/tmp/agentry-cli-debug", "-w", "7", "-e", "tree --type roots"]),
+                ("manage_worktree list", ["/tmp/agentry-cli-debug", "-w", "7", "-e", "manage_worktree op=list"]),
                 (
                     "agent_manage roles",
                     [
-                        "/tmp/rpce-cli-debug",
+                        "/tmp/agentry-cli-debug",
                         "-w",
                         "7",
                         "-c",
@@ -4248,13 +4248,13 @@ class SmokeOperationTests(unittest.TestCase):
             calls.append((name, argv, kwargs))
             return 0, "", ""
 
-        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
+        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/agentry-cli-debug"), mock.patch.object(
             conductor, "find_debug_app_pids", return_value=["4242"]
         ), mock.patch.dict(
             os.environ,
             {
-                "REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_WAIT": "2",
-                "REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_CYCLES": "2",
+                "AGENTRY_EXECUTION_LOCATION_UI_SMOKE_WAIT": "2",
+                "AGENTRY_EXECUTION_LOCATION_UI_SMOKE_CYCLES": "2",
             },
             clear=False,
         ), mock.patch.object(
@@ -4284,7 +4284,7 @@ class SmokeOperationTests(unittest.TestCase):
         self.assertEqual(calls[-1][2]["timeout"], 184.0)
 
     def test_execution_location_ui_smoke_requires_one_exact_debug_app(self) -> None:
-        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
+        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/agentry-cli-debug"), mock.patch.object(
             conductor, "find_debug_app_pids", return_value=[]
         ), mock.patch.object(conductor, "run_operation_command", return_value=(0, "", "")) as run_command, contextlib.redirect_stdout(
             io.StringIO()
@@ -4296,13 +4296,13 @@ class SmokeOperationTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(run_command.call_count, 5)
-        self.assertIn("requires exactly one running RepoPrompt debug app", output.getvalue())
+        self.assertIn("requires exactly one running Agentry debug app", output.getvalue())
 
     def test_structured_smoke_calls_route_to_requested_window_with_fake_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             log_path = root / "cli-calls.jsonl"
-            fake_cli = root / "rpce-cli-debug"
+            fake_cli = root / "agentry-cli-debug"
             fake_cli.write_text(
                 textwrap.dedent(
                     """\
@@ -4356,8 +4356,8 @@ class SmokeOperationTests(unittest.TestCase):
 
     def test_launch_smoke_uses_exact_embedded_helper_and_ignores_other_resolvers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            app = Path(tmp) / "RepoPrompt.app"
-            helper = app / "Contents" / "MacOS" / "repoprompt-mcp"
+            app = Path(tmp) / "Agentry.app"
+            helper = app / "Contents" / "MacOS" / "agentry-mcp"
             helper.parent.mkdir(parents=True)
             helper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
             helper.chmod(0o755)
@@ -4383,8 +4383,8 @@ class SmokeOperationTests(unittest.TestCase):
     def test_embedded_helper_resolution_rejects_symlink_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app = root / "RepoPrompt.app"
-            helper = app / "Contents" / "MacOS" / "repoprompt-mcp"
+            app = root / "Agentry.app"
+            helper = app / "Contents" / "MacOS" / "agentry-mcp"
             helper.parent.mkdir(parents=True)
             outside = root / "outside-helper"
             outside.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -4449,8 +4449,8 @@ class RunScriptTransitionTests(unittest.TestCase):
             env.update(
                 {
                     "PROCESS_HELPER_MARKER": str(marker),
-                    "REPOPROMPT_GUARD_DELAYED_LAUNCH": "1",
-                    "REPOPROMPT_DEV_HEAVY_SLOTS": "8",
+                    "AGENTRY_GUARD_DELAYED_LAUNCH": "1",
+                    "AGENTRY_DEV_HEAVY_SLOTS": "8",
                 }
             )
 
@@ -4459,7 +4459,7 @@ class RunScriptTransitionTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
         self.assertIn("package staged debug app", result.stdout)
-        self.assertNotIn("Stopping existing RepoPrompt CE debug app instance", result.stdout)
+        self.assertNotIn("Stopping existing Agentry debug app instance", result.stdout)
         self.assertFalse(helper_invoked)
 
     def test_direct_run_packages_before_waiting_for_live_lock_then_activates(self) -> None:
@@ -4473,17 +4473,17 @@ class RunScriptTransitionTests(unittest.TestCase):
             run_script.chmod(0o755)
             event_log = root / "events.log"
             launched_marker = root / "launched"
-            app_bundle = root / "DebugApps" / "RepoPrompt.app"
+            app_bundle = root / "DebugApps" / "Agentry.app"
             package_script = scripts / "package_app.sh"
             package_script.write_text(
                 textwrap.dedent(
                     """\
                     #!/usr/bin/env bash
                     set -e
-                    echo package:$REPOPROMPT_DEBUG_APP_BUNDLE >> "$EVENT_LOG"
-                    mkdir -p "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS"
-                    printf binary > "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
-                    chmod +x "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
+                    echo package:$AGENTRY_DEBUG_APP_BUNDLE >> "$EVENT_LOG"
+                    mkdir -p "$AGENTRY_DEBUG_APP_BUNDLE/Contents/MacOS"
+                    printf binary > "$AGENTRY_DEBUG_APP_BUNDLE/Contents/MacOS/Agentry"
+                    chmod +x "$AGENTRY_DEBUG_APP_BUNDLE/Contents/MacOS/Agentry"
                     """
                 ),
                 encoding="utf-8",
@@ -4533,8 +4533,8 @@ class RunScriptTransitionTests(unittest.TestCase):
                     "PATH": f"{bin_dir}:{env.get('PATH', '')}",
                     "EVENT_LOG": str(event_log),
                     "LAUNCHED_MARKER": str(launched_marker),
-                    "REPOPROMPT_DEBUG_APP_BUNDLE": str(app_bundle),
-                    "REPOPROMPT_DEV_HEAVY_SLOTS": "8",
+                    "AGENTRY_DEBUG_APP_BUNDLE": str(app_bundle),
+                    "AGENTRY_DEV_HEAVY_SLOTS": "8",
                 }
             )
             lock_ready = threading.Event()
@@ -4592,18 +4592,18 @@ class RunScriptTransitionTests(unittest.TestCase):
             run_script.chmod(0o755)
             event_log = root / "events.log"
             launched_marker = root / "launched"
-            app_bundle = root / "DebugApps" / "RepoPrompt.app"
-            app_executable = app_bundle / "Contents" / "MacOS" / "RepoPrompt"
+            app_bundle = root / "DebugApps" / "Agentry.app"
+            app_executable = app_bundle / "Contents" / "MacOS" / "Agentry"
             package_script = scripts / "package_app.sh"
             package_script.write_text(
                 textwrap.dedent(
                     """\
                     #!/usr/bin/env bash
                     set -e
-                    echo package:$REPOPROMPT_DEBUG_APP_BUNDLE >> "$EVENT_LOG"
-                    mkdir -p "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS"
-                    printf binary > "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
-                    chmod +x "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
+                    echo package:$AGENTRY_DEBUG_APP_BUNDLE >> "$EVENT_LOG"
+                    mkdir -p "$AGENTRY_DEBUG_APP_BUNDLE/Contents/MacOS"
+                    printf binary > "$AGENTRY_DEBUG_APP_BUNDLE/Contents/MacOS/Agentry"
+                    chmod +x "$AGENTRY_DEBUG_APP_BUNDLE/Contents/MacOS/Agentry"
                     """
                 ),
                 encoding="utf-8",
@@ -4653,8 +4653,8 @@ class RunScriptTransitionTests(unittest.TestCase):
                     "PATH": f"{bin_dir}:{env.get('PATH', '')}",
                     "EVENT_LOG": str(event_log),
                     "LAUNCHED_MARKER": str(launched_marker),
-                    "REPOPROMPT_DEBUG_APP_BUNDLE": str(app_bundle),
-                    "REPOPROMPT_DEV_HEAVY_SLOTS": "8",
+                    "AGENTRY_DEBUG_APP_BUNDLE": str(app_bundle),
+                    "AGENTRY_DEV_HEAVY_SLOTS": "8",
                 }
             )
 
@@ -4675,14 +4675,14 @@ class RunScriptTransitionTests(unittest.TestCase):
         source = (SCRIPT_DIR / "run.sh").read_text(encoding="utf-8")
         self.assertTrue(activated_executable_exists)
         self.assertIn("Activated staged debug app bundle", result.stdout)
-        self.assertIn("Observed launched RepoPrompt CE debug PID(s): 4242", result.stdout)
+        self.assertIn("Observed launched Agentry debug PID(s): 4242", result.stdout)
         self.assertNotIn("pgrep", source)
         self.assertNotIn("pkill", source)
 
 
 class AppStatusIdentityTests(unittest.TestCase):
     def make_bundle(self, bundle: Path, marker: str = "binary") -> None:
-        executable = bundle / "Contents" / "MacOS" / "RepoPrompt"
+        executable = bundle / "Contents" / "MacOS" / "Agentry"
         executable.parent.mkdir(parents=True, exist_ok=True)
         executable.write_text(marker, encoding="utf-8")
         executable.chmod(0o755)
@@ -4690,31 +4690,31 @@ class AppStatusIdentityTests(unittest.TestCase):
     def test_activate_staged_debug_bundle_replaces_live_and_cleans_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            live = root / "DebugApps" / "RepoPrompt.app"
-            staged = root / "DebugApps" / ".staging" / "token" / "RepoPrompt.app"
+            live = root / "DebugApps" / "Agentry.app"
+            staged = root / "DebugApps" / ".staging" / "token" / "Agentry.app"
             self.make_bundle(live, "old")
             self.make_bundle(staged, "new")
 
             conductor.activate_staged_debug_bundle(staged, live)
 
-            self.assertEqual((live / "Contents" / "MacOS" / "RepoPrompt").read_text(encoding="utf-8"), "new")
+            self.assertEqual((live / "Contents" / "MacOS" / "Agentry").read_text(encoding="utf-8"), "new")
             self.assertFalse(staged.parent.exists())
-            self.assertFalse(any(live.parent.glob(".RepoPrompt.app.previous.*")))
+            self.assertFalse(any(live.parent.glob(".Agentry.app.previous.*")))
 
     def test_staged_launch_stop_failure_preserves_live_and_cleans_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            live = root / "DebugApps" / "RepoPrompt.app"
-            staged = root / "DebugApps" / ".staging" / "token" / "RepoPrompt.app"
+            live = root / "DebugApps" / "Agentry.app"
+            staged = root / "DebugApps" / ".staging" / "token" / "Agentry.app"
             self.make_bundle(live, "old")
             self.make_bundle(staged, "new")
-            with mock.patch.dict(os.environ, {"REPOPROMPT_DEBUG_APP_BUNDLE": str(live)}), mock.patch.object(
+            with mock.patch.dict(os.environ, {"AGENTRY_DEBUG_APP_BUNDLE": str(live)}), mock.patch.object(
                 conductor, "_operation_app_stop_unlocked", return_value=7
             ), mock.patch.object(conductor, "run_operation_command") as run, contextlib.redirect_stdout(io.StringIO()):
                 code = conductor.operation_app_launch_existing(root, {"stagedBundle": str(staged), "appArgs": []})
 
             self.assertEqual(code, 7)
-            self.assertEqual((live / "Contents" / "MacOS" / "RepoPrompt").read_text(encoding="utf-8"), "old")
+            self.assertEqual((live / "Contents" / "MacOS" / "Agentry").read_text(encoding="utf-8"), "old")
             self.assertFalse(staged.parent.exists())
             run.assert_not_called()
 
@@ -4722,7 +4722,7 @@ class AppStatusIdentityTests(unittest.TestCase):
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,
-            {"REPOPROMPT_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "RepoPrompt.app")},
+            {"AGENTRY_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "Agentry.app")},
         ), mock.patch.object(conductor, "package_debug_app_under_heavy") as package, contextlib.redirect_stdout(output):
             code = conductor.operation_app_launch_existing(Path(tmp), {"appArgs": []})
 
@@ -4745,7 +4745,7 @@ class AppStatusIdentityTests(unittest.TestCase):
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,
-            {"REPOPROMPT_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "RepoPrompt.app")},
+            {"AGENTRY_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "Agentry.app")},
         ), mock.patch.object(conductor, "run_operation_command", return_value=(0, "", "")), contextlib.redirect_stdout(output):
             code = conductor.operation_app_status(Path("/tmp/repo"))
 
@@ -4757,7 +4757,7 @@ class AppStatusIdentityTests(unittest.TestCase):
         output = io.StringIO()
         with mock.patch.object(conductor, "find_debug_app_pids", return_value=["501"]), mock.patch.object(
             conductor, "run_operation_command", return_value=(0, "", "")
-        ), mock.patch.dict(os.environ, {"REPOPROMPT_DEBUG_APP_BUNDLE": "/tmp/missing-debug/RepoPrompt.app"}), contextlib.redirect_stdout(
+        ), mock.patch.dict(os.environ, {"AGENTRY_DEBUG_APP_BUNDLE": "/tmp/missing-debug/Agentry.app"}), contextlib.redirect_stdout(
             output
         ):
             code = conductor.operation_app_status(Path("/tmp/repo"))
@@ -4809,7 +4809,7 @@ class StopConfirmationTests(unittest.TestCase):
     def test_missing_debug_executable_is_confirmed_already_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, self.patched_timing(), mock.patch.dict(
             os.environ,
-            {"REPOPROMPT_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "RepoPrompt.app")},
+            {"AGENTRY_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "Agentry.app")},
         ), contextlib.redirect_stdout(io.StringIO()) as output:
             code = conductor.operation_app_stop(Path.cwd(), {})
 

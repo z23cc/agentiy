@@ -69,7 +69,7 @@ final class DebugCLIInstallerScriptTests: XCTestCase {
         XCTAssertTrue(result.output.contains("PATH command: unmanaged symlink"), result.output)
     }
 
-    func testInstallRepairsPathLinkPointingAtLegacyUserLink() throws {
+    func testInstallRefusesPathLinkPointingAtLegacyUserLink() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let legacyUserLink = fixture.home
@@ -79,10 +79,10 @@ final class DebugCLIInstallerScriptTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: fixture.pathLink, withDestinationURL: legacyUserLink)
 
         let install = try fixture.run("install")
-        XCTAssertEqual(install.status, 0, install.output)
-        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.pathLink.path), fixture.userLink.path)
-        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.userLink.path), fixture.bundledCLI.path)
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fixture.pathLink.path))
+        XCTAssertNotEqual(install.status, 0, install.output)
+        XCTAssertTrue(install.output.contains("unmanaged file"), install.output)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.pathLink.path), legacyUserLink.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.userLink.path))
     }
 
     private struct Fixture {
@@ -98,24 +98,24 @@ final class DebugCLIInstallerScriptTests: XCTestCase {
             root = FileManager.default.temporaryDirectory
                 .appendingPathComponent("DebugCLIInstallerScriptTests-\(UUID().uuidString)", isDirectory: true)
             home = root.appendingPathComponent("home", isDirectory: true)
-            appBundle = root.appendingPathComponent("RepoPrompt.app", isDirectory: true)
-            bundledCLI = appBundle.appendingPathComponent("Contents/MacOS/repoprompt-mcp")
-            userLink = home.appendingPathComponent("RepoPrompt/repoprompt_ce_cli_debug")
-            pathLink = root.appendingPathComponent("bin/rpce-cli-debug")
+            appBundle = root.appendingPathComponent("Agentry.app", isDirectory: true)
+            bundledCLI = appBundle.appendingPathComponent("Contents/MacOS/agentry-mcp")
+            userLink = home.appendingPathComponent("Agentry/agentry_cli_debug")
+            pathLink = root.appendingPathComponent("bin/agentry-cli-debug")
             script = try RepoRoot.url().appendingPathComponent("Scripts/install_debug_cli.sh")
 
             try FileManager.default.createDirectory(at: bundledCLI.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: userLink.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: pathLink.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try "#!/bin/sh\necho rpce-test-version\n".write(to: bundledCLI, atomically: true, encoding: .utf8)
+            try "#!/bin/sh\necho agentry-test-version\n".write(to: bundledCLI, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundledCLI.path)
         }
 
         func run(_ action: String) throws -> (status: Int32, output: String) {
             var environment = ProcessInfo.processInfo.environment
             environment["HOME"] = home.path
-            environment["REPOPROMPT_DEBUG_APP_BUNDLE"] = appBundle.path
-            environment["REPOPROMPT_DEBUG_CLI_INSTALL_PATH"] = pathLink.path
+            environment["AGENTRY_DEBUG_APP_BUNDLE"] = appBundle.path
+            environment["AGENTRY_DEBUG_CLI_INSTALL_PATH"] = pathLink.path
             let result = try TestProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/bin/bash"),
                 arguments: [script.path, action],

@@ -168,7 +168,7 @@ struct AdvancedSettingsView: View {
             ) {
                 SettingToggle(
                     title: "Respect .repo_ignore rules",
-                    description: "Honor RepoPrompt-specific .repo_ignore files. Edit local .repo_ignore content through the Ignore Patterns editor or file editing tools.",
+                    description: "Honor Agentry-specific .repo_ignore files. Edit local .repo_ignore content through the Ignore Patterns editor or file editing tools.",
                     isOn: respectRepoIgnoreBinding
                 )
 
@@ -216,7 +216,7 @@ struct AdvancedSettingsView: View {
             ) {
                 SettingToggle(
                     title: "Disable Code Maps globally",
-                    description: "When enabled, RepoPrompt preserves your per-workspace Code Map modes but ignores them and cancels active scans.",
+                    description: "When enabled, Agentry preserves your per-workspace Code Map modes but ignores them and cancels active scans.",
                     isOn: Binding(
                         get: { globalSettings.codeMapsGloballyDisabled },
                         set: { globalSettings.setCodeMapsGloballyDisabled($0) }
@@ -233,7 +233,7 @@ struct AdvancedSettingsView: View {
 
             SettingSection(
                 title: "Prompt Packaging",
-                description: "Affects how RepoPrompt assembles copied prompts and built-in chat instructions."
+                description: "Affects how Agentry assembles copied prompts and built-in chat instructions."
             ) {
                 Picker("File path display", selection: $promptViewModel.filePathDisplayOption) {
                     ForEach(FilePathDisplay.allCases, id: \.self) { mode in
@@ -317,7 +317,7 @@ struct AdvancedSettingsView: View {
     private var urlOpenerSection: some View {
         SettingSection(
             title: "URL Opener",
-            description: "Use RepoPrompt CE links to open folders, select files, seed prompt text, and focus windows from external tools."
+            description: "Use Agentry links to open folders, select files, seed prompt text, and focus windows from external tools."
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Canonical scheme: \(AppDeepLinkURLScheme.canonical)://")

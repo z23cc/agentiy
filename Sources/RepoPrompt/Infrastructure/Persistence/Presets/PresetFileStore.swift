@@ -1,14 +1,14 @@
 import Foundation
+import RepoPromptShared
 
 /// File-backed store for copy/chat/model presets.
 ///
 /// Primary location:
-/// `~/Library/Application Support/RepoPrompt CE/Presets/workflowPresets.json`
-/// `~/Library/Application Support/RepoPrompt CE/Presets/modelPresets.json`
+/// `~/Library/Application Support/Agentry/Presets/workflowPresets.json`
+/// `~/Library/Application Support/Agentry/Presets/modelPresets.json`
 final class PresetFileStore {
     static let shared = PresetFileStore()
 
-    static let appSupportDirectoryName = "RepoPrompt CE"
     static let presetsDirectoryName = "Presets"
     static let workflowFilename = "workflowPresets.json"
     static let modelFilename = "modelPresets.json"
@@ -47,10 +47,7 @@ final class PresetFileStore {
     }
 
     static func presetsDirectoryURL(fileManager: FileManager = .default) -> URL {
-        let supportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-        return supportDirectory
-            .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
+        AgentryProductIdentity.applicationSupportRootURL(fileManager: fileManager)
             .appendingPathComponent(presetsDirectoryName, isDirectory: true)
     }
 

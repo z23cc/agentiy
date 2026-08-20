@@ -1,9 +1,9 @@
 ---
 name: rpce-swift-concurrency-fix
-description: Diagnose and repair a bounded set of Swift concurrency compiler errors or warnings in RepoPrompt CE, including actor isolation, Sendable crossings, task captures, continuations, cancellation, global mutable state, and Objective-C interoperability. Use for a specific diagnostic, file, target, or coherent diagnostic family. Preserve behavior and avoid unrelated refactors; use the migration skill for project-wide settings, inventory, sequencing, or progress planning.
+description: Diagnose and repair a bounded set of Swift concurrency compiler errors or warnings in Agentry, including actor isolation, Sendable crossings, task captures, continuations, cancellation, global mutable state, and Objective-C interoperability. Use for a specific diagnostic, file, target, or coherent diagnostic family. Preserve behavior and avoid unrelated refactors; use the migration skill for project-wide settings, inventory, sequencing, or progress planning.
 ---
 
-# RepoPrompt CE Concurrency Fix
+# Agentry Concurrency Fix
 
 Resolve the requested diagnostics with the smallest semantic change that makes the runtime ownership explicit. Do not treat an annotation-only compile as proof of safety.
 

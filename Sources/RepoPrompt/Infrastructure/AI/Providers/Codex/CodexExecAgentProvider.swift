@@ -122,7 +122,7 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
             try runtime.prepareState()
         } catch {
             throw AIProviderError.invalidConfiguration(
-                detail: "RepoPrompt could not start Codex: unable to prepare its isolated state directories (\(error.localizedDescription))."
+                detail: "Agentry could not start Codex: unable to prepare its isolated state directories (\(error.localizedDescription))."
             )
         }
 
@@ -151,7 +151,7 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
         let ensureResult = CodexIntegrationConfiguration.ensureServerForDiscovery(runtime: runtime)
         guard ensureResult.success else {
             throw AIProviderError.invalidConfiguration(
-                detail: ensureResult.errorMessage ?? "Failed to install RepoPrompt MCP config for Codex."
+                detail: ensureResult.errorMessage ?? "Failed to install Agentry MCP config for Codex."
             )
         }
         if enableDebugLogging {
@@ -201,7 +201,7 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
 
                             let context = try await self.prepare(runID: runID)
                             guard let runner = self.runner else {
-                                throw AIProviderError.invalidConfiguration(detail: "RepoPrompt could not initialize the Codex runtime.")
+                                throw AIProviderError.invalidConfiguration(detail: "Agentry could not initialize the Codex runtime.")
                             }
                             try await AsyncScope.withCleanup({}, cleanup: {
                                 await self.cleanup(context: context)
@@ -969,7 +969,7 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
         let lower = stderr.lowercased()
         if lower.contains("command not found") || lower.contains("no such file") {
             return AIProviderError.invalidConfiguration(
-                detail: "The selected Codex runtime could not be started. Reinstall RepoPrompt CE or configure a valid explicit override."
+                detail: "The selected Codex runtime could not be started. Reinstall Agentry or configure a valid explicit override."
             )
         }
         if lower.contains("not authenticated") || lower.contains("unauthorized") {

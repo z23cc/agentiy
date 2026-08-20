@@ -207,7 +207,7 @@ struct AgentPermissionSecureStorageDegradedBanner: View {
                         Text("Secure permission storage unavailable")
                             .font(.body).bold()
                             .foregroundColor(.red)
-                        Text("RepoPrompt is using safe default permissions until secure storage is available. Permission changes may not persist.")
+                        Text("Agentry is using safe default permissions until secure storage is available. Permission changes may not persist.")
                             .font(.callout)
                             .foregroundColor(.primary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -232,7 +232,7 @@ struct AgentPermissionSecureStorageDegradedBanner: View {
                     .stroke(Color.red.opacity(0.35), lineWidth: 1)
             )
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Secure permission storage unavailable. RepoPrompt is using safe default permissions until secure storage is available. Permission changes may not persist.")
+            .accessibilityLabel("Secure permission storage unavailable. Agentry is using safe default permissions until secure storage is available. Permission changes may not persist.")
         }
     }
 

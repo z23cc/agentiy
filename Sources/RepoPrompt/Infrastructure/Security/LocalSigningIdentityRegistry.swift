@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import RepoPromptShared
 
 struct LocalSigningIdentityRecord: Codable, Equatable {
     static let currentSchemaVersion = 1
@@ -20,11 +21,11 @@ enum LocalSigningIdentityRegistryError: Error, Equatable {
 }
 
 enum LocalSigningIdentityRegistry {
-    static let relativePath = "RepoPrompt CE/local-signing-identity-v1.json"
+    static let filename = "local-signing-identity-v1.json"
 
     static func defaultURL(fileManager: FileManager = .default) -> URL? {
-        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent(relativePath)
+        AgentryProductIdentity.applicationSupportRootURL(fileManager: fileManager)
+            .appendingPathComponent(filename, isDirectory: false)
     }
 
     static func load(

@@ -1,3 +1,4 @@
+import CryptoKit
 @testable import RepoPromptApp
 import XCTest
 
@@ -106,7 +107,7 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
                     <enclosure url="https://example.com/RepoPrompt-2.1.9.zip" />
                 </item>
                 <item>
-                    <title>Tip build 320 · v2.1.20 · commit abc1234def56</title>
+                    <title>Beta build 320 · v2.1.20 · commit abc1234def56</title>
                     <sparkle:shortVersionString>2.1.20</sparkle:shortVersionString>
                     <sparkle:version>320</sparkle:version>
                     <pubDate>Tue, 21 Apr 2026 12:28:34 +0000</pubDate>
@@ -122,27 +123,101 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
 
         XCTAssertEqual(version.version, "2.1.20")
         XCTAssertEqual(version.buildNumber, "320")
-        XCTAssertEqual(version.title, "Tip build 320 · v2.1.20 · commit abc1234def56")
-        XCTAssertEqual(AvailableUpdateNotice.marketingVersion(fromTipTitle: version.title), "2.1.20")
-        XCTAssertEqual(AvailableUpdateNotice.shortCommitSHA(fromTipTitle: version.title), "abc1234def56")
+        XCTAssertEqual(version.title, "Beta build 320 · v2.1.20 · commit abc1234def56")
+        XCTAssertEqual(AvailableUpdateNotice.marketingVersion(fromBetaTitle: version.title), "2.1.20")
+        XCTAssertEqual(AvailableUpdateNotice.shortCommitSHA(fromBetaTitle: version.title), "abc1234def56")
         XCTAssertEqual(version.releaseNotesURL, "https://example.com/release-notes.html")
         XCTAssertEqual(version.downloadURL, "https://example.com/RepoPrompt-2.1.20.zip")
         XCTAssertEqual(version.minimumSystemVersion, "14.0")
         XCTAssertNotNil(version.date)
     }
 
-    func testUpdateChannelDefaultsToStableAndPersistsTipSelection() throws {
+    func testUpdateChannelDefaultsToStableAndPersistsBetaSelection() throws {
         let suiteName = "UpdateChannelTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         XCTAssertEqual(UpdateChannel.load(defaults: defaults), .stable)
 
-        UpdateChannel.store(.tip, defaults: defaults)
+        UpdateChannel.store(.beta, defaults: defaults)
 
-        XCTAssertEqual(UpdateChannel.load(defaults: defaults), .tip)
-        XCTAssertTrue(UpdateChannel.stable.feedURLString.contains("repoprompt-ce-updates"))
-        XCTAssertTrue(UpdateChannel.tip.feedURLString.contains("repoprompt-ce-tip-updates"))
+        XCTAssertEqual(UpdateChannel.load(defaults: defaults), .beta)
+        XCTAssertEqual(UpdateChannel.userDefaultsKey, "AgentryUpdateChannel")
+        XCTAssertEqual(
+            UpdateChannel.feedURLString(for: .stable, infoDictionary: provisionedSparkleInfo),
+            "https://updates.example/agentry-stable/releases/latest/download/appcast.xml"
+        )
+        XCTAssertEqual(
+            UpdateChannel.feedURLString(for: .beta, infoDictionary: provisionedSparkleInfo),
+            "https://updates.example/agentry-beta/releases/latest/download/appcast.xml"
+        )
+
+        defaults.set("tip", forKey: UpdateChannel.userDefaultsKey)
+        XCTAssertEqual(UpdateChannel.load(defaults: defaults), .stable)
+        defaults.set("manually-injected", forKey: UpdateChannel.userDefaultsKey)
+        XCTAssertEqual(UpdateChannel.load(defaults: defaults), .stable)
+    }
+
+    func testSparkleUpdaterManagerAcceptsOnlyProvisionedStableAndBetaConfiguration() {
+        XCTAssertTrue(SparkleUpdaterManager.validateSparkleConfiguration(
+            infoDictionary: provisionedSparkleInfo,
+            selectedChannel: .stable
+        ).isValid)
+        XCTAssertTrue(SparkleUpdaterManager.validateSparkleConfiguration(
+            infoDictionary: provisionedSparkleInfo,
+            selectedChannel: .beta
+        ).isValid)
+
+        var invalidConfigurations: [[String: Any]] = []
+        var placeholders = provisionedSparkleInfo
+        placeholders[UpdateChannel.stableFeedInfoDictionaryKey] = "__AGENTRY_SPARKLE_STABLE_FEED_URL__"
+        invalidConfigurations.append(placeholders)
+        var emptyBeta = provisionedSparkleInfo
+        emptyBeta[UpdateChannel.betaFeedInfoDictionaryKey] = "  "
+        invalidConfigurations.append(emptyBeta)
+        var invalidURL = provisionedSparkleInfo
+        invalidURL[UpdateChannel.betaFeedInfoDictionaryKey] = "not-a-url"
+        invalidConfigurations.append(invalidURL)
+        var legacyFeed = provisionedSparkleInfo
+        legacyFeed[UpdateChannel.stableFeedInfoDictionaryKey] =
+            "https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml"
+        legacyFeed["SUFeedURL"] = legacyFeed[UpdateChannel.stableFeedInfoDictionaryKey]
+        invalidConfigurations.append(legacyFeed)
+        var mixedCaseLegacyStableFeed = provisionedSparkleInfo
+        mixedCaseLegacyStableFeed[UpdateChannel.stableFeedInfoDictionaryKey] =
+            "https://github.com/RepoPrompt/RepoPrompt-CE-Updates/releases/latest/download/appcast.xml"
+        mixedCaseLegacyStableFeed["SUFeedURL"] = mixedCaseLegacyStableFeed[UpdateChannel.stableFeedInfoDictionaryKey]
+        invalidConfigurations.append(mixedCaseLegacyStableFeed)
+        var mixedCaseLegacyTipFeed = provisionedSparkleInfo
+        mixedCaseLegacyTipFeed[UpdateChannel.betaFeedInfoDictionaryKey] =
+            "https://github.com/RepoPrompt/RepoPrompt-CE-Tip-Updates/releases/latest/download/appcast.xml"
+        invalidConfigurations.append(mixedCaseLegacyTipFeed)
+        for configuration in invalidConfigurations {
+            let validation = SparkleUpdaterManager.validateSparkleConfiguration(
+                infoDictionary: configuration,
+                selectedChannel: .stable
+            )
+            XCTAssertFalse(validation.isValid)
+            XCTAssertEqual(validation.message, SparkleUpdaterManager.unprovisionedConfigurationMessage)
+        }
+
+        guard let knownRejectedKey = provisionedSparkleInfo["SUPublicEDKey"] as? String else {
+            XCTFail("Missing test Sparkle public key")
+            return
+        }
+        let knownRejectedDigest = SHA256.hash(data: Data(knownRejectedKey.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let digestMatchedValidation = SparkleUpdaterManager.debugValidateSparkleConfiguration(
+            infoDictionary: provisionedSparkleInfo,
+            selectedChannel: .stable,
+            rejectedPublicEdKeySHA256: knownRejectedDigest
+        )
+        XCTAssertFalse(digestMatchedValidation.isValid)
+        XCTAssertEqual(
+            digestMatchedValidation.message,
+            SparkleUpdaterManager.unprovisionedConfigurationMessage
+        )
     }
 
     func testAppcastParserPrefersHighestBuildNumberForSameMarketingVersion() throws {
@@ -168,38 +243,38 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
         XCTAssertEqual(version.buildNumber, "412")
     }
 
-    func testTipBuildVersionSortsBetweenAdjacentStableBuilds() throws {
+    func testBetaBuildVersionSortsBetweenAdjacentStableBuilds() throws {
         let currentStable = try XCTUnwrap(SparkleBuildVersion("28"))
-        let tip = try XCTUnwrap(SparkleBuildVersion("28.7.95"))
+        let beta = try XCTUnwrap(SparkleBuildVersion("28.7.95"))
         let nextStable = try XCTUnwrap(SparkleBuildVersion("29"))
 
-        XCTAssertGreaterThan(tip, currentStable)
-        XCTAssertGreaterThan(nextStable, tip)
+        XCTAssertGreaterThan(beta, currentStable)
+        XCTAssertGreaterThan(nextStable, beta)
         XCTAssertEqual(SparkleBuildVersion("28"), SparkleBuildVersion("28.0.0"))
         XCTAssertNil(SparkleBuildVersion("28.7.95.1"))
     }
 
-    func testAvailableUpdateNoticeKeepsDetectedChannelAndCentralizesTipCopy() {
+    func testAvailableUpdateNoticeKeepsDetectedChannelAndCentralizesBetaCopy() {
         let notice = AvailableUpdateNotice(
-            channel: .tip,
+            channel: .beta,
             version: "1.0.28",
             buildNumber: "29.8.52",
             shortCommitSHA: "abc1234def56",
             date: nil,
-            releaseNotes: "https://github.com/repoprompt/repoprompt-ce-tip-updates/releases/tag/tip-abc1234def56"
+            releaseNotes: "https://updates.example/agentry-beta/releases/tag/beta-abc1234def56"
         )
 
-        XCTAssertEqual(notice.toolbarLabel, "Tip build 29.8.52")
-        XCTAssertEqual(notice.availabilityStatus, "Tip build 29.8.52 · Version v1.0.28 · Commit abc1234def56 is available")
-        XCTAssertEqual(notice.menuInstallTitle, "Install Tip Build 29.8.52 (v1.0.28, commit abc1234def56)…")
-        XCTAssertEqual(notice.installButtonTitle, "Install Tip Build 29.8.52")
-        XCTAssertEqual(notice.accessibilityLabel, "Tip build 29.8.52 · Version v1.0.28 · Commit abc1234def56 update available")
-        XCTAssertEqual(notice.availableTooltip, "Tip build 29.8.52 · Version v1.0.28 · Commit abc1234def56 is available — click for update details")
+        XCTAssertEqual(notice.toolbarLabel, "Beta build 29.8.52")
+        XCTAssertEqual(notice.availabilityStatus, "Beta build 29.8.52 · Version v1.0.28 · Commit abc1234def56 is available")
+        XCTAssertEqual(notice.menuInstallTitle, "Install Beta Build 29.8.52 (v1.0.28, commit abc1234def56)…")
+        XCTAssertEqual(notice.installButtonTitle, "Install Beta Build 29.8.52")
+        XCTAssertEqual(notice.accessibilityLabel, "Beta build 29.8.52 · Version v1.0.28 · Commit abc1234def56 update available")
+        XCTAssertEqual(notice.availableTooltip, "Beta build 29.8.52 · Version v1.0.28 · Commit abc1234def56 is available — click for update details")
         XCTAssertEqual(notice.accessibilityHint, "Opens Sparkle's update details and install dialog.")
-        XCTAssertEqual(notice.channel, .tip)
+        XCTAssertEqual(notice.channel, .beta)
     }
 
-    func testStableUpdateNoticeUsesStableCopyWithoutTipLabel() {
+    func testStableUpdateNoticeUsesStableCopyWithoutBetaLabel() {
         let notice = AvailableUpdateNotice(
             channel: .stable,
             version: "v1.0.29",
@@ -216,7 +291,7 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
         XCTAssertEqual(notice.availableTooltip, "Version v1.0.29 · Build 30 is available — click to install")
         XCTAssertEqual(notice.accessibilityHint, "Opens Sparkle's update and install dialog.")
         XCTAssertFalse(notice.availableTooltip.localizedCaseInsensitiveContains("release notes"))
-        XCTAssertFalse(notice.availabilityStatus.contains("Tip"))
+        XCTAssertFalse(notice.availabilityStatus.contains("Beta"))
     }
 
     func testUncorrelatedSparkleNoUpdatePreservesNewerRequestAndNoticeDisposition() throws {
@@ -224,9 +299,9 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
         let olderRequestID = try XCTUnwrap(UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
         let newerRequestID = try XCTUnwrap(UUID(uuidString: "22222222-2222-2222-2222-222222222222"))
 
-        let olderRequest = observerState.begin(channel: .tip, requestID: olderRequestID)
+        let olderRequest = observerState.begin(channel: .beta, requestID: olderRequestID)
         XCTAssertTrue(observerState.finish(request: olderRequest))
-        let newerRequest = observerState.begin(channel: .tip, requestID: newerRequestID)
+        let newerRequest = observerState.begin(channel: .beta, requestID: newerRequestID)
 
         let disposition = observerState.receiveUncorrelatedNoUpdate()
 
@@ -240,11 +315,11 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
         var observerState = SparkleUserInitiatedObserverState()
         let requestID = try XCTUnwrap(UUID(uuidString: "33333333-3333-3333-3333-333333333333"))
 
-        XCTAssertNil(observerState.requestToSettle(afterPositiveResultFor: .tip))
-        let tipRequest = observerState.begin(channel: .tip, requestID: requestID)
-        XCTAssertEqual(observerState.requestToSettle(afterPositiveResultFor: .tip), tipRequest)
+        XCTAssertNil(observerState.requestToSettle(afterPositiveResultFor: .beta))
+        let betaRequest = observerState.begin(channel: .beta, requestID: requestID)
+        XCTAssertEqual(observerState.requestToSettle(afterPositiveResultFor: .beta), betaRequest)
         XCTAssertNil(observerState.requestToSettle(afterPositiveResultFor: .stable))
-        XCTAssertEqual(observerState.activeRequest, tipRequest)
+        XCTAssertEqual(observerState.activeRequest, betaRequest)
     }
 
     func testSparklePositiveResultsCannotDowngradeKnownBuilds() {
@@ -270,27 +345,27 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
         ))
     }
 
-    func testSparkleDisplayVersionNormalizationRemovesTipDecoration() {
-        let enrichedTipTitle = "Tip build 29.8.52 · v1.0.28 · commit abc1234def56"
+    func testSparkleDisplayVersionNormalizationRemovesBetaDecoration() {
+        let enrichedBetaTitle = "Beta build 29.8.52 · v1.0.28 · commit abc1234def56"
 
         XCTAssertEqual(
-            AvailableUpdateNotice.marketingVersion(fromTipTitle: enrichedTipTitle),
+            AvailableUpdateNotice.marketingVersion(fromBetaTitle: enrichedBetaTitle),
             "1.0.28"
         )
-        XCTAssertNil(AvailableUpdateNotice.marketingVersion(fromTipTitle: "Tip build v1.0.27"))
+        XCTAssertNil(AvailableUpdateNotice.marketingVersion(fromBetaTitle: "Beta build v1.0.27"))
         XCTAssertEqual(
             SparkleUpdaterManager.presentationVersion(
-                channel: .tip,
+                channel: .beta,
                 displayVersion: "1.0.28",
-                title: enrichedTipTitle
+                title: enrichedBetaTitle
             ),
             "1.0.28"
         )
         XCTAssertEqual(
             SparkleUpdaterManager.presentationVersion(
-                channel: .tip,
-                displayVersion: "Tip build v1.0.27",
-                title: "Tip build v1.0.27"
+                channel: .beta,
+                displayVersion: "Beta build v1.0.27",
+                title: "Beta build v1.0.27"
             ),
             "1.0.27"
         )
@@ -298,24 +373,24 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
             SparkleUpdaterManager.presentationVersion(
                 channel: .stable,
                 displayVersion: "v1.0.29",
-                title: enrichedTipTitle
+                title: enrichedBetaTitle
             ),
             "1.0.29"
         )
 
-        let tipIdentities = SparkleVersionDisplay.formattedIdentities(
+        let betaIdentities = SparkleVersionDisplay.formattedIdentities(
             availableDisplayVersion: "1.1.0",
             availableBuildNumber: "31.11.89",
-            availableTitle: "Tip build 31.11.89 · v1.1.0 · commit abc1234def56",
+            availableTitle: "Beta build 31.11.89 · v1.1.0 · commit abc1234def56",
             installedDisplayVersion: "1.1.0",
             installedBuildNumber: "31.10.88"
         )
-        XCTAssertEqual(tipIdentities.available, "v1.1.0 (31.11.89)")
-        XCTAssertEqual(tipIdentities.installed, "1.1.0 (31.10.88)")
+        XCTAssertEqual(betaIdentities.available, "v1.1.0 (31.11.89)")
+        XCTAssertEqual(betaIdentities.installed, "1.1.0 (31.10.88)")
 
         var installedDisplayVersion: NSString = "1.1.0"
         let availableDisplayVersion = SparkleVersionDisplay.apply(
-            tipIdentities,
+            betaIdentities,
             toInstalledDisplayVersion: &installedDisplayVersion
         )
         XCTAssertEqual(availableDisplayVersion, "v1.1.0 (31.11.89)")
@@ -331,21 +406,21 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
         XCTAssertEqual(stableIdentities.available, "v1.2.0 (32)")
         XCTAssertEqual(stableIdentities.installed, "1.1.0 (31)")
 
-        let legacyTipIdentities = SparkleVersionDisplay.formattedIdentities(
-            availableDisplayVersion: "Tip build v1.0.27",
+        let legacyBetaIdentities = SparkleVersionDisplay.formattedIdentities(
+            availableDisplayVersion: "Beta build v1.0.27",
             availableBuildNumber: "29.8.51",
-            availableTitle: "Tip build v1.0.27",
+            availableTitle: "Beta build v1.0.27",
             installedDisplayVersion: "v1.0.26",
             installedBuildNumber: "29.8.50"
         )
-        XCTAssertEqual(legacyTipIdentities.available, "v1.0.27 (29.8.51)")
-        XCTAssertEqual(legacyTipIdentities.installed, "1.0.26 (29.8.50)")
+        XCTAssertEqual(legacyBetaIdentities.available, "v1.0.27 (29.8.51)")
+        XCTAssertEqual(legacyBetaIdentities.installed, "1.0.26 (29.8.50)")
     }
 
     func testAppcastRequestIdentityRejectsDelayedAndOverlappingResults() throws {
-        let delayedTipRequest = try AppcastCheckRequestIdentity(
+        let delayedBetaRequest = try AppcastCheckRequestIdentity(
             id: XCTUnwrap(UUID(uuidString: "11111111-1111-1111-1111-111111111111")),
-            channel: .tip
+            channel: .beta
         )
         let latestStableRequest = try AppcastCheckRequestIdentity(
             id: XCTUnwrap(UUID(uuidString: "22222222-2222-2222-2222-222222222222")),
@@ -353,7 +428,7 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
         )
 
         XCTAssertFalse(SparkleUpdaterManager.appcastResultIsCurrent(
-            request: delayedTipRequest,
+            request: delayedBetaRequest,
             activeRequest: latestStableRequest,
             selectedChannel: .stable
         ))
@@ -377,31 +452,42 @@ final class AppPlatformUtilityRecoveryTests: XCTestCase {
     }
 
     func testSparkleAppcastItemURLIdentifiesOnlyExactTrustedUpdateChannels() throws {
-        let tipURL = try XCTUnwrap(URL(
-            string: "https://github.com/repoprompt/repoprompt-ce-tip-updates/releases/download/tip-abc/RepoPrompt.zip"
+        let betaURL = try XCTUnwrap(URL(
+            string: "https://updates.example/agentry-beta/releases/download/beta-abc/Agentry.zip"
         ))
         let stableURL = try XCTUnwrap(URL(
-            string: "https://github.com/repoprompt/repoprompt-ce-updates/releases/download/v1.0.29/RepoPrompt.zip"
+            string: "https://updates.example/agentry-stable/releases/download/v1.0.29/Agentry.zip"
         ))
         let lookalikeRepositoryURL = try XCTUnwrap(URL(
-            string: "https://github.com/repoprompt/repoprompt-ce-updates-evil/releases/download/v1/RepoPrompt.zip"
+            string: "https://updates.example/agentry-stable-evil/releases/download/v1/Agentry.zip"
         ))
         let queryURL = try XCTUnwrap(URL(
-            string: "https://github.com/repoprompt/repoprompt-ce-updates/releases/download/v1/RepoPrompt.zip?mirror=1"
+            string: "https://updates.example/agentry-stable/releases/download/v1/Agentry.zip?mirror=1"
         ))
         let insecureURL = try XCTUnwrap(URL(
-            string: "http://github.com/repoprompt/repoprompt-ce-updates/releases/download/v1/RepoPrompt.zip"
+            string: "http://updates.example/agentry-stable/releases/download/v1/Agentry.zip"
         ))
         let malformedDownloadURL = try XCTUnwrap(URL(
-            string: "https://github.com/repoprompt/repoprompt-ce-updates/releases/download/v1"
+            string: "https://updates.example/agentry-stable/releases/download/v1"
         ))
 
-        XCTAssertEqual(SparkleUpdaterManager.updateChannel(forAppcastItemURL: tipURL), .tip)
-        XCTAssertEqual(SparkleUpdaterManager.updateChannel(forAppcastItemURL: stableURL), .stable)
-        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: lookalikeRepositoryURL))
-        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: queryURL))
-        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: insecureURL))
-        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: malformedDownloadURL))
-        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: nil))
+        XCTAssertEqual(SparkleUpdaterManager.updateChannel(forAppcastItemURL: betaURL, infoDictionary: provisionedSparkleInfo), .beta)
+        XCTAssertEqual(SparkleUpdaterManager.updateChannel(forAppcastItemURL: stableURL, infoDictionary: provisionedSparkleInfo), .stable)
+        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: lookalikeRepositoryURL, infoDictionary: provisionedSparkleInfo))
+        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: queryURL, infoDictionary: provisionedSparkleInfo))
+        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: insecureURL, infoDictionary: provisionedSparkleInfo))
+        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: malformedDownloadURL, infoDictionary: provisionedSparkleInfo))
+        XCTAssertNil(SparkleUpdaterManager.updateChannel(forAppcastItemURL: nil, infoDictionary: provisionedSparkleInfo))
+    }
+
+    private var provisionedSparkleInfo: [String: Any] {
+        [
+            UpdateChannel.stableFeedInfoDictionaryKey:
+                "https://updates.example/agentry-stable/releases/latest/download/appcast.xml",
+            UpdateChannel.betaFeedInfoDictionaryKey:
+                "https://updates.example/agentry-beta/releases/latest/download/appcast.xml",
+            "SUFeedURL": "https://updates.example/agentry-stable/releases/latest/download/appcast.xml",
+            "SUPublicEDKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        ]
     }
 }

@@ -972,7 +972,7 @@ final class MCPServerViewModel: ObservableObject {
         // Check if there's a server-side issue that explains the client error
         switch (event.code, diagnostics.issue) {
         case (.localNetworkPolicyDenied, .localNetworkPermissionDenied):
-            return "\(clientName) and RepoPrompt both need Local Network permission."
+            return "\(clientName) and Agentry both need Local Network permission."
         case (.timeoutNoServices, _) where !isRunning:
             return "MCP server is not running. \(clientName) couldn't find any services."
         case (.connectionFailed, .listenerRestarting):
@@ -2836,7 +2836,7 @@ final class MCPServerViewModel: ObservableObject {
         case .none:
             nil
         case .localNetworkPermissionDenied:
-            "Local Network permission appears to be disabled. RepoPrompt cannot advertise the MCP server."
+            "Local Network permission appears to be disabled. Agentry cannot advertise the MCP server."
         case let .bonjourRegistrationFailed(message):
             "The MCP listener failed to advertise via Bonjour: \(message)"
         case .listenerRestarting:
@@ -3059,7 +3059,7 @@ final class MCPServerViewModel: ObservableObject {
 
     @MainActor
     private func handleLicenseStatusChanged() {
-        // RepoPrompt CE has no license gating; MCP tools remain available.
+        // Agentry has no license gating; MCP tools remain available.
     }
 
     @MainActor

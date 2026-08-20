@@ -282,14 +282,14 @@ run_pr_ready_path_validations() {
   fi
   if (( has_repoprompt_product_changes )); then
     timing_phase_start repoprompt_build
-    log "Build RepoPrompt product"
-    make dev-swift-build PRODUCT=RepoPrompt
+    log "Build Agentry product"
+    make dev-swift-build PRODUCT=Agentry
     timing_phase_pass repoprompt_build
   fi
   if (( has_mcp_product_changes )); then
     timing_phase_start mcp_build
-    log "Build repoprompt-mcp product"
-    make dev-swift-build PRODUCT=repoprompt-mcp
+    log "Build agentry-mcp product"
+    make dev-swift-build PRODUCT=agentry-mcp
     timing_phase_pass mcp_build
   fi
   if (( has_xcode_generator_test_changes )); then

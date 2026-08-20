@@ -203,7 +203,7 @@ struct CodexProviderToolsRuntimeSection: View {
 
             ProviderRuntimeToggleRow(
                 title: "Goals",
-                description: "Codex /goal support is enabled by default so long-running tasks can continue between turns. Turn it off if you do not want RepoPrompt to start Codex with goal support.",
+                description: "Codex /goal support is enabled by default so long-running tasks can continue between turns. Turn it off if you do not want Agentry to start Codex with goal support.",
                 isOn: tools.goalSupportEnabled,
                 onChange: { onApplyMutation(.goalSupport(enabled: $0)) }
             )
@@ -227,7 +227,7 @@ struct CodexProviderToolsRuntimeSection: View {
 
             ProviderRuntimeSubsection(
                 title: "MCP servers",
-                subtitle: "Choose which configured MCP servers Codex can use. RepoPrompt is required for app integration."
+                subtitle: "Choose which configured MCP servers Codex can use. Agentry is required for app integration."
             ) {
                 if !tools.mcpServerEntries.isEmpty {
                     ForEach(tools.mcpServerEntries, id: \.normalizedName) { entry in
@@ -250,7 +250,7 @@ struct CodexProviderToolsRuntimeSection: View {
                         )
                     }
                 } else {
-                    Text("No MCP servers found in RepoPrompt's isolated Codex config.")
+                    Text("No MCP servers found in Agentry's isolated Codex config.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
@@ -360,7 +360,7 @@ struct ClaudeProviderToolsRuntimeSection: View {
             ))
             .toggleStyle(.switch)
 
-            Toggle("RepoPrompt Only (Strict MCP)", isOn: Binding(
+            Toggle("Agentry Only (Strict MCP)", isOn: Binding(
                 get: { tools.mcpStrictModeEnabled },
                 set: { onApplyMutation(.mcpStrictMode(enabled: $0)) }
             ))
@@ -368,7 +368,7 @@ struct ClaudeProviderToolsRuntimeSection: View {
 
             Text(
                 tools.mcpStrictModeEnabled
-                    ? "Only RepoPrompt MCP is active. Other MCP servers are ignored."
+                    ? "Only Agentry MCP is active. Other MCP servers are ignored."
                     : "Other MCP servers from your Claude config will also be loaded."
             )
             .font(.footnote)

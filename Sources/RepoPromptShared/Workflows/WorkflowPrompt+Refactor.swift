@@ -9,7 +9,7 @@ extension RepoPromptWorkflowPrompts {
 	/// Generate rp-refactor for a specific variant.
 	static func rpRefactor(variant: WorkflowPromptVariant, includeSessionCleanupGuidance: Bool = true) -> String {
 		let suffix = variant == .cli ? " (CLI)" : ""
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 
 		return """
 \(frontmatter(name: "rp-refactor", description: "Refactoring assistant using \(toolDesc) to analyze and improve code organization", variant: variant))
@@ -80,9 +80,9 @@ Before calling \(builderName), dispatch explore agents to map the areas the user
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'tree'
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Scout: <area 1>" message="Map <area>: key types, responsibilities, interactions. Note duplication." detach=true'
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Scout: <area 2>" message="Check <area> — patterns, relationship to <area 1>, shared logic." detach=true'
+agentry-cli -w <window_id> -e 'tree'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Scout: <area 1>" message="Map <area>: key types, responsibilities, interactions. Note duplication." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Scout: <area 2>" message="Check <area> — patterns, relationship to <area 1>, shared logic." detach=true'
 ```
 """))
 
@@ -98,7 +98,7 @@ Collect results before proceeding:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=wait session_ids=["<id_1>","<id_2>"] timeout=60'
+agentry-cli -w <window_id> -e 'agent_run op=wait session_ids=["<id_1>","<id_2>"] timeout=60'
 ```
 """))
 
@@ -119,7 +119,7 @@ Not every refactor needs explore agents. If the user's request already names spe
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task>Analyze for refactoring opportunities. Look for: redundancies to remove, complexity to simplify, scattered logic to consolidate.</task>
+agentry-cli -w <window_id> -e 'builder "<task>Analyze for refactoring opportunities. Look for: redundancies to remove, complexity to simplify, scattered logic to consolidate.</task>
 
 <context>Target: <files, directory, or recent changes>.
 Goal: Preserve behavior while improving code organization.
@@ -153,7 +153,7 @@ After receiving analysis findings, you can ask clarifying questions in the same 
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -t '<tab_id>' -e 'chat "For the duplicate logic you identified, which location should be the canonical one?" --mode chat'
+agentry-cli -w <window_id> -t '<tab_id>' -e 'chat "For the duplicate logic you identified, which location should be the canonical one?" --mode chat'
 ```
 
 > Pass `-w <window_id>` to target the correct window and `-t <tab_id>` to target the same tab from the builder response.
@@ -175,7 +175,7 @@ Once you have a clear list of refactoring opportunities, use \(builderName) with
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task>Plan these refactorings in order:</task>
+agentry-cli -w <window_id> -e 'builder "<task>Plan these refactorings in order:</task>
 
 <context>Refactorings to apply:
 1. <specific refactoring with file references>
@@ -234,14 +234,14 @@ Start a single agent and feed it work **one item at a time**. Refactorings usual
 	cli: """
 ```bash
 # 1. Start with the first refactoring item
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=engineer session_name="Refactor: <goal>" message="Read the refactoring plan at <plan path> with read_file first. Implement item 1: <brief>. Preserve existing behavior."'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=engineer session_name="Refactor: <goal>" message="Read the refactoring plan at <plan path> with read_file first. Implement item 1: <brief>. Preserve existing behavior."'
 
 # 2. Verify, then steer the next item
-rpce-cli -w <window_id> -e 'read "<key file from item 1>"'
-rpce-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="Item 1 looks good. Item 2: <brief>" wait=true'
+agentry-cli -w <window_id> -e 'read "<key file from item 1>"'
+agentry-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="Item 1 looks good. Item 2: <brief>" wait=true'
 
 # 3. If something's off, steer a correction
-rpce-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="Item 1 missed <gap>. Fix first." wait=true'
+agentry-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="Item 1 missed <gap>. Fix first." wait=true'
 ```
 """))
 

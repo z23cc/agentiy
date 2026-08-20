@@ -9,7 +9,7 @@ extension RepoPromptWorkflowPrompts {
 	/// Generate rp-oracle-export for a specific variant.
 	static func rpOracleExport(variant: WorkflowPromptVariant) -> String {
 		let suffix = variant == .cli ? " (CLI)" : ""
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 		let isAgent = variant == .agent
 		let reviewBudgetRule: String
 		let budgetGuidanceLine: String
@@ -109,8 +109,8 @@ Start by checking git state:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'git status'
-rpce-cli -w <window_id> -e 'git diff --detail files'
+agentry-cli -w <window_id> -e 'git status'
+agentry-cli -w <window_id> -e 'git diff --detail files'
 ```
 """))
 
@@ -142,8 +142,8 @@ Use the fast path only when the request is already small and obvious:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'search "<key term>"'
-rpce-cli -w <window_id> -e 'select add RootName/path/to/FileA.swift RootName/path/to/FileB.swift'
+agentry-cli -w <window_id> -e 'search "<key term>"'
+agentry-cli -w <window_id> -e 'select add RootName/path/to/FileA.swift RootName/path/to/FileB.swift'
 ```
 """))
 
@@ -168,10 +168,10 @@ Otherwise use `context_builder`:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task>The actual problem to solve — not about exporting or prompting</task>
+agentry-cli -w <window_id> -e 'builder "<task>The actual problem to solve — not about exporting or prompting</task>
 <context>Scope: <what you found>.</context>" --response-type clarify'
 
-rpce-cli -w <window_id> -e 'builder "<task>Code review of changes against <confirmed_scope>.</task>
+agentry-cli -w <window_id> -e 'builder "<task>Code review of changes against <confirmed_scope>.</task>
 <context>Intent: code review. Branch: <branch_name>.</context>" --response-type clarify'
 ```
 """))
@@ -193,8 +193,8 @@ rpce-cli -w <window_id> -e 'builder "<task>Code review of changes against <confi
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'select get'
-rpce-cli -w <window_id> -e 'prompt get'
+agentry-cli -w <window_id> -e 'select get'
+agentry-cli -w <window_id> -e 'prompt get'
 ```
 """))
 
@@ -207,7 +207,7 @@ If available in this surface, the fast path may also inspect token state:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'context --include selection,tokens'
+agentry-cli -w <window_id> -e 'context --include selection,tokens'
 ```
 """))
 
@@ -237,7 +237,7 @@ Preset mapping:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'prompt export "prompt-exports/<unique filename>.md" --copy-preset <standard|plan|codeReview>'
+agentry-cli -w <window_id> -e 'prompt export "prompt-exports/<unique filename>.md" --copy-preset <standard|plan|codeReview>'
 ```
 """))
 
@@ -261,7 +261,7 @@ Report the final export path, prompt type, whether you used the fast path or `co
 """
 	}
 
-	/// CLI variant of rp-oracle-export - uses rpce-cli commands.
+	/// CLI variant of rp-oracle-export - uses agentry-cli commands.
 	static var rpOracleExportCLI: String { rpOracleExport(variant: .cli) }
 
 }

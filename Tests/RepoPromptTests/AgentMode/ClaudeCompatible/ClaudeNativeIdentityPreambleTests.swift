@@ -9,8 +9,8 @@ import XCTest
 /// returning a misleading 529. Passing a non-empty `--append-system-prompt` makes the CLI emit the
 /// never-shed "You are Claude Code…" preamble instead. These tests lock that behavior and its scope.
 ///
-/// Layer note: a unit test over the process-exec trust boundary (the CLI args RPCE spawns `claude`
-/// with). The deeper guarantee — that the value actually flips block 1 to the CLI preamble — depends
+/// Layer note: a unit test over the process-exec trust boundary (the CLI args the app uses to spawn
+/// `claude`). The deeper guarantee — that the value actually flips block 1 to the CLI preamble — depends
 /// on the real `claude` binary and is verified as a local capture-proxy diagnostic, not a committed
 /// test, since it requires the binary and live credentials.
 final class ClaudeNativeIdentityPreambleTests: XCTestCase {
@@ -45,11 +45,15 @@ final class ClaudeNativeIdentityPreambleTests: XCTestCase {
         )
         // Heuristic proxy for "won't reintroduce shedding": the value must avoid the SDK identity
         // trigger words. (The exact, binary-dependent proof is the local capture diagnostic.)
-        let lowered = value.lowercased()
         XCTAssertNil(
-            ["claude", "anthropic", "agent", "sdk"].first { lowered.contains($0) },
+            Self.firstSDKIdentityTrigger(in: value),
             "--append-system-prompt value must not contain an SDK identity trigger word, got: \(value)"
         )
+    }
+
+    func testSDKIdentityTriggerGuardRejectsAgentInsideProductName() {
+        XCTAssertEqual(Self.firstSDKIdentityTrigger(in: "Running within Agentry."), "agent")
+        XCTAssertNil(Self.firstSDKIdentityTrigger(in: "Running within this desktop app."))
     }
 
     func testNonGLMVariantsDoNotAppendIdentityPreambleFlag() async {
@@ -64,5 +68,10 @@ final class ClaudeNativeIdentityPreambleTests: XCTestCase {
                 "\(variant) must not append a system prompt, got: \(args)"
             )
         }
+    }
+
+    private static func firstSDKIdentityTrigger(in value: String) -> String? {
+        let lowered = value.lowercased()
+        return ["claude", "anthropic", "agent", "sdk"].first { lowered.contains($0) }
     }
 }

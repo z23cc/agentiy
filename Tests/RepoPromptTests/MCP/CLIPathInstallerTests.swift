@@ -11,11 +11,11 @@ final class CLIPathInstallerTests: XCTestCase {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("CLIPathInstallerTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        bundledCLI = root.appendingPathComponent("RepoPrompt.app/Contents/MacOS/repoprompt-mcp")
+        bundledCLI = root.appendingPathComponent("Agentry.app/Contents/MacOS/agentry-mcp")
         try FileManager.default.createDirectory(at: bundledCLI.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "#!/bin/sh\nexit 0\n".write(to: bundledCLI, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundledCLI.path)
-        linkURL = root.appendingPathComponent("repoprompt_ce_cli_debug")
+        linkURL = root.appendingPathComponent("agentry_cli_debug")
     }
 
     override func tearDownWithError() throws {
@@ -111,7 +111,7 @@ final class CLIPathInstallerTests: XCTestCase {
 
     func testUserSpaceManagerRepairsRecognizedMovedAppDestination() throws {
         let recognizedOldPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app/Contents/MacOS/repoprompt-mcp")
+            .appendingPathComponent("Library/Application Support/Agentry/DebugApps/Agentry.app/Contents/MacOS/agentry-mcp")
             .path
         try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: recognizedOldPath)
 
@@ -133,7 +133,7 @@ final class CLIPathInstallerTests: XCTestCase {
         // Translocation mount (dangling; the path does not exist).
         let staleTranslocated = "/private/var/folders/xx/T/AppTranslocation/"
             + UUID().uuidString
-            + "/d/RepoPrompt.app/Contents/MacOS/repoprompt-mcp"
+            + "/d/Agentry.app/Contents/MacOS/agentry-mcp"
         try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: staleTranslocated)
         XCTAssertEqual(
             ManagedCLIPathPolicy.classifySymlink(
@@ -149,7 +149,7 @@ final class CLIPathInstallerTests: XCTestCase {
         try FileManager.default.removeItem(at: linkURL)
         let foreignTranslocated = "/private/var/folders/xx/T/AppTranslocation/"
             + UUID().uuidString
-            + "/d/Evil.app/Contents/MacOS/repoprompt-mcp"
+            + "/d/Evil.app/Contents/MacOS/agentry-mcp"
         try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: foreignTranslocated)
         XCTAssertEqual(
             ManagedCLIPathPolicy.classifySymlink(
@@ -168,7 +168,7 @@ final class CLIPathInstallerTests: XCTestCase {
         // and repaired rather than rejected as unmanaged.
         let staleTranslocated = "/private/var/folders/xx/T/AppTranslocation/"
             + UUID().uuidString
-            + "/d/RepoPrompt.app/Contents/MacOS/repoprompt-mcp"
+            + "/d/Agentry.app/Contents/MacOS/agentry-mcp"
         try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: staleTranslocated)
 
         XCTAssertTrue(
@@ -182,7 +182,7 @@ final class CLIPathInstallerTests: XCTestCase {
 
     func testUserSpaceManagerRollsBackRacedUnmanagedReplacement() throws {
         let recognizedOldPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app/Contents/MacOS/repoprompt-mcp")
+            .appendingPathComponent("Library/Application Support/Agentry/DebugApps/Agentry.app/Contents/MacOS/agentry-mcp")
             .path
         try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: recognizedOldPath)
         let foreign = root.appendingPathComponent("foreign")
@@ -200,31 +200,28 @@ final class CLIPathInstallerTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: linkURL.path), foreign.path)
     }
 
-    func testManagedDestinationsRecognizeNoSpaceAndLegacyUserSpaceLinks() {
+    func testManagedDestinationsAcceptOnlyAgentryChain() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let destinations = ManagedCLIPathPolicy.managedDestinations(currentBundledCLIPath: nil)
 
         XCTAssertTrue(
-            destinations.contains(home.appendingPathComponent("RepoPrompt/repoprompt_ce_cli_debug").standardizedFileURL.path)
+            destinations.contains(home.appendingPathComponent("Agentry/agentry_cli_debug").standardizedFileURL.path)
         )
         XCTAssertTrue(
+            destinations.contains(home.appendingPathComponent("Agentry/agentry_cli").standardizedFileURL.path)
+        )
+        XCTAssertFalse(
             destinations.contains(
                 home.appendingPathComponent(
                     "Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug"
                 ).standardizedFileURL.path
             )
         )
-        XCTAssertTrue(
-            destinations.contains(
-                home.appendingPathComponent(
-                    "Library/Application Support/RepoPrompt CE/repoprompt_cli_debug"
-                ).standardizedFileURL.path
-            )
-        )
+        XCTAssertFalse(destinations.contains("/Applications/RepoPrompt.app/Contents/MacOS/repoprompt-mcp"))
     }
 
     func testPrivilegedShellCommandReplacesAndRemovesOnlyManagedLinks() throws {
-        let installURL = root.appendingPathComponent("bin/rpce-cli-debug")
+        let installURL = root.appendingPathComponent("bin/agentry-cli-debug")
         try FileManager.default.createDirectory(at: installURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let oldTarget = root.appendingPathComponent("old-managed").path
         try FileManager.default.createSymbolicLink(atPath: installURL.path, withDestinationPath: oldTarget)
@@ -262,7 +259,7 @@ final class CLIPathInstallerTests: XCTestCase {
     }
 
     func testPrivilegedWrapperOwnershipRecheckRejectsMarkerBelowLineEight() throws {
-        let installURL = root.appendingPathComponent("bin/claude-rpce-debug")
+        let installURL = root.appendingPathComponent("bin/claude-agentry-debug")
         try FileManager.default.createDirectory(at: installURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let sourceURL = root.appendingPathComponent("managed-wrapper")
         let source = "#!/bin/bash\n\(ManagedCLIPathPolicy.currentClaudeWrapperMarker)\nexec claude\n"
@@ -287,16 +284,16 @@ final class CLIPathInstallerTests: XCTestCase {
     func testWrapperMarkerMustBeExactHeaderLine() {
         let current = "#!/bin/bash\n\(ManagedCLIPathPolicy.currentClaudeWrapperMarker)\nexec claude\n"
         XCTAssertTrue(ManagedCLIPathPolicy.isManagedWrapper(current))
-        XCTAssertTrue(ManagedCLIPathPolicy.isManagedWrapper("#!/bin/bash\n\(ManagedCLIPathPolicy.legacyClaudeWrapperMarkers[0])\n"))
+        XCTAssertFalse(ManagedCLIPathPolicy.isManagedWrapper("#!/bin/bash\n# claude-rpce: Claude Code wrapper configured for RepoPrompt CE\n"))
         XCTAssertFalse(ManagedCLIPathPolicy.isManagedWrapper("#!/bin/bash\necho '\(ManagedCLIPathPolicy.currentClaudeWrapperMarker)'\n"))
         XCTAssertFalse(ManagedCLIPathPolicy.isManagedWrapper("#!/bin/bash\necho unrelated\n"))
     }
 
     func testPathExistsNotOursErrorReportsProvidedPath() {
         // The message must name the actual offending path, not a hardcoded one.
-        let path = "/Users/example/Library/Application Support/RepoPrompt CE/repoprompt_ce_cli"
+        let path = "/Users/example/Agentry/agentry_cli"
         let description = CLIPathInstaller.InstallError.pathExistsNotOurs(path: path).errorDescription
-        XCTAssertEqual(description, "A file already exists at \(path) that wasn't created by RepoPrompt")
+        XCTAssertEqual(description, "A file already exists at \(path) that wasn't created by Agentry")
     }
 
     func testUserSymlinkInstallErrorDistinguishesConflictFromSetupFailure() throws {
@@ -320,7 +317,7 @@ final class CLIPathInstallerTests: XCTestCase {
 
     func testUserSymlinkSetupFailedErrorReportsProvidedPath() {
         // The setup-failure message must name the path and avoid claiming a conflict.
-        let path = "/Users/example/Library/Application Support/RepoPrompt CE/repoprompt_ce_cli"
+        let path = "/Users/example/Agentry/agentry_cli"
         let description = CLIPathInstaller.InstallError.userSymlinkSetupFailed(path: path).errorDescription
         XCTAssertEqual(
             description,
@@ -334,7 +331,7 @@ final class CLIPathInstallerTests: XCTestCase {
         let allowlist: Set = [bundledCLI.path]
         let noAppBundle = "/private/var/folders/xx/T/AppTranslocation/"
             + UUID().uuidString
-            + "/d/repoprompt-mcp"
+            + "/d/agentry-mcp"
         try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: noAppBundle)
         XCTAssertEqual(
             ManagedCLIPathPolicy.classifySymlink(

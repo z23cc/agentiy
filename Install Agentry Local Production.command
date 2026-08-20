@@ -3,11 +3,11 @@ set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONDUCTOR="$ROOT_DIR/conductor"
-INSTALL_DIR="${LOCAL_PRODUCTION_INSTALL_DIR:-/Applications}"
-TARGET_APP="$INSTALL_DIR/RepoPrompt CE.app"
+INSTALL_DIR="${AGENTRY_LOCAL_PRODUCTION_INSTALL_DIR:-/Applications}"
+TARGET_APP="$INSTALL_DIR/Agentry.app"
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "Python 3 is required to install RepoPrompt CE from Finder."
+    echo "Python 3 is required to install Agentry from Finder."
     echo
     echo "Install Python 3, then run this launcher again."
     read -r -p "Press Return to close this window..." || true
@@ -25,14 +25,14 @@ fi
 
 install_app() {
     echo
-    echo "Building and installing RepoPrompt CE..."
+    echo "Building and installing Agentry..."
     echo "macOS may ask you to approve the dedicated local code-signing certificate."
     echo
     CONFIRM_LOCAL_PRODUCTION_INSTALL=1 "$CONDUCTOR" release local-install
 }
 
 clear 2>/dev/null || true
-echo "RepoPrompt CE - local self-signed production installer"
+echo "Agentry - local self-signed production installer"
 echo
 echo "Project: $ROOT_DIR"
 echo "Mode:    coordinated (build and install run through the dev daemon)"
@@ -64,11 +64,11 @@ esac
 cd "$ROOT_DIR" || exit 1
 if install_app; then
     echo
-    echo "RepoPrompt CE local production app installed successfully."
+    echo "Agentry local production app installed successfully."
 else
     status=$?
     echo
-    echo "RepoPrompt CE local production install failed."
+    echo "Agentry local production install failed."
     echo "Review the output above, then run this launcher again to retry."
     read -r -p "Press Return to close this window..." || true
     exit "$status"

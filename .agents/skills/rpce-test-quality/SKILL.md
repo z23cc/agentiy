@@ -1,9 +1,9 @@
 ---
 name: rpce-test-quality
-description: Select, design, review, consolidate, or remove RepoPrompt CE tests, diagnostic harnesses, and smoke checks by regression value and maintenance cost. Use when the task centers on test, diagnostic, or smoke coverage, including whether a single regression test is worth committing. Do not use for feature or bug-fix work merely because it may need coverage, or for routine test or validation execution.
+description: Select, design, review, consolidate, or remove Agentry tests, diagnostic harnesses, and smoke checks by regression value and maintenance cost. Use when the task centers on test, diagnostic, or smoke coverage, including whether a single regression test is worth committing. Do not use for feature or bug-fix work merely because it may need coverage, or for routine test or validation execution.
 ---
 
-# RepoPrompt CE Test Quality
+# Agentry Test Quality
 
 Protect meaningful current contracts, not changed lines or method counts. Maximize regression signal per maintenance cost. Follow `AGENTS.md` and the repository harness in `docs/testing.md`.
 

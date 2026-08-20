@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a paired live Agent Mode read_file/file_search performance diagnostic.
 
-Requires an already-running RepoPrompt CE DEBUG app. This script never launches,
+Requires an already-running Agentry DEBUG app. This script never launches,
 stops, or relaunches the app.
 """
 from __future__ import annotations
@@ -802,14 +802,14 @@ def worktree_metadata(root: Path, candidate: Path) -> dict[str, Any]:
 
 
 def resolve_cli(argument: str | None) -> Path:
-    candidates = [argument, os.environ.get("REPOPROMPT_DEBUG_CLI_INSTALL_PATH"), shutil.which("rpce-cli-debug"),
-                  str(Path.home() / "Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug")]
+    candidates = [argument, os.environ.get("REPOPROMPT_DEBUG_CLI_INSTALL_PATH"), shutil.which("agentry-cli-debug"),
+                  str(Path.home() / "Library/Application Support/Agentry/agentry_cli_debug")]
     for candidate in candidates:
         if candidate:
             path = Path(candidate).expanduser()
             if path.is_file() and os.access(path, os.X_OK):
                 return path.resolve(strict=True)
-    raise BenchmarkError("rpce-cli-debug was not found")
+    raise BenchmarkError("agentry-cli-debug was not found")
 
 
 def agent_prompt(route: str, marker: str, path: str, searches: int, reads: int, read_limit: int) -> str:

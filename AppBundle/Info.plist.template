@@ -14,20 +14,22 @@
   <key>LSMultipleInstancesProhibited</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
-  <key>RepoPromptDebugSecureStorageBackend</key><string>__DEBUG_SECURE_STORAGE_BACKEND__</string>
-  <key>RepoPromptSigningMode</key><string>__SIGNING_MODE__</string>
-  <key>RepoPromptLocalSigningCertificateSHA256</key><string>__LOCAL_SIGNING_CERTIFICATE_SHA256__</string>
-  <key>RepoPromptLocalSecureStorageGeneration</key><string>__LOCAL_SECURE_STORAGE_GENERATION__</string>
-  <key>RepoPromptSentryDSN</key><string></string>
-  <key>LSEnvironment</key><dict><key>REPOPROMPT_LAUNCH_SOURCE</key><string>launchservices</string></dict>
-  <key>CFBundleURLTypes</key><array><dict><key>CFBundleTypeRole</key><string>Viewer</string><key>CFBundleURLName</key><string>com.pvncher.repoprompt.ce</string><key>CFBundleURLSchemes</key><array><string>repoprompt-ce</string></array><key>CFBundleURLIconFile</key><string>AppIcon</string></dict></array>
+  <key>AgentryDebugSecureStorageBackend</key><string>__DEBUG_SECURE_STORAGE_BACKEND__</string>
+  <key>AgentrySigningMode</key><string>__SIGNING_MODE__</string>
+  <key>AgentryLocalSigningCertificateSHA256</key><string>__LOCAL_SIGNING_CERTIFICATE_SHA256__</string>
+  <key>AgentryLocalSecureStorageGeneration</key><string>__LOCAL_SECURE_STORAGE_GENERATION__</string>
+  <key>AgentrySentryDSN</key><string></string>
+  <key>AgentrySparkleStableFeedURL</key><string>__AGENTRY_SPARKLE_STABLE_FEED_URL__</string>
+  <key>AgentrySparkleBetaFeedURL</key><string>__AGENTRY_SPARKLE_BETA_FEED_URL__</string>
+  <key>LSEnvironment</key><dict><key>AGENTRY_LAUNCH_SOURCE</key><string>launchservices</string></dict>
+  <key>CFBundleURLTypes</key><array><dict><key>CFBundleTypeRole</key><string>Viewer</string><key>CFBundleURLName</key><string>io.github.z23cc.agentry</string><key>CFBundleURLSchemes</key><array><string>agentry</string></array><key>CFBundleURLIconFile</key><string>AppIcon</string></dict></array>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
-  <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>RepoPrompt CE Document</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Default</string><key>LSItemContentTypes</key><array><string>com.pvncher.repoprompt.ce.document</string></array></dict></array>
-  <key>UTExportedTypeDeclarations</key><array><dict><key>UTTypeIdentifier</key><string>com.pvncher.repoprompt.ce.document</string><key>UTTypeDescription</key><string>RepoPrompt CE Document</string><key>UTTypeConformsTo</key><array><string>public.data</string></array></dict></array>
-  <key>SUFeedURL</key><string>https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml</string>
-  <key>SUPublicEDKey</key><string>845kp9v5+kp4U6no85H53cUdnbfN3NmE1PJHKwH8Pd4=</string>
-  <key>SUBundleName</key><string>RepoPrompt CE.app</string>
-  <key>NSLocalNetworkUsageDescription</key><string>RepoPrompt CE needs local network access to enable MCP server functionality, allowing external tools to connect and interact with your workspace.</string>
+  <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>Agentry Document</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Default</string><key>LSItemContentTypes</key><array><string>io.github.z23cc.agentry.document</string></array></dict></array>
+  <key>UTExportedTypeDeclarations</key><array><dict><key>UTTypeIdentifier</key><string>io.github.z23cc.agentry.document</string><key>UTTypeDescription</key><string>Agentry Document</string><key>UTTypeConformsTo</key><array><string>public.data</string></array></dict></array>
+  <key>SUFeedURL</key><string>__AGENTRY_SPARKLE_STABLE_FEED_URL__</string>
+  <key>SUPublicEDKey</key><string>__AGENTRY_SPARKLE_PUBLIC_ED_KEY__</string>
+  <key>SUBundleName</key><string>__APP_BUNDLE_NAME__</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Agentry needs local network access to enable MCP server functionality, allowing external tools to connect and interact with your workspace.</string>
   <key>NSBonjourServices</key><array><string>_preflight_check._tcp</string><string>_mcp._tcp</string></array>
 </dict>
 </plist>

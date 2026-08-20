@@ -318,7 +318,7 @@ final class HeadlessMCPDomainRuntimeM0ContractTests: XCTestCase {
 
         let packageScript = try source("Scripts/package_app.sh")
         let cliCopy = "cp \"$BUILD_DIR/$exe\" \"$APP_BUNDLE/Contents/MacOS/$exe\""
-        let cliSign = "sign_path \"$APP_BUNDLE/Contents/MacOS/repoprompt-mcp\""
+        let cliSign = "sign_path \"$APP_BUNDLE/Contents/MacOS/$MCP_PRODUCT_NAME\""
         let appSign = "sign_path \"$APP_BUNDLE/Contents/MacOS/$APP_NAME\""
         XCTAssertTrue(packageScript.contains(cliCopy))
         XCTAssertLessThan(

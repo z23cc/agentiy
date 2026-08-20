@@ -48,7 +48,7 @@ struct PermissionsSettingsView: View {
                     .font(.title2.weight(.semibold))
             }
 
-            Text("Approvals for RepoPrompt workspace operations (creating folders, deleting workspaces, etc.). CLI agent and sub-agent permissions are configured in Agent Permissions.")
+            Text("Approvals for Agentry workspace operations (creating folders, deleting workspaces, etc.). CLI agent and sub-agent permissions are configured in Agent Permissions.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

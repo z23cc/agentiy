@@ -72,11 +72,11 @@ class ReleaseToolingTests(unittest.TestCase):
         policy = (
             root / "Sources" / "RepoPrompt" / "Infrastructure" / "Security" / "RuntimeCodeSigningPolicy.swift"
         ).read_text(encoding="utf-8")
-        entitlements = (root / "AppBundle" / "RepoPrompt.entitlements.template").read_text(encoding="utf-8")
+        entitlements = (root / "AppBundle" / "Agentry.entitlements.template").read_text(encoding="utf-8")
         info_plist = plistlib.loads((root / "AppBundle" / "Info.plist.template").read_bytes())
 
-        self.assertIn('environment["REPOPROMPT_ENABLE_SENTRY"] == "1"', package_manifest)
-        self.assertIn('repoPromptAppSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))', package_manifest)
+        self.assertIn('environment["AGENTRY_ENABLE_SENTRY"] == "1"', package_manifest)
+        self.assertIn('repoPromptAppSwiftSettings.append(.define("AGENTRY_SENTRY_ENABLED"))', package_manifest)
         self.assertNotIn("let sentryEnabled = true", package_manifest)
 
         self.assertIn(
@@ -87,27 +87,35 @@ class ReleaseToolingTests(unittest.TestCase):
             f'static let appleDevelopmentDebugBundleIdentifier = "{metadata["BUNDLE_ID"]}.debug"',
             policy,
         )
-        self.assertIn(
-            f'static let signingTeamIdentifier = "{metadata["SIGNING_TEAM_ID"]}"',
-            policy,
-        )
+        if metadata["SIGNING_TEAM_ID"]:
+            self.assertIn(
+                f'static let signingTeamIdentifier = "{metadata["SIGNING_TEAM_ID"]}"',
+                policy,
+            )
+        else:
+            # The public signing team is intentionally not provisioned in repository metadata yet.
+            # Keep requiring a non-empty runtime trust anchor until that external decision is made.
+            self.assertRegex(policy, r'static let signingTeamIdentifier = "[A-Z0-9]+"')
         self.assertIn("1.2.840.113635.100.6.1.13", policy)
         self.assertIn("1.2.840.113635.100.6.1.12", policy)
         self.assertIn("__SIGNING_TEAM_ID__.__BUNDLE_ID__", entitlements)
         self.assertIn("<string>__SIGNING_TEAM_ID__</string>", entitlements)
         self.assertEqual(info_plist["CFBundleIdentifier"], "__BUNDLE_ID__")
-        self.assertIn("RepoPromptSigningMode", info_plist)
-        self.assertIn("RepoPromptDebugSecureStorageBackend", info_plist)
-        self.assertIn("RepoPromptLocalSigningCertificateSHA256", info_plist)
-        self.assertIn("RepoPromptLocalSecureStorageGeneration", info_plist)
-        self.assertIn("RepoPromptSentryDSN", info_plist)
-        self.assertEqual(info_plist["RepoPromptSentryDSN"], "")
+        self.assertIn("AgentrySigningMode", info_plist)
+        self.assertIn("AgentryDebugSecureStorageBackend", info_plist)
+        self.assertIn("AgentryLocalSigningCertificateSHA256", info_plist)
+        self.assertIn("AgentryLocalSecureStorageGeneration", info_plist)
+        self.assertIn("AgentrySentryDSN", info_plist)
+        self.assertEqual(info_plist["AgentrySentryDSN"], "")
+        self.assertEqual(info_plist["AgentrySparkleStableFeedURL"], "__AGENTRY_SPARKLE_STABLE_FEED_URL__")
+        self.assertEqual(info_plist["AgentrySparkleBetaFeedURL"], "__AGENTRY_SPARKLE_BETA_FEED_URL__")
+        self.assertEqual(info_plist["SUPublicEDKey"], "__AGENTRY_SPARKLE_PUBLIC_ED_KEY__")
         self.assertIn(
-            'static let localSelfSignedCertificateName = "RepoPrompt CE Local Self-Signed Code Signing"',
+            'static let localSelfSignedCertificateName = "Agentry Local Self-Signed Code Signing"',
             policy,
         )
 
-    def test_info_plist_registers_canonical_ce_url_scheme_only(self) -> None:
+    def test_info_plist_registers_canonical_agentry_url_scheme_only(self) -> None:
         info_plist = plistlib.loads((SCRIPT_DIR.parent / "AppBundle" / "Info.plist.template").read_bytes())
         url_types = info_plist.get("CFBundleURLTypes", [])
         registered_schemes = [
@@ -116,7 +124,7 @@ class ReleaseToolingTests(unittest.TestCase):
             for scheme in url_type.get("CFBundleURLSchemes", [])
         ]
 
-        self.assertEqual(registered_schemes, ["repoprompt-ce"])
+        self.assertEqual(registered_schemes, ["agentry"])
 
     def test_local_self_signed_outer_codesign_uses_equals_requirement_argv(self) -> None:
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
@@ -144,10 +152,10 @@ sign_path() {{{sign_path_body}
 IS_RELEASE=1
 USE_ADHOC_SIGNING=0
 USE_LOCAL_SELF_SIGNED_RELEASE=1
-SIGN_IDENTITY='RepoPrompt CE Local Self-Signed Code Signing'
-APP_BUNDLE='/tmp/RepoPrompt.app'
-APP_ENTITLEMENTS='/tmp/RepoPrompt.entitlements'
-LOCAL_SELF_SIGNED_REQUIREMENT='identifier "com.pvncher.repoprompt.ce" and certificate leaf = H"{'1' * 40}"'
+SIGN_IDENTITY='Agentry Local Self-Signed Code Signing'
+APP_BUNDLE='/tmp/Agentry.app'
+APP_ENTITLEMENTS='/tmp/Agentry.entitlements'
+LOCAL_SELF_SIGNED_REQUIREMENT='identifier "io.github.z23cc.agentry" and certificate leaf = H"{'1' * 40}"'
 APP_SIGN_ARGS=(){app_signing_body}
 """,
             encoding="utf-8",
@@ -169,15 +177,15 @@ APP_SIGN_ARGS=(){app_signing_body}
             [
                 "--force",
                 "--sign",
-                "RepoPrompt CE Local Self-Signed Code Signing",
+                "Agentry Local Self-Signed Code Signing",
                 "--timestamp=none",
                 "--options",
                 "runtime",
                 "--entitlements",
-                "/tmp/RepoPrompt.entitlements",
+                "/tmp/Agentry.entitlements",
                 "--requirements",
-                '=designated => identifier "com.pvncher.repoprompt.ce" and certificate leaf = H"' + "1" * 40 + '"',
-                "/tmp/RepoPrompt.app",
+                '=designated => identifier "io.github.z23cc.agentry" and certificate leaf = H"' + "1" * 40 + '"',
+                "/tmp/Agentry.app",
             ],
         )
 
@@ -209,9 +217,10 @@ APP_SIGN_ARGS=(){app_signing_body}
         self.assertIn('CODEX_MANIFEST="$METADATA_ROOT/Vendor/Codex/manifest.json"', source)
         self.assertIn('python3 "$SCRIPT_DIR/codex_runtime_artifact.py"', source)
         self.assertEqual(source.count('--manifest "$CODEX_MANIFEST" verify-bundle'), 2)
-        self.assertEqual(source.count("list-bundle-signing-plan --arch all"), 1)
+        self.assertEqual(source.count("list-bundle-signing-plan --arch arm64"), 1)
         self.assertNotIn("list-bundle-mach-o-paths", source)
         self.assertEqual(source.count('--signed-team-identifier "$SIGNING_TEAM_ID"'), 1)
+        self.assertIn('[[ -n "$SIGNING_TEAM_ID" ]] || fail "Missing required Agentry SIGNING_TEAM_ID"', source)
         self.assertNotIn('$TRUSTED_ROOT/Vendor/Codex/manifest.json', source)
         self.assertIn('CODEX_V8_ENTITLEMENTS="$TRUSTED_ROOT/AppBundle/CodexV8JIT.entitlements"', source)
         self.assertIn('plutil -lint "$CODEX_V8_ENTITLEMENTS"', source)
@@ -220,10 +229,10 @@ APP_SIGN_ARGS=(){app_signing_body}
                 self.assertNotIn("--preserve-metadata", line)
 
         sparkle_sign = source.index('sign_sparkle_framework "$STAGED_SPARKLE_FRAMEWORK"')
-        enumerate_codex = source.index("list-bundle-signing-plan --arch all")
+        enumerate_codex = source.index("list-bundle-signing-plan --arch arm64")
         codex_sign = source.index('sign_path "$CODEX_BUNDLE/$relative_path" --entitlements "$CODEX_V8_ENTITLEMENTS"')
         codex_sign_unprofiled = source.index('sign_path "$CODEX_BUNDLE/$relative_path"\n', codex_sign + 1)
-        mcp_sign = source.index('sign_path "$APP_BUNDLE/Contents/MacOS/repoprompt-mcp"')
+        mcp_sign = source.index('sign_path "$APP_BUNDLE/Contents/MacOS/agentry-mcp"')
         app_sign = source.index('sign_path "$APP_BUNDLE/Contents/MacOS/$APP_NAME"')
         outer_sign = source.index('sign_path "$APP_BUNDLE" --entitlements "$app_entitlements"')
         self.assertLess(sparkle_sign, enumerate_codex)
@@ -260,7 +269,7 @@ APP_SIGN_ARGS=(){app_signing_body}
 
         for release_script_name in (
             "release.sh",
-            "main_tip_release.sh",
+            "main_beta_release.sh",
             "promote_release.sh",
             "publish_public_update_test.sh",
         ):
@@ -300,13 +309,13 @@ APP_SIGN_ARGS=(){app_signing_body}
     def test_embedded_mcp_helper_smoke_rejects_exit_137(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        helper = temp_dir / "RepoPrompt.app" / "Contents" / "MacOS" / "repoprompt-mcp"
+        helper = temp_dir / "Agentry.app" / "Contents" / "MacOS" / "agentry-mcp"
         helper.parent.mkdir(parents=True)
         helper.write_text("#!/usr/bin/env bash\nexit 137\n", encoding="utf-8")
         helper.chmod(0o755)
 
         result = subprocess.run(
-            [str(SCRIPT_DIR / "smoke_embedded_mcp_helper.sh"), str(temp_dir / "RepoPrompt.app"), "Fixture helper"],
+            [str(SCRIPT_DIR / "smoke_embedded_mcp_helper.sh"), str(temp_dir / "Agentry.app"), "Fixture helper"],
             text=True,
             capture_output=True,
         )
@@ -317,8 +326,8 @@ APP_SIGN_ARGS=(){app_signing_body}
     def test_embedded_helper_smoke_rejects_canonical_path_escape(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        app = temp_dir / "RepoPrompt.app"
-        helper = app / "Contents" / "MacOS" / "repoprompt-mcp"
+        app = temp_dir / "Agentry.app"
+        helper = app / "Contents" / "MacOS" / "agentry-mcp"
         helper.parent.mkdir(parents=True)
         outside = temp_dir / "outside-helper"
         outside.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -334,26 +343,35 @@ APP_SIGN_ARGS=(){app_signing_body}
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("escapes app bundle", result.stderr)
 
-    def test_universal_builder_uses_isolated_architecture_scratch_paths_and_unsigned_merge(self) -> None:
+    def test_arm64_builder_uses_one_isolated_scratch_and_no_merge(self) -> None:
         source = (SCRIPT_DIR / "build_swiftpm_release_products.sh").read_text(encoding="utf-8")
 
         self.assertIn('SCRATCH_ROOT="${REPOPROMPT_PUBLIC_SWIFTPM_SCRATCH_ROOT:', source)
         self.assertIn('CLEAN_PUBLIC_SWIFTPM_BUILDS="${REPOPROMPT_CLEAN_PUBLIC_SWIFTPM_BUILDS:-1}"', source)
-        self.assertIn('for arch in arm64 x86_64; do', source)
+        self.assertIn('scratch="$SCRATCH_ROOT/arm64"', source)
         self.assertIn('REPOPROMPT_SWIFTPM_SCRATCH_PATH="$scratch"', source)
         self.assertIn('patch_keyboard_shortcuts_resource_lookup.sh', source)
         self.assertIn('--scratch-path "$scratch"', source)
-        self.assertIn('--arch "$arch"', source)
-        self.assertIn('--product RepoPrompt', source)
-        self.assertIn('--product repoprompt-mcp', source)
-        self.assertIn('compare_swiftpm_release_resources.py', source)
-        architecture_loop = source.split('for arch in arm64 x86_64; do', 1)[1]
-        self.assertLess(source.index('run rm -rf "$SCRATCH_ROOT"'), source.index('for arch in arm64 x86_64; do'))
-        self.assertLess(architecture_loop.index('"$KEYBOARD_SHORTCUTS_PATCH_HELPER"'), architecture_loop.index("swift build"))
-        self.assertEqual(source.count('"$LIPO" -create'), 2)
+        self.assertIn('--arch arm64', source)
+        self.assertIn('for product in Agentry agentry-mcp; do', source)
+        self.assertIn('require_exact_arm64 "$ARM64_BIN_DIR/Agentry"', source)
+        self.assertIn('require_exact_arm64 "$ARM64_BIN_DIR/agentry-mcp"', source)
+        self.assertLess(source.index('run rm -rf "$SCRATCH_ROOT"'), source.index('scratch="$SCRATCH_ROOT/arm64"'))
+        self.assertLess(source.index('"$KEYBOARD_SHORTCUTS_PATCH_HELPER"'), source.index("swift build"))
+        self.assertNotIn("x86_64", source)
+        self.assertNotIn("lipo -create", source)
+        self.assertNotIn("compare_swiftpm_release_resources.py", source)
         self.assertNotIn("codesign", source)
 
-    def test_universal_builder_cleans_stale_resources_by_default_and_patches_each_fresh_scratch(self) -> None:
+        package_source = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        self.assertIn('CODEX_BUNDLE_ARCH="${AGENTRY_CODEX_ARCH:-arm64}"', package_source)
+        self.assertIn("AGENTRY_CODEX_ARCH must be arm64", package_source)
+        self.assertNotIn("REPOPROMPT_CODEX_ARCH", package_source)
+        self.assertIn('swift build "${SWIFT_BUILD_ARGS[@]}" --arch arm64 --product "$APP_NAME"', package_source)
+        self.assertIn('swift build -c "$CONF" --arch arm64 --show-bin-path', package_source)
+        self.assertIn('find "$CODEX_APP_DIR" -name \'x86_64-apple-darwin\'', package_source)
+
+    def test_arm64_builder_cleans_stale_resources_and_patches_fresh_scratch(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
         root = temp_dir / "source"
@@ -361,11 +379,10 @@ APP_SIGN_ARGS=(){app_signing_body}
         scratch = temp_dir / "scratch"
         output = temp_dir / "products" / "release"
         scratch.mkdir(parents=True)
-        (scratch / ".repoprompt-public-swiftpm-scratch").write_text("fixture\n", encoding="utf-8")
-        for arch in ("arm64", "x86_64"):
-            stale = scratch / arch / "release" / "Stale.bundle"
-            stale.mkdir(parents=True)
-            (stale / "stale.txt").write_text("stale\n", encoding="utf-8")
+        (scratch / ".agentry-public-swiftpm-scratch").write_text("fixture\n", encoding="utf-8")
+        stale = scratch / "arm64" / "release" / "Stale.bundle"
+        stale.mkdir(parents=True)
+        (stale / "stale.txt").write_text("stale\n", encoding="utf-8")
 
         tools = temp_dir / "tools"
         tools.mkdir()
@@ -389,8 +406,8 @@ while (( $# )); do
 done
 bin="$scratch/release"
 mkdir -p "$bin/Current.bundle"
-printf '%s\\n' "$arch" > "$bin/RepoPrompt"
-printf '%s\\n' "$arch" > "$bin/repoprompt-mcp"
+printf '%s\\n' "$arch" > "$bin/Agentry"
+printf '%s\\n' "$arch" > "$bin/agentry-mcp"
 printf 'current\\n' > "$bin/Current.bundle/value.txt"
 if (( show )); then printf '%s\\n' "$bin"; fi
 """,
@@ -401,8 +418,6 @@ if (( show )); then printf '%s\\n' "$bin"; fi
             "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$REPOPROMPT_SWIFTPM_SCRATCH_PATH\" >> \"$PATCH_LOG\"\n",
             encoding="utf-8",
         )
-        comparator = tools / "compare-resources"
-        comparator.write_text("#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n", encoding="utf-8")
         lipo = tools / "lipo"
         lipo.write_text(
             """#!/usr/bin/env bash
@@ -411,17 +426,12 @@ if [[ "$1" == "-archs" ]]; then
     cat "$2"
     exit 0
 fi
-output=""
-while (( $# )); do
-    if [[ "$1" == "-output" ]]; then output="$2"; shift 2; else shift; fi
-done
-printf 'arm64 x86_64\\n' > "$output"
 """,
             encoding="utf-8",
         )
         ditto = tools / "ditto"
         ditto.write_text("#!/usr/bin/env bash\nset -euo pipefail\ncp -R \"$1\" \"$2\"\n", encoding="utf-8")
-        for tool in (wrapper, patch, comparator, lipo, ditto):
+        for tool in (wrapper, patch, lipo, ditto):
             tool.chmod(0o755)
 
         env = os.environ.copy()
@@ -432,7 +442,6 @@ printf 'arm64 x86_64\\n' > "$output"
                 "REPOPROMPT_PUBLIC_SWIFTPM_SCRATCH_ROOT": str(scratch),
                 "REPOPROMPT_RUN_WITHOUT_GITHUB_TOKENS": str(wrapper),
                 "REPOPROMPT_KEYBOARD_SHORTCUTS_PATCH_HELPER": str(patch),
-                "REPOPROMPT_SWIFTPM_RESOURCE_COMPARATOR": str(comparator),
                 "PATCH_LOG": str(patch_log),
                 "LIPO": str(lipo),
             }
@@ -450,7 +459,7 @@ printf 'arm64 x86_64\\n' > "$output"
         self.assertTrue((output / "Current.bundle" / "value.txt").is_file())
         self.assertEqual(
             patch_log.read_text(encoding="utf-8").splitlines(),
-            [str(scratch / "arm64"), str(scratch / "x86_64")],
+            [str(scratch / "arm64")],
         )
 
         repository_marker = root / "must-survive.txt"
@@ -483,65 +492,114 @@ printf 'arm64 x86_64\\n' > "$output"
         self.assertIn("unmarked public SwiftPM scratch path", unsafe_unmarked.stderr)
         self.assertTrue(unmarked_marker.is_file())
 
-    def test_swiftpm_resource_comparator_accepts_equivalence_and_rejects_drift(self) -> None:
+    def test_sparkle_thinner_is_idempotent_and_refuses_vendor(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        arm = temp_dir / "arm"
-        intel = temp_dir / "intel"
-        for root in (arm, intel):
-            (root / "Fixture.bundle" / "nested").mkdir(parents=True)
-            (root / "Fixture.bundle" / "nested" / "value.txt").write_text("same\n", encoding="utf-8")
-            (root / "Fixture.bundle" / "link").symlink_to("nested/value.txt")
-            (root / "Sparkle.framework").mkdir()
-            (root / "Sparkle.framework" / "Info.plist").write_text("same\n", encoding="utf-8")
+        framework = temp_dir / "Sparkle.framework"
+        required = [
+            framework / "Versions" / "B" / "Sparkle",
+            framework / "Versions" / "B" / "Autoupdate",
+            framework / "Versions" / "B" / "Updater.app" / "Contents" / "MacOS" / "Updater",
+            framework
+            / "Versions"
+            / "B"
+            / "XPCServices"
+            / "Installer.xpc"
+            / "Contents"
+            / "MacOS"
+            / "Installer",
+            framework
+            / "Versions"
+            / "B"
+            / "XPCServices"
+            / "Downloader.xpc"
+            / "Contents"
+            / "MacOS"
+            / "Downloader",
+        ]
+        for path in required:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("arm64 x86_64\n", encoding="utf-8")
+            path.chmod(0o755)
+        fake_lipo = temp_dir / "lipo"
+        fake_lipo.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "-archs" ]]; then
+    cat "$2"
+    exit 0
+fi
+[[ "$1" == "-thin" && "$2" == "arm64" && "$4" == "-output" ]]
+printf 'arm64\\n' > "$5"
+""",
+            encoding="utf-8",
+        )
+        fake_lipo.chmod(0o755)
+        env = os.environ.copy() | {"LIPO": str(fake_lipo)}
 
-        accepted = subprocess.run(
-            [str(SCRIPT_DIR / "compare_swiftpm_release_resources.py"), str(arm), str(intel)],
+        for _ in range(2):
+            result = subprocess.run(
+                [str(SCRIPT_DIR / "thin_sparkle_framework_to_arm64.sh"), str(framework), "Fixture Sparkle"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(all(path.read_text(encoding="utf-8").strip() == "arm64" for path in required))
+
+        vendor = SCRIPT_DIR.parent / "Vendor" / "Sparkle" / "Sparkle.xcframework" / "macos-arm64_x86_64" / "Sparkle.framework"
+        refused = subprocess.run(
+            [str(SCRIPT_DIR / "thin_sparkle_framework_to_arm64.sh"), str(vendor), "Vendor Sparkle"],
+            env=env,
             text=True,
             capture_output=True,
         )
-        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("refusing to modify vendored Sparkle", refused.stderr)
 
-        (intel / "Fixture.bundle" / "nested" / "value.txt").write_text("different\n", encoding="utf-8")
-        rejected = subprocess.run(
-            [str(SCRIPT_DIR / "compare_swiftpm_release_resources.py"), str(arm), str(intel)],
-            text=True,
-            capture_output=True,
-        )
-        self.assertNotEqual(rejected.returncode, 0)
-        self.assertIn("resource differs", rejected.stderr)
-
-    def test_architecture_validator_accepts_universal_and_rejects_helper_mismatch(self) -> None:
-        app, fake_lipo = self.make_universal_architecture_fixture()
+    def test_architecture_validator_requires_recursive_exact_arm64(self) -> None:
+        app, fake_lipo = self.make_arm64_architecture_fixture()
         env = os.environ.copy()
         env["LIPO"] = str(fake_lipo)
 
         accepted = subprocess.run(
-            [str(SCRIPT_DIR / "validate_app_architectures.sh"), str(app), "arm64,x86_64", "Fixture"],
+            [str(SCRIPT_DIR / "validate_app_architectures.sh"), str(app), "Fixture"],
             env=env,
             text=True,
             capture_output=True,
         )
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("exact arm64 policy", accepted.stdout)
 
-        env["FAKE_THIN_HELPER"] = "1"
-        rejected = subprocess.run(
-            [str(SCRIPT_DIR / "validate_app_architectures.sh"), str(app), "arm64,x86_64", "Fixture"],
+        for pattern in ("agentry-mcp", "Downloader"):
+            with self.subTest(pattern=pattern):
+                rejected = subprocess.run(
+                    [str(SCRIPT_DIR / "validate_app_architectures.sh"), str(app), "Fixture"],
+                    env=env | {"FAKE_NON_ARM64_PATTERN": pattern},
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("expected exact arm64", rejected.stderr)
+
+        (app / "Contents" / "MacOS" / "agentry-mcp").unlink()
+        missing = subprocess.run(
+            [str(SCRIPT_DIR / "validate_app_architectures.sh"), str(app), "Fixture"],
             env=env,
             text=True,
             capture_output=True,
         )
-        self.assertNotEqual(rejected.returncode, 0)
-        self.assertIn("matching app/helper architectures", rejected.stderr)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("expected executable regular file", missing.stderr)
 
     def test_artifact_manifest_is_deterministic_external_and_detects_binary_drift(self) -> None:
-        app, fake_lipo = self.make_universal_architecture_fixture()
+        app, fake_lipo = self.make_arm64_architecture_fixture()
         info = {
-            "CFBundleExecutable": "RepoPrompt",
-            "CFBundleIdentifier": "com.pvncher.repoprompt.ce",
+            "CFBundleExecutable": "Agentry",
+            "CFBundleIdentifier": "io.github.z23cc.agentry",
             "CFBundleShortVersionString": "1.0.0",
             "CFBundleVersion": "1",
-            "RepoPromptSigningMode": "release-candidate-adhoc",
+            "AgentrySigningMode": "release-candidate-adhoc",
         }
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
         fake_codesign = app.parent / "codesign"
@@ -595,7 +653,7 @@ esac
                 "--output",
                 str(manifest),
                 "--expected-architectures",
-                "arm64,x86_64",
+                "arm64",
             ],
             env=env,
             text=True,
@@ -615,7 +673,7 @@ esac
         # With a DSN present, the manifest records telemetry_enabled=True but never the DSN value.
         dsn_value = "https://examplepublickey@o9999.ingest.sentry.io/424242"
         info_with_dsn = dict(info)
-        info_with_dsn["RepoPromptSentryDSN"] = dsn_value
+        info_with_dsn["AgentrySentryDSN"] = dsn_value
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info_with_dsn))
         dsn_manifest = app.parent / "telemetry-manifest.json"
         dsn_written = subprocess.run(
@@ -627,7 +685,7 @@ esac
                 "--output",
                 str(dsn_manifest),
                 "--expected-architectures",
-                "arm64,x86_64",
+                "arm64",
             ],
             env=env,
             text=True,
@@ -650,7 +708,7 @@ esac
                 "--manifest",
                 str(manifest),
                 "--expected-architectures",
-                "arm64,x86_64",
+                "arm64",
             ],
             env=env,
             text=True,
@@ -713,7 +771,7 @@ esac
         )
         env.pop("FAKE_CERTIFICATE_BACKED")
 
-        info["RepoPromptSigningMode"] = "developer-id"
+        info["AgentrySigningMode"] = "developer-id"
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
         env["FAKE_MISSING_REQUIREMENT"] = "1"
         developer_id_missing_requirement = subprocess.run(
@@ -754,7 +812,7 @@ esac
             developer_id_missing_certificate.stderr,
         )
 
-        info["RepoPromptSigningMode"] = "local-self-signed"
+        info["AgentrySigningMode"] = "local-self-signed"
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
         local_self_signed_missing_certificate = subprocess.run(
             [
@@ -775,7 +833,7 @@ esac
             local_self_signed_missing_certificate.stderr,
         )
 
-        info["RepoPromptSigningMode"] = "developer-id"
+        info["AgentrySigningMode"] = "developer-id"
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
         env["FAKE_CERTIFICATE_AVAILABLE"] = "1"
         env["FAKE_MISSING_ENTITLEMENTS"] = "1"
@@ -789,10 +847,10 @@ esac
         self.assertIn("did not expose parseable signed entitlements", missing_entitlements.stderr)
         env.pop("FAKE_MISSING_ENTITLEMENTS")
         env.pop("FAKE_CERTIFICATE_AVAILABLE")
-        info["RepoPromptSigningMode"] = "release-candidate-adhoc"
+        info["AgentrySigningMode"] = "release-candidate-adhoc"
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
 
-        with (app / "Contents" / "MacOS" / "repoprompt-mcp").open("a", encoding="utf-8") as handle:
+        with (app / "Contents" / "MacOS" / "agentry-mcp").open("a", encoding="utf-8") as handle:
             handle.write("drift\n")
         rejected = subprocess.run(
             [
@@ -803,7 +861,7 @@ esac
                 "--manifest",
                 str(manifest),
                 "--expected-architectures",
-                "arm64,x86_64",
+                "arm64",
             ],
             env=env,
             text=True,
@@ -813,13 +871,13 @@ esac
         self.assertIn("does not match app bundle", rejected.stderr)
 
     def test_artifact_manifest_records_certificate_from_equals_form_extraction(self) -> None:
-        app, fake_lipo = self.make_universal_architecture_fixture()
+        app, fake_lipo = self.make_arm64_architecture_fixture()
         info = {
-            "CFBundleExecutable": "RepoPrompt",
-            "CFBundleIdentifier": "com.pvncher.repoprompt.ce",
+            "CFBundleExecutable": "Agentry",
+            "CFBundleIdentifier": "io.github.z23cc.agentry",
             "CFBundleShortVersionString": "1.0.0",
             "CFBundleVersion": "1",
-            "RepoPromptSigningMode": "developer-id",
+            "AgentrySigningMode": "developer-id",
         }
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
         certificate = b"fixture leaf certificate\n"
@@ -880,7 +938,7 @@ esac
                 "--output",
                 str(manifest),
                 "--expected-architectures",
-                "arm64,x86_64",
+                "arm64",
             ],
             env=env,
             text=True,
@@ -903,7 +961,7 @@ esac
             self.assertEqual(arguments[:2], ["-d", next(item for item in arguments if item.startswith("--extract-certificates="))])
             self.assertNotIn("--extract-certificates", arguments)
 
-        covered_paths = [app / "Contents" / "MacOS" / "RepoPrompt", app / "Contents" / "MacOS" / "repoprompt-mcp", app]
+        covered_paths = [app / "Contents" / "MacOS" / "Agentry", app / "Contents" / "MacOS" / "agentry-mcp", app]
         for index, covered_path in enumerate(covered_paths):
             with self.subTest(covered_path=covered_path):
                 failure_env = env | {"FAKE_MISSING_CERTIFICATE_FOR": str(covered_path)}
@@ -916,7 +974,7 @@ esac
                         "--output",
                         str(app.parent / f"missing-certificate-{index}.json"),
                         "--expected-architectures",
-                        "arm64,x86_64",
+                        "arm64",
                     ],
                     env=failure_env,
                     text=True,
@@ -935,8 +993,8 @@ esac
         architecture_release.mkdir(parents=True)
         compatibility_release = temp_dir / ".build" / "release"
         compatibility_release.symlink_to(Path("arm64-apple-macosx") / "release")
-        app_bundle = architecture_release / "RepoPrompt.app"
-        compatibility_app_bundle = compatibility_release / "RepoPrompt.app"
+        app_bundle = architecture_release / "Agentry.app"
+        compatibility_app_bundle = compatibility_release / "Agentry.app"
 
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
         function_body = package_script.split("paths_same(){", 1)[1].split("\n}\nfinish(){", 1)[0]
@@ -962,7 +1020,7 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(compatibility_app_bundle.is_symlink())
-        self.assertFalse((app_bundle / "RepoPrompt.app").exists())
+        self.assertFalse((app_bundle / "Agentry.app").exists())
 
     def test_packaging_path_identity_keeps_case_distinct_missing_paths_separate(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
@@ -983,7 +1041,7 @@ paths_same "$1" "$2"
         probe.chmod(0o755)
 
         result = subprocess.run(
-            [str(probe), str(temp_dir / "RepoPrompt.app"), str(temp_dir / "repoprompt.app")],
+            [str(probe), str(temp_dir / "Agentry.app"), str(temp_dir / "agentry.app")],
             text=True,
             capture_output=True,
         )
@@ -996,7 +1054,7 @@ paths_same "$1" "$2"
         cleanup_before_metadata = """remove_stale_artifact_manifests
 source "$CONTROL_PLANE_SCRIPTS_DIR/load_release_metadata.sh"""
         manifest_write_block = package_script.split(
-            'run "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "$ARCHITECTURE_POLICY" "Post-sign packaged app"',
+            'run "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "Post-sign packaged app"',
             1,
         )[1].split(
             'run "$CONTROL_PLANE_SCRIPTS_DIR/validate_embedded_mcp_helper_layout.sh"',
@@ -1005,7 +1063,7 @@ source "$CONTROL_PLANE_SCRIPTS_DIR/load_release_metadata.sh"""
 
         self.assertIn('manifests=("$ROOT_DIR"/.build/release/*-artifact-manifest.json)', package_script)
         self.assertIn(cleanup_before_metadata, package_script)
-        self.assertIn("if (( PUBLIC_UNIVERSAL_RELEASE )); then", manifest_write_block)
+        self.assertIn("if (( PUBLIC_RELEASE )); then", manifest_write_block)
         self.assertIn('write_app_artifact_manifest.py" write', manifest_write_block)
         self.assertIn('--output "$ARTIFACT_MANIFEST"', manifest_write_block)
 
@@ -1019,7 +1077,7 @@ source "$CONTROL_PLANE_SCRIPTS_DIR/load_release_metadata.sh"""
         doctor.write_text("#!/usr/bin/env bash\nexit 42\n", encoding="utf-8")
         doctor.chmod(0o755)
         metadata = root / "version.env"
-        artifact_manifest = root / ".build" / "release" / "RepoPrompt-artifact-manifest.json"
+        artifact_manifest = root / ".build" / "release" / "Agentry-artifact-manifest.json"
         artifact_manifest.parent.mkdir(parents=True)
         env = os.environ.copy()
         env.update(
@@ -1041,12 +1099,12 @@ source "$CONTROL_PLANE_SCRIPTS_DIR/load_release_metadata.sh"""
         self.assertFalse(artifact_manifest.exists())
 
         metadata.write_text(
-            """APP_NAME=RepoPrompt
-DISPLAY_NAME="RepoPrompt CE"
+            """APP_NAME=Agentry
+DISPLAY_NAME="Agentry"
 MARKETING_VERSION=1.0.0
 BUILD_NUMBER=1
-BUNDLE_ID=com.pvncher.repoprompt.ce
-SIGNING_TEAM_ID=648A27MST5
+BUNDLE_ID=io.github.z23cc.agentry
+SIGNING_TEAM_ID=
 """,
             encoding="utf-8",
         )
@@ -1127,7 +1185,7 @@ SIGNING_TEAM_ID=648A27MST5
             mock.patch.object(helper, "capture_socket_snapshot", side_effect=[missing_snapshot, created_snapshot]),
             mock.patch.object(helper, "live_release_claims", return_value={}),
         ):
-            result = helper.find_owner(Path("/tmp/repoprompt-ce-mcp-test"), 123, Path("/tmp/RepoPrompt"))
+            result = helper.find_owner(Path("/tmp/agentry-mcp-test"), 123, Path("/tmp/Agentry"))
 
         self.assertIsNone(result)
         self.assertEqual(validate_process.call_count, 2)
@@ -1136,9 +1194,9 @@ SIGNING_TEAM_ID=648A27MST5
     def test_packaged_socket_owner_helper_rejects_live_preflight_and_accepts_exact_owner(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        socket_directory = temp_dir / "repoprompt-ce-mcp"
+        socket_directory = temp_dir / "agentry-mcp"
         socket_directory.mkdir(mode=0o700)
-        socket_path = socket_directory / "repoprompt-ce-7.sock"
+        socket_path = socket_directory / "agentry-8.sock"
         listener, accepted_connections = self.start_unix_listener(socket_path)
         expected_executable = self.socket_owner_process_path(listener.pid)
         wrong_pid = os.getpid()
@@ -1165,9 +1223,9 @@ SIGNING_TEAM_ID=648A27MST5
     def test_packaged_socket_owner_helper_allows_stale_and_rejects_wrong_or_replaced_owner(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        socket_directory = temp_dir / "repoprompt-ce-mcp"
+        socket_directory = temp_dir / "agentry-mcp"
         socket_directory.mkdir(mode=0o700)
-        socket_path = socket_directory / "repoprompt-ce-7.sock"
+        socket_path = socket_directory / "agentry-8.sock"
         stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         stale.bind(os.fspath(socket_path))
         stale.close()
@@ -1240,23 +1298,23 @@ SIGNING_TEAM_ID=648A27MST5
 
     def test_embedded_mcp_helper_layout_validator_rejects_invalid_metadata(self) -> None:
         def helper_symlink(app: Path) -> None:
-            helper = app / "Contents" / "MacOS" / "repoprompt-mcp"
+            helper = app / "Contents" / "MacOS" / "agentry-mcp"
             helper.unlink()
-            helper.symlink_to("RepoPrompt")
+            helper.symlink_to("Agentry")
 
         def non_executable_helper(app: Path) -> None:
-            (app / "Contents" / "MacOS" / "repoprompt-mcp").chmod(0o644)
+            (app / "Contents" / "MacOS" / "agentry-mcp").chmod(0o644)
 
         def missing_resources_link(app: Path) -> None:
-            (app / "Contents" / "Resources" / "repoprompt-mcp").unlink()
+            (app / "Contents" / "Resources" / "agentry-mcp").unlink()
 
         def missing_bin_link(app: Path) -> None:
-            (app / "Contents" / "Resources" / "bin" / "repoprompt-mcp").unlink()
+            (app / "Contents" / "Resources" / "bin" / "agentry-mcp").unlink()
 
         def alternate_in_app_target(app: Path) -> None:
-            link = app / "Contents" / "Resources" / "repoprompt-mcp"
+            link = app / "Contents" / "Resources" / "agentry-mcp"
             link.unlink()
-            link.symlink_to("../MacOS/RepoPrompt")
+            link.symlink_to("../MacOS/Agentry")
 
         for label, mutate in (
             ("helper symlink", helper_symlink),
@@ -1289,7 +1347,7 @@ SIGNING_TEAM_ID=648A27MST5
 
         signed_smoke = release_workflow.split("\n  smoke-signed-helper:", 1)[1]
         self.assertNotIn("environment: release", signed_smoke)
-        self.assertIn("RepoPrompt-CE-signed-release-zip", signed_smoke)
+        self.assertIn("Agentry-signed-release-zip", signed_smoke)
         self.assertIn("checksum_manifests=(signed-release/*SHA256SUMS)", signed_smoke)
         self.assertIn("artifact_manifests=(signed-release/*-artifact-manifest.json)", signed_smoke)
         self.assertIn("Expected exactly one signed ZIP checksum manifest", signed_smoke)
@@ -1300,7 +1358,7 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn("validate_app_architectures.sh", signed_smoke)
         self.assertIn("write_app_artifact_manifest.py verify", signed_smoke)
         self.assertIn("smoke_packaged_mcp_roundtrip.sh", signed_smoke)
-        self.assertIn('"extracted/RepoPrompt CE.app"', signed_smoke)
+        self.assertIn('"extracted/Agentry.app"', signed_smoke)
         self.assertIn("env -i", signed_smoke)
         self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"', signed_smoke)
         self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"', signed_smoke)
@@ -1322,7 +1380,7 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn("validate_app_architectures.sh", reviewed_smoke)
         self.assertIn("write_app_artifact_manifest.py verify", reviewed_smoke)
         self.assertIn("smoke_packaged_mcp_roundtrip.sh", reviewed_smoke)
-        self.assertIn('"extracted/RepoPrompt CE.app"', reviewed_smoke)
+        self.assertIn('"extracted/Agentry.app"', reviewed_smoke)
         self.assertIn("env -i", reviewed_smoke)
         self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"', reviewed_smoke)
         self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"', reviewed_smoke)
@@ -1350,14 +1408,14 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn('security delete-keychain "$KEYCHAIN_PATH" || true', p12_import)
         final_cleanup = publish_job.split(cleanup_step, 1)[1].split(upload_step, 1)[0]
         self.assertIn("if: always()", final_cleanup)
-        self.assertIn('KEYCHAIN_PATH="$RUNNER_TEMP/repoprompt-release.keychain-db"', final_cleanup)
-        self.assertIn('CERTIFICATE_PATH="$RUNNER_TEMP/repoprompt-release.p12"', final_cleanup)
+        self.assertIn('KEYCHAIN_PATH="$RUNNER_TEMP/agentry-release.keychain-db"', final_cleanup)
+        self.assertIn('CERTIFICATE_PATH="$RUNNER_TEMP/agentry-release.p12"', final_cleanup)
         self.assertIn('rm -f "$CERTIFICATE_PATH"', final_cleanup)
-        self.assertIn('rm -rf "$RUNNER_TEMP/repoprompt-release-secrets"', final_cleanup)
+        self.assertIn('rm -rf "$RUNNER_TEMP/agentry-release-secrets"', final_cleanup)
 
     def test_official_release_stage_and_publish_require_sentry_linking(self) -> None:
         env = os.environ.copy()
-        env["REPOPROMPT_ENABLE_SENTRY"] = "0"
+        env["AGENTRY_ENABLE_SENTRY"] = "0"
         for mode, phase in (("stage-publish", "staging"), ("publish-staged", "publishing")):
             with self.subTest(mode=mode):
                 result = subprocess.run(
@@ -1368,7 +1426,7 @@ SIGNING_TEAM_ID=648A27MST5
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(
-                    f"Official release {phase} requires REPOPROMPT_ENABLE_SENTRY=1",
+                    f"Official release {phase} requires AGENTRY_ENABLE_SENTRY=1",
                     result.stderr,
                 )
 
@@ -1378,10 +1436,10 @@ SIGNING_TEAM_ID=648A27MST5
         policy = SCRIPT_DIR / "release_sentry_symbols.sh"
         uploader = SCRIPT_DIR / "upload_sentry_debug_symbols.sh"
         symbols = temp_dir / "symbols"
-        dwarf = symbols / "RepoPrompt.dSYM" / "Contents" / "Resources" / "DWARF" / "RepoPrompt"
+        dwarf = symbols / "Agentry.dSYM" / "Contents" / "Resources" / "DWARF" / "Agentry"
         dwarf.parent.mkdir(parents=True)
         dwarf.write_text("fixture-debug-symbols", encoding="utf-8")
-        helper_dwarf = symbols / "repoprompt-mcp.dSYM" / "Contents" / "Resources" / "DWARF" / "repoprompt-mcp"
+        helper_dwarf = symbols / "agentry-mcp.dSYM" / "Contents" / "Resources" / "DWARF" / "agentry-mcp"
         helper_dwarf.parent.mkdir(parents=True)
         helper_dwarf.write_text("fixture-helper-debug-symbols", encoding="utf-8")
         staged_symbols = temp_dir / "stage" / ".build" / "sentry-symbols" / "release"
@@ -1407,7 +1465,7 @@ printf '%s' "${SENTRY_AUTH_TOKEN:-}" > "$TOKEN_CAPTURE"
         env.update(
             {
                 "PATH": f"{temp_dir}:{env.get('PATH', '')}",
-                "REPOPROMPT_ENABLE_SENTRY": "1",
+                "AGENTRY_ENABLE_SENTRY": "1",
                 "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE": str(token_file),
                 "REPOPROMPT_SENTRY_ORG": "fixture-org",
                 "REPOPROMPT_SENTRY_PROJECT": "fixture-project",
@@ -1426,10 +1484,10 @@ printf '%s' "${SENTRY_AUTH_TOKEN:-}" > "$TOKEN_CAPTURE"
                 str(symbols),
                 str(staged_symbols),
                 str(uploader),
-                "RepoPrompt.dSYM",
-                "RepoPrompt",
-                "repoprompt-mcp.dSYM",
-                "repoprompt-mcp",
+                "Agentry.dSYM",
+                "Agentry",
+                "agentry-mcp.dSYM",
+                "agentry-mcp",
             ],
             env=env,
             text=True,
@@ -1438,7 +1496,7 @@ printf '%s' "${SENTRY_AUTH_TOKEN:-}" > "$TOKEN_CAPTURE"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            (staged_symbols / "RepoPrompt.dSYM" / "Contents" / "Resources" / "DWARF" / "RepoPrompt").read_text(
+            (staged_symbols / "Agentry.dSYM" / "Contents" / "Resources" / "DWARF" / "Agentry").read_text(
                 encoding="utf-8"
             ),
             "fixture-debug-symbols",
@@ -1446,11 +1504,11 @@ printf '%s' "${SENTRY_AUTH_TOKEN:-}" > "$TOKEN_CAPTURE"
         self.assertEqual(
             (
                 staged_symbols
-                / "repoprompt-mcp.dSYM"
+                / "agentry-mcp.dSYM"
                 / "Contents"
                 / "Resources"
                 / "DWARF"
-                / "repoprompt-mcp"
+                / "agentry-mcp"
             ).read_text(encoding="utf-8"),
             "fixture-helper-debug-symbols",
         )
@@ -1469,11 +1527,11 @@ printf '%s' "${SENTRY_AUTH_TOKEN:-}" > "$TOKEN_CAPTURE"
         )
         self.assertNotIn(token, result.stdout + result.stderr)
 
-        app_bundle = temp_dir / "RepoPrompt.app"
+        app_bundle = temp_dir / "Agentry.app"
         app_macos = app_bundle / "Contents" / "MacOS"
         app_macos.mkdir(parents=True)
-        (app_macos / "RepoPrompt").write_text("fixture-app-executable", encoding="utf-8")
-        (app_macos / "repoprompt-mcp").write_text("fixture-helper-executable", encoding="utf-8")
+        (app_macos / "Agentry").write_text("fixture-app-executable", encoding="utf-8")
+        (app_macos / "agentry-mcp").write_text("fixture-helper-executable", encoding="utf-8")
         fake_dwarfdump = temp_dir / "dwarfdump"
         fake_dwarfdump.write_text(
             """#!/usr/bin/env bash
@@ -1485,18 +1543,15 @@ if [[ "${UUID_MODE:-match}" == "malformed" ]]; then
     printf 'unexpected uuid output\\n'
     exit 0
 fi
-if [[ "$path" == *repoprompt-mcp* ]]; then
-    first_uuid="33333333-3333-3333-3333-333333333333"
-    second_uuid="44444444-4444-4444-4444-444444444444"
+if [[ "$path" == *agentry-mcp* ]]; then
+    uuid="33333333-3333-3333-3333-333333333333"
     if [[ "${UUID_MODE:-match}" == "mismatch" && "$path" == *.dSYM/* ]]; then
-        first_uuid="55555555-5555-5555-5555-555555555555"
+        uuid="55555555-5555-5555-5555-555555555555"
     fi
 else
-    first_uuid="11111111-1111-1111-1111-111111111111"
-    second_uuid="22222222-2222-2222-2222-222222222222"
+    uuid="11111111-1111-1111-1111-111111111111"
 fi
-printf 'UUID: %s (arm64) %s\\n' "$first_uuid" "$path"
-printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
+printf 'UUID: %s (arm64) %s\\n' "$uuid" "$path"
 """,
             encoding="utf-8",
         )
@@ -1514,10 +1569,10 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
             str(policy),
             str(symbols),
             str(app_bundle),
-            "RepoPrompt.dSYM",
-            "RepoPrompt",
-            "repoprompt-mcp.dSYM",
-            "repoprompt-mcp",
+            "Agentry.dSYM",
+            "Agentry",
+            "agentry-mcp.dSYM",
+            "agentry-mcp",
         ]
 
         uuid_result = subprocess.run(uuid_args, env=uuid_env, text=True, capture_output=True)
@@ -1528,11 +1583,11 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
         shutil.copytree(symbols, empty_symbols)
         (
             empty_symbols
-            / "repoprompt-mcp.dSYM"
+            / "agentry-mcp.dSYM"
             / "Contents"
             / "Resources"
             / "DWARF"
-            / "repoprompt-mcp"
+            / "agentry-mcp"
         ).write_bytes(b"")
         empty_args = list(uuid_args)
         empty_args[5] = str(empty_symbols)
@@ -1561,7 +1616,7 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
         self.assertIn("Malformed Mach-O UUID output", malformed_result.stderr)
         self.assertNotIn(token, malformed_result.stdout + malformed_result.stderr)
 
-        nested_symlink = symbols / "RepoPrompt.dSYM" / "Contents" / "linked-debug-file"
+        nested_symlink = symbols / "Agentry.dSYM" / "Contents" / "linked-debug-file"
         nested_symlink.symlink_to(dwarf)
         symlink_result = subprocess.run(
             [
@@ -1571,10 +1626,10 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
                 "release-sentry-symbol-policy-symlink-test",
                 str(policy),
                 str(symbols),
-                "RepoPrompt.dSYM",
-                "RepoPrompt",
-                "repoprompt-mcp.dSYM",
-                "repoprompt-mcp",
+                "Agentry.dSYM",
+                "Agentry",
+                "agentry-mcp.dSYM",
+                "agentry-mcp",
             ],
             env=env,
             text=True,
@@ -1594,10 +1649,10 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
                 "release-sentry-symbol-policy-missing-test",
                 str(policy),
                 str(missing),
-                "RepoPrompt.dSYM",
-                "RepoPrompt",
-                "repoprompt-mcp.dSYM",
-                "repoprompt-mcp",
+                "Agentry.dSYM",
+                "Agentry",
+                "agentry-mcp.dSYM",
+                "agentry-mcp",
             ],
             env=env,
             text=True,
@@ -1608,7 +1663,7 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
         self.assertNotIn(token, missing_result.stdout + missing_result.stderr)
 
         partial_symbols = temp_dir / "partial-symbols"
-        (partial_symbols / "RepoPrompt.dSYM").mkdir(parents=True)
+        (partial_symbols / "Agentry.dSYM").mkdir(parents=True)
         partial_result = subprocess.run(
             [
                 "bash",
@@ -1617,10 +1672,10 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
                 "release-sentry-symbol-policy-partial-test",
                 str(policy),
                 str(partial_symbols),
-                "RepoPrompt.dSYM",
-                "RepoPrompt",
-                "repoprompt-mcp.dSYM",
-                "repoprompt-mcp",
+                "Agentry.dSYM",
+                "Agentry",
+                "agentry-mcp.dSYM",
+                "agentry-mcp",
             ],
             env=env,
             text=True,
@@ -1631,7 +1686,7 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
         self.assertNotIn(token, partial_result.stdout + partial_result.stderr)
 
         disabled_destination = temp_dir / "disabled-stage"
-        disabled_env = env | {"REPOPROMPT_ENABLE_SENTRY": "0"}
+        disabled_env = env | {"AGENTRY_ENABLE_SENTRY": "0"}
         disabled_result = subprocess.run(
             [
                 "bash",
@@ -1643,10 +1698,10 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
                 str(missing),
                 str(disabled_destination),
                 str(temp_dir / "missing-uploader"),
-                "RepoPrompt.dSYM",
-                "RepoPrompt",
-                "repoprompt-mcp.dSYM",
-                "repoprompt-mcp",
+                "Agentry.dSYM",
+                "Agentry",
+                "agentry-mcp.dSYM",
+                "agentry-mcp",
             ],
             env=disabled_env,
             text=True,
@@ -1661,7 +1716,7 @@ printf 'UUID: %s (x86_64) %s\\n' "$second_uuid" "$path"
         self.addCleanup(shutil.rmtree, temp_dir, True)
         symbols = temp_dir / "symbols"
         symbols.mkdir()
-        (symbols / "RepoPrompt.dSYM").mkdir()
+        (symbols / "Agentry.dSYM").mkdir()
         ambient_token = "sntrys_wrong_ambient_secret_token"
         token = "sntrys_fixture_secret_token"
         token_file = temp_dir / "sentry-token"
@@ -1856,7 +1911,7 @@ sys.stdout.write(str(status))
         env.update(
             {
                 "PATH": f"{temp_dir}:{env.get('PATH', '')}",
-                "REPOPROMPT_ENABLE_SENTRY": "1",
+                "AGENTRY_ENABLE_SENTRY": "1",
                 "SENTRY_AUTH_TOKEN": "fixture-token",
                 "REPOPROMPT_SENTRY_ORG": "fixture-org",
                 "REPOPROMPT_SENTRY_PROJECT": "fixture-project",
@@ -1964,15 +2019,15 @@ sys.stdout.write(str(status))
         self.assertIn("SWIFT_BUILD_ARGS+=(-debug-info-format dwarf)", package_script)
         self.assertIn('run xcrun dsymutil "$BUILD_DIR/$exe" -o "$SENTRY_SYMBOLS_DIR/$exe.dSYM"', package_script)
         self.assertIn('if truthy "${REPOPROMPT_UPLOAD_SENTRY_SYMBOLS:-}"; then', package_script)
-        self.assertIn("REPOPROMPT_UPLOAD_SENTRY_SYMBOLS requires REPOPROMPT_ENABLE_SENTRY=1", package_script)
+        self.assertIn("REPOPROMPT_UPLOAD_SENTRY_SYMBOLS requires AGENTRY_ENABLE_SENTRY=1", package_script)
         self.assertIn("REPOPROMPT_UPLOAD_SENTRY_SYMBOLS requires SENTRY_AUTH_TOKEN or REPOPROMPT_SENTRY_AUTH_TOKEN_FILE", package_script)
         self.assertIn("SWIFT_BUILD_ARGS+=(-debug-info-format dwarf)", universal_builder)
 
         self.assertIn('require_file "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh"', release_script)
         self.assertIn('require_file "$CONTROL_PLANE_SCRIPTS_DIR/release_sentry_symbols.sh"', release_script)
         self.assertIn('source "$CONTROL_PLANE_SCRIPTS_DIR/release_sentry_symbols.sh"', release_script)
-        self.assertIn("Official release staging requires REPOPROMPT_ENABLE_SENTRY=1", release_script)
-        self.assertIn("Official release publishing requires REPOPROMPT_ENABLE_SENTRY=1", release_script)
+        self.assertIn("Official release staging requires AGENTRY_ENABLE_SENTRY=1", release_script)
+        self.assertIn("Official release publishing requires AGENTRY_ENABLE_SENTRY=1", release_script)
         self.assertIn('SENTRY_SYMBOLS_DIR="$ROOT_DIR/.build/sentry-symbols/release"', release_script)
         self.assertIn("stage_release_sentry_symbols", release_script)
         self.assertIn("upload_release_sentry_symbols", release_script)
@@ -2033,7 +2088,7 @@ sys.stdout.write(str(status))
 
         stage_job = release_workflow.split("\n  stage:", 1)[1].split("\n  publish:", 1)[0]
         publish_job = release_workflow.split("\n  publish:", 1)[1].split("\n  smoke-signed-helper:", 1)[0]
-        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', stage_job)
+        self.assertIn('AGENTRY_ENABLE_SENTRY: "1"', stage_job)
         self.assertNotIn("SENTRY_AUTH_TOKEN", stage_job)
         self.assertIn("Install Sentry CLI when symbol upload is configured", publish_job)
         self.assertIn("brew install getsentry/tools/sentry-cli", publish_job)
@@ -2042,7 +2097,7 @@ sys.stdout.write(str(status))
             publish_job.index("Install Sentry CLI when symbol upload is configured"),
             publish_job.index("Sign, notarize, and create draft release"),
         )
-        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', publish_job)
+        self.assertIn('AGENTRY_ENABLE_SENTRY: "1"', publish_job)
         self.assertIn("REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}", publish_job)
         self.assertIn("REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}", publish_job)
 
@@ -2056,7 +2111,7 @@ sys.stdout.write(str(status))
         self.assertIn("Remove Sentry promotion token file", promote_job)
         self.assertNotIn("sentry-cli", promote_job)
 
-        self.assertIn('"REPOPROMPT_ENABLE_SENTRY"', conductor)
+        self.assertIn('"AGENTRY_ENABLE_SENTRY"', conductor)
         self.assertIn('"REPOPROMPT_UPLOAD_SENTRY_SYMBOLS"', conductor)
         self.assertIn('"REPOPROMPT_SENTRY_AUTH_TOKEN_FILE"', conductor)
         self.assertIn('"REPOPROMPT_SENTRY_ORG"', conductor)
@@ -2065,22 +2120,22 @@ sys.stdout.write(str(status))
 
     def test_staged_release_extractor_rejects_alternate_in_app_cli_target(self) -> None:
         for relative, alternate_target in (
-            ("Contents/Resources/repoprompt-mcp", "../MacOS/RepoPrompt"),
-            ("Contents/Resources/bin/repoprompt-mcp", "../../MacOS/RepoPrompt"),
+            ("Contents/Resources/agentry-mcp", "../MacOS/Agentry"),
+            ("Contents/Resources/bin/agentry-mcp", "../../MacOS/Agentry"),
         ):
             with self.subTest(relative=relative):
                 temp_dir = Path(tempfile.mkdtemp())
                 self.addCleanup(shutil.rmtree, temp_dir, True)
                 archive = temp_dir / "stage.zip"
                 destination = temp_dir / "extract"
-                info = zipfile.ZipInfo(f".build/release/RepoPrompt.app/{relative}")
+                info = zipfile.ZipInfo(f".build/release/Agentry.app/{relative}")
                 info.create_system = 3
                 info.external_attr = (stat.S_IFLNK | 0o777) << 16
                 with zipfile.ZipFile(archive, "w") as output:
                     output.writestr(info, alternate_target)
 
                 result = subprocess.run(
-                    [str(SCRIPT_DIR / "extract_staged_release.py"), str(archive), str(destination), "RepoPrompt"],
+                    [str(SCRIPT_DIR / "extract_staged_release.py"), str(archive), str(destination), "Agentry"],
                     text=True,
                     capture_output=True,
                 )
@@ -2090,12 +2145,12 @@ sys.stdout.write(str(status))
 
     def test_staged_release_validator_rejects_alternate_in_app_cli_target(self) -> None:
         for relative, alternate_target in (
-            ("Contents/Resources/repoprompt-mcp", "../MacOS/RepoPrompt"),
-            ("Contents/Resources/bin/repoprompt-mcp", "../../MacOS/RepoPrompt"),
+            ("Contents/Resources/agentry-mcp", "../MacOS/Agentry"),
+            ("Contents/Resources/bin/agentry-mcp", "../../MacOS/Agentry"),
         ):
             with self.subTest(relative=relative):
                 approved, staged, scripts = self.make_staged_release_fixture()
-                link = staged / ".build" / "release" / "RepoPrompt.app" / relative
+                link = staged / ".build" / "release" / "Agentry.app" / relative
                 link.unlink()
                 link.symlink_to(alternate_target)
 
@@ -2113,7 +2168,7 @@ sys.stdout.write(str(status))
         self.assertIn("OK: staged release payload matches approved source", result.stdout)
 
     def test_public_app_validation_uses_approved_manifest_from_extracted_stage_layout(self) -> None:
-        for script_name in ("release.sh", "main_tip_release.sh"):
+        for script_name in ("release.sh", "main_beta_release.sh"):
             with self.subTest(script=script_name):
                 approved, staged, scripts = self.make_staged_release_fixture()
                 self.assertFalse((staged / "Vendor").exists())
@@ -2142,8 +2197,8 @@ sys.stdout.write(str(status))
 
     def test_staged_release_validator_rejects_missing_embedded_codex_package_target(self) -> None:
         approved, staged, scripts = self.make_staged_release_fixture()
-        bundle = staged / ".build" / "release" / "RepoPrompt.app" / "Contents" / "Resources" / "BundledRuntimes" / "Codex"
-        shutil.rmtree(bundle / "x86_64-apple-darwin")
+        bundle = staged / ".build" / "release" / "Agentry.app" / "Contents" / "Resources" / "BundledRuntimes" / "Codex"
+        shutil.rmtree(bundle / "aarch64-apple-darwin")
 
         result = self.run_staged_validation(approved, staged, scripts)
 
@@ -2152,7 +2207,7 @@ sys.stdout.write(str(status))
 
     def test_staged_release_validator_rejects_keyboard_shortcuts_app_root_bundle(self) -> None:
         approved, staged, scripts = self.make_staged_release_fixture()
-        app = staged / ".build" / "release" / "RepoPrompt.app"
+        app = staged / ".build" / "release" / "Agentry.app"
         self.write_keyboard_shortcuts_bundle(app / "KeyboardShortcuts_KeyboardShortcuts.bundle")
 
         result = self.run_staged_validation(approved, staged, scripts)
@@ -2163,7 +2218,7 @@ sys.stdout.write(str(status))
 
     def test_staged_release_validator_rejects_missing_keyboard_shortcuts_resources_bundle(self) -> None:
         approved, staged, scripts = self.make_staged_release_fixture()
-        app = staged / ".build" / "release" / "RepoPrompt.app"
+        app = staged / ".build" / "release" / "Agentry.app"
         shutil.rmtree(app / "Contents" / "Resources" / "KeyboardShortcuts_KeyboardShortcuts.bundle")
 
         result = self.run_staged_validation(approved, staged, scripts)
@@ -2175,7 +2230,7 @@ sys.stdout.write(str(status))
     def test_resource_bundle_normalizer_rewrites_flat_keyboard_shortcuts_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            app = root / "RepoPrompt.app"
+            app = root / "Agentry.app"
             bundle = app / "Contents" / "Resources" / "KeyboardShortcuts_KeyboardShortcuts.bundle"
             (bundle / "en.lproj").mkdir(parents=True)
             (bundle / "Info.plist").write_text("<plist/>\n", encoding="utf-8")
@@ -2195,8 +2250,8 @@ sys.stdout.write(str(status))
 
     def test_staged_release_validator_rejects_missing_keyboard_shortcuts_patch_marker(self) -> None:
         approved, staged, scripts = self.make_staged_release_fixture()
-        app = staged / ".build" / "release" / "RepoPrompt.app"
-        (app / "Contents" / "MacOS" / "RepoPrompt").write_text("unpatched fixture\n", encoding="utf-8")
+        app = staged / ".build" / "release" / "Agentry.app"
+        (app / "Contents" / "MacOS" / "Agentry").write_text("unpatched fixture\n", encoding="utf-8")
 
         result = self.run_staged_validation(approved, staged, scripts)
 
@@ -2247,7 +2302,7 @@ sys.stdout.write(str(status))
         shared_validator = (SCRIPT_DIR / "validate_required_swiftpm_resource_bundles.sh").read_text(encoding="utf-8")
 
         dependency_patch = package_script.index("patch_keyboard_shortcuts_resource_lookup.sh")
-        first_build = package_script.index('phase "Building $APP_NAME ($CONF, host-native)"')
+        first_build = package_script.index('phase "Building $APP_NAME ($CONF, arm64)"')
         universal_dependency_patch = universal_builder.index("patch_keyboard_shortcuts_resource_lookup.sh")
         universal_first_build = universal_builder.index("swift build")
         broad_resources_copy = package_script.index('for bundle in "$BUILD_DIR"/*.bundle; do run cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/"; done')
@@ -2568,18 +2623,18 @@ shutil.copyfile(os.environ["FAKE_SWIFTFORMAT_ARCHIVE"], output)
         )
         self.assertNotIn("cancel-in-progress: true", concurrency_block)
 
-    def test_main_tip_workflow_keeps_tip_separate_and_uses_hardened_smoke(self) -> None:
-        tip_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-tip.yml").read_text(encoding="utf-8")
-        tip_script = (SCRIPT_DIR / "main_tip_release.sh").read_text(encoding="utf-8")
+    def test_main_beta_workflow_keeps_beta_separate_and_uses_hardened_smoke(self) -> None:
+        beta_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-beta.yml").read_text(encoding="utf-8")
+        beta_script = (SCRIPT_DIR / "main_beta_release.sh").read_text(encoding="utf-8")
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
 
-        self.assertIn("name: Publish Tip", tip_workflow)
-        concurrency_block = tip_workflow.split("concurrency:", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("name: Publish Beta", beta_workflow)
+        concurrency_block = beta_workflow.split("concurrency:", 1)[1].split("\npermissions:", 1)[0]
         normalized_concurrency = " ".join(concurrency_block.split())
         self.assertIn(
             "group: >- ${{ (github.event_name == 'workflow_dispatch' || "
             "github.event.workflow_run.conclusion == 'success') && "
-            "'main-tip-channel' || format('main-tip-skipped-{0}', github.run_id) }}",
+            "'main-beta-channel' || format('main-beta-skipped-{0}', github.run_id) }}",
             normalized_concurrency,
         )
         self.assertIn(
@@ -2588,41 +2643,43 @@ shutil.copyfile(os.environ["FAKE_SWIFTFORMAT_ARCHIVE"], output)
             normalized_concurrency,
         )
         self.assertNotIn("cancel-in-progress: true", concurrency_block)
-        self.assertIn("should-publish", tip_workflow)
-        self.assertIn("stable-appcast.xml", tip_workflow)
-        self.assertIn('build_number="$stable_build_number.$((build_sequence / 100)).$((build_sequence % 100))"', tip_workflow)
-        self.assertIn("environment: tip-release", tip_workflow)
-        self.assertIn("TIP_UPDATE_REPOSITORY_TOKEN", tip_workflow)
-        self.assertIn("repoprompt-ce-tip-updates", tip_workflow)
-        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"', tip_workflow)
-        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"', tip_workflow)
-        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_DIAGNOSTICS_DIR: ${{ runner.temp }}/tip-smoke-diagnostics', tip_workflow)
-        self.assertIn("Upload Tip smoke diagnostics", tip_workflow)
-        self.assertIn("RepoPrompt-CE-tip-smoke-diagnostics", tip_workflow)
-        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_TIMEOUT"', tip_workflow)
+        self.assertIn("should-publish", beta_workflow)
+        self.assertIn("stable-appcast.xml", beta_workflow)
+        self.assertIn('build_number="$stable_build_number.$((build_sequence / 100)).$((build_sequence % 100))"', beta_workflow)
+        self.assertIn("environment: beta-release", beta_workflow)
+        self.assertIn("BETA_UPDATE_REPOSITORY_TOKEN", beta_workflow)
+        self.assertIn("BETA_UPDATE_REPOSITORY: ${{ vars.BETA_UPDATE_REPOSITORY }}", beta_workflow)
+        self.assertNotIn("repoprompt-ce-beta-updates", beta_workflow)
+        self.assertIn('"$AGENTRY_SPARKLE_STABLE_FEED_URL"', beta_workflow)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"', beta_workflow)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"', beta_workflow)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_DIAGNOSTICS_DIR: ${{ runner.temp }}/beta-smoke-diagnostics', beta_workflow)
+        self.assertIn("Upload Beta smoke diagnostics", beta_workflow)
+        self.assertIn("Agentry-beta-smoke-diagnostics", beta_workflow)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_TIMEOUT"', beta_workflow)
         self.assertIn(
             'REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT"',
-            tip_workflow,
+            beta_workflow,
         )
-        self.assertIn("Check out approved tip source as data", tip_workflow)
-        self.assertIn("extract_staged_release.py", tip_workflow)
-        self.assertIn("RELEASE_COMMIT: ${{ needs.setup.outputs.commit }}", tip_workflow)
-        self.assertIn("REPOPROMPT_APPROVED_SOURCE_ROOT: ${{ github.workspace }}/approved-source", tip_workflow)
-        self.assertIn("REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE: ${{ needs.setup.outputs.build-number }}", tip_workflow)
-        self.assertIn("tip-source/dist/*-metadata.json", tip_workflow)
-        self.assertNotIn("stable-release-channel", tip_workflow)
-        self.assertNotIn("release-draft-creation", tip_workflow)
-        self.assertNotIn("PUBLIC_UPDATE_REPOSITORY_TOKEN", tip_workflow)
+        self.assertIn("Check out approved beta source as data", beta_workflow)
+        self.assertIn("extract_staged_release.py", beta_workflow)
+        self.assertIn("RELEASE_COMMIT: ${{ needs.setup.outputs.commit }}", beta_workflow)
+        self.assertIn("REPOPROMPT_APPROVED_SOURCE_ROOT: ${{ github.workspace }}/approved-source", beta_workflow)
+        self.assertIn("REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE: ${{ needs.setup.outputs.build-number }}", beta_workflow)
+        self.assertIn("beta-source/dist/*-metadata.json", beta_workflow)
+        self.assertNotIn("stable-release-channel", beta_workflow)
+        self.assertNotIn("release-draft-creation", beta_workflow)
+        self.assertNotIn("PUBLIC_UPDATE_REPOSITORY_TOKEN", beta_workflow)
 
-        stage_job = tip_workflow.split("\n  stage:", 1)[1].split("\n  sign:", 1)[0]
-        sign_job = tip_workflow.split("\n  sign:", 1)[1].split("\n  smoke-no-secrets:", 1)[0]
-        sign_step = sign_job.split("      - name: Sign and notarize staged tip", 1)[1].split(
+        stage_job = beta_workflow.split("\n  stage:", 1)[1].split("\n  sign:", 1)[0]
+        sign_job = beta_workflow.split("\n  sign:", 1)[1].split("\n  smoke-no-secrets:", 1)[0]
+        sign_step = sign_job.split("      - name: Sign and notarize staged beta", 1)[1].split(
             "      - name: Remove ephemeral keychain", 1
         )[0]
         cleanup_step = sign_job.split("      - name: Remove ephemeral keychain", 1)[1].split(
-            "      - name: Upload signed tip assets", 1
+            "      - name: Upload signed beta assets", 1
         )[0]
-        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', stage_job)
+        self.assertIn('AGENTRY_ENABLE_SENTRY: "1"', stage_job)
         for protected_name in (
             "SENTRY_DSN",
             "SENTRY_AUTH_TOKEN",
@@ -2631,88 +2688,89 @@ shutil.copyfile(os.environ["FAKE_SWIFTFORMAT_ARCHIVE"], output)
             "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE",
         ):
             self.assertNotIn(protected_name, stage_job)
-        self.assertIn("Install Sentry CLI for Tip symbol upload", sign_job)
-        self.assertIn("Prepare Tip Sentry auth token file", sign_job)
+        self.assertIn("Install Sentry CLI for Beta symbol upload", sign_job)
+        self.assertIn("Prepare Beta Sentry auth token file", sign_job)
         self.assertIn("chmod 600", sign_job)
-        self.assertIn('mkdir -p "$RUNNER_TEMP/repoprompt-tip-secrets"', sign_job)
-        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', sign_step)
+        self.assertIn('mkdir -p "$RUNNER_TEMP/agentry-beta-secrets"', sign_job)
+        self.assertIn('AGENTRY_ENABLE_SENTRY: "1"', sign_step)
         self.assertIn("SENTRY_DSN: ${{ secrets.SENTRY_DSN }}", sign_step)
         self.assertIn("REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}", sign_step)
         self.assertIn("REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}", sign_step)
-        self.assertIn("REPOPROMPT_SENTRY_AUTH_TOKEN_FILE: ${{ runner.temp }}/repoprompt-tip-secrets/sentry-auth-token", sign_step)
+        self.assertIn("REPOPROMPT_SENTRY_AUTH_TOKEN_FILE: ${{ runner.temp }}/agentry-beta-secrets/sentry-auth-token", sign_step)
         self.assertNotIn("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}", sign_step)
         self.assertIn("if: always()", cleanup_step)
-        self.assertIn('rm -rf "$RUNNER_TEMP/repoprompt-tip-secrets"', cleanup_step)
-        self.assertEqual(tip_workflow.count("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}"), 1)
-        self.assertEqual(tip_workflow.count("SENTRY_DSN: ${{ secrets.SENTRY_DSN }}"), 1)
-        self.assertEqual(tip_workflow.count("REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}"), 1)
-        self.assertEqual(tip_workflow.count("REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}"), 1)
+        self.assertIn('rm -rf "$RUNNER_TEMP/agentry-beta-secrets"', cleanup_step)
+        self.assertEqual(beta_workflow.count("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}"), 1)
+        self.assertEqual(beta_workflow.count("SENTRY_DSN: ${{ secrets.SENTRY_DSN }}"), 1)
+        self.assertEqual(beta_workflow.count("REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}"), 1)
+        self.assertEqual(beta_workflow.count("REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}"), 1)
         self.assertEqual(
-            tip_workflow.count(
-                "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE: ${{ runner.temp }}/repoprompt-tip-secrets/sentry-auth-token"
+            beta_workflow.count(
+                "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE: ${{ runner.temp }}/agentry-beta-secrets/sentry-auth-token"
             ),
             1,
         )
         self.assertLess(
-            sign_job.index("Install Sentry CLI for Tip symbol upload"),
-            sign_job.index("Sign and notarize staged tip"),
+            sign_job.index("Install Sentry CLI for Beta symbol upload"),
+            sign_job.index("Sign and notarize staged beta"),
         )
         self.assertLess(
-            sign_job.index("Prepare Tip Sentry auth token file"),
-            sign_job.index("Sign and notarize staged tip"),
+            sign_job.index("Prepare Beta Sentry auth token file"),
+            sign_job.index("Sign and notarize staged beta"),
         )
         self.assertLess(
-            sign_job.index("Sign and notarize staged tip"),
-            sign_job.index("Upload signed tip assets for smoke and publish"),
+            sign_job.index("Sign and notarize staged beta"),
+            sign_job.index("Upload signed beta assets for smoke and publish"),
         )
 
-        self.assertIn('TIP_BUILD_NUMBER="$BUILD_NUMBER.$((TIP_BUILD_SEQUENCE / 100)).$((TIP_BUILD_SEQUENCE % 100))"', tip_script)
+        self.assertIn('BETA_BUILD_NUMBER="$BUILD_NUMBER.$((BETA_BUILD_SEQUENCE / 100)).$((BETA_BUILD_SEQUENCE % 100))"', beta_script)
         self.assertLess(
-            tip_script.index('if [[ -z "${TIP_BUILD_NUMBER:-}" ]]'),
-            tip_script.index('git rev-list --count "$TIP_COMMIT"'),
+            beta_script.index('if [[ -z "${BETA_BUILD_NUMBER:-}" ]]'),
+            beta_script.index('git rev-list --count "$BETA_COMMIT"'),
         )
-        self.assertIn('TIP_TAG="${TIP_TAG:-tip-$TIP_SHORT_SHA}"', tip_script)
-        self.assertIn('TIP_UPDATE_REPOSITORY="${TIP_UPDATE_REPOSITORY:-repoprompt/repoprompt-ce-tip-updates}"', tip_script)
-        self.assertNotIn("--prerelease", tip_script)
-        self.assertIn("--latest", tip_script)
-        self.assertIn("--target main", tip_script)
-        self.assertIn('fail "TIP_UPDATE_REPOSITORY must not target the source or stable update repository"', tip_script)
-        self.assertIn('REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER"', tip_script)
-        self.assertEqual(tip_script.count('REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER"'), 3)
-        self.assertNotIn('BUILD_NUMBER="$TIP_BUILD_NUMBER"', tip_script)
-        self.assertIn("stage|sign|publish-tip", tip_script)
-        self.assertIn('source "$CONTROL_PLANE_SCRIPTS_DIR/release_sentry_symbols.sh"', tip_script)
-        self.assertIn("stage_release_sentry_symbols", tip_script)
-        self.assertIn("require_tip_sentry_configuration", tip_script)
-        self.assertIn("require_release_sentry_symbols_when_enabled", tip_script)
-        self.assertIn("upload_release_sentry_symbols", tip_script)
-        self.assertIn("final Tip artifact manifest must record telemetry_enabled=true", tip_script)
-        stage_tip = tip_script.split("stage_tip() {", 1)[1].split("\n}", 1)[0]
-        self.assertIn("REPOPROMPT_ENABLE_SENTRY=1", stage_tip)
-        self.assertNotIn("SENTRY_DSN", stage_tip)
-        self.assertNotIn("SENTRY_AUTH_TOKEN", stage_tip)
+        self.assertIn('BETA_TAG="${BETA_TAG:-beta-$BETA_SHORT_SHA}"', beta_script)
+        self.assertIn('BETA_UPDATE_REPOSITORY="${BETA_UPDATE_REPOSITORY:-}"', beta_script)
+        self.assertIn("validate_beta_sparkle_configuration", beta_script)
+        self.assertNotIn("--prerelease", beta_script)
+        self.assertIn("--latest", beta_script)
+        self.assertIn("--target main", beta_script)
+        self.assertIn('fail "BETA_UPDATE_REPOSITORY must not target the source or stable update repository"', beta_script)
+        self.assertIn('REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$BETA_BUILD_NUMBER"', beta_script)
+        self.assertEqual(beta_script.count('REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$BETA_BUILD_NUMBER"'), 3)
+        self.assertNotIn('BUILD_NUMBER="$BETA_BUILD_NUMBER"', beta_script)
+        self.assertIn("stage|sign|publish-beta", beta_script)
+        self.assertIn('source "$CONTROL_PLANE_SCRIPTS_DIR/release_sentry_symbols.sh"', beta_script)
+        self.assertIn("stage_release_sentry_symbols", beta_script)
+        self.assertIn("require_beta_sentry_configuration", beta_script)
+        self.assertIn("require_release_sentry_symbols_when_enabled", beta_script)
+        self.assertIn("upload_release_sentry_symbols", beta_script)
+        self.assertIn("final Beta artifact manifest must record telemetry_enabled=true", beta_script)
+        stage_beta = beta_script.split("stage_beta() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("AGENTRY_ENABLE_SENTRY=1", stage_beta)
+        self.assertNotIn("SENTRY_DSN", stage_beta)
+        self.assertNotIn("SENTRY_AUTH_TOKEN", stage_beta)
 
-        sign_tip = tip_script.split("sign_tip() {", 1)[1].split("\n}", 1)[0]
-        require_sentry = sign_tip.index("require_tip_sentry_configuration")
-        verify_symbols = sign_tip.index("verify_release_sentry_symbol_uuids_before_signing")
-        sign_staged = sign_tip.index('"$CONTROL_PLANE_SCRIPTS_DIR/sign_staged_release.sh"')
-        assert_telemetry = sign_tip.index("assert_tip_manifest_telemetry_enabled")
-        upload_symbols = sign_tip.index("upload_release_sentry_symbols")
-        create_distribution = sign_tip.index('local distribution_dir="$TMP_DIR/distribution"')
+        sign_beta = beta_script.split("sign_beta() {", 1)[1].split("\n}", 1)[0]
+        require_sentry = sign_beta.index("require_beta_sentry_configuration")
+        verify_symbols = sign_beta.index("verify_release_sentry_symbol_uuids_before_signing")
+        sign_staged = sign_beta.index('"$CONTROL_PLANE_SCRIPTS_DIR/sign_staged_release.sh"')
+        assert_telemetry = sign_beta.index("assert_beta_manifest_telemetry_enabled")
+        upload_symbols = sign_beta.index("upload_release_sentry_symbols")
+        create_distribution = sign_beta.index('local distribution_dir="$TMP_DIR/distribution"')
         self.assertLess(require_sentry, verify_symbols)
         self.assertLess(verify_symbols, sign_staged)
         self.assertLess(sign_staged, assert_telemetry)
         self.assertLess(assert_telemetry, upload_symbols)
         self.assertLess(upload_symbols, create_distribution)
-        generate_appcast = sign_tip.index('"$TRUSTED_ROOT/Vendor/Sparkle/bin/generate_appcast"')
-        validate_appcast = sign_tip.index("validate_generated_tip_appcast")
-        write_checksums = sign_tip.index('shasum -a 256', validate_appcast)
+        generate_appcast = sign_beta.index('"$TRUSTED_ROOT/Vendor/Sparkle/bin/generate_appcast"')
+        validate_appcast = sign_beta.index("validate_generated_beta_appcast")
+        write_checksums = sign_beta.index('shasum -a 256', validate_appcast)
         self.assertLess(generate_appcast, validate_appcast)
         self.assertLess(validate_appcast, write_checksums)
-        self.assertIn('fail "Tip appcast enclosure is missing an EdDSA signature"', tip_script)
-        self.assertIn('fail "Tip Sparkle private key does not match the app bundle SUPublicEDKey"', tip_script)
-        self.assertIn('fail "Tip Sparkle private key does not reproduce the generated appcast signature"', tip_script)
-        self.assertIn('"$CONTROL_PLANE_SCRIPTS_DIR/verify_sparkle_signature.swift"', tip_script)
+        self.assertIn('fail "Beta appcast enclosure is missing an EdDSA signature"', beta_script)
+        self.assertIn('fail "Beta Sparkle private key does not match the app bundle SUPublicEDKey"', beta_script)
+        self.assertIn('fail "Beta Sparkle private key does not reproduce the generated appcast signature"', beta_script)
+        self.assertIn('"$CONTROL_PLANE_SCRIPTS_DIR/verify_sparkle_signature.swift"', beta_script)
 
         capture_override = package_script.index(
             'RELEASE_BUILD_NUMBER_OVERRIDE="${REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE:-}"'
@@ -2726,31 +2784,31 @@ shutil.copyfile(os.environ["FAKE_SWIFTFORMAT_ARCHIVE"], output)
             package_script,
         )
 
-    def test_main_tip_setup_uses_read_only_github_token_for_release_lookup_helper(self) -> None:
-        tip_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-tip.yml").read_text(encoding="utf-8")
-        setup_job = tip_workflow.split("\n  setup:", 1)[1].split("\n  stage:", 1)[0]
-        after_setup = tip_workflow.split("\n  stage:", 1)[1]
-        before_publish, publish_job = tip_workflow.split("\n  publish:", 1)
+    def test_main_beta_setup_uses_read_only_github_token_for_release_lookup_helper(self) -> None:
+        beta_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-beta.yml").read_text(encoding="utf-8")
+        setup_job = beta_workflow.split("\n  setup:", 1)[1].split("\n  stage:", 1)[0]
+        after_setup = beta_workflow.split("\n  stage:", 1)[1]
+        before_publish, publish_job = beta_workflow.split("\n  publish:", 1)
 
-        self.assertIn("permissions:\n  contents: read", tip_workflow)
-        self.assertIn("./Scripts/lookup_public_tip_release.sh", setup_job)
-        self.assertIn("TIP_GH_TOKEN: ${{ github.token }}", setup_job)
-        self.assertEqual(tip_workflow.count("${{ github.token }}"), 1)
+        self.assertIn("permissions:\n  contents: read", beta_workflow)
+        self.assertIn("./Scripts/lookup_public_beta_release.sh", setup_job)
+        self.assertIn("BETA_GH_TOKEN: ${{ github.token }}", setup_job)
+        self.assertEqual(beta_workflow.count("${{ github.token }}"), 1)
         self.assertNotIn("${{ github.token }}", after_setup)
-        self.assertNotIn("environment: tip-release", setup_job)
+        self.assertNotIn("environment: beta-release", setup_job)
         self.assertNotIn("Authorization:", setup_job)
         self.assertNotIn("api.github.com", setup_job)
-        self.assertNotIn("TIP_UPDATE_REPOSITORY_TOKEN", before_publish)
-        self.assertIn("TIP_GH_TOKEN: ${{ secrets.TIP_UPDATE_REPOSITORY_TOKEN }}", publish_job)
-        self.assertEqual(tip_workflow.count("TIP_UPDATE_REPOSITORY_TOKEN"), 1)
+        self.assertNotIn("BETA_UPDATE_REPOSITORY_TOKEN", before_publish)
+        self.assertIn("BETA_GH_TOKEN: ${{ secrets.BETA_UPDATE_REPOSITORY_TOKEN }}", publish_job)
+        self.assertEqual(beta_workflow.count("BETA_UPDATE_REPOSITORY_TOKEN"), 1)
 
-    def test_public_tip_release_lookup_helper_handles_github_outcomes_safely(self) -> None:
+    def test_public_beta_release_lookup_helper_handles_github_outcomes_safely(self) -> None:
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
         tools = root / "tools"
         tools.mkdir()
         calls = root / "curl-calls"
-        archive_basename = "RepoPrompt-tip-fixture-1.2.3"
+        archive_basename = "RepoPrompt-beta-fixture-1.2.3"
         fake_curl = tools / "curl"
         fake_curl.write_text(
             """#!/usr/bin/env python3
@@ -2766,9 +2824,9 @@ def option(name):
 
 request_headers = [args[index + 1] for index, value in enumerate(args) if value == "--header"]
 authorization_headers = [header for header in request_headers if header.lower().startswith("authorization:")]
-expected_tip_gh_token = os.environ.get("FAKE_EXPECTED_TIP_GH_TOKEN", "")
-if expected_tip_gh_token:
-    if authorization_headers != [f"Authorization: Bearer {expected_tip_gh_token}"]:
+expected_beta_gh_token = os.environ.get("FAKE_EXPECTED_BETA_GH_TOKEN", "")
+if expected_beta_gh_token:
+    if authorization_headers != [f"Authorization: Bearer {expected_beta_gh_token}"]:
         raise SystemExit(90)
 elif authorization_headers:
     raise SystemExit(90)
@@ -2856,7 +2914,7 @@ sys.stdout.write(str(status))
 
         scenarios = (
             ("found-anonymous", "found", "", 0, "found", 1, "found"),
-            ("found-authenticated", "found", "fixture-tip-token", 0, "found", 1, "found"),
+            ("found-authenticated", "found", "fixture-beta-token", 0, "found", 1, "found"),
             ("absent", "absent", "", 0, "not-found", 1, "not-found"),
             ("rate-403-primary", "rate-403-primary", "", 1, "", 3, "rate-limited"),
             ("rate-403-secondary", "rate-403-secondary", "", 1, "", 3, "rate-limited"),
@@ -2876,12 +2934,12 @@ sys.stdout.write(str(status))
             ("malformed", "malformed", "", 1, "", 1, "malformed"),
             ("malformed-flags", "malformed-flags", "", 1, "", 1, "malformed"),
         )
-        helper = SCRIPT_DIR / "lookup_public_tip_release.sh"
-        for case_name, scenario, tip_gh_token, returncode, stdout, attempt_count, classification in scenarios:
+        helper = SCRIPT_DIR / "lookup_public_beta_release.sh"
+        for case_name, scenario, beta_gh_token, returncode, stdout, attempt_count, classification in scenarios:
             with self.subTest(case=case_name):
                 calls.unlink(missing_ok=True)
                 env = os.environ.copy()
-                env.pop("TIP_GH_TOKEN", None)
+                env.pop("BETA_GH_TOKEN", None)
                 env.update(
                     {
                         "PATH": f"{tools}:{env['PATH']}",
@@ -2889,13 +2947,13 @@ sys.stdout.write(str(status))
                         "FAKE_CURL_CALLS": str(calls),
                         "FAKE_GITHUB_SCENARIO": scenario,
                         "FAKE_ARCHIVE_BASENAME": archive_basename,
-                        "FAKE_EXPECTED_TIP_GH_TOKEN": tip_gh_token,
+                        "FAKE_EXPECTED_BETA_GH_TOKEN": beta_gh_token,
                     }
                 )
-                if tip_gh_token:
-                    env["TIP_GH_TOKEN"] = tip_gh_token
+                if beta_gh_token:
+                    env["BETA_GH_TOKEN"] = beta_gh_token
                 result = subprocess.run(
-                    [str(helper), "example/public-tip", "tip-fixture", archive_basename],
+                    [str(helper), "example/public-beta", "beta-fixture", archive_basename],
                     env=env,
                     text=True,
                     capture_output=True,
@@ -2906,8 +2964,8 @@ sys.stdout.write(str(status))
                 self.assertEqual(len(calls.read_text(encoding="utf-8").splitlines()), attempt_count)
                 self.assertIn(f"classification={classification}", result.stderr)
                 self.assertNotIn("SECRET_BODY_MARKER", result.stdout + result.stderr)
-                if tip_gh_token:
-                    self.assertNotIn(tip_gh_token, result.stdout + result.stderr)
+                if beta_gh_token:
+                    self.assertNotIn(beta_gh_token, result.stdout + result.stderr)
                 if scenario == "redirect-final-unexpected-403":
                     self.assertNotIn("classification=rate-limited", result.stderr)
                     self.assertIn(
@@ -2918,23 +2976,23 @@ sys.stdout.write(str(status))
                 for diagnostic in result.stderr.splitlines():
                     self.assertRegex(
                         diagnostic,
-                        r"^GitHub public tip lookup classification=[a-z-]+ status=[0-9]{3} "
+                        r"^GitHub public beta lookup classification=[a-z-]+ status=[0-9]{3} "
                         r"request_id=[^ ]+ rate_limit_remaining=[^ ]+ rate_limit_reset=[^ ]+ "
                         r"retry_after=[^ ]+$",
                     )
 
-    def test_generated_tip_appcast_validation_executes_crypto_and_rejects_missing_signature(self) -> None:
+    def test_generated_beta_appcast_validation_executes_crypto_and_rejects_missing_signature(self) -> None:
         root = SCRIPT_DIR.parent
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        app_bundle = temp_dir / "RepoPrompt.app"
+        app_bundle = temp_dir / "Agentry.app"
         info_plist = app_bundle / "Contents" / "Info.plist"
-        archive = temp_dir / "RepoPrompt-tip-fixture.zip"
+        archive = temp_dir / "Agentry-beta-fixture.zip"
         appcast = temp_dir / "appcast.xml"
         private_key_file = temp_dir / "private-key"
         validator_tmp_dir = temp_dir / "validator-tmp"
         info_plist.parent.mkdir(parents=True)
-        archive.write_text("signed tip archive\n", encoding="utf-8")
+        archive.write_text("signed beta archive\n", encoding="utf-8")
         private_key = base64.b64encode(bytes(range(32))).decode("ascii")
         private_key_file.write_text(private_key, encoding="utf-8")
         public_key = self.run_checked(
@@ -2951,7 +3009,7 @@ sys.stdout.write(str(status))
             ]
         ).stdout.strip()
 
-        expected_title = "Tip build 1.2.3 · v9.8.7 · commit 0123456789ab"
+        expected_title = "Beta build 1.2.3 · v9.8.7 · commit 0123456789ab"
         def write_appcast(
             enclosure_signature: str,
             *,
@@ -2972,7 +3030,7 @@ sys.stdout.write(str(status))
       <title>{title}</title>
       <sparkle:version>1.2.3</sparkle:version>
       <sparkle:shortVersionString>{marketing_version}</sparkle:shortVersionString>
-{release_notes_xml}      <enclosure url="https://example.invalid/tip/{archive.name}"
+{release_notes_xml}      <enclosure url="https://example.invalid/beta/{archive.name}"
                  length="{archive.stat().st_size}"
                  sparkle:edSignature="{enclosure_signature}" />
     </item>
@@ -2987,10 +3045,10 @@ sys.stdout.write(str(status))
             {
                 "REPOPROMPT_RELEASE_SOURCE_ROOT": str(root),
                 "REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR": str(SCRIPT_DIR),
-                "TIP_COMMIT": "0123456789abcdef" * 2 + "01234567",
-                "TIP_SHORT_SHA": "0123456789ab",
-                "TIP_BUILD_NUMBER": "1.2.3",
-                "TIP_DOWNLOAD_URL_PREFIX": "https://example.invalid/tip/",
+                "BETA_COMMIT": "0123456789abcdef" * 2 + "01234567",
+                "BETA_SHORT_SHA": "0123456789ab",
+                "BETA_BUILD_NUMBER": "1.2.3",
+                "BETA_DOWNLOAD_URL_PREFIX": "https://example.invalid/beta/",
                 "SPARKLE_PRIVATE_KEY": private_key,
                 "VALIDATOR_APP_BUNDLE": str(app_bundle),
                 "VALIDATOR_UPDATE_ZIP": str(archive),
@@ -3008,9 +3066,9 @@ APPCAST="$VALIDATOR_APPCAST"
 TMP_DIR="$VALIDATOR_TMP_DIR"
 mkdir -p "$TMP_DIR"
 MARKETING_VERSION="9.8.7"
-validate_generated_tip_appcast""",
-            "tip-appcast-validation",
-            str(SCRIPT_DIR / "main_tip_release.sh"),
+validate_generated_beta_appcast""",
+            "beta-appcast-validation",
+            str(SCRIPT_DIR / "main_beta_release.sh"),
         ]
 
         write_appcast(signature)
@@ -3029,7 +3087,7 @@ validate_generated_tip_appcast""",
         rejected_duplicate_version = subprocess.run(command, env=env, text=True, capture_output=True)
         self.assertNotEqual(rejected_duplicate_version.returncode, 0)
         self.assertIn(
-            "tip appcast item must contain exactly one sparkle:version",
+            "beta appcast item must contain exactly one sparkle:version",
             rejected_duplicate_version.stderr,
         )
 
@@ -3037,29 +3095,29 @@ validate_generated_tip_appcast""",
         wrong_marketing = subprocess.run(command, env=env, text=True, capture_output=True)
         self.assertNotEqual(wrong_marketing.returncode, 0)
         self.assertIn(
-            "Tip appcast marketing version mismatch: expected 9.8.7, got 9.8.8",
+            "Beta appcast marketing version mismatch: expected 9.8.7, got 9.8.8",
             wrong_marketing.stderr,
         )
 
-        write_appcast(signature, title="Wrong tip title")
+        write_appcast(signature, title="Wrong beta title")
         wrong_title = subprocess.run(command, env=env, text=True, capture_output=True)
         self.assertNotEqual(wrong_title.returncode, 0)
-        self.assertIn("Tip appcast presentation title mismatch: Wrong tip title", wrong_title.stderr)
+        self.assertIn("Beta appcast presentation title mismatch: Wrong beta title", wrong_title.stderr)
 
-        write_appcast(signature, release_notes_link="https://example.invalid/tip/details")
+        write_appcast(signature, release_notes_link="https://example.invalid/beta/details")
         embedded_release_page = subprocess.run(command, env=env, text=True, capture_output=True)
         self.assertNotEqual(embedded_release_page.returncode, 0)
         self.assertIn(
-            "tip appcast item must not contain sparkle:releaseNotesLink",
+            "beta appcast item must not contain sparkle:releaseNotesLink",
             embedded_release_page.stderr,
         )
 
         write_appcast("")
         rejected_signature = subprocess.run(command, env=env, text=True, capture_output=True)
         self.assertNotEqual(rejected_signature.returncode, 0)
-        self.assertIn("Tip appcast enclosure is missing an EdDSA signature", rejected_signature.stderr)
+        self.assertIn("Beta appcast enclosure is missing an EdDSA signature", rejected_signature.stderr)
 
-    def test_tip_appcast_label_changes_display_metadata_without_changing_comparison_version(self) -> None:
+    def test_beta_appcast_label_changes_display_metadata_without_changing_comparison_version(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
         appcast = temp_dir / "appcast.xml"
@@ -3082,11 +3140,11 @@ validate_generated_tip_appcast""",
             """source "$1"
 APPCAST="$2"
 MARKETING_VERSION="9.8.7"
-TIP_BUILD_NUMBER="29.8.52"
-TIP_SHORT_SHA="abc1234def56"
-label_generated_tip_appcast""",
-            "tip-appcast-label",
-            str(SCRIPT_DIR / "main_tip_release.sh"),
+BETA_BUILD_NUMBER="29.8.52"
+BETA_SHORT_SHA="abc1234def56"
+label_generated_beta_appcast""",
+            "beta-appcast-label",
+            str(SCRIPT_DIR / "main_beta_release.sh"),
             str(appcast),
         ]
 
@@ -3102,7 +3160,7 @@ label_generated_tip_appcast""",
             item.findtext(f"{{{sparkle}}}shortVersionString"),
             item.findtext(f"{{{sparkle}}}version"),
         )
-        self.assertEqual(item.findtext("title"), "Tip build 29.8.52 · v9.8.7 · commit abc1234def56")
+        self.assertEqual(item.findtext("title"), "Beta build 29.8.52 · v9.8.7 · commit abc1234def56")
         self.assertIsNone(item.find(f"{{{sparkle}}}releaseNotesLink"))
         self.assertIsNone(item.find("description"))
 
@@ -3129,22 +3187,25 @@ label_generated_tip_appcast""",
         self.assertIn('.package(url: "https://github.com/getsentry/sentry-cocoa", exact: "9.17.1")', package_manifest)
         self.assertIn('let sentryDependency = Target.Dependency.product(name: "Sentry", package: "sentry-cocoa")', package_manifest)
         self.assertIn('repoPromptAppDependencies.append(sentryDependency)', package_manifest)
-        self.assertIn('repoPromptAppSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))', package_manifest)
+        self.assertIn('repoPromptAppSwiftSettings.append(.define("AGENTRY_SENTRY_ENABLED"))', package_manifest)
         self.assertIn('repoPromptTestDependencies.append(sentryDependency)', package_manifest)
-        self.assertIn('repoPromptTestSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))', package_manifest)
-        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', release_workflow)
+        self.assertIn('repoPromptTestSwiftSettings.append(.define("AGENTRY_SENTRY_ENABLED"))', package_manifest)
+        self.assertIn('AGENTRY_ENABLE_SENTRY: "1"', release_workflow)
         self.assertIn('name: Sentry-enabled Build', ci_workflow)
-        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', ci_workflow)
-        self.assertIn('swift build --product RepoPrompt', ci_workflow)
+        self.assertIn('AGENTRY_ENABLE_SENTRY: "1"', ci_workflow)
+        self.assertIn('swift build --arch arm64 --product Agentry', ci_workflow)
         self.assertIn('swift test --filter SentryTelemetryPrivacyTests', ci_workflow)
         self.assertIn('smoke_packaged_mcp_roundtrip.sh', release_candidate_workflow)
-        self.assertIn('".build/release/RepoPrompt.app"', release_candidate_workflow)
+        self.assertIn('".build/release/Agentry.app"', release_candidate_workflow)
         self.assertIn("SENTRY_DSN: ${{ secrets.SENTRY_DSN }}", release_workflow)
-        self.assertIn("REPOPROMPT_ENABLE_SENTRY=1", release_script)
+        self.assertIn("AGENTRY_ENABLE_SENTRY=1", release_script)
         self.assertIn('if [[ -n "${SENTRY_DSN:-}" ]]; then', staged_signing_script)
-        self.assertIn('plutil -replace RepoPromptSentryDSN -string "$SENTRY_DSN"', staged_signing_script)
-        self.assertIn('Bundle.main.object(forInfoDictionaryKey: "RepoPromptSentryDSN")', bootstrap_source)
-        self.assertIn('REPOPROMPT_TELEMETRY_DISABLED', bootstrap_source)
+        self.assertIn('plutil -replace AgentrySentryDSN -string "$SENTRY_DSN"', staged_signing_script)
+        self.assertIn('infoDictionary["AgentrySentryDSN"]', bootstrap_source)
+        self.assertIn('environment["AGENTRY_SENTRY_DSN"]', bootstrap_source)
+        self.assertNotIn('environment["REPOPROMPT_SENTRY_DSN"]', bootstrap_source)
+        self.assertNotIn('infoDictionary["RepoPromptSentryDSN"]', bootstrap_source)
+        self.assertIn('AGENTRY_TELEMETRY_DISABLED', bootstrap_source)
         self.assertIn('GlobalSettingsStore.shared.telemetryEnabled()', bootstrap_source)
         self.assertIn('options.beforeSend', bootstrap_source)
         self.assertIn('options.enableCaptureFailedRequests = false', bootstrap_source)
@@ -3158,7 +3219,7 @@ label_generated_tip_appcast""",
         self.assertIn('scrub(stacktrace: event.stacktrace)', bootstrap_source)
         self.assertIn('event.debugMeta?.forEach', bootstrap_source)
         self.assertIn('options.tracesSampleRate = performanceTracingEnabled ? 0.05 : 0', bootstrap_source)
-        self.assertIn('#if DEBUG\n                if let value = ProcessInfo.processInfo.environment["REPOPROMPT_SENTRY_DSN"]', bootstrap_source)
+        self.assertIn('allowEnvironmentOverride: Bool = _isDebugAssertConfiguration()', bootstrap_source)
         self.assertIn('Official Sentry-enabled release publishing requires SENTRY_AUTH_TOKEN', release_script)
         self.assertIn('SENTRY_RELEASE_NAME="$BUNDLE_ID@$MARKETING_VERSION+$BUILD_NUMBER"', release_script)
         self.assertIn('prepare_sentry_release', release_script)
@@ -3281,26 +3342,26 @@ label_generated_tip_appcast""",
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
         universal_builder = (SCRIPT_DIR / "build_swiftpm_release_products.sh").read_text(encoding="utf-8")
         release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")
-        tip_script = (SCRIPT_DIR / "main_tip_release.sh").read_text(encoding="utf-8")
+        beta_script = (SCRIPT_DIR / "main_beta_release.sh").read_text(encoding="utf-8")
         workflows_dir = SCRIPT_DIR.parent / ".github" / "workflows"
         release_workflow = (workflows_dir / "release.yml").read_text(encoding="utf-8")
-        tip_workflow = (workflows_dir / "main-tip.yml").read_text(encoding="utf-8")
+        beta_workflow = (workflows_dir / "main-beta.yml").read_text(encoding="utf-8")
 
         release_stage_job = release_workflow.split("\n  stage:", 1)[1].split("\n  publish:", 1)[0]
-        tip_stage_job = tip_workflow.split("\n  stage:", 1)[1].split("\n  sign:", 1)[0]
+        beta_stage_job = beta_workflow.split("\n  stage:", 1)[1].split("\n  sign:", 1)[0]
         release_stage_function = release_script.split("stage_publish_release() {", 1)[1].split("\n}", 1)[0]
-        tip_stage_function = tip_script.split("stage_tip() {", 1)[1].split("\n}", 1)[0]
+        beta_stage_function = beta_script.split("stage_beta() {", 1)[1].split("\n}", 1)[0]
         release_resolver = release_script.split("resolve_without_lockfile_drift() {", 1)[1].split("\n}", 1)[0]
-        tip_resolver = tip_script.split("resolve_without_lockfile_drift() {", 1)[1].split("\n}", 1)[0]
+        beta_resolver = beta_script.split("resolve_without_lockfile_drift() {", 1)[1].split("\n}", 1)[0]
 
         self.assertIn("run: ./trusted-control-plane/Scripts/release.sh stage-publish", release_stage_job)
-        self.assertIn("run: ./trusted-control-plane/Scripts/main_tip_release.sh stage", tip_stage_job)
+        self.assertIn("run: ./trusted-control-plane/Scripts/main_beta_release.sh stage", beta_stage_job)
         self.assertIn("resolve_without_lockfile_drift", release_stage_function)
-        self.assertIn("resolve_without_lockfile_drift", tip_stage_function)
+        self.assertIn("resolve_without_lockfile_drift", beta_stage_function)
         self.assertIn('"$RUN_WITHOUT_GITHUB_TOKENS" swift package resolve', release_resolver)
-        self.assertIn('"$RUN_WITHOUT_GITHUB_TOKENS" swift package resolve', tip_resolver)
+        self.assertIn('"$RUN_WITHOUT_GITHUB_TOKENS" swift package resolve', beta_resolver)
         self.assertIn('"$RUN_WITHOUT_GITHUB_TOKENS" env -u SIGN_IDENTITY', release_stage_function)
-        self.assertIn('"$RUN_WITHOUT_GITHUB_TOKENS" env -u SIGN_IDENTITY', tip_stage_function)
+        self.assertIn('"$RUN_WITHOUT_GITHUB_TOKENS" env -u SIGN_IDENTITY', beta_stage_function)
         self.assertIn(
             'REPOPROMPT_RUN_WITHOUT_GITHUB_TOKENS="$RUN_WITHOUT_GITHUB_TOKENS"',
             package_script,
@@ -3367,7 +3428,7 @@ label_generated_tip_appcast""",
                 accepted = self.run_staged_validation(approved, staged, scripts)
                 self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
-                target = staged / ".build" / "release" / "RepoPrompt.app" / relative
+                target = staged / ".build" / "release" / "Agentry.app" / relative
                 moved = target.with_name(f"{target.name}-real")
                 target.rename(moved)
                 target.symlink_to(moved.name, target_is_directory=True)
@@ -3380,15 +3441,15 @@ label_generated_tip_appcast""",
         self.addCleanup(shutil.rmtree, temp_dir, True)
         archive = temp_dir / "stage.zip"
         destination = temp_dir / "extract"
-        member = ".build/release/RepoPrompt.app/Contents"
+        member = ".build/release/Agentry.app/Contents"
         info = zipfile.ZipInfo(member)
         info.create_system = 3
         info.external_attr = (stat.S_IFLNK | 0o777) << 16
         with zipfile.ZipFile(archive, "w") as output:
-            output.writestr(info, "/tmp/repoprompt-stage-escape")
+            output.writestr(info, "/tmp/agentry-stage-escape")
 
         result = subprocess.run(
-            [str(SCRIPT_DIR / "extract_staged_release.py"), str(archive), str(destination), "RepoPrompt"],
+            [str(SCRIPT_DIR / "extract_staged_release.py"), str(archive), str(destination), "Agentry"],
             text=True,
             capture_output=True,
         )
@@ -3406,7 +3467,7 @@ label_generated_tip_appcast""",
             output.writestr("version.env", "fixture\n")
 
         result = subprocess.run(
-            [str(SCRIPT_DIR / "extract_staged_release.py"), str(archive), str(destination), "RepoPrompt"],
+            [str(SCRIPT_DIR / "extract_staged_release.py"), str(archive), str(destination), "Agentry"],
             text=True,
             capture_output=True,
         )
@@ -3429,9 +3490,85 @@ label_generated_tip_appcast""",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "RepoPrompt|1.0.0|1\n")
+        self.assertEqual(result.stdout, "Agentry|1.0.0|1\n")
 
-    def test_release_metadata_parser_accepts_three_component_tip_build(self) -> None:
+    def test_agentry_sparkle_release_metadata_fails_closed_before_signing(self) -> None:
+        stable = "https://github.com/example/agentry-updates/releases/latest/download/appcast.xml"
+        beta = "https://github.com/example/agentry-beta-updates/releases/latest/download/appcast.xml"
+        public_key = base64.b64encode(bytes(range(32))).decode("ascii")
+
+        def validate(
+            stable_feed: str,
+            beta_feed: str,
+            key: str,
+            metadata_script: Path = SCRIPT_DIR / "load_release_metadata.sh",
+        ) -> subprocess.CompletedProcess[str]:
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "AGENTRY_SPARKLE_STABLE_FEED_URL": stable_feed,
+                    "AGENTRY_SPARKLE_BETA_FEED_URL": beta_feed,
+                    "AGENTRY_SPARKLE_PUBLIC_ED_KEY": key,
+                }
+            )
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'source "{metadata_script}"; validate_agentry_sparkle_metadata',
+                ],
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+
+        accepted = validate(stable, beta, public_key)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        for invalid_stable, invalid_beta, invalid_key in (
+            ("__AGENTRY_SPARKLE_STABLE_FEED_URL__", beta, public_key),
+            (stable, "", public_key),
+            ("http://github.com/example/agentry-updates/appcast.xml", beta, public_key),
+            ("https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml", beta, public_key),
+            ("https://github.com/RepoPrompt/RepoPrompt-CE-Updates/releases/latest/download/appcast.xml", beta, public_key),
+            (stable, "https://github.com/RepoPrompt/RepoPrompt-CE-Tip-Updates/releases/latest/download/appcast.xml", public_key),
+            (stable, stable, public_key),
+            (stable, beta, "not-base64"),
+        ):
+            rejected = validate(invalid_stable, invalid_beta, invalid_key)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("invalid Agentry Sparkle configuration", rejected.stderr)
+
+        metadata_script_source = (SCRIPT_DIR / "load_release_metadata.sh").read_text(encoding="utf-8")
+        digest_assignment = next(
+            line
+            for line in metadata_script_source.splitlines()
+            if line.startswith("legacy_public_key_sha256 = ")
+        )
+        injected_digest_assignment = (
+            f'legacy_public_key_sha256 = "{hashlib.sha256(public_key.encode("utf-8")).hexdigest()}"'
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            injected_metadata_script = Path(temp_dir) / "load_release_metadata.sh"
+            injected_metadata_script.write_text(
+                metadata_script_source.replace(digest_assignment, injected_digest_assignment),
+                encoding="utf-8",
+            )
+            digest_rejected = validate(stable, beta, public_key, injected_metadata_script)
+        self.assertNotEqual(digest_rejected.returncode, 0)
+        self.assertIn("must not reuse the legacy RepoPrompt CE signing key", digest_rejected.stderr)
+
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        staged_signing_script = (SCRIPT_DIR / "sign_staged_release.sh").read_text(encoding="utf-8")
+        self.assertLess(
+            package_script.index('validate_agentry_sparkle_info_plist "$APP_BUNDLE/Contents/Info.plist"'),
+            package_script.index('sign_path "$APP_BUNDLE/Contents/MacOS/$MCP_PRODUCT_NAME"'),
+        )
+        self.assertLess(
+            staged_signing_script.index('validate_agentry_sparkle_info_plist "$APP_BUNDLE/Contents/Info.plist"'),
+            staged_signing_script.index('"$SCRIPT_DIR/validate_staged_release.sh"'),
+        )
+
+    def test_release_metadata_parser_accepts_three_component_beta_build(self) -> None:
         root = self.make_metadata_root()
         metadata_path = root / "version.env"
         metadata_path.write_text(
@@ -3458,7 +3595,7 @@ label_generated_tip_appcast""",
         marker = root / "executed"
         metadata = (root / "version.env").read_text(encoding="utf-8")
         (root / "version.env").write_text(
-            metadata.replace("APP_NAME=RepoPrompt", f"APP_NAME=$(touch {marker})"),
+            metadata.replace("APP_NAME=Agentry", f"APP_NAME=$(touch {marker})"),
             encoding="utf-8",
         )
 
@@ -3559,13 +3696,13 @@ label_generated_tip_appcast""",
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("canonical", result.stderr)
 
-    def make_universal_architecture_fixture(self) -> tuple[Path, Path]:
+    def make_arm64_architecture_fixture(self) -> tuple[Path, Path]:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        app = temp_dir / "RepoPrompt.app"
+        app = temp_dir / "Agentry.app"
         paths = [
-            app / "Contents" / "MacOS" / "RepoPrompt",
-            app / "Contents" / "MacOS" / "repoprompt-mcp",
+            app / "Contents" / "MacOS" / "Agentry",
+            app / "Contents" / "MacOS" / "agentry-mcp",
             app / "Contents" / "Frameworks" / "Sparkle.framework" / "Versions" / "B" / "Sparkle",
             app / "Contents" / "Frameworks" / "Sparkle.framework" / "Versions" / "B" / "Autoupdate",
             app
@@ -3610,10 +3747,10 @@ label_generated_tip_appcast""",
             """#!/usr/bin/env bash
 set -euo pipefail
 path="${@: -1}"
-if [[ "${FAKE_THIN_HELPER:-0}" == "1" && "$path" == *repoprompt-mcp ]]; then
-    printf 'arm64\n'
-else
+if [[ -n "${FAKE_NON_ARM64_PATTERN:-}" && "$path" == *"$FAKE_NON_ARM64_PATTERN"* ]]; then
     printf 'arm64 x86_64\n'
+else
+    printf 'arm64\n'
 fi
 """,
             encoding="utf-8",
@@ -3624,17 +3761,17 @@ fi
     def make_embedded_helper_layout(self) -> Path:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
-        app = temp_dir / "RepoPrompt.app"
+        app = temp_dir / "Agentry.app"
         macos = app / "Contents" / "MacOS"
         resources_bin = app / "Contents" / "Resources" / "bin"
         macos.mkdir(parents=True)
         resources_bin.mkdir(parents=True)
-        (macos / "RepoPrompt").write_text("RepoPrompt\n", encoding="utf-8")
-        helper = macos / "repoprompt-mcp"
+        (macos / "Agentry").write_text("Agentry\n", encoding="utf-8")
+        helper = macos / "agentry-mcp"
         helper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         helper.chmod(0o755)
-        (app / "Contents" / "Resources" / "repoprompt-mcp").symlink_to("../MacOS/repoprompt-mcp")
-        (resources_bin / "repoprompt-mcp").symlink_to("../../MacOS/repoprompt-mcp")
+        (app / "Contents" / "Resources" / "agentry-mcp").symlink_to("../MacOS/agentry-mcp")
+        (resources_bin / "agentry-mcp").symlink_to("../../MacOS/agentry-mcp")
         return app
 
     def start_unix_listener(
@@ -3661,7 +3798,7 @@ fi
                 "listener.bind(sys.argv[1])\n"
                 "if lock_descriptor is not None:\n"
                 "    metadata = os.lstat(sys.argv[1])\n"
-                "    record = f'repoprompt-ce-socket-identity-v1 {metadata.st_dev} {metadata.st_ino}\\n'.encode()\n"
+                "    record = f'agentry-socket-identity-v1 {metadata.st_dev} {metadata.st_ino}\\n'.encode()\n"
                 "    os.ftruncate(lock_descriptor, 0)\n"
                 "    assert os.write(lock_descriptor, record) == len(record)\n"
                 "    os.fsync(lock_descriptor)\n"
@@ -3732,12 +3869,12 @@ fi
         self.addCleanup(shutil.rmtree, root, True)
         (root / "version.env").write_text(
             """\
-APP_NAME=RepoPrompt
-DISPLAY_NAME="RepoPrompt CE"
+APP_NAME=Agentry
+DISPLAY_NAME="Agentry"
 MARKETING_VERSION=1.0.0
 BUILD_NUMBER=1
-BUNDLE_ID=com.pvncher.repoprompt.ce
-SIGNING_TEAM_ID=648A27MST5
+BUNDLE_ID=io.github.z23cc.agentry
+SIGNING_TEAM_ID=
 """,
             encoding="utf-8",
         )
@@ -3804,7 +3941,7 @@ extension Data {
         approved = temp_dir / "approved"
         staged = temp_dir / "staged"
         scripts = temp_dir / "Scripts"
-        app = staged / ".build" / "release" / "RepoPrompt.app"
+        app = staged / ".build" / "release" / "Agentry.app"
         for directory in (
             approved / "AppBundle",
             approved / "Vendor" / "Codex",
@@ -3815,7 +3952,6 @@ extension Data {
             app / "Contents" / "Resources" / "bin",
             app / "Contents" / "Resources" / "Legal" / "ThirdPartyLicenses" / "fixture",
             app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "aarch64-apple-darwin",
-            app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "x86_64-apple-darwin",
             scripts,
         ):
             directory.mkdir(parents=True, exist_ok=True)
@@ -3829,22 +3965,25 @@ extension Data {
             "validate_staged_release.sh",
             "release_sentry_symbols.sh",
             "release.sh",
-            "main_tip_release.sh",
+            "main_beta_release.sh",
         ):
             shutil.copy2(SCRIPT_DIR / name, scripts / name)
             scripts.joinpath(name).chmod(0o755)
         (scripts / "codex_runtime_artifact.py").write_text(
-            "#!/usr/bin/env python3\nimport os\nimport sys\nfrom pathlib import Path\n\nexpected_manifest = Path(os.environ[\"FAKE_CODEX_MANIFEST\"])\nexpected_bundle = Path(os.environ[\"FAKE_CODEX_BUNDLE\"])\nexpected = [\n    \"--manifest\",\n    str(expected_manifest),\n    \"verify-bundle\",\n    \"--arch\",\n    \"all\",\n    \"--bundle\",\n    str(expected_bundle),\n]\nif sys.argv[1:] != expected:\n    print(f\"ERROR: unexpected Codex verifier arguments: {sys.argv[1:]!r}\", file=sys.stderr)\n    raise SystemExit(64)\nif not expected_manifest.is_file():\n    print(f\"ERROR: missing approved Codex manifest: {expected_manifest}\", file=sys.stderr)\n    raise SystemExit(65)\nexpected_targets = {\"aarch64-apple-darwin\", \"x86_64-apple-darwin\"}\nif not expected_bundle.is_dir() or {path.name for path in expected_bundle.iterdir()} != expected_targets:\n    print(f\"ERROR: missing embedded Codex package targets: {expected_bundle}\", file=sys.stderr)\n    raise SystemExit(66)\ncapture = os.environ.get(\"FAKE_CODEX_CAPTURE\")\nif capture:\n    with Path(capture).open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(\" \".join(sys.argv[1:]) + \"\\n\")\nprint(\"OK: fixture Codex bundle contract.\")\n",
+            "#!/usr/bin/env python3\nimport os\nimport sys\nfrom pathlib import Path\n\nexpected_manifest = Path(os.environ[\"FAKE_CODEX_MANIFEST\"])\nexpected_bundle = Path(os.environ[\"FAKE_CODEX_BUNDLE\"])\nexpected = [\n    \"--manifest\",\n    str(expected_manifest),\n    \"verify-bundle\",\n    \"--arch\",\n    \"arm64\",\n    \"--bundle\",\n    str(expected_bundle),\n]\nif sys.argv[1:] != expected:\n    print(f\"ERROR: unexpected Codex verifier arguments: {sys.argv[1:]!r}\", file=sys.stderr)\n    raise SystemExit(64)\nif not expected_manifest.is_file():\n    print(f\"ERROR: missing approved Codex manifest: {expected_manifest}\", file=sys.stderr)\n    raise SystemExit(65)\nexpected_targets = {\"aarch64-apple-darwin\"}\nif not expected_bundle.is_dir() or {path.name for path in expected_bundle.iterdir()} != expected_targets:\n    print(f\"ERROR: missing embedded Codex package targets: {expected_bundle}\", file=sys.stderr)\n    raise SystemExit(66)\ncapture = os.environ.get(\"FAKE_CODEX_CAPTURE\")\nif capture:\n    with Path(capture).open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(\" \".join(sys.argv[1:]) + \"\\n\")\nprint(\"OK: fixture Codex bundle contract.\")\n",
             encoding="utf-8",
         )
         (approved / "Vendor" / "Codex" / "manifest.json").write_text("{}\n", encoding="utf-8")
         metadata = """\
-APP_NAME=RepoPrompt
-DISPLAY_NAME="RepoPrompt CE"
+APP_NAME=Agentry
+DISPLAY_NAME="Agentry"
 MARKETING_VERSION=1.0.0
 BUILD_NUMBER=1
-BUNDLE_ID=com.pvncher.repoprompt.ce
-SIGNING_TEAM_ID=648A27MST5
+BUNDLE_ID=io.github.z23cc.agentry
+SIGNING_TEAM_ID=
+AGENTRY_SPARKLE_STABLE_FEED_URL=__AGENTRY_SPARKLE_STABLE_FEED_URL__
+AGENTRY_SPARKLE_BETA_FEED_URL=__AGENTRY_SPARKLE_BETA_FEED_URL__
+AGENTRY_SPARKLE_PUBLIC_ED_KEY=__AGENTRY_SPARKLE_PUBLIC_ED_KEY__
 """
         for root in (approved, staged):
             (root / "version.env").write_text(metadata, encoding="utf-8")
@@ -3854,9 +3993,10 @@ SIGNING_TEAM_ID=648A27MST5
         template = (SCRIPT_DIR.parent / "AppBundle" / "Info.plist.template").read_text(encoding="utf-8")
         (approved / "AppBundle" / "Info.plist.template").write_text(template, encoding="utf-8")
         for key, value in {
-            "__APP_NAME__": "RepoPrompt",
-            "__DISPLAY_NAME__": "RepoPrompt CE",
-            "__BUNDLE_ID__": "com.pvncher.repoprompt.ce",
+            "__APP_NAME__": "Agentry",
+            "__APP_BUNDLE_NAME__": "Agentry.app",
+            "__DISPLAY_NAME__": "Agentry",
+            "__BUNDLE_ID__": "io.github.z23cc.agentry",
             "__MARKETING_VERSION__": "1.0.0",
             "__BUILD_NUMBER__": "1",
             "__DEBUG_SECURE_STORAGE_BACKEND__": "alternate-in-memory",
@@ -3866,9 +4006,9 @@ SIGNING_TEAM_ID=648A27MST5
         }.items():
             template = template.replace(key, value)
         (app / "Contents" / "Info.plist").write_text(template, encoding="utf-8")
-        for name in ("RepoPrompt", "repoprompt-mcp"):
+        for name in ("Agentry", "agentry-mcp"):
             executable = app / "Contents" / "MacOS" / name
-            content = "RepoPromptKeyboardShortcutsResourceLookupV1\n" if name == "RepoPrompt" else name
+            content = "RepoPromptKeyboardShortcutsResourceLookupV1\n" if name == "Agentry" else name
             executable.write_text(content, encoding="utf-8")
             executable.chmod(0o755)
         sparkle_executables = [
@@ -3882,8 +4022,8 @@ SIGNING_TEAM_ID=648A27MST5
             executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_text(executable.name, encoding="utf-8")
             executable.chmod(0o755)
-        (app / "Contents" / "Resources" / "repoprompt-mcp").symlink_to("../MacOS/repoprompt-mcp")
-        (app / "Contents" / "Resources" / "bin" / "repoprompt-mcp").symlink_to("../../MacOS/repoprompt-mcp")
+        (app / "Contents" / "Resources" / "agentry-mcp").symlink_to("../MacOS/agentry-mcp")
+        (app / "Contents" / "Resources" / "bin" / "agentry-mcp").symlink_to("../../MacOS/agentry-mcp")
         self.write_keyboard_shortcuts_bundle(app / "Contents" / "Resources" / "KeyboardShortcuts_KeyboardShortcuts.bundle")
         legal = app / "Contents" / "Resources" / "Legal"
         shutil.copy2(staged / "LICENSE", legal / "LICENSE")
@@ -3894,7 +4034,7 @@ SIGNING_TEAM_ID=648A27MST5
         )
         (staged / "RELEASE_COMMIT").write_text("fixture-release-commit\n", encoding="utf-8")
         fake_lipo = scripts / "fake-lipo"
-        fake_lipo.write_text("#!/usr/bin/env bash\nprintf 'arm64 x86_64\\n'\n", encoding="utf-8")
+        fake_lipo.write_text("#!/usr/bin/env bash\nprintf 'arm64\\n'\n", encoding="utf-8")
         fake_lipo.chmod(0o755)
         fake_codesign = scripts / "fake-codesign"
         fake_codesign.write_text(
@@ -3910,7 +4050,7 @@ esac
             encoding="utf-8",
         )
         fake_codesign.chmod(0o755)
-        manifest = staged / ".build" / "release" / "RepoPrompt-artifact-manifest.json"
+        manifest = staged / ".build" / "release" / "Agentry-artifact-manifest.json"
         manifest_env = os.environ.copy()
         manifest_env.update({"LIPO": str(fake_lipo), "CODESIGN": str(fake_codesign)})
         subprocess.run(
@@ -3922,7 +4062,7 @@ esac
                 "--output",
                 str(manifest),
                 "--expected-architectures",
-                "arm64,x86_64",
+                "arm64",
             ],
             env=manifest_env,
             check=True,
@@ -3940,7 +4080,7 @@ esac
 
     @staticmethod
     def codex_fixture_environment(approved: Path, staged: Path) -> dict[str, str]:
-        app = staged / ".build" / "release" / "RepoPrompt.app"
+        app = staged / ".build" / "release" / "Agentry.app"
         return {
             "FAKE_CODEX_MANIFEST": str(approved / "Vendor" / "Codex" / "manifest.json"),
             "FAKE_CODEX_BUNDLE": str(
@@ -3981,8 +4121,8 @@ esac
         scripts: Path,
         script_name: str,
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
-        app = staged / ".build" / "release" / "RepoPrompt.app"
-        artifact_manifest = staged / ".build" / "release" / "RepoPrompt-artifact-manifest.json"
+        app = staged / ".build" / "release" / "Agentry.app"
+        artifact_manifest = staged / ".build" / "release" / "Agentry-artifact-manifest.json"
         capture = staged.parent / f"{script_name}-codex-calls.txt"
         env = os.environ.copy()
         env.update(
@@ -3991,8 +4131,8 @@ esac
                 "REPOPROMPT_APPROVED_SOURCE_ROOT": str(approved),
                 "REPOPROMPT_RELEASE_SOURCE_ROOT": str(staged),
                 "REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR": str(scripts),
-                "TIP_COMMIT": "fixture-release-commit",
-                "TIP_BUILD_NUMBER": "1.1",
+                "BETA_COMMIT": "fixture-release-commit",
+                "BETA_BUILD_NUMBER": "1.1",
                 "LIPO": str(scripts / "fake-lipo"),
                 "CODESIGN": str(scripts / "fake-codesign"),
                 "FAKE_CODEX_CAPTURE": str(capture),

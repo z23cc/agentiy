@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write or verify the deterministic external RepoPrompt app artifact manifest."""
+"""Write or verify the deterministic external Agentry app artifact manifest."""
 
 from __future__ import annotations
 
@@ -148,11 +148,11 @@ def collect_manifest(app: Path, expected_architectures: list[str] | None) -> dic
     executable_name = info.get("CFBundleExecutable")
     if not isinstance(executable_name, str) or not executable_name:
         fail("Info.plist is missing CFBundleExecutable")
-    signing_mode = info.get("RepoPromptSigningMode")
+    signing_mode = info.get("AgentrySigningMode")
     allow_adhoc_without_requirement = signing_mode == "release-candidate-adhoc"
     require_leaf_certificate = signing_mode in {"developer-id", "local-self-signed"}
     # Record only whether telemetry is enabled, never the DSN value itself (it is secret).
-    sentry_dsn = info.get("RepoPromptSentryDSN")
+    sentry_dsn = info.get("AgentrySentryDSN")
     telemetry_enabled = isinstance(sentry_dsn, str) and bool(sentry_dsn.strip())
     entries = [
         executable_entry(
@@ -163,7 +163,7 @@ def collect_manifest(app: Path, expected_architectures: list[str] | None) -> dic
         ),
         executable_entry(
             app,
-            "Contents/MacOS/repoprompt-mcp",
+            "Contents/MacOS/agentry-mcp",
             allow_adhoc_without_requirement=allow_adhoc_without_requirement,
             require_leaf_certificate=require_leaf_certificate,
         ),
@@ -193,9 +193,7 @@ def collect_manifest(app: Path, expected_architectures: list[str] | None) -> dic
             "build_number": info.get("CFBundleVersion"),
             "signing_mode": signing_mode,
             "telemetry_enabled": telemetry_enabled,
-            "architecture_policy": "universal-public"
-            if actual_architectures == ["arm64", "x86_64"]
-            else "host-native",
+            "architecture_policy": "arm64-only" if actual_architectures == ["arm64"] else "unsupported",
             "architectures": actual_architectures,
         },
         "bundle_signing": bundle_signing,

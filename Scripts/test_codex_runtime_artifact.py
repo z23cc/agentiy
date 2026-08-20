@@ -1056,7 +1056,9 @@ fi
         self.assertIn("Contents/Resources/BundledRuntimes/Codex", source)
         self.assertIn('stage-bundle', source)
         self.assertIn('verify-bundle', source)
-        self.assertIn('CODEX_BUNDLE_ARCH="all"', source)
+        self.assertIn('CODEX_BUNDLE_ARCH="${AGENTRY_CODEX_ARCH:-arm64}"', source)
+        self.assertIn("AGENTRY_CODEX_ARCH must be arm64", source)
+        self.assertIn("x86_64-apple-darwin", source)
 
 
 if __name__ == "__main__":

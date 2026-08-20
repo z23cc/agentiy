@@ -9,7 +9,7 @@ fail() {
     exit 1
 }
 
-[[ -n "$APP_BUNDLE" ]] || fail "Usage: $0 /path/to/RepoPrompt.app"
+[[ -n "$APP_BUNDLE" ]] || fail "Usage: $0 /path/to/Agentry.app"
 [[ -d "$APP_BUNDLE" ]] || fail "Missing app bundle: $APP_BUNDLE"
 
 LEGAL_DIR="$APP_BUNDLE/Contents/Resources/Legal"

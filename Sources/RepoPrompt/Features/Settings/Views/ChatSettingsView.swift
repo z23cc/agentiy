@@ -40,7 +40,7 @@ struct ChatSettingsView: View {
                             .font(.title2)
                             .fontWeight(.semibold)
 
-                        Text("Configure RepoPrompt's built-in chat UI — the Built-in Chat Model, MCP Oracle presets, and planning prompt. These settings don't affect Agent Mode.")
+                        Text("Configure Agentry's built-in chat UI — the Built-in Chat Model, MCP Oracle presets, and planning prompt. These settings don't affect Agent Mode.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

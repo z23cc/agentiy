@@ -5401,13 +5401,21 @@ actor WorkspaceFileContextStore {
                 preparation.token,
                 forKey: preparation.token.ownerID
             )
+            return true
+        } ?? false
+
+        // The authority publication permit holds a non-recursive synchronous mutex.
+        // Path snapshot invalidation may synchronously verify published authority fences,
+        // so perform it immediately after the permit releases the mutex. This remains one
+        // uninterrupted store-actor turn: no other store operation can observe published
+        // roots before their path-match snapshots are invalidated.
+        if didPublish {
             invalidatePathMatchSnapshot(
                 affectedRootKinds: [.sessionWorktree],
                 reason: .rootLoad,
                 affectedRootIDs: newlyPublishedRootIDs
             )
-            return true
-        } ?? false
+        }
 
         guard didPublish else {
             for subscription in pausedHandoffSubscriptions {

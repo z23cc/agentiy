@@ -1,6 +1,6 @@
 import Foundation
 
-#if REPOPROMPT_SENTRY_ENABLED
+#if AGENTRY_SENTRY_ENABLED
     import Sentry
 #endif
 
@@ -21,7 +21,7 @@ enum SentryTelemetryBootstrap {
     /// available, the user has not opted out, and the process kill switch is not set.
     @MainActor
     static func start() {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             let status = currentStatus()
             guard !status.started, status.canSendTelemetry, let dsn = configuredDSN() else { return }
 
@@ -72,7 +72,7 @@ enum SentryTelemetryBootstrap {
 
     @MainActor
     static func currentStatus() -> Status {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             let dsnConfigured = configuredDSN() != nil
             let telemetryEnabled = GlobalSettingsStore.shared.telemetryEnabled()
             let environmentDisabled = isEnvironmentDisabled()
@@ -98,7 +98,7 @@ enum SentryTelemetryBootstrap {
 
     @MainActor
     static func disableAndClose() {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             performanceTracingEnabled = false
             guard started else { return }
             SentrySDK.close()
@@ -111,39 +111,42 @@ enum SentryTelemetryBootstrap {
 
     @MainActor
     static func restartIfStarted() {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             guard started else { return }
             disableAndClose()
             start()
         #endif
     }
 
-    #if REPOPROMPT_SENTRY_ENABLED
-        private static func configuredDSN() -> String? {
-            #if DEBUG
-                if let value = ProcessInfo.processInfo.environment["REPOPROMPT_SENTRY_DSN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !value.isEmpty
-                {
-                    return value
-                }
-            #endif
-            if let value = Bundle.main.object(forInfoDictionaryKey: "RepoPromptSentryDSN") as? String {
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? nil : trimmed
-            }
-            return nil
+    static func configuredDSN(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:],
+        allowEnvironmentOverride: Bool = _isDebugAssertConfiguration()
+    ) -> String? {
+        if allowEnvironmentOverride,
+           let value = environment["AGENTRY_SENTRY_DSN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty
+        {
+            return value
         }
-    #endif
+        if let value = infoDictionary["AgentrySentryDSN"] as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return nil
+    }
 
-    private static func isEnvironmentDisabled() -> Bool {
-        let value = ProcessInfo.processInfo.environment["REPOPROMPT_TELEMETRY_DISABLED"]?
+    static func isEnvironmentDisabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let value = environment["AGENTRY_TELEMETRY_DISABLED"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return ["1", "true", "yes", "on"].contains(value ?? "")
     }
 
     struct TraceSpan {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             fileprivate let span: Span?
 
             fileprivate init(_ span: Span?) {
@@ -155,7 +158,7 @@ enum SentryTelemetryBootstrap {
     }
 
     static func addBreadcrumb(_ category: Category, action: Action, attributes: @autoclosure () -> [Attribute] = []) {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             guard isAllowedStartupBreadcrumb(category: category, action: action) else { return }
             let payload = BreadcrumbPayload(category: category, action: action, attributes: attributes())
             Task { @MainActor in
@@ -197,7 +200,7 @@ enum SentryTelemetryBootstrap {
         attributes: @autoclosure () -> [Attribute] = [],
         _ work: () async throws -> T
     ) async rethrows -> T {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             guard await shouldTrace(transaction) else { return try await work() }
             let sentryTransaction = SentrySDK.startTransaction(
                 name: transaction.name,
@@ -224,7 +227,7 @@ enum SentryTelemetryBootstrap {
         attributes: @autoclosure () -> [Attribute] = [],
         _ work: (TraceSpan) async throws -> T
     ) async rethrows -> T {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             guard await shouldTrace(transaction) else { return try await work(TraceSpan(nil)) }
             let sentryTransaction = SentrySDK.startTransaction(
                 name: transaction.name,
@@ -259,7 +262,7 @@ enum SentryTelemetryBootstrap {
         attributes: @autoclosure () -> [Attribute] = [],
         _ work: (TraceSpan) async throws -> T
     ) async rethrows -> T {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             try await work(TraceSpan(nil))
         #else
             try await work(TraceSpan())
@@ -287,7 +290,7 @@ enum SentryTelemetryBootstrap {
         }
     }
 
-    #if REPOPROMPT_SENTRY_ENABLED
+    #if AGENTRY_SENTRY_ENABLED
         @MainActor
         private static func shouldTrace(_ transaction: Transaction) -> Bool {
             started && performanceTracingEnabled && transaction.isStartupTrace

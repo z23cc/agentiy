@@ -42,10 +42,10 @@ This auto-resolves to the window containing your project. No need to list window
 	cli: """
 ```bash
 # First, list available windows to find the right one
-rpce-cli -e 'windows'
+agentry-cli -e 'windows'
 
 # Then check roots in a specific window (REQUIRED - CLI cannot auto-bind)
-rpce-cli -w <window_id> -e 'tree --type roots'
+agentry-cli -w <window_id> -e 'tree --type roots'
 ```
 """))
 
@@ -64,7 +64,7 @@ Then retry the `working_dirs` bind.
 
 **CLI Window Routing:**
 - CLI invocations are stateless—you MUST pass `-w <window_id>` to target the correct window
-- Use `rpce-cli -e 'windows'` to list all open windows and their workspaces
+- Use `agentry-cli -e 'windows'` to list all open windows and their workspaces
 - Always include `-w <window_id>` in ALL subsequent commands\(beforeAction == "exploration" ? "\n- Without `-w`, commands may target the wrong workspace" : "")
 """)
 
@@ -110,7 +110,7 @@ To check which model is powering a role:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_manage op=list_agents roles_only=true'
+agentry-cli -w <window_id> -e 'agent_manage op=list_agents roles_only=true'
 ```
 """))
 
@@ -150,14 +150,14 @@ Then pass `session_ids` (array) to `agent_run op=wait` to block until the **firs
 	cli: """
 ```bash
 # Dispatch both concurrently
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=\(defaultRole) session_name="1/N: <goal A>" message="<brief A>" detach=true'
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=\(defaultRole) session_name="2/N: <goal B>" message="<brief B>" detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=\(defaultRole) session_name="1/N: <goal A>" message="<brief A>" detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=\(defaultRole) session_name="2/N: <goal B>" message="<brief B>" detach=true'
 
 # Then wait for the first session that needs attention
-rpce-cli -w <window_id> -e 'agent_run op=wait session_ids=["<uuid1>","<uuid2>"] timeout=60'
+agentry-cli -w <window_id> -e 'agent_run op=wait session_ids=["<uuid1>","<uuid2>"] timeout=60'
 
 # Or poll all current snapshots without blocking
-rpce-cli -w <window_id> -e 'agent_run op=poll session_ids=["<uuid1>","<uuid2>"]'
+agentry-cli -w <window_id> -e 'agent_run op=poll session_ids=["<uuid1>","<uuid2>"]'
 ```
 """))
 
@@ -227,7 +227,7 @@ As each agent completes:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="The goal was X but Y appears missing." wait=true'
+agentry-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="The goal was X but Y appears missing." wait=true'
 ```
 """))
 3. **Summarize to the user**: Brief status update — what completed, what's still running.
@@ -249,7 +249,7 @@ Sessions persist after agents finish — useful when you might revisit output, b
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_manage op=cleanup_sessions session_ids=["<session_id>"]'
+agentry-cli -w <window_id> -e 'agent_manage op=cleanup_sessions session_ids=["<session_id>"]'
 ```
 """))
 
@@ -280,7 +280,7 @@ Plan and review exports generated during orchestration (via `export_response:tru
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'call file_actions {"action":"delete","path":"/absolute/path/to/repo/prompt-exports/<stale-export>.md"}'
+agentry-cli -w <window_id> -e 'call file_actions {"action":"delete","path":"/absolute/path/to/repo/prompt-exports/<stale-export>.md"}'
 ```
 """))
 """

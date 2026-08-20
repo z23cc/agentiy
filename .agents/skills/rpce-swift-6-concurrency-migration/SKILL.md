@@ -1,9 +1,9 @@
 ---
 name: rpce-swift-6-concurrency-migration
-description: Plan, inventory, stage, execute, or review RepoPrompt CE's project-wide migration to Swift 6.2 concurrency checking and Swift 6 language mode. Use when auditing packages, targets, settings, diagnostics, unsafe escape hatches, migration phases, blockers, or validation evidence across the root and provider packages. Do not use for a bounded diagnostic repair unless it changes migration policy or sequencing.
+description: Plan, inventory, stage, execute, or review Agentry's project-wide migration to Swift 6.2 concurrency checking and Swift 6 language mode. Use when auditing packages, targets, settings, diagnostics, unsafe escape hatches, migration phases, blockers, or validation evidence across the root and provider packages. Do not use for a bounded diagnostic repair unless it changes migration policy or sequencing.
 ---
 
-# RepoPrompt CE Swift 6.2 Concurrency Migration
+# Agentry Swift 6.2 Concurrency Migration
 
 Treat repository source, current compiler output, AGENTS.md, and official Swift documentation as authority. Do not infer language semantics from the toolchain version alone.
 

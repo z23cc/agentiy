@@ -1,6 +1,6 @@
 //
 //  MCPCommandRunner.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Reusable command execution engine.
 //  Handles parsing and executing commands without REPL UI.
@@ -845,10 +845,10 @@ actor MCPCommandRunner {
 
         Multiple RepoPrompt windows are open. Bind or disambiguate explicitly.
 
-        rpce-cli -e 'windows'                         Discover windows and context_id values
-        rpce-cli -w <id> -e 'context'                 Bind a window for this invocation
-        rpce-cli --context-id <uuid> -e 'context'     Bind a specific compose context
-        rpce-cli -w <id> -t <tab-or-uuid> -e 'context' Resolve/bind a tab in one step
+        agentry-cli -e 'windows'                         Discover windows and context_id values
+        agentry-cli -w <id> -e 'context'                 Bind a window for this invocation
+        agentry-cli --context-id <uuid> -e 'context'     Bind a specific compose context
+        agentry-cli -w <id> -t <tab-or-uuid> -e 'context' Resolve/bind a tab in one step
 
         AI agents SHOULD:
           1. Run 'windows' to discover available windows and context_id values

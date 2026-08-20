@@ -184,7 +184,7 @@ struct AgentModeGeneralSettingsView: View {
                 VStack(alignment: .leading, spacing: fontPreset.scaledClamped(6, max: 10)) {
                     Text("Provider Conversation Cleanup")
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 13, weight: .semibold))
-                    Text("When deleting Agent Mode sessions, RepoPrompt asks supported providers to archive or delete their remote conversation. Local cleanup still continues if a provider does not support cleanup.")
+                    Text("When deleting Agent Mode sessions, Agentry asks supported providers to archive or delete their remote conversation. Local cleanup still continues if a provider does not support cleanup.")
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -555,7 +555,7 @@ struct AgentModeGeneralSettingsView: View {
                 permissionsSubLinkRow(
                     icon: "person.crop.circle.badge.checkmark",
                     title: "Direct Agents",
-                    detail: "Claude Bash, Codex sandbox, ACP session mode, and MCP strict mode for agents you run directly from RepoPrompt.",
+                    detail: "Claude Bash, Codex sandbox, ACP session mode, and MCP strict mode for agents you run directly from Agentry.",
                     scope: .directAgents
                 )
                 Divider()

@@ -28,6 +28,10 @@ jobs:
       commit: ${{ steps.release-ref.outputs.commit }}
       tooling-commit: ${{ steps.release-ref.outputs.tooling-commit }}
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry promotion requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -54,6 +58,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry promotion requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -95,16 +103,15 @@ jobs:
           mkdir extracted
           ditto -x -k "${archives[0]}" extracted
           ./trusted-control-plane/Scripts/validate_embedded_mcp_helper_layout.sh \
-            "extracted/RepoPrompt CE.app" \
+            "extracted/Agentry.app" \
             "Reviewed ZIP MCP helper layout"
           ./trusted-control-plane/Scripts/validate_app_architectures.sh \
-            "extracted/RepoPrompt CE.app" \
-            "arm64,x86_64" \
+            "extracted/Agentry.app" \
             "Reviewed ZIP app"
           ./trusted-control-plane/Scripts/write_app_artifact_manifest.py verify \
-            --app "extracted/RepoPrompt CE.app" \
+            --app "extracted/Agentry.app" \
             --manifest "${artifact_manifests[0]}" \
-            --expected-architectures "arm64,x86_64"
+            --expected-architectures "arm64"
           echo "ARTIFACT_MANIFEST_PATH=${artifact_manifests[0]}" >> "$GITHUB_ENV"
 
       - name: Execute reviewed helper and packaged roundtrip without inherited secrets
@@ -119,7 +126,7 @@ jobs:
             USER="$USER" \
             LOGNAME="$LOGNAME" \
             ./trusted-control-plane/Scripts/smoke_embedded_mcp_helper.sh \
-            "extracted/RepoPrompt CE.app" \
+            "extracted/Agentry.app" \
             "Reviewed ZIP MCP helper"
           env -i \
             PATH=/usr/bin:/bin:/usr/sbin:/sbin \
@@ -130,7 +137,7 @@ jobs:
             REPOPROMPT_PACKAGED_SMOKE_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_TIMEOUT" \
             REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT" \
             ./trusted-control-plane/Scripts/smoke_packaged_mcp_roundtrip.sh \
-            "extracted/RepoPrompt CE.app" \
+            "extracted/Agentry.app" \
             "Reviewed packaged app" \
             "$ARTIFACT_MANIFEST_PATH"
 
@@ -145,6 +152,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry promotion requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -168,7 +179,7 @@ jobs:
           set -euo pipefail
           [[ -n "$SENTRY_AUTH_TOKEN" ]] || { echo "Missing protected SENTRY_AUTH_TOKEN" >&2; exit 1; }
           umask 077
-          SENTRY_TOKEN_FILE="$RUNNER_TEMP/repoprompt-sentry-promotion-token"
+          SENTRY_TOKEN_FILE="$RUNNER_TEMP/agentry-sentry-promotion-token"
           printf '%s' "$SENTRY_AUTH_TOKEN" > "$SENTRY_TOKEN_FILE"
           chmod 600 "$SENTRY_TOKEN_FILE"
           echo "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE=$SENTRY_TOKEN_FILE" >> "$GITHUB_ENV"
@@ -191,4 +202,4 @@ jobs:
 
       - name: Remove Sentry promotion token file
         if: always()
-        run: rm -f "$RUNNER_TEMP/repoprompt-sentry-promotion-token"
+        run: rm -f "$RUNNER_TEMP/agentry-sentry-promotion-token"

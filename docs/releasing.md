@@ -1,23 +1,20 @@
-# Releasing RepoPrompt CE
+# Releasing Agentry
 
-RepoPrompt CE has three release/update lanes:
+Agentry has three release/update lanes:
 
 - Contributors can build an ad-hoc release-candidate archive with no secrets.
-- Maintainers can publish rolling Tip Builds from latest passing `main` through
-  a separate Sparkle update feed for testers who opt in inside the app.
+- Maintainers can publish rolling beta builds from the latest passing `main` through
+  a separate Sparkle beta feed for testers who opt in inside the app.
 - Maintainers can publish a Developer ID signed, notarized, stapled GitHub
   Release with Sparkle EdDSA-signed update archive metadata through the
   protected `release` environment.
 
-Every public artifact in both lanes is universal and must contain matching
-`arm64+x86_64` `RepoPrompt` and `repoprompt-mcp` executables. Public builds use
-separate SwiftPM scratch directories per architecture, compare package resources
-before selecting one equivalent copy, merge unsigned products, and validate all
-packaged Mach-O architecture sets before and after signing and after ZIP
-extraction. Debug packages and local self-signed production packages remain
-host-native.
+Every debug, local-production, release-candidate, beta, and stable artifact is
+arm64-only. `Agentry`, `agentry-mcp`, Sparkle's nested helpers, and every other
+Mach-O under `Contents` must report exactly `arm64`; universal and x86_64-only
+payloads fail validation before signing, after signing, and after ZIP extraction.
 
-The packaged `repoprompt-mcp` exposes one final backend selector:
+The packaged `agentry-mcp` exposes one final backend selector:
 `--backend app|headless|auto`. **`app` remains the release default.** Explicit
 `auto` performs one bounded, connect-only probe of the well-known app socket
 before reading the MCP `initialize` request. A successful probe selects the app
@@ -37,7 +34,7 @@ job to launch or replace a developer's visible app implicitly. Until that
 evidence is accepted, release scripts, package metadata, installers, provider
 emitters, and documentation must preserve `app` as the default.
 
-RepoPrompt CE starts a new public release line at `1.0.0 (1)`. Its separate
+Agentry starts a new public release line at `1.0.0 (1)`. Its separate
 bundle identifier, Sparkle key pair, and appcast intentionally do not inherit
 the closed app's version history.
 
@@ -48,8 +45,8 @@ standalone package. The authority is the repository-owned
 [`Vendor/Codex/manifest.json`](../Vendor/Codex/manifest.json), which pins the
 official [`rust-v0.147.0` release](https://github.com/openai/codex/releases/tag/rust-v0.147.0),
 the official [`codex-package_SHA256SUMS`](https://github.com/openai/codex/releases/download/rust-v0.147.0/codex-package_SHA256SUMS),
-both macOS package assets, their complete extracted layouts, file hashes,
-architectures, and primary executable signing identities. The upstream release
+the arm64 macOS package asset, its complete extracted layout, file hashes,
+architecture, and primary executable signing identities. The upstream release
 publishes SHA-256 sums but does not document a public GPG, minisign, or SLSA
 verification procedure, so acquisition requires both the fixed HTTPS release
 URLs and agreement between the official checksum file and the independently
@@ -59,31 +56,25 @@ Packaging is the only automatic acquisition boundary; the app never downloads
 Codex at runtime. To acquire or inspect the cache explicitly:
 
 ```bash
-make codex-acquire                         # verifies both macOS packages
-make codex-acquire CODEX_ARCH=host         # current host only
-make codex-status                          # offline verification of both caches
+make codex-acquire CODEX_ARCH=arm64        # verifies the arm64 macOS package
+make codex-status CODEX_ARCH=arm64         # offline verification of the arm64 cache
 ```
 
 The verified cache lives under `.build/codex-runtime/<manifest-version>/<target>/`
-by default and can be relocated with `REPOPROMPT_CODEX_CACHE_ROOT`. Ordinary
-host-native debug and non-public packaging defaults to the host target and embeds
-one package under that target name. Setting `REPOPROMPT_CODEX_ARCH=all` explicitly
-for one of those host-native lanes embeds both target packages. Universal
-release-candidate and public release lanes always select `all`, acquire and embed
-both official macOS packages, and reject an explicit single-target selection.
+by default and can be relocated with `REPOPROMPT_CODEX_CACHE_ROOT`. Every packaging
+lane sets `AGENTRY_CODEX_ARCH=arm64`, acquires and embeds only the official
+`aarch64-apple-darwin` package, and rejects `all` and `x86_64`.
 
-Each intact thin package is copied to the stable target-specific layout
-`Contents/Resources/BundledRuntimes/Codex/<target>/`. Ordinary host-native output
-contains only its selected target directory, while explicit
-`REPOPROMPT_CODEX_ARCH=all` output and universal release-candidate/public artifacts
-contain both `aarch64-apple-darwin/` and `x86_64-apple-darwin/`. Runtime selection
-fails closed unless the package matching the running app architecture is present.
+The intact thin package is copied to
+`Contents/Resources/BundledRuntimes/Codex/aarch64-apple-darwin/`. Packaging rejects
+any staged `x86_64-apple-darwin` subtree, and runtime selection fails closed unless
+the arm64 package is present.
 Each target subtree preserves `codex-package.json`, `bin/codex`,
 `bin/codex-code-mode-host`, `codex-resources/`, `codex-path/`, and all additional
 package resources; the binaries inside remain thin and must match the directory's
 target architecture. The two primary macOS executables are
 Developer ID signed by `OpenAI OpCo, LLC` (team `2DC432GLL2`) with hardened
-runtime and timestamps. RepoPrompt's signing scripts do **not** thin, mutate, or
+runtime and timestamps. Agentry's signing scripts do **not** thin, mutate, or
 re-sign anything in this subtree. The outer app signature seals the resource
 tree, after which the artifact verifier rechecks every byte, architecture, and
 upstream signature. Privileged staged signing and post-notarization validation
@@ -95,13 +86,13 @@ signature verification without changing the upstream binary hashes. Actual
 notarization remains enforced by the protected release workflow; if Apple ever
 rejects this policy, stop rather than silently re-signing the upstream payload.
 
-The bundled package is RepoPrompt's default Codex runtime authority; runtime
+The bundled package is Agentry's default Codex runtime authority; runtime
 selection never falls through to the user's shell `PATH`. Advanced users may set
-one explicit absolute external override with `REPOPROMPT_CODEX_EXECUTABLE`.
-RepoPrompt rejects overrides older than 0.147.0, matching the bundled runtime and
+one explicit absolute external override with `AGENTRY_CODEX_EXECUTABLE`.
+Agentry rejects overrides older than 0.147.0, matching the bundled runtime and
 the documented app-server contract floor. Bundled and external runtimes both use
-RepoPrompt-owned `CODEX_HOME` and `CODEX_SQLITE_HOME` directories under
-`~/Library/Application Support/RepoPrompt CE/Codex/{Debug,Release}/`, leaving
+Agentry-owned `CODEX_HOME` and `CODEX_SQLITE_HOME` directories under
+`~/Library/Application Support/Agentry/Codex/{Debug,Release}/`, leaving
 `~/.codex` and official Codex App state untouched.
 
 Within that isolated `config.toml`, RepoPrompt owns the
@@ -121,17 +112,17 @@ and is covered by the packaged legal inventory checksum contract.
 To diagnose acquisition independently of a build, run:
 
 ```bash
-python3 Scripts/codex_runtime_artifact.py acquire --arch all
+python3 Scripts/codex_runtime_artifact.py acquire --arch arm64
 python3 Scripts/codex_runtime_artifact.py verify \
   --arch aarch64-apple-darwin \
   --package .build/codex-runtime/0.147.0/aarch64-apple-darwin
 python3 Scripts/codex_runtime_artifact.py stage-bundle \
-  --arch all \
+  --arch arm64 \
   --cache-root .build/codex-runtime \
-  --bundle /tmp/RepoPrompt-Codex-bundle
+  --bundle /tmp/Agentry-Codex-bundle
 python3 Scripts/codex_runtime_artifact.py verify-bundle \
-  --arch all \
-  --bundle /tmp/RepoPrompt-Codex-bundle
+  --arch arm64 \
+  --bundle /tmp/Agentry-Codex-bundle
 ```
 
 Rotate the pin only by reviewing a new official release and its checksum asset,
@@ -174,14 +165,13 @@ until a maintainer reviews and deliberately applies a complete rotation change.
 
 The known-good rollback for the 0.147.0 rotation is verified Codex 0.145.0
 (`rust-v0.145.0`; arm64 package archive SHA-256
-`ece937169d4c9e910d60826a6ea4ae7848a16c089403d122e70e7da4ac41ba34`, x86_64
-package archive SHA-256 `9d402c9ca814655fddc07b548d7086491c0afcebe1f746cdeba1045fd6f62646`).
+`ece937169d4c9e910d60826a6ea4ae7848a16c089403d122e70e7da4ac41ba34`).
 After a reviewed rotation, roll back by reverting the complete rotation change and
 rebuilding from the restored manifest rather than mixing old and new authority files.
 
 The manual **Codex Runtime Update Candidate** workflow runs only from `main`, has
 `contents: read`, uploads those evidence files, and cannot commit, open a pull
-request, promote Tip, or publish a release. Local and workflow runs share the same
+request, promote Beta, or publish a release. Local and workflow runs share the same
 repository-owned tool. A report is not approval: it leaves the external override
 floor as an explicit policy decision and requires schema-gate review (including
 `memory_mode`, MCP direct-only behavior, and `thread/start`/`thread/resume`),
@@ -192,7 +182,7 @@ approval, and soak before any stable rotation.
 
 Ordinary contributors prepare release candidates. They do not need Apple
 credentials, the Sparkle private key, or permission to create public tags and
-GitHub Releases.
+beta release
 
 Trusted maintainers own public distribution. A maintainer reviews the release
 PR, merges it, creates the immutable release tag, dispatches the protected
@@ -219,43 +209,43 @@ The intended process is:
    stable release, and runs anonymous post-publish checks.
 
 
-## Tip Builds
+## Beta Builds
 
-Tip Builds are signed and notarized builds from the latest successful protected
+Beta builds are signed and notarized builds from the latest successful protected
 `main` commit. They are official tester builds, not stable releases. Users opt in
-from **Settings → Software Updates → Update Channel → Tip Builds**. The default
-channel remains **Stable**. Returning from Tip Builds to Stable may not downgrade
+from **Settings → Software Updates → Update Channel → Beta Builds**. The default
+channel remains **Stable**. Returning from Beta Builds to Stable may not downgrade
 immediately; users may need to wait for a newer stable build or reinstall the
 stable app manually.
 
 The app uses separate Sparkle feeds:
 
 ```text
-Stable: https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml
-Tip:    https://github.com/repoprompt/repoprompt-ce-tip-updates/releases/latest/download/appcast.xml
+Stable: `$AGENTRY_SPARKLE_STABLE_FEED_URL`
+Beta:   `$AGENTRY_SPARKLE_BETA_FEED_URL`
 ```
 
-The initial Tip channel shares the CE Sparkle EdDSA key and Developer ID identity
-with stable releases, but it publishes only to the separate tip update
-repository. Tip workflows must never write to `repoprompt-ce-updates`, must not
-use `v*` tags, and must not feed into `Promote Release`. Stable promotion remains
-the only path that updates the stable appcast.
+Stable and beta require distinct configured feed URLs and use the newly
+provisioned Agentry Sparkle public key plus the configured Developer ID identity.
+Beta workflows publish only to `BETA_UPDATE_REPOSITORY`, must not use `v*` tags,
+and must not feed into `Promote Release`. Stable promotion remains the only path
+that updates the stable appcast.
 
-`Publish Tip` runs after successful CI on `main` and can also be dispatched
-manually. It stages the tip source without secrets, signs and notarizes without
+`Publish Beta` runs after successful CI on `main` and can also be dispatched
+manually. It stages the beta source without secrets, signs and notarizes without
 executing packaged app/helper code, runs the PR #441 hardened packaged smoke on a
 fresh no-secret runner, then publishes a normal GitHub release in the dedicated
-tip update repository using an immutable tag shaped like `tip-<shortsha>`. The
-release is marked latest inside the tip-only repository so GitHub's
+beta update repository using an immutable tag shaped like `beta-<shortsha>`. The
+release is marked latest inside the beta-only repository so GitHub's
 `releases/latest/download/appcast.xml` URL resolves for opted-in clients. Do not
-mark the tip release as a prerelease: GitHub excludes prereleases from
+mark the beta release as a prerelease: GitHub excludes prereleases from
 `releases/latest`.
 
-Tip `CFBundleVersion` values sort between adjacent stable builds. The workflow
+Beta `CFBundleVersion` values sort between adjacent stable builds. The workflow
 reads the currently published stable appcast and combines that stable build with
 the source commit count. For example, commit sequence `795` on stable build `28`
-becomes Tip build `28.7.95`: it is newer than stable `28`, while stable `29`
-still supersedes it. This keeps Stable and Tip in one monotonic Sparkle version
+becomes Beta build `28.7.95`: it is newer than stable `28`, while stable `29`
+still supersedes it. This keeps Stable and Beta in one monotonic Sparkle version
 space without forcing stable releases to adopt repository-sized build numbers.
 The source commit count must remain at or below `9999`; replace this encoding
 before the repository reaches that limit.
@@ -263,23 +253,22 @@ before the repository reaches that limit.
 The workflow uses GitHub concurrency to allow one active and one pending run.
 New successful `main` runs replace an older pending run while an active signing
 or notarization run finishes. Before compiling, it uses the workflow's read-only
-`github.token` to check for a complete release for the immutable `tip-<shortsha>`
+`github.token` to check for a complete release for the immutable `beta-<shortsha>`
 tag and skips an already-published commit. The protected update-repository token
 remains confined to the publishing job.
 
-Configure a protected GitHub Actions environment named `tip-release`. It can use
-the same Developer ID, provisioning, notarization, and Sparkle secrets as stable
-initially, but it needs a separate `TIP_UPDATE_REPOSITORY_TOKEN` scoped only to
-the tip update repository. Optionally set repository variable
-`TIP_UPDATE_REPOSITORY`; it defaults to `repoprompt/repoprompt-ce-tip-updates`.
+Configure a protected GitHub Actions environment named `beta-release`. It uses
+the same Developer ID, provisioning, notarization, and Sparkle signing secrets as
+stable, plus a separate `BETA_UPDATE_REPOSITORY_TOKEN` scoped only to the configured
+`BETA_UPDATE_REPOSITORY`.
 The publishing script fails closed if this variable points at the source repo or
-the stable update repo. Tip artifacts also include a small `*-metadata.json` asset
+the stable update repo. Beta artifacts also include a small `*-metadata.json` asset
 recording the source commit, immutable tag, marketing version, and build number.
 
-Tip builds use the same Sentry-linked binary and symbolication policy as stable
+Beta builds use the same Sentry-linked binary and symbolication policy as stable
 releases. The secret-free stage enables Sentry linking and carries release dSYMs
 inside the staged archive without a DSN or auth token. Only the protected
-`tip-release` signing job receives `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`, and the
+`beta-release` signing job receives `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`, and the
 Sentry org/project variables: it injects the DSN through
 `sign_staged_release.sh`, uploads the staged dSYMs before signed assets leave
 the job, and requires the final artifact manifest to record
@@ -296,9 +285,8 @@ make dev-release-preflight
 make dev-release-artifact
 ```
 
-The artifact is written under `dist/`. It exercises universal `arm64+x86_64`
-release-mode compilation in isolated SwiftPM directories, resource-equivalence
-checking, unsigned product merging, app bundling, legal-file packaging, and
+The artifact is written under `dist/`. It exercises arm64-only release-mode
+compilation, app bundling, Sparkle framework thinning, legal-file packaging, and
 archive extraction validation. Coordinated `release artifact` jobs allow up to
 four hours for this dual-architecture path; `package release`, `release package`,
 and `release local-install` retain the normal two-hour release timeout. The
@@ -323,21 +311,19 @@ production installer below.
 
 RepoPrompt currently patches the pinned `KeyboardShortcuts` SwiftPM checkout
 during app packaging so the package's localized resources are found inside the
-packaged app bundle. Host-native builds patch the default checkout, while public
-universal builds patch both isolated architecture checkouts:
+All lanes patch the arm64 build checkout:
 
 ```text
 .build/checkouts/KeyboardShortcuts/Sources/KeyboardShortcuts/Utilities.swift
-.build/public-release-swiftpm/{arm64,x86_64}/checkouts/KeyboardShortcuts/Sources/KeyboardShortcuts/Utilities.swift
+.build/public-release-swiftpm/arm64/checkouts/KeyboardShortcuts/Sources/KeyboardShortcuts/Utilities.swift
 ```
 
 The patch is applied **before** Swift compilation, not after the app is built or
 signed:
 
-1. `package_app.sh` patches the host-native checkout or delegates to the universal builder.
-2. The universal builder patches each architecture's isolated checkout.
-3. `swift build` compiles `RepoPrompt` with the patched dependency source.
-4. SwiftPM resource bundles are copied into `RepoPrompt.app/Contents/Resources`.
+1. `package_app.sh` patches the arm64 checkout or delegates to the arm64 release builder.
+2. `swift build --arch arm64` compiles `Agentry` with the patched dependency source.
+4. SwiftPM resource bundles are copied into `Agentry.app/Contents/Resources`.
 5. The packaged resource layout is validated.
 6. The app is signed.
 
@@ -345,7 +331,7 @@ This workaround exists because RepoPrompt's manual app packaging copies the
 SwiftPM resource bundle to:
 
 ```text
-RepoPrompt.app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle
+Agentry.app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle
 ```
 
 The package patch makes KeyboardShortcuts look there before falling back to its
@@ -363,7 +349,7 @@ patched package.
 
 Users who want a release-mode build without maintainer credentials can install
 a local-only production app by double-clicking
-[`Install RepoPrompt CE Local Production.command`](../Install%20RepoPrompt%20CE%20Local%20Production.command)
+[`Install Agentry Local Production.command`](../Install%20Agentry%20Local%20Production.command)
 in Finder. The Finder launcher requires Python 3, confirms replacement of any
 existing installed app, runs the coordinated developer daemon, and keeps the
 terminal window open so certificate approval prompts and build results remain
@@ -384,7 +370,7 @@ The direct fallback command is:
 CONFIRM_LOCAL_PRODUCTION_INSTALL=1 make install-local-production
 ```
 
-The installer uses the exact identity name `RepoPrompt CE Local Self-Signed Code
+The installer uses the exact identity name `Agentry Local Self-Signed Code
 Signing`, but continuity is anchored to the selected certificate's SHA-256
 fingerprint rather than to that display name. It inventories every valid
 private-key-backed exact-name identity. On first use it mints and registers one
@@ -398,7 +384,7 @@ LOCAL_SIGNING_IDENTITY_SHA256=<64-hex-fingerprint> \
 ```
 
 The versioned registry is stored at
-`~/Library/Application Support/RepoPrompt CE/local-signing-identity-v1.json`
+`~/Library/Application Support/Agentry/local-signing-identity-v1.json`
 with owner-only directory and file permissions. It records the exact
 certificate fingerprint and local secure-storage service generation. After a
 fingerprint is registered, a missing, expired, or private-keyless identity is a
@@ -460,20 +446,20 @@ Add these environment secrets:
 | `DEVELOPER_ID_APPLICATION_P12_BASE64` | Base64-encoded Developer ID Application certificate and private key exported as PKCS#12. |
 | `DEVELOPER_ID_APPLICATION_P12_PASSWORD` | Password used for the PKCS#12 export. |
 | `CI_KEYCHAIN_PASSWORD` | Random password for the ephemeral CI keychain. |
-| `REPOPROMPT_CE_PROVISIONING_PROFILE_BASE64` | Base64-encoded Developer ID provisioning profile for `com.pvncher.repoprompt.ce`. |
+| `AGENTRY_PROVISIONING_PROFILE_BASE64` | Base64-encoded Developer ID provisioning profile for `io.github.z23cc.agentry`. |
 | `NOTARYTOOL_PRIVATE_KEY_BASE64` | Base64-encoded App Store Connect API `.p8` key accepted by `notarytool`. |
 | `NOTARYTOOL_KEY_ID` | App Store Connect API key ID. |
 | `NOTARYTOOL_ISSUER_ID` | App Store Connect API issuer ID. |
 | `SPARKLE_PRIVATE_KEY` | Modern Sparkle EdDSA private-key seed for the CE update channel. It must decode from base64 to exactly 32 bytes. |
 | `PUBLIC_UPDATE_REPOSITORY_TOKEN` | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-updates` with repository contents read/write permission. |
-| `TIP_UPDATE_REPOSITORY_TOKEN` | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-tip-updates` with repository contents read/write permission. Do not reuse the stable update token. |
+| `BETA_UPDATE_REPOSITORY_TOKEN` | Fine-grained GitHub token scoped only to the configured beta update repository, with repository contents read/write permission. |
 | `SENTRY_DSN` | Sentry DSN injected into official signed builds for release routing. It is not a credential, but keep it in the protected release environment so unofficial artifacts do not route telemetry to the official project. |
 | `SENTRY_AUTH_TOKEN` | Sentry Organization Token used for draft-time debug-symbol/release metadata and verified-promotion deploy recording. Create it with the fixed `org:ci` scope; Organization Token scopes are immutable, and release tooling does not inspect or change them. |
 
 Add these non-secret GitHub environment variables for Sentry symbol upload in
-both the `release` and `tip-release` environments. The workflows map them to
+both the `release` and `beta-release` environments. The workflows map them to
 the release scripts' `REPOPROMPT_SENTRY_*` names and explicitly set
-`REPOPROMPT_ENABLE_SENTRY=1` for official staging and signing.
+`AGENTRY_ENABLE_SENTRY=1` for official staging and signing.
 
 | Variable | Contents |
 | --- | --- |
@@ -485,17 +471,18 @@ Official stable promotion intentionally requires `SENTRY_AUTH_TOKEN` and the Sen
 ## Sentry telemetry and debug symbols
 
 Official telemetry-enabled release staging links the Sentry SDK when
-`REPOPROMPT_ENABLE_SENTRY=1`. The protected release environment provides
+`AGENTRY_ENABLE_SENTRY=1`. The protected release environment provides
 `SENTRY_DSN`, and `Scripts/sign_staged_release.sh` injects it into `Info.plist`
-as `RepoPromptSentryDSN`. A DSN is not an auth secret, but it is not committed,
+as `AgentrySentryDSN`. A DSN is not an auth secret, but it is not committed,
 logged, or recorded in artifact manifests so only official signed artifacts route
 telemetry to the official project. Manifests record only the non-secret
 `telemetry_enabled` boolean.
 
-When Sentry is enabled, stable and Tip staging generate dSYMs under
-`.build/sentry-symbols/release` and carry them inside their staged release ZIPs.
-Both lanes use the shared deterministic symbol policy to require, copy, and
-upload those staged symbols with `upload_sentry_debug_symbols.sh`.
+When Sentry is enabled, stable and beta staging generate
+`Agentry.dSYM` and `agentry-mcp.dSYM` under `.build/sentry-symbols/release` and
+carry them inside their staged release ZIPs. Both lanes use the shared
+deterministic symbol policy to require, copy, and upload those staged symbols
+with `upload_sentry_debug_symbols.sh`.
 `release.sh publish-staged` additionally requires `SENTRY_AUTH_TOKEN` (or
 `REPOPROMPT_SENTRY_AUTH_TOKEN_FILE`), `REPOPROMPT_SENTRY_ORG`, and
 `REPOPROMPT_SENTRY_PROJECT` for official Sentry-enabled releases. Before code
@@ -518,7 +505,7 @@ source paths are not uploaded to Sentry.
 Local/debug symbol upload is opt-in and is mainly for testing the integration:
 
 ```bash
-REPOPROMPT_ENABLE_SENTRY=1 \
+AGENTRY_ENABLE_SENTRY=1 \
 REPOPROMPT_SENTRY_DSN="https://examplePublicKey@o0.ingest.sentry.io/0" \
 REPOPROMPT_UPLOAD_SENTRY_SYMBOLS=1 \
 REPOPROMPT_SENTRY_ORG="repoprompt" \
@@ -531,30 +518,10 @@ Prefer `REPOPROMPT_SENTRY_AUTH_TOKEN_FILE` for coordinated `make dev-build` /
 conductor runs. The daemon intentionally does not pass through `SENTRY_AUTH_TOKEN`
 because it stores job environment snapshots for status and retry identity.
 
-DEBUG telemetry-enabled builds support a shell-only crash probe for validating
-Sentry event detail:
-
-```bash
-"$HOME/Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app/Contents/MacOS/RepoPrompt" \
-  --repoprompt-sentry-test-crash
-```
-
-Relaunch the app once without the argument so the SDK can flush the cached native
-crash report.
-
-The optional `SIGN_IDENTITY` environment variable defaults to:
-
-```text
-Developer ID Application: Eric Provencher (648A27MST5)
-```
-
-The provisioning profile must authorize:
-
-```text
-648A27MST5.com.pvncher.repoprompt.ce
-```
-
-The release script validates that identifier before signing.
+Official signing requires an explicitly provisioned `SIGN_IDENTITY`, matching
+`SIGNING_TEAM_ID`, and a Developer ID provisioning profile authorizing
+`io.github.z23cc.agentry`. No legacy team, certificate, or profile is accepted;
+the release script validates these values before signing.
 
 `PUBLIC_UPDATE_REPOSITORY_TOKEN` is intentionally separate from the workflow's
 source-repository `github.token`. Keep its repository scope narrow: the
@@ -584,7 +551,7 @@ approved tag commit as release source with read-only permissions and without
 persisted checkout credentials. After remote-tag attestation it scrubs GitHub
 tokens before invoking SwiftPM-controlled commands. It resolves dependencies without lockfile
 drift, builds the approved source, verifies the trusted Sparkle payload, stages
-a universal ad-hoc app bundle plus its deterministic artifact manifest, and
+an arm64-only ad-hoc app bundle plus its deterministic artifact manifest, and
 uploads that payload as a short-lived workflow artifact. The environment-scoped signing job starts on a fresh runner,
 downloads and verifies the staged artifact, then imports the Developer ID
 certificate and notarization key. Before secrets are imported, trusted tooling
@@ -598,7 +565,7 @@ policy, signs the staged bundle, notarizes and staples the app and DMG, creates 
 a draft GitHub Release. Privileged signing validates the embedded MCP helper
 layout statically and does not execute packaged helper code. After draft creation, a fresh runner without the protected `release`
 environment downloads the signed ZIP and artifact manifest, repeats layout and
-universal-architecture validation, verifies manifest binding, runs the exact
+arm64-only architecture validation, verifies manifest binding, runs the exact
 contained helper's early `--version` smoke, and completes the isolated packaged
 app bootstrap/`windows` roundtrip. Protected signing jobs never execute packaged
 app or helper code. The draft notes embed
@@ -631,7 +598,7 @@ installed clients while maintainers review them.
 Each appcast enclosure must use an immutable tag-specific ZIP URL:
 
 ```text
-https://github.com/repoprompt/repoprompt-ce-updates/releases/download/<tag>/RepoPrompt-<version>-<build>.zip
+https://github.com/repoprompt/repoprompt-ce-updates/releases/download/<tag>/Agentry-<version>-<build>.zip
 ```
 
 Do not point update archive enclosures at `latest/download`. The moving
@@ -650,7 +617,7 @@ ZIP, download that ZIP locally and run:
 
 ```bash
 CONFIRM_PUBLIC_UPDATE_TEST=1 \
-  ./Scripts/publish_public_update_test.sh /path/to/RepoPrompt-<version>-<build>.zip
+  ./Scripts/publish_public_update_test.sh /path/to/Agentry-<version>-<build>.zip
 ```
 
 This maintainer-only helper refuses ad-hoc archives. It verifies the Developer
@@ -679,7 +646,7 @@ promotion job starts, a fresh runner downloads the reviewed ZIP and checksum
 manifest with a source-repository token scoped only to contents access. GitHub
 requires contents write permission for that token to read draft release assets;
 the token is used only for the download step. The runner verifies the reviewed digest, ZIP checksum, artifact manifest, and
-universal architecture policy, validates the helper layout statically, runs the
+arm64-only architecture policy, validates the helper layout statically, runs the
 exact contained helper's early `--version` smoke, and completes the isolated
 packaged app bootstrap/`windows` roundtrip. The protected
 job then runs:
@@ -742,13 +709,13 @@ The promotion gate confirms:
 
 ## Post-promote Homebrew tap checks
 
-RepoPrompt CE is also distributed through the
+Agentry is also distributed through the
 [`repoprompt/homebrew-repoprompt-ce`](https://github.com/repoprompt/homebrew-repoprompt-ce)
 tap. After **Promote Release** succeeds, verify the tap before announcing
 Homebrew availability for that version.
 
 1. Confirm the updater release for the promoted tag contains the expected
-   `RepoPrompt-<version>-<build>.zip`, `appcast.xml`, and `SHA256SUMS` assets.
+   `Agentry-<version>-<build>.zip`, `appcast.xml`, and `SHA256SUMS` assets.
 2. Confirm `Casks/repoprompt-ce.rb` in the tap points at the tag-specific
    updater ZIP, not a `latest/download` URL.
 3. Confirm the cask version encodes both `MARKETING_VERSION` and `BUILD_NUMBER`
@@ -762,7 +729,7 @@ Homebrew availability for that version.
    brew install --cask repoprompt-ce
    ```
 
-6. Confirm Homebrew installed `/Applications/RepoPrompt CE.app`.
+6. Confirm Homebrew installed `/Applications/Agentry.app`.
 
 If the tap lags the promoted release, update only the tap repository. The
 source repository's protected `release` environment and release workflows do
@@ -771,7 +738,7 @@ not need Homebrew signing, notarization, or Sparkle secrets.
 ## Recovery
 
 Never overwrite assets on a published release, reuse a public tag, or move an
-existing release tag.
+beta release
 
 For an incomplete source draft, inspect its assets and either delete the
 incomplete draft before rerunning the protected build or resume only after

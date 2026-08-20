@@ -1,9 +1,9 @@
 ---
 name: rpce-contribution-check
-description: Validate RepoPrompt CE contributions before committing or pushing. Use whenever an agent is about to create a commit, push the current branch, rewrite history, delete a branch or fork, or change GitHub-visible repository state. Enforces staged-index and outgoing-range secret scanning, repository guardrails, clean push boundaries, an explicit PR-ready lane for path-selected heavyweight validation, and explicit approval for destructive Git or visible live-app operations.
+description: Validate Agentry contributions before committing or pushing. Use whenever an agent is about to create a commit, push the current branch, rewrite history, delete a branch or fork, or change GitHub-visible repository state. Enforces staged-index and outgoing-range secret scanning, repository guardrails, clean push boundaries, an explicit PR-ready lane for path-selected heavyweight validation, and explicit approval for destructive Git or visible live-app operations.
 ---
 
-# RepoPrompt CE Contribution Check
+# Agentry Contribution Check
 
 Run the repository-local safety preflight before every commit and push. Read `AGENTS.md` first and use daemon-coordinated validation where available. Use the explicit `pr-ready` lane when computed-outgoing-range path-selected local validation evidence is required.
 

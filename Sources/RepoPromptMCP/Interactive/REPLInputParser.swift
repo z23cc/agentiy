@@ -1,6 +1,6 @@
 //
 //  REPLInputParser.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Lightweight parsing helpers for the interactive REPL.
 //

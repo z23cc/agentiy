@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate RepoPrompt CE's bounded Codex app-server contract against generated schemas."""
+"""Validate Agentry's bounded Codex app-server contract against generated schemas."""
 
 from __future__ import annotations
 

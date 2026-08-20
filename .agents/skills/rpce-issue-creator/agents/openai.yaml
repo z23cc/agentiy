@@ -1,4 +1,4 @@
 interface:
-  display_name: "RepoPrompt CE Issue Creator"
-  short_description: "Draft RepoPrompt CE issues without private data"
-  default_prompt: "Use $rpce-issue-creator to deduplicate and draft a RepoPrompt CE issue after removing private data."
+  display_name: "Agentry Issue Creator"
+  short_description: "Draft Agentry issues without private data"
+  default_prompt: "Use $rpce-issue-creator to deduplicate and draft a Agentry issue after removing private data."

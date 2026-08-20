@@ -1,7 +1,7 @@
 import Foundation
 
 /// Versioned JSON document stored at
-/// `~/Library/Application Support/RepoPrompt CE/Settings/globalSettings.json`.
+/// `~/Library/Application Support/Agentry/Settings/globalSettings.json`.
 ///
 /// Schema v1 contains copy settings, chat settings, and cross-workspace global
 /// defaults. Schema v2 adds optional scalar preference groups. Schema v4 adds

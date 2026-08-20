@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Plan, run, and aggregate the RepoPrompt CE worktree-startup live diagnostic.
+"""Plan, run, and aggregate the Agentry worktree-startup live diagnostic.
 
-The live subcommands require an already-running RepoPrompt CE DEBUG app and
-rpce-cli-debug. This script never builds, installs, launches, stops, or
+The live subcommands require an already-running Agentry DEBUG app and
+agentry-cli-debug. This script never builds, installs, launches, stops, or
 relaunches the app. Run ``plan`` and ``aggregate`` without contacting the app.
 """
 from __future__ import annotations
@@ -1231,15 +1231,15 @@ def resolve_cli(raw: str | None) -> Path:
     candidates = [
         raw,
         os.environ.get("REPOPROMPT_DEBUG_CLI_INSTALL_PATH"),
-        shutil.which("rpce-cli-debug"),
-        str(Path.home() / "Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug"),
+        shutil.which("agentry-cli-debug"),
+        str(Path.home() / "Library/Application Support/Agentry/agentry_cli_debug"),
     ]
     for candidate in candidates:
         if candidate:
             path = Path(candidate).expanduser()
             if path.is_file() and os.access(path, os.X_OK):
                 return path.resolve(strict=True)
-    raise BenchmarkError("rpce-cli-debug was not found")
+    raise BenchmarkError("agentry-cli-debug was not found")
 
 
 def exact_live_build_identity(cli: Path, plan: dict[str, Any]) -> dict[str, str]:

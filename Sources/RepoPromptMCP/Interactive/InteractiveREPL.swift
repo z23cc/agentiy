@@ -1,6 +1,6 @@
 //
 //  InteractiveREPL.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Interactive command loop for exploring and calling MCP tools.
 //  Uses MCPCommandRunner for execution, adds REPL-specific UI.
@@ -937,7 +937,7 @@ actor InteractiveREPL {
         let banner = """
         \u{001B}[1m
         ╔══════════════════════════════════════════════════════════╗
-        ║          RepoPrompt MCP Interactive Mode                 ║
+        ║          Agentry MCP Interactive Mode                 ║
         ╚══════════════════════════════════════════════════════════╝
         \u{001B}[0m
         Connected to: \(serverName) v\(serverVersion)
@@ -984,7 +984,7 @@ actor InteractiveREPL {
           \u{001B}[32mcall apply_edits\u{001B}[0m {...}         Find/replace (JSON args required)
                                           Example: call apply_edits {"path":"f.ts","search":"old","replace":"new"}
                                           File:    call apply_edits @edits.json  or  call apply_edits edits.json
-                                          Stdin:   echo '...' | rpce-cli -c apply_edits -j @-
+                                          Stdin:   echo '...' | agentry-cli -c apply_edits -j @-
                                           Auto-repair: raw newlines/tabs in strings are auto-escaped
 
         \u{001B}[4mConversation:\u{001B}[0m
@@ -1140,10 +1140,10 @@ actor InteractiveREPL {
 
         \u{001B}[1;31mMultiple RepoPrompt windows are open. Bind or disambiguate explicitly.\u{001B}[0m
 
-        rpce-cli -e 'windows'                            \u{001B}[2mDiscover windows and context_id values\u{001B}[0m
-        rpce-cli \u{001B}[33m-w <id>\u{001B}[0m -e 'context'                    \u{001B}[2mBind a window for this invocation\u{001B}[0m
-        rpce-cli \u{001B}[33m--context-id <uuid>\u{001B}[0m -e 'context'        \u{001B}[2mBind a compose context directly\u{001B}[0m
-        rpce-cli \u{001B}[33m-w <id> -t <tab-or-uuid>\u{001B}[0m -e 'context'   \u{001B}[2mResolve/bind a tab in one step\u{001B}[0m
+        agentry-cli -e 'windows'                            \u{001B}[2mDiscover windows and context_id values\u{001B}[0m
+        agentry-cli \u{001B}[33m-w <id>\u{001B}[0m -e 'context'                    \u{001B}[2mBind a window for this invocation\u{001B}[0m
+        agentry-cli \u{001B}[33m--context-id <uuid>\u{001B}[0m -e 'context'        \u{001B}[2mBind a compose context directly\u{001B}[0m
+        agentry-cli \u{001B}[33m-w <id> -t <tab-or-uuid>\u{001B}[0m -e 'context'   \u{001B}[2mResolve/bind a tab in one step\u{001B}[0m
 
         \u{001B}[2mAI agents SHOULD:
           1. Run 'windows' to discover available windows and context_id values

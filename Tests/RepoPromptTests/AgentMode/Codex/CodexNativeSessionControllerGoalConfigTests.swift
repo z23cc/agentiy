@@ -911,8 +911,8 @@ final class CodexNativeSessionControllerGoalConfigTests: XCTestCase {
                 )
 
                 XCTAssertTrue(error.localizedDescription.hasPrefix("server rejected request"))
-                XCTAssertTrue(error.localizedDescription.contains("Reinstall or update RepoPrompt CE"))
-                XCTAssertTrue(error.localizedDescription.contains("REPOPROMPT_CODEX_EXECUTABLE"))
+                XCTAssertTrue(error.localizedDescription.contains("Reinstall or update Agentry"))
+                XCTAssertTrue(error.localizedDescription.contains("AGENTRY_CODEX_EXECUTABLE"))
                 XCTAssertFalse(error.localizedDescription.contains("Update the installed Codex CLI"))
                 XCTAssertTrue(error.localizedDescription.contains(method))
             }

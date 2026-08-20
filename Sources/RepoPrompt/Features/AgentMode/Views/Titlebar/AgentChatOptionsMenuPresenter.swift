@@ -15,7 +15,7 @@ enum AgentSessionHandoffPrompt {
         instructions: String = ""
     ) -> String {
         let prompt = """
-        Use RepoPrompt CE to continue this exact Agent Mode session.
+        Use Agentry to continue this exact Agent Mode session.
 
         Window ID: \(target.windowID)
         Workspace ID: \(target.workspaceID.uuidString)

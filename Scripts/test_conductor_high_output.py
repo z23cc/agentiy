@@ -41,8 +41,8 @@ class HighOutputDiagnosticTest(unittest.TestCase):
         self.state_dir.mkdir()
         self.socket_path = self.root / "conductor.sock"
         self.env = os.environ.copy()
-        self.env["REPOPROMPT_DEV_DAEMON_STATE_DIR"] = str(self.state_dir)
-        self.env["REPOPROMPT_DEV_DAEMON_SOCKET"] = str(self.socket_path)
+        self.env["AGENTRY_DEV_DAEMON_STATE_DIR"] = str(self.state_dir)
+        self.env["AGENTRY_DEV_DAEMON_SOCKET"] = str(self.socket_path)
 
         self.paths = conductor.Paths(
             repo_root=self.root,

@@ -18,6 +18,10 @@ jobs:
     name: Style
     runs-on: macos-26
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out repository
         uses: actions/checkout@v6
         with:
@@ -60,6 +64,10 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out repository
         uses: actions/checkout@v6
         with:
@@ -76,10 +84,10 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-swiftpm-
 
       - name: Build app product
-        run: swift build --product RepoPrompt
+        run: swift build --arch arm64 --product Agentry
 
       - name: Build MCP product
-        run: swift build --product repoprompt-mcp
+        run: swift build --arch arm64 --product agentry-mcp
 
       - name: Run app tests
         shell: bash
@@ -104,6 +112,10 @@ jobs:
     name: Sentry-enabled Build
     runs-on: macos-26
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out repository
         uses: actions/checkout@v6
         with:
@@ -121,18 +133,22 @@ jobs:
 
       - name: Build app product with Sentry SDK linked
         env:
-          REPOPROMPT_ENABLE_SENTRY: "1"
-        run: swift build --product RepoPrompt
+          AGENTRY_ENABLE_SENTRY: "1"
+        run: swift build --arch arm64 --product Agentry
 
       - name: Test serialized Sentry privacy boundary
         env:
-          REPOPROMPT_ENABLE_SENTRY: "1"
+          AGENTRY_ENABLE_SENTRY: "1"
         run: swift test --filter SentryTelemetryPrivacyTests
 
   provider-tests:
     name: Provider Tests
     runs-on: macos-26
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out repository
         uses: actions/checkout@v6
         with:
@@ -156,6 +172,10 @@ jobs:
     name: Secret Scan
     runs-on: macos-26
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out repository
         uses: actions/checkout@v6
         with:

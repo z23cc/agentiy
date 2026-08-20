@@ -90,7 +90,7 @@ class BuildCacheTests(unittest.TestCase):
         (repo / "Sources" / "Feature.swift").write_text("let value = 2\n", encoding="utf-8")
         self.assertEqual(manager.snapshot("debug", {}).key, baseline.key)
         self.assertNotEqual(manager.snapshot("release", {}).key, baseline.key)
-        self.assertNotEqual(manager.snapshot("debug", {"REPOPROMPT_ENABLE_SENTRY": "1"}).key, baseline.key)
+        self.assertNotEqual(manager.snapshot("debug", {"AGENTRY_ENABLE_SENTRY": "1"}).key, baseline.key)
         self.assertNotEqual(manager.snapshot("debug", {"CC": "/usr/bin/clang-fixture"}).key, baseline.key)
         self.assertNotEqual(manager.snapshot("debug", {"CXX": "/usr/bin/clang++-fixture"}).key, baseline.key)
         (repo / "Package.swift").write_text("// changed manifest\n", encoding="utf-8")
@@ -531,14 +531,14 @@ class BuildCacheTests(unittest.TestCase):
         first, _ = self.publish_seed(manager, {})
         shutil.rmtree(repo / ".build")
         self.create_build(repo, b"b" * 128)
-        second_context = manager.prepare("build", {}, {"REPOPROMPT_ENABLE_SENTRY": "1"})
+        second_context = manager.prepare("build", {}, {"AGENTRY_ENABLE_SENTRY": "1"})
         assert second_context is not None
         manager.publish(second_context)
         first_meta_path = store / first.snapshot.key / "meta.json"
         first_meta = json.loads(first_meta_path.read_text(encoding="utf-8"))
         first_meta["toolchainSignature"] = "old-toolchain"
         conductor._atomic_write_json(first_meta_path, first_meta)
-        manager.env["REPOPROMPT_DEV_BUILD_CACHE_LIMIT_BYTES"] = "0"
+        manager.env["AGENTRY_DEV_BUILD_CACHE_LIMIT_BYTES"] = "0"
 
         with manager.key_lock(second_context.snapshot.key, exclusive=False):
             result = manager.enforce_retention(second_context.snapshot.toolchain_signature)
@@ -677,7 +677,7 @@ class BuildCacheTests(unittest.TestCase):
         os.close(write_fd)
         with mock.patch.dict(
             os.environ,
-            {"REPOPROMPT_CONDUCTOR_CACHE_WRAPPER_GATE_FD": str(read_fd)},
+            {"AGENTRY_CONDUCTOR_CACHE_WRAPPER_GATE_FD": str(read_fd)},
         ), mock.patch.object(conductor, "_run_cache_attempt") as attempt, self.assertRaises(conductor.ConductorError):
             conductor.operation_cache_retry(Path("/tmp/repo"), {})
 
@@ -843,7 +843,7 @@ class BuildCacheTests(unittest.TestCase):
         ticket = "seeded-retry"
         outcome = repo / f"{ticket}.cache-outcome.json"
         attempt_record = repo / f"{ticket}.cache-attempt.json"
-        with mock.patch.dict(os.environ, {"REPOPROMPT_DEV_BUILD_CACHE_DIR": str(store)}), mock.patch.object(
+        with mock.patch.dict(os.environ, {"AGENTRY_DEV_BUILD_CACHE_DIR": str(store)}), mock.patch.object(
             conductor,
             "_run_cache_attempt",
             side_effect=[(1, False), (0, False)],

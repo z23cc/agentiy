@@ -1,6 +1,6 @@
 //
 //  OutputSink.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Abstraction for command output - stdout or file redirect.
 //

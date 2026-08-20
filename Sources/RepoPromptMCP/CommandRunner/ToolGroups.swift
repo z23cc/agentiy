@@ -1,6 +1,6 @@
 //
 //  ToolGroups.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Tool category groupings for CLI filtering
 //

@@ -57,7 +57,7 @@ for bundle_name in required_bundles:
     require_regular_file(bundle / "Contents" / "Info.plist")
     require_regular_file(bundle / "Contents" / "Resources" / "en.lproj" / "Localizable.strings")
 
-executable = app / "Contents" / "MacOS" / "RepoPrompt"
+executable = app / "Contents" / "MacOS" / "Agentry"
 require_regular_file(executable)
 if patch_marker not in executable.read_bytes():
     fail(f"packaged RepoPrompt executable is missing KeyboardShortcuts resource lookup patch marker: {patch_marker.decode()}")

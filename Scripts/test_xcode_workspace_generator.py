@@ -71,7 +71,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
 
     def test_workspace_references_project_and_root_package(self) -> None:
         workspace = self.outputs[Path(generator.WORKSPACE_NAME) / "contents.xcworkspacedata"].decode()
-        self.assertIn("group:RepoPromptCE.xcodeproj", workspace)
+        self.assertIn("group:Agentry.xcodeproj", workspace)
         self.assertIn("group:../..", workspace)
 
     def test_custom_destination_uses_correct_relative_repository_path(self) -> None:
@@ -97,11 +97,19 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertIn("not mutate `Vendor/`", readme)
         self.assertIn("RepoPromptMCP", readme)
 
+    def test_developer_workflow_reads_only_agentry_xcode_environment(self) -> None:
+        workflow = (generator.REPO_ROOT / "Scripts/xcode_developer_workflow.sh").read_text()
+        self.assertIn("AGENTRY_XCODE_TEST_FILTER", workflow)
+        self.assertIn("AGENTRY_XCODE_UNCOORDINATED", workflow)
+        self.assertNotIn("REPOPROMPT_XCODE_TEST_FILTER", workflow)
+        self.assertNotIn("REPOPROMPT_XCODE_UNCOORDINATED", workflow)
+
     def test_manifest_preserves_thin_app_target_topology(self) -> None:
         products = {product["name"]: product for product in self.manifest["products"]}
         targets = {target["name"]: target for target in self.manifest["targets"]}
 
-        self.assertEqual(products["RepoPrompt"]["targets"], ["RepoPrompt"])
+        self.assertEqual(products["Agentry"]["targets"], ["RepoPrompt"])
+        self.assertEqual(products["agentry-mcp"]["targets"], ["RepoPromptMCP"])
         self.assertEqual(targets["RepoPrompt"]["type"], "executable")
         self.assertEqual(targets["RepoPrompt"]["path"], "Sources/RepoPromptExecutable")
         self.assertEqual(generator._by_name_dependencies(targets["RepoPrompt"]), ["RepoPromptApp"])
@@ -151,7 +159,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         path = Path(generator.PROJECT_NAME) / f"xcshareddata/xcschemes/{generator.APP_SCHEME}.xcscheme"
         scheme = self.outputs[path].decode()
         self.assertIn(str(generator.DEFAULT_DEBUG_APP_BUNDLE), scheme)
-        self.assertIn("REPOPROMPT_LAUNCH_SOURCE", scheme)
+        self.assertIn("AGENTRY_LAUNCH_SOURCE", scheme)
         self.assertIn("__XCODE_BUILT_PRODUCTS_DIR_PATHS", scheme)
         self.assertIn("prepare-app-run", scheme)
         self.assertNotIn("{repository_path}", scheme)
@@ -192,7 +200,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
 
     def test_mcp_scheme_points_at_debug_executable(self) -> None:
         path = Path(generator.PROJECT_NAME) / f"xcshareddata/xcschemes/{generator.MCP_SCHEME}.xcscheme"
-        self.assertIn(".build/debug/repoprompt-mcp", self.outputs[path].decode())
+        self.assertIn(".build/debug/agentry-mcp", self.outputs[path].decode())
 
     def test_xcodebuild_list_uses_expected_command(self) -> None:
         payload = {
@@ -222,7 +230,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
                 "-list",
                 "-json",
                 "-workspace",
-                "/tmp/generated-xcode/RepoPromptCE.xcworkspace",
+                "/tmp/generated-xcode/Agentry.xcworkspace",
             ],
         )
         self.assertNotIn("env", run.call_args.kwargs)
@@ -267,9 +275,9 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     def test_manifest_errors_are_actionable(self) -> None:
         missing_product = deepcopy(self.manifest)
         missing_product["products"] = [
-            product for product in missing_product["products"] if product["name"] != "RepoPrompt"
+            product for product in missing_product["products"] if product["name"] != "Agentry"
         ]
-        with self.assertRaisesRegex(generator.GeneratorError, "executable product 'RepoPrompt'"):
+        with self.assertRaisesRegex(generator.GeneratorError, "executable product 'Agentry'"):
             generator.validate_manifest(missing_product, generator.REPO_ROOT)
 
         missing_target = deepcopy(self.manifest)
@@ -411,6 +419,31 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
                 )
             self.assertEqual(sentinel.read_text(), "keep me")
 
+    def test_legacy_generated_destination_is_replaced_with_agentry_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "xcode"
+            destination.mkdir()
+            (destination / generator.LEGACY_OWNERSHIP_MARKER).write_text(
+                f"{generator.LEGACY_GENERATOR_ID}\n"
+            )
+            (destination / "legacy-generated-file").write_text("replace me")
+
+            generator.write_outputs(
+                destination,
+                self.outputs,
+                default_destination=destination,
+                custom_root=root / "custom",
+                repository_root=root,
+            )
+
+            self.assertEqual(
+                (destination / generator.OWNERSHIP_MARKER).read_text(),
+                f"{generator.GENERATOR_ID}\n",
+            )
+            self.assertFalse((destination / generator.LEGACY_OWNERSHIP_MARKER).exists())
+            self.assertFalse((destination / "legacy-generated-file").exists())
+
     def test_destination_rejects_symlink_escape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -429,7 +462,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     def test_uncoordinated_prepare_run_is_rejected_without_side_effects(self) -> None:
         environment = os.environ.copy()
         environment["CONFIGURATION"] = "Debug"
-        environment["REPOPROMPT_XCODE_UNCOORDINATED"] = "1"
+        environment["AGENTRY_XCODE_UNCOORDINATED"] = "1"
         result = subprocess.run(
             [generator.REPO_ROOT / "Scripts/xcode_developer_workflow.sh", "prepare-app-run"],
             cwd=generator.REPO_ROOT,

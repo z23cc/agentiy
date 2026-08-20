@@ -3,27 +3,27 @@ import Foundation
 extension RepoPromptWorkflowPrompts {
     // MARK: - CLI Variants (convenience accessors)
 
-    /// CLI variant of rp-investigate - uses rpce-cli commands instead of MCP tools.
+    /// CLI variant of rp-investigate - uses agentry-cli commands instead of MCP tools.
     static var rpInvestigateCLI: String {
         rpInvestigate(variant: .cli)
     }
 
-    /// CLI variant of rp-deep-plan - uses rpce-cli commands instead of MCP tools.
+    /// CLI variant of rp-deep-plan - uses agentry-cli commands instead of MCP tools.
     static var rpDeepPlanCLI: String {
         rpDeepPlan(variant: .cli)
     }
 
-    /// CLI variant of rp-build - uses rpce-cli commands instead of MCP tools.
+    /// CLI variant of rp-build - uses agentry-cli commands instead of MCP tools.
     static var rpBuildCLI: String {
         rpBuild(variant: .cli)
     }
 
-    /// CLI variant of rp-orchestrate - uses rpce-cli commands instead of MCP tools.
+    /// CLI variant of rp-orchestrate - uses agentry-cli commands instead of MCP tools.
     static var rpOrchestrateCLI: String {
         rpOrchestrate(variant: .cli)
     }
 
-    /// CLI variant of rp-optimize - uses rpce-cli commands instead of MCP tools.
+    /// CLI variant of rp-optimize - uses agentry-cli commands instead of MCP tools.
     static var rpOptimizeCLI: String {
         rpOptimize(variant: .cli)
     }

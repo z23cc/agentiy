@@ -1,4 +1,4 @@
-name: Publish Tip
+name: Publish Beta
 
 on:
   workflow_run:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: Commit SHA on protected main to publish as tip
+        description: Commit SHA on protected main to publish as beta
         required: false
         type: string
 
@@ -17,13 +17,13 @@ concurrency:
     ${{
       (github.event_name == 'workflow_dispatch' ||
         github.event.workflow_run.conclusion == 'success') &&
-      'main-tip-channel' ||
-      format('main-tip-skipped-{0}', github.run_id)
+      'main-beta-channel' ||
+      format('main-beta-skipped-{0}', github.run_id)
     }}
-  # Tip is a rolling channel: once main advances, completing an older artifact only
+  # Beta is a rolling channel: once main advances, completing an older artifact only
   # delays the commit users actually asked the channel to publish. A failed CI
   # notification receives a unique group so it cannot evict a healthy pending or
-  # in-flight Tip build before setup's success guard skips the replacement run.
+  # in-flight Beta build before setup's success guard skips the replacement run.
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
 permissions:
@@ -31,19 +31,23 @@ permissions:
 
 jobs:
   setup:
-    name: Resolve Tip Commit
+    name: Resolve Beta Commit
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
     runs-on: macos-26
     outputs:
-      commit: ${{ steps.tip.outputs.commit }}
-      short-sha: ${{ steps.tip.outputs.short-sha }}
-      build-number: ${{ steps.tip.outputs.build-number }}
-      tag: ${{ steps.tip.outputs.tag }}
-      tooling-commit: ${{ steps.tip.outputs.tooling-commit }}
-      should-publish: ${{ steps.tip.outputs.should-publish }}
+      commit: ${{ steps.beta.outputs.commit }}
+      short-sha: ${{ steps.beta.outputs.short-sha }}
+      build-number: ${{ steps.beta.outputs.build-number }}
+      tag: ${{ steps.beta.outputs.tag }}
+      tooling-commit: ${{ steps.beta.outputs.tooling-commit }}
+      should-publish: ${{ steps.beta.outputs.should-publish }}
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry beta release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -52,30 +56,41 @@ jobs:
           persist-credentials: false
 
       - name: Resolve protected main commit
-        id: tip
+        id: beta
         env:
           REQUESTED_COMMIT: ${{ inputs.commit || github.event.workflow_run.head_sha }}
-          TIP_UPDATE_REPOSITORY: ${{ vars.TIP_UPDATE_REPOSITORY || 'repoprompt/repoprompt-ce-tip-updates' }}
-          TIP_GH_TOKEN: ${{ github.token }}
+          BETA_UPDATE_REPOSITORY: ${{ vars.BETA_UPDATE_REPOSITORY }}
+          BETA_GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          source Scripts/load_release_metadata.sh
+          load_release_metadata "$PWD"
+          validate_agentry_sparkle_metadata
+          [[ -n "$BETA_UPDATE_REPOSITORY" ]] || {
+            echo "BETA_UPDATE_REPOSITORY is not configured" >&2
+            exit 1
+          }
+          [[ "$AGENTRY_SPARKLE_BETA_FEED_URL" == "https://github.com/$BETA_UPDATE_REPOSITORY/releases/latest/download/appcast.xml" ]] || {
+            echo "BETA_UPDATE_REPOSITORY does not match AGENTRY_SPARKLE_BETA_FEED_URL" >&2
+            exit 1
+          }
           git fetch --no-tags origin main
           commit="${REQUESTED_COMMIT:-$(git rev-parse origin/main)}"
           commit="$(git rev-parse "$commit^{commit}")"
           git merge-base --is-ancestor "$commit" origin/main || {
-            echo "Requested tip commit is not reachable from origin/main" >&2
+            echo "Requested beta commit is not reachable from origin/main" >&2
             exit 1
           }
           short_sha="$(git rev-parse --short=12 "$commit")"
           build_sequence="$(git rev-list --count "$commit")"
           (( build_sequence <= 9999 )) || {
-            echo "Tip build sequence exceeds the three-component CFBundleVersion capacity" >&2
+            echo "Beta build sequence exceeds the three-component CFBundleVersion capacity" >&2
             exit 1
           }
 
           stable_appcast="$RUNNER_TEMP/stable-appcast.xml"
           curl --fail --location --retry 3 --silent --show-error \
-            https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml \
+            "$AGENTRY_SPARKLE_STABLE_FEED_URL" \
             --output "$stable_appcast"
           stable_build_number="$(python3 - "$stable_appcast" <<'PYTHON'
           import sys
@@ -97,23 +112,23 @@ jobs:
             exit 1
           }
           build_number="$stable_build_number.$((build_sequence / 100)).$((build_sequence % 100))"
-          archive_basename="RepoPrompt-tip-$short_sha-$build_number"
-          tag="tip-$short_sha"
+          archive_basename="$APP_NAME-beta-$short_sha-$build_number"
+          tag="beta-$short_sha"
 
-          lookup_classification="$(./Scripts/lookup_public_tip_release.sh \
-            "$TIP_UPDATE_REPOSITORY" \
+          lookup_classification="$(./Scripts/lookup_public_beta_release.sh \
+            "$BETA_UPDATE_REPOSITORY" \
             "$tag" \
             "$archive_basename")"
           case "$lookup_classification" in
             found)
               should_publish=false
-              echo "Existing tip release response classification=complete; skipping rebuild."
+              echo "Existing beta release response classification=complete; skipping rebuild."
               ;;
             not-found)
               should_publish=true
               ;;
             *)
-              echo "GitHub public tip lookup classification=unexpected-helper-output" >&2
+              echo "GitHub public beta lookup classification=unexpected-helper-output" >&2
               exit 1
               ;;
           esac
@@ -127,13 +142,17 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   stage:
-    name: Build Tip Source Without Secrets
+    name: Build Beta Source Without Secrets
     needs: setup
     if: needs.setup.outputs.should-publish == 'true'
     runs-on: macos-26
     permissions:
       contents: read
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry beta release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -142,46 +161,51 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check out tip source
+      - name: Check out beta source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ needs.setup.outputs.commit }}
-          path: tip-source
+          path: beta-source
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Stage tip artifact
+      - name: Stage beta artifact
         env:
-          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
-          TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
-          TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
-          TIP_TAG: ${{ needs.setup.outputs.tag }}
+          BETA_COMMIT: ${{ needs.setup.outputs.commit }}
+          BETA_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
+          BETA_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
+          BETA_TAG: ${{ needs.setup.outputs.tag }}
+          BETA_UPDATE_REPOSITORY: ${{ vars.BETA_UPDATE_REPOSITORY }}
           REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR: ${{ github.workspace }}/trusted-control-plane/Scripts
-          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/tip-source
+          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/beta-source
           # Link Sentry and preserve dSYMs without exposing DSN or auth in this stage.
-          REPOPROMPT_ENABLE_SENTRY: "1"
-        run: ./trusted-control-plane/Scripts/main_tip_release.sh stage
+          AGENTRY_ENABLE_SENTRY: "1"
+        run: ./trusted-control-plane/Scripts/main_beta_release.sh stage
 
-      - name: Upload staged tip source
+      - name: Upload staged beta source
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: RepoPrompt-CE-staged-tip
+          name: Agentry-staged-beta
           path: |
-            tip-source/dist/*-stage.zip
-            tip-source/dist/*-stage.zip.sha256
+            beta-source/dist/*-stage.zip
+            beta-source/dist/*-stage.zip.sha256
           if-no-files-found: error
           retention-days: 1
 
   sign:
-    name: Sign and Notarize Tip
+    name: Sign and Notarize Beta
     needs:
       - setup
       - stage
-    environment: tip-release
+    environment: beta-release
     runs-on: macos-26
     permissions:
       contents: read
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry beta release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -190,13 +214,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Download staged tip source
+      - name: Download staged beta source
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: RepoPrompt-CE-staged-tip
-          path: staged-tip
+          name: Agentry-staged-beta
+          path: staged-beta
 
-      - name: Check out approved tip source as data
+      - name: Check out approved beta source as data
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ needs.setup.outputs.commit }}
@@ -204,21 +228,21 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify and expand staged tip source
+      - name: Verify and expand staged beta source
         env:
           RELEASE_COMMIT: ${{ needs.setup.outputs.commit }}
           REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE: ${{ needs.setup.outputs.build-number }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          archives=(staged-tip/*-stage.zip)
-          checksums=(staged-tip/*-stage.zip.sha256)
-          [[ "${#archives[@]}" == "1" ]] || { echo "Expected one staged tip ZIP" >&2; exit 1; }
-          [[ "${#checksums[@]}" == "1" ]] || { echo "Expected one staged tip checksum" >&2; exit 1; }
-          [[ "${checksums[0]}" == "${archives[0]}.sha256" ]] || { echo "Staged tip checksum name mismatch" >&2; exit 1; }
-          (cd staged-tip && shasum -a 256 -c "$(basename "${checksums[0]}")")
-          ./trusted-control-plane/Scripts/extract_staged_release.py "${archives[0]}" tip-source RepoPrompt
-          REPOPROMPT_RELEASE_SOURCE_ROOT=tip-source \
+          archives=(staged-beta/*-stage.zip)
+          checksums=(staged-beta/*-stage.zip.sha256)
+          [[ "${#archives[@]}" == "1" ]] || { echo "Expected one staged beta ZIP" >&2; exit 1; }
+          [[ "${#checksums[@]}" == "1" ]] || { echo "Expected one staged beta checksum" >&2; exit 1; }
+          [[ "${checksums[0]}" == "${archives[0]}.sha256" ]] || { echo "Staged beta checksum name mismatch" >&2; exit 1; }
+          (cd staged-beta && shasum -a 256 -c "$(basename "${checksums[0]}")")
+          ./trusted-control-plane/Scripts/extract_staged_release.py "${archives[0]}" beta-source Agentry
+          REPOPROMPT_RELEASE_SOURCE_ROOT=beta-source \
             REPOPROMPT_APPROVED_SOURCE_ROOT=approved-source \
             ./trusted-control-plane/Scripts/validate_staged_release.sh
 
@@ -231,8 +255,8 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          KEYCHAIN_PATH="$RUNNER_TEMP/repoprompt-tip.keychain-db"
-          CERTIFICATE_PATH="$RUNNER_TEMP/repoprompt-tip.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/agentry-beta.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/agentry-beta.p12"
           printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
           security create-keychain -p "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -241,86 +265,87 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          echo "SIGN_IDENTITY=${CONFIGURED_SIGN_IDENTITY:-Developer ID Application: Eric Provencher (648A27MST5)}" >> "$GITHUB_ENV"
+          [[ -n "$CONFIGURED_SIGN_IDENTITY" ]] || { echo "CONFIGURED_SIGN_IDENTITY is required" >&2; exit 1; }
+          echo "SIGN_IDENTITY=$CONFIGURED_SIGN_IDENTITY" >> "$GITHUB_ENV"
 
       - name: Prepare provisioning profile and notarization key
         env:
-          PROVISIONING_PROFILE_BASE64: ${{ secrets.REPOPROMPT_CE_PROVISIONING_PROFILE_BASE64 }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.AGENTRY_PROVISIONING_PROFILE_BASE64 }}
           NOTARYTOOL_PRIVATE_KEY_BASE64: ${{ secrets.NOTARYTOOL_PRIVATE_KEY_BASE64 }}
         run: |
           set -euo pipefail
           umask 077
-          SECRETS_DIR="$RUNNER_TEMP/repoprompt-tip-secrets"
+          SECRETS_DIR="$RUNNER_TEMP/agentry-beta-secrets"
           mkdir -p "$SECRETS_DIR"
-          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$SECRETS_DIR/repoprompt-ce.provisionprofile"
+          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$SECRETS_DIR/agentry.provisionprofile"
           printf '%s' "$NOTARYTOOL_PRIVATE_KEY_BASE64" | base64 --decode > "$SECRETS_DIR/notarytool-private-key.p8"
-          echo "REPOPROMPT_PROVISIONING_PROFILE=$SECRETS_DIR/repoprompt-ce.provisionprofile" >> "$GITHUB_ENV"
+          echo "REPOPROMPT_PROVISIONING_PROFILE=$SECRETS_DIR/agentry.provisionprofile" >> "$GITHUB_ENV"
           echo "NOTARYTOOL_PRIVATE_KEY=$SECRETS_DIR/notarytool-private-key.p8" >> "$GITHUB_ENV"
 
-      - name: Install Sentry CLI for Tip symbol upload
+      - name: Install Sentry CLI for Beta symbol upload
         run: |
           set -euo pipefail
           if ! command -v sentry-cli >/dev/null 2>&1; then
             brew install getsentry/tools/sentry-cli
           fi
 
-      - name: Prepare Tip Sentry auth token file
+      - name: Prepare Beta Sentry auth token file
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           umask 077
           [[ -n "${SENTRY_AUTH_TOKEN:-}" ]] || { echo "SENTRY_AUTH_TOKEN is not configured" >&2; exit 1; }
-          mkdir -p "$RUNNER_TEMP/repoprompt-tip-secrets"
-          SENTRY_TOKEN_FILE="$RUNNER_TEMP/repoprompt-tip-secrets/sentry-auth-token"
+          mkdir -p "$RUNNER_TEMP/agentry-beta-secrets"
+          SENTRY_TOKEN_FILE="$RUNNER_TEMP/agentry-beta-secrets/sentry-auth-token"
           printf '%s' "$SENTRY_AUTH_TOKEN" > "$SENTRY_TOKEN_FILE"
           chmod 600 "$SENTRY_TOKEN_FILE"
 
-      - name: Sign and notarize staged tip
+      - name: Sign and notarize staged beta
         env:
-          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
-          TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
-          TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
-          TIP_TAG: ${{ needs.setup.outputs.tag }}
-          TIP_UPDATE_REPOSITORY: ${{ vars.TIP_UPDATE_REPOSITORY || 'repoprompt/repoprompt-ce-tip-updates' }}
+          BETA_COMMIT: ${{ needs.setup.outputs.commit }}
+          BETA_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
+          BETA_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
+          BETA_TAG: ${{ needs.setup.outputs.tag }}
+          BETA_UPDATE_REPOSITORY: ${{ vars.BETA_UPDATE_REPOSITORY }}
           RELEASE_COMMIT: ${{ needs.setup.outputs.commit }}
           REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR: ${{ github.workspace }}/trusted-control-plane/Scripts
-          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/tip-source
+          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/beta-source
           REPOPROMPT_APPROVED_SOURCE_ROOT: ${{ github.workspace }}/approved-source
           REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE: ${{ needs.setup.outputs.build-number }}
-          REPOPROMPT_ENABLE_SENTRY: "1"
+          AGENTRY_ENABLE_SENTRY: "1"
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-          REPOPROMPT_SENTRY_AUTH_TOKEN_FILE: ${{ runner.temp }}/repoprompt-tip-secrets/sentry-auth-token
+          REPOPROMPT_SENTRY_AUTH_TOKEN_FILE: ${{ runner.temp }}/agentry-beta-secrets/sentry-auth-token
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           NOTARYTOOL_KEY_ID: ${{ secrets.NOTARYTOOL_KEY_ID }}
           NOTARYTOOL_ISSUER_ID: ${{ secrets.NOTARYTOOL_ISSUER_ID }}
-        run: ./trusted-control-plane/Scripts/main_tip_release.sh sign
+        run: ./trusted-control-plane/Scripts/main_beta_release.sh sign
 
       - name: Remove ephemeral keychain
         if: always()
         run: |
-          security delete-keychain "$RUNNER_TEMP/repoprompt-tip.keychain-db" || true
-          rm -rf "$RUNNER_TEMP/repoprompt-tip-secrets"
-          rm -f "$RUNNER_TEMP/repoprompt-tip.p12"
+          security delete-keychain "$RUNNER_TEMP/agentry-beta.keychain-db" || true
+          rm -rf "$RUNNER_TEMP/agentry-beta-secrets"
+          rm -f "$RUNNER_TEMP/agentry-beta.p12"
 
-      - name: Upload signed tip assets for smoke and publish
+      - name: Upload signed beta assets for smoke and publish
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: RepoPrompt-CE-signed-tip
+          name: Agentry-signed-beta
           path: |
-            tip-source/dist/*.zip
-            tip-source/dist/*.dmg
-            tip-source/dist/appcast.xml
-            tip-source/dist/SHA256SUMS
-            tip-source/dist/*-artifact-manifest.json
-            tip-source/dist/*-metadata.json
+            beta-source/dist/*.zip
+            beta-source/dist/*.dmg
+            beta-source/dist/appcast.xml
+            beta-source/dist/SHA256SUMS
+            beta-source/dist/*-artifact-manifest.json
+            beta-source/dist/*-metadata.json
           if-no-files-found: error
           retention-days: 1
 
   smoke-no-secrets:
-    name: Smoke Tip Without Release Secrets
+    name: Smoke Beta Without Release Secrets
     needs:
       - setup
       - sign
@@ -328,6 +353,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry beta release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -336,24 +365,24 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download signed tip assets
+      - name: Download signed beta assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: RepoPrompt-CE-signed-tip
-          path: signed-tip
+          name: Agentry-signed-beta
+          path: signed-beta
 
-      - name: Verify and smoke signed tip
+      - name: Verify and smoke signed beta
         env:
           REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"
           REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"
-          REPOPROMPT_PACKAGED_SMOKE_DIAGNOSTICS_DIR: ${{ runner.temp }}/tip-smoke-diagnostics
+          REPOPROMPT_PACKAGED_SMOKE_DIAGNOSTICS_DIR: ${{ runner.temp }}/beta-smoke-diagnostics
         run: |
           set -euo pipefail
           shopt -s nullglob
-          archives=(signed-tip/*.zip)
-          manifests=(signed-tip/*-artifact-manifest.json)
-          [[ "${#archives[@]}" == "1" ]] || { echo "Expected one signed tip ZIP" >&2; exit 1; }
-          [[ "${#manifests[@]}" == "1" ]] || { echo "Expected one signed tip manifest" >&2; exit 1; }
+          archives=(signed-beta/*.zip)
+          manifests=(signed-beta/*-artifact-manifest.json)
+          [[ "${#archives[@]}" == "1" ]] || { echo "Expected one signed beta ZIP" >&2; exit 1; }
+          [[ "${#manifests[@]}" == "1" ]] || { echo "Expected one signed beta manifest" >&2; exit 1; }
           mkdir extracted
           ditto -x -k "${archives[0]}" extracted
           env -i \
@@ -366,29 +395,33 @@ jobs:
             REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT" \
             REPOPROMPT_PACKAGED_SMOKE_DIAGNOSTICS_DIR="$REPOPROMPT_PACKAGED_SMOKE_DIAGNOSTICS_DIR" \
             ./trusted-control-plane/Scripts/smoke_packaged_mcp_roundtrip.sh \
-            "extracted/RepoPrompt CE.app" \
-            "Tip packaged app" \
+            "extracted/Agentry.app" \
+            "Beta packaged app" \
             "${manifests[0]}"
 
-      - name: Upload Tip smoke diagnostics
+      - name: Upload Beta smoke diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: RepoPrompt-CE-tip-smoke-diagnostics
-          path: ${{ runner.temp }}/tip-smoke-diagnostics
+          name: Agentry-beta-smoke-diagnostics
+          path: ${{ runner.temp }}/beta-smoke-diagnostics
           if-no-files-found: warn
           retention-days: 3
 
   publish:
-    name: Publish Tip Appcast
+    name: Publish Beta Appcast
     needs:
       - setup
       - smoke-no-secrets
-    environment: tip-release
+    environment: beta-release
     runs-on: macos-26
     permissions:
       contents: read
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry beta release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -397,21 +430,21 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download signed tip assets
+      - name: Download signed beta assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: RepoPrompt-CE-signed-tip
-          path: tip-assets
+          name: Agentry-signed-beta
+          path: beta-assets
 
-      - name: Publish tip update release
+      - name: Publish beta update release
         env:
-          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
-          TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
-          TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
-          TIP_TAG: ${{ needs.setup.outputs.tag }}
-          TIP_UPDATE_REPOSITORY: ${{ vars.TIP_UPDATE_REPOSITORY || 'repoprompt/repoprompt-ce-tip-updates' }}
-          TIP_GH_TOKEN: ${{ secrets.TIP_UPDATE_REPOSITORY_TOKEN }}
+          BETA_COMMIT: ${{ needs.setup.outputs.commit }}
+          BETA_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
+          BETA_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
+          BETA_TAG: ${{ needs.setup.outputs.tag }}
+          BETA_UPDATE_REPOSITORY: ${{ vars.BETA_UPDATE_REPOSITORY }}
+          BETA_GH_TOKEN: ${{ secrets.BETA_UPDATE_REPOSITORY_TOKEN }}
           REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR: ${{ github.workspace }}/trusted-control-plane/Scripts
           REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/trusted-control-plane
-          DIST_DIR: ${{ github.workspace }}/tip-assets
-        run: ./trusted-control-plane/Scripts/main_tip_release.sh publish-tip
+          DIST_DIR: ${{ github.workspace }}/beta-assets
+        run: ./trusted-control-plane/Scripts/main_beta_release.sh publish-beta

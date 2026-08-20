@@ -53,7 +53,7 @@ Start by getting a lay of the land with the file tree:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'tree'
+agentry-cli -w <window_id> -e 'tree'
 ```
 """))
 
@@ -67,8 +67,8 @@ Then use targeted searches to understand how the task maps to the codebase:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'search "<key term from task>"'
-rpce-cli -w <window_id> -e 'structure RootName/likely/relevant/area/'
+agentry-cli -w <window_id> -e 'search "<key term from task>"'
+agentry-cli -w <window_id> -e 'structure RootName/likely/relevant/area/'
 ```
 """))
 
@@ -93,7 +93,7 @@ Call \(builderName) with your informed prompt. Use `response_type: "plan"` to ge
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<reformulated prompt with codebase context>" --response-type plan'
+agentry-cli -w <window_id> -e 'builder "<reformulated prompt with codebase context>" --response-type plan'
 ```
 """))
 
@@ -104,7 +104,7 @@ rpce-cli -w <window_id> -e 'builder "<reformulated prompt with codebase context>
 \(variant == .cli ? "- `tab_id` for targeting the same tab in subsequent CLI invocations" : "")
 
 \(variant == .cli ? """
-**Tab routing:** Each `rpce-cli` invocation is a fresh connection. To continue working in the same tab across separate invocations, pass `-t <tab_id>` (the tab ID returned by builder).
+**Tab routing:** Each `agentry-cli` invocation is a fresh connection. To continue working in the same tab across separate invocations, pass `-t <tab_id>` (the tab ID returned by builder).
 """ : "")
 **Trust \(builderName)** – it explores deeply, aggregates the relevant context, and selects intelligently. Default to trusting the plan it returns. The \(chatName) follow-up only reasons over that selected context; it cannot fill coverage gaps on its own.
 
@@ -136,7 +136,7 @@ If the answer depends on files outside the current selection, \(chatName) cannot
 """,
 	cli: """
 ```bash
-rpce-cli -t '<tab_id>' -e 'chat "The plan points me to X and Y, but I'\''m still having trouble tracing how they connect across these selected files. What am I missing, and what edge cases should I watch for?" --mode plan'
+agentry-cli -t '<tab_id>' -e 'chat "The plan points me to X and Y, but I'\''m still having trouble tracing how they connect across these selected files. What am I missing, and what edge cases should I watch for?" --mode plan'
 ```
 
 > **Note:** Pass `-t <tab_id>` to target the same tab across separate CLI invocations.
@@ -181,16 +181,16 @@ Implement the plan directly with the editing tools; use \(chatName) only for rea
 	cli: """
 ```bash
 # Modify existing files (search/replace) - JSON format required
-rpce-cli -w <window_id> -e 'call apply_edits {"path":"Root/File.swift","search":"old","replace":"new"}'
+agentry-cli -w <window_id> -e 'call apply_edits {"path":"Root/File.swift","search":"old","replace":"new"}'
 
 # Multiline edits
-rpce-cli -w <window_id> -e 'call apply_edits {"path":"Root/File.swift","search":"old\\ntext","replace":"new\\ntext"}'
+agentry-cli -w <window_id> -e 'call apply_edits {"path":"Root/File.swift","search":"old\\ntext","replace":"new\\ntext"}'
 
 # Create new files
-rpce-cli -w <window_id> -e 'file create Root/NewFile.swift "content..."'
+agentry-cli -w <window_id> -e 'file create Root/NewFile.swift "content..."'
 
 # Read specific sections during implementation
-rpce-cli -w <window_id> -e 'read Root/File.swift --start-line 50 --limit 30'
+agentry-cli -w <window_id> -e 'read Root/File.swift --start-line 50 --limit 30'
 ```
 """))
 
@@ -208,7 +208,7 @@ rpce-cli -w <window_id> -e 'read Root/File.swift --start-line 50 --limit 30'
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -t '<tab_id>' -e 'chat "I'\''m implementing X. The plan does not fully explain Y, and reading the selected files still leaves a gap. What pattern or connection am I missing here?" --mode chat'
+agentry-cli -w <window_id> -t '<tab_id>' -e 'chat "I'\''m implementing X. The plan does not fully explain Y, and reading the selected files still leaves a gap. What pattern or connection am I missing here?" --mode chat'
 ```
 """))
 
@@ -260,7 +260,7 @@ rpce-cli -w <window_id> -t '<tab_id>' -e 'chat "I'\''m implementing X. The plan 
 		case .agent: suffix = ""; title = "Builder Mode"
 		case .mcp: suffix = ""; title = "MCP Builder Mode"
 		}
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 		let builderName = variant == .cli ? "`builder`" : "`context_builder`"
 
 		return """

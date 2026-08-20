@@ -3,9 +3,11 @@ import Sparkle
 
 enum UpdateChannel: String, CaseIterable, Identifiable {
     case stable
-    case tip
+    case beta
 
-    static let userDefaultsKey = "RepoPromptUpdateChannel"
+    static let userDefaultsKey = "AgentryUpdateChannel"
+    static let stableFeedInfoDictionaryKey = "AgentrySparkleStableFeedURL"
+    static let betaFeedInfoDictionaryKey = "AgentrySparkleBetaFeedURL"
 
     var id: String {
         rawValue
@@ -14,24 +16,31 @@ enum UpdateChannel: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .stable: "Stable"
-        case .tip: "Tip Builds"
+        case .beta: "Beta"
         }
     }
 
     var shortDescription: String {
         switch self {
         case .stable: "Curated releases only."
-        case .tip: "Latest signed and notarized main build."
+        case .beta: "Signed and notarized preview releases."
         }
     }
 
     var feedURLString: String {
-        switch self {
-        case .stable:
-            SecurityObfuscation.decode(SecurityObfuscation.stableFeedURLEncoded)
-        case .tip:
-            SecurityObfuscation.decode(SecurityObfuscation.tipFeedURLEncoded)
+        Self.feedURLString(for: self, infoDictionary: Bundle.main.infoDictionary)
+    }
+
+    static func feedURLString(
+        for channel: UpdateChannel,
+        infoDictionary: [String: Any]?
+    ) -> String {
+        let key = switch channel {
+        case .stable: stableFeedInfoDictionaryKey
+        case .beta: betaFeedInfoDictionaryKey
         }
+        return (infoDictionary?[key] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     static func load(defaults: UserDefaults = .standard) -> UpdateChannel {
@@ -50,6 +59,7 @@ enum UpdateChannel: String, CaseIterable, Identifiable {
 
 final class SparkleUpdateFeedDelegate: NSObject, SPUUpdaterDelegate {
     func feedURLString(for updater: SPUUpdater) -> String? {
-        UpdateChannel.load().feedURLString
+        let feedURL = UpdateChannel.load().feedURLString
+        return feedURL.isEmpty ? nil : feedURL
     }
 }

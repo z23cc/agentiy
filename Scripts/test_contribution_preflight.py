@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the RepoPrompt CE contribution preflight lanes."""
+"""Regression tests for the Agentry contribution preflight lanes."""
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ CI_APP_TEST_RUNNER_SELFTEST_TARGET = "ci-app-test-runner-selftest"
 SWIFT_LINT_TARGET = "dev-lint"
 ROOT_TEST_TARGET = "dev-test"
 PROVIDER_TEST_TARGET = "dev-provider-test"
-REPOPROMPT_BUILD_TARGET = "dev-swift-build PRODUCT=RepoPrompt"
-MCP_BUILD_TARGET = "dev-swift-build PRODUCT=repoprompt-mcp"
+REPOPROMPT_BUILD_TARGET = "dev-swift-build PRODUCT=Agentry"
+MCP_BUILD_TARGET = "dev-swift-build PRODUCT=agentry-mcp"
 XCODE_GENERATOR_TEST_TARGET = "xcode-generator-test"
 XCODE_VALIDATE_TARGET = "xcode-validate"
 ORDINARY_SUBPROCESS_TIMEOUT_SECONDS = 90

@@ -13,7 +13,7 @@ enum ProcessLaunchSource: Equatable {
 }
 
 struct ProcessLaunchContext: Equatable {
-    static let launchSourceEnvironmentKey = "REPOPROMPT_LAUNCH_SOURCE"
+    static let launchSourceEnvironmentKey = "AGENTRY_LAUNCH_SOURCE"
     static let launchServicesEnvironmentValue = "launchservices"
 
     let source: ProcessLaunchSource

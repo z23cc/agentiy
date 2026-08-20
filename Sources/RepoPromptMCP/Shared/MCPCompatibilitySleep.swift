@@ -1,6 +1,6 @@
 //
 //  MCPCompatibilitySleep.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 
 /// Avoids the release-mode `Task.sleep(for:)` specialization crash tracked by

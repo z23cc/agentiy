@@ -3365,7 +3365,7 @@ public class APISettingsViewModel: ObservableObject {
 
         let lowered = message.lowercased()
         if lowered.contains("not installed") || lowered.contains("no such file") || lowered.contains("command not found") {
-            return "The selected Codex runtime is unavailable. Reinstall RepoPrompt CE or configure a valid explicit override."
+            return "The selected Codex runtime is unavailable. Reinstall Agentry or configure a valid explicit override."
         }
         if lowered.contains("permission denied") {
             return "Permission denied. Ensure the 'codex' executable is accessible."
@@ -3387,7 +3387,7 @@ public class APISettingsViewModel: ObservableObject {
         collector.append("Exporting trace to Downloads folder")
         let exportDate = Date()
         let url = try collector.writeMarkdownToDownloads(
-            baseFilename: "RepoPrompt-ClaudeCodeTrace",
+            baseFilename: "Agentry-ClaudeCodeTrace",
             title: "Claude Code Connection Trace",
             timestamp: exportDate
         )
@@ -3422,7 +3422,7 @@ public class APISettingsViewModel: ObservableObject {
         collector.append("Exporting trace to Downloads folder")
         let exportDate = Date()
         let url = try collector.writeMarkdownToDownloads(
-            baseFilename: "RepoPrompt-CodexTrace",
+            baseFilename: "Agentry-CodexTrace",
             title: "Codex CLI Connection Trace",
             timestamp: exportDate
         )
@@ -3534,7 +3534,7 @@ public class APISettingsViewModel: ObservableObject {
         collector.append("Exporting trace to Downloads folder")
         let exportDate = Date()
         let url = try collector.writeMarkdownToDownloads(
-            baseFilename: "RepoPrompt-OpenCodeTrace",
+            baseFilename: "Agentry-OpenCodeTrace",
             title: "OpenCode CLI Connection Trace",
             timestamp: exportDate
         )
@@ -3683,7 +3683,7 @@ public class APISettingsViewModel: ObservableObject {
         collector.append("Exporting trace to Downloads folder")
         let exportDate = Date()
         let url = try collector.writeMarkdownToDownloads(
-            baseFilename: "RepoPrompt-CursorTrace",
+            baseFilename: "Agentry-CursorTrace",
             title: "Cursor Agent CLI Connection Trace",
             timestamp: exportDate
         )
@@ -3833,7 +3833,7 @@ public class APISettingsViewModel: ObservableObject {
         collector.append("Exporting trace to Downloads folder")
         let exportDate = Date()
         let url = try collector.writeMarkdownToDownloads(
-            baseFilename: "RepoPrompt-GrokBuildTrace",
+            baseFilename: "Agentry-GrokBuildTrace",
             title: "Grok Build CLI Connection Trace",
             timestamp: exportDate
         )
@@ -3936,7 +3936,7 @@ public class APISettingsViewModel: ObservableObject {
                 defaultTemperature: 0.7,
                 customHeaders: [
                     "HTTP-Referer": "https://repoprompt.com/",
-                    "X-Title": "Repo Prompt"
+                    "X-Title": "Agentry"
                 ]
             )
             let models = try await provider.getAvailableModels()

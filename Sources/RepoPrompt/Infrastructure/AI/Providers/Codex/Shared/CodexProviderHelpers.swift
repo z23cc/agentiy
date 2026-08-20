@@ -147,7 +147,7 @@ enum CodexProviderHelpers {
 
     static func isCodexExecutableUnavailableMessage(_ message: String) -> Bool {
         message.trimmingCharacters(in: .whitespacesAndNewlines)
-            .hasPrefix("RepoPrompt could not start Codex:")
+            .hasPrefix("Agentry could not start Codex:")
     }
 
     /// Extracts the name of a broken MCP server from Codex CLI stderr output.

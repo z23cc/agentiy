@@ -1,11 +1,11 @@
 ---
 name: rpce-release
-description: Build or publish RepoPrompt CE release artifacts using the repository release scripts and GitHub workflows.
+description: Build or publish Agentry release artifacts using the repository release scripts and GitHub workflows.
 ---
 
-# RepoPrompt CE Release
+# Agentry Release
 
-Use this skill when preparing a RepoPrompt CE release artifact or orienting a
+Use this skill when preparing a Agentry release artifact or orienting a
 maintainer through a production release.
 
 ## Contributor artifact
@@ -19,7 +19,7 @@ make dev-release-artifact
 
 For a local-only release-mode installation signed by the user's own dedicated
 self-signed identity, install Python 3 and double-click
-[`Install RepoPrompt CE Local Production.command`](../../../Install%20RepoPrompt%20CE%20Local%20Production.command)
+[`Install Agentry Local Production.command`](../../../Install%20Agentry%20Local%20Production.command)
 in Finder, or use the coordinated CLI path:
 
 ```bash
@@ -30,7 +30,7 @@ This app is not notarized and must not be distributed or uploaded to GitHub
 Releases.
 
 Report the ZIP, `SHA256SUMS`, and external artifact manifest written under
-`dist/`. Confirm that the public candidate is universal `arm64+x86_64`, ad-hoc
+`dist/`. Confirm that the public candidate is arm64-only, ad-hoc
 signed, intended for packaging validation, and not distributable. Debug and
 local self-signed packages remain host-native.
 
@@ -53,7 +53,7 @@ the source and updater repositories. Supply the SHA-256 digest of the reviewed
 source-draft `SHA256SUMS` file when dispatching promotion. Do not paste private keys,
 profiles, certificate exports, tokens, or passwords into logs or chat.
 
-RepoPrompt CE starts its independent release history at `1.0.0 (1)`.
+Agentry starts its independent release history at `1.0.0 (1)`.
 Increment `BUILD_NUMBER` monotonically for every later public update.
 After changing `version.env`, run `make release-sync-cli-version` and commit the
 synchronized MCP CLI version before creating the release tag.

@@ -692,7 +692,7 @@
     ]
   },
   "credential_gate": {
-    "packaged_cli_path": "RepoPrompt.app/Contents/MacOS/repoprompt-mcp",
+    "packaged_cli_path": "Agentry.app/Contents/MacOS/agentry-mcp",
     "signing_observation": "Scripts/package_app.sh signs the CLI before signing the outer app bundle.",
     "reason": "The preserved record says authorization-UI behavior was not probed and startup_scan_approved is false.",
     "prohibited_claim": "Direct packaged-child Keychain access works.",
@@ -707,7 +707,7 @@
       {
         "owner": "GlobalSettingsStore",
         "backing": "file",
-        "path": "~/Library/Application Support/RepoPrompt CE/Settings/globalSettings.json",
+        "path": "~/Library/Application Support/Agentry/Settings/globalSettings.json",
         "classification": "durable_authority"
       },
       {
@@ -728,13 +728,13 @@
       {
         "owner": "DomainMutationPolicyStore",
         "backing": "versioned_file_with_compare_and_swap",
-        "path": "~/Library/Application Support/RepoPrompt CE/Settings/protected-mutations.json",
+        "path": "~/Library/Application Support/Agentry/Settings/protected-mutations.json",
         "classification": "protected_mutation_grant_authority"
       },
       {
         "owner": "DomainMutationJournal",
         "backing": "versioned_file_with_compare_and_swap",
-        "path": "~/Library/Application Support/RepoPrompt CE/Settings/protected-mutation-journal.json",
+        "path": "~/Library/Application Support/Agentry/Settings/protected-mutation-journal.json",
         "classification": "internal_request_dedupe_and_commit_settlement_authority"
       },
       {

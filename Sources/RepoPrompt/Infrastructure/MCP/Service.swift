@@ -30,7 +30,7 @@ extension Service {
     func activate() async throws {}
 
     /// Dispatch a tool call to the matching `Tool` implementation.
-    /// RepoPrompt CE keeps registered tools callable; feature availability is not gated here.
+    /// Agentry keeps registered tools callable; feature availability is not gated here.
     func call(
         tool name: String,
         with arguments: [String: Value]

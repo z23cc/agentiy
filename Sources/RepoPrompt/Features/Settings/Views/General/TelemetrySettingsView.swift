@@ -60,14 +60,14 @@ struct TelemetrySettingsView: View {
 
                 SettingSection(
                     title: "Privacy",
-                    description: "What RepoPrompt sends and what it never sends."
+                    description: "What Agentry sends and what it never sends."
                 ) {
                     VStack(alignment: .leading, spacing: fontPreset.scaledClamped(8, max: 12)) {
                         bullet("Collected: crash diagnostics, app hangs when enabled, release/build metadata, OS/app version, and optional startup performance timing.")
                         bullet("Never intentionally sent: prompt contents, chat transcripts, selected file contents, tool payloads, API keys, provider tokens, or full local paths.")
                         bullet("Automatic failed-request capture and automatic release-health session tracking are disabled.")
                         bullet("A defense-in-depth scrubber removes request payloads, headers, cookies, query strings, obvious secrets, local home paths, user/geo/server identifiers, stable device identifiers, and IP-like values from events before upload.")
-                        bullet("Set REPOPROMPT_TELEMETRY_DISABLED=1 before launch to disable telemetry for the process regardless of Settings.")
+                        bullet("Set AGENTRY_TELEMETRY_DISABLED=1 before launch to disable telemetry for the process regardless of Settings.")
                     }
                 }
             }
@@ -81,7 +81,7 @@ struct TelemetrySettingsView: View {
         let message = if !status.sdkCompiledIn {
             "Telemetry is inactive in this build because the Sentry SDK is not linked."
         } else if status.environmentDisabled {
-            "Telemetry is disabled by REPOPROMPT_TELEMETRY_DISABLED for this process."
+            "Telemetry is disabled by AGENTRY_TELEMETRY_DISABLED for this process."
         } else if !status.dsnConfigured {
             "Telemetry is inactive in this build because no Sentry DSN is configured."
         } else if !status.telemetryEnabled {

@@ -78,8 +78,8 @@ final class DirectHeadlessProcessTests: XCTestCase {
         process.executableURL = executable
         process.arguments = ["--backend", "headless"]
         var environment = ProcessInfo.processInfo.environment
-        environment["REPOPROMPT_MCP_HEADLESS_PROFILE_DIR"] = profile.path
-        environment["REPOPROMPT_MCP_WORKING_DIRS"] = root.path
+        environment["AGENTRY_MCP_HEADLESS_PROFILE_DIR"] = profile.path
+        environment["AGENTRY_MCP_WORKING_DIRS"] = root.path
         environment.removeValue(forKey: "REPOPROMPT_MCP_PRIVATE_ENDPOINT")
         environment.removeValue(forKey: "REPOPROMPT_MCP_LAUNCH_TOKEN")
         process.environment = environment
@@ -252,14 +252,14 @@ final class DirectHeadlessProcessTests: XCTestCase {
     private static func executableURL() throws -> URL {
         var cursor = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
         for _ in 0 ..< 8 {
-            let candidate = cursor.appendingPathComponent("repoprompt-mcp")
+            let candidate = cursor.appendingPathComponent("agentry-mcp")
             if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }
             cursor.deleteLastPathComponent()
         }
         let fallback = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(".build/debug/repoprompt-mcp")
+            .appendingPathComponent(".build/debug/agentry-mcp")
         guard FileManager.default.isExecutableFile(atPath: fallback.path) else {
-            throw XCTSkip("repoprompt-mcp product is not built")
+            throw XCTSkip("agentry-mcp product is not built")
         }
         return fallback
     }

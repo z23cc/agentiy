@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptShared
 
 struct DirectHeadlessRuntimeLocations: Equatable {
     let profileIdentifier: String
@@ -28,9 +29,9 @@ enum DirectHeadlessRuntimeLocationResolver {
         customWorkspaceStoragePath: String? = UserDefaults.standard.string(forKey: "GlobalCustomStorageURL")
     ) throws -> DirectHeadlessRuntimeLocations {
         let profile = sanitizedProfileIdentifier(
-            environment["REPOPROMPT_MCP_HEADLESS_PROFILE"] ?? "default"
+            environment["AGENTRY_MCP_HEADLESS_PROFILE"] ?? "default"
         )
-        let explicitProfilePath = environment["REPOPROMPT_MCP_HEADLESS_PROFILE_DIR"]?
+        let explicitProfilePath = environment["AGENTRY_MCP_HEADLESS_PROFILE_DIR"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let usesExplicitProfileDirectory = explicitProfilePath?.isEmpty == false
         if profile != "default", !usesExplicitProfileDirectory {
@@ -51,7 +52,12 @@ enum DirectHeadlessRuntimeLocationResolver {
             runtimeTemporaryDirectory = root.appendingPathComponent("Temporary", isDirectory: true)
         } else {
             let root = homeDirectory
-                .appendingPathComponent("Library/Application Support/RepoPrompt CE", isDirectory: true)
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+                .appendingPathComponent(
+                    AgentryProductIdentity.applicationSupportDirectoryName,
+                    isDirectory: true
+                )
                 .standardizedFileURL
             storageDirectory = root
             workspaceStorageDirectory = customWorkspaceStoragePath.flatMap { path -> URL? in
@@ -63,11 +69,14 @@ enum DirectHeadlessRuntimeLocationResolver {
             } ?? root.appendingPathComponent("Workspaces", isDirectory: true)
             eventDirectory = root.appendingPathComponent("Events", isDirectory: true)
             runtimeTemporaryDirectory = temporaryDirectory
-                .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+                .appendingPathComponent(
+                    AgentryProductIdentity.applicationSupportDirectoryName,
+                    isDirectory: true
+                )
         }
 
         let workingDirectories = try resolvedWorkingDirectories(
-            environment["REPOPROMPT_MCP_WORKING_DIRS"]
+            environment["AGENTRY_MCP_WORKING_DIRS"]
         )
         return DirectHeadlessRuntimeLocations(
             profileIdentifier: profile,

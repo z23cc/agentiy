@@ -318,7 +318,7 @@ struct GlobalSettingsWriteDiagnostic: Equatable {
 
 /// This is the single source of truth for workspace default settings.
 /// Primary persistence is the Application Support JSON document at
-/// `~/Library/Application Support/RepoPrompt CE/Settings/globalSettings.json`.
+/// `~/Library/Application Support/Agentry/Settings/globalSettings.json`.
 /// Windows use WindowSettingsManager to maintain local overlays.
 @MainActor
 class GlobalSettingsStore: ObservableObject {
@@ -2634,7 +2634,7 @@ class GlobalSettingsStore: ObservableObject {
     }
 
     private static var defaultTelemetryEnabled: Bool {
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             true
         #else
             false

@@ -1,6 +1,6 @@
 //
 //  InteractiveMCPService.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  ServiceLifecycle service for interactive MCP mode.
 //  Manages the MCP client session and REPL.

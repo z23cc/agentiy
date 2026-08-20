@@ -44,7 +44,7 @@ actor MCPStdioServerTransport: Transport {
         maximumBufferedFrames: Int = 64,
         parentPIDProvider: @escaping @Sendable () -> Int32 = { getppid() },
         deliveryTracker: MCPDomainResponseDeliveryTracker = MCPDomainResponseDeliveryTracker(),
-        logger: Logger = Logger(label: "com.repoprompt.ce.mcp.headless-stdio")
+        logger: Logger = Logger(label: "io.github.z23cc.agentry.mcp.headless-stdio")
     ) {
         self.stdinFD = stdinFD
         self.stdoutFD = stdoutFD

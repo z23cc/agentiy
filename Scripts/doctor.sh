@@ -20,7 +20,7 @@ Checks Swift/Xcode, signing, SDK, SwiftUI availability, debug CLI status, and Sw
 
 Options:
   --quiet                 Suppress nonessential output. Does not require SwiftFormat or SwiftLint.
-  --install-debug-cli     Package and install /usr/local/bin/rpce-cli-debug.
+  --install-debug-cli     Package and install /usr/local/bin/agentry-cli-debug.
   --check-format-tools    Fail if SwiftFormat or SwiftLint is missing.
   --install-format-tools  Install missing SwiftFormat/SwiftLint tools with Homebrew.
 EOF

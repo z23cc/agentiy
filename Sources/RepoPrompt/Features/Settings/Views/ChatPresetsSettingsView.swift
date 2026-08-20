@@ -146,7 +146,7 @@ struct ChatPresetsSettingsView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Reusable presets for RepoPrompt's built-in chat UI. Each preset bundles a chat mode, optional model selection, project-structure / code-map / git-diff options, and stored-prompt selections. These don't affect Agent Mode.")
+            Text("Reusable presets for Agentry's built-in chat UI. Each preset bundles a chat mode, optional model selection, project-structure / code-map / git-diff options, and stored-prompt selections. These don't affect Agent Mode.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

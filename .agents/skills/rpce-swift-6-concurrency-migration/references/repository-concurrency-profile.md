@@ -1,4 +1,4 @@
-# RepoPrompt CE concurrency profile
+# Agentry concurrency profile
 
 Reverify these facts before a migration phase; line numbers and target composition can change.
 

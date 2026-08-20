@@ -47,7 +47,7 @@ final class SparkleVersionDisplay: NSObject, SPUStandardUserDriverDelegate, SUVe
         installedBuildNumber: String
     ) -> SparkleVersionIdentities {
         let availableMarketingVersion = AvailableUpdateNotice.marketingVersion(
-            fromTipTitle: availableTitle
+            fromBetaTitle: availableTitle
         ) ?? SparkleUpdaterManager.sanitizeVersionString(availableDisplayVersion)
         let installedMarketingVersion = SparkleUpdaterManager.sanitizeVersionString(
             installedDisplayVersion

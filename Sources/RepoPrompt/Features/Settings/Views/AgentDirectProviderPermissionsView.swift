@@ -39,7 +39,7 @@ struct AgentDirectProviderPermissionsView: View {
 
         AgentPermissionSettingsGroupBox(
             title: "Provider Permissions",
-            subtitle: "Applies to agents launched directly from RepoPrompt.",
+            subtitle: "Applies to agents launched directly from Agentry.",
             accent: .secondary,
             contentSpacing: AgentPermissionSettingsLayout.controlSpacing
         ) {

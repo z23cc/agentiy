@@ -28,7 +28,7 @@ final class SettingsWindowCoordinator: NSObject, NSWindowDelegate {
 
     /// Key used to persist the window frame between launches via
     /// `setFrameAutosaveName(_:)`.
-    private static let frameAutosaveName = "RepoPrompt.SettingsWindow"
+    private static let frameAutosaveName = "Agentry.SettingsWindow"
 
     /// Default content size used for first-open (or when no saved frame
     /// exists). Tuned so the sidebar plus a ~560pt readable detail column fit

@@ -126,7 +126,7 @@ final class AgentWorkflowStore: ObservableObject {
 
     // MARK: Filesystem paths
 
-    /// `~/Library/Application Support/RepoPrompt CE/Workflows/`
+    /// `~/Library/Application Support/Agentry/Workflows/`
     static var workflowsDirectoryURL: URL {
         MCPFilesystemConstants.identity.applicationSupportRootURL()
             .appendingPathComponent("Workflows", isDirectory: true)

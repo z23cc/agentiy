@@ -8,11 +8,11 @@ set -a
 source "$ROOT_DIR/version.env"
 set +a
 
-LOCAL_SELF_SIGNED_CERTIFICATE_NAME="RepoPrompt CE Local Self-Signed Code Signing"
+LOCAL_SELF_SIGNED_CERTIFICATE_NAME="Agentry Local Self-Signed Code Signing"
 LOCAL_PRODUCTION_INSTALL_DIR="${LOCAL_PRODUCTION_INSTALL_DIR:-/Applications}"
 LOCAL_PRODUCTION_APP="$LOCAL_PRODUCTION_INSTALL_DIR/$DISPLAY_NAME.app"
 LOCAL_CERTIFICATE_DAYS="${LOCAL_CERTIFICATE_DAYS:-3650}"
-LOCAL_SIGNING_IDENTITY_REGISTRY_PATH="${LOCAL_SIGNING_IDENTITY_REGISTRY_PATH:-$HOME/Library/Application Support/RepoPrompt CE/local-signing-identity-v1.json}"
+LOCAL_SIGNING_IDENTITY_REGISTRY_PATH="${LOCAL_SIGNING_IDENTITY_REGISTRY_PATH:-$HOME/Library/Application Support/Agentry/local-signing-identity-v1.json}"
 LOCAL_SIGNING_IDENTITY_SHA256="${LOCAL_SIGNING_IDENTITY_SHA256:-}"
 ROTATE_LOCAL_SIGNING_IDENTITY="${ROTATE_LOCAL_SIGNING_IDENTITY:-0}"
 LOCAL_SIGNING_IDENTITY_TOOL="$ROOT_DIR/Scripts/local_signing_identity.py"
@@ -103,7 +103,7 @@ inventory_local_identities() {
 mint_local_identity() {
     local password
     password="$(openssl rand -hex 24)"
-    printf 'Creating one user-local RepoPrompt CE self-signed code-signing identity. macOS may ask for confirmation when its trust policy is installed.\n'
+    printf 'Creating one user-local Agentry self-signed code-signing identity. macOS may ask for confirmation when its trust policy is installed.\n'
     cat > "$TMP_DIR/openssl.cnf" <<EOF
 [req]
 distinguished_name = distinguished_name
@@ -112,7 +112,7 @@ prompt = no
 
 [distinguished_name]
 CN = $LOCAL_SELF_SIGNED_CERTIFICATE_NAME
-O = RepoPrompt CE Local
+O = Agentry Local
 OU = Local Build
 
 [codesign_extensions]
@@ -124,18 +124,18 @@ EOF
     openssl req -new -newkey rsa:2048 -x509 -sha256 -days "$LOCAL_CERTIFICATE_DAYS" -nodes \
         -config "$TMP_DIR/openssl.cnf" \
         -out "$CERTIFICATE_PEM" \
-        -keyout "$TMP_DIR/repoprompt-ce-local-signing-key.pem"
+        -keyout "$TMP_DIR/agentry-local-signing-key.pem"
     local -a pkcs12_args=(-export)
     if { openssl pkcs12 -help 2>&1 || true; } | grep -q -- '-legacy'; then
         pkcs12_args+=(-legacy)
     fi
     openssl pkcs12 "${pkcs12_args[@]}" \
-        -out "$TMP_DIR/repoprompt-ce-local-signing.p12" \
-        -inkey "$TMP_DIR/repoprompt-ce-local-signing-key.pem" \
+        -out "$TMP_DIR/agentry-local-signing.p12" \
+        -inkey "$TMP_DIR/agentry-local-signing-key.pem" \
         -in "$CERTIFICATE_PEM" \
         -name "$LOCAL_SELF_SIGNED_CERTIFICATE_NAME" \
         -passout "pass:$password"
-    security import "$TMP_DIR/repoprompt-ce-local-signing.p12" \
+    security import "$TMP_DIR/agentry-local-signing.p12" \
         -k "$LOGIN_KEYCHAIN" \
         -P "$password" \
         -T /usr/bin/codesign \
@@ -224,7 +224,7 @@ chmod 700 "$REGISTRY_LOCK_DIR"
 printf '%s\n' "$$" > "$REGISTRY_LOCK_DIR/pid"
 chmod 600 "$REGISTRY_LOCK_DIR/pid"
 REGISTRY_BACKUP_PATH="$TMP_DIR/local-signing-identity-registry.backup"
-CERTIFICATE_PEM="$TMP_DIR/repoprompt-ce-local-signing.pem"
+CERTIFICATE_PEM="$TMP_DIR/agentry-local-signing.pem"
 INVENTORY_BEFORE="$TMP_DIR/identity-inventory-before.json"
 INVENTORY_AFTER="$TMP_DIR/identity-inventory-after.json"
 PLAN_PATH="$TMP_DIR/identity-plan.json"
@@ -287,11 +287,11 @@ LOCAL_SELF_SIGNED_RELEASE=1 \
 
 SOURCE_APP="$ROOT_DIR/.build/release/$APP_NAME.app"
 [[ -d "$SOURCE_APP" ]] || fail "Missing packaged local production app: $SOURCE_APP"
-[[ "$(plutil -extract RepoPromptSigningMode raw "$SOURCE_APP/Contents/Info.plist")" == "local-self-signed" ]] ||
+[[ "$(plutil -extract AgentrySigningMode raw "$SOURCE_APP/Contents/Info.plist")" == "local-self-signed" ]] ||
     fail "Packaged app is missing the local self-signed signing-mode marker."
-[[ "$(plutil -extract RepoPromptLocalSigningCertificateSHA256 raw "$SOURCE_APP/Contents/Info.plist")" == "$SELECTED_CERTIFICATE_SHA256" ]] ||
+[[ "$(plutil -extract AgentryLocalSigningCertificateSHA256 raw "$SOURCE_APP/Contents/Info.plist")" == "$SELECTED_CERTIFICATE_SHA256" ]] ||
     fail "Packaged app local signing fingerprint metadata does not match the selected identity."
-[[ "$(plutil -extract RepoPromptLocalSecureStorageGeneration raw "$SOURCE_APP/Contents/Info.plist")" == "$LOCAL_SIGNING_SERVICE_GENERATION" ]] ||
+[[ "$(plutil -extract AgentryLocalSecureStorageGeneration raw "$SOURCE_APP/Contents/Info.plist")" == "$LOCAL_SIGNING_SERVICE_GENERATION" ]] ||
     fail "Packaged app local secure-storage generation metadata does not match the registry plan."
 codesign --verify --deep --strict --verbose=2 "$SOURCE_APP"
 codesign --verify --deep --strict --verbose=2 -R="$LOCAL_SIGNING_REQUIREMENT" "$SOURCE_APP"

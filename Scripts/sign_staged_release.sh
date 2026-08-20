@@ -10,7 +10,7 @@ load_release_metadata "$METADATA_ROOT"
 
 APP_BUNDLE="$ROOT_DIR/.build/release/$APP_NAME.app"
 TRUSTED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENTITLEMENTS_TEMPLATE="$TRUSTED_ROOT/AppBundle/RepoPrompt.entitlements.template"
+ENTITLEMENTS_TEMPLATE="$TRUSTED_ROOT/AppBundle/Agentry.entitlements.template"
 CODEX_V8_ENTITLEMENTS="$TRUSTED_ROOT/AppBundle/CodexV8JIT.entitlements"
 TRUSTED_SPARKLE_FRAMEWORK="$TRUSTED_ROOT/Vendor/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 STAGED_SPARKLE_FRAMEWORK="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
@@ -23,16 +23,19 @@ fail() {
 }
 
 [[ -n "${SIGN_IDENTITY:-}" ]] || fail "Missing required environment variable: SIGN_IDENTITY"
+[[ -n "$SIGNING_TEAM_ID" ]] || fail "Missing required Agentry SIGNING_TEAM_ID"
 [[ -f "${REPOPROMPT_PROVISIONING_PROFILE:-}" ]] ||
-    fail "Missing RepoPrompt CE Developer ID provisioning profile"
+    fail "Missing Agentry Developer ID provisioning profile"
 [[ -d "$APP_BUNDLE" ]] || fail "Missing staged app bundle: $APP_BUNDLE"
+validate_agentry_sparkle_info_plist "$APP_BUNDLE/Contents/Info.plist" ||
+    fail "Staged Developer ID signing requires provisioned Agentry Sparkle configuration"
 REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
     "$SCRIPT_DIR/validate_staged_release.sh"
 REPOPROMPT_RELEASE_SOURCE_ROOT="$TRUSTED_ROOT" \
     "$SCRIPT_DIR/verify_sparkle_vendor.sh"
 python3 "$SCRIPT_DIR/codex_runtime_artifact.py" \
     --manifest "$CODEX_MANIFEST" verify-bundle \
-    --arch all \
+    --arch arm64 \
     --bundle "$CODEX_BUNDLE"
 
 rm -rf "$STAGED_SPARKLE_FRAMEWORK"
@@ -40,9 +43,11 @@ mkdir -p "$(dirname "$STAGED_SPARKLE_FRAMEWORK")"
 ditto "$TRUSTED_SPARKLE_FRAMEWORK" "$STAGED_SPARKLE_FRAMEWORK"
 REPOPROMPT_RELEASE_SOURCE_ROOT="$TRUSTED_ROOT" \
     "$SCRIPT_DIR/verify_sparkle_vendor.sh" "$STAGED_SPARKLE_FRAMEWORK"
+"$SCRIPT_DIR/thin_sparkle_framework_to_arm64.sh" \
+    "$STAGED_SPARKLE_FRAMEWORK" \
+    "Trusted Sparkle replacement"
 "$SCRIPT_DIR/validate_app_architectures.sh" \
     "$APP_BUNDLE" \
-    "arm64,x86_64" \
     "Trusted Sparkle replacement pre-sign app"
 
 profile_plist="$(mktemp)"
@@ -72,14 +77,14 @@ Path(output).write_text(text, encoding="utf-8")
 PYTHON
 plutil -lint "$app_entitlements"
 plutil -lint "$CODEX_V8_ENTITLEMENTS"
-plutil -replace RepoPromptDebugSecureStorageBackend -string keychain "$APP_BUNDLE/Contents/Info.plist"
-plutil -replace RepoPromptSigningMode -string developer-id "$APP_BUNDLE/Contents/Info.plist"
+plutil -replace AgentryDebugSecureStorageBackend -string keychain "$APP_BUNDLE/Contents/Info.plist"
+plutil -replace AgentrySigningMode -string developer-id "$APP_BUNDLE/Contents/Info.plist"
 
 # Telemetry is gated on DSN presence: only the official Developer ID publish job receives the
 # protected SENTRY_DSN secret, and only here is it baked into the signed bundle. The value is never
 # echoed or written to the artifact manifest.
 if [[ -n "${SENTRY_DSN:-}" ]]; then
-    plutil -replace RepoPromptSentryDSN -string "$SENTRY_DSN" "$APP_BUNDLE/Contents/Info.plist"
+    plutil -replace AgentrySentryDSN -string "$SENTRY_DSN" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
 sign_path() {
@@ -102,7 +107,7 @@ sign_sparkle_framework "$STAGED_SPARKLE_FRAMEWORK"
 # profile pinned in Vendor/Codex/manifest.json. The trusted V8 JIT allowlist is a
 # repository-owned plist; vendor entitlement metadata is never preserved blindly.
 codex_signing_plan="$(python3 "$SCRIPT_DIR/codex_runtime_artifact.py" \
-    --manifest "$CODEX_MANIFEST" list-bundle-signing-plan --arch all)"
+    --manifest "$CODEX_MANIFEST" list-bundle-signing-plan --arch arm64)"
 while IFS=$'\t' read -r relative_path entitlement_profile; do
     [[ -n "$relative_path" ]] || continue
     case "$entitlement_profile" in
@@ -117,23 +122,22 @@ while IFS=$'\t' read -r relative_path entitlement_profile; do
         ;;
     esac
 done <<< "$codex_signing_plan"
-sign_path "$APP_BUNDLE/Contents/MacOS/repoprompt-mcp"
+sign_path "$APP_BUNDLE/Contents/MacOS/agentry-mcp"
 sign_path "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 sign_path "$APP_BUNDLE" --entitlements "$app_entitlements"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 python3 "$SCRIPT_DIR/codex_runtime_artifact.py" \
     --manifest "$CODEX_MANIFEST" verify-bundle \
-    --arch all \
+    --arch arm64 \
     --bundle "$CODEX_BUNDLE" \
     --signed-team-identifier "$SIGNING_TEAM_ID"
 "$SCRIPT_DIR/validate_app_architectures.sh" \
     "$APP_BUNDLE" \
-    "arm64,x86_64" \
     "Developer ID staged app post-sign"
 "$SCRIPT_DIR/write_app_artifact_manifest.py" write \
     --app "$APP_BUNDLE" \
     --output "$ARTIFACT_MANIFEST" \
-    --expected-architectures "arm64,x86_64"
+    --expected-architectures "arm64"
 codesign -d --entitlements :- "$APP_BUNDLE" > "$signed_entitlements"
 plutil -convert xml1 -o "$canonical_app_entitlements" "$app_entitlements"
 plutil -convert xml1 -o "$canonical_signed_entitlements" "$signed_entitlements"

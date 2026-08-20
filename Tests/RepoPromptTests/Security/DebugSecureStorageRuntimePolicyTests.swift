@@ -195,9 +195,20 @@ final class RuntimeCodeSigningPolicyTests: XCTestCase {
     }
 
     func testCompileTimeTrustAnchorsIncludeExpectedCertificateClasses() {
-        XCTAssertEqual(RuntimeCodeSigningPolicy.developerIDBundleIdentifier, "com.pvncher.repoprompt.ce")
-        XCTAssertEqual(RuntimeCodeSigningPolicy.appleDevelopmentDebugBundleIdentifier, "com.pvncher.repoprompt.ce.debug")
+        XCTAssertEqual(RuntimeCodeSigningPolicy.developerIDBundleIdentifier, "io.github.z23cc.agentry")
+        XCTAssertEqual(RuntimeCodeSigningPolicy.appleDevelopmentDebugBundleIdentifier, "io.github.z23cc.agentry.debug")
         XCTAssertEqual(RuntimeCodeSigningPolicy.signingTeamIdentifier, "648A27MST5")
+        XCTAssertTrue(
+            RuntimeCodeSigningPolicy.developerIDRequirement.contains(RuntimeCodeSigningPolicy.developerIDBundleIdentifier)
+        )
+        XCTAssertTrue(
+            RuntimeCodeSigningPolicy.appleDevelopmentDebugRequirement
+                .contains(RuntimeCodeSigningPolicy.appleDevelopmentDebugBundleIdentifier)
+        )
+        XCTAssertTrue(RuntimeCodeSigningPolicy.developerIDRequirement.contains(RuntimeCodeSigningPolicy.signingTeamIdentifier))
+        XCTAssertTrue(
+            RuntimeCodeSigningPolicy.appleDevelopmentDebugRequirement.contains(RuntimeCodeSigningPolicy.signingTeamIdentifier)
+        )
         XCTAssertTrue(RuntimeCodeSigningPolicy.developerIDRequirement.contains("1.2.840.113635.100.6.1.13"))
         XCTAssertTrue(RuntimeCodeSigningPolicy.appleDevelopmentDebugRequirement.contains("1.2.840.113635.100.6.1.12"))
     }

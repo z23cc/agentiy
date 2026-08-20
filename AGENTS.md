@@ -1,6 +1,6 @@
 # Agent Notes
 
-This is a Swift Package macOS app for RepoPrompt CE.
+This is a Swift Package macOS app for Agentry.
 
 Prefer the coordinated developer daemon (`make dev-*`, see "Developer daemon / coordinated validation" below) for builds, runs, and tests. It runs every job through a lane-serialized queue so concurrent agents do not build, launch, or test over each other, and it returns a ticket for each job so long builds can be detached and checked on later instead of blocking. The plain `make` / `swift` / `./Scripts` commands shown below are the uncoordinated fallback for when the daemon is unavailable.
 
@@ -27,7 +27,7 @@ Local `docs/investigations/*.md` reports are intentionally left unignored so Rep
 
 ```bash
 make doctor     # verify Swift/Xcode command line tool setup, SDK, signing diagnostics, SwiftUI probe, and debug CLI status
-make dev-run    # coordinated build, package, stop existing RepoPrompt, and launch the debug app
+make dev-run    # coordinated build, package, stop existing Agentry, and launch the debug app
 ```
 
 `make dev-run` routes through the developer daemon (see "Developer daemon / coordinated validation") and remains the ordinary FIFO coordinated launch path. For a user-directed newest lifecycle action, use `./conductor app relaunch`; the Finder launcher uses that operation when `python3` is available. The uncoordinated equivalents are `make run` or `./Scripts/run.sh`.
@@ -55,7 +55,7 @@ VERBOSE=1 ./Scripts/package_app.sh debug 2>&1 | tee /tmp/repoprompt-build.log
 The debug app bundle is created through:
 
 ```text
-.build/debug/RepoPrompt.app
+.build/debug/Agentry.app
 ```
 
 SwiftPM’s architecture-specific build output is usually under:
@@ -80,9 +80,9 @@ make xcode-clean            # remove generated workspace metadata
 
 Default CI runs `make xcode-generator-test`; full `make xcode-validate` is explicit and runs through local `pr-ready` for Xcode workspace boundary changes or the dedicated `Xcode Workspace Validation` workflow.
 
-Xcode 26.3 exposes the native `RepoPrompt` and `repoprompt-mcp` product schemes.
-Use `RepoPrompt CE App` and `RepoPrompt CE MCP` for conductor-coordinated debug
-products. `RepoPrompt CE Tests` delegates to conductor because `RepoPromptMCP`
+Xcode 26.3 exposes the native `Agentry` and `agentry-mcp` product schemes.
+Use `Agentry App` and `Agentry MCP` for conductor-coordinated debug
+products. `Agentry Tests` delegates to conductor because `RepoPromptMCP`
 is executable-only and cannot back a native Xcode unit-test dependency. Do not
 edit or commit `.build/xcode`, use these schemes for release/archive work, or
 assume canceling Xcode cancels a queued conductor job; inspect
@@ -91,57 +91,57 @@ assume canceling Xcode cancels a queued conductor job; inspect
 
 ## Debug CLI / MCP
 
-Use the CE-specific debug CLI when testing this app. The production `rp-cli` / `rp-cli-debug` connection is only an analogue and may talk to the non-CE app.
+Use the Agentry-specific debug CLI when testing this app. The production `rp-cli` / `rp-cli-debug` connection is only an analogue and may talk to the non-Agentry app.
 
 Install or inspect the debug CLI:
 
 ```bash
 make debug-cli-status
-make install-debug-cli     # packages the debug app, then installs /usr/local/bin/rpce-cli-debug
+make install-debug-cli     # packages the debug app, then installs /usr/local/bin/agentry-cli-debug
 ./Scripts/doctor.sh --install-debug-cli
 ```
 
 The installer links:
 
 ```text
-/usr/local/bin/rpce-cli-debug
-  -> ~/Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug
-  -> ~/Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app/Contents/MacOS/repoprompt-mcp
+/usr/local/bin/agentry-cli-debug
+  -> ~/Library/Application Support/Agentry/agentry_cli_debug
+  -> ~/Library/Application Support/Agentry/DebugApps/Agentry.app/Contents/MacOS/agentry-mcp
 ```
 
 If `/usr/local/bin` needs administrator privileges, run the install target from an interactive terminal so `sudo` can prompt, or install the CLI from Settings → MCP → CLI Tools. Without the PATH link, use the direct fallback:
 
 ```bash
-"$HOME/Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug" -e 'windows'
+"$HOME/Library/Application Support/Agentry/agentry_cli_debug" -e 'windows'
 ```
 
 Live CE MCP smoke flow:
 
 ```bash
 make run
-rpce-cli-debug -e 'windows'
-rpce-cli-debug -w 1 -e 'workspace switch repoprompt-ce'
-rpce-cli-debug -w 1 -e 'tree --type roots'
-rpce-cli-debug -w 1 -c agent_manage -j '{"op":"list_agents","roles_only":true}'
+agentry-cli-debug -e 'windows'
+agentry-cli-debug -w 1 -e 'workspace switch repoprompt-ce'
+agentry-cli-debug -w 1 -e 'tree --type roots'
+agentry-cli-debug -w 1 -c agent_manage -j '{"op":"list_agents","roles_only":true}'
 ```
 
 Then use `agent_run` for end-to-end Agent Mode behavior:
 
 ```bash
-rpce-cli-debug -w 1 -c agent_run -j '{"op":"start","model_id":"explore","session_name":"CE debug CLI smoke","message":"Reply exactly with CE_AGENT_RUN_SMOKE_OK and stop. Do not edit files.","detach":true}'
-rpce-cli-debug -w 1 -c agent_run -j '{"op":"wait","session_id":"<session_id>","timeout":120}'
+agentry-cli-debug -w 1 -c agent_run -j '{"op":"start","model_id":"explore","session_name":"Agentry debug CLI smoke","message":"Reply exactly with CE_AGENT_RUN_SMOKE_OK and stop. Do not edit files.","detach":true}'
+agentry-cli-debug -w 1 -c agent_run -j '{"op":"wait","session_id":"<session_id>","timeout":120}'
 ```
 
-Before live Agent Mode or Claude investigations, enable debug-only diagnostics through the CE debug app's MCP `app_settings` surface:
+Before live Agent Mode or Claude investigations, enable debug-only diagnostics through the Agentry debug app's MCP `app_settings` surface:
 
 ```bash
-rpce-cli-debug -w 1 -c app_settings -j '{"op":"list","group":"agent_mode","detailed":true}'
-rpce-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"agent_mode.claude_raw_event_logging_enabled","value":true}'
-rpce-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"agent_mode.claude_raw_event_log_file_path","value":"/tmp/repoprompt-ce-claude-raw-events"}'
-rpce-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"agent_mode.perf_diagnostics_enabled","value":true}'
+agentry-cli-debug -w 1 -c app_settings -j '{"op":"list","group":"agent_mode","detailed":true}'
+agentry-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"agent_mode.claude_raw_event_logging_enabled","value":true}'
+agentry-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"agent_mode.claude_raw_event_log_file_path","value":"/tmp/repoprompt-ce-claude-raw-events"}'
+agentry-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"agent_mode.perf_diagnostics_enabled","value":true}'
 ```
 
-These settings are intentionally DEBUG-only. If a key is unavailable, confirm `rpce-cli-debug --version` is resolving to the current CE debug build before falling back to lower-level defaults.
+These settings are intentionally DEBUG-only. If a key is unavailable, confirm `agentry-cli-debug --version` is resolving to the current Agentry debug build before falling back to lower-level defaults.
 
 ## Developer daemon / coordinated validation
 
@@ -159,13 +159,13 @@ Happy path — daemon aliases:
 ```bash
 make dev-status
 make dev-build
-make dev-swift-build PRODUCT=repoprompt-mcp         # focused product build (PRODUCT=RepoPrompt|repoprompt-mcp|all, default all)
+make dev-swift-build PRODUCT=agentry-mcp         # focused product build (PRODUCT=Agentry|agentry-mcp|all, default all)
 make dev-run
 make dev-launch-existing                         # launch current DebugApps bundle without building
 make dev-test                                       # full coordinated test suite
 make dev-test FILTER=WorkspaceFileContextStoreTests # focused coordinated test run
 make dev-provider-test                              # RepoPromptAgentProviders package tests (FILTER= also supported)
-make dev-smoke          # non-disruptive: requires an already-running CE debug app and installed debug CLI
+make dev-smoke          # non-disruptive: requires an already-running Agentry debug app and installed debug CLI
 make dev-smoke-launch   # builds/launches the debug app, then runs the smoke flow
 make dev-format-check   # non-mutating coordinated SwiftFormat check
 make dev-lint           # non-mutating coordinated format-check + SwiftLint strict
@@ -193,11 +193,11 @@ Daemon output defaults are intentionally concise for agent use: synchronous `dev
 
 Behavior notes:
 
-- `make dev-run` (daemon `run`) builds/packages a unique staged app under heavy admission, releases that heavy slot, then takes the live-app lock for stop/staged-bundle activation/open/confirm against the shared `DebugApps/RepoPrompt.app` bundle. A build/package failure performs no lifecycle action and does not mutate the live bundle.
+- `make dev-run` (daemon `run`) builds/packages a unique staged app under heavy admission, releases that heavy slot, then takes the live-app lock for stop/staged-bundle activation/open/confirm against the shared `DebugApps/Agentry.app` bundle. A build/package failure performs no lifecycle action and does not mutate the live bundle.
 - `./conductor app launch-existing` / `make dev-launch-existing` requires the shared debug app bundle to already exist, reports bundle provenance, never waits for heavy admission, and never falls back to building.
 - `./conductor app relaunch` is the overriding interactive relaunch used by the Finder launcher; like `app stop`, it can cancel older active or queued `liveApp` work. It builds/packages before replacing the visible app, so a failure before lifecycle work begins does not itself stop or reopen an already-running app.
 - Do not assume an in-flight `run`, `smoke`, or diagnostics job will complete if another operator issues `app stop` or interactive `app relaunch`.
-- `make dev-smoke` is the non-disruptive live-only check: it assumes the CE debug app is already running and the debug CLI is installed/resolvable.
+- `make dev-smoke` is the non-disruptive live-only check: it assumes the Agentry debug app is already running and the debug CLI is installed/resolvable.
 - `make dev-smoke-launch` (or `./conductor smoke --launch`) builds/packages and launches the debug app before smoke validation.
 - `./conductor smoke --agent-run` is opt-in, for when provider credentials and model access are available.
 - Style checks (`make dev-format-check`, `make dev-lint`) are non-mutating and do not auto-install tools; `make dev-install-format-tools` is the explicit install path.
@@ -211,7 +211,7 @@ make run
 make test
 ```
 
-These do not claim daemon lanes or lifecycle supersession, so when multiple agents are active they can build, launch, or run style tooling over each other; a direct launch may reopen the app after a coordinated stop. The Finder launcher requires `python3` and does not provide an uncoordinated no-Python fallback because safe lifecycle actions require exact debug-executable identity checks. Prefer the `dev-*` aliases when the daemon is available. The manual `rpce-cli-debug` commands above remain valid for direct live MCP validation.
+These do not claim daemon lanes or lifecycle supersession, so when multiple agents are active they can build, launch, or run style tooling over each other; a direct launch may reopen the app after a coordinated stop. The Finder launcher requires `python3` and does not provide an uncoordinated no-Python fallback because safe lifecycle actions require exact debug-executable identity checks. Prefer the `dev-*` aliases when the daemon is available. The manual `agentry-cli-debug` commands above remain valid for direct live MCP validation.
 
 ## Source placement rules
 
@@ -280,8 +280,8 @@ make dev-format-check
 make dev-lint
 make dev-test FILTER=CodexIntegrationConfigurationTests
 make dev-test FILTER=WorkspaceFileContextStoreTests
-make dev-swift-build PRODUCT=RepoPrompt
-make dev-swift-build PRODUCT=repoprompt-mcp
+make dev-swift-build PRODUCT=Agentry
+make dev-swift-build PRODUCT=agentry-mcp
 make dev-provider-test
 make dev-codex-schema-check
 make guardrails
@@ -293,7 +293,7 @@ Run the smallest relevant daemon build/test command above to validate a change. 
 
 Direct `swift test --filter <name>` and `swift build --product <name>` still work and produce the same result, but they are uncoordinated — use them only when the daemon is unavailable (for example, no `python3`), and avoid them when other agents may be building.
 
-Use `make dev-run` (or `make run`) only when it is safe to stop any existing RepoPrompt instance and launch the local debug app.
+Use `make dev-run` (or `make run`) only when it is safe to stop any existing Agentry instance and launch the local debug app.
 
 ### XCTest optimization inventory and timing
 

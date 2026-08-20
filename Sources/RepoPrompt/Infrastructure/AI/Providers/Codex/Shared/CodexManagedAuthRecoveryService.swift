@@ -175,7 +175,7 @@ enum CodexManagedAuthRecoveryClassifier {
     static let loginActionTitle = "Login with ChatGPT"
     static let deviceCodeActionTitle = "Use device code instead"
     static let separateSignInExplanation =
-        "RepoPrompt CE uses a separate Codex sign-in from any ~/.codex CLI credentials; sign in once here."
+        "Agentry uses a separate Codex sign-in from any ~/.codex CLI credentials; sign in once here."
     static let manualLoginGuidanceMessage =
         "Codex authentication could not be refreshed automatically. Use 'Login with ChatGPT' or 'Use device code instead', then retry. \(separateSignInExplanation)"
 

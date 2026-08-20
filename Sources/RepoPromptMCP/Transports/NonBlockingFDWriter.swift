@@ -1,6 +1,6 @@
 //
 //  NonBlockingFDWriter.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Bounded no-progress writer for proxy-mode stdout bridging.
 //

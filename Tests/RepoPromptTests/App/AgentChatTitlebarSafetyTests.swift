@@ -122,7 +122,7 @@ final class AgentChatTitlebarSafetyTests: XCTestCase {
         XCTAssertEqual(bindRequest.matchKind, .contextID)
 
         let expectedDebug = """
-        Use RepoPrompt CE to continue this exact Agent Mode session.
+        Use Agentry to continue this exact Agent Mode session.
 
         Window ID: 7
         Workspace ID: 11111111-1111-1111-1111-111111111111
@@ -138,7 +138,7 @@ final class AgentChatTitlebarSafetyTests: XCTestCase {
         `rpce-cli-debug -w 7 --context-id 22222222-2222-2222-2222-222222222222 -c agent_manage -j '{"op":"extract_handoff","session_id":"33333333-3333-3333-3333-333333333333"}'`
         """
         let expectedRelease = """
-        Use RepoPrompt CE to continue this exact Agent Mode session.
+        Use Agentry to continue this exact Agent Mode session.
 
         Window ID: 7
         Workspace ID: 11111111-1111-1111-1111-111111111111

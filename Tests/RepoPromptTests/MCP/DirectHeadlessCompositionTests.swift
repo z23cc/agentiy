@@ -74,9 +74,9 @@ final class DirectHeadlessCompositionTests: XCTestCase {
 
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "workflow-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": root.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "workflow-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": root.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
             currentDirectory: root
@@ -130,9 +130,9 @@ final class DirectHeadlessCompositionTests: XCTestCase {
         let service = DirectHeadlessMCPService(
             environment: [
                 "REPOPROMPT_CODEX_COMMAND": stub.path,
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "workflow-setting-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": root.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "workflow-setting-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": root.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
             currentDirectory: root
@@ -344,9 +344,9 @@ final class DirectHeadlessCompositionTests: XCTestCase {
 
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "file-search-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": root.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "file-search-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": root.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
             currentDirectory: root
@@ -445,9 +445,9 @@ final class DirectHeadlessCompositionTests: XCTestCase {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         let service = DirectHeadlessMCPService(
             environment: [
-                "REPOPROMPT_MCP_HEADLESS_PROFILE": "composition-test",
-                "REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": profile.path,
-                "REPOPROMPT_MCP_WORKING_DIRS": root.path,
+                "AGENTRY_MCP_HEADLESS_PROFILE": "composition-test",
+                "AGENTRY_MCP_HEADLESS_PROFILE_DIR": profile.path,
+                "AGENTRY_MCP_WORKING_DIRS": root.path,
                 "PATH": ProcessInfo.processInfo.environment["PATH"] ?? ""
             ],
             currentDirectory: root

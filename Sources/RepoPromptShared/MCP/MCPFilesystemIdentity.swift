@@ -1,13 +1,13 @@
 import Darwin
 import Foundation
 
-/// Shared filesystem and stable-name authority for RepoPrompt MCP products.
+/// Shared filesystem and stable-name authority for Agentry MCP products.
 ///
 /// Callers select their build flavor locally and pass it explicitly so this
 /// shared target never depends on compile-configuration conditionals.
 public struct MCPFilesystemIdentity: Equatable, Sendable {
     public enum Product: String, Sendable {
-        case repoPromptCE
+        case agentry
     }
 
     public enum BuildFlavor: String, Sendable {
@@ -15,7 +15,7 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
         case release
     }
 
-    public static let currentProtocolVersion = 7
+    public static let currentProtocolVersion = 8
 
     public let product: Product
     public let buildFlavor: BuildFlavor
@@ -31,48 +31,45 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
         self.protocolVersion = protocolVersion
     }
 
-    public static func repoPromptCE(_ buildFlavor: BuildFlavor) -> Self {
-        Self(product: .repoPromptCE, buildFlavor: buildFlavor)
+    public static func agentry(_ buildFlavor: BuildFlavor) -> Self {
+        Self(product: .agentry, buildFlavor: buildFlavor)
     }
 
     public var socketDirectoryName: String {
         switch product {
-        case .repoPromptCE:
-            "repoprompt-ce-mcp"
+        case .agentry:
+            "agentry-mcp"
         }
     }
 
     public var bootstrapSocketName: String {
         switch (product, buildFlavor) {
-        case (.repoPromptCE, .debug):
-            "repoprompt-ce-D-\(protocolVersion).sock"
-        case (.repoPromptCE, .release):
-            "repoprompt-ce-\(protocolVersion).sock"
+        case (.agentry, .debug):
+            "agentry-D-\(protocolVersion).sock"
+        case (.agentry, .release):
+            "agentry-\(protocolVersion).sock"
         }
     }
 
     public var externalEventsDirectoryName: String {
         switch (product, buildFlavor) {
-        case (.repoPromptCE, .debug):
-            "MCPEvents-CE-D-\(protocolVersion)"
-        case (.repoPromptCE, .release):
-            "MCPEvents-CE-\(protocolVersion)"
+        case (.agentry, .debug):
+            "MCPEvents-Agentry-D-\(protocolVersion)"
+        case (.agentry, .release):
+            "MCPEvents-Agentry-\(protocolVersion)"
         }
     }
 
     public var applicationSupportDirectoryName: String {
-        switch product {
-        case .repoPromptCE:
-            "RepoPrompt CE"
-        }
+        AgentryProductIdentity.applicationSupportDirectoryName
     }
 
     public var killSignalsDirectoryName: String {
         switch (product, buildFlavor) {
-        case (.repoPromptCE, .debug):
-            "MCPKillSignals-CE-D-\(protocolVersion)"
-        case (.repoPromptCE, .release):
-            "MCPKillSignals-CE-\(protocolVersion)"
+        case (.agentry, .debug):
+            "MCPKillSignals-Agentry-D-\(protocolVersion)"
+        case (.agentry, .release):
+            "MCPKillSignals-Agentry-\(protocolVersion)"
         }
     }
 
@@ -106,27 +103,27 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
     public var userSpaceCLIFileName: String {
         switch buildFlavor {
         case .debug:
-            "repoprompt_ce_cli_debug"
+            "agentry_cli_debug"
         case .release:
-            "repoprompt_ce_cli"
+            "agentry_cli"
         }
     }
 
     public var pathCLICommandName: String {
         switch buildFlavor {
         case .debug:
-            "rpce-cli-debug"
+            "agentry-cli-debug"
         case .release:
-            "rpce-cli"
+            "agentry-cli"
         }
     }
 
     public var claudeWrapperCommandName: String {
         switch buildFlavor {
         case .debug:
-            "claude-rpce-debug"
+            "claude-agentry-debug"
         case .release:
-            "claude-rpce"
+            "claude-agentry"
         }
     }
 
@@ -139,13 +136,11 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
     }
 
     public func applicationSupportRootURL(fileManager: FileManager = .default) -> URL {
-        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(applicationSupportDirectoryName, isDirectory: true)
+        AgentryProductIdentity.applicationSupportRootURL(fileManager: fileManager)
     }
 
     public func temporaryRootURL(fileManager: FileManager = .default) -> URL {
-        fileManager.temporaryDirectory
-            .appendingPathComponent(applicationSupportDirectoryName, isDirectory: true)
+        AgentryProductIdentity.temporaryRootURL(fileManager: fileManager)
     }
 
     public func configDirectoryURL(fileManager: FileManager = .default) -> URL {
@@ -185,7 +180,7 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
 
     public func userSpaceCLIURL(fileManager: FileManager = .default) -> URL {
         fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("RepoPrompt", isDirectory: true)
+            .appendingPathComponent(AgentryProductIdentity.displayName, isDirectory: true)
             .appendingPathComponent(userSpaceCLIFileName, isDirectory: false)
     }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline classifier for captured RepoPrompt CE local signing identity data.
+"""Offline classifier for captured Agentry local signing identity data.
 
 This tool intentionally cannot read a Keychain or execute ``security``/``openssl``.
 It accepts only a JSON fixture captured by a separately approved process.
@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CERTIFICATE_NAME = "RepoPrompt CE Local Self-Signed Code Signing"
+DEFAULT_CERTIFICATE_NAME = "Agentry Local Self-Signed Code Signing"
 IDENTITY_PATTERN = re.compile(
     r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]+)"(?:\s+\(([^)]*)\))?',
     re.MULTILINE,

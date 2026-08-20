@@ -6,10 +6,10 @@ let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().pa
 
 // Telemetry (Sentry) is resolved deterministically but linked only when explicitly
 // requested. The official Developer ID release pipeline sets
-// REPOPROMPT_ENABLE_SENTRY=1; local builds use the same gate for intentional
+// AGENTRY_ENABLE_SENTRY=1; local builds use the same gate for intentional
 // Sentry testing.
 let environment = ProcessInfo.processInfo.environment
-let sentryEnabled = environment["REPOPROMPT_ENABLE_SENTRY"] == "1"
+let sentryEnabled = environment["AGENTRY_ENABLE_SENTRY"] == "1"
 let benchmarkTestsEnabled = environment["RPCE_ENABLE_BENCHMARK_TESTS"] == "1"
 
 var packageDependencies: [Package.Dependency] = [
@@ -97,9 +97,9 @@ var repoPromptCodeMapTestSwiftSettings: [SwiftSetting] = [
 if sentryEnabled {
     let sentryDependency = Target.Dependency.product(name: "Sentry", package: "sentry-cocoa")
     repoPromptAppDependencies.append(sentryDependency)
-    repoPromptAppSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))
+    repoPromptAppSwiftSettings.append(.define("AGENTRY_SENTRY_ENABLED"))
     repoPromptTestDependencies.append(sentryDependency)
-    repoPromptTestSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))
+    repoPromptTestSwiftSettings.append(.define("AGENTRY_SENTRY_ENABLED"))
 }
 
 if benchmarkTestsEnabled {
@@ -112,11 +112,11 @@ let swift6LanguageMode: [SwiftSetting] = [
 ]
 
 let package = Package(
-    name: "RepoPromptCE",
+    name: "Agentry",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "RepoPrompt", targets: ["RepoPrompt"]),
-        .executable(name: "repoprompt-mcp", targets: ["RepoPromptMCP"])
+        .executable(name: "Agentry", targets: ["RepoPrompt"]),
+        .executable(name: "agentry-mcp", targets: ["RepoPromptMCP"])
     ],
     dependencies: packageDependencies,
     targets: [

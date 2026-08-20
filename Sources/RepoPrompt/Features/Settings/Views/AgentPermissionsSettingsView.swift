@@ -209,14 +209,14 @@ struct AgentPermissionsSettingsView: View {
             AgentPermissionRelatedLinkRow(
                 icon: "shield.checkered",
                 title: "Workspace Approvals",
-                detail: "Approvals for RepoPrompt workspace operations.",
+                detail: "Approvals for Agentry workspace operations.",
                 tab: .permissions,
                 onNavigate: onNavigate
             )
             AgentPermissionRelatedLinkRow(
                 icon: "wrench.and.screwdriver",
                 title: "MCP Tools",
-                detail: "Which RepoPrompt MCP tools are advertised and enabled.",
+                detail: "Which Agentry MCP tools are advertised and enabled.",
                 tab: .mcpTools,
                 onNavigate: onNavigate
             )

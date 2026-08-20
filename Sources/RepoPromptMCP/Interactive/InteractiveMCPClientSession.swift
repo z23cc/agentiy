@@ -1,6 +1,6 @@
 //
 //  InteractiveMCPClientSession.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Manages the MCP client connection for interactive CLI mode.
 //  Handles bootstrap handshake, tool caching, and tool calls.

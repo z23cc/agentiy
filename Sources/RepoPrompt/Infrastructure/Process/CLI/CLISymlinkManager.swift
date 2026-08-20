@@ -3,8 +3,8 @@ import Foundation
 import OSLog
 import RepoPromptShared
 
-/// Maintains the flavor-specific CE user-space link. The link is repaired only
-/// when its existing destination is on the explicit CE managed allowlist.
+/// Maintains the flavor-specific Agentry user-space link. The link is repaired only
+/// when its existing destination is on the explicit Agentry managed allowlist.
 enum CLISymlinkManagerUserSpace {
     private static let logger = Logger(
         subsystem: "CLI.SymlinkMgr",
@@ -12,9 +12,9 @@ enum CLISymlinkManagerUserSpace {
     )
 
     #if DEBUG
-        static let identity = MCPFilesystemIdentity.repoPromptCE(.debug)
+        static let identity = MCPFilesystemIdentity.agentry(.debug)
     #else
-        static let identity = MCPFilesystemIdentity.repoPromptCE(.release)
+        static let identity = MCPFilesystemIdentity.agentry(.release)
     #endif
 
     static var userSymlinkPath: String {
@@ -22,7 +22,7 @@ enum CLISymlinkManagerUserSpace {
     }
 
     static var stableCLIPath: String {
-        guard let cliURL = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp") else {
+        guard let cliURL = Bundle.main.url(forAuxiliaryExecutable: "agentry-mcp") else {
             logger.error("Bundled CLI not found")
             return userSymlinkPath
         }
@@ -35,12 +35,12 @@ enum CLISymlinkManagerUserSpace {
     }
 
     static func validateSymlink() -> Bool {
-        guard let cliURL = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp") else { return false }
+        guard let cliURL = Bundle.main.url(forAuxiliaryExecutable: "agentry-mcp") else { return false }
         return validateSymlink(userSymlinkURL: URL(fileURLWithPath: userSymlinkPath), bundledCLIURL: cliURL)
     }
 
     static func ensureLocalSymlink() {
-        guard let cliURL = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp") else {
+        guard let cliURL = Bundle.main.url(forAuxiliaryExecutable: "agentry-mcp") else {
             logger.error("Bundled CLI not found")
             return
         }

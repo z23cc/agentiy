@@ -7,7 +7,7 @@ release_sentry_symbols_fail() {
 }
 
 release_sentry_linking_enabled() {
-    [[ "${REPOPROMPT_ENABLE_SENTRY:-}" == "1" ]]
+    [[ "${AGENTRY_ENABLE_SENTRY:-}" == "1" ]]
 }
 
 require_release_sentry_symbol_mappings() {

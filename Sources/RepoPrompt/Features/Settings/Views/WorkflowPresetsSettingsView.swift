@@ -49,7 +49,7 @@ struct WorkflowPresetsSettingsView: View {
             case .copy:
                 "Templates for the copy-to-paste workflow."
             case .chat:
-                "Presets for the built-in RepoPrompt chat UI."
+                "Presets for the built-in Agentry chat UI."
             }
         }
 

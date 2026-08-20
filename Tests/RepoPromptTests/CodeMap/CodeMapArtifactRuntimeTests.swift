@@ -15,7 +15,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
         )
         let rootObservationCount = RuntimeProviderTestCounter()
         let provider = CodeMapArtifactRuntime.makeProcessWideProvider(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             applicationSupportRootURL: applicationSupportRoot,
             postSuccessfulInitialization: {
                 callbackCount.increment()
@@ -50,7 +50,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
         XCTAssertEqual(chmod(runtimeRoot.path, 0o755), 0)
         let callbackCount = RuntimeProviderTestCounter()
         let provider = CodeMapArtifactRuntime.makeProcessWideProvider(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             applicationSupportRootURL: applicationSupportRoot,
             postSuccessfulInitialization: {
                 callbackCount.increment()
@@ -67,7 +67,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
             let applicationSupportRoot = try makeSecureRoot()
             defer { try? FileManager.default.removeItem(at: applicationSupportRoot) }
             let provider = CodeMapArtifactRuntime.makeProcessWideProvider(
-                identity: .repoPromptCE(.debug),
+                identity: .agentry(.debug),
                 applicationSupportRootURL: applicationSupportRoot
             )
 
@@ -93,7 +93,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
             count: GitBlobRepositoryNamespace.saltByteCount
         )
         let provider = CodeMapArtifactRuntime.makeProcessWideProvider(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             applicationSupportRootURL: applicationSupportRoot,
             namespaceSaltProvider: { _, _ in
                 namespaceSaltLoadCount.increment()
@@ -129,7 +129,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: applicationSupportRoot) }
         let registry = WorkspaceCodemapBindingIntegrationRegistry()
         let provider = CodeMapArtifactRuntime.makeProcessWideProvider(
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             applicationSupportRootURL: applicationSupportRoot,
             namespaceSaltProvider: { _, _ in
                 Data(repeating: 0x4D, count: GitBlobRepositoryNamespace.saltByteCount)
@@ -350,7 +350,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
 
     func testProcessWideRootDerivationSeparatesFlavorsAndReservedNamespaces() {
         let applicationSupportRoot = URL(
-            fileURLWithPath: "/synthetic/Library/Application Support/RepoPrompt CE",
+            fileURLWithPath: "/synthetic/Library/Application Support/Agentry",
             isDirectory: true
         )
         let debugRoot = CodeMapArtifactRuntime.processWideRootURL(
@@ -454,7 +454,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
 
         let salt = try CodeMapRepositoryNamespaceSaltStore.loadOrCreate(
             rootURL: root,
-            identity: .repoPromptCE(.debug),
+            identity: .agentry(.debug),
             hooks: hooks
         )
 
@@ -483,7 +483,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
                 do {
                     let salt = try CodeMapRepositoryNamespaceSaltStore.loadOrCreate(
                         rootURL: root,
-                        identity: .repoPromptCE(.debug),
+                        identity: .agentry(.debug),
                         hooks: hooks
                     )
                     results.record(salt: salt)
@@ -519,7 +519,7 @@ final class CodeMapArtifactRuntimeTests: XCTestCase {
         do {
             _ = try CodeMapRepositoryNamespaceSaltStore.loadOrCreate(
                 rootURL: root,
-                identity: .repoPromptCE(.debug),
+                identity: .agentry(.debug),
                 hooks: hooks
             )
             XCTFail("Expected non-interrupted synchronization failure.")

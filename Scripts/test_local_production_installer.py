@@ -20,7 +20,7 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent
-PINNED_CERTIFICATE_NAME = "RepoPrompt CE Local Self-Signed Code Signing"
+PINNED_CERTIFICATE_NAME = "Agentry Local Self-Signed Code Signing"
 SHA1_A = "1" * 40
 SHA1_B = "2" * 40
 SHA1_C = "3" * 40
@@ -156,7 +156,7 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
 
     def test_registry_write_is_atomic_owner_only_and_versioned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "Application Support" / "RepoPrompt CE" / "local-signing-identity-v1.json"
+            path = Path(tmp) / "Application Support" / "Agentry" / "local-signing-identity-v1.json"
             result = subprocess.run(
                 [
                     "python3",
@@ -296,7 +296,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertIn(str(selected_clt), result.stderr)
 
     def test_finder_launcher_routes_confirmed_install_through_conductor(self) -> None:
-        launcher = ROOT_DIR / "Install RepoPrompt CE Local Production.command"
+        launcher = ROOT_DIR / "Install Agentry Local Production.command"
         self.assertTrue(os.access(launcher, os.X_OK))
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,6 +313,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["LAUNCHER_CAPTURE"] = str(capture)
+            env["AGENTRY_LOCAL_PRODUCTION_INSTALL_DIR"] = str(root / "Applications")
             result = subprocess.run(
                 ["bash", str(copied_launcher)],
                 env=env,
@@ -328,7 +329,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertIn("replaces any existing app at", result.stdout)
 
     def test_finder_launcher_decline_does_not_invoke_conductor(self) -> None:
-        launcher = ROOT_DIR / "Install RepoPrompt CE Local Production.command"
+        launcher = ROOT_DIR / "Install Agentry Local Production.command"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             copied_launcher = root / launcher.name
@@ -352,7 +353,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertIn("Install canceled.", result.stdout)
 
     def test_local_entitlements_and_packaging_require_fingerprint_metadata(self) -> None:
-        template = ROOT_DIR / "AppBundle" / "RepoPrompt.local-self-signed.entitlements.template"
+        template = ROOT_DIR / "AppBundle" / "Agentry.local-self-signed.entitlements.template"
         with template.open("rb") as handle:
             entitlements = plistlib.load(handle)
         self.assertEqual(
@@ -370,8 +371,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
         self.assertIn("LOCAL_SIGNING_CERTIFICATE_SHA256", package_script)
         info_template = (ROOT_DIR / "AppBundle" / "Info.plist.template").read_text(encoding="utf-8")
-        self.assertIn("RepoPromptLocalSigningCertificateSHA256", info_template)
-        self.assertIn("RepoPromptLocalSecureStorageGeneration", info_template)
+        self.assertIn("AgentryLocalSigningCertificateSHA256", info_template)
+        self.assertIn("AgentryLocalSecureStorageGeneration", info_template)
         self.assertIn("--extract-certificates=\"$certificate_prefix\"", package_script)
         self.assertIn("Extracted designated requirement", package_script)
 
@@ -395,7 +396,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(context["swift_log"].exists())
         self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(encoding="utf-8"),
+            (context["install_dir"] / "Agentry.app" / "payload.txt").read_text(encoding="utf-8"),
             "new\n",
         )
 
@@ -506,11 +507,11 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_backup_copy=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
+        self.assertEqual((context["install_dir"] / "Agentry.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
         self.assertEqual(context["registry"].stat().st_mode & 0o777, 0o600)
-        self.assertEqual(list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), [])
+        self.assertEqual(list(context["install_dir"].glob(".Agentry.app.backup.*")), [])
 
     def test_failed_registry_write_restores_prior_app_and_exact_registry(self) -> None:
         result, context = self.run_installer(
@@ -522,11 +523,11 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_write=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
+        self.assertEqual((context["install_dir"] / "Agentry.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
         self.assertEqual(context["registry"].stat().st_mode & 0o777, 0o600)
-        self.assertEqual(list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), [])
+        self.assertEqual(list(context["install_dir"].glob(".Agentry.app.backup.*")), [])
 
     def test_failed_app_backup_preserves_prior_app_and_registry(self) -> None:
         result, context = self.run_installer(
@@ -539,10 +540,10 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_restore_copy=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
+        self.assertEqual((context["install_dir"] / "Agentry.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
-        self.assertEqual(list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), [])
+        self.assertEqual(list(context["install_dir"].glob(".Agentry.app.backup.*")), [])
 
     def test_failed_registry_restore_preserves_snapshot_for_manual_recovery(self) -> None:
         result, context = self.run_installer(
@@ -555,7 +556,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_restore_copy=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
+        self.assertEqual((context["install_dir"] / "Agentry.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(context["registry"].read_text(encoding="utf-8"), "damaged registry\n")
         match = re.search(r"Preserving failed transaction snapshot for manual recovery: ([^\n]+)", result.stderr)
         self.assertIsNotNone(match, result.stderr)
@@ -575,7 +576,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_verification=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
+        self.assertEqual((context["install_dir"] / "Agentry.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
 
@@ -586,7 +587,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_final_install_move=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
+        self.assertEqual((context["install_dir"] / "Agentry.app" / "payload.txt").read_text(), "old\n")
         self.assertFalse(context["registry"].exists())
 
     def test_certificate_minting_omits_legacy_when_openssl_does_not_support_it(self) -> None:
@@ -661,13 +662,13 @@ class LocalProductionInstallerTests(unittest.TestCase):
                 encoding="utf-8",
             )
         (root / "version.env").write_text(
-            'APP_NAME=RepoPrompt\nDISPLAY_NAME="RepoPrompt CE"\nBUNDLE_ID=com.pvncher.repoprompt.ce\n',
+            'APP_NAME=Agentry\nDISPLAY_NAME="Agentry"\nBUNDLE_ID=io.github.z23cc.agentry\n',
             encoding="utf-8",
         )
 
         build_dir = root / ".build" / "release"
         install_dir = temp_dir / "Applications"
-        installed_app = install_dir / "RepoPrompt CE.app"
+        installed_app = install_dir / "Agentry.app"
         installed_app.mkdir(parents=True)
         (installed_app / "payload.txt").write_text("old\n", encoding="utf-8")
         keychain = temp_dir / "Library" / "Keychains" / "login keychain-db"
@@ -677,7 +678,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         fixture.write_text(json.dumps({"certificates": certificates}), encoding="utf-8")
         after_fixture = temp_dir / "inventory-after-mint.json"
         after_fixture.write_text(json.dumps({"certificates": after_mint or certificates}), encoding="utf-8")
-        registry_path = temp_dir / "Application Support" / "RepoPrompt CE" / "local-signing-identity-v1.json"
+        registry_path = temp_dir / "Application Support" / "Agentry" / "local-signing-identity-v1.json"
         if registry:
             registry_path.parent.mkdir(parents=True)
             registry_path.write_text(
@@ -703,16 +704,16 @@ class LocalProductionInstallerTests(unittest.TestCase):
                 """\
                 #!/usr/bin/env bash
                 set -euo pipefail
-                app="$FAKE_BUILD_DIR/RepoPrompt.app"
+                app="$FAKE_BUILD_DIR/Agentry.app"
                 mkdir -p "$app/Contents"
                 printf 'new\\n' > "$app/payload.txt"
                 printf '%s|%s|%s\\n' "$LOCAL_SIGNING_CERTIFICATE_SHA1" "$LOCAL_SIGNING_CERTIFICATE_SHA256" "$LOCAL_SIGNING_SERVICE_GENERATION" >> "$PACKAGE_CAPTURE"
                 cat > "$app/Contents/Info.plist" <<EOF
                 <?xml version="1.0" encoding="UTF-8"?>
                 <plist version="1.0"><dict>
-                  <key>RepoPromptSigningMode</key><string>local-self-signed</string>
-                  <key>RepoPromptLocalSigningCertificateSHA256</key><string>$LOCAL_SIGNING_CERTIFICATE_SHA256</string>
-                  <key>RepoPromptLocalSecureStorageGeneration</key><string>$LOCAL_SIGNING_SERVICE_GENERATION</string>
+                  <key>AgentrySigningMode</key><string>local-self-signed</string>
+                  <key>AgentryLocalSigningCertificateSHA256</key><string>$LOCAL_SIGNING_CERTIFICATE_SHA256</string>
+                  <key>AgentryLocalSecureStorageGeneration</key><string>$LOCAL_SIGNING_SERVICE_GENERATION</string>
                 </dict></plist>
                 EOF
                 """
@@ -758,7 +759,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             "codesign",
             """\
             if [[ "$1" == "-d" && "$2" == "-r-" ]]; then
-                printf 'designated => identifier "com.pvncher.repoprompt.ce" and certificate leaf = H"%s"\\n' "$FAKE_DESIGNATED_SHA1" >&2
+                printf 'designated => identifier "io.github.z23cc.agentry" and certificate leaf = H"%s"\\n' "$FAKE_DESIGNATED_SHA1" >&2
             fi
             exit 0
             """,
@@ -798,10 +799,10 @@ class LocalProductionInstallerTests(unittest.TestCase):
             bin_dir,
             "mv",
             """\
-            if [[ "${FAIL_APP_BACKUP_MOVE:-0}" == "1" && "$1" == "$FAKE_INSTALLED_APP" && "$2" == *".backup."*"/RepoPrompt CE.app" ]]; then
+            if [[ "${FAIL_APP_BACKUP_MOVE:-0}" == "1" && "$1" == "$FAKE_INSTALLED_APP" && "$2" == *".backup."*"/Agentry.app" ]]; then
                 exit 24
             fi
-            if [[ "${FAIL_FINAL_INSTALL_MOVE:-0}" == "1" && "$1" == *".installing."*"/RepoPrompt CE.app" && "$2" == *"/RepoPrompt CE.app" ]]; then
+            if [[ "${FAIL_FINAL_INSTALL_MOVE:-0}" == "1" && "$1" == *".installing."*"/Agentry.app" && "$2" == *"/Agentry.app" ]]; then
                 exit 23
             fi
             exec /bin/mv "$@"

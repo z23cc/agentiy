@@ -6,7 +6,7 @@ extension RepoPromptWorkflowPrompts {
 	/// Generate rp-mcp (reminder) for a specific variant.
 	static func rpReminder(variant: WorkflowPromptVariant) -> String {
 		let suffix = variant == .cli ? " (CLI)" : ""
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 
 		return """
 \(frontmatter(name: "rp-reminder", description: "Reminder to use \(toolDesc)", variant: variant))
@@ -86,21 +86,21 @@ Dispatch a sub-agent when a side investigation or delegated chunk of work would 
 	cli: """
 ```bash
 # Search · Read · Edit · File ops
-rpce-cli -w <window_id> -e 'search "keyword"'
-rpce-cli -w <window_id> -e 'read Root/file.swift --start-line 50 --limit 30'
-rpce-cli -w <window_id> -e 'call apply_edits {"path":"Root/file.swift","search":"old","replace":"new"}'
-rpce-cli -w <window_id> -e 'file create Root/new.swift "content..."'
+agentry-cli -w <window_id> -e 'search "keyword"'
+agentry-cli -w <window_id> -e 'read Root/file.swift --start-line 50 --limit 30'
+agentry-cli -w <window_id> -e 'call apply_edits {"path":"Root/file.swift","search":"old","replace":"new"}'
+agentry-cli -w <window_id> -e 'file create Root/new.swift "content..."'
 
 # Selection · Builder · Oracle
-rpce-cli -w <window_id> -e 'select add Root/path/file.swift'
-rpce-cli -w <window_id> -e 'builder "<task>" --response-type plan'
-rpce-cli -w <window_id> -e 'chat "..." --mode plan'
+agentry-cli -w <window_id> -e 'select add Root/path/file.swift'
+agentry-cli -w <window_id> -e 'builder "<task>" --response-type plan'
+agentry-cli -w <window_id> -e 'chat "..." --mode plan'
 
 # Delegate · Fan-out · Steer · Cleanup
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Probe: X" message="<question>" detach=true'
-rpce-cli -w <window_id> -e 'agent_run op=wait session_ids=["<uuid1>","<uuid2>"] timeout=60'
-rpce-cli -w <window_id> -e 'agent_run op=steer session_id="<uuid>" message="now do Y" wait=true'
-rpce-cli -w <window_id> -e 'agent_manage op=cleanup_sessions session_ids=["<uuid>"]'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Probe: X" message="<question>" detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=wait session_ids=["<uuid1>","<uuid2>"] timeout=60'
+agentry-cli -w <window_id> -e 'agent_run op=steer session_id="<uuid>" message="now do Y" wait=true'
+agentry-cli -w <window_id> -e 'agent_manage op=cleanup_sessions session_ids=["<uuid>"]'
 ```
 """))
 
@@ -108,7 +108,7 @@ Continue with your task using these tools.
 """
 	}
 
-	/// CLI variant of rp-mcp (reminder) - uses rpce-cli commands.
+	/// CLI variant of rp-mcp (reminder) - uses agentry-cli commands.
 	static var rpReminderCLI: String { rpReminder(variant: .cli) }
 
 }

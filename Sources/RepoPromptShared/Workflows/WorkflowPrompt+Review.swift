@@ -9,7 +9,7 @@ extension RepoPromptWorkflowPrompts {
 	/// Generate rp-review for a specific variant.
 	static func rpReview(variant: WorkflowPromptVariant) -> String {
 		let suffix = variant == .cli ? " (CLI)" : ""
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 
 		return """
 \(frontmatter(name: "rp-review", description: "Code review workflow using \(toolDesc) git tool and context_builder", variant: variant))
@@ -54,9 +54,9 @@ You are a **Code Reviewer** using \(toolDesc). Your workflow: understand the sco
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'git status'
-rpce-cli -w <window_id> -e 'git log --count 10'
-rpce-cli -w <window_id> -e 'git diff --detail files'
+agentry-cli -w <window_id> -e 'git status'
+agentry-cli -w <window_id> -e 'git log --count 10'
+agentry-cli -w <window_id> -e 'git diff --detail files'
 ```
 """))
 
@@ -80,7 +80,7 @@ Use XML tags to structure the instructions:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task>Review changes comparing <current_branch> against <confirmed_comparison_target>. Focus on correctness, security, API changes, error handling.</task>
+agentry-cli -w <window_id> -e 'builder "<task>Review changes comparing <current_branch> against <confirmed_comparison_target>. Focus on correctness, security, API changes, error handling.</task>
 
 <context>Comparison: <confirmed_scope> (e.g., uncommitted, main, staged)
 Current branch: <branch_name>
@@ -106,7 +106,7 @@ After receiving review findings, you can ask clarifying questions in the same ch
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -t '<tab_id>' -e 'chat "Can you explain the security concern in more detail? What'\\''s the attack vector?" --mode chat'
+agentry-cli -w <window_id> -t '<tab_id>' -e 'chat "Can you explain the security concern in more detail? What'\\''s the attack vector?" --mode chat'
 ```
 
 > Pass `-w <window_id>` to target the correct window and `-t <tab_id>` to target the same tab from the builder response.
@@ -126,7 +126,7 @@ If the review omitted significant areas, run a focused follow-up. **Explicitly d
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task>Review <specific area> in depth.</task>
+agentry-cli -w <window_id> -e 'builder "<task>Review <specific area> in depth.</task>
 
 <context>Previous review covered: <list files/areas reviewed>.
 Not yet reviewed: <list files/areas to review now>.</context>

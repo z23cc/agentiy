@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import os
 import RepoPromptDomainRuntime
+import RepoPromptShared
 import SwiftUI
 
 /// Free helper function not tied to any actor
@@ -58,14 +59,8 @@ private enum WorkspaceExitPerf {
 }
 
 enum WorkspaceStoragePaths {
-    static let defaultRoot: URL = {
-        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        return home
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
-            .appendingPathComponent("Workspaces", isDirectory: true)
-    }()
+    static let defaultRoot = AgentryProductIdentity.applicationSupportRootURL()
+        .appendingPathComponent("Workspaces", isDirectory: true)
 }
 
 struct WorkspaceFileLoadResult {
@@ -6824,15 +6819,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     private nonisolated static func duplicateCleanupBackupDirectoryURL() throws -> URL {
-        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            throw NSError(
-                domain: "WorkspaceDuplicateCleanup",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Application Support directory is unavailable."]
-            )
-        }
-        let directory = appSupport
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+        let directory = AgentryProductIdentity.applicationSupportRootURL()
             .appendingPathComponent("workspace-cleanup-backups", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
@@ -10326,7 +10313,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             let data = try Data(contentsOf: potentialWorkspaceFile)
             let workspace = try JSONDecoder().decode(WorkspaceModel.self, from: data)
 
-            // Build the local folder path, e.g. ~/Library/Application Support/RepoPrompt CE/Workspaces/Workspace-Name-UUID
+            // Build the local folder path, e.g. ~/Library/Application Support/Agentry/Workspaces/Workspace-Name-UUID
             let localWsDir: URL = if let customURL = workspace.customStoragePath {
                 customURL
             } else {

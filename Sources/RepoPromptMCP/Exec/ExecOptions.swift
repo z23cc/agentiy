@@ -1,6 +1,6 @@
 //
 //  ExecOptions.swift
-//  repoprompt-mcp
+//  agentry-mcp
 //
 //  Options for exec mode - non-interactive command execution.
 //

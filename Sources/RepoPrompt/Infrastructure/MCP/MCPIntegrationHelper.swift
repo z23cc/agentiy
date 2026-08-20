@@ -1009,7 +1009,7 @@ enum MCPIntegrationHelper {
     ///
     /// - Parameters:
     ///   - workspacePath: Path to the workspace/project folder.
-    ///   - useCLIVariant: If true, installs CLI variant skills (rpce-cli syntax). Defaults to false (MCP syntax).
+    ///   - useCLIVariant: If true, installs CLI variant skills (agentry-cli syntax). Defaults to false (MCP syntax).
     ///   - mode: Installation mode. `.fullInstall` creates missing files (UI buttons), `.updateExistingOnly` only updates existing managed files (validation).
     /// - Returns: Number of skills successfully installed/updated.
     @discardableResult
@@ -1035,7 +1035,7 @@ enum MCPIntegrationHelper {
     ///
     /// - Parameters:
     ///   - workspacePaths: Array of workspace folder paths.
-    ///   - useCLIVariant: If true, installs CLI variant commands (rpce-cli syntax). Defaults to false (MCP syntax).
+    ///   - useCLIVariant: If true, installs CLI variant commands (agentry-cli syntax). Defaults to false (MCP syntax).
     ///   - mode: Installation mode. `.fullInstall` creates missing files (UI buttons), `.updateExistingOnly` only updates existing managed files (validation).
     /// - Returns: Total number of skills successfully installed across all workspaces.
     @discardableResult
@@ -1105,7 +1105,7 @@ enum MCPIntegrationHelper {
     /// These appear as slash commands in Codex, for example `/rp-build`, `/rp-review`, and `/rp-orchestrate`.
     ///
     /// - Parameters:
-    ///   - useCLIVariant: If true, installs CLI variant commands (rpce-cli syntax). Defaults to true for Codex.
+    ///   - useCLIVariant: If true, installs CLI variant commands (agentry-cli syntax). Defaults to true for Codex.
     ///   - mode: Installation mode. `.fullInstall` creates missing files (UI buttons), `.updateExistingOnly` only updates existing managed files (validation).
     /// - Returns: Number of commands successfully installed/updated.
     @discardableResult
@@ -1616,7 +1616,7 @@ enum MCPIntegrationHelper {
 
     // MARK: - CLI PATH Installation ------------------------------------------------
 
-    /// Installs the CLI to /usr/local/bin as rpce-cli (release) or rpce-cli-debug (debug).
+    /// Installs the CLI to /usr/local/bin as agentry-cli (release) or agentry-cli-debug (debug).
     /// Uses AppleScript to request admin privileges.
     @MainActor
     static func installCLIToPath() async throws {
@@ -1636,7 +1636,7 @@ enum MCPIntegrationHelper {
         CLIPathInstaller.checkStatus()
     }
 
-    /// The CLI command name that will be installed (rpce-cli or rpce-cli-debug).
+    /// The CLI command name that will be installed (agentry-cli or agentry-cli-debug).
     static var cliCommandName: String {
         CLIPathInstaller.cliCommandName
     }

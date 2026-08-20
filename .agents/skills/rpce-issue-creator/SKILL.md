@@ -1,9 +1,9 @@
 ---
 name: rpce-issue-creator
-description: Draft, deduplicate, review, refine, or file maintainer-friendly GitHub issues for RepoPrompt CE from rough notes, investigation findings, or agent context. Use when a user or agent needs a clear RepoPrompt CE issue draft or explicitly requests issue filing.
+description: Draft, deduplicate, review, refine, or file maintainer-friendly GitHub issues for Agentry from rough notes, investigation findings, or agent context. Use when a user or agent needs a clear Agentry issue draft or explicitly requests issue filing.
 ---
 
-# RepoPrompt CE Issue Creator
+# Agentry Issue Creator
 
 Create concise, actionable issues for `repoprompt/repoprompt-ce`. Remove private or identifying data from source material before using it in a draft. Ask only for missing details that materially affect reproduction, routing, or acceptance.
 
@@ -11,7 +11,7 @@ Create concise, actionable issues for `repoprompt/repoprompt-ce`. Remove private
 
 1. Classify the request as a bug, regression, enhancement, task, docs issue, investigation follow-up, or question.
 2. Search open and closed issues in `repoprompt/repoprompt-ce` before drafting. Link likely duplicates; if the report is distinct, state the differing symptom, environment, version, or commit. Do not file blindly.
-3. Draft the issue using the content and CE-specific evidence guidance below.
+3. Draft the issue using the content and Agentry-specific evidence guidance below.
 4. Review the complete draft and remove or redact all private and identifying data.
 5. Show the user the exact final title, body, and proposed labels. Obtain immediate explicit approval to file; approval to investigate or draft is not approval to create the issue.
 6. Only after approval, run `gh issue create --repo repoprompt/repoprompt-ce` with the reviewed payload. Report the URL. Note that issues from unapproved contributors may be auto-closed for maintainer review under `CONTRIBUTING.md`.
@@ -38,8 +38,8 @@ Route the affected surface without guessing a fix:
 
 ## Use CE-Specific Evidence
 
-- Distinguish the RepoPrompt CE app and `rpce-cli-debug` from production/non-CE `rp-cli` or `rp-cli-debug`, which may connect to a different app. State which executable and app build reproduced the behavior.
-- Prefer coordinated, boundary-specific evidence: focused `make dev-test FILTER=<Suite>` for root logic, `make dev-provider-test` for provider-package behavior, `make dev-swift-build PRODUCT=RepoPrompt|repoprompt-mcp` for build boundaries, and `make dev-smoke` only for live CE app/MCP wiring when an appropriate debug app is already running.
+- Distinguish the Agentry app and `agentry-cli-debug` from unrelated `rp-cli` or `rp-cli-debug`, which may connect to a different app. State which executable and app build reproduced the behavior.
+- Prefer coordinated, boundary-specific evidence: focused `make dev-test FILTER=<Suite>` for root logic, `make dev-provider-test` for provider-package behavior, `make dev-swift-build PRODUCT=Agentry|agentry-mcp` for build boundaries, and `make dev-smoke` only for live Agentry app/MCP wiring when an appropriate debug app is already running.
 - Use the minimum bounded evidence needed: command plus result, a short redacted excerpt, counts, timings, or hashes. Never paste entire daemon logs, crash dumps, generated diagnostics, or raw command output.
 - Treat DEBUG-only MCP diagnostics such as `__repoprompt_debug_diagnostics` and diagnostic `app_settings` as sensitive. Prefer structured bounded snapshots, and do not assume built-in redaction makes raw output publishable.
 - Do not enable raw provider logging or launch, relaunch, or stop a visible app merely to draft an issue. If local raw capture is genuinely necessary, require separate approval where repository rules demand it, keep it bounded and owner-only, redact the distilled evidence, and clean up the capture.

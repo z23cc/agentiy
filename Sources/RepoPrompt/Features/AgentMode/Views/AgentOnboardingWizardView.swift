@@ -1,8 +1,8 @@
 //
 //  AgentOnboardingWizardView.swift
-//  RepoPrompt
+//  Agentry
 //
-//  Created by RepoPrompt on 2026-02-05.
+//  Created by Agentry on 2026-02-05.
 //
 
 import SwiftUI
@@ -236,7 +236,7 @@ struct AgentOnboardingWizardView: View {
 
 // MARK: - Step: Welcome
 
-/// Shared welcome step for RepoPrompt CE.
+/// Shared welcome step for Agentry.
 private struct WelcomeStepView: View {
     @ObservedObject var viewModel: AgentOnboardingWizardViewModel
     var windowID: Int?
@@ -244,7 +244,7 @@ private struct WelcomeStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
-            Text("Welcome! RepoPrompt CE includes Agent Mode, Context Builder workflows, token-efficient MCP tools, and full context features.")
+            Text("Welcome! Agentry includes Agent Mode, Context Builder workflows, token-efficient MCP tools, and full context features.")
                 .font(.title3)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -295,7 +295,7 @@ private struct MCPServerCard: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Use in Any Coding Agent")
                             .font(.headline)
-                        Text("Give Claude Code, Cursor, Codex, and other MCP-compatible tools access to RepoPrompt's token-efficient context tools.")
+                        Text("Give Claude Code, Cursor, Codex, and other MCP-compatible tools access to Agentry's token-efficient context tools.")
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -398,7 +398,7 @@ private struct FreeFeaturesStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
-            Text("RepoPrompt CE gives you powerful context management for AI coding. Here's what you can do right now:")
+            Text("Agentry gives you powerful context management for AI coding. Here's what you can do right now:")
                 .font(.title3)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -468,7 +468,7 @@ private struct FeatureShowcaseStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
-            Text("RepoPrompt CE can be the backend for your AI coding agents. Here's what is available:")
+            Text("Agentry can be the backend for your AI coding agents. Here's what is available:")
                 .font(.title3)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -479,7 +479,7 @@ private struct FeatureShowcaseStepView: View {
                     FeatureShowcaseRow(
                         icon: "terminal.fill",
                         title: "Agent Mode",
-                        description: "CLI agents use RepoPrompt as their session host and context backbone.",
+                        description: "CLI agents use Agentry as their session host and context backbone.",
                         color: .purple
                     )
                     FeatureShowcaseRow(
@@ -560,7 +560,7 @@ private struct AgentModeIntroStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Agent Mode gives you a beautifully native session host for CLI coding agents — with per-tab sessions, live tool call streaming, and deep integration with RepoPrompt's context engine.")
+            Text("Agent Mode gives you a beautifully native session host for CLI coding agents — with per-tab sessions, live tool call streaming, and deep integration with Agentry's context engine.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -585,7 +585,7 @@ private struct AgentModeIntroStepView: View {
                 AnimatedFeatureRow(
                     icon: "bubble.left.and.text.bubble.right",
                     title: "Oracle Chat",
-                    description: "Agents can ask RepoPrompt questions about your codebase mid-session. Context Builder finds the answer using your full repo — no manual file selection needed.",
+                    description: "Agents can ask Agentry questions about your codebase mid-session. Context Builder finds the answer using your full repo — no manual file selection needed.",
                     delay: 0.25,
                     appeared: $showRows[1]
                 )
@@ -601,7 +601,7 @@ private struct AgentModeIntroStepView: View {
                 AnimatedFeatureRow(
                     icon: "bolt.fill",
                     title: "Token-Efficient Tools",
-                    description: "Agents use RepoPrompt's MCP tools for file search, code structure, and editing — ~80% fewer tokens than built-in CLI equivalents.",
+                    description: "Agents use Agentry's MCP tools for file search, code structure, and editing — ~80% fewer tokens than built-in CLI equivalents.",
                     delay: 0.55,
                     appeared: $showRows[3]
                 )
@@ -804,7 +804,7 @@ private struct MCPSetupStepView: View {
                             .padding(.vertical, 2)
                             .background(Capsule().fill(Color.green))
                     }
-                    Text("Agent Mode inside RepoPrompt already includes every tool below — no MCP setup required. Configure the MCP server only if you want to give external clients (Claude Code, Cursor, Codex CLI, OpenCode, Claude Desktop, VS Code) access to RepoPrompt's context tools.")
+                    Text("Agent Mode inside Agentry already includes every tool below — no MCP setup required. Configure the MCP server only if you want to give external clients (Claude Code, Cursor, Codex CLI, OpenCode, Claude Desktop, VS Code) access to Agentry's context tools.")
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -821,7 +821,7 @@ private struct MCPSetupStepView: View {
                     .stroke(Color.green.opacity(0.18), lineWidth: 1)
             )
 
-            Text("If you do want to use RepoPrompt outside the app, the built-in MCP server gives any MCP-compatible client access to the same token-efficient context tools your agents use here.")
+            Text("If you do want to use Agentry outside the app, the built-in MCP server gives any MCP-compatible client access to the same token-efficient context tools your agents use here.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -894,7 +894,7 @@ private struct MCPSetupStepView: View {
                         }
 
                         Section {
-                            Text("RepoPrompt Codex (isolated prompts)")
+                            Text("Agentry Codex (isolated prompts)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 

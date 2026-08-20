@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RepoPrompt CE developer daemon.
+"""Agentry developer daemon.
 
 Implements repo-internal daemon/job mechanics, fake sleep validation support,
 and delegated build/package/test/debug-app/live-smoke/release operation
@@ -74,7 +74,7 @@ BUILD_CACHE_ENV_KEYS = (
     "DEVELOPER_DIR",
     "ONLY_ACTIVE_ARCH",
     "OTHER_SWIFT_FLAGS",
-    "REPOPROMPT_ENABLE_SENTRY",
+    "AGENTRY_ENABLE_SENTRY",
     "RPCE_ENABLE_BENCHMARK_TESTS",
     "SDKROOT",
     "SWIFT_EXEC",
@@ -180,7 +180,7 @@ IMPLEMENTED_OPERATIONS = {
 }
 
 HELP = f"""\
-conductor — RepoPrompt CE developer daemon
+conductor — Agentry developer daemon
 
 Usage:
   ./conductor --help
@@ -210,7 +210,7 @@ Operation commands:
   ./conductor format-tools-status    # inspect SwiftFormat/SwiftLint availability
   ./conductor check-format-tools     # fail if style tools are missing
   ./conductor install-format-tools   # explicit Homebrew install of missing style tools
-  ./conductor swift-build --product RepoPrompt|repoprompt-mcp|all
+  ./conductor swift-build --product Agentry|agentry-mcp|all
   ./conductor build
   ./conductor package debug|release
   ./conductor test [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
@@ -223,8 +223,8 @@ Operation commands:
   ./conductor app launch-existing [-- <app args...>]   # launch existing DebugApps bundle without building
   ./conductor app relaunch [-- <app args...>]          # latest interactive relaunch intent
   ./conductor smoke [--launch | --packaged-app <path>] [--artifact-manifest <path>] [--workspace <name>] [--window-id <id>] [--agent-run] [--execution-location-ui]
-    --execution-location-ui uses REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_WAIT (default 3s) and _CYCLES (default 3); Accessibility permission is required.
-    (without --launch/--packaged-app, requires the CE debug app to already be running and CLI installed)
+    --execution-location-ui uses AGENTRY_EXECUTION_LOCATION_UI_SMOKE_WAIT (default 3s) and _CYCLES (default 3); Accessibility permission is required.
+    (without --launch/--packaged-app, requires the Agentry debug app to already be running and CLI installed)
   ./conductor diagnostics agent-mode-on [--log-file <path>]
   ./conductor diagnostics build-cache [--limit <n>]
   ./conductor cache status [--limit <n>] [--json]  # read-only; performs no repair or cleanup
@@ -253,11 +253,11 @@ Output:
   verbosity captured in the stored log and does not imply --full-log.
 
 State paths:
-  state dir default: ~/Library/Application Support/RepoPrompt CE/Conductor/<repo-root-hash>/
+  state dir default: ~/Library/Application Support/Agentry/Conductor/<repo-root-hash>/
   socket default:    /tmp/conductor-<uid>/<repo-root-hash16>.sock (directory mode 0700)
-  machine locks:     /tmp/repoprompt-ce-dev-locks-<uid>/ (directory mode 0700; independent of socket overrides)
-  heavy slots:       REPOPROMPT_DEV_HEAVY_SLOTS=N (default 1)
-  overrides: REPOPROMPT_DEV_DAEMON_STATE_DIR, REPOPROMPT_DEV_DAEMON_SOCKET (socket parent must be owned 0700)
+  machine locks:     /tmp/agentry-dev-locks-<uid>/ (directory mode 0700; independent of socket overrides)
+  heavy slots:       AGENTRY_DEV_HEAVY_SLOTS=N (default 1)
+  overrides: AGENTRY_DEV_DAEMON_STATE_DIR, AGENTRY_DEV_DAEMON_SOCKET (socket parent must be owned 0700)
 
 Protocol version: {PROTOCOL_VERSION}
 """
@@ -634,8 +634,8 @@ def resolve_repo_root() -> Path:
 def compute_paths(repo_root: Path) -> Paths:
     real_root = repo_root.resolve()
     repo_hash = hashlib.sha256(str(real_root).encode("utf-8")).hexdigest()
-    state_override = os.environ.get("REPOPROMPT_DEV_DAEMON_STATE_DIR")
-    socket_override = os.environ.get("REPOPROMPT_DEV_DAEMON_SOCKET")
+    state_override = os.environ.get("AGENTRY_DEV_DAEMON_STATE_DIR")
+    socket_override = os.environ.get("AGENTRY_DEV_DAEMON_SOCKET")
 
     if state_override:
         state_dir = Path(state_override).expanduser().resolve()
@@ -644,7 +644,7 @@ def compute_paths(repo_root: Path) -> Paths:
             Path.home()
             / "Library"
             / "Application Support"
-            / "RepoPrompt CE"
+            / "Agentry"
             / "Conductor"
             / repo_hash
         )
@@ -796,8 +796,8 @@ class BuildCacheManager:
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.env = dict(os.environ if env is None else env)
-        override = self.env.get("REPOPROMPT_DEV_BUILD_CACHE_DIR")
-        self.store_root = (store_root or (Path(override).expanduser() if override else Path.home() / "Library" / "Application Support" / "RepoPrompt CE" / "Conductor" / "BuildCache")).resolve()
+        override = self.env.get("AGENTRY_DEV_BUILD_CACHE_DIR")
+        self.store_root = (store_root or (Path(override).expanduser() if override else Path.home() / "Library" / "Application Support" / "Agentry" / "Conductor" / "BuildCache")).resolve()
         self.locks_dir = self.store_root / "locks"
         self._probe_provider = probe_provider or self._probe_toolchain
         self._clone_runner = clone_runner or self._clone_cow
@@ -1154,7 +1154,7 @@ class BuildCacheManager:
     def prepare(self, operation: str, args: Dict[str, Any], job_env: Dict[str, str]) -> Optional[BuildCacheContext]:
         if (
             not self.eligible(operation, args)
-            or self.env.get("REPOPROMPT_DEV_BUILD_CACHE_DISABLE") == "1"
+            or self.env.get("AGENTRY_DEV_BUILD_CACHE_DISABLE") == "1"
             or not (self.repo_root / "Package.swift").is_file()
         ):
             return None
@@ -1424,7 +1424,7 @@ class BuildCacheManager:
         self._ensure_store_dirs()
         hygiene = self._sweep_stranded_store_temporaries()
         try:
-            limit = int(self.env.get("REPOPROMPT_DEV_BUILD_CACHE_LIMIT_BYTES") or BUILD_CACHE_DEFAULT_LIMIT_BYTES)
+            limit = int(self.env.get("AGENTRY_DEV_BUILD_CACHE_LIMIT_BYTES") or BUILD_CACHE_DEFAULT_LIMIT_BYTES)
         except ValueError:
             limit = BUILD_CACHE_DEFAULT_LIMIT_BYTES
         rows: List[Tuple[bool, float, int, str]] = []
@@ -1480,19 +1480,19 @@ class BuildCacheManager:
 
 def machine_lock_dir() -> Path:
     uid = os.getuid() if hasattr(os, "getuid") else 0
-    return Path("/tmp") / f"repoprompt-ce-dev-locks-{uid}"
+    return Path("/tmp") / f"agentry-dev-locks-{uid}"
 
 
 def configured_global_heavy_slots(env: Optional[Dict[str, str]] = None) -> int:
-    raw = (env or os.environ).get("REPOPROMPT_DEV_HEAVY_SLOTS")
+    raw = (env or os.environ).get("AGENTRY_DEV_HEAVY_SLOTS")
     if raw is None or raw == "":
         return 1
     try:
         slots = int(raw)
     except ValueError as exc:
-        raise ConductorError("REPOPROMPT_DEV_HEAVY_SLOTS must be a positive integer") from exc
+        raise ConductorError("AGENTRY_DEV_HEAVY_SLOTS must be a positive integer") from exc
     if slots < 1 or slots > MAX_GLOBAL_HEAVY_SLOTS:
-        raise ConductorError(f"REPOPROMPT_DEV_HEAVY_SLOTS must be between 1 and {MAX_GLOBAL_HEAVY_SLOTS}")
+        raise ConductorError(f"AGENTRY_DEV_HEAVY_SLOTS must be between 1 and {MAX_GLOBAL_HEAVY_SLOTS}")
     return slots
 
 
@@ -2540,10 +2540,10 @@ class OutputSummarizer:
     TIMEOUT_RE = re.compile(r"(timed out after|terminating process (?:group|tree)|killing process (?:group|tree)|canceled)", re.IGNORECASE)
     PHASE_RE = re.compile(r"^(==>|\$ |\+ )")
     ARTIFACT_RE = re.compile(
-        r"^(Created:|APP_BUNDLE=|COMPAT_APP_BUNDLE=|CLI_PATH=|Output written to:|Agent Mode diagnostics enabled|Resolved rpce-cli-debug:|Build cache diagnostics|Current \.build:|Managed worktree container:|Worktree \.build total:|Top \.build directories:|\s+[0-9.]+ [KMGT]?i?B\s+)"
+        r"^(Created:|APP_BUNDLE=|COMPAT_APP_BUNDLE=|CLI_PATH=|Output written to:|Agent Mode diagnostics enabled|Resolved agentry-cli-debug:|Build cache diagnostics|Current \.build:|Managed worktree container:|Worktree \.build total:|Top \.build directories:|\s+[0-9.]+ [KMGT]?i?B\s+)"
     )
     APP_LIFECYCLE_RE = re.compile(
-        r"(Stopping existing RepoPrompt|Waiting for existing RepoPrompt|Launching .*RepoPrompt\.app|Confirming launched RepoPrompt|Observed launched RepoPrompt|Guarding against a delayed RepoPrompt|Delayed launch guard confirmed|RepoPrompt(?: CE debug app)? stop confirmed|RepoPrompt was (not running|already stopped))"
+        r"(Stopping existing Agentry|Waiting for existing Agentry|Launching .*Agentry\.app|Confirming launched Agentry|Observed launched Agentry|Guarding against a delayed Agentry|Delayed launch guard confirmed|Agentry(?: debug app)? stop confirmed|Agentry was (not running|already stopped))"
     )
     SOURCE_CHANGED_DURING_BUILD_RE = re.compile(r"input file .* was modified during the build", re.IGNORECASE)
 
@@ -2636,12 +2636,12 @@ class OutputSummarizer:
             line = clean_summary_line(raw_text)
             tail.append(line)
 
-            if "Stopping existing RepoPrompt" in line:
+            if "Stopping existing Agentry" in line:
                 launch_lifecycle["transitionStarted"] = True
-            if "Launching " in line and "RepoPrompt.app" in line:
+            if "Launching " in line and "Agentry.app" in line:
                 launch_lifecycle["transitionStarted"] = True
                 launch_lifecycle["launchRequested"] = True
-            if "Observed launched RepoPrompt" in line:
+            if "Observed launched Agentry" in line:
                 launch_lifecycle["launchConfirmed"] = True
             if cls.SOURCE_CHANGED_DURING_BUILD_RE.search(line):
                 launch_lifecycle["sourceChangedDuringBuild"] = True
@@ -3083,9 +3083,9 @@ class OperationRegistry:
         "BUNDLE_ID",
     ]
     DEBUG_ENV_KEYS = [
-        "REPOPROMPT_DEBUG_APP_ROOT",
-        "REPOPROMPT_DEBUG_APP_BUNDLE",
-        "REPOPROMPT_DEBUG_CLI_INSTALL_PATH",
+        "AGENTRY_DEBUG_APP_ROOT",
+        "AGENTRY_DEBUG_APP_BUNDLE",
+        "AGENTRY_DEBUG_CLI_INSTALL_PATH",
     ]
     BUILD_ENV_KEYS = [
         "PATH",
@@ -3131,14 +3131,14 @@ class OperationRegistry:
         "RP_SWIFT_CODEMAP_REFERENCE_PATH",
     ]
     CONDUCTOR_ENV_KEYS = [
-        "REPOPROMPT_DEV_HEAVY_SLOTS",
-        "REPOPROMPT_DEV_BUILD_CACHE_DIR",
-        "REPOPROMPT_DEV_BUILD_CACHE_DISABLE",
-        "REPOPROMPT_DEV_BUILD_CACHE_LIMIT_BYTES",
+        "AGENTRY_DEV_HEAVY_SLOTS",
+        "AGENTRY_DEV_BUILD_CACHE_DIR",
+        "AGENTRY_DEV_BUILD_CACHE_DISABLE",
+        "AGENTRY_DEV_BUILD_CACHE_LIMIT_BYTES",
     ]
     TELEMETRY_ENV_KEYS = [
-        "REPOPROMPT_ENABLE_SENTRY",
-        "REPOPROMPT_SENTRY_DSN",
+        "AGENTRY_ENABLE_SENTRY",
+        "AGENTRY_SENTRY_DSN",
         "REPOPROMPT_UPLOAD_SENTRY_SYMBOLS",
         "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE",
         "REPOPROMPT_SENTRY_ORG",
@@ -3458,11 +3458,11 @@ class DaemonState:
 
     def _build_cache_manager(self, env: Optional[Dict[str, str]] = None) -> BuildCacheManager:
         desired_env = dict(os.environ if env is None else env)
-        override = desired_env.get("REPOPROMPT_DEV_BUILD_CACHE_DIR")
+        override = desired_env.get("AGENTRY_DEV_BUILD_CACHE_DIR")
         desired_root = (
             Path(override).expanduser().resolve()
             if override
-            else (Path.home() / "Library" / "Application Support" / "RepoPrompt CE" / "Conductor" / "BuildCache").resolve()
+            else (Path.home() / "Library" / "Application Support" / "Agentry" / "Conductor" / "BuildCache").resolve()
         )
         if self.build_cache is None or self.build_cache.store_root != desired_root:
             self.build_cache = BuildCacheManager(self.paths.repo_root, env=desired_env)
@@ -3525,7 +3525,7 @@ class DaemonState:
 
     def _external_call_while_locked(self, function: Any, *args: Any) -> Any:
         """Run external work with all recursive holds on the central RLock released."""
-        # RepoPrompt's conductor is macOS-CPython-only. These private RLock hooks
+        # Agentry's conductor is macOS-CPython-only. These private RLock hooks
         # are required to restore the exact recursive hold count around external work.
         if not self.lock._is_owned():  # type: ignore[attr-defined]
             return function(*args)
@@ -4233,7 +4233,7 @@ class DaemonState:
                     self._append_system_line_locked(job, "job canceled before process start\n")
                     return
             argv, _lanes, cwd, env, effective_timeout = self.registry.prepare(request)
-            env["REPOPROMPT_CONDUCTOR_JOB_TICKET"] = job.ticket
+            env["AGENTRY_CONDUCTOR_JOB_TICKET"] = job.ticket
             if BuildCacheManager.eligible(job.operation, job.args) and (self.paths.repo_root / "Package.swift").is_file():
                 with self._cache_write_lock:
                     cache_manager = self._build_cache_manager(env)
@@ -4287,7 +4287,7 @@ class DaemonState:
             process_pass_fds: Tuple[int, ...] = ()
             if cache_context is not None and cache_context.seeded:
                 cache_wrapper_gate_read, cache_wrapper_gate_write = os.pipe()
-                env["REPOPROMPT_CONDUCTOR_CACHE_WRAPPER_GATE_FD"] = str(cache_wrapper_gate_read)
+                env["AGENTRY_CONDUCTOR_CACHE_WRAPPER_GATE_FD"] = str(cache_wrapper_gate_read)
                 process_pass_fds = (cache_wrapper_gate_read,)
             process = subprocess.Popen(
                 argv,
@@ -6471,7 +6471,7 @@ def lifecycle_outcome_lines(payload: Dict[str, Any], summary: Dict[str, Any]) ->
         ]
     lines = [
         "Rebuild/package failed before this relaunch ticket reached app stop/open.",
-        "This ticket did not stop or reopen RepoPrompt.",
+        "This ticket did not stop or reopen Agentry.",
     ]
     if lifecycle.get("sourceChangedDuringBuild"):
         lines.extend(
@@ -7076,18 +7076,18 @@ def routed_structured_cli_argv(cli: str, window_id: int, command: str, payload: 
 
 
 def resolve_debug_cli() -> Optional[str]:
-    install_override = os.environ.get("REPOPROMPT_DEBUG_CLI_INSTALL_PATH")
+    install_override = os.environ.get("AGENTRY_DEBUG_CLI_INSTALL_PATH")
     if install_override:
         override_path = Path(install_override).expanduser()
         if override_path.is_file() and os.access(override_path, os.X_OK):
             return str(override_path)
-    path_cli = shutil.which("rpce-cli-debug")
+    path_cli = shutil.which("agentry-cli-debug")
     if path_cli and os.access(path_cli, os.X_OK):
         return path_cli
-    fallback = Path.home() / "Library" / "Application Support" / "RepoPrompt CE" / "repoprompt_ce_cli_debug"
+    fallback = Path.home() / "Agentry" / "agentry_cli_debug"
     if fallback.is_file() and os.access(fallback, os.X_OK):
         return str(fallback)
-    bundled = debug_app_bundle_path() / "Contents" / "MacOS" / "repoprompt-mcp"
+    bundled = debug_app_bundle_path() / "Contents" / "MacOS" / "agentry-mcp"
     if bundled.is_file() and os.access(bundled, os.X_OK):
         return str(bundled)
     return None
@@ -7095,7 +7095,7 @@ def resolve_debug_cli() -> Optional[str]:
 
 def resolve_embedded_helper(app_bundle: Path) -> str:
     app = app_bundle.expanduser().resolve(strict=True)
-    candidate = app / "Contents" / "MacOS" / "repoprompt-mcp"
+    candidate = app / "Contents" / "MacOS" / "agentry-mcp"
     if candidate.is_symlink():
         raise ConductorError(f"embedded MCP helper must not be a symlink: {candidate}")
     helper = candidate.resolve(strict=True)
@@ -7111,9 +7111,9 @@ def resolve_embedded_helper(app_bundle: Path) -> str:
 def require_debug_cli() -> Optional[str]:
     cli = resolve_debug_cli()
     if cli:
-        print(f"Resolved rpce-cli-debug: {cli}", flush=True)
+        print(f"Resolved agentry-cli-debug: {cli}", flush=True)
         return cli
-    print("ERROR: rpce-cli-debug was not found via REPOPROMPT_DEBUG_CLI_INSTALL_PATH, PATH, user-space fallback, or the debug app bundle.", flush=True)
+    print("ERROR: agentry-cli-debug was not found via AGENTRY_DEBUG_CLI_INSTALL_PATH, PATH, user-space fallback, or the debug app bundle.", flush=True)
     print("Install it with:", flush=True)
     print("  make install-debug-cli", flush=True)
     print("  # or", flush=True)
@@ -7146,14 +7146,14 @@ def find_session_id_in_text(text: str) -> Optional[str]:
 def debug_app_bundle_path() -> Path:
     # Mirrors Scripts/run.sh path resolution so app status reports the same bundle that run delegates launch.
     root = os.environ.get(
-        "REPOPROMPT_DEBUG_APP_ROOT",
-        str(Path.home() / "Library" / "Application Support" / "RepoPrompt CE" / "DebugApps"),
+        "AGENTRY_DEBUG_APP_ROOT",
+        str(Path.home() / "Library" / "Application Support" / "Agentry" / "DebugApps"),
     )
-    return Path(os.environ.get("REPOPROMPT_DEBUG_APP_BUNDLE", str(Path(root) / "RepoPrompt.app")))
+    return Path(os.environ.get("AGENTRY_DEBUG_APP_BUNDLE", str(Path(root) / "Agentry.app")))
 
 
 def debug_app_executable_path() -> Path:
-    return debug_app_bundle_path() / "Contents" / "MacOS" / "RepoPrompt"
+    return debug_app_bundle_path() / "Contents" / "MacOS" / "Agentry"
 
 
 def find_debug_app_pids() -> List[str]:
@@ -7162,11 +7162,11 @@ def find_debug_app_pids() -> List[str]:
 
 def execution_location_ui_smoke_timeout(env: Dict[str, str]) -> float:
     try:
-        wait_seconds = max(0.0, float(env.get("REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_WAIT", "3")))
+        wait_seconds = max(0.0, float(env.get("AGENTRY_EXECUTION_LOCATION_UI_SMOKE_WAIT", "3")))
     except ValueError:
         wait_seconds = 3.0
     try:
-        cycles = max(1, int(env.get("REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_CYCLES", "3")))
+        cycles = max(1, int(env.get("AGENTRY_EXECUTION_LOCATION_UI_SMOKE_CYCLES", "3")))
     except ValueError:
         cycles = 3
     return cycles * (wait_seconds + 60.0) + 60.0
@@ -7260,7 +7260,7 @@ def report_launch_bundle_details(repo_root: Path, bundle: Path) -> int:
         elif line.startswith("Authority="):
             authorities.append(line.split("=", 1)[1])
     marker = subprocess.run(
-        ["plutil", "-extract", "RepoPromptDebugSecureStorageBackend", "raw", "-o", "-", str(bundle / "Contents" / "Info.plist")],
+        ["plutil", "-extract", "AgentryDebugSecureStorageBackend", "raw", "-o", "-", str(bundle / "Contents" / "Info.plist")],
         text=True,
         capture_output=True,
     )
@@ -7296,7 +7296,7 @@ def wait_for_debug_app_process(timeout: float = STARTUP_TIMEOUT_SECONDS) -> List
 
 
 def guard_delayed_debug_app_launch() -> int:
-    print("Guarding against a delayed RepoPrompt CE debug app launch from superseded app work.", flush=True)
+    print("Guarding against a delayed Agentry debug app launch from superseded app work.", flush=True)
     return _operation_app_stop_unlocked(Path.cwd(), {"guardDelayedLaunch": True})
 
 
@@ -7308,7 +7308,7 @@ def _operation_app_stop_unlocked(_repo_root: Path, args: Dict[str, Any]) -> int:
     quiet_since: Optional[float] = None
     observed_process = False
     if guard_delayed_launch:
-        print("Guarding against a delayed RepoPrompt CE debug app launch from superseded app work.", flush=True)
+        print("Guarding against a delayed Agentry debug app launch from superseded app work.", flush=True)
     while True:
         try:
             pids = find_debug_app_pids()
@@ -7318,7 +7318,7 @@ def _operation_app_stop_unlocked(_repo_root: Path, args: Dict[str, Any]) -> int:
         if pids:
             observed_process = True
             quiet_since = None
-            print(f"Observed running RepoPrompt CE debug PID(s): {', '.join(pids)}", flush=True)
+            print(f"Observed running Agentry debug PID(s): {', '.join(pids)}", flush=True)
             try:
                 terminate_debug_app_processes()
             except ProcessIdentityError as exc:
@@ -7329,12 +7329,12 @@ def _operation_app_stop_unlocked(_repo_root: Path, args: Dict[str, Any]) -> int:
                 quiet_since = now()
             if now() - quiet_since >= required_quiet:
                 if observed_process:
-                    print("RepoPrompt stop confirmed.", flush=True)
+                    print("Agentry stop confirmed.", flush=True)
                 else:
-                    print("RepoPrompt was already stopped; stop confirmed.", flush=True)
+                    print("Agentry was already stopped; stop confirmed.", flush=True)
                 return 0
         if now() >= deadline:
-            print("ERROR: timed out confirming that RepoPrompt remained stopped.", flush=True)
+            print("ERROR: timed out confirming that Agentry remained stopped.", flush=True)
             return 1
         time.sleep(APP_STOP_POLL_SECONDS)
 
@@ -7359,14 +7359,14 @@ def package_debug_app_under_heavy(repo_root: Path, operation_label: str) -> Tupl
     staged_bundle = staging_parent / live_bundle.name
     metadata = display_lock_metadata(
         lock_kind="global-heavy",
-        ticket=os.environ.get("REPOPROMPT_CONDUCTOR_JOB_TICKET"),
+        ticket=os.environ.get("AGENTRY_CONDUCTOR_JOB_TICKET"),
         operation=operation_label,
         operation_label=operation_label,
         repo_root=repo_root,
         repo_hash=None,
     )
     env = os.environ.copy()
-    env["REPOPROMPT_DEBUG_APP_BUNDLE"] = str(staged_bundle)
+    env["AGENTRY_DEBUG_APP_BUNDLE"] = str(staged_bundle)
     try:
         with machine_heavy_slot(metadata, env, "global heavy slot for debug package"):
             code, _stdout, _stderr = run_operation_command(
@@ -7378,7 +7378,7 @@ def package_debug_app_under_heavy(repo_root: Path, operation_label: str) -> Tupl
         if code != 0:
             cleanup_staged_debug_bundle(staged_bundle)
             return code, None
-        executable = staged_bundle / "Contents" / "MacOS" / "RepoPrompt"
+        executable = staged_bundle / "Contents" / "MacOS" / "Agentry"
         if not executable.is_file() or not os.access(executable, os.X_OK):
             print(f"ERROR: staged debug app is not launchable: {staged_bundle}", flush=True)
             cleanup_staged_debug_bundle(staged_bundle)
@@ -7413,7 +7413,7 @@ def activate_staged_debug_bundle(staged_bundle: Path, live_bundle: Optional[Path
     live = live_bundle or debug_app_bundle_path()
     if not staged_bundle.exists():
         raise ConductorError(f"staged debug app bundle is missing: {staged_bundle}")
-    executable = staged_bundle / "Contents" / "MacOS" / "RepoPrompt"
+    executable = staged_bundle / "Contents" / "MacOS" / "Agentry"
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise ConductorError(f"staged debug app bundle is not launchable: {staged_bundle}")
     live.parent.mkdir(parents=True, exist_ok=True)
@@ -7444,14 +7444,14 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
     staged_value = args.get("stagedBundle")
     staged_bundle = Path(str(staged_value)) if staged_value else None
     activated = False
-    executable = bundle / "Contents" / "MacOS" / "RepoPrompt"
+    executable = bundle / "Contents" / "MacOS" / "Agentry"
     if staged_bundle is None and (not bundle.exists() or not executable.is_file() or not os.access(executable, os.X_OK)):
         print(f"ERROR: existing debug app bundle is not launchable: {bundle}", flush=True)
         print("Build it first with './conductor build' or './conductor run'.", flush=True)
         return 1
     metadata = display_lock_metadata(
         lock_kind="live-app",
-        ticket=os.environ.get("REPOPROMPT_CONDUCTOR_JOB_TICKET"),
+        ticket=os.environ.get("AGENTRY_CONDUCTOR_JOB_TICKET"),
         operation="app launch-existing" if staged_bundle is None else "app activate-staged-and-launch",
         operation_label="app launch-existing" if staged_bundle is None else "app activate staged and launch",
         repo_root=repo_root,
@@ -7461,7 +7461,7 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
         with machine_exclusive_lock(live_app_lock_path(), metadata, "live-app lock"):
             if staged_bundle is None:
                 report_launch_bundle_details(repo_root, bundle)
-            print("Stopping existing RepoPrompt CE debug app instance", flush=True)
+            print("Stopping existing Agentry debug app instance", flush=True)
             stop_code = _operation_app_stop_unlocked(repo_root, {"guardDelayedLaunch": bool(args.get("guardDelayedLaunch"))})
             if stop_code != 0:
                 return stop_code
@@ -7479,13 +7479,13 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
             try:
                 launched_pids = wait_for_debug_app_process()
             except ProcessIdentityError as exc:
-                print(f"ERROR: could not safely identify the launched RepoPrompt CE debug app process: {exc}", flush=True)
+                print(f"ERROR: could not safely identify the launched Agentry debug app process: {exc}", flush=True)
                 return 1
             if not launched_pids:
-                print("ERROR: launch request returned, but no matching RepoPrompt CE debug app process appeared within 10 seconds.", flush=True)
+                print("ERROR: launch request returned, but no matching Agentry debug app process appeared within 10 seconds.", flush=True)
                 _operation_app_stop_unlocked(repo_root, {"guardDelayedLaunch": True})
                 return 1
-            print(f"Observed launched RepoPrompt CE debug PID(s): {', '.join(launched_pids)}", flush=True)
+            print(f"Observed launched Agentry debug PID(s): {', '.join(launched_pids)}", flush=True)
         return 0
     finally:
         if staged_bundle is not None and not activated:
@@ -7505,7 +7505,7 @@ def operation_debug_app_build_then_launch(repo_root: Path, args: Dict[str, Any])
 
 def operation_app_status(repo_root: Path) -> int:
     bundle = debug_app_bundle_path()
-    print("RepoPrompt CE debug app status")
+    print("Agentry debug app status")
     print(f"  Debug app bundle: {bundle}")
     print("  Running matching debug app PIDs: ", end="")
     try:
@@ -7531,7 +7531,7 @@ def operation_app_status(repo_root: Path) -> int:
         print(f"  Signing authorities: {', '.join(authorities) if authorities else '<none/ad-hoc>'}")
         plist = bundle / "Contents" / "Info.plist"
         marker = subprocess.run(
-            ["plutil", "-extract", "RepoPromptDebugSecureStorageBackend", "raw", "-o", "-", str(plist)],
+            ["plutil", "-extract", "AgentryDebugSecureStorageBackend", "raw", "-o", "-", str(plist)],
             text=True,
             capture_output=True,
         )
@@ -7546,7 +7546,7 @@ def operation_app_status(repo_root: Path) -> int:
 def operation_app_stop(repo_root: Path, args: Dict[str, Any]) -> int:
     metadata = display_lock_metadata(
         lock_kind="live-app",
-        ticket=os.environ.get("REPOPROMPT_CONDUCTOR_JOB_TICKET"),
+        ticket=os.environ.get("AGENTRY_CONDUCTOR_JOB_TICKET"),
         operation="app stop",
         operation_label="app stop",
         repo_root=repo_root,
@@ -7557,7 +7557,7 @@ def operation_app_stop(repo_root: Path, args: Dict[str, Any]) -> int:
 
 
 def operation_swift_build_all(repo_root: Path) -> int:
-    for product in ["RepoPrompt", "repoprompt-mcp"]:
+    for product in ["Agentry", "agentry-mcp"]:
         code, _stdout, _stderr = run_operation_command(f"swift build --product {product}", ["swift", "build", "--product", product], repo_root)
         if code != 0:
             return code
@@ -7613,13 +7613,13 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
             return 1
 
     if launched:
-        print("Polling rpce-cli-debug windows until the app is ready...", flush=True)
+        print("Polling agentry-cli-debug windows until the app is ready...", flush=True)
         while True:
             code, stdout, stderr = run_operation_command("windows readiness", [cli, "-e", "windows"], repo_root, env=env, allow_exit_codes={0, 1})
             if code == 0:
                 break
             if now() >= deadline:
-                print("ERROR: timed out waiting for rpce-cli-debug windows after launch", flush=True)
+                print("ERROR: timed out waiting for agentry-cli-debug windows after launch", flush=True)
                 return code or 1
             time.sleep(2.0)
 
@@ -7648,7 +7648,7 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
         debug_pids = find_debug_app_pids()
         if len(debug_pids) != 1:
             print(
-                "ERROR: execution-location UI smoke requires exactly one running RepoPrompt debug app "
+                "ERROR: execution-location UI smoke requires exactly one running Agentry debug app "
                 f"matching {debug_app_executable_path()}; found {len(debug_pids)}.",
                 flush=True,
             )
@@ -7668,8 +7668,8 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
         start_payload = {
             "op": "start",
             "model_id": "explore",
-            "session_name": "CE debug CLI smoke",
-            "message": "Reply exactly with CE_AGENT_RUN_SMOKE_OK and stop. Do not edit files.",
+            "session_name": "Agentry debug CLI smoke",
+            "message": "Reply exactly with AGENTRY_AGENT_RUN_SMOKE_OK and stop. Do not edit files.",
             "detach": True,
         }
         code, stdout, _stderr = run_operation_command(
@@ -7687,7 +7687,7 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
             session_id = find_session_id_in_text(stdout)
         if not session_id:
             print("ERROR: Could not parse session_id from agent_run start output.", flush=True)
-            print("Manual wait hint: rpce-cli-debug -w 1 -c agent_run -j '{\"op\":\"wait\",\"session_id\":\"<session_id>\",\"timeout\":120}'", flush=True)
+            print("Manual wait hint: agentry-cli-debug -w 1 -c agent_run -j '{\"op\":\"wait\",\"session_id\":\"<session_id>\",\"timeout\":120}'", flush=True)
             return 1
         wait_payload = {"op": "wait", "session_id": session_id, "timeout": agent_timeout}
         code, _stdout, _stderr = run_operation_command(
@@ -7830,7 +7830,7 @@ def operation_diagnostics_agent_mode_on(repo_root: Path, args: Dict[str, Any]) -
     if not cli:
         return 1
     window_id = int(args.get("windowId") or 1)
-    log_file = str(args.get("logFile") or "/tmp/repoprompt-ce-claude-raw-events")
+    log_file = str(args.get("logFile") or "/tmp/agentry-claude-raw-events")
     settings = [
         {"op": "list", "group": "agent_mode", "detailed": True},
         {"op": "set", "key": "agent_mode.claude_raw_event_logging_enabled", "value": True},
@@ -7993,7 +7993,7 @@ def _remove_cache_build_for_retry(build_dir: Path, cleanup_timeout: float) -> bo
 
 
 def _await_cache_retry_wrapper_gate() -> None:
-    raw_fd = os.environ.pop("REPOPROMPT_CONDUCTOR_CACHE_WRAPPER_GATE_FD", None)
+    raw_fd = os.environ.pop("AGENTRY_CONDUCTOR_CACHE_WRAPPER_GATE_FD", None)
     if raw_fd is None:
         return
     try:
@@ -8202,7 +8202,7 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         parse_no_args(f"conductor {operation}", rest)
     elif operation == "swift-build":
         parser = argparse.ArgumentParser(prog="conductor swift-build")
-        parser.add_argument("--product", required=True, choices=["RepoPrompt", "repoprompt-mcp", "all"])
+        parser.add_argument("--product", required=True, choices=["Agentry", "agentry-mcp", "all"])
         ns = parser.parse_args(rest)
         args["product"] = ns.product
     elif operation == "package":
@@ -8282,14 +8282,14 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
         agent_mode = subparsers.add_parser("agent-mode-on")
-        agent_mode.add_argument("--log-file", default="/tmp/repoprompt-ce-claude-raw-events")
+        agent_mode.add_argument("--log-file", default="/tmp/agentry-claude-raw-events")
         agent_mode.add_argument("--window-id", type=int, default=1)
 
         build_cache = subparsers.add_parser("build-cache")
         build_cache.add_argument("--limit", type=int, default=BUILD_CACHE_DIAGNOSTIC_MAX_ROWS)
 
         focused_build = subparsers.add_parser("focused-build")
-        focused_build.add_argument("--product", default="RepoPrompt")
+        focused_build.add_argument("--product", default="Agentry")
         focused_build.add_argument("--test", action="store_true")
         focused_build.add_argument("--filter")
 

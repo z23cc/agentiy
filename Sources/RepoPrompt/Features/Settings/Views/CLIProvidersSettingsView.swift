@@ -662,7 +662,7 @@ struct CLIProvidersSettingsView: View {
             }
             return "Claude Code routed through Z.ai's Anthropic-compatible backend."
         case .kimi:
-            return "Claude Code routed through Kimi's coding backend. Kimi manages model selection — RepoPrompt does not pass `--model`."
+            return "Claude Code routed through Kimi's coding backend. Kimi manages model selection — Agentry does not pass `--model`."
         case .custom:
             switch config.modelBehavior {
             case .noModel:
@@ -1166,7 +1166,7 @@ struct CLIProvidersSettingsView: View {
                 Text("Model behavior: No `--model` flag")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.secondary)
-                Text("Backend manages model selection. RepoPrompt does not pass a Claude slot or Claude Code effort level.")
+                Text("Backend manages model selection. Agentry does not pass a Claude slot or Claude Code effort level.")
                     .font(.caption)
                     .foregroundColor(.primary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1317,7 +1317,7 @@ struct CLIProvidersSettingsView: View {
                 Spacer()
             }
 
-            Text("RepoPrompt passes the selected Claude slot to `claude`; these env vars tell the backend which model each slot should use.")
+            Text("Agentry passes the selected Claude slot to `claude`; these env vars tell the backend which model each slot should use.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1559,7 +1559,7 @@ struct CLIProvidersSettingsView: View {
     private var codexCard: some View {
         providerCard(
             title: "Codex CLI",
-            subtitle: "Runs RepoPrompt CE's managed Codex runtime with a separate sign-in from ~/.codex.",
+            subtitle: "Runs Agentry's managed Codex runtime with a separate sign-in from ~/.codex.",
             infoURL: "https://developers.openai.com/codex/cli/",
             isConnected: viewModel.isCodexConnected,
             isExpanded: $isCodexExpanded
@@ -1706,7 +1706,7 @@ struct CLIProvidersSettingsView: View {
                                 }
                                 .buttonStyle(CustomButtonStyle())
                             }
-                            Text("Open the verification page in a browser, enter the code, and leave this panel open. RepoPrompt CE will keep checking this separate Codex sign-in until it completes or expires.")
+                            Text("Open the verification page in a browser, enter the code, and leave this panel open. Agentry will keep checking this separate Codex sign-in until it completes or expires.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1722,7 +1722,7 @@ struct CLIProvidersSettingsView: View {
                             .foregroundColor(.red)
                             .fixedSize(horizontal: false, vertical: true)
                         if viewModel.isCodexExecutableUnavailable {
-                            Text("Reinstall RepoPrompt CE, or fix/remove REPOPROMPT_CODEX_EXECUTABLE, then click Connect to check again.")
+                            Text("Reinstall Agentry, or fix/remove AGENTRY_CODEX_EXECUTABLE, then click Connect to check again.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1830,7 +1830,7 @@ struct CLIProvidersSettingsView: View {
     private var grokBuildCard: some View {
         providerCard(
             title: "Grok Build",
-            subtitle: "Uses xAI's Grok Build ACP runtime (`grok agent stdio`) for Agent Mode and headless tasks. RepoPrompt MCP tools are added through the ACP session.",
+            subtitle: "Uses xAI's Grok Build ACP runtime (`grok agent stdio`) for Agent Mode and headless tasks. Agentry MCP tools are added through the ACP session.",
             infoURL: "https://docs.x.ai/build/overview",
             isConnected: viewModel.isGrokBuildConnected,
             isExpanded: $isGrokBuildExpanded
@@ -1909,7 +1909,7 @@ struct CLIProvidersSettingsView: View {
     private var cursorCard: some View {
         providerCard(
             title: "Cursor CLI",
-            subtitle: "Uses Cursor's ACP runtime for Agent Mode, headless tasks, and chat. RepoPrompt MCP tools are added only for agent/headless runs.",
+            subtitle: "Uses Cursor's ACP runtime for Agent Mode, headless tasks, and chat. Agentry MCP tools are added only for agent/headless runs.",
             infoURL: "https://cursor.com/cli",
             isConnected: viewModel.isCursorConnected,
             isExpanded: $isCursorExpanded

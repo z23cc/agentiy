@@ -297,9 +297,9 @@ final actor ServerController: ObservableObject {
         }
     #endif
 
-    /// Returns true iff the connecting process matches the app-bundled `repoprompt-mcp` executable.
+    /// Returns true iff the connecting process matches the app-bundled `agentry-mcp` executable.
     private func isBundledRepoPromptCLIConnection(connectionID: UUID) async -> Bool {
-        guard let expectedURL = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp") else {
+        guard let expectedURL = Bundle.main.url(forAuxiliaryExecutable: "agentry-mcp") else {
             return false
         }
         guard let peerPID = await networkManager.peerPID(for: connectionID) else {

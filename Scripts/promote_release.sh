@@ -12,7 +12,7 @@ source "$CONTROL_PLANE_SCRIPTS_DIR/load_release_metadata.sh"
 load_release_metadata "$ROOT_DIR"
 
 SOURCE_GITHUB_REPOSITORY="${SOURCE_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-repoprompt/repoprompt-ce}}"
-PUBLIC_UPDATE_REPOSITORY="${PUBLIC_UPDATE_REPOSITORY:-repoprompt/repoprompt-ce-updates}"
+PUBLIC_UPDATE_REPOSITORY="${PUBLIC_UPDATE_REPOSITORY:-}"
 RELEASE_TAG="${RELEASE_TAG:-}"
 SOURCE_GH_TOKEN="${SOURCE_GH_TOKEN:-${GH_TOKEN:-}}"
 PUBLIC_UPDATE_GH_TOKEN="${PUBLIC_UPDATE_GH_TOKEN:-}"
@@ -28,7 +28,7 @@ APPCAST_NAME="appcast.xml"
 CHECKSUMS_NAME="SHA256SUMS"
 ARTIFACT_MANIFEST_NAME="$ARCHIVE_BASENAME-artifact-manifest.json"
 PUBLIC_UPDATE_BASE_URL="https://github.com/$PUBLIC_UPDATE_REPOSITORY/releases/download/$RELEASE_TAG"
-PUBLIC_FEED_URL="https://github.com/$PUBLIC_UPDATE_REPOSITORY/releases/latest/download/$APPCAST_NAME"
+PUBLIC_FEED_URL="$AGENTRY_SPARKLE_STABLE_FEED_URL"
 SOURCE_RELEASE_BASE_URL="https://github.com/$SOURCE_GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
 SIGN_UPDATE="${SIGN_UPDATE:-$TRUSTED_ROOT/Vendor/Sparkle/bin/sign_update}"
 TMP_DIR=""
@@ -271,18 +271,17 @@ validate_app_bundle() {
         "$CONTROL_PLANE_SCRIPTS_DIR/validate_packaged_legal.sh" "$app_bundle"
     python3 "$CONTROL_PLANE_SCRIPTS_DIR/codex_runtime_artifact.py" \
         --manifest "$ROOT_DIR/Vendor/Codex/manifest.json" verify-bundle \
-        --arch all \
+        --arch arm64 \
         --bundle "$app_bundle/Contents/Resources/BundledRuntimes/Codex" \
         --signed-team-identifier "$SIGNING_TEAM_ID"
     validate_embedded_mcp_helper_layout "$app_bundle" "Reviewed ZIP MCP helper layout"
     "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" \
         "$app_bundle" \
-        "arm64,x86_64" \
         "Reviewed ZIP app"
     "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" verify \
         --app "$app_bundle" \
         --manifest "$artifact_manifest" \
-        --expected-architectures "arm64,x86_64"
+        --expected-architectures "arm64"
 }
 
 validate_dmg_matches_zip_app() {
@@ -297,17 +296,16 @@ validate_dmg_matches_zip_app() {
     validate_embedded_mcp_helper_layout "$dmg_app" "Mounted DMG MCP helper layout"
     python3 "$CONTROL_PLANE_SCRIPTS_DIR/codex_runtime_artifact.py" \
         --manifest "$ROOT_DIR/Vendor/Codex/manifest.json" verify-bundle \
-        --arch all \
+        --arch arm64 \
         --bundle "$dmg_app/Contents/Resources/BundledRuntimes/Codex" \
         --signed-team-identifier "$SIGNING_TEAM_ID"
     "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" \
         "$dmg_app" \
-        "arm64,x86_64" \
         "Mounted DMG app"
     "$CONTROL_PLANE_SCRIPTS_DIR/write_app_artifact_manifest.py" verify \
         --app "$dmg_app" \
         --manifest "$ARTIFACT_MANIFEST" \
-        --expected-architectures "arm64,x86_64"
+        --expected-architectures "arm64"
 
     hdiutil detach "$DMG_MOUNT_POINT" >/dev/null
     DMG_MOUNT_POINT=""
@@ -373,6 +371,11 @@ PYTHON
 verify_source_release() {
     require_env RELEASE_TAG
     require_env RELEASE_COMMIT
+    require_env PUBLIC_UPDATE_REPOSITORY
+    validate_agentry_sparkle_metadata ||
+        fail "Stable promotion requires provisioned Agentry Sparkle configuration"
+    [[ "$PUBLIC_FEED_URL" == "https://github.com/$PUBLIC_UPDATE_REPOSITORY/releases/latest/download/$APPCAST_NAME" ]] ||
+        fail "PUBLIC_UPDATE_REPOSITORY does not match AGENTRY_SPARKLE_STABLE_FEED_URL"
     require_env SOURCE_GH_TOKEN
     require_env SPARKLE_PRIVATE_KEY
     require_release_tag_matches_metadata

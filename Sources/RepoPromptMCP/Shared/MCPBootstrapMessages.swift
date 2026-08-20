@@ -3,11 +3,11 @@
 //  RepoPrompt
 //
 //  Shared bootstrap socket handshake message types.
-//  Used by both the app (BootstrapSocketServer) and CLI (repoprompt-mcp).
+//  Used by both the app (BootstrapSocketServer) and CLI (agentry-mcp).
 //
 //  IMPORTANT: This file must be included in both targets:
 //  - RepoPrompt (app)
-//  - repoprompt-mcp (CLI)
+//  - agentry-mcp (CLI)
 //
 
 import Foundation
@@ -45,7 +45,7 @@ public struct MCPBootstrapRequest: Codable, Sendable {
     /// CLI process ID for debugging and diagnostics.
     public let clientPid: Int
 
-    /// Client executable name (e.g., "cursor", "claude", "repoprompt-mcp").
+    /// Client executable name (e.g., "cursor", "claude", "agentry-mcp").
     /// May be nil if detection fails.
     public let clientName: String?
 

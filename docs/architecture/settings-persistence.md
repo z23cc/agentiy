@@ -4,10 +4,10 @@ Current as of 2026-08-11. This document is contributor-facing: use it when chang
 
 ## Durable settings file
 
-RepoPrompt CE stores app settings in the versioned JSON document at:
+Agentry stores app settings in the versioned JSON document at:
 
 ```text
-~/Library/Application Support/RepoPrompt CE/Settings/globalSettings.json
+~/Library/Application Support/Agentry/Settings/globalSettings.json
 ```
 
 The file is identified by two fields, not one:

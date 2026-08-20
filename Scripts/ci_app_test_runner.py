@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hosted CI app-test runner for RepoPrompt CE.
+"""Hosted CI app-test runner for Agentry.
 
 The GitHub macOS runner executes root XCTest suites one XCTest class at a time.
 This keeps hosted CI bounded without changing stable local validation.
@@ -815,7 +815,7 @@ def run_all_suites(
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run RepoPrompt CE app XCTest suites for hosted CI.")
+    parser = argparse.ArgumentParser(description="Run Agentry app XCTest suites for hosted CI.")
     parser.add_argument("--suite-timeout-seconds", type=float, default=DEFAULT_SUITE_TIMEOUT_SECONDS)
     parser.add_argument("--silent-timeout-retries", type=int, default=DEFAULT_SILENT_TIMEOUT_RETRIES)
     parser.add_argument(

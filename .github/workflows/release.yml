@@ -24,6 +24,10 @@ jobs:
       commit: ${{ steps.release-ref.outputs.commit }}
       tooling-commit: ${{ steps.release-ref.outputs.tooling-commit }}
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -48,6 +52,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -74,13 +82,13 @@ jobs:
           REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
           # Link the Sentry SDK into the official release binary. The protected DSN is
           # injected later in the signing job, so the secret-free stage stays inert.
-          REPOPROMPT_ENABLE_SENTRY: "1"
+          AGENTRY_ENABLE_SENTRY: "1"
         run: ./trusted-control-plane/Scripts/release.sh stage-publish
 
       - name: Upload staged release source
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: RepoPrompt-CE-staged-release
+          name: Agentry-staged-release
           path: |
             release-source/dist/*-stage.zip
             release-source/dist/*-stage.zip.sha256
@@ -98,6 +106,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -109,7 +121,7 @@ jobs:
       - name: Download staged release source
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: RepoPrompt-CE-staged-release
+          name: Agentry-staged-release
           path: staged-release
 
       - name: Check out approved source as data
@@ -134,7 +146,7 @@ jobs:
           archive="${archives[0]}"
           [[ "${checksum_files[0]}" == "$archive.sha256" ]] || { echo "Staged ZIP checksum name mismatch" >&2; exit 1; }
           shasum -a 256 -c "${checksum_files[0]}"
-          ../trusted-control-plane/Scripts/extract_staged_release.py "$archive" ../release-source RepoPrompt
+          ../trusted-control-plane/Scripts/extract_staged_release.py "$archive" ../release-source Agentry
           REPOPROMPT_RELEASE_SOURCE_ROOT=../release-source \
             REPOPROMPT_APPROVED_SOURCE_ROOT=../approved-source \
             ../trusted-control-plane/Scripts/validate_staged_release.sh
@@ -148,8 +160,8 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          KEYCHAIN_PATH="$RUNNER_TEMP/repoprompt-release.keychain-db"
-          CERTIFICATE_PATH="$RUNNER_TEMP/repoprompt-release.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/agentry-release.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/agentry-release.p12"
           keychain_created=0
           cleanup_certificate_and_failed_keychain() {
             status=$?
@@ -168,20 +180,21 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          echo "SIGN_IDENTITY=${CONFIGURED_SIGN_IDENTITY:-Developer ID Application: Eric Provencher (648A27MST5)}" >> "$GITHUB_ENV"
+          [[ -n "$CONFIGURED_SIGN_IDENTITY" ]] || { echo "CONFIGURED_SIGN_IDENTITY is required" >&2; exit 1; }
+          echo "SIGN_IDENTITY=$CONFIGURED_SIGN_IDENTITY" >> "$GITHUB_ENV"
 
       - name: Prepare provisioning profile and notarization key
         env:
-          PROVISIONING_PROFILE_BASE64: ${{ secrets.REPOPROMPT_CE_PROVISIONING_PROFILE_BASE64 }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.AGENTRY_PROVISIONING_PROFILE_BASE64 }}
           NOTARYTOOL_PRIVATE_KEY_BASE64: ${{ secrets.NOTARYTOOL_PRIVATE_KEY_BASE64 }}
         run: |
           set -euo pipefail
           umask 077
-          SECRETS_DIR="$RUNNER_TEMP/repoprompt-release-secrets"
+          SECRETS_DIR="$RUNNER_TEMP/agentry-release-secrets"
           mkdir -p "$SECRETS_DIR"
-          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$SECRETS_DIR/repoprompt-ce.provisionprofile"
+          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$SECRETS_DIR/agentry.provisionprofile"
           printf '%s' "$NOTARYTOOL_PRIVATE_KEY_BASE64" | base64 --decode > "$SECRETS_DIR/notarytool-private-key.p8"
-          echo "REPOPROMPT_PROVISIONING_PROFILE=$SECRETS_DIR/repoprompt-ce.provisionprofile" >> "$GITHUB_ENV"
+          echo "REPOPROMPT_PROVISIONING_PROFILE=$SECRETS_DIR/agentry.provisionprofile" >> "$GITHUB_ENV"
           echo "NOTARYTOOL_PRIVATE_KEY=$SECRETS_DIR/notarytool-private-key.p8" >> "$GITHUB_ENV"
 
       - name: Install Sentry CLI when symbol upload is configured
@@ -200,7 +213,7 @@ jobs:
           set -euo pipefail
           if [[ -n "${SENTRY_AUTH_TOKEN:-}" ]]; then
             umask 077
-            SENTRY_TOKEN_FILE="$RUNNER_TEMP/repoprompt-release-secrets/sentry-auth-token"
+            SENTRY_TOKEN_FILE="$RUNNER_TEMP/agentry-release-secrets/sentry-auth-token"
             printf '%s' "$SENTRY_AUTH_TOKEN" > "$SENTRY_TOKEN_FILE"
             echo "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE=$SENTRY_TOKEN_FILE" >> "$GITHUB_ENV"
           fi
@@ -216,12 +229,12 @@ jobs:
           REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
           REPOPROMPT_APPROVED_SOURCE_ROOT: ${{ github.workspace }}/approved-source
           REPOPROMPT_REQUIRE_HEAD_MATCH: 0
-          REPOPROMPT_ENABLE_SENTRY: "1"
+          AGENTRY_ENABLE_SENTRY: "1"
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           NOTARYTOOL_KEY_ID: ${{ secrets.NOTARYTOOL_KEY_ID }}
           NOTARYTOOL_ISSUER_ID: ${{ secrets.NOTARYTOOL_ISSUER_ID }}
           # Protected release environment secret. sign_staged_release.sh bakes it
-          # into the signed bundle's Info.plist as RepoPromptSentryDSN. Optional: if
+          # into the signed bundle's Info.plist as AgentrySentryDSN. Optional: if
           # unset, telemetry stays off (fail-safe).
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}
@@ -231,16 +244,16 @@ jobs:
       - name: Remove ephemeral keychain
         if: always()
         run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/repoprompt-release.keychain-db"
-          CERTIFICATE_PATH="$RUNNER_TEMP/repoprompt-release.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/agentry-release.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/agentry-release.p12"
           security delete-keychain "$KEYCHAIN_PATH" || true
           rm -f "$CERTIFICATE_PATH"
-          rm -rf "$RUNNER_TEMP/repoprompt-release-secrets"
+          rm -rf "$RUNNER_TEMP/agentry-release-secrets"
 
       - name: Upload signed release ZIP for secret-free smoke
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: RepoPrompt-CE-signed-release-zip
+          name: Agentry-signed-release-zip
           path: |
             release-source/dist/*.zip
             release-source/dist/SHA256SUMS
@@ -258,6 +271,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry release requires an arm64 runner" >&2; exit 1; }
+
       - name: Check out trusted release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -269,7 +286,7 @@ jobs:
       - name: Download signed release ZIP
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: RepoPrompt-CE-signed-release-zip
+          name: Agentry-signed-release-zip
           path: signed-release
 
       - name: Extract and statically validate signed helper layout
@@ -291,16 +308,15 @@ jobs:
           mkdir extracted
           ditto -x -k "$archive" extracted
           ./trusted-control-plane/Scripts/validate_embedded_mcp_helper_layout.sh \
-            "extracted/RepoPrompt CE.app" \
+            "extracted/Agentry.app" \
             "Signed draft MCP helper layout"
           ./trusted-control-plane/Scripts/validate_app_architectures.sh \
-            "extracted/RepoPrompt CE.app" \
-            "arm64,x86_64" \
+            "extracted/Agentry.app" \
             "Signed draft app"
           ./trusted-control-plane/Scripts/write_app_artifact_manifest.py verify \
-            --app "extracted/RepoPrompt CE.app" \
+            --app "extracted/Agentry.app" \
             --manifest "${artifact_manifests[0]}" \
-            --expected-architectures "arm64,x86_64"
+            --expected-architectures "arm64"
           echo "ARTIFACT_MANIFEST_PATH=${artifact_manifests[0]}" >> "$GITHUB_ENV"
 
       - name: Execute signed helper and packaged roundtrip without inherited secrets
@@ -315,7 +331,7 @@ jobs:
             USER="$USER" \
             LOGNAME="$LOGNAME" \
             ./trusted-control-plane/Scripts/smoke_embedded_mcp_helper.sh \
-            "extracted/RepoPrompt CE.app" \
+            "extracted/Agentry.app" \
             "Signed draft MCP helper"
           env -i \
             PATH=/usr/bin:/bin:/usr/sbin:/sbin \
@@ -326,6 +342,6 @@ jobs:
             REPOPROMPT_PACKAGED_SMOKE_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_TIMEOUT" \
             REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT" \
             ./trusted-control-plane/Scripts/smoke_packaged_mcp_roundtrip.sh \
-            "extracted/RepoPrompt CE.app" \
+            "extracted/Agentry.app" \
             "Signed draft packaged app" \
             "$ARTIFACT_MANIFEST_PATH"

@@ -1,4 +1,4 @@
-# Testing RepoPrompt CE
+# Testing Agentry
 
 Use this guide for contributor-facing XCTest changes. Follow `AGENTS.md` for coordinated daemon use, style checks, and lifecycle approvals. Use `$rpce-test-quality` when deciding whether coverage is worth adding, retaining, consolidating, or removing.
 
@@ -83,7 +83,7 @@ Use focused before/after measurements to attribute a change, then exercise the f
 
 ## Live Codex Desktop direct-headless worktree routing
 
-Run this release acceptance only from a Codex Desktop task whose repository root is an existing linked worktree and whose RepoPrompt launcher selects `--backend headless` with that exact root in `REPOPROMPT_MCP_WORKING_DIRS`. The canonical checkout must already belong to one saved RepoPrompt CE workspace. This lane validates an installed release candidate; it does not build, install, launch, stop, or relaunch RepoPrompt, create a workspace, or create a worktree.
+Run this release acceptance only from a Codex Desktop task whose repository root is an existing linked worktree and whose Agentry launcher selects `--backend headless` with that exact root in `AGENTRY_MCP_WORKING_DIRS`. The canonical checkout must already belong to one saved Agentry workspace. This lane validates an installed release candidate; it does not build, install, launch, stop, or relaunch RepoPrompt, create a workspace, or create a worktree.
 
 Record the saved workspace file hash and `git worktree list --porcelain` before starting. In the same Codex task:
 
@@ -96,7 +96,7 @@ The Codex Desktop pre-start app-CLI isolation fallback remains in place through 
 
 ## Live Agent Mode file-tool performance diagnostic
 
-`Scripts/benchmark_agent_mode_file_tools.py` measures paired `file_search` and `read_file` calls from exactly two concurrent Explore sessions: the normal workspace root and a linked worktree. It requires an already-running RepoPrompt CE DEBUG app and never launches, stops, or relaunches the app.
+`Scripts/benchmark_agent_mode_file_tools.py` measures paired `file_search` and `read_file` calls from exactly two concurrent Explore sessions: the normal workspace root and a linked worktree. It requires an already-running Agentry DEBUG app and never launches, stops, or relaunches the app.
 
 ```bash
 python3 Scripts/benchmark_agent_mode_file_tools.py \
@@ -126,7 +126,7 @@ python3 Scripts/test_agent_mode_file_tools_benchmark.py
 ## Live large-workspace worktree-startup diagnostic
 
 `Scripts/worktree_startup_live_benchmark.py` is the reusable validation lane for
-large-root and linked-worktree startup. It drives `rpce-cli-debug` and the
+large-root and linked-worktree startup. It drives `agentry-cli-debug` and the
 DEBUG-only `worktree_startup_benchmark` diagnostics. It never builds, installs,
 launches, stops, or relaunches RepoPrompt. A fresh-process (cold) run therefore
 requires a separately approved relaunch before invoking the script; label a run
@@ -141,7 +141,7 @@ behavioral tests or the broader suite validation required by the changed boundar
 
 The worktree interactive-readiness campaign uses additive DEBUG diagnostic
 schema 5. Production route behavior is unchanged. Its authoritative iteration-0
-root is the real RepoPrompt CE main checkout in the dedicated
+root is the real Agentry main checkout in the dedicated
 `RPCE Search Bench Main 20260618` workspace (or a clearly owned equivalent real
 clone), never the active development tab/workspace. Synthetic repositories are
 allowed only by `self-test` and are labeled non-authoritative.
@@ -294,7 +294,7 @@ time are never evidence.
 Use a disposable workspace whose name starts with `RPCE 8E Bench ` or the
 established `RPCE Search Bench ` prefix. Never use
 the active development checkout: the driver rejects its own repository root.
-Create/open a separate disposable root with `rpce-cli-debug`, bind the benchmark
+Create/open a separate disposable root with `agentry-cli-debug`, bind the benchmark
 tab, and record its exact window, workspace, context, and root IDs. A name or
 current selection is not proof of isolation. Create an exclusive root marker
 with a new owner UUID after those stable IDs exist:
@@ -367,7 +367,7 @@ Explicitly enable the DEBUG-only gate for the campaign; the harness verifies it
 but never changes this global setting on the operator's behalf:
 
 ```bash
-rpce-cli-debug -w 3 -c app_settings -j \
+agentry-cli-debug -w 3 -c app_settings -j \
   '{"op":"set","key":"agent_mode.worktree_startup_benchmark_diagnostics_enabled","value":true}'
 ```
 
@@ -578,7 +578,7 @@ evidence.
 ### Mandatory live codemap projection-demand gate
 
 `codemap-gate` is the packaged-app release authority for live codemap demand.
-It uses the already-running current DEBUG app, `rpce-cli-debug`, the exact
+It uses the already-running current DEBUG app, `agentry-cli-debug`, the exact
 dedicated workspace plan above, and real `agent_run` sessions. It never builds,
 launches, stops, or relaunches the app. Prepare lifecycle state separately with
 the approval required by `AGENTS.md`. The planned root must be an owned,
@@ -650,7 +650,7 @@ python3 Scripts/worktree_startup_live_benchmark.py codemap-gate \
 ```
 
 The printed artifact directory is local raw evidence. It contains the exact
-`rpce-cli-debug` JSON, agent transcript XML, sample NDJSON, state, cleanup,
+`agentry-cli-debug` JSON, agent transcript XML, sample NDJSON, state, cleanup,
 resource, fixture, plan, and derived summary files. Directories must remain
 `0700` and files `0600`. The final scan fails closed on credential patterns,
 the developer checkout, unallowlisted home/private paths, or mode drift.
@@ -665,7 +665,7 @@ The command passes only when all of these gates pass:
    absence of its exact codemap `+` marker through a non-demanding tree probe;
    warm repetitions reuse those same cold fixtures. All requests use the
    server-owned fixed 10-second readiness deadline. Before live work begins,
-   the harness saves `rpce-cli-debug describe get_code_structure` and fails
+   the harness saves `agentry-cli-debug describe get_code_structure` and fails
    immediately if the model-facing schema advertises a caller-controlled
    readiness deadline; no harness or agent request may tune that deadline.
 2. Every successful structure request is exactly `ready`, contains the expected

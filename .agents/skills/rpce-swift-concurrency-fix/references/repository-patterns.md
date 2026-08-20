@@ -1,4 +1,4 @@
-# RepoPrompt CE concurrency patterns
+# Agentry concurrency patterns
 
 Use these as review prompts, not copy-paste prescriptions. Read current implementations and tests before reusing or changing them.
 

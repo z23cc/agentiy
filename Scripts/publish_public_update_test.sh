@@ -8,11 +8,11 @@ set -a
 source "$ROOT_DIR/version.env"
 set +a
 
-PUBLIC_UPDATE_REPOSITORY="${PUBLIC_UPDATE_REPOSITORY:-repoprompt/repoprompt-ce-updates}"
+PUBLIC_UPDATE_REPOSITORY="${PUBLIC_UPDATE_REPOSITORY:-}"
 PUBLIC_UPDATE_TAG="${PUBLIC_UPDATE_TAG:-v${MARKETING_VERSION}-private-smoke.${BUILD_NUMBER}}"
 PUBLIC_UPDATE_BASE_URL="https://github.com/$PUBLIC_UPDATE_REPOSITORY/releases/download/$PUBLIC_UPDATE_TAG"
 PUBLIC_FEED_URL="$PUBLIC_UPDATE_BASE_URL/appcast.xml"
-SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-repoprompt-ce}"
+SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-agentry}"
 UPDATE_ZIP="${1:-$ROOT_DIR/dist/${APP_NAME}-${MARKETING_VERSION}-${BUILD_NUMBER}.zip}"
 ARTIFACT_MANIFEST="${UPDATE_ZIP%.zip}-artifact-manifest.json"
 GENERATE_APPCAST="$ROOT_DIR/Vendor/Sparkle/bin/generate_appcast"
@@ -34,6 +34,7 @@ trap cleanup EXIT
 
 [[ "${CONFIRM_PUBLIC_UPDATE_TEST:-}" == "1" ]] ||
     fail "Set CONFIRM_PUBLIC_UPDATE_TEST=1 to acknowledge that this publishes a signed test update publicly."
+[[ -n "$PUBLIC_UPDATE_REPOSITORY" ]] || fail "PUBLIC_UPDATE_REPOSITORY must name an explicit Agentry test-update repository."
 [[ -f "$UPDATE_ZIP" ]] || fail "Missing update ZIP: $UPDATE_ZIP"
 [[ -f "$ARTIFACT_MANIFEST" ]] || fail "Missing update artifact manifest: $ARTIFACT_MANIFEST"
 [[ -x "$GENERATE_APPCAST" ]] || fail "Missing Sparkle generate_appcast tool: $GENERATE_APPCAST"
@@ -71,16 +72,16 @@ printf '%s\n' "$signature_details" | grep -q '^Authority=Developer ID Applicatio
     fail "Signed app team mismatch: expected $SIGNING_TEAM_ID, got ${team_identifier:-<missing>}"
 xcrun stapler validate "$APP_BUNDLE"
 "$ROOT_DIR/Scripts/validate_embedded_mcp_helper_layout.sh" "$APP_BUNDLE" "Public updater ZIP MCP helper layout"
-"$ROOT_DIR/Scripts/validate_app_architectures.sh" "$APP_BUNDLE" "arm64,x86_64" "Public updater ZIP app"
+"$ROOT_DIR/Scripts/validate_app_architectures.sh" "$APP_BUNDLE" "Public updater ZIP app"
 python3 "$ROOT_DIR/Scripts/codex_runtime_artifact.py" \
     --manifest "$ROOT_DIR/Vendor/Codex/manifest.json" verify-bundle \
-    --arch all \
+    --arch arm64 \
     --bundle "$APP_BUNDLE/Contents/Resources/BundledRuntimes/Codex" \
     --signed-team-identifier "$SIGNING_TEAM_ID"
 "$ROOT_DIR/Scripts/write_app_artifact_manifest.py" verify \
     --app "$APP_BUNDLE" \
     --manifest "$ARTIFACT_MANIFEST" \
-    --expected-architectures "arm64,x86_64"
+    --expected-architectures "arm64"
 
 bundle_identifier="$(plutil -extract CFBundleIdentifier raw "$APP_BUNDLE/Contents/Info.plist")"
 marketing_version="$(plutil -extract CFBundleShortVersionString raw "$APP_BUNDLE/Contents/Info.plist")"
@@ -116,8 +117,8 @@ gh release create "$PUBLIC_UPDATE_TAG" \
     --repo "$PUBLIC_UPDATE_REPOSITORY" \
     --target main \
     --latest=false \
-    --title "RepoPrompt CE $MARKETING_VERSION private-repo updater smoke" \
-    --notes "Public updater smoke artifact for RepoPrompt CE $MARKETING_VERSION ($BUILD_NUMBER). Source remains private during release validation."
+    --title "Agentry $MARKETING_VERSION private-repo updater smoke" \
+    --notes "Public updater smoke artifact for Agentry $MARKETING_VERSION ($BUILD_NUMBER). Source remains private during release validation."
 
 curl --fail --location --retry 8 --retry-delay 3 --retry-all-errors \
     "$PUBLIC_FEED_URL" \
@@ -125,5 +126,5 @@ curl --fail --location --retry 8 --retry-delay 3 --retry-all-errors \
 grep -q "$PUBLIC_UPDATE_BASE_URL/" "$TMP_DIR/published-appcast.xml" ||
     fail "Published appcast does not point at the expected public update URL."
 
-printf 'Published public RepoPrompt CE updater smoke release: %s\n' "$PUBLIC_UPDATE_TAG"
+printf 'Published public Agentry updater smoke release: %s\n' "$PUBLIC_UPDATE_TAG"
 printf 'Isolated smoke feed URL: %s\n' "$PUBLIC_FEED_URL"

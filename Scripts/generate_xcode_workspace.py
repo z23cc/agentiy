@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the disposable RepoPrompt CE developer workspace.
+"""Generate the disposable Agentry developer workspace.
 
 Package.swift remains the build graph.  This generator adds three legacy
 convenience targets which delegate to the repository's existing developer
@@ -26,18 +26,20 @@ from xml.sax.saxutils import escape as xml_escape
 
 
 SCHEMA_VERSION = 1
-GENERATOR_ID = "com.repoprompt.ce.xcode-workspace-generator"
-OWNERSHIP_MARKER = Path(".repoprompt-xcode-workspace")
-WORKSPACE_NAME = "RepoPromptCE.xcworkspace"
-PROJECT_NAME = "RepoPromptCE.xcodeproj"
-APP_SCHEME = "RepoPrompt CE App"
-MCP_SCHEME = "RepoPrompt CE MCP"
-TEST_SCHEME = "RepoPrompt CE Tests"
+GENERATOR_ID = "io.github.z23cc.agentry.xcode-workspace-generator"
+OWNERSHIP_MARKER = Path(".agentry-xcode-workspace")
+LEGACY_GENERATOR_ID = "com.repoprompt.ce.xcode-workspace-generator"
+LEGACY_OWNERSHIP_MARKER = Path(".repoprompt-xcode-workspace")
+WORKSPACE_NAME = "Agentry.xcworkspace"
+PROJECT_NAME = "Agentry.xcodeproj"
+APP_SCHEME = "Agentry App"
+MCP_SCHEME = "Agentry MCP"
+TEST_SCHEME = "Agentry Tests"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DESTINATION = REPO_ROOT / ".build/xcode"
 CUSTOM_DESTINATION_ROOT = REPO_ROOT / ".build/xcode-custom"
 DEFAULT_DEBUG_APP_BUNDLE = (
-    Path.home() / "Library/Application Support/RepoPrompt CE/DebugApps/RepoPrompt.app"
+    Path.home() / "Library/Application Support/Agentry/DebugApps/Agentry.app"
 )
 
 
@@ -91,17 +93,21 @@ def _by_name_dependencies(target: dict) -> list[str]:
 
 
 def validate_manifest(manifest: dict, repo_root: Path) -> None:
-    if manifest.get("name") != "RepoPromptCE":
-        raise GeneratorError("Package.swift must define package 'RepoPromptCE'")
+    if manifest.get("name") != "Agentry":
+        raise GeneratorError("Package.swift must define package 'Agentry'")
 
     products = {product.get("name"): product for product in manifest.get("products", [])}
-    for name in ("RepoPrompt", "repoprompt-mcp"):
+    for name in ("Agentry", "agentry-mcp"):
         product = products.get(name)
         if product is None or "executable" not in product.get("type", {}):
             raise GeneratorError(f"Package.swift must retain executable product '{name}'")
-    if products["RepoPrompt"].get("targets") != ["RepoPrompt"]:
+    if products["Agentry"].get("targets") != ["RepoPrompt"]:
         raise GeneratorError(
-            "Executable product 'RepoPrompt' must remain mapped only to target 'RepoPrompt'"
+            "Executable product 'Agentry' must remain mapped only to target 'RepoPrompt'"
+        )
+    if products["agentry-mcp"].get("targets") != ["RepoPromptMCP"]:
+        raise GeneratorError(
+            "Executable product 'agentry-mcp' must remain mapped only to target 'RepoPromptMCP'"
         )
 
     targets = _target_map(manifest)
@@ -261,7 +267,7 @@ def render_workspace(repository_relative_path: str) -> str:
 <Workspace
    version = "1.0">
    <FileRef
-      location = "group:RepoPromptCE.xcodeproj">
+      location = "group:Agentry.xcodeproj">
    </FileRef>
    <FileRef
       location = "group:{repository_relative_path}">
@@ -413,7 +419,7 @@ def render_project(repository_relative_path: str) -> str:
 \t\t\t\tBuildIndependentTargetsInParallel = 1;
 \t\t\t\tLastUpgradeCheck = 2630;
 \t\t\t}};
-\t\t\tbuildConfigurationList = {project_config_list_id} /* Build configuration list for PBXProject \"RepoPromptCE\" */;
+\t\t\tbuildConfigurationList = {project_config_list_id} /* Build configuration list for PBXProject \"Agentry\" */;
 \t\t\tcompatibilityVersion = \"Xcode 16.0\";
 \t\t\tdevelopmentRegion = en;
 \t\t\thasScannedForEncodings = 0;
@@ -447,7 +453,7 @@ def render_project(repository_relative_path: str) -> str:
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-\t\t{project_config_list_id} /* Build configuration list for PBXProject \"RepoPromptCE\" */ = {{
+\t\t{project_config_list_id} /* Build configuration list for PBXProject \"Agentry\" */ = {{
 \t\t\tisa = XCConfigurationList;
 \t\t\tbuildConfigurations = ({project_debug_id} /* Debug */, {project_release_id} /* Release */);
 \t\t\tdefaultConfigurationIsVisible = 0;
@@ -495,13 +501,13 @@ def render_scheme(
     if app:
         environment = f"""
       <EnvironmentVariables>
-         <EnvironmentVariable key = "REPOPROMPT_LAUNCH_SOURCE" value = "xcode" isEnabled = "YES"/>
+         <EnvironmentVariable key = "AGENTRY_LAUNCH_SOURCE" value = "xcode" isEnabled = "YES"/>
          <EnvironmentVariable key = "__XCODE_BUILT_PRODUCTS_DIR_PATHS" value = "{repository_path}/.build/debug" isEnabled = "YES"/>
       </EnvironmentVariables>"""
         preactions = f"""
       <PreActions>
          <ExecutionAction ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
-            <ActionContent title = "Stop existing RepoPrompt CE debug app" scriptText = "&quot;${{PROJECT_DIR}}/{repository_relative_path}/Scripts/xcode_developer_workflow.sh&quot; prepare-app-run">
+            <ActionContent title = "Stop existing Agentry debug app" scriptText = "&quot;${{PROJECT_DIR}}/{repository_relative_path}/Scripts/xcode_developer_workflow.sh&quot; prepare-app-run">
                <EnvironmentBuildable>
                   <BuildableReference BuildableIdentifier = "primary" BlueprintIdentifier = "{target_id}" BuildableName = "{name}" BlueprintName = "{name}" ReferencedContainer = "container:{PROJECT_NAME}"/>
                </EnvironmentBuildable>
@@ -565,14 +571,14 @@ def render_test_scheme(working_directory: Path) -> str:
 
 
 def render_generated_readme() -> str:
-    return """# Generated RepoPrompt CE Xcode Workspace
+    return """# Generated Agentry Xcode Workspace
 
 This directory is disposable. Regenerate it with `make xcode-generate`; do not edit it.
 
-- `RepoPrompt CE App` builds and runs the canonical packaged debug app through conductor.
-- `RepoPrompt CE MCP` builds the MCP executable through conductor.
-- `RepoPrompt CE Tests` builds the authoritative XCTest suite through conductor. Set
-  `REPOPROMPT_XCODE_TEST_FILTER` before building to run a focused filter.
+- `Agentry App` builds and runs the canonical packaged debug app through conductor.
+- `Agentry MCP` builds the MCP executable through conductor.
+- `Agentry Tests` builds the authoritative XCTest suite through conductor. Set
+  `AGENTRY_XCODE_TEST_FILTER` before building to run a focused filter.
 
 The root Swift package reference provides source browsing and indexing. Its native Xcode
 test action is not the supported test workflow because Xcode does not expose the
@@ -643,7 +649,7 @@ def render_outputs(
         Path(PROJECT_NAME) / f"xcshareddata/xcschemes/{MCP_SCHEME}.xcscheme": render_scheme(
             MCP_SCHEME,
             "target:mcp",
-            f"$(PROJECT_DIR)/{relative_repo}/.build/debug/repoprompt-mcp",
+            f"$(PROJECT_DIR)/{relative_repo}/.build/debug/agentry-mcp",
             app=False,
             repository_relative_path=relative_repo,
             working_directory=repo_root,
@@ -711,7 +717,7 @@ def validate_structure(destination: Path) -> None:
     except (ET.ParseError, OSError) as error:
         raise GeneratorError(f"invalid generated workspace XML: {error}") from error
     locations = {node.attrib.get("location") for node in workspace.findall(".//FileRef")}
-    if locations != {"group:RepoPromptCE.xcodeproj", f"group:{relative_repo}"}:
+    if locations != {"group:Agentry.xcodeproj", f"group:{relative_repo}"}:
         raise GeneratorError("generated workspace does not reference the project and root package")
 
     project_text = (destination / PROJECT_NAME / "project.pbxproj").read_text()
@@ -793,21 +799,38 @@ def validate_generator_owned_destination(destination: Path) -> None:
     if not destination.is_dir():
         raise GeneratorError(f"existing destination is not a directory: {destination}")
     marker = destination / OWNERSHIP_MARKER
-    if marker.is_symlink() or not marker.is_file():
-        raise GeneratorError(
-            f"refusing to replace non-generator-owned destination: {destination}; "
-            "remove it manually or choose another destination"
-        )
-    try:
-        marker_content = marker.read_text()
-    except OSError as error:
+    if marker.is_symlink():
         raise GeneratorError(
             f"refusing to replace destination with an invalid ownership marker: {destination}"
-        ) from error
-    if marker_content != f"{GENERATOR_ID}\n":
-        raise GeneratorError(
-            f"refusing to replace destination owned by another tool: {destination}"
         )
+    if marker.is_file():
+        try:
+            marker_content = marker.read_text()
+        except OSError as error:
+            raise GeneratorError(
+                f"refusing to replace destination with an invalid ownership marker: {destination}"
+            ) from error
+        if marker_content != f"{GENERATOR_ID}\n":
+            raise GeneratorError(
+                f"refusing to replace destination owned by another tool: {destination}"
+            )
+        return
+
+    legacy_marker = destination / LEGACY_OWNERSHIP_MARKER
+    if not legacy_marker.is_symlink() and legacy_marker.is_file():
+        try:
+            legacy_content = legacy_marker.read_text()
+        except OSError as error:
+            raise GeneratorError(
+                f"refusing to replace destination with an invalid ownership marker: {destination}"
+            ) from error
+        if legacy_content == f"{LEGACY_GENERATOR_ID}\n":
+            return
+
+    raise GeneratorError(
+        f"refusing to replace non-generator-owned destination: {destination}; "
+        "remove it manually or choose another destination"
+    )
 
 
 @contextmanager

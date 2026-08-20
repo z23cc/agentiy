@@ -21,10 +21,10 @@ on accessibilityPermissionPreflight()
             set permissionEnabled to UI elements enabled
         end tell
     on error
-        error "Accessibility permission is required for this UI smoke. Enable RepoPrompt CE in System Settings > Privacy & Security > Accessibility."
+        error "Accessibility permission is required for this UI smoke. Enable Agentry in System Settings > Privacy & Security > Accessibility."
     end try
     if not permissionEnabled then
-        error "Accessibility permission is required for this UI smoke. Enable RepoPrompt CE in System Settings > Privacy & Security > Accessibility."
+        error "Accessibility permission is required for this UI smoke. Enable Agentry in System Settings > Privacy & Security > Accessibility."
     end if
 end accessibilityPermissionPreflight
 

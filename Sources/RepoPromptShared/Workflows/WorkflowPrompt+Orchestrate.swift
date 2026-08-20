@@ -15,7 +15,7 @@ extension RepoPromptWorkflowPrompts {
 		case .agent: suffix = ""; title = "Orchestrator"
 		case .mcp: suffix = ""; title = "MCP Orchestrator"
 		}
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 
 		return """
 \(frontmatter(name: "rp-orchestrate", description: "Plan, decompose, and delegate complex tasks across multiple agents using \(toolDesc)", variant: variant))
@@ -72,9 +72,9 @@ Then:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'tree'
-rpce-cli -w <window_id> -e 'search "<key term>"'
-rpce-cli -w <window_id> -e 'builder "<contextualized task>" --response-type plan --export'
+agentry-cli -w <window_id> -e 'tree'
+agentry-cli -w <window_id> -e 'search "<key term>"'
+agentry-cli -w <window_id> -e 'builder "<contextualized task>" --response-type plan --export'
 ```
 """))
 
@@ -93,7 +93,7 @@ If you can't disambiguate from a quick scan, dispatch a narrow explore agent fir
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Explore: <area>" message="Check <specific thing>"'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Explore: <area>" message="Check <specific thing>"'
 ```
 """))
 
@@ -142,8 +142,8 @@ The tool returns `oracle_export_path` and `oracle_export_instruction`. Include `
 	cli: """
 ```bash
 # Generate and export the plan, then reference the returned path in agent_run message.
-rpce-cli -w <window_id> -e 'builder "<task description>" --response-type plan --export'
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Orchestrate: <goal>" message="Read the plan at <plan path> with read_file first. Implement <work item>."'
+agentry-cli -w <window_id> -e 'builder "<task description>" --response-type plan --export'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Orchestrate: <goal>" message="Read the plan at <plan path> with read_file first. Implement <work item>."'
 ```
 """))
 
@@ -207,16 +207,16 @@ Do **not** fire-and-forget the full list. Catching drift early — before the ne
 	cli: """
 ```bash
 # 1. Dispatch item 1 as a fresh agent
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Orchestrate 1/N: <goal>" message="Read the plan at <plan path> with read_file first. Your job is item 1: <brief>."'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Orchestrate 1/N: <goal>" message="Read the plan at <plan path> with read_file first. Your job is item 1: <brief>."'
 
 # 2. Verify output, spot-check key files
-rpce-cli -w <window_id> -e 'read "<key file from item 1>"'
+agentry-cli -w <window_id> -e 'read "<key file from item 1>"'
 
 # 3. Update plan file to record progress
-rpce-cli -w <window_id> -e 'call apply_edits {"path":"<plan path>","search":"- [ ] Item 1:","replace":"- [x] Item 1:"}'
+agentry-cli -w <window_id> -e 'call apply_edits {"path":"<plan path>","search":"- [ ] Item 1:","replace":"- [x] Item 1:"}'
 
 # 4. Dispatch item 2 as a new fresh agent
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Orchestrate 2/N: <goal>" message="Read the plan at <plan path> with read_file first. Item 1 is complete. Your job is item 2: <brief>."'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=pair session_name="Orchestrate 2/N: <goal>" message="Read the plan at <plan path> with read_file first. Item 1 is complete. Your job is item 2: <brief>."'
 ```
 """))
 
@@ -245,7 +245,7 @@ When steering, the loop is the same but step 5 becomes `agent_run op=steer` on t
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="Item 1 looks good. Moving on to item 2: <brief>" wait=true'
+agentry-cli -w <window_id> -e 'agent_run op=steer session_id="<session_id>" message="Item 1 looks good. Moving on to item 2: <brief>" wait=true'
 ```
 """))
 

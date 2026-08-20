@@ -10,7 +10,7 @@ extension RepoPromptWorkflowPrompts {
 	/// Generate rp-deep-plan for a specific variant.
 	static func rpDeepPlan(variant: WorkflowPromptVariant, includeSessionCleanupGuidance: Bool = true) -> String {
 		let suffix = variant == .cli ? " (CLI)" : ""
-		let toolDesc = variant == .cli ? "rpce-cli" : "RepoPrompt MCP tools"
+		let toolDesc = variant == .cli ? "agentry-cli" : "RepoPrompt MCP tools"
 
 		return """
 \(frontmatter(name: "rp-deep-plan", description: "Deep planning workflow using \(toolDesc): map seams, draft, critique, polish — produces a ready-to-execute plan document", variant: variant))
@@ -72,7 +72,7 @@ Before any exploration, ask the user how involved they want to be. This is the *
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'call ask_user {"question":"How involved would you like to be while I shape this plan?","options":["Up front — I want to clarify the prompt before exploration begins.","Mid-flow — check in with me before the design agent reviews the draft.","Hands-off — surface the plan when it is ready, then we can refine it interactively."],"context":"This decides where I pause for your input. The default if you skip or don'\''t reply is hands-off.","timeout_seconds":120}'
+agentry-cli -w <window_id> -e 'call ask_user {"question":"How involved would you like to be while I shape this plan?","options":["Up front — I want to clarify the prompt before exploration begins.","Mid-flow — check in with me before the design agent reviews the draft.","Hands-off — surface the plan when it is ready, then we can refine it interactively."],"context":"This decides where I pause for your input. The default if you skip or don'\''t reply is hands-off.","timeout_seconds":120}'
 ```
 """))
 
@@ -112,7 +112,7 @@ Don't jump to questions. Dispatch 1–2 narrow explore agents first, **scoped to
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Ambiguity scout: <area>" message="What existing patterns or conventions in <area> might apply to <user task>? Report 2–3 concrete patterns with file:line refs and a one-sentence description. Don'\\''t propose solutions." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Ambiguity scout: <area>" message="What existing patterns or conventions in <area> might apply to <user task>? Report 2–3 concrete patterns with file:line refs and a one-sentence description. Don'\\''t propose solutions." detach=true'
 ```
 """))
 
@@ -166,9 +166,9 @@ Each explore gets ONE narrow question. Spawn with `detach: true`, then wait on t
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Seams: <area>" message="How does <subsystem> connect to <adjacent area>? Key types, extension points, file:line refs." detach=true'
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="External: <topic>" message="Look up <library/API/RFC>. Report current behavior, version notes, and 2–3 links." detach=true'
-rpce-cli -w <window_id> -e 'agent_run op=wait session_ids=["<id1>","<id2>"] timeout=120'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="Seams: <area>" message="How does <subsystem> connect to <adjacent area>? Key types, extension points, file:line refs." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=explore session_name="External: <topic>" message="Look up <library/API/RFC>. Report current behavior, version notes, and 2–3 links." detach=true'
+agentry-cli -w <window_id> -e 'agent_run op=wait session_ids=["<id1>","<id2>"] timeout=120'
 ```
 """))
 
@@ -196,7 +196,7 @@ Create `docs/plans/<topic>-<YYYY-MM-DD>.md`. Seed it with a **lightweight pre-dr
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'file create docs/plans/<topic>-<YYYY-MM-DD>.md "# <Topic>: Plan
+agentry-cli -w <window_id> -e 'file create docs/plans/<topic>-<YYYY-MM-DD>.md "# <Topic>: Plan
 
 ## Goal
 <1–2 sentence restatement in the codebase'\\''s actual terms>
@@ -233,7 +233,7 @@ Call \(builderName) in plan mode with `export_response: true`. Request the full 
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'builder "<task><user task, restated in the codebase'\\''s terms></task>
+agentry-cli -w <window_id> -e 'builder "<task><user task, restated in the codebase'\\''s terms></task>
 
 <context>See the in-progress plan at docs/plans/<topic>-<YYYY-MM-DD>.md. Its Background section holds the curated explore-agent findings, plus the goal and open questions gathered so far. Build on that context rather than re-deriving it.
 
@@ -259,7 +259,7 @@ The tool returns `oracle_export_path`. **Use the export's generated plan as the 
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'read <oracle_export_path>'
+agentry-cli -w <window_id> -e 'read <oracle_export_path>'
 ```
 """))
 
@@ -293,7 +293,7 @@ Dispatch a design agent **once**, with tight scope, to check the plan against bo
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'agent_run op=start model_id=design session_name="Plan critique: <topic>" message="Read the plan at docs/plans/<topic>-<YYYY-MM-DD>.md and the complete original builder export at <oracle_export_path> — treat only its generated plan response as the baseline; any composed prompt or selected-file dump is context, not plan content. Check for implementation-bearing content missing, weakened, or generalized; under-specified seams, contradictions, or incorrect references; details the code disproves, the task does not require, or a named simpler design replaces (give the correction); requirements or architectural problems absent from both — ownership, lifecycle, failure behavior, cancellation, testability; and material questions. Do not remove accurate content merely because it is specific or low-level, expand scope, rewrite the plan, or explore broadly." wait=true'
+agentry-cli -w <window_id> -e 'agent_run op=start model_id=design session_name="Plan critique: <topic>" message="Read the plan at docs/plans/<topic>-<YYYY-MM-DD>.md and the complete original builder export at <oracle_export_path> — treat only its generated plan response as the baseline; any composed prompt or selected-file dump is context, not plan content. Check for implementation-bearing content missing, weakened, or generalized; under-specified seams, contradictions, or incorrect references; details the code disproves, the task does not require, or a named simpler design replaces (give the correction); requirements or architectural problems absent from both — ownership, lifecycle, failure behavior, cancellation, testability; and material questions. Do not remove accurate content merely because it is specific or low-level, expand scope, rewrite the plan, or explore broadly." wait=true'
 ```
 """))
 
@@ -332,7 +332,7 @@ Delete the export only after this check passes:
 """,
 	cli: """
 ```bash
-rpce-cli -w <window_id> -e 'call file_actions {"action":"delete","path":"<oracle_export_path>"}'
+agentry-cli -w <window_id> -e 'call file_actions {"action":"delete","path":"<oracle_export_path>"}'
 ```
 """))
 
@@ -368,7 +368,7 @@ The current Phase 4 export is not fully consumed until the Phase 7.5 fidelity ch
 
 ---
 
-Now begin with Phase 0.\(variant == .cli ? " First run `rpce-cli -e 'windows'` to find the correct window." : "")
+Now begin with Phase 0.\(variant == .cli ? " First run `agentry-cli -e 'windows'` to find the correct window." : "")
 """
 	}
 

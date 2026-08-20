@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_BUNDLE="${1:-}"
 SMOKE_LABEL="${2:-Packaged MCP roundtrip}"
 ARTIFACT_MANIFEST="${3:-}"
-EXPECTED_ARCHITECTURES="${REPOPROMPT_EXPECTED_ARCHITECTURES:-arm64,x86_64}"
+EXPECTED_ARCHITECTURES="${AGENTRY_EXPECTED_ARCHITECTURES:-arm64}"
 ROUNDTRIP_TIMEOUT="${REPOPROMPT_PACKAGED_SMOKE_TIMEOUT:-60}"
 HELPER_REQUEST_TIMEOUT="${REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT:-30}"
 SOCKET_OWNER_HELPER="$SCRIPT_DIR/verify_packaged_mcp_socket_owner.py"
@@ -106,7 +106,8 @@ trap 'exit 130' INT TERM
 [[ "$HELPER_REQUEST_TIMEOUT" =~ ^[0-9]+$ && "$HELPER_REQUEST_TIMEOUT" -gt 0 ]] ||
     fail "REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT must be a positive integer, got $HELPER_REQUEST_TIMEOUT"
 "$SCRIPT_DIR/validate_embedded_mcp_helper_layout.sh" "$APP_BUNDLE" "$SMOKE_LABEL layout"
-"$SCRIPT_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "$EXPECTED_ARCHITECTURES" "$SMOKE_LABEL architectures"
+[[ "$EXPECTED_ARCHITECTURES" == "arm64" ]] || fail "AGENTRY_EXPECTED_ARCHITECTURES must be arm64"
+"$SCRIPT_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "$SMOKE_LABEL architectures"
 if [[ -n "$ARTIFACT_MANIFEST" ]]; then
     "$SCRIPT_DIR/write_app_artifact_manifest.py" verify \
         --app "$APP_BUNDLE" \
@@ -121,7 +122,7 @@ from pathlib import Path
 
 app = Path(sys.argv[1]).resolve(strict=True)
 app_executable = (app / "Contents" / "MacOS" / "RepoPrompt").resolve(strict=True)
-helper = (app / "Contents" / "MacOS" / "repoprompt-mcp").resolve(strict=True)
+helper = (app / "Contents" / "MacOS" / "agentry-mcp").resolve(strict=True)
 for label, path in (("app executable", app_executable), ("MCP helper", helper)):
     if not path.is_relative_to(app):
         raise SystemExit(f"ERROR: canonical {label} escapes app bundle: {path}")
@@ -145,7 +146,7 @@ APP_LOG="$TEMP_ROOT/app.log"
 mkdir -p "$ISOLATED_HOME/Library/Keychains" "$ISOLATED_HOME/Library/Preferences" "$ISOLATED_TMP"
 chmod 700 "$TEMP_ROOT" "$ISOLATED_HOME" "$ISOLATED_HOME/Library" \
     "$ISOLATED_HOME/Library/Keychains" "$ISOLATED_HOME/Library/Preferences" "$ISOLATED_TMP"
-HELPER_DEBUG_LOG="$ISOLATED_HOME/Library/Application Support/RepoPrompt CE/socket-proxy-debug.log"
+HELPER_DEBUG_LOG="$ISOLATED_HOME/Library/Application Support/Agentry/socket-proxy-debug.log"
 # The signed app must exercise its production Keychain backend, but the isolated HOME has no
 # login keychain. Supply a short-lived unlocked default so first-launch writes cannot request UI.
 SMOKE_KEYCHAIN_PATH="$ISOLATED_HOME/Library/Keychains/repoprompt-packaged-smoke.keychain-db"

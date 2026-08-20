@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptShared
 
 protocol GlobalSettingsFileStoring {
     var fileURL: URL { get }
@@ -40,12 +41,11 @@ enum GlobalSettingsPersistenceBlockReason: Equatable {
 /// File-backed store for the versioned global settings document.
 ///
 /// Primary location:
-/// `~/Library/Application Support/RepoPrompt CE/Settings/globalSettings.json`
+/// `~/Library/Application Support/Agentry/Settings/globalSettings.json`
 ///
 /// Schema identity is `(schemaLineage, schemaVersion)`, not `schemaVersion` alone.
 /// See `docs/architecture/settings-persistence.md` before changing the preservation rules.
 final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
-    static let appSupportDirectoryName = "RepoPrompt CE"
     static let settingsDirectoryName = "Settings"
     static let filename = "globalSettings.json"
 
@@ -87,10 +87,7 @@ final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
     }
 
     static func settingsDirectoryURL(fileManager: FileManager = .default) -> URL {
-        let supportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-        return supportDirectory
-            .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
+        AgentryProductIdentity.applicationSupportRootURL(fileManager: fileManager)
             .appendingPathComponent(settingsDirectoryName, isDirectory: true)
     }
 

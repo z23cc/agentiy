@@ -2792,7 +2792,7 @@ import XCTest
                         terminalPayload["last_handler_phase"] as? String,
                         MCPToolExecutionHandlerPhase.getCodeStructureGraphTraversal.rawValue
                     )
-                    XCTAssertTrue((terminalPayload["error"] as? String)?.contains("restart RepoPrompt CE") == true)
+                    XCTAssertTrue((terminalPayload["error"] as? String)?.contains("restart Agentry") == true)
 
                     let siblingAtLimitResponse = try await fixture.endpointB().callTool(
                         name: MCPWindowToolName.readFile,

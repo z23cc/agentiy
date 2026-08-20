@@ -688,7 +688,7 @@ enum SettingsTab: String, CaseIterable {
                 "url opener",
                 "deep link",
                 "deep links",
-                "repoprompt-ce://",
+                "agentry://",
                 "open links",
                 "prompt",
                 "instructions",

@@ -5,10 +5,42 @@ import XCTest
 
 @MainActor
 final class SettingsJSONOnlyPersistenceTests: XCTestCase {
-    func testDefaultGlobalSettingsPathUsesCESupportRoot() {
+    func testDefaultGlobalSettingsFileStorePathUsesAgentrySupportRoot() {
         let path = GlobalSettingsFileStore.defaultFileURL().path
-        XCTAssertTrue(path.contains("/Application Support/RepoPrompt CE/Settings/globalSettings.json"), path)
-        XCTAssertFalse(path.contains("/Application Support/RepoPrompt/Settings/globalSettings.json"), path)
+        XCTAssertTrue(path.contains("/Application Support/Agentry/Settings/globalSettings.json"), path)
+        XCTAssertFalse(path.contains("/Application Support/RepoPrompt CE/"), path)
+        XCTAssertFalse(path.contains("/Application Support/RepoPrompt/"), path)
+    }
+
+    func testGlobalSettingsFileStoreIgnoresExistingLegacyRootAndCreatesFreshDefaults() throws {
+        let temp = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let legacyRoot = temp.appendingPathComponent("RepoPrompt CE", isDirectory: true)
+        let legacyFileURL = legacyRoot.appendingPathComponent(
+            "Settings/globalSettings.json",
+            isDirectory: false
+        )
+        let agentryFileURL = temp
+            .appendingPathComponent("Agentry", isDirectory: true)
+            .appendingPathComponent("Settings/globalSettings.json", isDirectory: false)
+        let legacyStore = GlobalSettingsFileStore(fileURL: legacyFileURL)
+        try legacyStore.save(GlobalSettingsDocument(
+            scalarPreferences: GlobalScalarPreferences(ui: .init(showTooltips: false))
+        ))
+        let legacyBytes = try Data(contentsOf: legacyFileURL)
+
+        let agentryStore = GlobalSettingsFileStore(fileURL: agentryFileURL)
+        let document = agentryStore.loadOrCreateDefault()
+
+        XCTAssertNil(document.scalarPreferences?.ui?.showTooltips)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: agentryFileURL.path))
+        XCTAssertEqual(try Data(contentsOf: legacyFileURL), legacyBytes)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                atPath: legacyFileURL.deletingLastPathComponent().path
+            ),
+            ["globalSettings.json"]
+        )
     }
 
     func testMissingGlobalSettingsCreatesCurrentDefaultsAndIgnoresObsoleteDefaults() throws {
@@ -485,7 +517,7 @@ final class SettingsJSONOnlyPersistenceTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let store = GlobalSettingsStore(defaults: defaults, fileStore: fileStore)
 
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             XCTAssertTrue(store.telemetryEnabled())
         #else
             XCTAssertFalse(store.telemetryEnabled())
@@ -588,7 +620,7 @@ final class SettingsJSONOnlyPersistenceTests: XCTestCase {
         )
 
         XCTAssertNil(defaults.object(forKey: "telemetry.enabled"))
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             XCTAssertTrue(store.telemetryEnabled())
         #else
             XCTAssertFalse(store.telemetryEnabled())
@@ -615,7 +647,7 @@ final class SettingsJSONOnlyPersistenceTests: XCTestCase {
 
         XCTAssertNil(store.persistenceBlockReason)
         XCTAssertNil(defaults.object(forKey: "telemetry.enabled"))
-        #if REPOPROMPT_SENTRY_ENABLED
+        #if AGENTRY_SENTRY_ENABLED
             XCTAssertTrue(store.telemetryEnabled())
         #else
             XCTAssertFalse(store.telemetryEnabled())
