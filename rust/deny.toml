@@ -1,0 +1,39 @@
+# cargo-deny policy is enforced in the coordinated Phase 10 CI lane.
+
+[graph]
+targets = [
+  { triple = "aarch64-apple-darwin" },
+]
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+unlicensed = "deny"
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

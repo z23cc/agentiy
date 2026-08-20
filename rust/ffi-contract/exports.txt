@@ -1,0 +1,15 @@
+# ABI epoch 1 raw export inventory.
+# All exports are synchronous, fast, typed Result APIs. No UDL, async foreign trait, or payload callback.
+# RuntimeIdentity is explicit or embedded in command/scope/subscription/response records on every raw call.
+
+CoreRuntime.new(CoreConfig) throws -> CoreRuntime
+CoreRuntime.initialize() throws -> CoreHandshake
+CoreRuntime.execute(CommandEnvelope) throws -> AdmissionReceipt
+CoreRuntime.cancelOperation(RuntimeIdentity, OperationId) throws -> CancelReceipt
+CoreRuntime.openSubscription(SubscriptionScope) throws -> SubscriptionBootstrap
+CoreRuntime.tryDrain(SubscriptionId, maxEvents, maxBytes) throws -> DrainBatch
+CoreRuntime.duplicateWakeReadFd(RuntimeIdentity) throws -> Int32
+CoreRuntime.rearmWake(RuntimeIdentity) throws -> Bool
+CoreRuntime.respondHostRequest(HostResponse) throws
+CoreRuntime.closeSubscription(SubscriptionId) throws
+CoreRuntime.beginShutdown(RuntimeIdentity) throws -> ShutdownReceipt

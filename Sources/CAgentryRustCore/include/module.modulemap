@@ -1,0 +1,4 @@
+module AgentryCoreFFI {
+    header "AgentryCoreFFI.h"
+    export *
+}

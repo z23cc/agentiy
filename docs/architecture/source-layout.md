@@ -67,6 +67,31 @@ Tests/
 
 The external products and emitted binaries are `Agentry` and `agentry-mcp`. The internal `RepoPrompt` executable target remains a one-file entry shell delegating to `RepoPromptApp`; internal module and target names are intentionally unchanged. `RepoPromptApp` is not declared as a library product or separate Xcode convenience scheme. `RepoPromptCodeMapCore`, `RepoPromptRegexCore`, `RepoPromptWorkspaceCore`, and `RepoPromptDomainRuntime` are internal dependencies of `RepoPromptApp`, are not exposed as package products, and have direct owning test targets. `RepoPromptDomainRuntime` owns the AppKit-free, Sendable MCP runtime identity/lifecycle values, the canonical 27-tool name/capability/admission/client-policy catalog, immutable definitions and fingerprints, and the actor registry. App registration is process composition over that registry; no app-local registry facade or second schema authority remains. `RepoPromptCodeMapCoreTests` is the sole resource owner for pure CodeMap parser fixtures and goldens. Root app tests import `RepoPromptApp`; the separate `RepoPromptMCP` executable dependency remains unchanged.
 
+## Rust core and FFI ownership
+
+The Phase 0 Rust foundation lives in the virtual workspace under `rust/`; it is subordinate to the repository build orchestration rather than a second top-level product graph. Its minimal members and dependency direction are:
+
+```text
+rust/crates/proto       # agentry-proto: versioned payload contracts; no runtime or FFI dependency
+        ↑
+rust/crates/runtime     # agentry-runtime: future Tokio/registry/queue owner; no UniFFI dependency
+        ↑
+rust/crates/ffi         # agentry-ffi: the only product crate allowed to depend on UniFFI
+
+rust/tools/xtask        # repository-only artifact/codegen tool; not a product crate
+```
+
+Future domain crates belong under `rust/crates/domain/<domain>/`, binaries under `rust/bins/<product>/`, and repository tools under `rust/tools/<tool>/`. Phase 0 intentionally does not create empty domain or binary crates before they have an owned behavior boundary. All members share `rust/Cargo.lock`, the pinned `rust/rust-toolchain.toml`, the arm64-only `rust/.cargo/config.toml`, and workspace lint/profile policy.
+
+When the Swift bridge is introduced, its only permitted dependency chain is:
+
+```text
+AgentryCoreBridgeTests → AgentryCoreBridge → AgentryUniFFIRaw
+  → CAgentryRustCore → libagentry_ffi.a
+```
+
+`RepoPromptApp`, existing executable targets, and existing app integration tests must not directly import or depend on `AgentryUniFFIRaw`. Generated bindings and headers are reviewed artifacts but remain private implementation detail behind the handwritten bridge. The Phase 0 contracts, gates, fixture rules, and dependency policy are documented in [`rust-ffi.md`](rust-ffi.md).
+
 The legacy top-level layer buckets under `Sources/RepoPrompt` have been pruned and must not be recreated:
 
 - `Models`

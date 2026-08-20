@@ -1,0 +1,6 @@
+[bindings.swift]
+module_name = "AgentryCore"
+ffi_module_name = "AgentryCoreFFI"
+ffi_module_filename = "AgentryCoreFFI"
+generate_module_map = false
+generate_immutable_records = true

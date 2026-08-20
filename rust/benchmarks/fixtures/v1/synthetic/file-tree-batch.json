@@ -1,0 +1,1 @@
+{"fixtureKind":"file-tree-batch","payload":{"batch":0,"entries":[{"depth":0,"kind":"directory","path":"fixture-root"},{"depth":1,"kind":"file","path":"fixture-root/source-001.swift","sizeBytes":256},{"depth":1,"kind":"file","path":"fixture-root/source-002.rs","sizeBytes":65536}],"hasMore":false},"redacted":true,"schemaVersion":1}

@@ -67,6 +67,23 @@ BUILD_CACHE_CLONE_SECONDS_PER_GIB = 5.0
 BUILD_CACHE_RETRY_OVERHEAD_SECONDS = 30.0
 BUILD_CACHE_FORCE_STOP_WAIT_SECONDS = 4 * BUILD_CACHE_CLONE_MAX_SECONDS + BUILD_CACHE_RETRY_OVERHEAD_SECONDS
 BUILD_CACHE_ELIGIBLE_OPERATIONS = {"swift-build", "build", "package", "test", "install-debug-cli"}
+CARGO_OPERATIONS = {
+    "cargo-build",
+    "cargo-test",
+    "cargo-codegen",
+    "cargo-archive",
+    "cargo-deny",
+    "cargo-audit",
+    "cargo-fuzz",
+}
+CARGO_FUZZ_TARGETS = {"envelope_decode"}
+CARGO_FUZZ_TOOLCHAIN = "nightly-2026-08-15"
+CARGO_TARGET = "aarch64-apple-darwin"
+CARGO_PACKAGE_NAMES = {
+    "proto": "agentry-proto",
+    "runtime": "agentry-runtime",
+    "ffi": "agentry-ffi",
+}
 BUILD_CACHE_ENV_KEYS = (
     "ARCHS",
     "CC",
@@ -159,6 +176,14 @@ IMPLEMENTED_OPERATIONS = {
     "doctor",
     "guardrails",
     "codex-schema-check",
+    "cargo-build",
+    "cargo-test",
+    "cargo-codegen",
+    "cargo-archive",
+    "cargo-deny",
+    "cargo-audit",
+    "cargo-fuzz",
+    "xcode-rust-link-validate",
     "format",
     "format-check",
     "lint",
@@ -204,6 +229,14 @@ Operation commands:
   ./conductor doctor
   ./conductor guardrails
   ./conductor codex-schema-check      # validate bounded RPCE assumptions against generated Codex schemas
+  ./conductor cargo-build [--profile debug|release]
+  ./conductor cargo-test [--package proto|runtime|ffi|all]
+  ./conductor cargo-codegen [--check]
+  ./conductor cargo-archive [--profile debug|release]
+  ./conductor cargo-deny
+  ./conductor cargo-audit
+  ./conductor cargo-fuzz [--target envelope_decode] [--seconds 1..300]
+  ./conductor xcode-rust-link-validate
   ./conductor format                 # mutates first-party Swift files
   ./conductor format-check           # non-mutating SwiftFormat check
   ./conductor lint                   # non-mutating format-check + SwiftLint strict
@@ -213,7 +246,7 @@ Operation commands:
   ./conductor swift-build --product Agentry|agentry-mcp|all
   ./conductor build
   ./conductor package debug|release
-  ./conductor test [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
+  ./conductor test [--filter <filter>] [--test-product <product>] [--configuration debug|release] [--sanitize none|thread] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
   ./conductor provider-test [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
   ./conductor install-debug-cli
   ./conductor debug-cli-status
@@ -2841,7 +2874,17 @@ def job_consumes_unlaned_capacity(operation: str, lanes: Sequence[str]) -> bool:
 
 
 def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -> bool:
-    if operation in {"swift-build", "build", "package", "test", "provider-test", "install-debug-cli"}:
+    if operation in CARGO_OPERATIONS:
+        return True
+    if operation in {
+        "swift-build",
+        "build",
+        "package",
+        "test",
+        "provider-test",
+        "install-debug-cli",
+        "xcode-rust-link-validate",
+    }:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
         return True
@@ -3201,6 +3244,12 @@ class OperationRegistry:
 
         if operation in {"test", "provider-test"}:
             self._validate_xctest_stall_options(args)
+            configuration = str(args.get("configuration") or "debug")
+            sanitizer = str(args.get("sanitize") or "none")
+            if configuration not in {"debug", "release"}:
+                raise ConductorError("test configuration must be debug or release")
+            if sanitizer not in {"none", "thread"}:
+                raise ConductorError("test sanitizer must be none or thread")
 
         env = self._base_env(verbose, request)
         effective_timeout = self._default_timeout(operation, args)
@@ -3217,6 +3266,80 @@ class OperationRegistry:
             return [script("guardrails.sh")], lanes, cwd, env, effective_timeout
         if operation == "codex-schema-check":
             return [sys.executable, script("check_codex_app_server_schema.py")], lanes, cwd, env, effective_timeout
+        if operation in CARGO_OPERATIONS:
+            profile = str(args.get("profile") or "debug")
+            package = str(args.get("package") or "all")
+            if operation in {"cargo-build", "cargo-archive"} and profile not in {"debug", "release"}:
+                raise ConductorError("cargo profile must be debug or release")
+            if operation == "cargo-test" and package not in {*CARGO_PACKAGE_NAMES, "all"}:
+                raise ConductorError("cargo package must be proto, runtime, ffi, or all")
+            if operation == "cargo-codegen" and set(args) - {"check"}:
+                raise ConductorError("cargo-codegen accepts only the check flag")
+            if operation in {"cargo-deny", "cargo-audit"} and args:
+                raise ConductorError(f"{operation} does not accept arguments")
+            fuzz_target = str(args.get("target") or "envelope_decode")
+            fuzz_seconds = int(args.get("seconds") or 60)
+            if operation == "cargo-fuzz":
+                if fuzz_target not in CARGO_FUZZ_TARGETS:
+                    raise ConductorError("cargo fuzz target must be envelope_decode")
+                if not 1 <= fuzz_seconds <= 300:
+                    raise ConductorError("cargo fuzz seconds must be between 1 and 300")
+                if set(args) - {"target", "seconds"}:
+                    raise ConductorError("cargo-fuzz accepts only target and seconds")
+            cargo = shutil.which("cargo")
+            if cargo is None:
+                raise ConductorError("cargo is unavailable; install the pinned Rust toolchain from rust/rust-toolchain.toml")
+            cwd = self.repo_root / "rust"
+            env = self._cargo_env(env)
+            if operation == "cargo-build":
+                profile = str(args.get("profile") or "debug")
+                argv = [cargo, "build", "--workspace", "--locked", "--target", CARGO_TARGET]
+                if profile == "release":
+                    argv.append("--release")
+                return argv, ["build"], cwd, env, effective_timeout
+            if operation == "cargo-test":
+                package = str(args.get("package") or "all")
+                argv = [cargo, "test", "--workspace", "--locked", "--target", CARGO_TARGET]
+                if package != "all":
+                    argv = [cargo, "test", "--locked", "--target", CARGO_TARGET, "-p", CARGO_PACKAGE_NAMES[package]]
+                return argv, ["build"], cwd, env, effective_timeout
+            if operation == "cargo-codegen":
+                argv = [cargo, "run", "--locked", "-p", "xtask", "--", "generate"]
+                if args.get("check"):
+                    argv.append("--check")
+                return argv, ["build"], cwd, env, effective_timeout
+            if operation == "cargo-deny":
+                return [cargo, "deny", "check"], ["build"], cwd, env, effective_timeout
+            if operation == "cargo-audit":
+                return [cargo, "audit", "--file", "Cargo.lock"], ["build"], cwd, env, effective_timeout
+            if operation == "cargo-fuzz":
+                return [
+                    cargo,
+                    f"+{CARGO_FUZZ_TOOLCHAIN}",
+                    "fuzz",
+                    "run",
+                    fuzz_target,
+                    f"fuzz/corpus/{fuzz_target}",
+                    "--",
+                    f"-max_total_time={fuzz_seconds}",
+                    "-print_final_stats=1",
+                ], ["build"], cwd, env, effective_timeout
+            profile = str(args.get("profile") or "debug")
+            return [
+                cargo,
+                "run",
+                "--locked",
+                "-p",
+                "xtask",
+                "--",
+                "archive",
+                "--profile",
+                profile,
+            ], ["build"], cwd, env, effective_timeout
+        if operation == "xcode-rust-link-validate":
+            env = self._cargo_env(env)
+            command = [sys.executable, script("generate_xcode_workspace.py"), "build-for-testing"]
+            return self._rust_archive_then_command(command, "debug"), ["build"], cwd, env, effective_timeout
         if operation == "format":
             return [script("swift_style.sh"), "format"], ["style", "build"], cwd, env, effective_timeout
         if operation == "format-check":
@@ -3232,22 +3355,36 @@ class OperationRegistry:
         if operation == "swift-build":
             product = args.get("product")
             lanes = ["build"]
+            env = self._cargo_env(env)
             if product == "all":
-                return self._internal_argv("swift_build_all", {}), lanes, cwd, env, effective_timeout
-            return ["swift", "build", "--product", str(product)], lanes, cwd, env, effective_timeout
+                command = self._internal_argv("swift_build_all", {})
+            else:
+                command = ["swift", "build", "--product", str(product)]
+            return self._rust_archive_then_command(command, "debug"), lanes, cwd, env, effective_timeout
         if operation == "build":
-            return [script("package_app.sh"), "debug"], ["build", "debugArtifact"], cwd, env, effective_timeout
+            env = self._cargo_env(env)
+            command = [script("package_app.sh"), "debug"]
+            return self._rust_archive_then_command(command, "debug"), ["build", "debugArtifact"], cwd, env, effective_timeout
         if operation == "package":
             config = str(args.get("config"))
             lanes = ["build", "debugArtifact"] + (["release"] if config == "release" else [])
-            return [script("package_app.sh"), config], lanes, cwd, env, effective_timeout
+            env = self._cargo_env(env)
+            command = [script("package_app.sh"), config]
+            return self._rust_archive_then_command(command, config), lanes, cwd, env, effective_timeout
         if operation == "test":
+            configuration = str(args.get("configuration") or "debug")
+            sanitizer = str(args.get("sanitize") or "none")
             argv = ["swift", "test"]
+            if configuration == "release":
+                argv.extend(["--configuration", "release"])
+            if sanitizer == "thread":
+                argv.extend(["--sanitize", "thread"])
             if args.get("testProduct"):
                 argv.extend(["--test-product", str(args["testProduct"])])
             if args.get("filter"):
                 argv.extend(["--filter", str(args["filter"])])
-            return argv, ["build"], cwd, env, effective_timeout
+            env = self._cargo_env(env)
+            return self._rust_archive_then_command(argv, configuration), ["build"], cwd, env, effective_timeout
         if operation == "provider-test":
             argv = ["swift", "test"]
             if args.get("testProduct"):
@@ -3357,6 +3494,27 @@ class OperationRegistry:
         if verbose:
             env["VERBOSE"] = "1"
         return env
+
+    def _cargo_env(self, env: Dict[str, str]) -> Dict[str, str]:
+        controlled = dict(env)
+        for key in ("PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "TMPDIR"):
+            value = os.environ.get(key)
+            if value is not None:
+                controlled[key] = value
+        controlled["CARGO_TARGET_DIR"] = str(self.repo_root / ".build" / "cargo")
+        controlled["CARGO_BUILD_TARGET"] = CARGO_TARGET
+        controlled["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
+        controlled["CARGO_INCREMENTAL"] = "0"
+        return controlled
+
+    def _rust_archive_then_command(self, command: Sequence[str], profile: str) -> List[str]:
+        cargo = shutil.which("cargo")
+        if cargo is None:
+            raise ConductorError("cargo is unavailable; run `make doctor` and install the pinned Rust toolchain")
+        return self._internal_argv(
+            "rust_archive_then_command",
+            {"cargo": cargo, "profile": profile, "command": list(command)},
+        )
 
     def _internal_argv(self, kind: str, args: Dict[str, Any]) -> List[str]:
         payload = {"kind": kind, "args": args, "repoRoot": str(self.repo_root)}
@@ -8094,6 +8252,63 @@ def operation_cache_retry(repo_root: Path, args: Dict[str, Any]) -> int:
     return cold_code
 
 
+def operation_rust_archive_then_command(repo_root: Path, args: Dict[str, Any]) -> int:
+    cargo = str(args.get("cargo") or "")
+    profile = str(args.get("profile") or "debug")
+    command = args.get("command")
+    if not cargo or profile not in {"debug", "release"} or not isinstance(command, list) or not command:
+        print("invalid rust archive build wrapper request", file=sys.stderr)
+        return 2
+    archive_argv = [
+        cargo,
+        "run",
+        "--locked",
+        "-p",
+        "xtask",
+        "--",
+        "archive",
+        "--profile",
+        profile,
+    ]
+    code, _stdout, _stderr = run_operation_command(
+        f"prepare Agentry Rust FFI {profile} archive",
+        archive_argv,
+        repo_root / "rust",
+        env=os.environ.copy(),
+    )
+    if code != 0:
+        print(
+            f"Rust FFI archive preparation failed; retry with `make dev-cargo-archive PROFILE={profile}`.",
+            file=sys.stderr,
+        )
+        return code
+    current = repo_root / ".build" / "agentry-rust" / "current"
+    archive = current / "libagentry_ffi.a"
+    manifest_path = current / "artifact-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        archive_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    except (OSError, ValueError) as exc:
+        print(
+            f"Rust FFI archive is missing or invalid ({exc}); run `make dev-cargo-archive PROFILE={profile}`.",
+            file=sys.stderr,
+        )
+        return 2
+    if manifest.get("profile") != profile or manifest.get("archiveSha256") != archive_digest:
+        print(
+            f"Rust FFI archive is stale for profile {profile}; run `make dev-cargo-archive PROFILE={profile}`.",
+            file=sys.stderr,
+        )
+        return 2
+    code, _stdout, _stderr = run_operation_command(
+        "Swift build after verified Rust FFI archive",
+        [str(value) for value in command],
+        repo_root,
+        env=os.environ.copy(),
+    )
+    return code
+
+
 def run_operation_runner(payload_json: str) -> int:
     payload = json.loads(payload_json)
     kind = payload.get("kind")
@@ -8101,6 +8316,8 @@ def run_operation_runner(payload_json: str) -> int:
     repo_root = Path(payload.get("repoRoot") or resolve_repo_root()).resolve()
     if kind == "swift_build_all":
         return operation_swift_build_all(repo_root)
+    if kind == "rust_archive_then_command":
+        return operation_rust_archive_then_command(repo_root, args)
     if kind == "cache_retry":
         return operation_cache_retry(repo_root, args)
     if kind == "app_stop":
@@ -8198,8 +8415,33 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "format-tools-status",
         "check-format-tools",
         "install-format-tools",
+        "cargo-deny",
+        "cargo-audit",
+        "xcode-rust-link-validate",
     }:
         parse_no_args(f"conductor {operation}", rest)
+    elif operation in {"cargo-build", "cargo-archive"}:
+        parser = argparse.ArgumentParser(prog=f"conductor {operation}")
+        parser.add_argument("--profile", choices=["debug", "release"], default="debug")
+        ns = parser.parse_args(rest)
+        args["profile"] = ns.profile
+    elif operation == "cargo-test":
+        parser = argparse.ArgumentParser(prog="conductor cargo-test")
+        parser.add_argument("--package", choices=["proto", "runtime", "ffi", "all"], default="all")
+        ns = parser.parse_args(rest)
+        args["package"] = ns.package
+    elif operation == "cargo-codegen":
+        parser = argparse.ArgumentParser(prog="conductor cargo-codegen")
+        parser.add_argument("--check", action="store_true")
+        ns = parser.parse_args(rest)
+        args["check"] = ns.check
+    elif operation == "cargo-fuzz":
+        parser = argparse.ArgumentParser(prog="conductor cargo-fuzz")
+        parser.add_argument("--target", choices=sorted(CARGO_FUZZ_TARGETS), default="envelope_decode")
+        parser.add_argument("--seconds", type=int, choices=range(1, 301), default=60)
+        ns = parser.parse_args(rest)
+        args["target"] = ns.target
+        args["seconds"] = ns.seconds
     elif operation == "swift-build":
         parser = argparse.ArgumentParser(prog="conductor swift-build")
         parser.add_argument("--product", required=True, choices=["Agentry", "agentry-mcp", "all"])
@@ -8214,6 +8456,9 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         parser = argparse.ArgumentParser(prog=f"conductor {operation}")
         parser.add_argument("--filter")
         parser.add_argument("--test-product")
+        if operation == "test":
+            parser.add_argument("--configuration", choices=["debug", "release"])
+            parser.add_argument("--sanitize", choices=["none", "thread"])
         parser.add_argument("--xctest-stall-seconds", type=float)
         parser.add_argument("--xctest-stall-wake-probe", action="store_true")
         ns = parser.parse_args(rest)
@@ -8223,6 +8468,10 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
             raise ConductorError("--xctest-stall-seconds must be greater than zero")
         if ns.xctest_stall_wake_probe and ns.xctest_stall_seconds is None:
             raise ConductorError("--xctest-stall-wake-probe requires --xctest-stall-seconds")
+        if getattr(ns, "configuration", None):
+            args["configuration"] = ns.configuration
+        if getattr(ns, "sanitize", None):
+            args["sanitize"] = ns.sanitize
         if ns.filter:
             args["filter"] = ns.filter
         if ns.test_product:

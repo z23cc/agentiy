@@ -1,0 +1,1 @@
+{"fixtureKind":"codemap","payload":{"files":[{"path":"fixture-root/source-001.swift","symbols":[{"endLine":8,"kind":"type","name":"SyntheticType001","startLine":1},{"endLine":7,"kind":"function","name":"syntheticFunction001","startLine":3}]}]},"redacted":true,"schemaVersion":1}

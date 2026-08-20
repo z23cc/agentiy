@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "status": "absolute-caps-frozen-swift-baseline-pending",
+  "environment": {
+    "architecture": "aarch64",
+    "target": "aarch64-apple-darwin",
+    "profile": "release",
+    "minimumMacOSVersion": "14.0",
+    "warmupIterations": 1000,
+    "sampleIterations": 10000
+  },
+  "caps": [
+    {"operation": "admit", "percentile": 99, "maximumMilliseconds": 5},
+    {"operation": "cancel", "percentile": 99, "maximumMilliseconds": 5},
+    {"operation": "emptyDrain", "percentile": 99, "maximumMilliseconds": 5},
+    {
+      "operation": "drain64EventsUpTo64KiB",
+      "percentile": 99,
+      "maximumMilliseconds": 10,
+      "maximumItems": 64,
+      "maximumPayloadBytes": 65536
+    },
+    {
+      "operation": "emptyToNonemptyDispatchSourceScheduled",
+      "percentile": 99,
+      "maximumMilliseconds": 25
+    }
+  ],
+  "syntheticPayloadBytes": [0, 256, 65536, 1048577],
+  "ffiFastPathProhibitions": [
+    "sleep",
+    "await-tokio-task",
+    "wait-for-queue-space"
+  ],
+  "representativeFixtureKinds": [
+    "file-tree-batch",
+    "codemap",
+    "search-results",
+    "transcript"
+  ],
+  "swiftBaseline": {
+    "status": "pending",
+    "requiredBefore": ["phase-8-representative-payload-gate", "phase-10-ci-slo-gate"],
+    "requiredMetrics": [
+      "wall-time",
+      "cpu-time",
+      "instruments-allocations",
+      "malloc-bytes",
+      "peak-rss",
+      "decode-apply-signpost"
+    ],
+    "mayRelaxAbsoluteCaps": false
+  }
+}

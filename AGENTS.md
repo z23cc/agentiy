@@ -160,6 +160,10 @@ Happy path — daemon aliases:
 make dev-status
 make dev-build
 make dev-swift-build PRODUCT=agentry-mcp         # focused product build (PRODUCT=Agentry|agentry-mcp|all, default all)
+make dev-cargo-build                               # coordinated Rust workspace build; PROFILE=debug|release
+make dev-cargo-test                                # coordinated Rust workspace tests; CARGO_PACKAGE=proto|runtime|ffi|all
+make dev-cargo-codegen-check                       # coordinated deterministic UniFFI generation check
+make dev-cargo-archive                             # coordinated staged static archive; PROFILE=debug|release
 make dev-run
 make dev-launch-existing                         # launch current DebugApps bundle without building
 make dev-test                                       # full coordinated test suite
@@ -282,6 +286,10 @@ make dev-test FILTER=CodexIntegrationConfigurationTests
 make dev-test FILTER=WorkspaceFileContextStoreTests
 make dev-swift-build PRODUCT=Agentry
 make dev-swift-build PRODUCT=agentry-mcp
+make dev-cargo-build
+make dev-cargo-test CARGO_PACKAGE=all
+make dev-cargo-codegen-check
+make dev-cargo-archive PROFILE=debug
 make dev-provider-test
 make dev-codex-schema-check
 make guardrails

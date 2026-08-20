@@ -1,0 +1,1 @@
+{"fixtureKind":"search-results","payload":{"query":"synthetic-query","results":[{"line":3,"path":"fixture-root/source-001.swift","preview":"synthetic-match-001"},{"line":17,"path":"fixture-root/source-002.rs","preview":"synthetic-match-002"}]},"redacted":true,"schemaVersion":1}

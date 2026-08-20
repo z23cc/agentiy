@@ -111,6 +111,12 @@ let swift6LanguageMode: [SwiftSetting] = [
     .swiftLanguageMode(.v6)
 ]
 
+let rustArtifactRoot = "\(packageRoot)/.build/agentry-rust/current"
+let rustFFISwiftSettings = swift6LanguageMode + [
+    .define("DEBUG", .when(configuration: .debug)),
+    .unsafeFlags(["-strict-concurrency=complete", "-warnings-as-errors"])
+]
+
 let package = Package(
     name: "Agentry",
     platforms: [.macOS(.v14)],
@@ -120,6 +126,31 @@ let package = Package(
     ],
     dependencies: packageDependencies,
     targets: [
+        .target(
+            name: "CAgentryRustCore",
+            path: "Sources/CAgentryRustCore",
+            sources: ["shim.c"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .unsafeFlags(["-I", rustArtifactRoot])
+            ],
+            linkerSettings: [
+                .unsafeFlags(["\(rustArtifactRoot)/libagentry_ffi.a"])
+            ]
+        ),
+        .target(
+            name: "AgentryUniFFIRaw",
+            dependencies: ["CAgentryRustCore"],
+            path: "Sources/AgentryUniFFIRaw",
+            sources: ["Generated"],
+            swiftSettings: rustFFISwiftSettings
+        ),
+        .target(
+            name: "AgentryCoreBridge",
+            dependencies: ["AgentryUniFFIRaw"],
+            path: "Sources/AgentryCoreBridge",
+            swiftSettings: rustFFISwiftSettings
+        ),
         .executableTarget(
             name: "RepoPrompt",
             dependencies: ["RepoPromptApp"],
@@ -198,6 +229,12 @@ let package = Package(
         // FileManager source probe evaluates false in this root package graph.
         .target(name: "TreeSitterScannerSupport", path: "Sources/TreeSitterScannerSupport", sources: ["src/javascript/scanner.c", "src/python/scanner.c"], publicHeadersPath: "include"),
         .binaryTarget(name: "Sparkle", path: "Vendor/Sparkle/Sparkle.xcframework"),
+        .testTarget(
+            name: "AgentryCoreBridgeTests",
+            dependencies: ["AgentryCoreBridge"],
+            path: "Tests/AgentryCoreBridgeTests",
+            swiftSettings: rustFFISwiftSettings
+        ),
         .testTarget(
             name: "RepoPromptDomainRuntimeTests",
             dependencies: [

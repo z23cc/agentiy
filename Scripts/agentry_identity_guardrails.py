@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SELF_PATH = Path(__file__).resolve().relative_to(ROOT).as_posix()
 ACTIVE_ROOTS = (
     "Sources/",
+    "rust/",
     "AppBundle/",
     "Scripts/",
     ".github/workflows/",

@@ -1,0 +1,1 @@
+{"fixtureKind":"transcript","payload":{"events":[{"kind":"message","role":"user","text":"synthetic-user-message"},{"kind":"message","role":"assistant","text":"synthetic-assistant-message"},{"kind":"terminal","outcome":"success"}]},"redacted":true,"schemaVersion":1}

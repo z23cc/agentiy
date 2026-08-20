@@ -30,6 +30,10 @@ required_dirs=(
   "Sources/RepoPromptShared/MCP"
   "Sources/RepoPromptWorkspaceCore"
   "Sources/RepoPromptDomainRuntime"
+  "Sources/CAgentryRustCore"
+  "Sources/AgentryUniFFIRaw/Generated"
+  "Sources/AgentryCoreBridge"
+  "Tests/AgentryCoreBridgeTests"
   "Tests/RepoPromptTests"
   "Tests/RepoPromptWorkspaceCoreTests"
   "Tests/RepoPromptDomainRuntimeTests"
@@ -185,12 +189,42 @@ else:
     if test_dependencies != ["RepoPromptWorkspaceCore"] or len(workspace_core_tests.get("dependencies", [])) != 1:
         errors.append("RepoPromptWorkspaceCoreTests must depend only on RepoPromptWorkspaceCore")
 
+ffi_expected = {
+    "CAgentryRustCore": ("regular", "Sources/CAgentryRustCore", []),
+    "AgentryUniFFIRaw": ("regular", "Sources/AgentryUniFFIRaw", ["CAgentryRustCore"]),
+    "AgentryCoreBridge": ("regular", "Sources/AgentryCoreBridge", ["AgentryUniFFIRaw"]),
+    "AgentryCoreBridgeTests": ("test", "Tests/AgentryCoreBridgeTests", ["AgentryCoreBridge"]),
+}
+for name, (target_type, path, expected_dependencies) in ffi_expected.items():
+    target = targets.get(name)
+    if target is None:
+        errors.append(f"{name} target missing")
+        continue
+    dependencies = [dependency["byName"][0] for dependency in target.get("dependencies", []) if dependency.get("byName")]
+    if target.get("type") != target_type: errors.append(f"{name} target type drifted")
+    if target.get("path") != path: errors.append(f"{name} target path drifted")
+    if dependencies != expected_dependencies or len(target.get("dependencies", [])) != len(expected_dependencies):
+        errors.append(f"{name} dependency boundary drifted: expected {expected_dependencies}, got {dependencies}")
+for name in ("AgentryUniFFIRaw", "AgentryCoreBridge", "AgentryCoreBridgeTests"):
+    target = targets.get(name, {})
+    settings_text = json.dumps(target.get("settings", []))
+    if '"swiftLanguageMode":{"_0":"6"}' not in settings_text.replace(" ", ""):
+        errors.append(f"{name} must compile in Swift 6 language mode")
+    if "-strict-concurrency=complete" not in settings_text or "-warnings-as-errors" not in settings_text:
+        errors.append(f"{name} must use complete strict concurrency and warnings-as-errors")
+for product in package.get("products", []):
+    if any(name in product.get("targets", []) for name in ffi_expected):
+        errors.append("Rust FFI targets must remain internal package targets")
+
 app_by_name_dependencies = [dependency["byName"][0] for dependency in repo_prompt_app_dependencies if dependency.get("byName")]
 if app_by_name_dependencies.count("RepoPromptWorkspaceCore") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptWorkspaceCore")
-for forbidden_consumer in ("RepoPrompt", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
+for forbidden_consumer in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
     dependencies = [dependency["byName"][0] for dependency in targets.get(forbidden_consumer, {}).get("dependencies", []) if dependency.get("byName")]
-    if "RepoPromptWorkspaceCore" in dependencies: errors.append(f"{forbidden_consumer} must not directly depend on RepoPromptWorkspaceCore")
+    if forbidden_consumer != "RepoPromptApp" and "RepoPromptWorkspaceCore" in dependencies:
+        errors.append(f"{forbidden_consumer} must not directly depend on RepoPromptWorkspaceCore")
+    if any(name in dependencies for name in ("CAgentryRustCore", "AgentryUniFFIRaw", "AgentryCoreBridge")):
+        errors.append(f"{forbidden_consumer} must not consume Phase 0 Rust FFI targets")
 for product in package.get("products", []):
     if "RepoPromptWorkspaceCore" in product.get("targets", []): errors.append("RepoPromptWorkspaceCore must not be exposed as a package product")
 
@@ -769,10 +803,12 @@ print_matches \
 # 8. Agent-authored reports and working notes stay local unless explicitly
 # promoted into the contributor-facing documentation set.
 allowed_tracked_docs=(
+  "docs/architecture/adr-0001-uniffi-raw-binder.md"
   "docs/architecture/codex-app-server-schema-gate.md"
   "docs/architecture/context-composer.md"
   "docs/architecture/headless-mcp-runtime.md"
   "docs/architecture/provider-plugins.md"
+  "docs/architecture/rust-ffi.md"
   "docs/architecture/settings-persistence.md"
   "docs/architecture/source-layout.md"
   "docs/architecture/xcode-workspace.md"

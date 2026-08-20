@@ -2,6 +2,8 @@
 .build/
 .swiftpm/
 Package.resolved.backup
+# Defensive fallback if Cargo is invoked without rust/.cargo/config.toml.
+rust/target/
 
 # Xcode / Apple build products
 DerivedData/

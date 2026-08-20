@@ -1,0 +1,5 @@
+# No advisory exemption is permitted without an advisory ID, rationale, owner,
+# and expiration recorded in docs/architecture/rust-ffi.md.
+
+[advisories]
+ignore = []

@@ -2176,6 +2176,102 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(cwd, repo_root)
         self.assertEqual(timeout, conductor.SHORT_TIMEOUT_SECONDS)
 
+    def test_cargo_operations_are_bounded_build_lane_heavy_jobs_with_controlled_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            conductor.shutil, "which", return_value="/fixture/bin/cargo"
+        ):
+            repo_root = Path(tmp)
+            (repo_root / "rust").mkdir()
+            registry = conductor.OperationRegistry(repo_root)
+            requests = {
+                "build": {"operation": "cargo-build", "args": {"profile": "release"}},
+                "test": {"operation": "cargo-test", "args": {"package": "runtime"}},
+                "codegen": {"operation": "cargo-codegen", "args": {"check": True}},
+                "archive": {"operation": "cargo-archive", "args": {"profile": "debug"}},
+                "deny": {"operation": "cargo-deny", "args": {}},
+                "audit": {"operation": "cargo-audit", "args": {}},
+                "fuzz": {
+                    "operation": "cargo-fuzz",
+                    "args": {"target": "envelope_decode", "seconds": 60},
+                },
+            }
+            prepared = {name: registry.prepare(request) for name, request in requests.items()}
+
+        for name, (_argv, lanes, cwd, env, timeout) in prepared.items():
+            with self.subTest(operation=name):
+                self.assertEqual(lanes, ["build"])
+                self.assertEqual(cwd, repo_root / "rust")
+                self.assertEqual(env["CARGO_TARGET_DIR"], str(repo_root / ".build" / "cargo"))
+                self.assertEqual(env["CARGO_BUILD_TARGET"], conductor.CARGO_TARGET)
+                self.assertEqual(env["MACOSX_DEPLOYMENT_TARGET"], "14.0")
+                self.assertEqual(timeout, conductor.MEDIUM_TIMEOUT_SECONDS)
+                self.assertTrue(conductor.operation_requires_global_heavy_slot(requests[name]["operation"], requests[name]["args"]))
+
+        self.assertEqual(prepared["build"][0][-1], "--release")
+        self.assertEqual(prepared["test"][0][-2:], ["-p", "agentry-runtime"])
+        self.assertEqual(prepared["codegen"][0][-2:], ["generate", "--check"])
+        self.assertEqual(prepared["archive"][0][-3:], ["archive", "--profile", "debug"])
+        self.assertEqual(prepared["deny"][0][-2:], ["deny", "check"])
+        self.assertEqual(prepared["audit"][0][-3:], ["audit", "--file", "Cargo.lock"])
+        self.assertIn("fuzz/corpus/envelope_decode", prepared["fuzz"][0])
+        self.assertIn("-max_total_time=60", prepared["fuzz"][0])
+
+    def test_cargo_cli_accepts_only_bounded_options(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        cases = {
+            "cargo-build": (["--profile", "release"], {"profile": "release"}),
+            "cargo-test": (["--package", "ffi"], {"package": "ffi"}),
+            "cargo-codegen": (["--check"], {"check": True}),
+            "cargo-archive": (["--profile", "debug"], {"profile": "debug"}),
+            "cargo-deny": ([], {}),
+            "cargo-audit": ([], {}),
+            "cargo-fuzz": (
+                ["--target", "envelope_decode", "--seconds", "60"],
+                {"target": "envelope_decode", "seconds": 60},
+            ),
+        }
+        for operation, (argv, expected) in cases.items():
+            with self.subTest(operation=operation), mock.patch.object(
+                conductor, "enqueue_and_maybe_wait", return_value=0
+            ) as enqueue:
+                self.assertEqual(conductor.handle_real_operation(state.paths, operation, argv), 0)
+                self.assertEqual(enqueue.call_args.args[2], expected)
+
+        with self.assertRaises(SystemExit):
+            conductor.handle_real_operation(state.paths, "cargo-build", ["--target", "x86_64-apple-darwin"])
+        with self.assertRaises(SystemExit):
+            conductor.handle_real_operation(state.paths, "cargo-test", ["--package", "arbitrary"])
+        with self.assertRaises(SystemExit):
+            conductor.handle_real_operation(state.paths, "cargo-fuzz", ["--seconds", "0"])
+        with self.assertRaises(SystemExit):
+            conductor.handle_real_operation(state.paths, "cargo-deny", ["--manifest-path", "elsewhere"])
+
+    def test_xcode_rust_link_validation_is_coordinated_and_non_launching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            conductor.shutil, "which", return_value="/fixture/bin/cargo"
+        ):
+            repo_root = Path(tmp)
+            registry = conductor.OperationRegistry(repo_root)
+            argv, lanes, cwd, _env, timeout = registry.prepare(
+                {"operation": "xcode-rust-link-validate", "args": {}}
+            )
+
+        wrapper = json.loads(argv[-1])
+        self.assertEqual(wrapper["kind"], "rust_archive_then_command")
+        self.assertEqual(wrapper["args"]["profile"], "debug")
+        self.assertEqual(
+            Path(wrapper["args"]["command"][-2]).name,
+            "generate_xcode_workspace.py",
+        )
+        self.assertEqual(wrapper["args"]["command"][-1], "build-for-testing")
+        self.assertEqual(lanes, ["build"])
+        self.assertEqual(cwd, repo_root)
+        self.assertEqual(timeout, conductor.MEDIUM_TIMEOUT_SECONDS)
+        self.assertTrue(
+            conductor.operation_requires_global_heavy_slot("xcode-rust-link-validate", {})
+        )
+
     def test_release_artifact_delegates_release_script_with_release_lanes_and_extended_timeout(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
@@ -3881,9 +3977,63 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             }
         )
 
+        self.assertIn("__operation_runner", root_argv)
+        wrapper = json.loads(root_argv[-1])
+        self.assertEqual(wrapper["kind"], "rust_archive_then_command")
+        self.assertEqual(wrapper["args"]["profile"], "debug")
         self.assertEqual(
-            root_argv,
+            wrapper["args"]["command"],
             ["swift", "test", "--test-product", "RepoPromptWorkspaceTests", "--filter", "WorkspaceTests"],
+        )
+        self.assertEqual(root_lanes, ["build"])
+        self.assertEqual(root_cwd, state.paths.repo_root)
+
+    def test_test_cli_forwards_release_configuration_and_thread_sanitizer(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        arguments = [
+            "--configuration",
+            "release",
+            "--sanitize",
+            "thread",
+            "--test-product",
+            "AgentryCoreBridgeTests",
+            "--filter",
+            "AgentryCoreBridge",
+        ]
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
+            code = conductor.handle_real_operation(state.paths, "test", arguments)
+
+        self.assertEqual(code, 0)
+        expected = {
+            "configuration": "release",
+            "sanitize": "thread",
+            "testProduct": "AgentryCoreBridgeTests",
+            "filter": "AgentryCoreBridge",
+        }
+        self.assertEqual(enqueue.call_args.args[2], expected)
+
+        registry = conductor.OperationRegistry(state.paths.repo_root)
+        root_argv, root_lanes, root_cwd, _env, _timeout = registry.prepare(
+            {"operation": "test", "args": expected}
+        )
+        wrapper = json.loads(root_argv[-1])
+        self.assertEqual(wrapper["kind"], "rust_archive_then_command")
+        self.assertEqual(wrapper["args"]["profile"], "release")
+        self.assertEqual(
+            wrapper["args"]["command"],
+            [
+                "swift",
+                "test",
+                "--configuration",
+                "release",
+                "--sanitize",
+                "thread",
+                "--test-product",
+                "AgentryCoreBridgeTests",
+                "--filter",
+                "AgentryCoreBridge",
+            ],
         )
         self.assertEqual(root_lanes, ["build"])
         self.assertEqual(root_cwd, state.paths.repo_root)

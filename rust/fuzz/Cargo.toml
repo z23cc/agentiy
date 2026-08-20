@@ -1,0 +1,21 @@
+[package]
+name = "agentry-proto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+agentry-proto = { path = "../crates/proto", version = "=0.1.0" }
+libfuzzer-sys = "=0.4.13"
+
+[[bin]]
+name = "envelope_decode"
+path = "fuzz_targets/envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "abiEpoch": 1,
+  "namespace": "agentry_core",
+  "supportedTargets": ["aarch64-apple-darwin"],
+  "minimumMacOSVersion": "14.0",
+  "envelope": {
+    "schemaVersion": 1,
+    "byteOrder": "big-endian",
+    "headerBytes": 16,
+    "magicAscii": "AGRY",
+    "maximumEnvelopeBytes": 1048576,
+    "fields": [
+      {"name": "magic", "offset": 0, "width": 4},
+      {"name": "schemaVersion", "offset": 4, "width": 2},
+      {"name": "payloadKind", "offset": 6, "width": 2},
+      {"name": "flags", "offset": 8, "width": 4, "allowedValues": [0]},
+      {"name": "payloadLength", "offset": 12, "width": 4}
+    ],
+    "payloadKinds": {"control": 1, "data": 2, "hostRequest": 3, "hostResponse": 4},
+    "decodePolicy": {
+      "validateBeforePayloadAllocation": true,
+      "requireExactPayloadLength": true,
+      "rejectTrailingBytes": true,
+      "rejectTruncation": true,
+      "rejectUnknownVersion": true,
+      "rejectUnknownPayloadKind": true,
+      "rejectNonzeroFlags": true,
+      "rejectOversizeWithoutPartialDecode": true
+    }
+  },
+  "identifiers": {
+    "operationID": {"format": "lowercase-canonical-uuid"},
+    "scopeID": {"format": "lowercase-canonical-uuid"},
+    "requestFingerprint": {"format": "lowercase-sha256-hex", "length": 64},
+    "deadline": {
+      "boundaryUnit": "unix-epoch-milliseconds",
+      "admissionConversion": "remaining-monotonic-duration",
+      "expiredAdmission": "deadlineExpired"
+    }
+  },
+  "operation": {
+    "states": ["admitted", "running", "cancelRequested", "terminal"],
+    "terminalOutcomes": ["success", "cancelled", "deadlineExceeded", "failed"],
+    "sameIdSameFingerprintAndScope": "idempotent-existing-state",
+    "sameIdDifferentFingerprintOrScope": "operationConflict",
+    "terminalResolution": "first-terminal-wins",
+    "terminalTombstoneLifetime": "runtime-lifetime"
+  },
+  "runtimeIdentity": {
+    "fields": [
+      {"name": "abiEpoch", "type": "u32", "requiredValue": 1},
+      {"name": "instanceNonce", "type": "lowercase-hex", "length": 32},
+      {"name": "buildFingerprint", "type": "lowercase-sha256-hex", "length": 64},
+      {"name": "bindingChecksum", "type": "lowercase-sha256-hex", "length": 64}
+    ],
+    "requiredOnEveryRawCall": true,
+    "staleBehavior": "staleRuntimeIdentity",
+    "panicBehavior": {"firstCall": "internalPanic", "laterCalls": "runtimePoisoned", "unwindAcrossCAbi": false}
+  },
+  "admissionOutcomes": ["accepted", "duplicate"],
+  "runtimeEventKinds": ["admitted", "progress", "data", "gap", "hostRequest", "payloadRejected", "terminal"],
+  "ffiErrors": [
+    "invalidArgument",
+    "incompatibleAbi",
+    "staleRuntimeIdentity",
+    "runtimePoisoned",
+    "runtimeStopped",
+    "operationConflict",
+    "deadlineExpired",
+    "subscriptionNotFound",
+    "queueLimitExceeded",
+    "payloadTooLarge",
+    "shutdownTimedOut",
+    "internalPanic"
+  ],
+  "subscription": {
+    "capacityEvents": 256,
+    "capacityBytes": 1048576,
+    "reservedTerminalSlots": 1,
+    "reservedTerminalControlBytes": 4096,
+    "defaultDrainMaxItems": 64,
+    "defaultDrainMaxBytes": 262144,
+    "hardDrainMaxItems": 256,
+    "hardDrainMaxBytes": 1048576,
+    "minimumDrainMaxBytes": 4096,
+    "delivery": "exactly-once-dequeue",
+    "dataOverflow": "coalesced-gap-event",
+    "oversize": "compact-payloadRejected-event",
+    "terminalMayEvictOldestData": true
+  },
+  "fixtureManifest": "rust/benchmarks/fixtures/v1/manifest.json",
+  "sloRegistry": "rust/benchmarks/slo-v1.json",
+  "exportsInventory": "rust/ffi-contract/exports.txt"
+}

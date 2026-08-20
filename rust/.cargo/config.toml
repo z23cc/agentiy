@@ -1,0 +1,3 @@
+[build]
+target = "aarch64-apple-darwin"
+target-dir = "../../.build/cargo"

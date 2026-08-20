@@ -142,6 +142,31 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertIn("RepoPromptApp", metadata["package"]["targets"])
         self.assertIn("RepoPromptDomainRuntime", metadata["package"]["targets"])
         self.assertIn("RepoPromptDomainRuntimeTests", metadata["package"]["targets"])
+        self.assertIn("CAgentryRustCore", metadata["package"]["targets"])
+        self.assertIn("AgentryUniFFIRaw", metadata["package"]["targets"])
+        self.assertIn("AgentryCoreBridge", metadata["package"]["targets"])
+        self.assertIn("AgentryCoreBridgeTests", metadata["package"]["targets"])
+
+    def test_manifest_preserves_private_rust_ffi_target_chain(self) -> None:
+        targets = {target["name"]: target for target in self.manifest["targets"]}
+        self.assertEqual(targets["CAgentryRustCore"]["path"], "Sources/CAgentryRustCore")
+        self.assertEqual(generator._by_name_dependencies(targets["CAgentryRustCore"]), [])
+        self.assertEqual(
+            generator._by_name_dependencies(targets["AgentryUniFFIRaw"]),
+            ["CAgentryRustCore"],
+        )
+        self.assertEqual(
+            generator._by_name_dependencies(targets["AgentryCoreBridge"]),
+            ["AgentryUniFFIRaw"],
+        )
+        self.assertEqual(
+            generator._by_name_dependencies(targets["AgentryCoreBridgeTests"]),
+            ["AgentryCoreBridge"],
+        )
+        products = {target for product in self.manifest["products"] for target in product["targets"]}
+        self.assertTrue(
+            {"CAgentryRustCore", "AgentryUniFFIRaw", "AgentryCoreBridge"}.isdisjoint(products)
+        )
 
     def test_project_has_exactly_three_convenience_targets(self) -> None:
         project = self.outputs[Path(generator.PROJECT_NAME) / "project.pbxproj"].decode()
@@ -209,6 +234,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
                     generator.APP_SCHEME,
                     generator.MCP_SCHEME,
                     generator.TEST_SCHEME,
+                    generator.RUST_BRIDGE_TEST_SCHEME,
                     "RepoPrompt",
                 ],
             },
@@ -234,6 +260,22 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("env", run.call_args.kwargs)
+
+    def test_rust_bridge_build_for_testing_is_arm64_non_launching(self) -> None:
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(generator.subprocess, "run", return_value=completed) as run:
+            generator.validate_rust_bridge_build_for_testing(Path("/tmp/generated-xcode"))
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "xcodebuild")
+        self.assertIn("AgentryCoreBridgeTests", command)
+        self.assertIn("platform=macOS,arch=arm64", command)
+        self.assertIn("ARCHS=arm64", command)
+        self.assertIn("ONLY_ACTIVE_ARCH=YES", command)
+        self.assertIn("CODE_SIGNING_ALLOWED=NO", command)
+        self.assertEqual(command[-1], "build-for-testing")
+        self.assertNotIn("test", command)
+        self.assertNotIn("run", command)
 
     def test_check_detects_corruption(self) -> None:
         temporary, destination = self.generate_in_temporary_directory()
@@ -353,6 +395,36 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptCodeMapCoreTests"):
             generator.validate_manifest(moved_resources, generator.REPO_ROOT)
+
+        missing_rust_bridge_target = deepcopy(self.manifest)
+        missing_rust_bridge_target["targets"] = [
+            target
+            for target in missing_rust_bridge_target["targets"]
+            if target["name"] != "AgentryCoreBridge"
+        ]
+        with self.assertRaisesRegex(generator.GeneratorError, "target 'AgentryCoreBridge'"):
+            generator.validate_manifest(missing_rust_bridge_target, generator.REPO_ROOT)
+
+        broken_rust_chain = deepcopy(self.manifest)
+        for target in broken_rust_chain["targets"]:
+            if target["name"] == "AgentryCoreBridge":
+                target["dependencies"] = [{"byName": ["CAgentryRustCore", None]}]
+        with self.assertRaisesRegex(generator.GeneratorError, "Rust FFI dependency chain drifted"):
+            generator.validate_manifest(broken_rust_chain, generator.REPO_ROOT)
+
+        app_imports_bridge = deepcopy(self.manifest)
+        for target in app_imports_bridge["targets"]:
+            if target["name"] == "RepoPromptApp":
+                target["dependencies"].append({"byName": ["AgentryCoreBridge", None]})
+        with self.assertRaisesRegex(generator.GeneratorError, "must not depend on private Rust FFI"):
+            generator.validate_manifest(app_imports_bridge, generator.REPO_ROOT)
+
+        exposed_bridge_product = deepcopy(self.manifest)
+        exposed_bridge_product["products"].append(
+            {"name": "AgentryCoreBridge", "targets": ["AgentryCoreBridge"], "type": {"library": ["automatic"]}}
+        )
+        with self.assertRaisesRegex(generator.GeneratorError, "must not be exposed"):
+            generator.validate_manifest(exposed_bridge_product, generator.REPO_ROOT)
 
         duplicate_resources = deepcopy(self.manifest)
         duplicate_resources["targets"].append({

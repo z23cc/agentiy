@@ -35,6 +35,7 @@ PROJECT_NAME = "Agentry.xcodeproj"
 APP_SCHEME = "Agentry App"
 MCP_SCHEME = "Agentry MCP"
 TEST_SCHEME = "Agentry Tests"
+RUST_BRIDGE_TEST_SCHEME = "AgentryCoreBridgeTests"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DESTINATION = REPO_ROOT / ".build/xcode"
 CUSTOM_DESTINATION_ROOT = REPO_ROOT / ".build/xcode-custom"
@@ -128,6 +129,10 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "RepoPromptRegexCoreTests",
         "RepoPromptCodeMapCoreTests",
         "RepoPromptTests",
+        "CAgentryRustCore",
+        "AgentryUniFFIRaw",
+        "AgentryCoreBridge",
+        "AgentryCoreBridgeTests",
     )
     for name in required_targets:
         if name not in targets:
@@ -160,6 +165,36 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         raise GeneratorError(
             "Target 'RepoPromptApp' must retain the existing Sources/RepoPrompt implementation"
         )
+
+    rust_ffi_targets = {
+        "CAgentryRustCore": ("regular", "Sources/CAgentryRustCore", []),
+        "AgentryUniFFIRaw": ("regular", "Sources/AgentryUniFFIRaw", ["CAgentryRustCore"]),
+        "AgentryCoreBridge": ("regular", "Sources/AgentryCoreBridge", ["AgentryUniFFIRaw"]),
+        "AgentryCoreBridgeTests": ("test", "Tests/AgentryCoreBridgeTests", ["AgentryCoreBridge"]),
+    }
+    for name, (target_type, path, dependencies) in rust_ffi_targets.items():
+        target = targets[name]
+        if target.get("type") != target_type:
+            raise GeneratorError(f"Target '{name}' must remain a {target_type} target")
+        if target.get("path") != path:
+            raise GeneratorError(f"Target '{name}' must remain at '{path}'")
+        if _by_name_dependencies(target) != dependencies:
+            dependency_text = " → ".join([name, *dependencies]) if dependencies else f"{name} (none)"
+            raise GeneratorError(f"Rust FFI dependency chain drifted at {dependency_text}")
+
+    forbidden_app_dependencies = {"CAgentryRustCore", "AgentryUniFFIRaw", "AgentryCoreBridge"}
+    for name in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptTests"):
+        leaked = forbidden_app_dependencies.intersection(_by_name_dependencies(targets[name]))
+        if leaked:
+            raise GeneratorError(
+                f"Target '{name}' must not depend on private Rust FFI target '{sorted(leaked)[0]}'"
+            )
+    for product in products.values():
+        leaked = forbidden_app_dependencies.intersection(product.get("targets", []))
+        if leaked:
+            raise GeneratorError(
+                f"Rust FFI target '{sorted(leaked)[0]}' must not be exposed as a package product"
+            )
 
     expected_test_dependencies = {
         "RepoPromptApp",
@@ -253,6 +288,10 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "Scripts/package_app.sh",
         "Scripts/xcode_developer_workflow.sh",
         "Sources/RepoPromptExecutable/RepoPromptExecutable.swift",
+        "Sources/CAgentryRustCore/include/AgentryCoreFFI.h",
+        "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift",
+        "Sources/AgentryCoreBridge/CoreBridge.swift",
+        "rust/ffi-contract/generated-manifest.json",
         "conductor",
         "AppBundle/Info.plist.template",
         "Vendor/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
@@ -581,10 +620,15 @@ This directory is disposable. Regenerate it with `make xcode-generate`; do not e
   `AGENTRY_XCODE_TEST_FILTER` before building to run a focused filter.
 
 The root Swift package reference provides source browsing and indexing. Its native Xcode
-test action is not the supported test workflow because Xcode does not expose the
-`RepoPromptMCP` executable dependency as an importable test module. The vendored Sparkle
-XCFramework also declares an omitted dSYMs directory; this generator deliberately does
-not mutate `Vendor/` to compensate. Use the convenience schemes above.
+test action is not the supported full-suite workflow because Xcode does not expose the
+`RepoPromptMCP` executable dependency as an importable test module. The private native
+`AgentryCoreBridgeTests` scheme is intentionally supported for non-launching arm64
+`build-for-testing`: first prepare the verified archive with
+`make dev-cargo-archive PROFILE=debug`, or use the coordinated
+`make xcode-rust-link-validate` entrypoint. Xcode consumes only the checked-in generated
+Swift/header plus `.build/agentry-rust/current`; edit `rust/` with rust-analyzer. The
+vendored Sparkle XCFramework also declares an omitted dSYMs directory; this generator
+deliberately does not mutate `Vendor/` to compensate. Use the convenience schemes above.
 
 Xcode does not expand project macros reliably for every external runnable field. The
 generated app scheme records the current worktree root as the working directory and the
@@ -959,13 +1003,39 @@ def validate_xcodebuild_list(destination: Path) -> None:
     except json.JSONDecodeError as error:
         raise GeneratorError(f"xcodebuild -list returned invalid JSON: {error}") from error
     schemes = set(payload.get("workspace", {}).get("schemes", []))
-    required = {APP_SCHEME, MCP_SCHEME, TEST_SCHEME, "RepoPrompt"}
+    required = {APP_SCHEME, MCP_SCHEME, TEST_SCHEME, RUST_BRIDGE_TEST_SCHEME, "RepoPrompt"}
     missing = sorted(required - schemes)
     if missing:
         available = ", ".join(sorted(schemes)) or "none"
         raise GeneratorError(
             f"xcodebuild did not discover scheme '{missing[0]}' (available: {available})"
         )
+
+
+def validate_rust_bridge_build_for_testing(destination: Path) -> None:
+    workspace = destination / WORKSPACE_NAME
+    command = [
+        "xcodebuild",
+        "-workspace",
+        str(workspace),
+        "-scheme",
+        RUST_BRIDGE_TEST_SCHEME,
+        "-configuration",
+        "Debug",
+        "-destination",
+        "platform=macOS,arch=arm64",
+        "ARCHS=arm64",
+        "ONLY_ACTIVE_ARCH=YES",
+        "CODE_SIGNING_ALLOWED=NO",
+        "build-for-testing",
+    ]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+    except FileNotFoundError as error:
+        raise GeneratorError("xcodebuild is required; install/select Xcode") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise GeneratorError(f"Rust bridge xcodebuild build-for-testing failed: {detail}")
 
 
 def destination_from_argument(value: str) -> Path:
@@ -978,7 +1048,7 @@ def destination_from_argument(value: str) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("generate", "check", "validate", "print-path"):
+    for command in ("generate", "check", "validate", "build-for-testing", "print-path"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--destination", default=".build/xcode")
         if command == "validate":
@@ -995,9 +1065,14 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = load_package_manifest(REPO_ROOT)
     outputs = render_outputs(REPO_ROOT, manifest, destination)
-    if args.command == "generate":
+    if args.command in {"generate", "build-for-testing"}:
         write_outputs(destination, outputs)
-        print(f"Generated {destination / WORKSPACE_NAME}")
+        if args.command == "build-for-testing":
+            validate_xcodebuild_list(destination)
+            validate_rust_bridge_build_for_testing(destination)
+            print(f"Built Rust bridge tests for {destination / WORKSPACE_NAME}")
+        else:
+            print(f"Generated {destination / WORKSPACE_NAME}")
     elif args.command == "check":
         check_outputs(destination, outputs)
         print(f"Generated workspace is current: {destination / WORKSPACE_NAME}")

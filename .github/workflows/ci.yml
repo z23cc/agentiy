@@ -141,6 +141,60 @@ jobs:
           AGENTRY_ENABLE_SENTRY: "1"
         run: swift test --filter SentryTelemetryPrivacyTests
 
+  rust-ffi:
+    name: Rust FFI
+    runs-on: macos-26
+    steps:
+      - name: Require arm64 runner
+        run: |
+          [[ "$(uname -m)" == "arm64" ]] || { echo "ERROR: Agentry CI requires an arm64 runner" >&2; exit 1; }
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/cargo
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml', 'rust/ffi-contract/**', 'Sources/AgentryUniFFIRaw/Generated/**', 'Sources/CAgentryRustCore/include/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Check Rust formatting
+        working-directory: rust
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust workspace tests
+        working-directory: rust
+        run: cargo test --workspace --locked
+
+      - name: Check generated Rust FFI bindings
+        working-directory: rust
+        run: cargo run --locked -p xtask -- generate --check
+
+      - name: Check Rust dependency policy when available
+        working-directory: rust
+        run: |
+          if command -v cargo-deny >/dev/null 2>&1; then
+            cargo deny check
+          else
+            echo "::notice::cargo-deny is unavailable on this runner; dependency policy check skipped"
+          fi
+
+      - name: Audit Rust dependencies when available
+        working-directory: rust
+        run: |
+          if command -v cargo-audit >/dev/null 2>&1; then
+            cargo audit --file Cargo.lock
+          else
+            echo "::notice::cargo-audit is unavailable on this runner; advisory audit skipped"
+          fi
+
   provider-tests:
     name: Provider Tests
     runs-on: macos-26
