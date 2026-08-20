@@ -1,6 +1,7 @@
 # ADR-0001: UniFFI as the Raw Binder for the Rust Core Boundary
 
-**Status:** Draft（待用户裁决 Accept/Reject）
+**Status:** Accepted（用户裁决，2026-08-20）
+**Accepted scope:** raw binder only — capabilities proven by the §15.2 gates; G4/G7/G8 conditional gaps remain registered follow-ups in rust-ffi.md and do not expand this acceptance
 **Date:** 2026-08-20
 **Decision owner:** User
 

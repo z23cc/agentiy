@@ -24,7 +24,7 @@ Phases 1–6 establish:
 - proc-macro-only synchronous UniFFI exports with typed records/errors, RuntimeIdentity validation, project-owned panic poison, idempotent close/shutdown, and controlled wake-FD duplication;
 - deterministic arm64 staticlib construction, Swift/header/ordinary-modulemap generation, canonical CoreBuildFingerprint injection, checked-in artifact hashes, and zero-diff regeneration.
 
-The remaining Phase 0 closure items are the redacted current-Swift representative-payload baseline and SLO comparison, separately registered release dead-strip/dSYM symbolication evidence, mandatory CI security/fuzz execution, Rust-specific PR-ready path selection, and the user Accept/Reject decision recorded by `docs/architecture/adr-0001-uniffi-raw-binder.md`. `RepoPromptApp` still has no dependency on the raw or bridge targets.
+The remaining Phase 0 closure items are the redacted current-Swift representative-payload baseline and SLO comparison, separately registered release dead-strip/dSYM symbolication evidence, mandatory CI security/fuzz execution, Rust-specific PR-ready path selection, and the ADR decision is recorded: `docs/architecture/adr-0001-uniffi-raw-binder.md` is **Accepted** (user decision, 2026-08-20). `RepoPromptApp` still has no dependency on the raw or bridge targets.
 
 ## Acceptance gate matrix
 
@@ -54,7 +54,7 @@ The project gate IDs below remain the stable primary keys. The “Charter §15.2
 | **G7 Swift/Link/Xcode** | 5 debug/release/race bridge; 7 Swift concurrency | **Conditional pass** | focused `AgentryCoreBridgeTests` in debug, release, and ThreadSanitizer configurations; `Package.swift` Swift 6 strict concurrency plus warnings-as-errors for `AgentryUniFFIRaw`, `AgentryCoreBridge`, and `AgentryCoreBridgeTests`; `make xcode-rust-link-validate` authority | Compile/link/race coverage is present, but the evidence register has no standalone release dead-strip/link-map and dSYM Rust-frame symbolication result. Record those outputs before treating the broader G7 wording as unqualified. |
 | **G8 Governance** | 8 fuzz/security; cross-gate execution authority | **Conditional pass** | conductor Cargo operations and Make aliases; `.github/workflows/ci.yml` arm64 `rust-ffi` job; `make guardrails`; `python3 Scripts/test_contribution_preflight.py`; `cargo-fuzz` envelope smoke: 105,821,922 executions in 61 s, zero crashes, `cov=51` | Rust-specific PR-ready path selection is not present. CI currently runs deny/audit only when the tools are available and does not run bounded fuzz or bridge debug/release/TSan steps, so governance is not yet fail-closed. |
 
-UniFFI therefore remains a conditional raw-binder candidate. G4's real-baseline/SLO comparison is a P1 prerequisite; the broader project-gate wording also leaves the explicitly listed G7 and G8 evidence-registration/enforcement gaps. The user Accept/Reject decision is intentionally deferred to `docs/architecture/adr-0001-uniffi-raw-binder.md`.
+UniFFI is the **accepted** raw binder (ADR-0001, user decision 2026-08-20), within the capability envelope proven by the gates. G4's real-baseline/SLO comparison remains a P1 prerequisite; the explicitly listed G7 and G8 evidence-registration/enforcement gaps remain registered follow-ups.
 
 Passing the Rust-side Phases 1–6 evidence alone is not evidence that the cross-language G3–G7 gates pass.
 
