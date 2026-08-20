@@ -72,8 +72,38 @@
     "queueLimitExceeded",
     "payloadTooLarge",
     "shutdownTimedOut",
-    "internalPanic"
+    "internalPanic",
+    "patternTooComplex",
+    "invalidEscape",
+    "unmatchedBrackets",
+    "unmatchedParentheses",
+    "invalidQuantifier",
+    "variableLengthLookbehind",
+    "invalidPattern",
+    "matchLimitExceeded",
+    "depthLimitExceeded",
+    "heapLimitExceeded",
+    "jitUnavailable",
+    "searchCancelled",
+    "searchInvariant"
   ],
+  "searchLeaf": {
+    "additiveInAbiEpoch": 1,
+    "coordinates": "utf8-byte-half-open",
+    "lineNumbers": "zero-based",
+    "typedDtos": true,
+    "synchronousExports": true,
+    "runtimeIdentityRequired": true,
+    "requestScopedCancellation": {
+      "object": "LeafCancellation",
+      "operations": ["create", "cancel", "close"],
+      "idempotentCancelAndClose": true
+    },
+    "contentCancellation": "searchCancelled",
+    "pathCancellation": "ordered-partial-result",
+    "malformedRangeBehavior": "searchInvariant",
+    "productFallback": "none"
+  },
   "subscription": {
     "capacityEvents": 256,
     "capacityBytes": 1048576,

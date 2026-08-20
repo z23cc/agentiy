@@ -625,9 +625,15 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func closeSubscription(subscriptionId: SubscriptionId) throws
 
+    func createLeafCancellation(identity: RuntimeIdentity) throws  -> LeafCancellation
+
     func duplicateWakeReadFd(identity: RuntimeIdentity) throws  -> Int32
 
     func execute(command: CommandEnvelope) throws  -> AdmissionReceipt
+
+    func filterPaths(request: PathFilterRequest) throws  -> PathFilterResult
+
+    func folderSuffixIndices(request: FolderSuffixRequest) throws  -> [UInt32]
 
     func initialize() throws  -> CoreHandshake
 
@@ -636,6 +642,8 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
     func rearmWake(identity: RuntimeIdentity) throws  -> Bool
 
     func respondHostRequest(response: HostResponse) throws
+
+    func searchRegex(request: RegexSearchRequest) throws  -> RegexSearchResult
 
     func tryDrain(subscriptionId: SubscriptionId, maxEvents: UInt32, maxBytes: UInt64) throws  -> DrainBatch
 
@@ -732,6 +740,16 @@ open func closeSubscription(subscriptionId: SubscriptionId)throws   {try rustCal
 }
 }
 
+open func createLeafCancellation(identity: RuntimeIdentity)throws  -> LeafCancellation  {
+    return try  FfiConverterTypeLeafCancellation_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_create_leaf_cancellation(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),uniffiCallStatus
+    )
+})
+}
+
 open func duplicateWakeReadFd(identity: RuntimeIdentity)throws  -> Int32  {
     return try  FfiConverterInt32.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -748,6 +766,26 @@ open func execute(command: CommandEnvelope)throws  -> AdmissionReceipt  {
     uniffi_agentry_ffi_fn_method_coreruntime_execute(
             self.uniffiCloneHandle(),
         FfiConverterTypeCommandEnvelope_lower(command),uniffiCallStatus
+    )
+})
+}
+
+open func filterPaths(request: PathFilterRequest)throws  -> PathFilterResult  {
+    return try  FfiConverterTypePathFilterResult_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_filter_paths(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePathFilterRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func folderSuffixIndices(request: FolderSuffixRequest)throws  -> [UInt32]  {
+    return try  FfiConverterSequenceUInt32.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_folder_suffix_indices(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeFolderSuffixRequest_lower(request),uniffiCallStatus
     )
 })
 }
@@ -788,6 +826,16 @@ open func respondHostRequest(response: HostResponse)throws   {try rustCallWithEr
         FfiConverterTypeHostResponse_lower(response),uniffiCallStatus
     )
 }
+}
+
+open func searchRegex(request: RegexSearchRequest)throws  -> RegexSearchResult  {
+    return try  FfiConverterTypeRegexSearchResult_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_search_regex(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRegexSearchRequest_lower(request),uniffiCallStatus
+    )
+})
 }
 
 open func tryDrain(subscriptionId: SubscriptionId, maxEvents: UInt32, maxBytes: UInt64)throws  -> DrainBatch  {
@@ -845,6 +893,134 @@ public func FfiConverterTypeCoreRuntime_lift(_ handle: UInt64) throws -> CoreRun
 #endif
 public func FfiConverterTypeCoreRuntime_lower(_ value: CoreRuntime) -> UInt64 {
     return FfiConverterTypeCoreRuntime.lower(value)
+}
+
+
+
+
+
+
+public protocol LeafCancellationProtocol: AnyObject, Sendable {
+
+    func cancel(identity: RuntimeIdentity) throws
+
+    func close(identity: RuntimeIdentity) throws
+
+}
+open class LeafCancellation: LeafCancellationProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_agentry_ffi_fn_clone_leafcancellation(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_agentry_ffi_fn_free_leafcancellation(handle, $0) }
+    }
+
+
+
+
+open func cancel(identity: RuntimeIdentity)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_leafcancellation_cancel(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),uniffiCallStatus
+    )
+}
+}
+
+open func close(identity: RuntimeIdentity)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_leafcancellation_close(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),uniffiCallStatus
+    )
+}
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLeafCancellation: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = LeafCancellation
+
+    public static func lift(_ handle: UInt64) throws -> LeafCancellation {
+        return LeafCancellation(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: LeafCancellation) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LeafCancellation {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: LeafCancellation, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLeafCancellation_lift(_ handle: UInt64) throws -> LeafCancellation {
+    return try FfiConverterTypeLeafCancellation.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLeafCancellation_lower(_ value: LeafCancellation) -> UInt64 {
+    return FfiConverterTypeLeafCancellation.lower(value)
 }
 
 
@@ -909,6 +1085,60 @@ public func FfiConverterTypeAdmissionReceipt_lift(_ buf: RustBuffer) throws -> A
 #endif
 public func FfiConverterTypeAdmissionReceipt_lower(_ value: AdmissionReceipt) -> RustBuffer {
     return FfiConverterTypeAdmissionReceipt.lower(value)
+}
+
+
+public struct ByteRange: Equatable, Hashable {
+    public let start: UInt64
+    public let end: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(start: UInt64, end: UInt64) {
+        self.start = start
+        self.end = end
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ByteRange: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeByteRange: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ByteRange {
+        return
+            try ByteRange(
+                start: FfiConverterUInt64.read(from: &buf),
+                end: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ByteRange, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.start, into: &buf)
+        FfiConverterUInt64.write(value.end, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeByteRange_lift(_ buf: RustBuffer) throws -> ByteRange {
+    return try FfiConverterTypeByteRange.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeByteRange_lower(_ value: ByteRange) -> RustBuffer {
+    return FfiConverterTypeByteRange.lower(value)
 }
 
 
@@ -1238,6 +1468,72 @@ public func FfiConverterTypeDrainBatch_lower(_ value: DrainBatch) -> RustBuffer 
 }
 
 
+public struct FolderSuffixRequest {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let fragment: String
+    public let relativePaths: [String]
+    public let caseInsensitive: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, fragment: String, relativePaths: [String], caseInsensitive: Bool) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.fragment = fragment
+        self.relativePaths = relativePaths
+        self.caseInsensitive = caseInsensitive
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension FolderSuffixRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFolderSuffixRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FolderSuffixRequest {
+        return
+            try FolderSuffixRequest(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                fragment: FfiConverterString.read(from: &buf),
+                relativePaths: FfiConverterSequenceString.read(from: &buf),
+                caseInsensitive: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FolderSuffixRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterString.write(value.fragment, into: &buf)
+        FfiConverterSequenceString.write(value.relativePaths, into: &buf)
+        FfiConverterBool.write(value.caseInsensitive, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFolderSuffixRequest_lift(_ buf: RustBuffer) throws -> FolderSuffixRequest {
+    return try FfiConverterTypeFolderSuffixRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFolderSuffixRequest_lower(_ value: FolderSuffixRequest) -> RustBuffer {
+    return FfiConverterTypeFolderSuffixRequest.lower(value)
+}
+
+
 public struct HostResponse: Equatable, Hashable {
     public let runtimeIdentity: RuntimeIdentity
     public let requestId: String
@@ -1405,6 +1701,566 @@ public func FfiConverterTypeOversizeEvent_lift(_ buf: RustBuffer) throws -> Over
 #endif
 public func FfiConverterTypeOversizeEvent_lower(_ value: OversizeEvent) -> RustBuffer {
     return FfiConverterTypeOversizeEvent.lower(value)
+}
+
+
+public struct PathDiagnostic: Equatable, Hashable {
+    public let visitedSnapshotCount: UInt64
+    public let matchedSnapshotCount: UInt64
+    public let cancelled: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(visitedSnapshotCount: UInt64, matchedSnapshotCount: UInt64, cancelled: Bool) {
+        self.visitedSnapshotCount = visitedSnapshotCount
+        self.matchedSnapshotCount = matchedSnapshotCount
+        self.cancelled = cancelled
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PathDiagnostic: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePathDiagnostic: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PathDiagnostic {
+        return
+            try PathDiagnostic(
+                visitedSnapshotCount: FfiConverterUInt64.read(from: &buf),
+                matchedSnapshotCount: FfiConverterUInt64.read(from: &buf),
+                cancelled: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PathDiagnostic, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.visitedSnapshotCount, into: &buf)
+        FfiConverterUInt64.write(value.matchedSnapshotCount, into: &buf)
+        FfiConverterBool.write(value.cancelled, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathDiagnostic_lift(_ buf: RustBuffer) throws -> PathDiagnostic {
+    return try FfiConverterTypePathDiagnostic.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathDiagnostic_lower(_ value: PathDiagnostic) -> RustBuffer {
+    return FfiConverterTypePathDiagnostic.lower(value)
+}
+
+
+public struct PathFilterRequest {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let snapshots: [PathSnapshot]
+    public let clauses: [PathClause]
+    public let caseInsensitive: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, snapshots: [PathSnapshot], clauses: [PathClause], caseInsensitive: Bool) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.snapshots = snapshots
+        self.clauses = clauses
+        self.caseInsensitive = caseInsensitive
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PathFilterRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePathFilterRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PathFilterRequest {
+        return
+            try PathFilterRequest(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                snapshots: FfiConverterSequenceTypePathSnapshot.read(from: &buf),
+                clauses: FfiConverterSequenceTypePathClause.read(from: &buf),
+                caseInsensitive: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PathFilterRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterSequenceTypePathSnapshot.write(value.snapshots, into: &buf)
+        FfiConverterSequenceTypePathClause.write(value.clauses, into: &buf)
+        FfiConverterBool.write(value.caseInsensitive, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathFilterRequest_lift(_ buf: RustBuffer) throws -> PathFilterRequest {
+    return try FfiConverterTypePathFilterRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathFilterRequest_lower(_ value: PathFilterRequest) -> RustBuffer {
+    return FfiConverterTypePathFilterRequest.lower(value)
+}
+
+
+public struct PathFilterResult: Equatable, Hashable {
+    public let matchedSnapshotIndices: [UInt32]
+    public let visitedSnapshotCount: UInt64
+    public let cancelled: Bool
+    public let diagnostic: PathDiagnostic
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(matchedSnapshotIndices: [UInt32], visitedSnapshotCount: UInt64, cancelled: Bool, diagnostic: PathDiagnostic) {
+        self.matchedSnapshotIndices = matchedSnapshotIndices
+        self.visitedSnapshotCount = visitedSnapshotCount
+        self.cancelled = cancelled
+        self.diagnostic = diagnostic
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PathFilterResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePathFilterResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PathFilterResult {
+        return
+            try PathFilterResult(
+                matchedSnapshotIndices: FfiConverterSequenceUInt32.read(from: &buf),
+                visitedSnapshotCount: FfiConverterUInt64.read(from: &buf),
+                cancelled: FfiConverterBool.read(from: &buf),
+                diagnostic: FfiConverterTypePathDiagnostic.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PathFilterResult, into buf: inout [UInt8]) {
+        FfiConverterSequenceUInt32.write(value.matchedSnapshotIndices, into: &buf)
+        FfiConverterUInt64.write(value.visitedSnapshotCount, into: &buf)
+        FfiConverterBool.write(value.cancelled, into: &buf)
+        FfiConverterTypePathDiagnostic.write(value.diagnostic, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathFilterResult_lift(_ buf: RustBuffer) throws -> PathFilterResult {
+    return try FfiConverterTypePathFilterResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathFilterResult_lower(_ value: PathFilterResult) -> RustBuffer {
+    return FfiConverterTypePathFilterResult.lower(value)
+}
+
+
+public struct PathSnapshot: Equatable, Hashable {
+    public let standardizedFullPath: String
+    public let standardizedRelativePath: String
+    public let standardizedRootPath: String
+    public let clientDisplayPath: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(standardizedFullPath: String, standardizedRelativePath: String, standardizedRootPath: String, clientDisplayPath: String) {
+        self.standardizedFullPath = standardizedFullPath
+        self.standardizedRelativePath = standardizedRelativePath
+        self.standardizedRootPath = standardizedRootPath
+        self.clientDisplayPath = clientDisplayPath
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PathSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePathSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PathSnapshot {
+        return
+            try PathSnapshot(
+                standardizedFullPath: FfiConverterString.read(from: &buf),
+                standardizedRelativePath: FfiConverterString.read(from: &buf),
+                standardizedRootPath: FfiConverterString.read(from: &buf),
+                clientDisplayPath: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PathSnapshot, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.standardizedFullPath, into: &buf)
+        FfiConverterString.write(value.standardizedRelativePath, into: &buf)
+        FfiConverterString.write(value.standardizedRootPath, into: &buf)
+        FfiConverterString.write(value.clientDisplayPath, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathSnapshot_lift(_ buf: RustBuffer) throws -> PathSnapshot {
+    return try FfiConverterTypePathSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathSnapshot_lower(_ value: PathSnapshot) -> RustBuffer {
+    return FfiConverterTypePathSnapshot.lower(value)
+}
+
+
+public struct RegexDiagnostic: Equatable, Hashable {
+    public let engine: EngineKind
+    public let jitStatus: JitStatus
+    public let cacheHit: Bool
+    public let repairKind: RepairKind
+    public let limitPolicy: LimitPolicy
+    public let subjectByteCount: UInt64
+    public let lineCount: UInt64
+    public let hitCount: UInt64
+    public let matchingLineCount: UInt64
+    public let cancelled: Bool
+    public let limitFailure: LimitFailure?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(engine: EngineKind, jitStatus: JitStatus, cacheHit: Bool, repairKind: RepairKind, limitPolicy: LimitPolicy, subjectByteCount: UInt64, lineCount: UInt64, hitCount: UInt64, matchingLineCount: UInt64, cancelled: Bool, limitFailure: LimitFailure?) {
+        self.engine = engine
+        self.jitStatus = jitStatus
+        self.cacheHit = cacheHit
+        self.repairKind = repairKind
+        self.limitPolicy = limitPolicy
+        self.subjectByteCount = subjectByteCount
+        self.lineCount = lineCount
+        self.hitCount = hitCount
+        self.matchingLineCount = matchingLineCount
+        self.cancelled = cancelled
+        self.limitFailure = limitFailure
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RegexDiagnostic: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegexDiagnostic: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegexDiagnostic {
+        return
+            try RegexDiagnostic(
+                engine: FfiConverterTypeEngineKind.read(from: &buf),
+                jitStatus: FfiConverterTypeJitStatus.read(from: &buf),
+                cacheHit: FfiConverterBool.read(from: &buf),
+                repairKind: FfiConverterTypeRepairKind.read(from: &buf),
+                limitPolicy: FfiConverterTypeLimitPolicy.read(from: &buf),
+                subjectByteCount: FfiConverterUInt64.read(from: &buf),
+                lineCount: FfiConverterUInt64.read(from: &buf),
+                hitCount: FfiConverterUInt64.read(from: &buf),
+                matchingLineCount: FfiConverterUInt64.read(from: &buf),
+                cancelled: FfiConverterBool.read(from: &buf),
+                limitFailure: FfiConverterOptionTypeLimitFailure.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegexDiagnostic, into buf: inout [UInt8]) {
+        FfiConverterTypeEngineKind.write(value.engine, into: &buf)
+        FfiConverterTypeJitStatus.write(value.jitStatus, into: &buf)
+        FfiConverterBool.write(value.cacheHit, into: &buf)
+        FfiConverterTypeRepairKind.write(value.repairKind, into: &buf)
+        FfiConverterTypeLimitPolicy.write(value.limitPolicy, into: &buf)
+        FfiConverterUInt64.write(value.subjectByteCount, into: &buf)
+        FfiConverterUInt64.write(value.lineCount, into: &buf)
+        FfiConverterUInt64.write(value.hitCount, into: &buf)
+        FfiConverterUInt64.write(value.matchingLineCount, into: &buf)
+        FfiConverterBool.write(value.cancelled, into: &buf)
+        FfiConverterOptionTypeLimitFailure.write(value.limitFailure, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexDiagnostic_lift(_ buf: RustBuffer) throws -> RegexDiagnostic {
+    return try FfiConverterTypeRegexDiagnostic.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexDiagnostic_lower(_ value: RegexDiagnostic) -> RustBuffer {
+    return FfiConverterTypeRegexDiagnostic.lower(value)
+}
+
+
+public struct RegexLineHit: Equatable, Hashable {
+    public let lineNumber: UInt32
+    public let lineByteRange: ByteRange
+    public let matchByteRange: ByteRange
+    public let contextBeforeByteRanges: [ByteRange]
+    public let contextAfterByteRanges: [ByteRange]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lineNumber: UInt32, lineByteRange: ByteRange, matchByteRange: ByteRange, contextBeforeByteRanges: [ByteRange], contextAfterByteRanges: [ByteRange]) {
+        self.lineNumber = lineNumber
+        self.lineByteRange = lineByteRange
+        self.matchByteRange = matchByteRange
+        self.contextBeforeByteRanges = contextBeforeByteRanges
+        self.contextAfterByteRanges = contextAfterByteRanges
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RegexLineHit: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegexLineHit: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegexLineHit {
+        return
+            try RegexLineHit(
+                lineNumber: FfiConverterUInt32.read(from: &buf),
+                lineByteRange: FfiConverterTypeByteRange.read(from: &buf),
+                matchByteRange: FfiConverterTypeByteRange.read(from: &buf),
+                contextBeforeByteRanges: FfiConverterSequenceTypeByteRange.read(from: &buf),
+                contextAfterByteRanges: FfiConverterSequenceTypeByteRange.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegexLineHit, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.lineNumber, into: &buf)
+        FfiConverterTypeByteRange.write(value.lineByteRange, into: &buf)
+        FfiConverterTypeByteRange.write(value.matchByteRange, into: &buf)
+        FfiConverterSequenceTypeByteRange.write(value.contextBeforeByteRanges, into: &buf)
+        FfiConverterSequenceTypeByteRange.write(value.contextAfterByteRanges, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexLineHit_lift(_ buf: RustBuffer) throws -> RegexLineHit {
+    return try FfiConverterTypeRegexLineHit.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexLineHit_lower(_ value: RegexLineHit) -> RustBuffer {
+    return FfiConverterTypeRegexLineHit.lower(value)
+}
+
+
+public struct RegexSearchRequest {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let mode: RegexSearchMode
+    public let pattern: String
+    public let subject: String
+    public let caseInsensitive: Bool
+    public let wholeWord: Bool
+    public let multilineAnchors: Bool
+    public let collectMatches: Bool
+    public let maxCollectedMatches: UInt32?
+    public let contextLines: UInt16
+    public let matchPolicy: MatchPolicy
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, mode: RegexSearchMode, pattern: String, subject: String, caseInsensitive: Bool, wholeWord: Bool, multilineAnchors: Bool, collectMatches: Bool, maxCollectedMatches: UInt32?, contextLines: UInt16, matchPolicy: MatchPolicy) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.mode = mode
+        self.pattern = pattern
+        self.subject = subject
+        self.caseInsensitive = caseInsensitive
+        self.wholeWord = wholeWord
+        self.multilineAnchors = multilineAnchors
+        self.collectMatches = collectMatches
+        self.maxCollectedMatches = maxCollectedMatches
+        self.contextLines = contextLines
+        self.matchPolicy = matchPolicy
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RegexSearchRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegexSearchRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegexSearchRequest {
+        return
+            try RegexSearchRequest(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                mode: FfiConverterTypeRegexSearchMode.read(from: &buf),
+                pattern: FfiConverterString.read(from: &buf),
+                subject: FfiConverterString.read(from: &buf),
+                caseInsensitive: FfiConverterBool.read(from: &buf),
+                wholeWord: FfiConverterBool.read(from: &buf),
+                multilineAnchors: FfiConverterBool.read(from: &buf),
+                collectMatches: FfiConverterBool.read(from: &buf),
+                maxCollectedMatches: FfiConverterOptionUInt32.read(from: &buf),
+                contextLines: FfiConverterUInt16.read(from: &buf),
+                matchPolicy: FfiConverterTypeMatchPolicy.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegexSearchRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterTypeRegexSearchMode.write(value.mode, into: &buf)
+        FfiConverterString.write(value.pattern, into: &buf)
+        FfiConverterString.write(value.subject, into: &buf)
+        FfiConverterBool.write(value.caseInsensitive, into: &buf)
+        FfiConverterBool.write(value.wholeWord, into: &buf)
+        FfiConverterBool.write(value.multilineAnchors, into: &buf)
+        FfiConverterBool.write(value.collectMatches, into: &buf)
+        FfiConverterOptionUInt32.write(value.maxCollectedMatches, into: &buf)
+        FfiConverterUInt16.write(value.contextLines, into: &buf)
+        FfiConverterTypeMatchPolicy.write(value.matchPolicy, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchRequest_lift(_ buf: RustBuffer) throws -> RegexSearchRequest {
+    return try FfiConverterTypeRegexSearchRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchRequest_lower(_ value: RegexSearchRequest) -> RustBuffer {
+    return FfiConverterTypeRegexSearchRequest.lower(value)
+}
+
+
+public struct RegexSearchResult: Equatable, Hashable {
+    public let hits: [RegexLineHit]
+    public let matchingLineCount: UInt64
+    public let cancelled: Bool
+    public let diagnostic: RegexDiagnostic
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(hits: [RegexLineHit], matchingLineCount: UInt64, cancelled: Bool, diagnostic: RegexDiagnostic) {
+        self.hits = hits
+        self.matchingLineCount = matchingLineCount
+        self.cancelled = cancelled
+        self.diagnostic = diagnostic
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RegexSearchResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegexSearchResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegexSearchResult {
+        return
+            try RegexSearchResult(
+                hits: FfiConverterSequenceTypeRegexLineHit.read(from: &buf),
+                matchingLineCount: FfiConverterUInt64.read(from: &buf),
+                cancelled: FfiConverterBool.read(from: &buf),
+                diagnostic: FfiConverterTypeRegexDiagnostic.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegexSearchResult, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeRegexLineHit.write(value.hits, into: &buf)
+        FfiConverterUInt64.write(value.matchingLineCount, into: &buf)
+        FfiConverterBool.write(value.cancelled, into: &buf)
+        FfiConverterTypeRegexDiagnostic.write(value.diagnostic, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchResult_lift(_ buf: RustBuffer) throws -> RegexSearchResult {
+    return try FfiConverterTypeRegexSearchResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchResult_lower(_ value: RegexSearchResult) -> RustBuffer {
+    return FfiConverterTypeRegexSearchResult.lower(value)
 }
 
 
@@ -2034,6 +2890,19 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case PayloadTooLarge
     case ShutdownTimedOut
     case InternalPanic
+    case PatternTooComplex
+    case InvalidEscape
+    case UnmatchedBrackets
+    case UnmatchedParentheses
+    case InvalidQuantifier
+    case VariableLengthLookbehind
+    case InvalidPattern
+    case MatchLimitExceeded
+    case DepthLimitExceeded
+    case HeapLimitExceeded
+    case JitUnavailable
+    case SearchCancelled
+    case SearchInvariant
 
 
 
@@ -2075,6 +2944,19 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case 10: return .PayloadTooLarge
         case 11: return .ShutdownTimedOut
         case 12: return .InternalPanic
+        case 13: return .PatternTooComplex
+        case 14: return .InvalidEscape
+        case 15: return .UnmatchedBrackets
+        case 16: return .UnmatchedParentheses
+        case 17: return .InvalidQuantifier
+        case 18: return .VariableLengthLookbehind
+        case 19: return .InvalidPattern
+        case 20: return .MatchLimitExceeded
+        case 21: return .DepthLimitExceeded
+        case 22: return .HeapLimitExceeded
+        case 23: return .JitUnavailable
+        case 24: return .SearchCancelled
+        case 25: return .SearchInvariant
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -2134,6 +3016,58 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case .InternalPanic:
             writeInt(&buf, Int32(12))
 
+
+        case .PatternTooComplex:
+            writeInt(&buf, Int32(13))
+
+
+        case .InvalidEscape:
+            writeInt(&buf, Int32(14))
+
+
+        case .UnmatchedBrackets:
+            writeInt(&buf, Int32(15))
+
+
+        case .UnmatchedParentheses:
+            writeInt(&buf, Int32(16))
+
+
+        case .InvalidQuantifier:
+            writeInt(&buf, Int32(17))
+
+
+        case .VariableLengthLookbehind:
+            writeInt(&buf, Int32(18))
+
+
+        case .InvalidPattern:
+            writeInt(&buf, Int32(19))
+
+
+        case .MatchLimitExceeded:
+            writeInt(&buf, Int32(20))
+
+
+        case .DepthLimitExceeded:
+            writeInt(&buf, Int32(21))
+
+
+        case .HeapLimitExceeded:
+            writeInt(&buf, Int32(22))
+
+
+        case .JitUnavailable:
+            writeInt(&buf, Int32(23))
+
+
+        case .SearchCancelled:
+            writeInt(&buf, Int32(24))
+
+
+        case .SearchInvariant:
+            writeInt(&buf, Int32(25))
+
         }
     }
 }
@@ -2152,6 +3086,392 @@ public func FfiConverterTypeCoreError_lift(_ buf: RustBuffer) throws -> CoreErro
 public func FfiConverterTypeCoreError_lower(_ value: CoreError) -> RustBuffer {
     return FfiConverterTypeCoreError.lower(value)
 }
+
+
+
+public enum EngineKind: Equatable, Hashable {
+
+    case asciiWholeWord
+    case anchoredDeclaration
+    case asciiMarker
+    case pathSuffix
+    case anchoredLinePrefilter
+    case pcre2
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension EngineKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEngineKind: FfiConverterRustBuffer {
+    typealias SwiftType = EngineKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EngineKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .asciiWholeWord
+
+        case 2: return .anchoredDeclaration
+
+        case 3: return .asciiMarker
+
+        case 4: return .pathSuffix
+
+        case 5: return .anchoredLinePrefilter
+
+        case 6: return .pcre2
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: EngineKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .asciiWholeWord:
+            writeInt(&buf, Int32(1))
+
+
+        case .anchoredDeclaration:
+            writeInt(&buf, Int32(2))
+
+
+        case .asciiMarker:
+            writeInt(&buf, Int32(3))
+
+
+        case .pathSuffix:
+            writeInt(&buf, Int32(4))
+
+
+        case .anchoredLinePrefilter:
+            writeInt(&buf, Int32(5))
+
+
+        case .pcre2:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEngineKind_lift(_ buf: RustBuffer) throws -> EngineKind {
+    return try FfiConverterTypeEngineKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEngineKind_lower(_ value: EngineKind) -> RustBuffer {
+    return FfiConverterTypeEngineKind.lower(value)
+}
+
+
+
+
+public enum JitStatus: Equatable, Hashable {
+
+    case notApplicable
+    case active
+    case pcre2InterpreterFallback
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension JitStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeJitStatus: FfiConverterRustBuffer {
+    typealias SwiftType = JitStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> JitStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .notApplicable
+
+        case 2: return .active
+
+        case 3: return .pcre2InterpreterFallback
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: JitStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .notApplicable:
+            writeInt(&buf, Int32(1))
+
+
+        case .active:
+            writeInt(&buf, Int32(2))
+
+
+        case .pcre2InterpreterFallback:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeJitStatus_lift(_ buf: RustBuffer) throws -> JitStatus {
+    return try FfiConverterTypeJitStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeJitStatus_lower(_ value: JitStatus) -> RustBuffer {
+    return FfiConverterTypeJitStatus.lower(value)
+}
+
+
+
+
+public enum LimitFailure: Equatable, Hashable {
+
+    case match
+    case depth
+    case heap
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LimitFailure: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLimitFailure: FfiConverterRustBuffer {
+    typealias SwiftType = LimitFailure
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LimitFailure {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .match
+
+        case 2: return .depth
+
+        case 3: return .heap
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LimitFailure, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .match:
+            writeInt(&buf, Int32(1))
+
+
+        case .depth:
+            writeInt(&buf, Int32(2))
+
+
+        case .heap:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLimitFailure_lift(_ buf: RustBuffer) throws -> LimitFailure {
+    return try FfiConverterTypeLimitFailure.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLimitFailure_lower(_ value: LimitFailure) -> RustBuffer {
+    return FfiConverterTypeLimitFailure.lower(value)
+}
+
+
+
+
+public enum LimitPolicy: Equatable, Hashable {
+
+    case fileSearchFullBuffer
+    case fileSearchLine
+    case pathSearchShortSubject
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LimitPolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLimitPolicy: FfiConverterRustBuffer {
+    typealias SwiftType = LimitPolicy
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LimitPolicy {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .fileSearchFullBuffer
+
+        case 2: return .fileSearchLine
+
+        case 3: return .pathSearchShortSubject
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LimitPolicy, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .fileSearchFullBuffer:
+            writeInt(&buf, Int32(1))
+
+
+        case .fileSearchLine:
+            writeInt(&buf, Int32(2))
+
+
+        case .pathSearchShortSubject:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLimitPolicy_lift(_ buf: RustBuffer) throws -> LimitPolicy {
+    return try FfiConverterTypeLimitPolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLimitPolicy_lower(_ value: LimitPolicy) -> RustBuffer {
+    return FfiConverterTypeLimitPolicy.lower(value)
+}
+
+
+
+
+public enum MatchPolicy: Equatable, Hashable {
+
+    case contentFullBuffer
+    case contentLine
+    case shortPath
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MatchPolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMatchPolicy: FfiConverterRustBuffer {
+    typealias SwiftType = MatchPolicy
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MatchPolicy {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .contentFullBuffer
+
+        case 2: return .contentLine
+
+        case 3: return .shortPath
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MatchPolicy, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .contentFullBuffer:
+            writeInt(&buf, Int32(1))
+
+
+        case .contentLine:
+            writeInt(&buf, Int32(2))
+
+
+        case .shortPath:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMatchPolicy_lift(_ buf: RustBuffer) throws -> MatchPolicy {
+    return try FfiConverterTypeMatchPolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMatchPolicy_lower(_ value: MatchPolicy) -> RustBuffer {
+    return FfiConverterTypeMatchPolicy.lower(value)
+}
+
 
 
 
@@ -2251,6 +3571,249 @@ public func FfiConverterTypeOperationState_lift(_ buf: RustBuffer) throws -> Ope
 #endif
 public func FfiConverterTypeOperationState_lower(_ value: OperationState) -> RustBuffer {
     return FfiConverterTypeOperationState.lower(value)
+}
+
+
+
+
+public enum PathClause: Equatable, Hashable {
+
+    case exactFile(absPath: String, relPath: String, restrictedRootPath: String?
+    )
+    case exactFolder(absLower: String, relLower: String, restrictedRootPath: String?
+    )
+    case glob(pattern: String, restrictedRootPath: String?
+    )
+    case legacyPrefix(candidateLower: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PathClause: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePathClause: FfiConverterRustBuffer {
+    typealias SwiftType = PathClause
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PathClause {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .exactFile(absPath: try FfiConverterString.read(from: &buf), relPath: try FfiConverterString.read(from: &buf), restrictedRootPath: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 2: return .exactFolder(absLower: try FfiConverterString.read(from: &buf), relLower: try FfiConverterString.read(from: &buf), restrictedRootPath: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 3: return .glob(pattern: try FfiConverterString.read(from: &buf), restrictedRootPath: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 4: return .legacyPrefix(candidateLower: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PathClause, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .exactFile(absPath,relPath,restrictedRootPath):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(absPath, into: &buf)
+            FfiConverterString.write(relPath, into: &buf)
+            FfiConverterOptionString.write(restrictedRootPath, into: &buf)
+
+
+        case let .exactFolder(absLower,relLower,restrictedRootPath):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(absLower, into: &buf)
+            FfiConverterString.write(relLower, into: &buf)
+            FfiConverterOptionString.write(restrictedRootPath, into: &buf)
+
+
+        case let .glob(pattern,restrictedRootPath):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(pattern, into: &buf)
+            FfiConverterOptionString.write(restrictedRootPath, into: &buf)
+
+
+        case let .legacyPrefix(candidateLower):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(candidateLower, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathClause_lift(_ buf: RustBuffer) throws -> PathClause {
+    return try FfiConverterTypePathClause.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePathClause_lower(_ value: PathClause) -> RustBuffer {
+    return FfiConverterTypePathClause.lower(value)
+}
+
+
+
+
+public enum RegexSearchMode: Equatable, Hashable {
+
+    case content
+    case path
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RegexSearchMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegexSearchMode: FfiConverterRustBuffer {
+    typealias SwiftType = RegexSearchMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegexSearchMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .content
+
+        case 2: return .path
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RegexSearchMode, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .content:
+            writeInt(&buf, Int32(1))
+
+
+        case .path:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchMode_lift(_ buf: RustBuffer) throws -> RegexSearchMode {
+    return try FfiConverterTypeRegexSearchMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchMode_lower(_ value: RegexSearchMode) -> RustBuffer {
+    return FfiConverterTypeRegexSearchMode.lower(value)
+}
+
+
+
+
+public enum RepairKind: Equatable, Hashable {
+
+    case none
+    case doubleEscapeCompression
+    case normalise
+    case normaliseThenCompression
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RepairKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRepairKind: FfiConverterRustBuffer {
+    typealias SwiftType = RepairKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RepairKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .none
+
+        case 2: return .doubleEscapeCompression
+
+        case 3: return .normalise
+
+        case 4: return .normaliseThenCompression
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RepairKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .none:
+            writeInt(&buf, Int32(1))
+
+
+        case .doubleEscapeCompression:
+            writeInt(&buf, Int32(2))
+
+
+        case .normalise:
+            writeInt(&buf, Int32(3))
+
+
+        case .normaliseThenCompression:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRepairKind_lift(_ buf: RustBuffer) throws -> RepairKind {
+    return try FfiConverterTypeRepairKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRepairKind_lower(_ value: RepairKind) -> RustBuffer {
+    return FfiConverterTypeRepairKind.lower(value)
 }
 
 
@@ -2358,6 +3921,30 @@ public func FfiConverterTypeRuntimeEventKind_lower(_ value: RuntimeEventKind) ->
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = UInt32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
     typealias SwiftType = UInt64?
 
@@ -2382,6 +3969,30 @@ fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeOversizeEvent: FfiConverterRustBuffer {
     typealias SwiftType = OversizeEvent?
 
@@ -2398,6 +4009,30 @@ fileprivate struct FfiConverterOptionTypeOversizeEvent: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeOversizeEvent.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeLimitFailure: FfiConverterRustBuffer {
+    typealias SwiftType = LimitFailure?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLimitFailure.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLimitFailure.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -2431,6 +4066,131 @@ fileprivate struct FfiConverterSequenceUInt16: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt32]
+
+    public static func write(_ value: [UInt32], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt32.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt32] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt32]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt32.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeByteRange: FfiConverterRustBuffer {
+    typealias SwiftType = [ByteRange]
+
+    public static func write(_ value: [ByteRange], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeByteRange.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ByteRange] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ByteRange]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeByteRange.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypePathSnapshot: FfiConverterRustBuffer {
+    typealias SwiftType = [PathSnapshot]
+
+    public static func write(_ value: [PathSnapshot], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePathSnapshot.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PathSnapshot] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PathSnapshot]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePathSnapshot.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRegexLineHit: FfiConverterRustBuffer {
+    typealias SwiftType = [RegexLineHit]
+
+    public static func write(_ value: [RegexLineHit], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRegexLineHit.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RegexLineHit] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RegexLineHit]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRegexLineHit.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeRuntimeEvent: FfiConverterRustBuffer {
     typealias SwiftType = [RuntimeEvent]
 
@@ -2448,6 +4208,31 @@ fileprivate struct FfiConverterSequenceTypeRuntimeEvent: FfiConverterRustBuffer 
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeRuntimeEvent.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypePathClause: FfiConverterRustBuffer {
+    typealias SwiftType = [PathClause]
+
+    public static func write(_ value: [PathClause], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePathClause.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PathClause] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PathClause]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePathClause.read(from: &buf))
         }
         return seq
     }
@@ -2477,10 +4262,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_close_subscription() != 31003) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_create_leaf_cancellation() != 701) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_duplicate_wake_read_fd() != 17040) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_execute() != 24272) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_filter_paths() != 52760) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_folder_suffix_indices() != 65299) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_initialize() != 13097) {
@@ -2495,7 +4289,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_respond_host_request() != 27361) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_search_regex() != 2445) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_try_drain() != 27207) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_leafcancellation_cancel() != 14065) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_leafcancellation_close() != 11762) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_constructor_coreruntime_new() != 14410) {

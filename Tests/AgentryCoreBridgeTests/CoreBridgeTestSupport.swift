@@ -3,11 +3,16 @@ import Foundation
 import os
 @testable import AgentryCoreBridge
 
+final class FakeLeafCancellationHandle: CoreLeafCancellationHandle, Sendable {}
+
 final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
     struct State {
         var identity: CoreRuntimeIdentity
         var handshakeOverride: CoreTransportHandshake?
         var executeError: CoreTransportError?
+        var searchError: CoreTransportError?
+        var searchResult: CoreRegexSearchResult?
+        var blocksSearch = false
         var actions: [String] = []
         var drains: [CoreTransportDrainBatch] = []
         var rearmResults: [Bool] = []
@@ -17,6 +22,8 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
     }
 
     private let state: OSAllocatedUnfairLock<State>
+    let searchStarted = DispatchSemaphore(value: 0)
+    let searchRelease = DispatchSemaphore(value: 0)
     private let readFD: Int32
     private let writeFD: Int32
 
@@ -120,6 +127,87 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         state.withLock { $0.actions.append("host-response") }
     }
 
+    func createLeafCancellation(identity: CoreRuntimeIdentity) throws -> any CoreLeafCancellationHandle {
+        state.withLock { $0.actions.append("create-leaf-cancellation") }
+        return FakeLeafCancellationHandle()
+    }
+
+    func cancelLeafCancellation(
+        _ cancellation: any CoreLeafCancellationHandle,
+        identity: CoreRuntimeIdentity
+    ) throws {
+        state.withLock { $0.actions.append("cancel-leaf-cancellation") }
+    }
+
+    func closeLeafCancellation(
+        _ cancellation: any CoreLeafCancellationHandle,
+        identity: CoreRuntimeIdentity
+    ) throws {
+        state.withLock { $0.actions.append("close-leaf-cancellation") }
+    }
+
+    func searchRegex(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchRequest
+    ) throws -> CoreRegexSearchResult {
+        let outcome = state.withLock { value in
+            value.actions.append("search-regex")
+            return (value.blocksSearch, value.searchError, value.searchResult)
+        }
+        if outcome.0 {
+            searchStarted.signal()
+            searchRelease.wait()
+        }
+        if let error = outcome.1 { throw error }
+        if let result = outcome.2 { return result }
+        return CoreRegexSearchResult(
+            hits: [],
+            matchingLineCount: 0,
+            cancelled: false,
+            diagnostic: CoreRegexDiagnostic(
+                engine: .pcre2,
+                jitStatus: .active,
+                cacheHit: false,
+                repairKind: .none,
+                limitPolicy: .fileSearchFullBuffer,
+                subjectByteCount: UInt64(request.subject.utf8.count),
+                lineCount: 0,
+                hitCount: 0,
+                matchingLineCount: 0,
+                cancelled: false,
+                limitFailure: nil
+            )
+        )
+    }
+
+    func filterPaths(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CorePathFilterRequest
+    ) throws -> CorePathFilterResult {
+        state.withLock { $0.actions.append("filter-paths") }
+        return CorePathFilterResult(
+            matchedSnapshotIndices: [],
+            visitedSnapshotCount: UInt64(request.snapshots.count),
+            cancelled: false,
+            diagnostic: .init(
+                visitedSnapshotCount: UInt64(request.snapshots.count),
+                matchedSnapshotCount: 0,
+                cancelled: false
+            )
+        )
+    }
+
+    func folderSuffixIndices(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreFolderSuffixRequest
+    ) throws -> [UInt32] {
+        state.withLock { $0.actions.append("folder-suffix") }
+        return []
+    }
+
     func beginShutdown(identity: CoreRuntimeIdentity) throws -> CoreShutdownReceipt {
         state.withLock { value in
             value.shutdownCount += 1
@@ -134,6 +222,18 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
 
     func failExecute(with error: CoreTransportError) {
         state.withLock { $0.executeError = error }
+    }
+
+    func failSearch(with error: CoreTransportError) {
+        state.withLock { $0.searchError = error }
+    }
+
+    func returnSearchResult(_ result: CoreRegexSearchResult) {
+        state.withLock { $0.searchResult = result }
+    }
+
+    func blockSearch() {
+        state.withLock { $0.blocksSearch = true }
     }
 
     func enqueue(_ batches: [CoreTransportDrainBatch], rearm: [Bool] = []) {

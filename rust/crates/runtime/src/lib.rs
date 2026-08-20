@@ -7,6 +7,7 @@ mod identity;
 mod lifecycle;
 mod operation;
 mod registry;
+mod search;
 mod subscription;
 mod wake_pipe;
 
@@ -18,6 +19,12 @@ pub use operation::{
     OperationId, OperationSnapshot, OperationState, RequestFingerprint, ScopeId, TerminalOutcome,
 };
 pub use registry::{OperationRegistry, RegistryError};
+pub use search::{
+    ByteRange, EngineKind, FolderSuffixRequest, JitStatus, LeafCancellation, LimitFailure,
+    LimitPolicy, MatchPolicy, PathClause, PathDiagnostic, PathFilterRequest, PathFilterResult,
+    PathSnapshot, RegexDiagnostic, RegexLineHit, RegexSearchMode, RegexSearchRequest,
+    RegexSearchResult, RepairKind, SearchError, SearchLeaf,
+};
 pub use subscription::{
     DEFAULT_DRAIN_MAX_BYTES, DEFAULT_DRAIN_MAX_EVENTS, DEFAULT_MAX_QUEUED_BYTES,
     DEFAULT_MAX_QUEUED_EVENTS, DrainBatch, DrainOutcome, EventClass, EventDetail, EventInput,

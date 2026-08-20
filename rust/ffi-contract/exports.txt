@@ -12,4 +12,10 @@ CoreRuntime.duplicateWakeReadFd(RuntimeIdentity) throws -> Int32
 CoreRuntime.rearmWake(RuntimeIdentity) throws -> Bool
 CoreRuntime.respondHostRequest(HostResponse) throws
 CoreRuntime.closeSubscription(SubscriptionId) throws
+CoreRuntime.createLeafCancellation(RuntimeIdentity) throws -> LeafCancellation
+LeafCancellation.cancel(RuntimeIdentity) throws
+LeafCancellation.close(RuntimeIdentity) throws
+CoreRuntime.searchRegex(RegexSearchRequest) throws -> RegexSearchResult
+CoreRuntime.filterPaths(PathFilterRequest) throws -> PathFilterResult
+CoreRuntime.folderSuffixIndices(FolderSuffixRequest) throws -> sequence<UInt32>
 CoreRuntime.beginShutdown(RuntimeIdentity) throws -> ShutdownReceipt

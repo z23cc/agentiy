@@ -1,6 +1,6 @@
 use agentry_proto::DecodeError;
 use agentry_runtime::{
-    IdentifierError, IdentityError, RegistryError, RuntimeError, SubscriptionError,
+    IdentifierError, IdentityError, RegistryError, RuntimeError, SearchError, SubscriptionError,
 };
 
 /// Stable error categories exported by ABI epoch 1.
@@ -30,6 +30,32 @@ pub enum CoreError {
     ShutdownTimedOut,
     #[error("an internal panic was contained")]
     InternalPanic,
+    #[error("search pattern is too complex")]
+    PatternTooComplex,
+    #[error("invalid regex escape sequence")]
+    InvalidEscape,
+    #[error("unmatched regex brackets")]
+    UnmatchedBrackets,
+    #[error("unmatched regex parentheses")]
+    UnmatchedParentheses,
+    #[error("invalid regex quantifier")]
+    InvalidQuantifier,
+    #[error("variable-length lookbehind is unsupported")]
+    VariableLengthLookbehind,
+    #[error("invalid regex pattern")]
+    InvalidPattern,
+    #[error("regex match limit exceeded")]
+    MatchLimitExceeded,
+    #[error("regex depth limit exceeded")]
+    DepthLimitExceeded,
+    #[error("regex heap limit exceeded")]
+    HeapLimitExceeded,
+    #[error("PCRE2 JIT is unavailable")]
+    JitUnavailable,
+    #[error("search was cancelled")]
+    SearchCancelled,
+    #[error("search result violated an internal invariant")]
+    SearchInvariant,
 }
 
 impl From<IdentifierError> for CoreError {
@@ -83,6 +109,26 @@ impl From<RuntimeError> for CoreError {
             RuntimeError::Subscription(error) => error.into(),
             RuntimeError::DataLaneSaturated => Self::QueueLimitExceeded,
             RuntimeError::ShuttingDown => Self::RuntimeStopped,
+        }
+    }
+}
+
+impl From<SearchError> for CoreError {
+    fn from(value: SearchError) -> Self {
+        match value {
+            SearchError::PatternTooComplex => Self::PatternTooComplex,
+            SearchError::InvalidEscape => Self::InvalidEscape,
+            SearchError::UnmatchedBrackets => Self::UnmatchedBrackets,
+            SearchError::UnmatchedParentheses => Self::UnmatchedParentheses,
+            SearchError::InvalidQuantifier => Self::InvalidQuantifier,
+            SearchError::VariableLengthLookbehind => Self::VariableLengthLookbehind,
+            SearchError::InvalidPattern { .. } => Self::InvalidPattern,
+            SearchError::MatchLimitExceeded => Self::MatchLimitExceeded,
+            SearchError::DepthLimitExceeded => Self::DepthLimitExceeded,
+            SearchError::HeapLimitExceeded => Self::HeapLimitExceeded,
+            SearchError::JitUnavailable(_) => Self::JitUnavailable,
+            SearchError::Cancelled => Self::SearchCancelled,
+            SearchError::InternalInvariant(_) => Self::SearchInvariant,
         }
     }
 }

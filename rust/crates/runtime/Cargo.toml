@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 agentry-proto.workspace = true
 nix = { workspace = true, features = ["fs"] }
+pcre2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]

@@ -11,7 +11,7 @@ mod generated {
     pub(crate) mod contract_identity;
 }
 
-pub use api::CoreRuntime;
+pub use api::{CoreRuntime, LeafCancellation};
 pub use errors::CoreError;
 pub use types::*;
 

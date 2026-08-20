@@ -5,22 +5,85 @@ use crate::generated::contract_identity::{
 use crate::panic_guard::PanicGuard;
 use crate::types::{
     AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope, CoreConfig,
-    CoreHandshake, DrainBatch, HostResponse, OperationState, OversizeEvent, RuntimeEvent,
+    CoreHandshake, DrainBatch, FolderSuffixRequest, HostResponse, OperationState, OversizeEvent,
+    PathFilterRequest, PathFilterResult, RegexSearchRequest, RegexSearchResult, RuntimeEvent,
     RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
 use std::os::fd::IntoRawFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
+
+#[derive(uniffi::Object)]
+pub struct LeafCancellation {
+    inner: runtime::LeafCancellation,
+    runtime: Weak<runtime::CoreRuntime>,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for LeafCancellation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LeafCancellation")
+            .finish_non_exhaustive()
+    }
+}
+
+impl LeafCancellation {
+    pub(crate) fn runtime_handle(&self) -> &runtime::LeafCancellation {
+        &self.inner
+    }
+
+    fn validate_identity(
+        &self,
+        identity: &RuntimeIdentity,
+    ) -> Result<Arc<runtime::CoreRuntime>, CoreError> {
+        let identity = identity.parse()?;
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if &identity == runtime.identity() && &identity == self.inner.identity() {
+            Ok(runtime)
+        } else {
+            Err(CoreError::StaleRuntimeIdentity)
+        }
+    }
+}
+
+#[uniffi::export]
+impl LeafCancellation {
+    pub fn cancel(&self, identity: RuntimeIdentity) -> Result<(), CoreError> {
+        self.panic_guard.call(|| {
+            let runtime = self.validate_identity(&identity)?;
+            self.inner.cancel();
+            if runtime.lifecycle() == runtime::LifecycleState::Running {
+                Ok(())
+            } else {
+                Err(CoreError::RuntimeStopped)
+            }
+        })
+    }
+
+    pub fn close(&self, identity: RuntimeIdentity) -> Result<(), CoreError> {
+        self.panic_guard.call(|| {
+            let runtime = self.validate_identity(&identity)?;
+            self.inner.close();
+            if runtime.lifecycle() == runtime::LifecycleState::Running {
+                Ok(())
+            } else {
+                Err(CoreError::RuntimeStopped)
+            }
+        })
+    }
+}
 
 #[derive(uniffi::Object)]
 pub struct CoreRuntime {
-    inner: runtime::CoreRuntime,
+    inner: Arc<runtime::CoreRuntime>,
+    search_leaf: runtime::SearchLeaf,
     config: CoreConfig,
     initialized: AtomicBool,
-    panic_guard: PanicGuard,
+    panic_guard: Arc<PanicGuard>,
 }
 
 #[uniffi::export]
@@ -241,6 +304,83 @@ impl CoreRuntime {
         })
     }
 
+    pub fn create_leaf_cancellation(
+        &self,
+        identity: RuntimeIdentity,
+    ) -> Result<Arc<LeafCancellation>, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            Ok(Arc::new(LeafCancellation {
+                inner: runtime::LeafCancellation::new(identity),
+                runtime: Arc::downgrade(&self.inner),
+                panic_guard: Arc::clone(&self.panic_guard),
+            }))
+        })
+    }
+
+    pub fn search_regex(
+        &self,
+        request: RegexSearchRequest,
+    ) -> Result<RegexSearchResult, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            Ok(self
+                .search_leaf
+                .search_regex(&request.runtime_request())?
+                .into())
+        })
+    }
+
+    pub fn filter_paths(&self, request: PathFilterRequest) -> Result<PathFilterResult, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            Ok(self
+                .search_leaf
+                .filter_paths(&request.runtime_request())
+                .into())
+        })
+    }
+
+    pub fn folder_suffix_indices(
+        &self,
+        request: FolderSuffixRequest,
+    ) -> Result<Vec<u32>, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            Ok(self
+                .search_leaf
+                .folder_suffix_indices(&request.runtime_request()))
+        })
+    }
+
     pub fn begin_shutdown(&self, identity: RuntimeIdentity) -> Result<ShutdownReceipt, CoreError> {
         self.guard(|| {
             self.require_initialized()?;
@@ -258,12 +398,17 @@ impl CoreRuntime {
 impl CoreRuntime {
     fn create(config: CoreConfig) -> Result<Self, CoreError> {
         let identity = runtime::RuntimeIdentity::fresh(CORE_BUILD_FINGERPRINT, BINDING_CHECKSUM)?;
-        let inner = runtime::CoreRuntime::new(config.runtime_config()?, identity)?;
+        let inner = Arc::new(runtime::CoreRuntime::new(
+            config.runtime_config()?,
+            identity,
+        )?);
+        let search_leaf = runtime::SearchLeaf::new()?;
         Ok(Self {
             inner,
+            search_leaf,
             config,
             initialized: AtomicBool::new(false),
-            panic_guard: PanicGuard::new(),
+            panic_guard: Arc::new(PanicGuard::new()),
         })
     }
 
@@ -276,6 +421,15 @@ impl CoreRuntime {
             Ok(())
         } else {
             Err(CoreError::IncompatibleAbi)
+        }
+    }
+
+    fn require_running(&self) -> Result<(), CoreError> {
+        self.require_initialized()?;
+        if self.inner.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
         }
     }
 

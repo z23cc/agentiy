@@ -23,7 +23,7 @@ struct CoreTransportHandshake: Sendable {
     let bindingChecksum: String
 }
 
-enum CoreTransportError: Error, Sendable {
+enum CoreTransportError: Error, Sendable, Equatable {
     case invalidArgument
     case incompatibleAbi
     case staleRuntimeIdentity
@@ -36,6 +36,19 @@ enum CoreTransportError: Error, Sendable {
     case payloadTooLarge
     case shutdownTimedOut
     case internalPanic
+    case patternTooComplex
+    case invalidEscape
+    case unmatchedBrackets
+    case unmatchedParentheses
+    case invalidQuantifier
+    case variableLengthLookbehind
+    case invalidPattern
+    case matchLimitExceeded
+    case depthLimitExceeded
+    case heapLimitExceeded
+    case jitUnavailable
+    case searchCancelled
+    case searchInvariant
     case unexpected(String)
 }
 
@@ -49,7 +62,33 @@ protocol CoreRuntimeTransport: Sendable {
     func rearmWake(identity: CoreRuntimeIdentity) throws -> Bool
     func closeSubscription(subscriptionID: UInt64, identity: CoreRuntimeIdentity) throws
     func respondHostRequest(_ response: CoreHostResponse) throws
+    func createLeafCancellation(identity: CoreRuntimeIdentity) throws -> any CoreLeafCancellationHandle
+    func cancelLeafCancellation(_ cancellation: any CoreLeafCancellationHandle, identity: CoreRuntimeIdentity) throws
+    func closeLeafCancellation(_ cancellation: any CoreLeafCancellationHandle, identity: CoreRuntimeIdentity) throws
+    func searchRegex(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchRequest
+    ) throws -> CoreRegexSearchResult
+    func filterPaths(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CorePathFilterRequest
+    ) throws -> CorePathFilterResult
+    func folderSuffixIndices(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreFolderSuffixRequest
+    ) throws -> [UInt32]
     func beginShutdown(identity: CoreRuntimeIdentity) throws -> CoreShutdownReceipt
+}
+
+final class UniFFILeafCancellationHandle: CoreLeafCancellationHandle, @unchecked Sendable {
+    let raw: AgentryUniFFIRaw.LeafCancellation
+
+    init(raw: AgentryUniFFIRaw.LeafCancellation) {
+        self.raw = raw
+    }
 }
 
 final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendable {
@@ -219,6 +258,137 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func createLeafCancellation(identity: CoreRuntimeIdentity) throws -> any CoreLeafCancellationHandle {
+        do {
+            return try UniFFILeafCancellationHandle(
+                raw: runtime.createLeafCancellation(identity: Self.rawIdentity(identity))
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func cancelLeafCancellation(
+        _ cancellation: any CoreLeafCancellationHandle,
+        identity: CoreRuntimeIdentity
+    ) throws {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        do {
+            try cancellation.raw.cancel(identity: Self.rawIdentity(identity))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func closeLeafCancellation(
+        _ cancellation: any CoreLeafCancellationHandle,
+        identity: CoreRuntimeIdentity
+    ) throws {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        do {
+            try cancellation.raw.close(identity: Self.rawIdentity(identity))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func searchRegex(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchRequest
+    ) throws -> CoreRegexSearchResult {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        do {
+            let value = try runtime.searchRegex(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                mode: request.mode == .content ? .content : .path,
+                pattern: request.pattern,
+                subject: request.subject,
+                caseInsensitive: request.caseInsensitive,
+                wholeWord: request.wholeWord,
+                multilineAnchors: request.multilineAnchors,
+                collectMatches: request.collectMatches,
+                maxCollectedMatches: request.maxCollectedMatches,
+                contextLines: request.contextLines,
+                matchPolicy: Self.rawMatchPolicy(request.matchPolicy)
+            ))
+            return CoreRegexSearchResult(
+                hits: value.hits.map(Self.regexHit),
+                matchingLineCount: value.matchingLineCount,
+                cancelled: value.cancelled,
+                diagnostic: Self.regexDiagnostic(value.diagnostic)
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func filterPaths(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CorePathFilterRequest
+    ) throws -> CorePathFilterResult {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        do {
+            let value = try runtime.filterPaths(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                snapshots: request.snapshots.map {
+                    .init(
+                        standardizedFullPath: $0.standardizedFullPath,
+                        standardizedRelativePath: $0.standardizedRelativePath,
+                        standardizedRootPath: $0.standardizedRootPath,
+                        clientDisplayPath: $0.clientDisplayPath
+                    )
+                },
+                clauses: request.clauses.map(Self.rawPathClause),
+                caseInsensitive: request.caseInsensitive
+            ))
+            return CorePathFilterResult(
+                matchedSnapshotIndices: value.matchedSnapshotIndices,
+                visitedSnapshotCount: value.visitedSnapshotCount,
+                cancelled: value.cancelled,
+                diagnostic: .init(
+                    visitedSnapshotCount: value.diagnostic.visitedSnapshotCount,
+                    matchedSnapshotCount: value.diagnostic.matchedSnapshotCount,
+                    cancelled: value.diagnostic.cancelled
+                )
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func folderSuffixIndices(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreFolderSuffixRequest
+    ) throws -> [UInt32] {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        do {
+            return try runtime.folderSuffixIndices(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                fragment: request.fragment,
+                relativePaths: request.relativePaths,
+                caseInsensitive: request.caseInsensitive
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func beginShutdown(identity: CoreRuntimeIdentity) throws -> CoreShutdownReceipt {
         do {
             let value = try runtime.beginShutdown(identity: Self.rawIdentity(identity))
@@ -273,6 +443,88 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    private static func rawMatchPolicy(_ value: CoreMatchPolicy) -> AgentryUniFFIRaw.MatchPolicy {
+        switch value {
+        case .contentFullBuffer: .contentFullBuffer
+        case .contentLine: .contentLine
+        case .shortPath: .shortPath
+        }
+    }
+
+    private static func rawPathClause(_ value: CorePathClause) -> AgentryUniFFIRaw.PathClause {
+        switch value {
+        case let .exactFile(absPath, relPath, restrictedRootPath):
+            .exactFile(absPath: absPath, relPath: relPath, restrictedRootPath: restrictedRootPath)
+        case let .exactFolder(absLower, relLower, restrictedRootPath):
+            .exactFolder(absLower: absLower, relLower: relLower, restrictedRootPath: restrictedRootPath)
+        case let .glob(pattern, restrictedRootPath):
+            .glob(pattern: pattern, restrictedRootPath: restrictedRootPath)
+        case let .legacyPrefix(candidateLower):
+            .legacyPrefix(candidateLower: candidateLower)
+        }
+    }
+
+    private static func byteRange(_ value: AgentryUniFFIRaw.ByteRange) -> CoreByteRange {
+        .init(start: value.start, end: value.end)
+    }
+
+    private static func regexHit(_ value: AgentryUniFFIRaw.RegexLineHit) -> CoreRegexLineHit {
+        .init(
+            lineNumber: value.lineNumber,
+            lineByteRange: byteRange(value.lineByteRange),
+            matchByteRange: byteRange(value.matchByteRange),
+            contextBeforeByteRanges: value.contextBeforeByteRanges.map(byteRange),
+            contextAfterByteRanges: value.contextAfterByteRanges.map(byteRange)
+        )
+    }
+
+    private static func regexDiagnostic(_ value: AgentryUniFFIRaw.RegexDiagnostic) -> CoreRegexDiagnostic {
+        let engine: CoreSearchEngine = switch value.engine {
+        case .asciiWholeWord: .asciiWholeWord
+        case .anchoredDeclaration: .anchoredDeclaration
+        case .asciiMarker: .asciiMarker
+        case .pathSuffix: .pathSuffix
+        case .anchoredLinePrefilter: .anchoredLinePrefilter
+        case .pcre2: .pcre2
+        }
+        let jitStatus: CoreJITStatus = switch value.jitStatus {
+        case .notApplicable: .notApplicable
+        case .active: .active
+        case .pcre2InterpreterFallback: .pcre2InterpreterFallback
+        }
+        let repairKind: CoreRepairKind = switch value.repairKind {
+        case .none: .none
+        case .doubleEscapeCompression: .doubleEscapeCompression
+        case .normalise: .normalise
+        case .normaliseThenCompression: .normaliseThenCompression
+        }
+        let limitPolicy: CoreLimitPolicy = switch value.limitPolicy {
+        case .fileSearchFullBuffer: .fileSearchFullBuffer
+        case .fileSearchLine: .fileSearchLine
+        case .pathSearchShortSubject: .pathSearchShortSubject
+        }
+        let limitFailure: CoreLimitFailure? = value.limitFailure.map {
+            switch $0 {
+            case .match: .match
+            case .depth: .depth
+            case .heap: .heap
+            }
+        }
+        return .init(
+            engine: engine,
+            jitStatus: jitStatus,
+            cacheHit: value.cacheHit,
+            repairKind: repairKind,
+            limitPolicy: limitPolicy,
+            subjectByteCount: value.subjectByteCount,
+            lineCount: value.lineCount,
+            hitCount: value.hitCount,
+            matchingLineCount: value.matchingLineCount,
+            cancelled: value.cancelled,
+            limitFailure: limitFailure
+        )
+    }
+
     private static func map(_ error: Error) -> CoreTransportError {
         guard let error = error as? AgentryUniFFIRaw.CoreError else {
             return .unexpected(String(describing: error))
@@ -290,6 +542,19 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .PayloadTooLarge: .payloadTooLarge
         case .ShutdownTimedOut: .shutdownTimedOut
         case .InternalPanic: .internalPanic
+        case .PatternTooComplex: .patternTooComplex
+        case .InvalidEscape: .invalidEscape
+        case .UnmatchedBrackets: .unmatchedBrackets
+        case .UnmatchedParentheses: .unmatchedParentheses
+        case .InvalidQuantifier: .invalidQuantifier
+        case .VariableLengthLookbehind: .variableLengthLookbehind
+        case .InvalidPattern: .invalidPattern
+        case .MatchLimitExceeded: .matchLimitExceeded
+        case .DepthLimitExceeded: .depthLimitExceeded
+        case .HeapLimitExceeded: .heapLimitExceeded
+        case .JitUnavailable: .jitUnavailable
+        case .SearchCancelled: .searchCancelled
+        case .SearchInvariant: .searchInvariant
         }
     }
 }
@@ -445,6 +710,87 @@ public actor AgentryCoreBridge {
         } catch {
             throw mapTransportError(error)
         }
+    }
+
+    public func searchClient() throws -> CoreSearchClient {
+        _ = try requireIdentity()
+        return CoreSearchClient(bridge: self)
+    }
+
+    func prepareSearchOperation() throws -> CoreSearchOperationContext {
+        do {
+            let identity = try requireIdentity()
+            return CoreSearchOperationContext(
+                transport: transport,
+                identity: identity,
+                cancellation: try transport.createLeafCancellation(identity: identity)
+            )
+        } catch {
+            throw mapSearchFailure(error)
+        }
+    }
+
+    func validateSearchCompletion(identity: CoreRuntimeIdentity) throws {
+        do {
+            try validate(identity)
+        } catch {
+            throw mapSearchFailure(error)
+        }
+    }
+
+    func mapSearchFailure(_ error: Error) -> CoreSearchError {
+        if let error = error as? CoreSearchError {
+            if error == .malformedRange {
+                invalidate()
+            }
+            return error
+        }
+        if error is CancellationError {
+            return .cancelled
+        }
+        if let error = error as? CoreBridgeError {
+            let mapped: CoreSearchError = switch error {
+            case .runtimeInvalidated: .runtimeInvalidated
+            case .runtimeStopped, .alreadyClosed: .runtimeStopped
+            case .staleRuntimeIdentity: .runtimeInvalidated
+            case .incompatibleBindings: .runtimeInvalidated
+            default: .transportFailure(error.localizedDescription)
+            }
+            if mapped == .runtimeInvalidated || mapped == .runtimeStopped {
+                invalidate()
+            }
+            return mapped
+        }
+        guard let error = error as? CoreTransportError else {
+            return .transportFailure(String(describing: error))
+        }
+        let mapped: CoreSearchError = switch error {
+        case .patternTooComplex: .patternTooComplex
+        case .invalidEscape: .invalidPattern(.invalidEscape)
+        case .unmatchedBrackets: .invalidPattern(.unmatchedBrackets)
+        case .unmatchedParentheses: .invalidPattern(.unmatchedParentheses)
+        case .invalidQuantifier: .invalidPattern(.invalidQuantifier)
+        case .variableLengthLookbehind: .invalidPattern(.variableLengthLookbehind)
+        case .invalidPattern, .invalidArgument: .invalidPattern(.other)
+        case .matchLimitExceeded: .matchLimitExceeded
+        case .depthLimitExceeded: .depthLimitExceeded
+        case .heapLimitExceeded: .heapLimitExceeded
+        case .jitUnavailable: .jitUnavailable
+        case .searchCancelled: .cancelled
+        case .searchInvariant: .malformedRange
+        case .runtimePoisoned: .runtimePoisoned
+        case .runtimeStopped: .runtimeStopped
+        case .staleRuntimeIdentity, .incompatibleAbi, .internalPanic: .runtimeInvalidated
+        case let .unexpected(message): .transportFailure(message)
+        default: .transportFailure(String(describing: error))
+        }
+        switch mapped {
+        case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned, .malformedRange:
+            invalidate()
+        default:
+            break
+        }
+        return mapped
     }
 
     @discardableResult
@@ -666,6 +1012,11 @@ public actor AgentryCoreBridge {
         case .queueLimitExceeded: return .queueLimitExceeded
         case .payloadTooLarge: return .payloadTooLarge
         case .shutdownTimedOut: return .shutdownTimedOut
+        case .patternTooComplex, .invalidEscape, .unmatchedBrackets, .unmatchedParentheses,
+             .invalidQuantifier, .variableLengthLookbehind, .invalidPattern, .matchLimitExceeded,
+             .depthLimitExceeded, .heapLimitExceeded, .jitUnavailable, .searchCancelled,
+             .searchInvariant:
+            return .invalidArgument
         case let .unexpected(message): return .transportFailure(message)
         }
     }
