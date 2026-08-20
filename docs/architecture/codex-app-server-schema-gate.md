@@ -16,7 +16,7 @@ codex app-server generate-json-schema --experimental --out <temporary-directory>
 ```
 
 The generated bundle is the upstream authority. It is never checked in or hand-edited. The compact
-contract at `Scripts/Fixtures/codex-app-server-contract.json` records only the fields RPCE sends or
+contract at `Scripts/Fixtures/codex-app-server-contract.json` records only the fields Agentry sends or
 consumes at its current integration boundary.
 
 ## Version contract
@@ -26,7 +26,7 @@ consumes at its current integration boundary.
 - CI installs exactly `@openai/codex@0.147.0`, making the required check deterministic.
 - The gate fails before generation when the installed CLI is older than the floor.
 
-When advancing Codex, install the intended version, run the gate, reconcile RPCE with the generated
+When advancing Codex, install the intended version, run the gate, reconcile Agentry with the generated
 schema, then update the CI pin and contract floor together. Do not copy the complete generated
 protocol into this repository and do not add per-version adapters without a demonstrated runtime
 requirement.
@@ -35,19 +35,19 @@ requirement.
 
 The initial projection covers:
 
-- the client requests RPCE sends for initialization, model discovery, hook discovery, hook-trust
+- the client requests Agentry sends for initialization, model discovery, hook discovery, hook-trust
   config writes, thread lifecycle, goals, turns, interruption, steering, compaction, and the optional
   memory-mode setting;
-- request fields RPCE always or conditionally emits, including nested initialize metadata, turn-input
+- request fields Agentry always or conditionally emits, including nested initialize metadata, turn-input
   variants, sandbox-policy variants, and detection of newly required upstream fields;
-- incoming parameter and response paths RPCE reads, with explicit required, optional, conditional,
+- incoming parameter and response paths Agentry reads, with explicit required, optional, conditional,
   and nullable semantics, including adopted discriminated item variants;
 - core lifecycle, transcript, progress, plan, diff, status, usage, and canonical command-execution
   notifications, including terminal interaction;
 - canonical v2 server requests for user input, auth refresh, MCP elicitation, permissions, dynamic
   tools, and command/file approvals;
-- server-response fields and enum values RPCE emits for those canonical requests;
-- exhaustive incoming enum sets where RPCE rejects unknown values, so additions fail visibly.
+- server-response fields and enum values Agentry emits for those canonical requests;
+- exhaustive incoming enum sets where Agentry rejects unknown values, so additions fail visibly.
 
 The versioned contract is fail-closed: missing or unknown keys are errors. Method discovery follows
 local `$ref`, `allOf`, `oneOf`, and `anyOf` composition and accepts both single-value `enum`
@@ -64,26 +64,26 @@ The hardened 0.147.0 baseline checks 45 methods, 193 parameter paths, and 93 res
 the union, method, and exact missing field, required field, response path, or enum value.
 
 This is intentionally not a complete protocol mirror. New upstream methods do not fail the gate
-unless RPCE adopts them.
+unless Agentry adopts them.
 
 ## First baseline findings (2026-07-19)
 
 The baseline was generated with the installed `codex-cli 0.144.6`. It uncovered these concrete
 differences:
 
-1. RPCE sent `effort` in `thread/start`, but `ThreadStartParams` does not declare it.
-2. RPCE sent `effort` in `thread/resume`, but `ThreadResumeParams` does not declare it.
-3. RPCE sent the persisted rollout `path` in `thread/resume`, but `ThreadResumeParams` no longer
+1. Agentry sent `effort` in `thread/start`, but `ThreadStartParams` does not declare it.
+2. Agentry sent `effort` in `thread/resume`, but `ThreadResumeParams` does not declare it.
+3. Agentry sent the persisted rollout `path` in `thread/resume`, but `ThreadResumeParams` no longer
    declares it; `threadId` is the current resume authority.
-4. `ThreadGoalGetResponse.goal` is optional, while RPCE treated an omitted key as an invalid
+4. `ThreadGoalGetResponse.goal` is optional, while Agentry treated an omitted key as an invalid
    response instead of “no goal.”
 5. **Corrected after upstream protocol review:** Fresh `thread/start` config initializes memory
-   eligibility, but resume config does not reconcile an existing stored thread's persisted mode. RPCE
+   eligibility, but resume config does not reconcile an existing stored thread's persisted mode. Agentry
    therefore calls experimental `thread/memoryMode/set` with `enabled` or `disabled` before
    `thread/resume` so resumed startup observes the requested mode. It does not issue a redundant
    post-start request. The 0.147.0 runtime floor and `experimentalApi` initialization capability make
    resume reconciliation a required contract rather than an optional compatibility fallback.
-6. The generated `goal.status` enum includes `blocked` and `usageLimited`, while RPCE previously
+6. The generated `goal.status` enum includes `blocked` and `usageLimited`, while Agentry previously
    rejected both as invalid responses. The same six-value enum is also declared for
    `thread/goal/set`, so accepting those cases does not create an outbound schema violation.
 
@@ -93,7 +93,7 @@ The verified bundled 0.145.0 CLI passes the bounded projection. A full generated
 with verified 0.144.6 schemas showed additive upstream evolution, including optional
 `runtimeWorkspaceRoots` on `thread/start` and `turn/start`, backwards pagination cursors on
 `thread/resume`, audio input/tool-output variants, and new app, environment, and thread-search methods.
-None removes or changes a field RPCE sends or consumes. The exact tagged source also retains
+None removes or changes a field Agentry sends or consumes. The exact tagged source also retains
 `[features.code_mode].direct_only_tool_namespaces` as direct model exposure. Subsequent protocol review
 confirmed that existing thread memory eligibility must be reconciled through experimental
 `thread/memoryMode/set`; resume config keys alone are insufficient for stored threads, while fresh
@@ -105,11 +105,11 @@ The repository candidate flow verified official `rust-v0.147.0` artifacts from r
 `be6e8eac029b183056b7e4402879f15d2c85f61b`, including both complete macOS package layouts,
 architectures, OpenAI signing identities, and trusted timestamps. The exact pinned CLI passes the
 experimental bounded projection at 42 methods, 186 parameter paths, and 78 response paths; no
-request, response, required-field, or enum change at RPCE's used boundary required a compact
+request, response, required-field, or enum change at Agentry's used boundary required a compact
 contract expansion.
 
 The required non-schema compatibility change is the upstream removal of `codex exec --full-auto`.
-Ordinary RPCE exec now requests `--sandbox workspace-write`; the app's persisted typed
+Ordinary Agentry exec now requests `--sandbox workspace-write`; the app's persisted typed
 `.fullAccess` preference alone may select `--dangerously-bypass-approvals-and-sandbox`.
 Direct-headless remains workspace-write only because it has no typed unrestricted-authorization
 contract.
@@ -117,11 +117,11 @@ contract.
 The 0.146.0 and 0.147.0 releases also add portable Agent Plugins, persistent/manual conversation
 sections, paginated and incremental thread history, remote Code Mode hosts, and opt-in MCP
 2026-07-28 support. These are meaningful optional follow-ups, not part of this runtime rotation:
-RPCE should adopt any of them only through a separately designed and tested product boundary.
+Agentry should adopt any of them only through a separately designed and tested product boundary.
 Likewise, the new `--approve-for-me` flag is not adopted because approval automation requires its
 own explicit authorization design.
 
-The contract still generates experimental schemas because RPCE validates `initialize.capabilities.experimentalApi`.
+The contract still generates experimental schemas because Agentry validates `initialize.capabilities.experimentalApi`.
 
 Items 1–4 and 6 were reconciled in the same change: thread-level requests no longer send undeclared
 `effort` or `path`, turn-level `effort` remains authoritative, an omitted goal is treated as
@@ -129,23 +129,23 @@ no goal, and every generated goal status is parsed and displayed.
 
 The bounded comparison also recorded these explicit gaps rather than hiding them:
 
-- RPCE retains deprecated `codex/event/*` notification aliases and permissive legacy field-name
+- Agentry retains deprecated `codex/event/*` notification aliases and permissive legacy field-name
   parsing for compatibility. Those aliases are not current generated-schema members and are outside
   the authoritative v2 projection.
 - The generated bundle still declares legacy `applyPatchApproval` and `execCommandApproval`
   responses with `approved` / `approved_for_session` / `denied` / `timed_out` / `abort`
-  decisions. RPCE routes those legacy requests through its shared approval path, whose canonical v2
+  decisions. Agentry routes those legacy requests through its shared approval path, whose canonical v2
   result dialect is `accept` / `acceptForSession` / `decline` / `cancel`. Legacy response
   adaptation is not included in this initial gate and requires a separately tested compatibility
   decision rather than expanding the schema gate into a per-version adapter.
-- `item/tool/call` is recognized but deliberately rejected with a JSON-RPC error because RPCE does
+- `item/tool/call` is recognized but deliberately rejected with a JSON-RPC error because Agentry does
   not implement dynamic client-side tool execution; therefore the success response is not part of
   this contract.
 
 ## Files and tests
 
 - `Scripts/check_codex_app_server_schema.py` generates and validates the bundle.
-- `Scripts/Fixtures/codex-app-server-contract.json` is the bounded RPCE projection.
+- `Scripts/Fixtures/codex-app-server-contract.json` is the bounded Agentry projection.
 - `Scripts/test_codex_app_server_schema.py` tests stable/prerelease version floors, generation
   flags, explicit response presence/nullability, nested discriminated shapes, required-field drift,
   exhaustive incoming enums, fail-closed contract keys, and `$ref` / `allOf` / `const` method

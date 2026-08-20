@@ -3,6 +3,14 @@ import AppKit
 import XCTest
 
 final class StoredPromptPersistenceBoundaryTests: XCTestCase {
+    func testDefaultStorageUsesFreshAgentryApplicationSupportRoot() {
+        let path = PromptStorage.defaultFileURL().path
+
+        XCTAssertTrue(path.hasSuffix("/Library/Application Support/Agentry/SavedPrompts.json"), path)
+        XCTAssertFalse(path.contains("com.pvncher.repoprompt"), path)
+        XCTAssertFalse(path.contains("RepoPrompt CE"), path)
+    }
+
     func testStoredRecordPreservesLegacyDecodingAndEqualitySemantics() throws {
         let id = UUID()
         let legacyJSON = """

@@ -1998,7 +1998,7 @@ sys.stdout.write(str(status))
             )
             env["RELEASE_TAG"] = f'v{metadata["MARKETING_VERSION"].strip(chr(34))}'
             if action == "recover-disabled":
-                env.pop("REPOPROMPT_ENABLE_SENTRY", None)
+                env.pop("AGENTRY_ENABLE_SENTRY", None)
             shell_action = "recover_sentry_finalization"
         else:
             shell_action = (
@@ -2154,12 +2154,12 @@ sys.stdout.write(str(status))
 
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
-        self.assertIn("finalize-sentry requires REPOPROMPT_ENABLE_SENTRY=1", result.stderr)
+        self.assertIn("finalize-sentry requires AGENTRY_ENABLE_SENTRY=1", result.stderr)
 
     def test_sentry_timeout_configuration_rejects_unbounded_values_before_network(self) -> None:
         result, calls = self.run_sentry_prepare_fixture(
             "not-found-once",
-            env_overrides={"REPOPROMPT_SENTRY_REQUEST_TIMEOUT_SECONDS": "301"},
+            env_overrides={"AGENTRY_SENTRY_REQUEST_TIMEOUT_SECONDS": "301"},
         )
 
         self.assertNotEqual(result.returncode, 0)
@@ -2956,7 +2956,7 @@ shutil.copyfile(os.environ["FAKE_SWIFTFORMAT_ARCHIVE"], output)
             {
                 "FAKE_SWIFTFORMAT_ARCHIVE": str(archive),
                 "FAKE_SWIFTFORMAT_CURL_ARGS": str(curl_args),
-                "REPOPROMPT_FORMAT_DOWNLOAD_TOTAL_TIMEOUT_SECONDS": "601",
+                "AGENTRY_FORMAT_DOWNLOAD_TOTAL_TIMEOUT_SECONDS": "601",
             }
         )
 

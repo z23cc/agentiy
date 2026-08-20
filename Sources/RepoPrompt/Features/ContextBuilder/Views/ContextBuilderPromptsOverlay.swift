@@ -1,4 +1,5 @@
 import AppKit
+import RepoPromptShared
 import SwiftUI
 
 /// A simple prompt model for context builder custom instructions.
@@ -50,7 +51,7 @@ class ContextBuilderPromptStorage: ObservableObject {
 
     private let filename = "ContextBuilderPrompts.json"
     private let builtInPinnedDefaultsKey = "ContextBuilderBuiltInPinnedPromptIDs"
-    private static let queue = DispatchQueue(label: "com.pvncher.repoprompt.ContextBuilderPromptStorageQueue")
+    private static let queue = DispatchQueue(label: "io.github.z23cc.agentry.context-builder-prompt-storage")
 
     @Published private(set) var prompts: [ContextBuilderPrompt] = []
     @Published private(set) var builtInPinnedPromptIDs: Set<UUID> = []
@@ -67,12 +68,7 @@ class ContextBuilderPromptStorage: ObservableObject {
     }
 
     private var fileURL: URL {
-        let supportDir = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-
-        let appSupportFolder = supportDir.appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+        let appSupportFolder = AgentryProductIdentity.applicationSupportRootURL()
         try? FileManager.default.createDirectory(
             at: appSupportFolder,
             withIntermediateDirectories: true

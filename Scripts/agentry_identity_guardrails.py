@@ -27,7 +27,7 @@ ACTIVE_FILES = {
 }
 FORBIDDEN = (
     "RepoPrompt CE",
-    "com.pvncher.repoprompt.ce",
+    "com.pvncher.repoprompt",
     "rpce-cli-debug",
     "repoprompt_ce_cli_debug",
     "repoprompt-mcp",

@@ -181,7 +181,7 @@ final class AppSettingsMCPService: Service {
         }
         guard !Self.humanOnlySettingKeys.contains(key) else {
             throw MCPError.invalidParams(
-                "Setting '\(key)' is security-sensitive and can only be changed by a human in RepoPrompt Settings."
+                "Setting '\(key)' is security-sensitive and can only be changed by a human in Agentry Settings."
             )
         }
 

@@ -5007,7 +5007,7 @@ class PromptViewModel: ObservableObject {
             print("⚠️ CRITICAL: Cannot load prompts file, aborting to prevent data loss")
             print("⚠️ Error details: \(error)")
             print("⚠️ Keeping current in-memory prompts. User should check file at:")
-            print("⚠️ ~/Library/Application Support/com.pvncher.repoprompt/SavedPrompts.json")
+            print("⚠️ \(PromptStorage.defaultFileURL().path)")
 
             // Keep whatever prompts we have in memory, don't save
             updateMetaInstructions()

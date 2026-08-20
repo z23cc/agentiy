@@ -161,7 +161,7 @@ struct MCPBindingResolver {
     ) async throws -> Int {
         let windowIDs = logicalContext.windowIDs
         guard !windowIDs.isEmpty else {
-            throw MCPError.invalidParams("No open RepoPrompt window can serve context_id '\(logicalContext.tabID.uuidString)'.")
+            throw MCPError.invalidParams("No open Agentry window can serve context_id '\(logicalContext.tabID.uuidString)'.")
         }
 
         if let requestedWindowID {

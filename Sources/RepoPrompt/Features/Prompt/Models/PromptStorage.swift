@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import RepoPromptShared
 
 struct StoredPromptRecord: Identifiable, Codable, Equatable {
     let id: UUID
@@ -48,23 +49,28 @@ struct PromptExport: Codable, Equatable {
 
 /// <summary>
 /// Manages reading and writing the user's saved prompts as JSON
-/// in the app's Application Support/com.pvncher.repoprompt directory,
+/// in the app's Agentry Application Support directory,
 /// using a static dispatch queue for safe, atomic operations.
 /// </summary>
 class PromptStorage {
     static let shared = PromptStorage()
 
-    private let filename = "SavedPrompts.json"
+    private static let filename = "SavedPrompts.json"
     private let configuredFileURL: URL?
 
     /// This serial queue ensures file reads/writes are never interleaved.
-    private static let queue = DispatchQueue(label: "com.pvncher.repoprompt.PromptStorageQueue")
+    private static let queue = DispatchQueue(label: "io.github.z23cc.agentry.prompt-storage")
 
     init(fileURL: URL? = nil) {
         configuredFileURL = fileURL
     }
 
-    /// Compute the file URL in Application Support under com.pvncher.repoprompt.
+    static func defaultFileURL(fileManager: FileManager = .default) -> URL {
+        AgentryProductIdentity.applicationSupportRootURL(fileManager: fileManager)
+            .appendingPathComponent(filename)
+    }
+
+    /// Compute the file URL in Agentry's Application Support directory.
     private var fileURL: URL {
         if let configuredFileURL {
             try? FileManager.default.createDirectory(
@@ -74,19 +80,13 @@ class PromptStorage {
             return configuredFileURL
         }
 
-        let supportDir = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-
-        // Create a subfolder "com.pvncher.repoprompt" if it doesn't exist
-        let appSupportFolder = supportDir.appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+        let defaultFileURL = Self.defaultFileURL()
         try? FileManager.default.createDirectory(
-            at: appSupportFolder,
+            at: defaultFileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
 
-        return appSupportFolder.appendingPathComponent(filename)
+        return defaultFileURL
     }
 
     /// <summary>

@@ -1674,7 +1674,7 @@ final class WindowRoutingService: Service {
             if let windowID {
                 throw MCPError.invalidParams("Window \(windowID) does not actively show context_id '\(contextID.uuidString)'. Bind with working_dirs for the desired workspace's absolute roots, or use bind_context op=list to discover active context_id values.")
             }
-            throw MCPError.invalidParams("No open RepoPrompt window actively shows context_id '\(contextID.uuidString)'. Bind with working_dirs for the desired workspace's absolute roots, or use bind_context op=list to discover active context_id values.")
+            throw MCPError.invalidParams("No open Agentry window actively shows context_id '\(contextID.uuidString)'. Bind with working_dirs for the desired workspace's absolute roots, or use bind_context op=list to discover active context_id values.")
         }
 
         guard let targetWindowID = Self.preferredContextIDBindWindowID(

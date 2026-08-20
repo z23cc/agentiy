@@ -94,7 +94,7 @@ final class BindContextRoutingRecoveryTests: XCTestCase {
             connectionPreferredWindowID: staleWindow.windowID
         )) { error in
             let message = String(describing: error)
-            XCTAssertTrue(message.contains("No open RepoPrompt window actively shows context_id"), message)
+            XCTAssertTrue(message.contains("No open Agentry window actively shows context_id"), message)
             XCTAssertTrue(message.contains("working_dirs"), message)
         }
     }
