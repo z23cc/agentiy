@@ -23,16 +23,20 @@ Rust is the sole decoder that converts search subjects into lines. Swift may con
 
 `subject` is a valid in-process Swift/Rust string. The API does not accept precomputed Swift line tables or UTF-16 offsets.
 
+`searchRegexBatch` is the structured compatibility export carrying the same pattern and options plus an ordered `subjects` array. `searchRegexBatchCompactV1` is the additive production content/path scan export. One identity-bound cancellation handle covers either whole call; Rust iterates subjects in order and reuses its compiled-pattern cache. Batch results are index-aligned with `subjects`. Production content workers call the compact export once per homogeneous scan-policy batch rather than once per file. `filterPaths` and folder-suffix requests remain array-based single-boundary operations and do not perform per-element FFI calls.
+
 ### Content result
 
-`ContentSearchResult` contains:
+`ContentSearchResult` is the logical result view and contains:
 
-- ordered, unique `ContentLineHit` records;
+- ordered, unique `ContentLineHit` values;
 - `matchingLineCount` independent of whether hit payload collection was capped;
 - `cancelled`;
 - one privacy-safe diagnostic record.
 
-Each `ContentLineHit` contains a 0-based `lineNumber`, a `lineByteRange`, the first accepted `matchByteRange` for that line, and ordered `contextBeforeByteRanges` / `contextAfterByteRanges`. Every range is relative to the start of the original UTF-8 subject.
+A logical `ContentLineHit` has a 0-based `lineNumber`, a `lineByteRange`, the first accepted `matchByteRange` for that line, and ordered context-before/context-after line ranges. Every range is relative to the start of the original UTF-8 subject. This logical view does not require nested records on the production wire.
+
+The versioned production wire is one batch-wide `CompactRegexBatchResult`: index-aligned `subjectSummaries`, a contiguous `lineRangeWords` table with stride 2 (`start`, `end`), and a contiguous `hitWords` table with stride 6 (`lineNumber`, subject-relative `selectedLineIndex`, `matchStart`, `matchEnd`, `contextBeforeCount`, `contextAfterCount`). Each subject summary identifies its batch-wide line-range and hit slices, matching-line count, cancellation state, and flattened diagnostic fields. Each subject's selected-line slice contains only the ordered, deduplicated union of collected hit and context windows; overlapping windows share entries. Swift may use `selectedLineIndex - contextBeforeCount ... selectedLineIndex + contextAfterCount` arithmetic over this Rust-authoritative selected-line table, but it must not parse line endings or reconstruct a line table.
 
 ### Path request and result
 
@@ -53,7 +57,8 @@ Folder-suffix matching is a separate stateless request over a fragment and calle
 - A zero-length match is assigned by its start byte and iteration must make forward progress. A cross-line match is assigned to the line containing its start byte.
 - Multiple occurrences assigned to the same line produce one hit: retain the first accepted match in ascending byte order.
 - Hits sort by `lineNumber`, then `matchByteRange.start`; they contain no duplicate line number.
-- For requested context `N`, before-ranges are `[max(0, line-N), line)` and after-ranges are `(line, min(lineCount, line+N+1))`, both in document order. Missing sides are empty collections at the leaf boundary; Swift may preserve its existing optional presentation shape.
+- Compact table word counts must match their strides; every subject slice is in bounds; selected line ranges are ordered and deduplicated; hit indices and context counts remain within that subject's selected-line slice. Bridge validates these structural, bounds, ordering, and UTF-8 scalar-boundary invariants once and fails closed with malformed-range invalidation.
+- For requested context `N`, before-ranges are `[max(0, line-N), line)` and after-ranges are `(line, min(lineCount, line+N+1))`, both in document order. Missing sides are empty collections at the leaf boundary; Swift may preserve its existing optional presentation shape. Collection caps limit hit payload only: `matchingLineCount >= hitCount` remains exact.
 
 ## Pattern validation and repair
 
@@ -123,7 +128,7 @@ P1 does not migrate or own:
 
 ## Boundary transport decision: typed DTOs, not Protobuf
 
-P1 uses typed UniFFI records/enums. These calls are synchronous, in-process, and guarded by the existing binding checksum/build fingerprint; no persisted or cross-version wire format exists. Protobuf would still copy strings while adding a second schema, code generator, and runtime. The P0 event envelope remains for the event data plane and is not reused for this leaf API. G4 measurement must include the real typed-DTO FFI copying cost.
+P1 uses typed UniFFI records/enums, including the versioned batch-wide contiguous primitive tables used by `searchRegexBatchCompactV1`. These calls are synchronous, in-process, and guarded by the existing binding checksum/build fingerprint; no persisted wire format exists. ABI epoch remains 1 for this additive export. The structured compatibility export and compact production export adapt the same canonical matcher; there is no second matching, repair, line-decoding, or fast-plan authority. Protobuf would still copy strings while adding a second schema, code generator, and runtime. The P0 event envelope remains for the event data plane and is not reused for this leaf API. G4 measurement must include the real typed-DTO FFI copying cost.
 
 ## Cutover rule
 

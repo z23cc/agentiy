@@ -22,6 +22,17 @@ final class CoreSearchTests: XCTestCase {
         XCTAssertEqual(content.hits[0].contextBeforeByteRanges, [.init(start: 0, end: 2)])
         XCTAssertEqual(content.hits[0].contextAfterByteRanges, [.init(start: 14, end: 17)])
 
+        let batch = try await client.searchRegexBatch(.init(
+            pattern: "needle",
+            subjects: ["first needle", "absent", "third needle"]
+        ))
+        XCTAssertEqual(batch.map(\.matchingLineCount), [1, 0, 1])
+        XCTAssertEqual(batch.map { $0.hits.first?.matchByteRange }, [
+            .init(start: 6, end: 12),
+            nil,
+            .init(start: 6, end: 12)
+        ])
+
         let path = try await client.filterPaths(.init(
             snapshots: [
                 .init(
@@ -198,6 +209,80 @@ final class CoreSearchTests: XCTestCase {
         }
     }
 
+    func testCompactBatchPreservesSubjectAlignmentAndContextArithmetic() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.searchClient()
+        let result = try await client.searchRegexBatchCompactV1(.init(
+            pattern: "hit",
+            subjects: ["a\nhit\nc", "none", "hit\nz"],
+            contextLines: 1
+        ))
+        XCTAssertEqual(result.subjectSummaries.map(\.hitCount), [1, 0, 1])
+        XCTAssertEqual(result.subjectSummaries.map(\.lineRangeStart), [0, 3, 3])
+        XCTAssertEqual(result.subjectSummaries.map(\.lineRangeCount), [3, 0, 2])
+        XCTAssertEqual(result.subjectSummaries.map(\.hitStart), [0, 1, 1])
+        XCTAssertEqual(Array(result.hitWords[0 ..< 6]), [1, 1, 2, 5, 1, 1])
+        XCTAssertEqual(Array(result.hitWords[6 ..< 12]), [0, 0, 0, 3, 0, 1])
+        _ = try await bridge.close()
+    }
+
+    func testCompactBatchRejectsMalformedTableStrides() async throws {
+        let transport = FakeCoreTransport()
+        transport.returnCompactSearchResult(.init(
+            subjectSummaries: [compactSummary(subjectByteCount: 1)],
+            lineRangeWords: [0],
+            hitWords: []
+        ))
+        let bridge = AgentryCoreBridge(transport: transport)
+        try await bridge.initialize()
+        let client = try await bridge.searchClient()
+        await XCTAssertThrowsErrorAsync(try await client.searchRegexBatchCompactV1(.init(
+            pattern: "x",
+            subjects: ["x"]
+        ))) {
+            XCTAssertEqual($0 as? CoreSearchError, .malformedRange)
+        }
+        await XCTAssertThrowsErrorAsync(try await bridge.searchClient()) {
+            XCTAssertEqual($0 as? CoreBridgeError, .runtimeInvalidated)
+        }
+    }
+
+    func testCompactBatchRejectsOutOfBoundsSubjectSlices() async throws {
+        let transport = FakeCoreTransport()
+        transport.returnCompactSearchResult(.init(
+            subjectSummaries: [compactSummary(subjectByteCount: 1, lineRangeCount: 1)],
+            lineRangeWords: [],
+            hitWords: []
+        ))
+        let bridge = AgentryCoreBridge(transport: transport)
+        try await bridge.initialize()
+        let client = try await bridge.searchClient()
+        await XCTAssertThrowsErrorAsync(try await client.searchRegexBatchCompactV1(.init(
+            pattern: "x",
+            subjects: ["x"]
+        ))) {
+            XCTAssertEqual($0 as? CoreSearchError, .malformedRange)
+        }
+    }
+
+    func testCompactBatchRejectsInvalidUTF8Boundaries() async throws {
+        let transport = FakeCoreTransport()
+        transport.returnCompactSearchResult(.init(
+            subjectSummaries: [compactSummary(subjectByteCount: 4, lineRangeCount: 1)],
+            lineRangeWords: [1, 4],
+            hitWords: []
+        ))
+        let bridge = AgentryCoreBridge(transport: transport)
+        try await bridge.initialize()
+        let client = try await bridge.searchClient()
+        await XCTAssertThrowsErrorAsync(try await client.searchRegexBatchCompactV1(.init(
+            pattern: ".",
+            subjects: ["🙂"]
+        ))) {
+            XCTAssertEqual($0 as? CoreSearchError, .malformedRange)
+        }
+    }
+
     func testLateResultAfterShutdownIsDiscarded() async throws {
         let transport = FakeCoreTransport()
         transport.blockSearch()
@@ -211,6 +296,37 @@ final class CoreSearchTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await task.value) {
             XCTAssertEqual($0 as? CoreSearchError, .runtimeStopped)
         }
+    }
+
+    private func compactSummary(
+        subjectByteCount: UInt64,
+        lineRangeStart: UInt64 = 0,
+        lineRangeCount: UInt64 = 0,
+        hitStart: UInt64 = 0,
+        hitCount: UInt64 = 0,
+        matchingLineCount: UInt64 = 0
+    ) -> CoreCompactRegexSubjectSummary {
+        .init(
+            lineRangeStart: lineRangeStart,
+            lineRangeCount: lineRangeCount,
+            hitStart: hitStart,
+            hitCount: hitCount,
+            matchingLineCount: matchingLineCount,
+            cancelled: false,
+            diagnostic: .init(
+                engine: .pcre2,
+                jitStatus: .active,
+                cacheHit: false,
+                repairKind: .none,
+                limitPolicy: .fileSearchFullBuffer,
+                subjectByteCount: subjectByteCount,
+                lineCount: lineRangeCount,
+                hitCount: hitCount,
+                matchingLineCount: matchingLineCount,
+                cancelled: false,
+                limitFailure: nil
+            )
+        )
     }
 
     private func realTransport() throws -> (UniFFICoreRuntimeTransport, CoreRuntimeIdentity) {

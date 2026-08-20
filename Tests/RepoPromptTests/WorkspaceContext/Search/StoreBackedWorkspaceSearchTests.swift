@@ -2655,7 +2655,7 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             "try await validateSearchReadiness(readinessTicket, workspaceManager: workspaceManager)",
             "let visibleRootRefs = await store.rootRefs(scope: .visibleWorkspace)",
             "try await validateSearchReadiness(readinessTicket, workspaceManager: workspaceManager)",
-            "let filterResult = await withTaskCancellationHandler",
+            "let filterResult = try await filterPathIndicesResult(",
             "try await validateSearchReadiness(readinessTicket, workspaceManager: workspaceManager)",
             "results = try await EditFlowPerf.measure(",
             "try await fileSearchActor.searchUnified(",

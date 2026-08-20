@@ -1,4 +1,4 @@
-.PHONY: help doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status codex-acquire codex-status codex-update-candidate resolve build run test guardrails codex-schema-check conductor-selftest ci-app-test-runner-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production xcode xcode-open xcode-generate xcode-check xcode-validate xcode-rust-link-validate xcode-generator-test xcode-clean dev-status dev-build dev-swift-build dev-cargo-build dev-cargo-test dev-cargo-codegen dev-cargo-codegen-check dev-cargo-archive dev-cargo-deny dev-cargo-audit dev-cargo-fuzz dev-rust-ffi-swift-baseline-export dev-rust-ffi-swift-baseline-check dev-rust-ffi-swift-baseline-measure dev-run dev-launch-existing dev-codex-schema-check dev-test dev-provider-test dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
+.PHONY: help doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status codex-acquire codex-status codex-update-candidate resolve build run test guardrails codex-schema-check conductor-selftest ci-app-test-runner-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production xcode xcode-open xcode-generate xcode-check xcode-validate xcode-rust-link-validate xcode-generator-test xcode-clean dev-status dev-build dev-swift-build dev-cargo-build dev-cargo-test dev-cargo-codegen dev-cargo-codegen-check dev-cargo-archive dev-cargo-deny dev-cargo-audit dev-cargo-fuzz dev-rust-ffi-swift-baseline-export dev-rust-ffi-swift-baseline-check dev-rust-ffi-swift-baseline-measure dev-rust-ffi-swift-baseline-candidate dev-rust-search-phase-profile dev-run dev-launch-existing dev-codex-schema-check dev-test dev-provider-test dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
 
 PRODUCT ?= all
 CODEX_ARCH ?= all
@@ -6,6 +6,8 @@ PROFILE ?= debug
 CARGO_PACKAGE ?= all
 FUZZ_TARGET ?= envelope_decode
 FUZZ_SECONDS ?= 60
+FIXTURE ?=
+PROCESS_RUNS ?= 3
 
 help:
 	@printf '%s\n' 'Usage: make <target>'
@@ -32,6 +34,8 @@ help:
 	@printf '  %-38s %s\n' 'dev-rust-ffi-swift-baseline-export' 'Export canonical pre-P1 Swift fixtures from the release test binary'
 	@printf '  %-38s %s\n' 'dev-rust-ffi-swift-baseline-check' 'Regenerate pre-P1 Swift fixtures twice and verify committed bytes'
 	@printf '  %-38s %s\n' 'dev-rust-ffi-swift-baseline-measure' 'Measure pre-P1 Swift fixtures in the release test binary'
+	@printf '  %-38s %s\n' 'dev-rust-ffi-swift-baseline-candidate' 'Measure Rust search candidate and enforce the frozen SLO gate'
+	@printf '  %-38s %s\n' 'dev-rust-search-phase-profile' 'Profile Rust search phases; FIXTURE=representative-* PROCESS_RUNS=N'
 	@printf '  %-30s %s\n' 'dev-run' 'Coordinated debug app build and launch'
 	@printf '  %-30s %s\n' 'dev-launch-existing' 'Launch existing coordinated debug app without building'
 	@printf '  %-30s %s\n' 'dev-codex-schema-check' 'Coordinated Codex app-server schema validation'
@@ -249,6 +253,12 @@ dev-rust-ffi-swift-baseline-check:
 
 dev-rust-ffi-swift-baseline-measure:
 	./conductor rust-ffi-swift-baseline-measure
+
+dev-rust-ffi-swift-baseline-candidate:
+	./conductor rust-ffi-swift-baseline-candidate
+
+dev-rust-search-phase-profile:
+	./conductor rust-search-phase-profile$(if $(FIXTURE), --fixture $(FIXTURE)) --process-runs $(PROCESS_RUNS)
 
 dev-run:
 	./conductor run

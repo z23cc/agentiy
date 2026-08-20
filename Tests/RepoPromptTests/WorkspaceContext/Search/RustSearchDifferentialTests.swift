@@ -89,12 +89,64 @@ final class RustSearchDifferentialTests: XCTestCase {
                 let rust = await captureRustError(client: client, pattern: pattern, subject: "x")
                 XCTAssertEqual(legacy, rust, "error-case-\(index)")
             }
+            let normalizeOnlyPattern = #"\\\\{)"#
+            let normalizeOnlySubject = #"\\{)"#
+            let normalizeOnlyRust = try await client.searchRegex(.init(
+                pattern: normalizeOnlyPattern,
+                subject: normalizeOnlySubject
+            ))
+            XCTAssertEqual(normalizeOnlyRust.diagnostic.repairKind, .normalise)
+            XCTAssertEqual(normalizeOnlyRust.matchingLineCount, 1)
+            XCTAssertEqual(normalizeOnlyRust.hits.map(\.lineNumber), [0])
+            XCTAssertEqual(normalizeOnlyRust.hits.map(\.matchByteRange), [.init(start: 0, end: 4)])
+
             let limitPattern = "(*LIMIT_MATCH=1)(?:a+)+$"
             let limitSubject = String(repeating: "a", count: 128) + "!"
             let legacyLimit = captureLegacyError(pattern: limitPattern, subject: limitSubject)
             let rustLimit = await captureRustError(client: client, pattern: limitPattern, subject: limitSubject)
             XCTAssertEqual(legacyLimit, .matchLimitExceeded)
             XCTAssertEqual(legacyLimit, rustLimit, "match-limit")
+
+            let policyTiers: [(CoreSearchLegacyMatchPolicy, CoreMatchPolicy, CoreRegexSearchMode, String)] = [
+                (.fullBuffer, .contentFullBuffer, .content, "full-buffer"),
+                (.line, .contentLine, .content, "line"),
+                (.path, .shortPath, .path, "path")
+            ]
+            let depthPattern = #"(*LIMIT_DEPTH=1)(?:\C)?^(a(?1)?b)$"#
+            let depthSubject = "aaaabbbb"
+            let heapPattern = #"(*LIMIT_HEAP=1)(?:\C)?^(?:(a+)+)+$"#
+            let heapSubject = String(repeating: "a", count: 4096) + "!"
+            for (legacyPolicy, rustPolicy, mode, label) in policyTiers {
+                let legacyDepth = captureLegacyError(
+                    pattern: depthPattern,
+                    subject: depthSubject,
+                    matchPolicy: legacyPolicy
+                )
+                let rustDepth = await captureRustError(
+                    client: client,
+                    mode: mode,
+                    pattern: depthPattern,
+                    subject: depthSubject,
+                    matchPolicy: rustPolicy
+                )
+                XCTAssertEqual(legacyDepth, .depthLimitExceeded, "depth-legacy-\(label)")
+                XCTAssertEqual(legacyDepth, rustDepth, "depth-\(label)")
+
+                let legacyHeap = captureLegacyError(
+                    pattern: heapPattern,
+                    subject: heapSubject,
+                    matchPolicy: legacyPolicy
+                )
+                let rustHeap = await captureRustError(
+                    client: client,
+                    mode: mode,
+                    pattern: heapPattern,
+                    subject: heapSubject,
+                    matchPolicy: rustPolicy
+                )
+                XCTAssertEqual(legacyHeap, .heapLimitExceeded, "heap-legacy-\(label)")
+                XCTAssertEqual(legacyHeap, rustHeap, "heap-\(label)")
+            }
             _ = try await bridge.close()
         #else
             throw XCTSkip("The legacy differential oracle is DEBUG-only")
@@ -214,7 +266,7 @@ final class RustSearchDifferentialTests: XCTestCase {
                 .glob(pattern: "App/**/Model.swift", restrictedRootPath: "/root"),
                 .legacyPrefix(candidateLower: "docs")
             ])
-            let legacy = filterPathIndicesResult(snapshots: snapshots, spec: legacySpec)
+            let legacy = legacyFilterPathIndicesResult(snapshots: snapshots, spec: legacySpec)
             let coreSnapshots = snapshots.map {
                 CorePathSnapshot(
                     standardizedFullPath: $0.standardizedFullPath,
@@ -236,7 +288,7 @@ final class RustSearchDifferentialTests: XCTestCase {
             XCTAssertEqual(legacy.cancelled, rust.cancelled)
 
             for emptySnapshots in [snapshots, []] {
-                let emptyLegacy = filterPathIndicesResult(
+                let emptyLegacy = legacyFilterPathIndicesResult(
                     snapshots: emptySnapshots,
                     spec: SearchPathFilterSpec(caseInsensitive: false, clauses: [])
                 )
@@ -264,7 +316,7 @@ final class RustSearchDifferentialTests: XCTestCase {
                 ("/root/Sources/**", nil, false)
             ]
             for (pattern, restrictedRootPath, caseInsensitive) in globCases {
-                let globLegacy = filterPathIndicesResult(
+                let globLegacy = legacyFilterPathIndicesResult(
                     snapshots: snapshots,
                     spec: SearchPathFilterSpec(
                         caseInsensitive: caseInsensitive,
@@ -282,14 +334,17 @@ final class RustSearchDifferentialTests: XCTestCase {
 
             let relativePaths = ["Sources", "Nested/Sources", "SourcesExtra", "Tests"]
             let legacyFolders = Dictionary(uniqueKeysWithValues: relativePaths.indices.map { ("/folder/\($0)", $0) })
-            let legacySuffix = resolveFoldersBySuffixFragment("/Sources/", in: legacyFolders) { relativePaths[$0] }.sorted()
+            let legacySuffix = legacyResolveFoldersBySuffixFragment(
+                "/Sources/",
+                using: buildFolderSuffixIndex(in: legacyFolders, relativePath: { relativePaths[$0] })
+            ).sorted()
             let rustSuffix = try await client.folderSuffixIndices(.init(fragment: "/Sources/", relativePaths: relativePaths))
             XCTAssertEqual(legacySuffix, rustSuffix.map(Int.init))
 
             let cancellationBarrier = RustSearchCancellationBarrier(expectedArrivals: 2)
             let legacyCancellation = Task {
                 await cancellationBarrier.arriveAndWait()
-                return filterPathIndicesResult(snapshots: snapshots, spec: legacySpec)
+                return legacyFilterPathIndicesResult(snapshots: snapshots, spec: legacySpec)
             }
             let rustCancellation = Task {
                 await cancellationBarrier.arriveAndWait()
@@ -403,9 +458,17 @@ final class RustSearchDifferentialTests: XCTestCase {
         case other
     }
 
-    private func captureLegacyError(pattern: String, subject: String) -> DifferentialErrorKind {
+    private func captureLegacyError(
+        pattern: String,
+        subject: String,
+        matchPolicy: CoreSearchLegacyMatchPolicy = .fullBuffer
+    ) -> DifferentialErrorKind {
         do {
-            _ = try RustSearchLegacyOracle.search(pattern: pattern, subject: subject)
+            _ = try RustSearchLegacyOracle.search(
+                pattern: pattern,
+                subject: subject,
+                matchPolicy: matchPolicy
+            )
             return .other
         } catch let error as RustSearchLegacyError {
             return switch error {
@@ -427,11 +490,18 @@ final class RustSearchDifferentialTests: XCTestCase {
 
     private func captureRustError(
         client: CoreSearchClient,
+        mode: CoreRegexSearchMode = .content,
         pattern: String,
-        subject: String
+        subject: String,
+        matchPolicy: CoreMatchPolicy = .contentFullBuffer
     ) async -> DifferentialErrorKind {
         do {
-            _ = try await client.searchRegex(.init(pattern: pattern, subject: subject))
+            _ = try await client.searchRegex(.init(
+                mode: mode,
+                pattern: pattern,
+                subject: subject,
+                matchPolicy: matchPolicy
+            ))
             return .other
         } catch let error as CoreSearchError {
             return switch error {

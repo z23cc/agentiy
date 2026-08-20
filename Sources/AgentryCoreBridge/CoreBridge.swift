@@ -70,6 +70,16 @@ protocol CoreRuntimeTransport: Sendable {
         cancellation: any CoreLeafCancellationHandle,
         request: CoreRegexSearchRequest
     ) throws -> CoreRegexSearchResult
+    func searchRegexBatch(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchBatchRequest
+    ) throws -> [CoreRegexSearchResult]
+    func searchRegexBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchBatchRequest
+    ) throws -> CoreCompactRegexBatchResult
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -330,6 +340,74 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func searchRegexBatch(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchBatchRequest
+    ) throws -> [CoreRegexSearchResult] {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        do {
+            return try runtime.searchRegexBatch(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                mode: request.mode == .content ? .content : .path,
+                pattern: request.pattern,
+                subjects: request.subjects,
+                caseInsensitive: request.caseInsensitive,
+                wholeWord: request.wholeWord,
+                multilineAnchors: request.multilineAnchors,
+                collectMatches: request.collectMatches,
+                maxCollectedMatches: request.maxCollectedMatches,
+                contextLines: request.contextLines,
+                matchPolicy: Self.rawMatchPolicy(request.matchPolicy)
+            )).map {
+                CoreRegexSearchResult(
+                    hits: $0.hits.map(Self.regexHit),
+                    matchingLineCount: $0.matchingLineCount,
+                    cancelled: $0.cancelled,
+                    diagnostic: Self.regexDiagnostic($0.diagnostic)
+                )
+            }
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func searchRegexBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchBatchRequest
+    ) throws -> CoreCompactRegexBatchResult {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        do {
+            let value = try runtime.searchRegexBatchCompactV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                mode: request.mode == .content ? .content : .path,
+                pattern: request.pattern,
+                subjects: request.subjects,
+                caseInsensitive: request.caseInsensitive,
+                wholeWord: request.wholeWord,
+                multilineAnchors: request.multilineAnchors,
+                collectMatches: request.collectMatches,
+                maxCollectedMatches: request.maxCollectedMatches,
+                contextLines: request.contextLines,
+                matchPolicy: Self.rawMatchPolicy(request.matchPolicy)
+            ))
+            return CoreCompactRegexBatchResult(
+                subjectSummaries: value.subjectSummaries.map(Self.compactRegexSummary),
+                lineRangeWords: value.lineRangeWords,
+                hitWords: value.hitWords
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -475,6 +553,32 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             matchByteRange: byteRange(value.matchByteRange),
             contextBeforeByteRanges: value.contextBeforeByteRanges.map(byteRange),
             contextAfterByteRanges: value.contextAfterByteRanges.map(byteRange)
+        )
+    }
+
+    private static func compactRegexSummary(
+        _ value: AgentryUniFFIRaw.CompactRegexSubjectSummary
+    ) -> CoreCompactRegexSubjectSummary {
+        .init(
+            lineRangeStart: value.lineRangeStart,
+            lineRangeCount: value.lineRangeCount,
+            hitStart: value.hitStart,
+            hitCount: value.hitCount,
+            matchingLineCount: value.matchingLineCount,
+            cancelled: value.cancelled,
+            diagnostic: regexDiagnostic(.init(
+                engine: value.engine,
+                jitStatus: value.jitStatus,
+                cacheHit: value.cacheHit,
+                repairKind: value.repairKind,
+                limitPolicy: value.limitPolicy,
+                subjectByteCount: value.subjectByteCount,
+                lineCount: value.lineCount,
+                hitCount: value.diagnosticHitCount,
+                matchingLineCount: value.diagnosticMatchingLineCount,
+                cancelled: value.diagnosticCancelled,
+                limitFailure: value.limitFailure
+            ))
         )
     }
 

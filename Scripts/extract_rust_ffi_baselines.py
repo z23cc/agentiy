@@ -22,6 +22,9 @@ SWIFT_FIXTURE_NAMES = {
     "codemap.json": "codemap",
     "search-results.json": "search-results",
     "transcript.json": "transcript",
+    "representative-large-subject.json": "representative-large-subject",
+    "representative-multi-file-batch.json": "representative-multi-file-batch",
+    "representative-match-density.json": "representative-match-density",
 }
 FORBIDDEN_KEYS = {
     "absolutepath",

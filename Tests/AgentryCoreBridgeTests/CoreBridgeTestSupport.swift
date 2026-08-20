@@ -12,6 +12,7 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         var executeError: CoreTransportError?
         var searchError: CoreTransportError?
         var searchResult: CoreRegexSearchResult?
+        var compactSearchResult: CoreCompactRegexBatchResult?
         var blocksSearch = false
         var actions: [String] = []
         var drains: [CoreTransportDrainBatch] = []
@@ -181,6 +182,71 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         )
     }
 
+    func searchRegexBatch(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchBatchRequest
+    ) throws -> [CoreRegexSearchResult] {
+        state.withLock { $0.actions.append("search-regex-batch") }
+        return try request.subjects.map { subject in
+            try searchRegex(
+                identity: identity,
+                cancellation: cancellation,
+                request: CoreRegexSearchRequest(
+                    mode: request.mode,
+                    pattern: request.pattern,
+                    subject: subject,
+                    caseInsensitive: request.caseInsensitive,
+                    wholeWord: request.wholeWord,
+                    multilineAnchors: request.multilineAnchors,
+                    collectMatches: request.collectMatches,
+                    maxCollectedMatches: request.maxCollectedMatches,
+                    contextLines: request.contextLines,
+                    matchPolicy: request.matchPolicy
+                )
+            )
+        }
+    }
+
+    func searchRegexBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreRegexSearchBatchRequest
+    ) throws -> CoreCompactRegexBatchResult {
+        try state.withLock { value in
+            value.actions.append("search-regex-batch-compact-v1")
+            if let error = value.searchError { throw error }
+            if let result = value.compactSearchResult { return result }
+            return CoreCompactRegexBatchResult(
+                subjectSummaries: request.subjects.map { subject in
+                    CoreCompactRegexSubjectSummary(
+                        lineRangeStart: 0,
+                        lineRangeCount: 0,
+                        hitStart: 0,
+                        hitCount: 0,
+                        matchingLineCount: 0,
+                        cancelled: false,
+                        diagnostic: CoreRegexDiagnostic(
+                            engine: .pcre2,
+                            jitStatus: .active,
+                            cacheHit: false,
+                            repairKind: .none,
+                            limitPolicy: .fileSearchFullBuffer,
+                            subjectByteCount: UInt64(subject.utf8.count),
+                            lineCount: 0,
+                            hitCount: 0,
+                            matchingLineCount: 0,
+                            cancelled: false,
+                            limitFailure: nil
+                        )
+                    )
+                },
+                lineRangeWords: [],
+                hitWords: []
+            )
+        }
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -230,6 +296,10 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
 
     func returnSearchResult(_ result: CoreRegexSearchResult) {
         state.withLock { $0.searchResult = result }
+    }
+
+    func returnCompactSearchResult(_ result: CoreCompactRegexBatchResult) {
+        state.withLock { $0.compactSearchResult = result }
     }
 
     func blockSearch() {

@@ -467,11 +467,11 @@ pub struct RegexSearchRequest {
 }
 
 impl RegexSearchRequest {
-    pub(crate) fn runtime_request(&self) -> runtime::RegexSearchRequest {
+    pub(crate) fn into_runtime_request(self) -> runtime::RegexSearchRequest {
         runtime::RegexSearchRequest {
             mode: self.mode.into(),
-            pattern: self.pattern.clone(),
-            subject: self.subject.clone(),
+            pattern: self.pattern,
+            subject: self.subject,
             case_insensitive: self.case_insensitive,
             whole_word: self.whole_word,
             multiline_anchors: self.multiline_anchors,
@@ -481,6 +481,44 @@ impl RegexSearchRequest {
             match_policy: self.match_policy.into(),
             cancellation: self.cancellation.runtime_handle().clone(),
         }
+    }
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct RegexSearchBatchRequest {
+    pub runtime_identity: RuntimeIdentity,
+    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
+    pub mode: RegexSearchMode,
+    pub pattern: String,
+    pub subjects: Vec<String>,
+    pub case_insensitive: bool,
+    pub whole_word: bool,
+    pub multiline_anchors: bool,
+    pub collect_matches: bool,
+    pub max_collected_matches: Option<u32>,
+    pub context_lines: u16,
+    pub match_policy: MatchPolicy,
+}
+
+impl RegexSearchBatchRequest {
+    pub(crate) fn into_runtime_requests(self) -> Vec<runtime::RegexSearchRequest> {
+        let cancellation = self.cancellation.runtime_handle().clone();
+        self.subjects
+            .into_iter()
+            .map(|subject| runtime::RegexSearchRequest {
+                mode: self.mode.into(),
+                pattern: self.pattern.clone(),
+                subject,
+                case_insensitive: self.case_insensitive,
+                whole_word: self.whole_word,
+                multiline_anchors: self.multiline_anchors,
+                collect_matches: self.collect_matches,
+                max_collected_matches: self.max_collected_matches,
+                context_lines: self.context_lines,
+                match_policy: self.match_policy.into(),
+                cancellation: cancellation.clone(),
+            })
+            .collect()
     }
 }
 
@@ -528,6 +566,73 @@ impl From<runtime::RegexSearchResult> for RegexSearchResult {
             matching_line_count: value.matching_line_count,
             cancelled: value.cancelled,
             diagnostic: value.diagnostic.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CompactRegexSubjectSummary {
+    pub line_range_start: u64,
+    pub line_range_count: u64,
+    pub hit_start: u64,
+    pub hit_count: u64,
+    pub matching_line_count: u64,
+    pub cancelled: bool,
+    pub engine: EngineKind,
+    pub jit_status: JitStatus,
+    pub cache_hit: bool,
+    pub repair_kind: RepairKind,
+    pub limit_policy: LimitPolicy,
+    pub subject_byte_count: u64,
+    pub line_count: u64,
+    pub diagnostic_hit_count: u64,
+    pub diagnostic_matching_line_count: u64,
+    pub diagnostic_cancelled: bool,
+    pub limit_failure: Option<LimitFailure>,
+}
+
+impl From<runtime::CompactRegexSubjectSummary> for CompactRegexSubjectSummary {
+    fn from(value: runtime::CompactRegexSubjectSummary) -> Self {
+        let diagnostic = value.diagnostic;
+        Self {
+            line_range_start: value.line_range_start,
+            line_range_count: value.line_range_count,
+            hit_start: value.hit_start,
+            hit_count: value.hit_count,
+            matching_line_count: value.matching_line_count,
+            cancelled: value.cancelled,
+            engine: diagnostic.engine.into(),
+            jit_status: diagnostic.jit_status.into(),
+            cache_hit: diagnostic.cache_hit,
+            repair_kind: diagnostic.repair_kind.into(),
+            limit_policy: diagnostic.limit_policy.into(),
+            subject_byte_count: diagnostic.subject_byte_count,
+            line_count: diagnostic.line_count,
+            diagnostic_hit_count: diagnostic.hit_count,
+            diagnostic_matching_line_count: diagnostic.matching_line_count,
+            diagnostic_cancelled: diagnostic.cancelled,
+            limit_failure: diagnostic.limit_failure.map(Into::into),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CompactRegexBatchResult {
+    pub subject_summaries: Vec<CompactRegexSubjectSummary>,
+    pub line_range_words: Vec<u64>,
+    pub hit_words: Vec<u64>,
+}
+
+impl From<runtime::CompactRegexBatchResult> for CompactRegexBatchResult {
+    fn from(value: runtime::CompactRegexBatchResult) -> Self {
+        Self {
+            subject_summaries: value
+                .subject_summaries
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            line_range_words: value.line_range_words,
+            hit_words: value.hit_words,
         }
     }
 }

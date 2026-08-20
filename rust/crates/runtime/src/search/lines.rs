@@ -35,10 +35,6 @@ impl LineTable {
         self.ranges.len()
     }
 
-    pub(crate) fn range(&self, line: usize) -> Option<ByteRange> {
-        self.ranges.get(line).copied()
-    }
-
     pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, ByteRange)> + '_ {
         self.ranges.iter().copied().enumerate()
     }
@@ -54,16 +50,10 @@ impl LineTable {
         })
     }
 
-    pub(crate) fn context(&self, line: usize, count: usize) -> (Vec<ByteRange>, Vec<ByteRange>) {
-        let before_start = line.saturating_sub(count);
-        let before = self.ranges[before_start..line].to_vec();
-        let after_end = self
-            .ranges
-            .len()
-            .min(line.saturating_add(count).saturating_add(1));
-        let after = self.ranges[line.saturating_add(1)..after_end].to_vec();
-        (before, after)
+    pub(crate) fn into_ranges(self) -> Vec<ByteRange> {
+        self.ranges
     }
+
 }
 
 impl ByteRange {

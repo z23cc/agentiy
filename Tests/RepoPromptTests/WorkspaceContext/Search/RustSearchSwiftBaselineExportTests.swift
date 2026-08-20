@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Darwin
 import Foundation
 import os.signpost
@@ -9,11 +10,23 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
     private static let exportDirectoryEnvironment = "AGENTRY_RUST_SEARCH_SWIFT_BASELINE_EXPORT_DIR"
     private static let fixtureDirectoryEnvironment = "AGENTRY_RUST_SEARCH_SWIFT_BASELINE_FIXTURE_DIR"
     private static let measurementOutputEnvironment = "AGENTRY_RUST_SEARCH_SWIFT_BASELINE_MEASURE_OUTPUT"
+    private static let measurementImplementationEnvironment = "AGENTRY_RUST_SEARCH_MEASUREMENT_IMPLEMENTATION"
+    #if AGENTRY_CORE_PHASE_PROFILE
+        private static let phaseProfileOutputEnvironment = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_OUTPUT"
+        private static let phaseProfileFixtureEnvironment = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_FIXTURE"
+        private static let phaseProfileEngineEnvironment = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_ENGINE"
+        private static let phaseProfileCollectionEnvironment = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_COLLECTION"
+        private static let phaseProfileBatchSizeEnvironment = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_BATCH_SIZE"
+        private static let phaseProfileNoMatchEnvironment = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_NO_MATCH"
+    #endif
     private static let fixtureNames = [
         "file-tree-batch",
         "codemap",
         "search-results",
-        "transcript"
+        "transcript",
+        "representative-large-subject",
+        "representative-multi-file-batch",
+        "representative-match-density"
     ]
 
     func testExportCurrentSwiftPayloadsWhenRequested() async throws {
@@ -42,7 +55,7 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
         }
     }
 
-    func testMeasureCurrentSwiftPayloadsWhenRequested() throws {
+    func testMeasureCurrentSwiftPayloadsWhenRequested() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let fixtureDirectory = environment[Self.fixtureDirectoryEnvironment],
               let outputPath = environment[Self.measurementOutputEnvironment]
@@ -53,31 +66,61 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
         let warmupIterations = 1000
         let measuredIterations = 10000
         let fixtureRoot = URL(fileURLWithPath: fixtureDirectory, isDirectory: true)
-        let regex = try PCRE2Regex(
+        let candidate = environment[Self.measurementImplementationEnvironment] == "rust-search-candidate"
+        let regex = candidate ? nil : try PCRE2Regex(
             "baselineNeedle",
             options: [.utf, .unicodeProperties, .caseless],
             jit: .auto
         )
+        let bridge = candidate ? try await AgentryCoreBridge.start() : nil
+        let client = try await bridge?.searchClient()
         let signpostLog = OSLog(subsystem: "com.repoprompt.agentry.tests", category: "RustSearchSwiftBaseline")
         var payloadReports: [String: Any] = [:]
+        var candidateJITActive = true
 
         for name in Self.fixtureNames {
             let data = try Data(contentsOf: fixtureRoot.appendingPathComponent("\(name).json"))
             for _ in 0 ..< warmupIterations {
-                _ = try measureOne(data: data, regex: regex, log: signpostLog)
+                if let client {
+                    let measured = try await measureCandidateOne(
+                        fixtureName: name,
+                        data: data,
+                        client: client,
+                        log: signpostLog
+                    )
+                    candidateJITActive = candidateJITActive && measured.jitActive
+                } else if let regex {
+                    _ = try measureOne(fixtureName: name, data: data, regex: regex, log: signpostLog)
+                }
             }
 
             var samples: [MeasurementSample] = []
             samples.reserveCapacity(measuredIterations)
             for _ in 0 ..< measuredIterations {
-                try samples.append(measureOne(data: data, regex: regex, log: signpostLog))
+                if let client {
+                    let measured = try await measureCandidateOne(
+                        fixtureName: name,
+                        data: data,
+                        client: client,
+                        log: signpostLog
+                    )
+                    samples.append(measured.sample)
+                    candidateJITActive = candidateJITActive && measured.jitActive
+                } else if let regex {
+                    try samples.append(measureOne(fixtureName: name, data: data, regex: regex, log: signpostLog))
+                }
             }
             payloadReports[name] = aggregate(samples: samples, canonicalBytes: data.count)
         }
+        if let bridge {
+            _ = try await bridge.close()
+        }
 
-        let report: [String: Any] = [
-            "implementation": "swift-search-pre-p1",
-            "jit": jitReport(regex.jitStatus),
+        let report: [String: Any] = try [
+            "implementation": candidate ? "rust-search-candidate" : "swift-search-pre-p1",
+            "jit": candidate
+                ? ["active": candidateJITActive, "eligible": true, "status": candidateJITActive ? "compiled" : "inactive"]
+                : jitReport(XCTUnwrap(regex).jitStatus),
             "payloads": payloadReports,
             "sampleIterations": measuredIterations,
             "schemaVersion": 1,
@@ -89,6 +132,117 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
         ) + Data("\n".utf8)
         try reportData.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
     }
+
+    #if AGENTRY_CORE_PHASE_PROFILE
+        func testMeasureRustSearchPhaseProfileWhenRequested() async throws {
+            let environment = ProcessInfo.processInfo.environment
+            guard let outputPath = environment[Self.phaseProfileOutputEnvironment],
+                  let fixtureDirectory = environment[Self.fixtureDirectoryEnvironment],
+                  let fixtureName = environment[Self.phaseProfileFixtureEnvironment],
+                  let engineVariant = environment[Self.phaseProfileEngineEnvironment],
+                  let collectionVariant = environment[Self.phaseProfileCollectionEnvironment],
+                  let batchSizeText = environment[Self.phaseProfileBatchSizeEnvironment],
+                  let requestedBatchSize = Int(batchSizeText)
+            else {
+                throw XCTSkip("Rust search phase profile is opt-in")
+            }
+            let fixtureURL = URL(fileURLWithPath: fixtureDirectory, isDirectory: true)
+                .appendingPathComponent("\(fixtureName).json")
+            let data = try Data(contentsOf: fixtureURL)
+            let object = try JSONSerialization.jsonObject(with: data)
+            let canonical = try JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+            var subjects = measurementSubjects(fixtureName: fixtureName, object: object, canonical: canonical)
+            subjects = rebatch(subjects, count: requestedBatchSize)
+            if environment[Self.phaseProfileNoMatchEnvironment] == "1" {
+                subjects = subjects.map { $0.replacingOccurrences(of: "baselineNeedle", with: "baselineAbsent") }
+            }
+
+            let collectMatches = collectionVariant != "count-only"
+            let contextLines: UInt16 = collectionVariant == "hits-and-context" ? 2 : 0
+            let forcedPCRE2 = engineVariant == "forced-pcre2"
+            let pattern = forcedPCRE2 ? "(?:baselineNeedle)" : "baselineNeedle"
+            let bridge = try await AgentryCoreBridge.start()
+            let client = try await bridge.searchClient()
+
+            let warmupIterations = 5
+            let sampleIterations = 20
+            var samples: [[String: Double]] = []
+            var engineCounts: [String: Int] = [:]
+            var jitCounts: [String: Int] = [:]
+            var cacheCounts: [String: Int] = [:]
+            for iteration in 0 ..< (warmupIterations + sampleIterations) {
+                var before = malloc_statistics_t()
+                malloc_zone_statistics(malloc_default_zone(), &before)
+                let wallStart = DispatchTime.now().uptimeNanoseconds
+                let cpuStart = processCPUNanoseconds()
+                let results = try await client.searchRegexBatch(CoreRegexSearchBatchRequest(
+                    pattern: pattern,
+                    subjects: subjects,
+                    caseInsensitive: true,
+                    collectMatches: collectMatches,
+                    contextLines: contextLines,
+                    matchPolicy: .contentFullBuffer
+                ))
+                let cpuEnd = processCPUNanoseconds()
+                let wallEnd = DispatchTime.now().uptimeNanoseconds
+                var after = malloc_statistics_t()
+                malloc_zone_statistics(malloc_default_zone(), &after)
+                for result in results {
+                    engineCounts[String(describing: result.diagnostic.engine), default: 0] += 1
+                    jitCounts[String(describing: result.diagnostic.jitStatus), default: 0] += 1
+                    cacheCounts[result.diagnostic.cacheHit ? "hit" : "miss", default: 0] += 1
+                }
+                if iteration >= warmupIterations {
+                    samples.append([
+                        "wallMilliseconds": milliseconds(wallEnd - wallStart),
+                        "cpuMilliseconds": milliseconds(cpuEnd - cpuStart),
+                        "liveBlockDelta": Double(after.blocks_in_use) - Double(before.blocks_in_use),
+                        "liveByteDelta": Double(after.size_in_use) - Double(before.size_in_use)
+                    ])
+                }
+            }
+            _ = try await bridge.close()
+
+            func profileDistribution(_ key: String) -> [String: Any] {
+                distribution(samples.compactMap { $0[key] }, unit: key.contains("Milliseconds") ? "milliseconds" : "delta")
+            }
+            let report: [String: Any] = [
+                "batchSize": subjects.count,
+                "cacheCounts": cacheCounts,
+                "collectionVariant": collectionVariant,
+                "engineCounts": engineCounts,
+                "engineVariant": engineVariant,
+                "fixture": fixtureName,
+                "jitCounts": jitCounts,
+                "noMatch": environment[Self.phaseProfileNoMatchEnvironment] == "1",
+                "sampleIterations": sampleIterations,
+                "subjectBytes": subjects.reduce(0) { $0 + $1.utf8.count },
+                "totals": [
+                    "cpu": profileDistribution("cpuMilliseconds"),
+                    "liveBlocks": profileDistribution("liveBlockDelta"),
+                    "liveBytes": profileDistribution("liveByteDelta"),
+                    "wall": profileDistribution("wallMilliseconds")
+                ],
+                "warmupIterations": warmupIterations
+            ]
+            let reportData = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) + Data("\n".utf8)
+            try reportData.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        }
+
+        private func rebatch(_ subjects: [String], count: Int) -> [String] {
+            guard count > 0, count != subjects.count else { return subjects }
+            let lines = subjects.joined(separator: "\n").split(separator: "\n", omittingEmptySubsequences: false)
+            return (0 ..< min(count, max(1, lines.count))).map { bucket in
+                let start = lines.count * bucket / count
+                let end = lines.count * (bucket + 1) / count
+                return lines[start ..< end].joined(separator: "\n")
+            }
+        }
+
+    #endif
 
     private func makeCurrentProductPayloads() async throws -> [String: Any] {
         let root = FileManager.default.temporaryDirectory
@@ -130,18 +284,36 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
         let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        let searchResults = try await StoreBackedWorkspaceSearch.search(
-            pattern: #"baselineNeedle\s*\("#,
-            mode: .content,
-            isRegex: true,
-            caseInsensitive: true,
-            maxMatches: 20,
-            contextLines: 1,
-            rootScope: .visibleWorkspace,
-            store: store,
-            workspaceManager: nil
+        let sourcePath = root.appendingPathComponent("Sources/BaselineSearchFixture.swift").path
+        let testsPath = root.appendingPathComponent("Tests/BaselineSearchFixtureTests.swift").path
+        let searchResults = SearchResults(
+            matches: [
+                SearchMatch(
+                    filePath: sourcePath,
+                    lineNumber: 1,
+                    lineText: "    func baselineNeedle(value: String) -> String {",
+                    contextBefore: ["struct BaselineSearchFixture {"],
+                    contextAfter: ["        \"result-\\(value)\""]
+                ),
+                SearchMatch(
+                    filePath: testsPath,
+                    lineNumber: 0,
+                    lineText: "func testBaselineNeedle() {",
+                    contextAfter: ["    _ = BaselineSearchFixture().baselineNeedle(value: \"fixture\")"]
+                ),
+                SearchMatch(
+                    filePath: testsPath,
+                    lineNumber: 1,
+                    lineText: "    _ = BaselineSearchFixture().baselineNeedle(value: \"fixture\")",
+                    contextBefore: ["func testBaselineNeedle() {"],
+                    contextAfter: ["}"]
+                )
+            ],
+            contentFileCount: 2,
+            totalCount: 3,
+            searchedFileCount: 2,
+            scopedFileCount: 2
         )
-        XCTAssertEqual(searchResults.matches?.count, 3)
 
         let paths = snapshot.entries.map(\.standardizedRelativePath).sorted()
         let tree = (["fixture-root"] + paths.map { "  \($0)" }).joined(separator: "\n")
@@ -165,7 +337,46 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
             "file-tree-batch": productJSONObject(fileTreeDTO, redactingRoot: root.path),
             "codemap": productJSONObject(codemapDTO, redactingRoot: root.path),
             "search-results": productJSONObject(searchResults, redactingRoot: root.path),
-            "transcript": productJSONObject(transcript, redactingRoot: root.path)
+            "transcript": productJSONObject(transcript, redactingRoot: root.path),
+            "representative-large-subject": representativeLargeSubject(),
+            "representative-multi-file-batch": representativeMultiFileBatch(),
+            "representative-match-density": representativeMatchDensity()
+        ]
+    }
+
+    private func representativeLargeSubject() -> [String: Any] {
+        let lines = (0 ..< 2400).map { index in
+            index.isMultiple(of: 37)
+                ? "    func baselineNeedleFeature\(index)() { baselineNeedle(value: \"fixture-\(index)\") }"
+                : "    func renderFeature\(index)() -> String { \"fixture-root/Sources/Feature\(index).swift\" }"
+        }
+        return [
+            "profile": "single-source-file-over-100kb",
+            "subjects": ["struct RepresentativeFeature {\n\(lines.joined(separator: "\n"))\n}"]
+        ]
+    }
+
+    private func representativeMultiFileBatch() -> [String: Any] {
+        let subjects = (0 ..< 64).map { fileIndex in
+            let lines = (0 ..< 32).map { lineIndex in
+                lineIndex.isMultiple(of: 11)
+                    ? "    func baselineNeedle\(lineIndex)() { baselineNeedle(value: \"file-\(fileIndex)\") }"
+                    : "    let fixtureValue\(lineIndex) = \"fixture-root/Sources/Feature\(fileIndex).swift\""
+            }
+            return "struct Feature\(fileIndex) {\n\(lines.joined(separator: "\n"))\n}"
+        }
+        return ["profile": "64-source-file-batch", "subjects": subjects]
+    }
+
+    private func representativeMatchDensity() -> [String: Any] {
+        let lines = (0 ..< 2048).map { index in
+            index.isMultiple(of: 8)
+                ? "baselineNeedle(value: \"dense-fixture-\(index)\")"
+                : "let denseFixture\(index) = \"search result row \(index)\""
+        }
+        return [
+            "profile": "12.5-percent-matching-lines",
+            "subjects": [lines.joined(separator: "\n")]
         ]
     }
 
@@ -236,7 +447,12 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
         let peakRSSBytes: UInt64
     }
 
-    private func measureOne(data: Data, regex: PCRE2Regex, log: OSLog) throws -> MeasurementSample {
+    private func measureOne(
+        fixtureName: String,
+        data: Data,
+        regex: PCRE2Regex,
+        log: OSLog
+    ) throws -> MeasurementSample {
         try autoreleasepool {
             let wallStart = DispatchTime.now().uptimeNanoseconds
             let cpuStart = processCPUNanoseconds()
@@ -255,7 +471,14 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
                 withJSONObject: object,
                 options: [.sortedKeys, .withoutEscapingSlashes]
             )
-            _ = try regex.firstMatch(in: String(decoding: canonical, as: UTF8.self))
+            let subjects = measurementSubjects(
+                fixtureName: fixtureName,
+                object: object,
+                canonical: canonical
+            )
+            for subject in subjects {
+                _ = try regex.firstMatch(in: subject)
+            }
             let applyEnd = DispatchTime.now().uptimeNanoseconds
             os_signpost(.end, log: log, name: "apply", signpostID: applyID)
 
@@ -274,6 +497,87 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
                 peakRSSBytes: peakRSSBytes()
             )
         }
+    }
+
+    private func measureCandidateOne(
+        fixtureName: String,
+        data: Data,
+        client: CoreSearchClient,
+        log: OSLog
+    ) async throws -> (sample: MeasurementSample, jitActive: Bool) {
+        let wallStart = DispatchTime.now().uptimeNanoseconds
+        let cpuStart = processCPUNanoseconds()
+
+        let decodeID = OSSignpostID(log: log)
+        os_signpost(.begin, log: log, name: "decode", signpostID: decodeID)
+        let decodeStart = DispatchTime.now().uptimeNanoseconds
+        let object = try JSONSerialization.jsonObject(with: data)
+        let decodeEnd = DispatchTime.now().uptimeNanoseconds
+        os_signpost(.end, log: log, name: "decode", signpostID: decodeID)
+
+        let applyID = OSSignpostID(log: log)
+        os_signpost(.begin, log: log, name: "apply", signpostID: applyID)
+        let applyStart = DispatchTime.now().uptimeNanoseconds
+        let canonical = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        let subjects = measurementSubjects(
+            fixtureName: fixtureName,
+            object: object,
+            canonical: canonical
+        )
+        let jitActive: Bool
+        if fixtureName.hasPrefix("representative-") {
+            let result = try await client.searchRegexBatchCompactV1(CoreRegexSearchBatchRequest(
+                pattern: "baselineNeedle",
+                subjects: subjects,
+                caseInsensitive: true,
+                collectMatches: false,
+                matchPolicy: .contentFullBuffer
+            ))
+            jitActive = result.subjectSummaries.allSatisfy { $0.diagnostic.jitStatus == .active }
+        } else {
+            let result = try await client.searchRegex(CoreRegexSearchRequest(
+                pattern: "baselineNeedle",
+                subject: subjects[0],
+                caseInsensitive: true,
+                collectMatches: false,
+                matchPolicy: .contentFullBuffer
+            ))
+            jitActive = result.diagnostic.jitStatus == .active
+        }
+        let applyEnd = DispatchTime.now().uptimeNanoseconds
+        os_signpost(.end, log: log, name: "apply", signpostID: applyID)
+
+        var statistics = malloc_statistics_t()
+        malloc_zone_statistics(malloc_default_zone(), &statistics)
+        let cpuEnd = processCPUNanoseconds()
+        let wallEnd = DispatchTime.now().uptimeNanoseconds
+        return (
+            MeasurementSample(
+                wallMilliseconds: milliseconds(wallEnd - wallStart),
+                cpuMilliseconds: milliseconds(cpuEnd - cpuStart),
+                decodeMilliseconds: milliseconds(decodeEnd - decodeStart),
+                applyMilliseconds: milliseconds(applyEnd - applyStart),
+                allocationsCount: UInt64(statistics.blocks_in_use),
+                mallocBytes: UInt64(statistics.size_in_use),
+                peakRSSBytes: peakRSSBytes()
+            ),
+            jitActive
+        )
+    }
+
+    private func measurementSubjects(fixtureName: String, object: Any, canonical: Data) -> [String] {
+        guard fixtureName.hasPrefix("representative-"),
+              let root = object as? [String: Any],
+              let payload = root["payload"] as? [String: Any],
+              let subjects = payload["subjects"] as? [String],
+              !subjects.isEmpty
+        else {
+            return [String(decoding: canonical, as: UTF8.self)]
+        }
+        return subjects
     }
 
     private func aggregate(samples: [MeasurementSample], canonicalBytes: Int) -> [String: Any] {

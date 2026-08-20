@@ -20,10 +20,11 @@ pub use operation::{
 };
 pub use registry::{OperationRegistry, RegistryError};
 pub use search::{
-    ByteRange, EngineKind, FolderSuffixRequest, JitStatus, LeafCancellation, LimitFailure,
-    LimitPolicy, MatchPolicy, PathClause, PathDiagnostic, PathFilterRequest, PathFilterResult,
-    PathSnapshot, RegexDiagnostic, RegexLineHit, RegexSearchMode, RegexSearchRequest,
-    RegexSearchResult, RepairKind, SearchError, SearchLeaf,
+    ByteRange, CompactRegexBatchResult, CompactRegexSubjectSummary, EngineKind,
+    FolderSuffixRequest, JitStatus, LeafCancellation, LimitFailure, LimitPolicy, MatchPolicy,
+    PathClause, PathDiagnostic, PathFilterRequest, PathFilterResult, PathSnapshot, RegexDiagnostic,
+    RegexLineHit, RegexSearchMode, RegexSearchRequest, RegexSearchResult, RepairKind, SearchError,
+    SearchLeaf,
 };
 pub use subscription::{
     DEFAULT_DRAIN_MAX_BYTES, DEFAULT_DRAIN_MAX_EVENTS, DEFAULT_MAX_QUEUED_BYTES,

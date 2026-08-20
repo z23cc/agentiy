@@ -93,6 +93,23 @@
     "lineNumbers": "zero-based",
     "typedDtos": true,
     "synchronousExports": true,
+    "batchExports": {
+      "structuredCompatibility": "searchRegexBatch",
+      "productionCompactV1": "searchRegexBatchCompactV1",
+      "canonicalMatcherShared": true
+    },
+    "compactBatchV1": {
+      "subjectAlignment": "input-index",
+      "lineRangeWords": {"stride": 2, "fields": ["start", "end"]},
+      "hitWords": {
+        "stride": 6,
+        "fields": ["lineNumber", "selectedLineIndex", "matchStart", "matchEnd", "contextBeforeCount", "contextAfterCount"]
+      },
+      "selectedLines": "ordered-deduplicated-hit-and-context-union",
+      "selectedLineIndex": "subject-relative",
+      "collectionCap": "hit-payload-only",
+      "matchingLineCount": "uncapped"
+    },
     "runtimeIdentityRequired": true,
     "requestScopedCancellation": {
       "object": "LeafCancellation",

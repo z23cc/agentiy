@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Foundation
 import RepoPromptRegexCore
 
@@ -401,11 +402,58 @@ private struct SearchDocumentBuildResult {
     let document: SearchDocument
 }
 
+private struct RustSearchByteRangeMaterializer {
+    let selectedLines: [String]
+
+    init(text: String, lineRangeWords: ArraySlice<UInt64>) throws {
+        let utf8 = text.utf8
+        var cursor = utf8.startIndex
+        var cursorOffset = 0
+        var lines: [String] = []
+        lines.reserveCapacity(lineRangeWords.count / CoreCompactRegexBatchResult.lineRangeStride)
+        for index in stride(from: lineRangeWords.startIndex, to: lineRangeWords.endIndex, by: 2) {
+            let startOffset = Int(lineRangeWords[index])
+            let endOffset = Int(lineRangeWords[index + 1])
+            utf8.formIndex(&cursor, offsetBy: startOffset - cursorOffset)
+            guard let start = String.Index(cursor, within: text) else {
+                throw CoreSearchError.malformedRange
+            }
+            utf8.formIndex(&cursor, offsetBy: endOffset - startOffset)
+            guard let end = String.Index(cursor, within: text) else {
+                throw CoreSearchError.malformedRange
+            }
+            lines.append(String(text[start ..< end]))
+            cursorOffset = endOffset
+        }
+        selectedLines = lines
+    }
+}
+
 private struct SearchFileScanBatch {
     let ordinal: Int
     let document: SearchDocument?
     let summary: SearchScanSummary
     let errors: [(String, RegexPatternFailure)]
+    var materializedMatches: [SearchMatch]?
+}
+
+private struct RustLoadedSearchFile {
+    let input: SearchFileInput
+    let snapshot: FileSearchContentSnapshot
+    let text: String
+}
+
+private struct RustSearchScanPlan {
+    let pattern: String
+    let caseInsensitive: Bool
+    let wholeWord: Bool
+    let multilineAnchors: Bool
+    let lineOriented: Bool
+    let contextLines: Int
+    let countOnly: Bool
+    let maxCollectedMatches: Int?
+    let contentFreshnessPolicy: FileContentFreshnessPolicy
+    let client: CoreSearchClient
 }
 
 private struct SearchScanPlan {
@@ -518,6 +566,13 @@ private struct SearchContentBatch {
 private struct SearchContentBatchResult {
     let index: Int
     let fileResults: [SearchFileScanBatch]
+}
+
+private struct RustSearchPathScanPlan {
+    let pattern: String
+    let caseInsensitive: Bool
+    let aliasByRootPath: [String: String]?
+    let client: CoreSearchClient
 }
 
 private struct SearchPathScanPlan {
@@ -686,7 +741,9 @@ actor FileSearchActor {
 
     /// Looks like a literal with unnecessary escapes (e.g., "\\(") and no "\\\\"
     private static func looksOverEscapedLiteral(_ s: String) -> Bool {
-        if s.contains("\\\\") { return false } // double-backslash present → likely intended literal backslash
+        if s.contains("\\\\") {
+            return false
+        } // double-backslash present → likely intended literal backslash
         let chars = Array(s)
         var i = 0
         var saw = false
@@ -962,7 +1019,11 @@ actor FileSearchActor {
         from batch: SearchFileScanBatch,
         remaining: Int
     ) -> [SearchMatch] {
-        guard remaining > 0, let document = batch.document else { return [] }
+        guard remaining > 0 else { return [] }
+        if let materializedMatches = batch.materializedMatches {
+            return Array(materializedMatches.prefix(remaining))
+        }
+        guard let document = batch.document else { return [] }
         let matchLimit = min(remaining, batch.summary.hits.count)
         return EditFlowPerf.measure(
             EditFlowPerf.Stage.Search.materializeMatches,
@@ -1032,7 +1093,7 @@ actor FileSearchActor {
         in files: [SearchFileDescriptor]
     ) async throws -> SearchContentResult {
         // Filter files by extensions and exclude patterns first
-        let filteredFiles = filterFiles(files, options: options)
+        let filteredFiles = try await filterFiles(files, options: options)
         func hasMatches(_ result: SearchContentResult) -> Bool {
             result.totalCount > 0
         }
@@ -1134,7 +1195,7 @@ actor FileSearchActor {
             // 3) As a last resort, interpret intent literally with PCRE2-safe escaping
             let literalCandidate = Self.unescapeLiteralRegexEscapes(pattern)
             if literalCandidate != pattern {
-                let quoted = RepoPromptPCRE2Adapter.escapedLiteral(literalCandidate)
+                let quoted = NSRegularExpression.escapedPattern(for: literalCandidate)
                 let corrected3 = try await searchContentWithErrors(
                     pattern: quoted,
                     isRegex: true,
@@ -1196,44 +1257,57 @@ actor FileSearchActor {
     }
 
     /// Filter files based on include/exclude patterns
-    private func filterFiles(_ files: [SearchFileDescriptor], options: SearchOptions) -> [SearchFileDescriptor] {
-        files.filter { file in
-            // Check include extensions
-            if !options.includeExtensions.isEmpty {
-                let fileExtension = "." + (file.fileExtension ?? "")
-                if !options.includeExtensions.contains(fileExtension) {
-                    return false
-                }
-            }
-
-            // Check exclude patterns
-            for excludePattern in options.excludePatterns {
-                if matchesPattern(file.relativePath, pattern: excludePattern) {
-                    return false
-                }
-            }
-
-            return true
+    private func filterFiles(
+        _ files: [SearchFileDescriptor],
+        options: SearchOptions
+    ) async throws -> [SearchFileDescriptor] {
+        let extensionFiltered = files.filter { file in
+            guard !options.includeExtensions.isEmpty else { return true }
+            return options.includeExtensions.contains("." + (file.fileExtension ?? ""))
         }
-    }
-
-    /// Simple pattern matching for exclude patterns (supports basic wildcards)
-    private func matchesPattern(_ path: String, pattern: String) -> Bool {
-        // Use wildmatch for patterns with wildcards
-        if pattern.contains("*") || pattern.contains("?") {
-            // Use wildmatch with appropriate flags
-            // NOTE: Only set WM_WILDSTAR (which implies PATHNAME) if pattern uses '**'.
-            // Otherwise we avoid PATHNAME so that '*' may match across '/'.
-            let flags: UInt32 = (pattern.contains("**") ? WM_WILDSTAR : 0) | WM_CASEFOLD
-            return pattern.withCString { patternC in
-                path.withCString { pathC in
-                    repo_wildmatch(patternC, pathC, flags) == WM_MATCH
-                }
-            }
+        guard !options.excludePatterns.isEmpty, !extensionFiltered.isEmpty else {
+            return extensionFiltered
         }
 
-        // Literal substring match (case insensitive)
-        return path.lowercased().contains(pattern.lowercased())
+        func literalWildmatch(_ literal: String) -> String {
+            var escaped = ""
+            escaped.reserveCapacity(literal.count + 2)
+            for character in literal {
+                if character == "\\" || character == "[" || character == "]" {
+                    escaped.append("\\")
+                }
+                escaped.append(character)
+            }
+            return "*\(escaped)*"
+        }
+
+        let snapshots = extensionFiltered.map {
+            FileSearchPathSnapshot(
+                standardizedFullPath: $0.relativePath,
+                standardizedRelativePath: $0.relativePath,
+                standardizedRootPath: $0.standardizedRootFolderPath,
+                clientDisplayPath: $0.relativePath
+            )
+        }
+        let clauses = options.excludePatterns.map { pattern -> SearchPathClause in
+            let effective = pattern.contains("*") || pattern.contains("?")
+                ? pattern
+                : literalWildmatch(pattern)
+            return .glob(pattern: effective, restrictedRootPath: nil)
+        }
+        let client = try await AgentryCoreService.shared.searchClient()
+        let excluded = try await filterPathIndicesResult(
+            snapshots: snapshots,
+            spec: SearchPathFilterSpec(caseInsensitive: true, clauses: clauses),
+            client: client
+        )
+        if excluded.cancelled {
+            throw CancellationError()
+        }
+        let excludedIndices = Set(excluded.matchedSnapshotIndices)
+        return extensionFiltered.enumerated().compactMap {
+            excludedIndices.contains($0.offset) ? nil : $0.element
+        }
     }
 
     private func searchContent(
@@ -1263,6 +1337,411 @@ actor FileSearchActor {
     }
 
     private func searchContentWithErrors(
+        pattern: String,
+        isRegex: Bool,
+        wasAutoCorrected: inout Bool?,
+        caseInsensitive: Bool,
+        wholeWord: Bool,
+        fuzzySpaceMatching: Bool,
+        contextLines: Int,
+        countOnly: Bool,
+        maxResults: Int,
+        contentFreshnessPolicy: FileContentFreshnessPolicy = .cachedMetadata,
+        in files: [SearchFileDescriptor]
+    ) async throws -> SearchContentResult {
+        if !isRegex && pattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return SearchContentResult(matches: [], totalCount: 0, matchedFileCount: 0, perFileErrors: [])
+        }
+        try RegexToolkit.validateComplexity(pattern, isRegex: isRegex)
+        try Task.checkCancellation()
+
+        let client = try await AgentryCoreService.shared.searchClient()
+        let effectivePattern: String
+        let effectiveWholeWord: Bool
+        if isRegex {
+            effectivePattern = pattern
+            effectiveWholeWord = wholeWord
+        } else if fuzzySpaceMatching, pattern.contains(" ") {
+            effectivePattern = Self.convertSpacesToFuzzyRegex(pattern)
+            effectiveWholeWord = false
+        } else {
+            effectivePattern = NSRegularExpression.escapedPattern(for: pattern)
+            effectiveWholeWord = wholeWord
+        }
+        let lineOriented = !isRegex
+            || RegexToolkit.isLineAnchored(pattern)
+            || pattern.first == "^"
+            || pattern.last == "$"
+            || RegexToolkit.isExpensiveUnanchored(pattern)
+        let plan = RustSearchScanPlan(
+            pattern: effectivePattern,
+            caseInsensitive: caseInsensitive,
+            wholeWord: effectiveWholeWord,
+            multilineAnchors: pattern.contains("^") || pattern.contains("$"),
+            lineOriented: lineOriented,
+            contextLines: contextLines,
+            countOnly: countOnly,
+            maxCollectedMatches: countOnly ? nil : max(0, maxResults),
+            contentFreshnessPolicy: contentFreshnessPolicy,
+            client: client
+        )
+
+        if isRegex {
+            do {
+                let probe = try await client.searchRegex(CoreRegexSearchRequest(
+                    pattern: effectivePattern,
+                    subject: "",
+                    caseInsensitive: caseInsensitive,
+                    wholeWord: effectiveWholeWord,
+                    multilineAnchors: plan.multilineAnchors,
+                    collectMatches: false,
+                    contextLines: 0,
+                    matchPolicy: lineOriented ? .contentLine : .contentFullBuffer
+                ))
+                if probe.diagnostic.repairKind != .none {
+                    wasAutoCorrected = true
+                }
+            } catch let error as CoreSearchError {
+                if let failure = Self.regexPatternFailure(for: error, pattern: pattern) {
+                    throw failure
+                }
+                throw error
+            }
+        }
+
+        let entries = files
+            .sorted { $0.fullPath < $1.fullPath }
+            .enumerated()
+            .map { SearchFileInput(ordinal: $0.offset, file: $0.element) }
+        let contentBatchSize = Self.contentScanBatchSize(
+            fileCount: entries.count,
+            workerCount: Self.maxConcurrentTasks
+        )
+        let batches = Self.makeContentBatches(entries, batchSize: contentBatchSize)
+        let rustScanKind = isRegex
+            ? (lineOriented ? "rust-regex-line" : "rust-regex-full-buffer")
+            : "rust-literal-line"
+        let contentScanState = EditFlowPerf.begin(
+            EditFlowPerf.Stage.Search.contentScanTotal,
+            EditFlowPerf.Dimensions(
+                taskCount: batches.count,
+                workerCount: Self.maxConcurrentTasks,
+                admittedFileCount: files.count,
+                scanKind: rustScanKind,
+                batchSize: contentBatchSize,
+                isRegex: isRegex,
+                countOnly: countOnly
+            )
+        )
+        var contentScanOutcome = "completed"
+        var scannedFileCount = 0
+        var batchWindow = OrderedSearchBatchWindow(
+            batchCount: batches.count,
+            maxEnqueueLead: Self.maxConcurrentTasks
+        )
+        var pending: [Int: SearchContentBatchResult] = [:]
+        var emittedMatches: [SearchMatch] = []
+        var totalCount = 0
+        var matchedFileCount = 0
+        var perFileErrors: [(String, RegexPatternFailure)] = []
+        defer {
+            EditFlowPerf.end(
+                EditFlowPerf.Stage.Search.contentScanTotal,
+                contentScanState,
+                EditFlowPerf.Dimensions(
+                    outcome: contentScanOutcome,
+                    matchCount: totalCount,
+                    taskCount: batches.count,
+                    workerCount: Self.maxConcurrentTasks,
+                    admittedFileCount: files.count,
+                    scannedFileCount: scannedFileCount,
+                    matchedFileCount: matchedFileCount,
+                    scanKind: rustScanKind,
+                    batchSize: contentBatchSize,
+                    isRegex: isRegex,
+                    countOnly: countOnly
+                )
+            )
+        }
+
+        func refillBatchWindow(into group: inout ThrowingTaskGroup<SearchContentBatchResult, Error>) {
+            while let batchIndex = batchWindow.takeNextBatchToEnqueue() {
+                let batch = batches[batchIndex]
+                group.addTask { [entries] in
+                    try await Self.scanRustContentBatch(batch, entries: entries, plan: plan)
+                }
+            }
+        }
+
+        do {
+            try await withThrowingTaskGroup(of: SearchContentBatchResult.self) { group in
+                refillBatchWindow(into: &group)
+                scanLoop: while let batchResult = try await group.next() {
+                    scannedFileCount += batchResult.fileResults.count
+                    pending[batchResult.index] = batchResult
+                    var drainAdvanced = false
+                    while let ready = pending.removeValue(forKey: batchWindow.nextBatchToDrain) {
+                        for fileResult in ready.fileResults {
+                            perFileErrors.append(contentsOf: fileResult.errors)
+                            totalCount += fileResult.summary.lineMatchCount
+                            if fileResult.summary.matchedFile {
+                                matchedFileCount += 1
+                            }
+                            if !countOnly, emittedMatches.count < maxResults {
+                                emittedMatches.append(contentsOf: Self.materializeMatches(
+                                    from: fileResult,
+                                    remaining: maxResults - emittedMatches.count
+                                ))
+                            }
+                            if !countOnly, emittedMatches.count >= maxResults {
+                                contentScanOutcome = "capped"
+                                group.cancelAll()
+                                break scanLoop
+                            }
+                        }
+                        batchWindow.advanceDrainFrontier()
+                        drainAdvanced = true
+                    }
+                    if drainAdvanced {
+                        refillBatchWindow(into: &group)
+                    }
+                }
+            }
+        } catch {
+            contentScanOutcome = error is CancellationError ? "cancelled" : "failed"
+            throw error
+        }
+
+        if countOnly {
+            return SearchContentResult(
+                matches: [],
+                totalCount: totalCount,
+                matchedFileCount: matchedFileCount,
+                perFileErrors: perFileErrors
+            )
+        }
+        return SearchContentResult(
+            matches: emittedMatches,
+            totalCount: emittedMatches.count,
+            matchedFileCount: Set(emittedMatches.map(\.filePath)).count,
+            perFileErrors: perFileErrors
+        )
+    }
+
+    private static func scanRustContentBatch(
+        _ batch: SearchContentBatch,
+        entries: [SearchFileInput],
+        plan: RustSearchScanPlan
+    ) async throws -> SearchContentBatchResult {
+        let batchSize = batch.range.count
+        let scanKind = plan.lineOriented ? "rust-line" : "rust-full-buffer"
+        let perfState = EditFlowPerf.begin(
+            EditFlowPerf.Stage.Search.contentBatch,
+            EditFlowPerf.Dimensions(
+                workerCount: Self.maxConcurrentTasks,
+                scanKind: scanKind,
+                batchSize: batchSize,
+                isRegex: true,
+                countOnly: plan.countOnly,
+                caseInsensitive: plan.caseInsensitive,
+                wholeWord: plan.wholeWord,
+                contextLines: plan.contextLines
+            )
+        )
+        var fileResults: [SearchFileScanBatch] = []
+        fileResults.reserveCapacity(batchSize)
+        defer {
+            EditFlowPerf.end(
+                EditFlowPerf.Stage.Search.contentBatch,
+                perfState,
+                EditFlowPerf.Dimensions(
+                    matchCount: fileResults.reduce(0) { $0 + $1.summary.lineMatchCount },
+                    workerCount: Self.maxConcurrentTasks,
+                    scannedFileCount: fileResults.count,
+                    scanKind: scanKind,
+                    batchSize: batchSize,
+                    isRegex: true,
+                    countOnly: plan.countOnly,
+                    caseInsensitive: plan.caseInsensitive,
+                    wholeWord: plan.wholeWord,
+                    contextLines: plan.contextLines
+                )
+            )
+        }
+        var loaded: [RustLoadedSearchFile] = []
+        loaded.reserveCapacity(batchSize)
+        for index in batch.range {
+            try Task.checkCancellation()
+            let input = entries[index]
+            do {
+                let snapshot = try await input.file.contentSnapshot(plan.contentFreshnessPolicy)
+                guard let text = snapshot.content else {
+                    fileResults.append(emptyRustFileResult(input))
+                    continue
+                }
+                loaded.append(RustLoadedSearchFile(input: input, snapshot: snapshot, text: text))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as ContentReadSchedulerError {
+                throw StoreBackedWorkspaceSearchAdmissionError.contentReadQueueFull(
+                    retryAfterMilliseconds: error.retryAfterMilliseconds
+                )
+            } catch let error as StoreBackedWorkspaceSearchAdmissionError {
+                throw error
+            } catch {
+                fileResults.append(emptyRustFileResult(input))
+            }
+        }
+
+        let grouped = Dictionary(grouping: loaded) {
+            plan.lineOriented || $0.text.utf8.count > Self.maxPCRE2FullScanBytes
+        }
+        for linePolicy in [false, true] {
+            guard let files = grouped[linePolicy], !files.isEmpty else { continue }
+            do {
+                let result = try await plan.client.searchRegexBatchCompactV1(CoreRegexSearchBatchRequest(
+                    pattern: plan.pattern,
+                    subjects: files.map(\.text),
+                    caseInsensitive: plan.caseInsensitive,
+                    wholeWord: plan.wholeWord,
+                    multilineAnchors: plan.multilineAnchors,
+                    collectMatches: !plan.countOnly,
+                    maxCollectedMatches: plan.maxCollectedMatches.flatMap(UInt32.init(exactly:)),
+                    contextLines: UInt16(clamping: plan.contextLines),
+                    matchPolicy: linePolicy ? .contentLine : .contentFullBuffer
+                ))
+                for (file, summary) in zip(files, result.subjectSummaries) {
+                    try fileResults.append(rustFileResult(
+                        file,
+                        summary: summary,
+                        batchResult: result,
+                        plan: plan
+                    ))
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as CoreSearchError {
+                guard let failure = regexPatternFailure(for: error, pattern: plan.pattern) else {
+                    throw error
+                }
+                fileResults.append(contentsOf: files.map {
+                    SearchFileScanBatch(
+                        ordinal: $0.input.ordinal,
+                        document: nil,
+                        summary: SearchScanSummary(hits: [], lineMatchCount: 0),
+                        errors: [($0.input.file.relativePath, failure)]
+                    )
+                })
+            }
+        }
+        fileResults.sort { $0.ordinal < $1.ordinal }
+        return SearchContentBatchResult(index: batch.index, fileResults: fileResults)
+    }
+
+    private static func emptyRustFileResult(_ input: SearchFileInput) -> SearchFileScanBatch {
+        SearchFileScanBatch(
+            ordinal: input.ordinal,
+            document: nil,
+            summary: SearchScanSummary(hits: [], lineMatchCount: 0),
+            errors: []
+        )
+    }
+
+    private static func rustFileResult(
+        _ loaded: RustLoadedSearchFile,
+        summary: CoreCompactRegexSubjectSummary,
+        batchResult: CoreCompactRegexBatchResult,
+        plan: RustSearchScanPlan
+    ) throws -> SearchFileScanBatch {
+        let file = loaded.input.file
+        let matches = try materializeRustMatches(
+            summary: summary,
+            batchResult: batchResult,
+            text: loaded.text,
+            filePath: file.fullPath,
+            contextLines: plan.contextLines
+        )
+        return SearchFileScanBatch(
+            ordinal: loaded.input.ordinal,
+            document: nil,
+            summary: SearchScanSummary(hits: [], lineMatchCount: Int(summary.matchingLineCount)),
+            errors: [],
+            materializedMatches: matches
+        )
+    }
+
+    private static func materializeRustMatches(
+        summary: CoreCompactRegexSubjectSummary,
+        batchResult: CoreCompactRegexBatchResult,
+        text: String,
+        filePath: String,
+        contextLines: Int
+    ) throws -> [SearchMatch] {
+        let lineStart = Int(summary.lineRangeStart) * CoreCompactRegexBatchResult.lineRangeStride
+        let lineEnd = lineStart
+            + Int(summary.lineRangeCount) * CoreCompactRegexBatchResult.lineRangeStride
+        let materializer = try RustSearchByteRangeMaterializer(
+            text: text,
+            lineRangeWords: batchResult.lineRangeWords[lineStart ..< lineEnd]
+        )
+        let hitStart = Int(summary.hitStart) * CoreCompactRegexBatchResult.hitStride
+        let hitEnd = hitStart + Int(summary.hitCount) * CoreCompactRegexBatchResult.hitStride
+        var matches: [SearchMatch] = []
+        matches.reserveCapacity(Int(summary.hitCount))
+        for index in stride(from: hitStart, to: hitEnd, by: CoreCompactRegexBatchResult.hitStride) {
+            let selectedLineIndex = Int(batchResult.hitWords[index + 1])
+            let beforeCount = Int(batchResult.hitWords[index + 4])
+            let afterCount = Int(batchResult.hitWords[index + 5])
+            let before = Array(
+                materializer.selectedLines[(selectedLineIndex - beforeCount) ..< selectedLineIndex]
+            )
+            let after = afterCount > 0
+                ? Array(materializer.selectedLines[(selectedLineIndex + 1) ... (selectedLineIndex + afterCount)])
+                : []
+            matches.append(SearchMatch(
+                filePath: filePath,
+                lineNumber: Int(batchResult.hitWords[index]),
+                lineText: materializer.selectedLines[selectedLineIndex],
+                contextBefore: contextLines > 0 && !before.isEmpty ? before : nil,
+                contextAfter: contextLines > 0 && !after.isEmpty ? after : nil
+            ))
+        }
+        return matches
+    }
+
+    private static func regexPatternFailure(
+        for error: CoreSearchError,
+        pattern: String
+    ) -> RegexPatternFailure? {
+        switch error {
+        case .patternTooComplex:
+            SearchPatternTooComplexError()
+        case let .invalidPattern(reason):
+            switch reason {
+            case .invalidEscape: SearchPatternError.invalidEscape(pattern)
+            case .unmatchedBrackets: SearchPatternError.unmatchedBrackets(pattern)
+            case .unmatchedParentheses: SearchPatternError.unmatchedParentheses(pattern)
+            case .invalidQuantifier: SearchPatternError.invalidQuantifier(pattern)
+            case .variableLengthLookbehind:
+                SearchPatternError.invalidRegex(
+                    pattern,
+                    "Variable-length lookbehind is unsupported; use fixed or bounded width."
+                )
+            case .other: SearchPatternError.invalidRegex(pattern, "Failed to compile regular expression")
+            }
+        case .matchLimitExceeded:
+            SearchPatternError.invalidRegex(pattern, "Regex match limit exceeded")
+        case .depthLimitExceeded:
+            SearchPatternError.invalidRegex(pattern, "Regex depth limit exceeded")
+        case .heapLimitExceeded:
+            SearchPatternError.invalidRegex(pattern, "Regex heap limit exceeded")
+        case .jitUnavailable, .cancelled, .runtimeInvalidated, .runtimeStopped,
+             .runtimePoisoned, .malformedRange, .transportFailure:
+            nil
+        }
+    }
+
+    private func legacySearchContentWithErrors(
         pattern: String,
         isRegex: Bool,
         wasAutoCorrected: inout Bool?,
@@ -1523,7 +2002,9 @@ actor FileSearchActor {
         var fileResults: [SearchFileScanBatch] = []
         fileResults.reserveCapacity(batchSize)
         for index in batch.range {
-            if Task.isCancelled { break }
+            if Task.isCancelled {
+                break
+            }
             let result = try await scanFileWithErrorHandling(entries[index], plan: plan)
             scannedFileCount += 1
             matchCount += result.summary.lineMatchCount
@@ -1828,7 +2309,9 @@ actor FileSearchActor {
         }
 
         while index < scalars.endIndex {
-            if (lineNumber & 0xFF) == 0, Task.isCancelled { break }
+            if (lineNumber & 0xFF) == 0, Task.isCancelled {
+                break
+            }
             let scalar = scalars[index]
             if scalar.value == 13 || scalar.value == 10 { // CR or LF; mirrors SearchLineIndex line boundaries.
                 scanLine(endingAtUTF16: offsetUTF16)
@@ -2089,7 +2572,9 @@ actor FileSearchActor {
                 hitCount += 1
                 if !countOnly, maxCollectedMatches.map({ hits.count < $0 }) ?? true {
                     hits.append(SearchHit(lineNumber: lineNumber))
-                    if reachedCollectionLimit() { break }
+                    if reachedCollectionLimit() {
+                        break
+                    }
                 }
             }
         }
@@ -2152,18 +2637,26 @@ actor FileSearchActor {
 
         try regex.enumerateMatches(in: document.text, matchLimits: RepoPromptPCRE2MatchPolicy.fileSearchFullBuffer) { match in
             defer { matchIndex += 1 }
-            if match.byteRange.isEmpty { return true }
-            if (matchIndex & 0x0F) == 0, Task.isCancelled { return false }
+            if match.byteRange.isEmpty {
+                return true
+            }
+            if (matchIndex & 0x0F) == 0, Task.isCancelled {
+                return false
+            }
 
             let lineNumber = document.lineNumber(forUTF8Offset: match.byteRange.lowerBound)
             guard lineNumber >= 0 else { return true }
-            if lastLineNumber == lineNumber { return true }
+            if lastLineNumber == lineNumber {
+                return true
+            }
 
             lastLineNumber = lineNumber
             hitCount += 1
             if !countOnly, maxCollectedMatches.map({ hits.count < $0 }) ?? true {
                 hits.append(SearchHit(lineNumber: lineNumber))
-                if reachedCollectionLimit() { return false }
+                if reachedCollectionLimit() {
+                    return false
+                }
             }
             return true
         }
@@ -2283,6 +2776,228 @@ actor FileSearchActor {
     }
 
     private func searchPaths(
+        pattern: String,
+        limit: Int = 100,
+        in files: [SearchFileDescriptor],
+        caseInsensitive: Bool = true,
+        isRegex: Bool = false,
+        aliasByRootPath: [String: String]? = nil
+    ) async throws -> [String] {
+        let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !files.isEmpty, limit > 0 else { return [] }
+        try Task.checkCancellation()
+        let client = try await AgentryCoreService.shared.searchClient()
+        #if DEBUG
+            let sortAndInputStart = WorkspaceFileSearchDebugTiming.now()
+        #endif
+        let sortedFiles = files.sorted { Self.pathSearchInputPrecedes($0.fullPath, $1.fullPath) }
+        let hasWildcards = trimmed.contains("*") || trimmed.contains("?")
+        let strongRegex = Self.containsRegexSyntax(trimmed)
+        let useGlob = hasWildcards && (!isRegex || !strongRegex)
+
+        if useGlob {
+            let snapshots = sortedFiles.map { file -> FileSearchPathSnapshot in
+                let candidates = Self.candidatePaths(for: file, aliasByRootPath: aliasByRootPath)
+                let relative = candidates.first ?? file.standardizedRelativePath
+                return FileSearchPathSnapshot(
+                    standardizedFullPath: relative,
+                    standardizedRelativePath: relative,
+                    standardizedRootPath: file.standardizedRootFolderPath,
+                    clientDisplayPath: candidates.last ?? relative
+                )
+            }
+            let result = try await filterPathIndicesResult(
+                snapshots: snapshots,
+                spec: SearchPathFilterSpec(
+                    caseInsensitive: caseInsensitive,
+                    clauses: Self.pathGlobCandidates(for: trimmed).map {
+                        .glob(pattern: $0, restrictedRootPath: nil)
+                    }
+                ),
+                client: client
+            )
+            if result.cancelled {
+                throw CancellationError()
+            }
+            return result.matchedSnapshotIndices.prefix(limit).map {
+                sortedFiles[$0].standardizedFullPath
+            }
+        }
+
+        let effectivePattern = isRegex ? trimmed : NSRegularExpression.escapedPattern(for: trimmed)
+        do {
+            _ = try await client.searchRegex(CoreRegexSearchRequest(
+                mode: .path,
+                pattern: effectivePattern,
+                subject: "",
+                caseInsensitive: caseInsensitive,
+                collectMatches: false,
+                matchPolicy: .shortPath
+            ))
+        } catch let error as CoreSearchError {
+            if let failure = Self.regexPatternFailure(for: error, pattern: trimmed) {
+                throw failure
+            }
+            throw error
+        }
+
+        let plan = RustSearchPathScanPlan(
+            pattern: effectivePattern,
+            caseInsensitive: caseInsensitive,
+            aliasByRootPath: aliasByRootPath,
+            client: client
+        )
+        let entries = sortedFiles.enumerated().map {
+            SearchPathInput(ordinal: $0.offset, file: $0.element)
+        }
+        #if DEBUG
+            let sortAndInputEnd = WorkspaceFileSearchDebugTiming.now()
+            WorkspaceFileSearchDebugContext.collector?.recordSortAndInput(
+                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
+                    since: sortAndInputStart,
+                    through: sortAndInputEnd
+                ),
+                inputCount: entries.count
+            )
+            let batchAndEnqueueStart = WorkspaceFileSearchDebugTiming.now()
+        #endif
+        let batches = Self.makePathBatches(entries)
+        var batchWindow = OrderedSearchBatchWindow(
+            batchCount: batches.count,
+            maxEnqueueLead: Self.maxConcurrentTasks
+        )
+        var pending: [Int: SearchPathBatchResult] = [:]
+        var hits: [String] = []
+        #if DEBUG
+            let diagnosticReturnLimit = max(
+                1,
+                WorkspaceFileSearchDebugContext.collector?.requestedPathLimit() ?? limit
+            )
+            var diagnosticDrainedBatchCount = 0
+            var diagnosticEntriesExamined = 0
+            var diagnosticDrainedBatchCountThroughHit = 0
+            var diagnosticEntriesExaminedThroughHit = 0
+            var diagnosticReturnedHitOrdinal = 0
+            var diagnosticReturnedHitPrefixLength = 0
+            var diagnosticDrainStart: UInt64 = 0
+            var diagnosticFirstHitEnd: UInt64?
+        #endif
+
+        func refillBatchWindow(into group: inout ThrowingTaskGroup<SearchPathBatchResult, Error>) {
+            while let batchIndex = batchWindow.takeNextBatchToEnqueue() {
+                let batch = batches[batchIndex]
+                group.addTask { [entries] in
+                    try await Self.scanRustPathBatch(batch, entries: entries, plan: plan)
+                }
+            }
+        }
+
+        try await withThrowingTaskGroup(of: SearchPathBatchResult.self) { group in
+            refillBatchWindow(into: &group)
+            #if DEBUG
+                let initialEnqueueEnd = WorkspaceFileSearchDebugTiming.now()
+                WorkspaceFileSearchDebugContext.collector?.recordBatchAndInitialEnqueue(
+                    nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
+                        since: batchAndEnqueueStart,
+                        through: initialEnqueueEnd
+                    ),
+                    totalBatchCount: batches.count,
+                    initiallyEnqueuedBatchCount: batchWindow.nextBatchToEnqueue
+                )
+                diagnosticDrainStart = initialEnqueueEnd
+            #endif
+            scanLoop: while let batchResult = try await group.next() {
+                pending[batchResult.index] = batchResult
+                var drainAdvanced = false
+                while let ready = pending.removeValue(forKey: batchWindow.nextBatchToDrain) {
+                    #if DEBUG
+                        diagnosticDrainedBatchCount += 1
+                        diagnosticEntriesExamined += batches[ready.index].range.count
+                    #endif
+                    for hit in ready.hits.sorted(by: { $0.ordinal < $1.ordinal }) {
+                        hits.append(hit.path)
+                        #if DEBUG
+                            if diagnosticFirstHitEnd == nil, hits.count >= diagnosticReturnLimit {
+                                diagnosticDrainedBatchCountThroughHit = diagnosticDrainedBatchCount
+                                diagnosticEntriesExaminedThroughHit = diagnosticEntriesExamined
+                                diagnosticReturnedHitOrdinal = hit.ordinal + 1
+                                diagnosticReturnedHitPrefixLength = hits.count
+                                diagnosticFirstHitEnd = WorkspaceFileSearchDebugTiming.now()
+                            }
+                        #endif
+                        if hits.count >= limit {
+                            group.cancelAll()
+                            break scanLoop
+                        }
+                    }
+                    batchWindow.advanceDrainFrontier()
+                    drainAdvanced = true
+                }
+                if drainAdvanced {
+                    refillBatchWindow(into: &group)
+                }
+            }
+        }
+        #if DEBUG
+            let diagnosticGroupEnd = WorkspaceFileSearchDebugTiming.now()
+            let diagnosticDrainEnd = diagnosticFirstHitEnd ?? diagnosticGroupEnd
+            if diagnosticFirstHitEnd == nil {
+                diagnosticDrainedBatchCountThroughHit = diagnosticDrainedBatchCount
+                diagnosticEntriesExaminedThroughHit = diagnosticEntriesExamined
+            }
+            WorkspaceFileSearchDebugContext.collector?.recordDeterministicDrainToHit(
+                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
+                    since: diagnosticDrainStart,
+                    through: diagnosticDrainEnd
+                ),
+                drainedBatchCount: diagnosticDrainedBatchCountThroughHit,
+                entriesExamined: diagnosticEntriesExaminedThroughHit,
+                returnedHitOrdinal: diagnosticReturnedHitOrdinal,
+                returnedHitPrefixLength: diagnosticReturnedHitPrefixLength
+            )
+            WorkspaceFileSearchDebugContext.collector?.recordPostHitResidual(
+                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
+                    since: diagnosticDrainEnd,
+                    through: diagnosticGroupEnd
+                )
+            )
+        #endif
+        return hits
+    }
+
+    private static func scanRustPathBatch(
+        _ batch: SearchPathBatch,
+        entries: [SearchPathInput],
+        plan: RustSearchPathScanPlan
+    ) async throws -> SearchPathBatchResult {
+        var hits: [(ordinal: Int, path: String)] = []
+        for index in batch.range {
+            try Task.checkCancellation()
+            let entry = entries[index]
+            let candidates = candidatePaths(for: entry.file, aliasByRootPath: plan.aliasByRootPath)
+            var matched = false
+            for candidate in candidates {
+                let result = try await plan.client.searchRegex(CoreRegexSearchRequest(
+                    mode: .path,
+                    pattern: plan.pattern,
+                    subject: candidate,
+                    caseInsensitive: plan.caseInsensitive,
+                    collectMatches: false,
+                    matchPolicy: .shortPath
+                ))
+                if result.matchingLineCount > 0 {
+                    matched = true
+                    break
+                }
+            }
+            if matched {
+                hits.append((entry.ordinal, entry.file.standardizedFullPath))
+            }
+        }
+        return SearchPathBatchResult(index: batch.index, hits: hits)
+    }
+
+    private func legacySearchPaths(
         pattern: String,
         limit: Int = 100,
         in files: [SearchFileDescriptor],
@@ -2575,7 +3290,9 @@ actor FileSearchActor {
                             }
                         }
                     }
-                    if matched { return true }
+                    if matched {
+                        return true
+                    }
                 }
                 return false
             } else {
@@ -2719,7 +3436,7 @@ actor FileSearchActor {
         #if DEBUG
             let filterStart = WorkspaceFileSearchDebugTiming.now()
         #endif
-        let filteredFiles = filterFiles(files, options: options)
+        let filteredFiles = try await filterFiles(files, options: options)
         #if DEBUG
             let filterEnd = WorkspaceFileSearchDebugTiming.now()
             WorkspaceFileSearchDebugContext.collector?.recordActorFilter(
@@ -2730,7 +3447,9 @@ actor FileSearchActor {
 
         // Decide effective strategy when `.auto`
         let effectiveMode: SearchMode = {
-            if options.mode != .auto { return options.mode }
+            if options.mode != .auto {
+                return options.mode
+            }
             return Self.inferMode(pattern)
         }()
         let perfState = EditFlowPerf.begin(
@@ -2982,18 +3701,28 @@ actor FileSearchActor {
         }
 
         // Content indicators
-        if raw.contains("\n") { return .content }
-        if raw.contains(" "), raw.count > 10 { return .content }
+        if raw.contains("\n") {
+            return .content
+        }
+        if raw.contains(" "), raw.count > 10 {
+            return .content
+        }
 
         // Short patterns should search both to be thorough
-        if raw.count <= 3 { return .both }
+        if raw.count <= 3 {
+            return .both
+        }
 
         // Identifier-like tokens (e.g., "Player", "Bomb", "MyClass.swift") should search both
         // paths and content - this is the most intuitive UX for code search
-        if isIdentifierLike(raw) { return .both }
+        if isIdentifierLike(raw) {
+            return .both
+        }
 
         // Medium patterns with spaces are likely content searches
-        if raw.contains(" ") { return .content }
+        if raw.contains(" ") {
+            return .content
+        }
 
         // Everything else defaults to content (most common use case)
         return .content
@@ -3038,15 +3767,21 @@ actor FileSearchActor {
         guard !s.isEmpty else { return false }
 
         // Must be a single token (no spaces or path separators)
-        if s.contains(" ") || s.contains("/") || s.contains("\\") { return false }
+        if s.contains(" ") || s.contains("/") || s.contains("\\") {
+            return false
+        }
 
         // No obvious regex metacharacters
         let forbidden: Set<Character> = ["*", "+", "?", "[", "]", "{", "}", "(", ")", "|", "^", "$"]
-        if s.contains(where: forbidden.contains) { return false }
+        if s.contains(where: forbidden.contains) {
+            return false
+        }
 
         // Restrict to common identifier/filename characters: letters, digits, dot, underscore, hyphen
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
-        if s.unicodeScalars.contains(where: { !allowed.contains($0) }) { return false }
+        if s.unicodeScalars.contains(where: { !allowed.contains($0) }) {
+            return false
+        }
 
         return true
     }
@@ -3157,7 +3892,7 @@ actor FileSearchActor {
     private static func convertSpacesToFuzzyRegex(_ pattern: String) -> String {
         pattern
             .split(separator: " ", omittingEmptySubsequences: false)
-            .map { RepoPromptPCRE2Adapter.escapedLiteral(String($0)) }
+            .map { NSRegularExpression.escapedPattern(for: String($0)) }
             .joined(separator: "\\s+")
     }
 }
@@ -3217,7 +3952,9 @@ actor FileSearchActor {
             matchPolicy: CoreSearchLegacyMatchPolicy = .fullBuffer
         ) throws -> RustSearchLegacyResult {
             do {
-                if Task.isCancelled { throw CancellationError() }
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 try RegexToolkit.validateComplexity(pattern, isRegex: true)
                 let compiled = try RepoPromptPCRE2Adapter.compileSearchRegexWithRepairsResult(
                     pattern: pattern,
@@ -3233,7 +3970,9 @@ actor FileSearchActor {
                     in: subject,
                     matchLimits: matchPolicy.limits
                 ) { match in
-                    if Task.isCancelled { return false }
+                    if Task.isCancelled {
+                        return false
+                    }
                     let lineNumber = lineIndex.lineNumber(forUTF8Offset: match.byteRange.lowerBound)
                     guard lineNumber >= 0, seenLines.insert(lineNumber).inserted else { return true }
                     if collectMatches,
@@ -3249,7 +3988,9 @@ actor FileSearchActor {
                     }
                     return true
                 }
-                if Task.isCancelled { throw CancellationError() }
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 return RustSearchLegacyResult(
                     hits: hits,
                     matchingLineCount: UInt64(seenLines.count),
@@ -3310,15 +4051,21 @@ actor FileSearchActor {
                 candidate.removeFirst(2)
                 candidate.removeLast(2)
             }
-            if candidate == original { return .none }
+            if candidate == original {
+                return .none
+            }
 
             let compressed = RepoPromptPCRE2Adapter.compressDoubleEscapesBeforeMeta(original)
-            if candidate == compressed { return .doubleEscapeCompression }
+            if candidate == compressed {
+                return .doubleEscapeCompression
+            }
 
             guard let normalised = try? RegexToolkit.normalise(original).text else {
                 return .normalise
             }
-            if candidate == normalised { return .normalise }
+            if candidate == normalised {
+                return .normalise
+            }
             if candidate == RepoPromptPCRE2Adapter.compressDoubleEscapesBeforeMeta(normalised) {
                 return .normaliseThenCompression
             }
@@ -3326,11 +4073,17 @@ actor FileSearchActor {
         }
 
         private static func classify(_ error: Error, pattern: String) -> RustSearchLegacyError {
-            if error is SearchPatternTooComplexError { return .patternTooComplex }
+            if error is SearchPatternTooComplexError {
+                return .patternTooComplex
+            }
             if let patternError = error as? SearchPatternError {
                 let classification = classify(patternError, pattern: pattern)
-                if classification != .invalidPattern { return classification }
-                if hasInvalidPCRE2Escape(pattern) { return .invalidEscape }
+                if classification != .invalidPattern {
+                    return classification
+                }
+                if hasInvalidPCRE2Escape(pattern) {
+                    return .invalidEscape
+                }
                 do {
                     try RegexToolkit.validate(pattern)
                 } catch let friendlyError as SearchPatternError {
@@ -3355,7 +4108,9 @@ actor FileSearchActor {
                     return .invalidPattern
                 }
             }
-            if hasInvalidPCRE2Escape(pattern) { return .invalidEscape }
+            if hasInvalidPCRE2Escape(pattern) {
+                return .invalidEscape
+            }
             do {
                 try RegexToolkit.validate(pattern)
             } catch let patternError as SearchPatternError {
@@ -3404,7 +4159,9 @@ actor FileSearchActor {
                 {
                     return .unmatchedBrackets
                 }
-                if normalized.contains("parenthes") { return .unmatchedParentheses }
+                if normalized.contains("parenthes") {
+                    return .unmatchedParentheses
+                }
                 if normalized.contains("quantifier") || normalized.contains("nothing to repeat") {
                     return .invalidQuantifier
                 }

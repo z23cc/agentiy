@@ -10619,7 +10619,7 @@ extension WorkspaceFilesViewModel {
         _ rawPaths: [String],
         caseInsensitive: Bool,
         rootScope: LookupRootScope = .allLoaded
-    ) async -> SearchScopeParseResult {
+    ) async throws -> SearchScopeParseResult {
         let normalizedEntries = rawPaths.compactMap { raw -> (raw: String, normalized: String, hadTrailingSlash: Bool)? in
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
@@ -10633,6 +10633,7 @@ extension WorkspaceFilesViewModel {
         var issues: [PathResolutionIssue] = []
         var seenClauses = Set<String>()
         let suffixIndex = searchFolderSuffixIndex(for: rootScope)
+        let searchClient = try await AgentryCoreService.shared.searchClient()
 
         func appendClause(_ clause: SearchPathClause) {
             let key = String(describing: clause)
@@ -10751,7 +10752,12 @@ extension WorkspaceFilesViewModel {
             }
 
             if !standardized.hasPrefix("/") {
-                let suffixMatches = resolveFoldersBySuffixFragment(standardized, using: suffixIndex, caseInsensitive: true)
+                let suffixMatches = try await resolveFoldersBySuffixFragment(
+                    standardized,
+                    using: suffixIndex,
+                    caseInsensitive: true,
+                    client: searchClient
+                )
                 if !suffixMatches.isEmpty {
                     for folder in suffixMatches {
                         appendClause(.exactFolder(

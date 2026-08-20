@@ -187,6 +187,8 @@ IMPLEMENTED_OPERATIONS = {
     "rust-ffi-swift-baseline-export",
     "rust-ffi-swift-baseline-check",
     "rust-ffi-swift-baseline-measure",
+    "rust-ffi-swift-baseline-candidate",
+    "rust-search-phase-profile",
     "format",
     "format-check",
     "lint",
@@ -243,6 +245,8 @@ Operation commands:
   ./conductor rust-ffi-swift-baseline-export    # release test binary; never launches the app
   ./conductor rust-ffi-swift-baseline-check     # two deterministic release test-binary exports
   ./conductor rust-ffi-swift-baseline-measure   # release test-binary measurement
+  ./conductor rust-ffi-swift-baseline-candidate # Rust search candidate measurement + SLO gate
+  ./conductor rust-search-phase-profile [--fixture NAME] [--process-runs N]
   ./conductor format                 # mutates first-party Swift files
   ./conductor format-check           # non-mutating SwiftFormat check
   ./conductor lint                   # non-mutating format-check + SwiftLint strict
@@ -2893,6 +2897,8 @@ def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -
         "rust-ffi-swift-baseline-export",
         "rust-ffi-swift-baseline-check",
         "rust-ffi-swift-baseline-measure",
+        "rust-ffi-swift-baseline-candidate",
+        "rust-search-phase-profile",
     }:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
@@ -3353,10 +3359,18 @@ class OperationRegistry:
             "rust-ffi-swift-baseline-export",
             "rust-ffi-swift-baseline-check",
             "rust-ffi-swift-baseline-measure",
+            "rust-ffi-swift-baseline-candidate",
         }:
             mode = operation.removeprefix("rust-ffi-swift-baseline-")
             env = self._cargo_env(env)
             command = [sys.executable, script("measure_rust_search_baseline.py"), mode]
+            return self._rust_archive_then_command(command, "release"), ["build"], cwd, env, effective_timeout
+        if operation == "rust-search-phase-profile":
+            env = self._cargo_env(env)
+            command = [sys.executable, script("measure_rust_search_baseline.py"), "--phase-profile"]
+            if fixture := args.get("fixture"):
+                command.extend(["--fixture", str(fixture)])
+            command.extend(["--process-runs", str(args.get("processRuns") or 3)])
             return self._rust_archive_then_command(command, "release"), ["build"], cwd, env, effective_timeout
         if operation == "format":
             return [script("swift_style.sh"), "format"], ["style", "build"], cwd, env, effective_timeout
@@ -8439,8 +8453,22 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "rust-ffi-swift-baseline-export",
         "rust-ffi-swift-baseline-check",
         "rust-ffi-swift-baseline-measure",
+        "rust-ffi-swift-baseline-candidate",
     }:
         parse_no_args(f"conductor {operation}", rest)
+    elif operation == "rust-search-phase-profile":
+        parser = argparse.ArgumentParser(prog=f"conductor {operation}")
+        parser.add_argument("--fixture", choices=[
+            "representative-large-subject",
+            "representative-multi-file-batch",
+            "representative-match-density",
+        ])
+        parser.add_argument("--process-runs", type=int, default=3)
+        ns = parser.parse_args(rest)
+        if ns.process_runs < 1:
+            parser.error("--process-runs must be positive")
+        args["fixture"] = ns.fixture
+        args["processRuns"] = ns.process_runs
     elif operation in {"cargo-build", "cargo-archive"}:
         parser = argparse.ArgumentParser(prog=f"conductor {operation}")
         parser.add_argument("--profile", choices=["debug", "release"], default="debug")

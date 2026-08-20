@@ -132,6 +132,27 @@ pub struct RegexSearchResult {
     pub diagnostic: RegexDiagnostic,
 }
 
+pub const COMPACT_LINE_RANGE_STRIDE: usize = 2;
+pub const COMPACT_HIT_STRIDE: usize = 6;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactRegexSubjectSummary {
+    pub line_range_start: u64,
+    pub line_range_count: u64,
+    pub hit_start: u64,
+    pub hit_count: u64,
+    pub matching_line_count: u64,
+    pub cancelled: bool,
+    pub diagnostic: RegexDiagnostic,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactRegexBatchResult {
+    pub subject_summaries: Vec<CompactRegexSubjectSummary>,
+    pub line_range_words: Vec<u64>,
+    pub hit_words: Vec<u64>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SearchError {
     PatternTooComplex,

@@ -437,7 +437,9 @@ fn render_swift_identity(
 public enum AgentryCoreBindingIdentity {{
     public static let abiEpoch: UInt32 = {}
     public static let payloadSchemaVersions: [UInt16] = [1]
-#if DEBUG
+#if AGENTRY_CORE_RELEASE_ARCHIVE
+    public static let buildFingerprint = "{}"
+#elseif DEBUG
     public static let buildFingerprint = "{}"
 #else
     public static let buildFingerprint = "{}"
@@ -446,6 +448,7 @@ public enum AgentryCoreBindingIdentity {{
 }}
 "#,
         debug_identity.inputs.abi_epoch,
+        release_identity.build_fingerprint,
         debug_identity.build_fingerprint,
         release_identity.build_fingerprint,
         debug_identity.binding_checksum

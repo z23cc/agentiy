@@ -645,6 +645,10 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func searchRegex(request: RegexSearchRequest) throws  -> RegexSearchResult
 
+    func searchRegexBatch(request: RegexSearchBatchRequest) throws  -> [RegexSearchResult]
+
+    func searchRegexBatchCompactV1(request: RegexSearchBatchRequest) throws  -> CompactRegexBatchResult
+
     func tryDrain(subscriptionId: SubscriptionId, maxEvents: UInt32, maxBytes: UInt64) throws  -> DrainBatch
 
 }
@@ -834,6 +838,26 @@ open func searchRegex(request: RegexSearchRequest)throws  -> RegexSearchResult  
     uniffi_agentry_ffi_fn_method_coreruntime_search_regex(
             self.uniffiCloneHandle(),
         FfiConverterTypeRegexSearchRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func searchRegexBatch(request: RegexSearchBatchRequest)throws  -> [RegexSearchResult]  {
+    return try  FfiConverterSequenceTypeRegexSearchResult.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_search_regex_batch(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRegexSearchBatchRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func searchRegexBatchCompactV1(request: RegexSearchBatchRequest)throws  -> CompactRegexBatchResult  {
+    return try  FfiConverterTypeCompactRegexBatchResult_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_search_regex_batch_compact_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRegexSearchBatchRequest_lower(request),uniffiCallStatus
     )
 })
 }
@@ -1263,6 +1287,178 @@ public func FfiConverterTypeCommandEnvelope_lift(_ buf: RustBuffer) throws -> Co
 #endif
 public func FfiConverterTypeCommandEnvelope_lower(_ value: CommandEnvelope) -> RustBuffer {
     return FfiConverterTypeCommandEnvelope.lower(value)
+}
+
+
+public struct CompactRegexBatchResult: Equatable, Hashable {
+    public let subjectSummaries: [CompactRegexSubjectSummary]
+    public let lineRangeWords: [UInt64]
+    public let hitWords: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(subjectSummaries: [CompactRegexSubjectSummary], lineRangeWords: [UInt64], hitWords: [UInt64]) {
+        self.subjectSummaries = subjectSummaries
+        self.lineRangeWords = lineRangeWords
+        self.hitWords = hitWords
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompactRegexBatchResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompactRegexBatchResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompactRegexBatchResult {
+        return
+            try CompactRegexBatchResult(
+                subjectSummaries: FfiConverterSequenceTypeCompactRegexSubjectSummary.read(from: &buf),
+                lineRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                hitWords: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompactRegexBatchResult, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCompactRegexSubjectSummary.write(value.subjectSummaries, into: &buf)
+        FfiConverterSequenceUInt64.write(value.lineRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.hitWords, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactRegexBatchResult_lift(_ buf: RustBuffer) throws -> CompactRegexBatchResult {
+    return try FfiConverterTypeCompactRegexBatchResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactRegexBatchResult_lower(_ value: CompactRegexBatchResult) -> RustBuffer {
+    return FfiConverterTypeCompactRegexBatchResult.lower(value)
+}
+
+
+public struct CompactRegexSubjectSummary: Equatable, Hashable {
+    public let lineRangeStart: UInt64
+    public let lineRangeCount: UInt64
+    public let hitStart: UInt64
+    public let hitCount: UInt64
+    public let matchingLineCount: UInt64
+    public let cancelled: Bool
+    public let engine: EngineKind
+    public let jitStatus: JitStatus
+    public let cacheHit: Bool
+    public let repairKind: RepairKind
+    public let limitPolicy: LimitPolicy
+    public let subjectByteCount: UInt64
+    public let lineCount: UInt64
+    public let diagnosticHitCount: UInt64
+    public let diagnosticMatchingLineCount: UInt64
+    public let diagnosticCancelled: Bool
+    public let limitFailure: LimitFailure?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lineRangeStart: UInt64, lineRangeCount: UInt64, hitStart: UInt64, hitCount: UInt64, matchingLineCount: UInt64, cancelled: Bool, engine: EngineKind, jitStatus: JitStatus, cacheHit: Bool, repairKind: RepairKind, limitPolicy: LimitPolicy, subjectByteCount: UInt64, lineCount: UInt64, diagnosticHitCount: UInt64, diagnosticMatchingLineCount: UInt64, diagnosticCancelled: Bool, limitFailure: LimitFailure?) {
+        self.lineRangeStart = lineRangeStart
+        self.lineRangeCount = lineRangeCount
+        self.hitStart = hitStart
+        self.hitCount = hitCount
+        self.matchingLineCount = matchingLineCount
+        self.cancelled = cancelled
+        self.engine = engine
+        self.jitStatus = jitStatus
+        self.cacheHit = cacheHit
+        self.repairKind = repairKind
+        self.limitPolicy = limitPolicy
+        self.subjectByteCount = subjectByteCount
+        self.lineCount = lineCount
+        self.diagnosticHitCount = diagnosticHitCount
+        self.diagnosticMatchingLineCount = diagnosticMatchingLineCount
+        self.diagnosticCancelled = diagnosticCancelled
+        self.limitFailure = limitFailure
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompactRegexSubjectSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompactRegexSubjectSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompactRegexSubjectSummary {
+        return
+            try CompactRegexSubjectSummary(
+                lineRangeStart: FfiConverterUInt64.read(from: &buf),
+                lineRangeCount: FfiConverterUInt64.read(from: &buf),
+                hitStart: FfiConverterUInt64.read(from: &buf),
+                hitCount: FfiConverterUInt64.read(from: &buf),
+                matchingLineCount: FfiConverterUInt64.read(from: &buf),
+                cancelled: FfiConverterBool.read(from: &buf),
+                engine: FfiConverterTypeEngineKind.read(from: &buf),
+                jitStatus: FfiConverterTypeJitStatus.read(from: &buf),
+                cacheHit: FfiConverterBool.read(from: &buf),
+                repairKind: FfiConverterTypeRepairKind.read(from: &buf),
+                limitPolicy: FfiConverterTypeLimitPolicy.read(from: &buf),
+                subjectByteCount: FfiConverterUInt64.read(from: &buf),
+                lineCount: FfiConverterUInt64.read(from: &buf),
+                diagnosticHitCount: FfiConverterUInt64.read(from: &buf),
+                diagnosticMatchingLineCount: FfiConverterUInt64.read(from: &buf),
+                diagnosticCancelled: FfiConverterBool.read(from: &buf),
+                limitFailure: FfiConverterOptionTypeLimitFailure.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompactRegexSubjectSummary, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.lineRangeStart, into: &buf)
+        FfiConverterUInt64.write(value.lineRangeCount, into: &buf)
+        FfiConverterUInt64.write(value.hitStart, into: &buf)
+        FfiConverterUInt64.write(value.hitCount, into: &buf)
+        FfiConverterUInt64.write(value.matchingLineCount, into: &buf)
+        FfiConverterBool.write(value.cancelled, into: &buf)
+        FfiConverterTypeEngineKind.write(value.engine, into: &buf)
+        FfiConverterTypeJitStatus.write(value.jitStatus, into: &buf)
+        FfiConverterBool.write(value.cacheHit, into: &buf)
+        FfiConverterTypeRepairKind.write(value.repairKind, into: &buf)
+        FfiConverterTypeLimitPolicy.write(value.limitPolicy, into: &buf)
+        FfiConverterUInt64.write(value.subjectByteCount, into: &buf)
+        FfiConverterUInt64.write(value.lineCount, into: &buf)
+        FfiConverterUInt64.write(value.diagnosticHitCount, into: &buf)
+        FfiConverterUInt64.write(value.diagnosticMatchingLineCount, into: &buf)
+        FfiConverterBool.write(value.diagnosticCancelled, into: &buf)
+        FfiConverterOptionTypeLimitFailure.write(value.limitFailure, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactRegexSubjectSummary_lift(_ buf: RustBuffer) throws -> CompactRegexSubjectSummary {
+    return try FfiConverterTypeCompactRegexSubjectSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactRegexSubjectSummary_lower(_ value: CompactRegexSubjectSummary) -> RustBuffer {
+    return FfiConverterTypeCompactRegexSubjectSummary.lower(value)
 }
 
 
@@ -2105,6 +2301,100 @@ public func FfiConverterTypeRegexLineHit_lift(_ buf: RustBuffer) throws -> Regex
 #endif
 public func FfiConverterTypeRegexLineHit_lower(_ value: RegexLineHit) -> RustBuffer {
     return FfiConverterTypeRegexLineHit.lower(value)
+}
+
+
+public struct RegexSearchBatchRequest {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let mode: RegexSearchMode
+    public let pattern: String
+    public let subjects: [String]
+    public let caseInsensitive: Bool
+    public let wholeWord: Bool
+    public let multilineAnchors: Bool
+    public let collectMatches: Bool
+    public let maxCollectedMatches: UInt32?
+    public let contextLines: UInt16
+    public let matchPolicy: MatchPolicy
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, mode: RegexSearchMode, pattern: String, subjects: [String], caseInsensitive: Bool, wholeWord: Bool, multilineAnchors: Bool, collectMatches: Bool, maxCollectedMatches: UInt32?, contextLines: UInt16, matchPolicy: MatchPolicy) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.mode = mode
+        self.pattern = pattern
+        self.subjects = subjects
+        self.caseInsensitive = caseInsensitive
+        self.wholeWord = wholeWord
+        self.multilineAnchors = multilineAnchors
+        self.collectMatches = collectMatches
+        self.maxCollectedMatches = maxCollectedMatches
+        self.contextLines = contextLines
+        self.matchPolicy = matchPolicy
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RegexSearchBatchRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegexSearchBatchRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegexSearchBatchRequest {
+        return
+            try RegexSearchBatchRequest(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                mode: FfiConverterTypeRegexSearchMode.read(from: &buf),
+                pattern: FfiConverterString.read(from: &buf),
+                subjects: FfiConverterSequenceString.read(from: &buf),
+                caseInsensitive: FfiConverterBool.read(from: &buf),
+                wholeWord: FfiConverterBool.read(from: &buf),
+                multilineAnchors: FfiConverterBool.read(from: &buf),
+                collectMatches: FfiConverterBool.read(from: &buf),
+                maxCollectedMatches: FfiConverterOptionUInt32.read(from: &buf),
+                contextLines: FfiConverterUInt16.read(from: &buf),
+                matchPolicy: FfiConverterTypeMatchPolicy.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegexSearchBatchRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterTypeRegexSearchMode.write(value.mode, into: &buf)
+        FfiConverterString.write(value.pattern, into: &buf)
+        FfiConverterSequenceString.write(value.subjects, into: &buf)
+        FfiConverterBool.write(value.caseInsensitive, into: &buf)
+        FfiConverterBool.write(value.wholeWord, into: &buf)
+        FfiConverterBool.write(value.multilineAnchors, into: &buf)
+        FfiConverterBool.write(value.collectMatches, into: &buf)
+        FfiConverterOptionUInt32.write(value.maxCollectedMatches, into: &buf)
+        FfiConverterUInt16.write(value.contextLines, into: &buf)
+        FfiConverterTypeMatchPolicy.write(value.matchPolicy, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchBatchRequest_lift(_ buf: RustBuffer) throws -> RegexSearchBatchRequest {
+    return try FfiConverterTypeRegexSearchBatchRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegexSearchBatchRequest_lower(_ value: RegexSearchBatchRequest) -> RustBuffer {
+    return FfiConverterTypeRegexSearchBatchRequest.lower(value)
 }
 
 
@@ -4091,6 +4381,31 @@ fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt64]
+
+    public static func write(_ value: [UInt64], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt64.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt64] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt64]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt64.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -4141,6 +4456,31 @@ fileprivate struct FfiConverterSequenceTypeByteRange: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCompactRegexSubjectSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [CompactRegexSubjectSummary]
+
+    public static func write(_ value: [CompactRegexSubjectSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCompactRegexSubjectSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CompactRegexSubjectSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CompactRegexSubjectSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCompactRegexSubjectSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePathSnapshot: FfiConverterRustBuffer {
     typealias SwiftType = [PathSnapshot]
 
@@ -4183,6 +4523,31 @@ fileprivate struct FfiConverterSequenceTypeRegexLineHit: FfiConverterRustBuffer 
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeRegexLineHit.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRegexSearchResult: FfiConverterRustBuffer {
+    typealias SwiftType = [RegexSearchResult]
+
+    public static func write(_ value: [RegexSearchResult], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRegexSearchResult.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RegexSearchResult] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RegexSearchResult]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRegexSearchResult.read(from: &buf))
         }
         return seq
     }
@@ -4290,6 +4655,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_search_regex() != 2445) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_search_regex_batch() != 1759) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_search_regex_batch_compact_v1() != 41042) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_try_drain() != 27207) {

@@ -1,5 +1,7 @@
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use agentry_runtime::{
     LeafCancellation, MatchPolicy, PathClause, PathFilterRequest, PathSnapshot, RegexSearchMode,
@@ -32,6 +34,94 @@ fn cancellation_idempotent_and_concurrent_v1() {
     }
     assert!(cancellation.is_cancelled());
     assert!(cancellation.is_closed());
+}
+
+#[test]
+fn running_content_cancellation_latency_is_bounded_v1() {
+    let cancellation = LeafCancellation::new(identity());
+    let worker_cancellation = cancellation.clone();
+    let subject = (0..1_000_000)
+        .map(|index| format!("final class SearchCancellation{index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (started_tx, started_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let leaf = SearchLeaf::new().unwrap();
+        started_tx.send(()).unwrap();
+        leaf.search_regex(&RegexSearchRequest {
+            mode: RegexSearchMode::Content,
+            pattern: r"^\s*(?:final\s+)?(?:class|struct|func)\s+[A-Za-z_][A-Za-z0-9_]*".into(),
+            subject,
+            case_insensitive: false,
+            whole_word: false,
+            multiline_anchors: true,
+            collect_matches: true,
+            max_collected_matches: None,
+            context_lines: 0,
+            match_policy: MatchPolicy::ContentLine,
+            cancellation: worker_cancellation,
+        })
+    });
+    started_rx.recv().unwrap();
+    thread::sleep(Duration::from_millis(5));
+    let cancelled_at = Instant::now();
+    cancellation.cancel();
+    let result = worker.join().unwrap();
+    assert!(
+        cancelled_at.elapsed() <= Duration::from_secs(2),
+        "64-line checkpoint cancellation exceeded the 2s upper bound"
+    );
+    match result {
+        Ok(value) => assert!(
+            value.cancelled,
+            "running content search did not observe cancellation"
+        ),
+        Err(agentry_runtime::SearchError::Cancelled) => {}
+        Err(error) => panic!("running content search failed unexpectedly: {error}"),
+    }
+}
+
+#[test]
+fn running_path_cancellation_latency_is_bounded_v1() {
+    let cancellation = LeafCancellation::new(identity());
+    let worker_cancellation = cancellation.clone();
+    let snapshots = (0..200_000)
+        .map(|index| PathSnapshot {
+            standardized_full_path: format!("/root/Sources/Deep/Path/{index}/Model.swift"),
+            standardized_relative_path: format!("Sources/Deep/Path/{index}/Model.swift"),
+            standardized_root_path: "/root".into(),
+            client_display_path: format!("App/Sources/Deep/Path/{index}/Model.swift"),
+        })
+        .collect();
+    let (started_tx, started_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let leaf = SearchLeaf::new().unwrap();
+        started_tx.send(()).unwrap();
+        leaf.filter_paths(&PathFilterRequest {
+            snapshots,
+            clauses: vec![PathClause::Glob {
+                pattern: "**/NeverMatches-????????.swift".into(),
+                restricted_root_path: Some("/root".into()),
+            }],
+            case_insensitive: true,
+            cancellation: worker_cancellation,
+        })
+    });
+    started_rx.recv().unwrap();
+    thread::sleep(Duration::from_millis(5));
+    let cancelled_at = Instant::now();
+    cancellation.cancel();
+    let result = worker.join().unwrap();
+    assert!(
+        cancelled_at.elapsed() <= Duration::from_secs(2),
+        "per-snapshot checkpoint cancellation exceeded the 2s upper bound"
+    );
+    assert!(
+        result.cancelled,
+        "running path search did not observe cancellation"
+    );
+    assert!(result.visited_snapshot_count < 200_000);
+    assert!(result.matched_snapshot_indices.is_empty());
 }
 
 #[test]

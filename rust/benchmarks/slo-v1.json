@@ -49,12 +49,20 @@
     "await-tokio-task",
     "wait-for-queue-space"
   ],
-  "representativeFixtureKinds": [
-    "file-tree-batch",
-    "codemap",
-    "search-results",
-    "transcript"
-  ],
+  "fixtureTiers": {
+    "microBoundaryTaxInformational": [
+      "file-tree-batch",
+      "codemap",
+      "search-results",
+      "transcript"
+    ],
+    "representativeCutoverRequired": [
+      "representative-large-subject",
+      "representative-multi-file-batch",
+      "representative-match-density"
+    ]
+  },
+  "fixtureTierDecision": "Orchestrator decision completing the original G4 representative-workload intent. Micro fixtures remain measured against the unchanged 110%/125% ratios as informational FFI boundary-tax tracking; only the representative tier decides cutover.",
   "swiftBaseline": {
     "status": "captured",
     "requiredBefore": [
@@ -72,7 +80,7 @@
     "mayRelaxAbsoluteCaps": false,
     "referenceReport": {
       "path": "rust/benchmarks/results/v1/swift-search-reference.json",
-      "sha256": "7cb06ef6961b4f1f03cafc66cfd595caeb8749be3b6ae5853ce0ebfe7352e37d",
+      "sha256": "649f2915ca9c8c39db35f48510707e73bb25b4ddb8866017aec57b321ca26ac5",
       "sourceImplementation": "swift-search-pre-p1"
     },
     "candidateGate": {
@@ -81,7 +89,18 @@
       "jitActiveRequiredForEligiblePatterns": true,
       "mallocBytesMaximumReferenceRatio": 1.25,
       "peakRSSMaximumReferenceRatio": 1.25,
-      "wallP99MaximumReferenceRatio": 1.1
+      "wallP99MaximumReferenceRatio": 1.1,
+      "requiredRepresentativeFixtures": [
+        "representative-large-subject",
+        "representative-multi-file-batch",
+        "representative-match-density"
+      ],
+      "informationalBoundaryTaxFixtures": [
+        "file-tree-batch",
+        "codemap",
+        "search-results",
+        "transcript"
+      ]
     }
   }
 }

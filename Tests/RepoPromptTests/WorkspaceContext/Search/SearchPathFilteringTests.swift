@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 @testable import RepoPromptApp
 import XCTest
 
@@ -14,7 +15,10 @@ final class SearchPathFilteringTests: XCTestCase {
         )
     }
 
-    func testExactFileAndFolderMatchesRespectRestrictedRoots() {
+    func testExactFileAndFolderMatchesRespectRestrictedRoots() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        defer { Task { _ = try? await bridge.close() } }
+        let client = try await bridge.searchClient()
         let snapshots = [
             snapshot(root: rootA, relativePath: "Sources/App/View.swift"),
             snapshot(root: rootA, relativePath: "Sources/App/Model.swift"),
@@ -31,7 +35,8 @@ final class SearchPathFilteringTests: XCTestCase {
                 )
             ]
         )
-        XCTAssertEqual(filterPathIndicesResult(snapshots: snapshots, spec: exactFile).matchedSnapshotIndices, [1, 2])
+        let exactFileResult = try await filterPathIndicesResult(snapshots: snapshots, spec: exactFile, client: client)
+        XCTAssertEqual(exactFileResult.matchedSnapshotIndices, [1, 2])
 
         let exactFolder = SearchPathFilterSpec(
             caseInsensitive: true,
@@ -43,10 +48,14 @@ final class SearchPathFilteringTests: XCTestCase {
                 )
             ]
         )
-        XCTAssertEqual(filterPathIndicesResult(snapshots: snapshots, spec: exactFolder).matchedSnapshotIndices, [0, 1])
+        let exactFolderResult = try await filterPathIndicesResult(snapshots: snapshots, spec: exactFolder, client: client)
+        XCTAssertEqual(exactFolderResult.matchedSnapshotIndices, [0, 1])
     }
 
-    func testGlobMatchesDisplayRelativeAndFullPaths() {
+    func testGlobMatchesDisplayRelativeAndFullPaths() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        defer { Task { _ = try? await bridge.close() } }
+        let client = try await bridge.searchClient()
         let snapshots = [
             snapshot(root: rootA, relativePath: "Sources/App/View.swift", displayPath: "App/Sources/App/View.swift"),
             snapshot(root: rootA, relativePath: "Sources/Domain/Model.swift", displayPath: "App/Sources/Domain/Model.swift"),
@@ -62,13 +71,16 @@ final class SearchPathFilteringTests: XCTestCase {
             ]
         )
 
-        let result = filterPathIndicesResult(snapshots: snapshots, spec: spec)
+        let result = try await filterPathIndicesResult(snapshots: snapshots, spec: spec, client: client)
         XCTAssertEqual(result.matchedSnapshotIndices, [0, 1, 2])
         XCTAssertEqual(result.visitedSnapshotCount, 3)
         XCTAssertFalse(result.cancelled)
     }
 
-    func testLegacyPrefixMatchesDisplayPathAndDeduplicatesInInputOrder() {
+    func testLegacyPrefixMatchesDisplayPathAndDeduplicatesInInputOrder() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        defer { Task { _ = try? await bridge.close() } }
+        let client = try await bridge.searchClient()
         let snapshots = [
             snapshot(root: rootA, relativePath: "Sources/App/View.swift", displayPath: "App/Sources/App/View.swift"),
             snapshot(root: rootA, relativePath: "Sources/App/Model.swift", displayPath: "App/Sources/App/Model.swift"),
@@ -83,15 +95,19 @@ final class SearchPathFilteringTests: XCTestCase {
             ]
         )
 
-        let result = filterPathIndicesResult(snapshots: snapshots, spec: spec)
+        let result = try await filterPathIndicesResult(snapshots: snapshots, spec: spec, client: client)
         XCTAssertEqual(result.matchedSnapshotIndices, [0, 1])
-        XCTAssertEqual(filterPaths(snapshots: snapshots, spec: spec), [
+        let fullPaths = try await filterPaths(snapshots: snapshots, spec: spec, client: client)
+        XCTAssertEqual(fullPaths, [
             "\(rootA)/Sources/App/View.swift",
             "\(rootA)/Sources/App/Model.swift"
         ])
     }
 
-    func testCancelledTaskReportsCancellationMetadata() async {
+    func testCancelledTaskReportsCancellationMetadata() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        defer { Task { _ = try? await bridge.close() } }
+        let client = try await bridge.searchClient()
         let snapshots = (0 ..< 50000).map { index in
             snapshot(root: rootA, relativePath: "Sources/File\(index).swift")
         }
@@ -104,11 +120,11 @@ final class SearchPathFilteringTests: XCTestCase {
         let task = Task.detached(priority: .background) {
             // Shared cancellation gate resumes with CancellationError; continue into filter.
             try? await cancellationGate.waitUntilCancelled()
-            return filterPathIndicesResult(snapshots: snapshots, spec: spec)
+            return try await filterPathIndicesResult(snapshots: snapshots, spec: spec, client: client)
         }
         await cancellationGate.waitUntilEntered()
         task.cancel()
-        let result = await task.value
+        let result = try await task.value
 
         XCTAssertTrue(result.cancelled)
         XCTAssertEqual(result.visitedSnapshotCount, 0)

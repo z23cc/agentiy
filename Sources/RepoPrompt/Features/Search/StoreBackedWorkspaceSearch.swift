@@ -365,15 +365,12 @@ enum StoreBackedWorkspaceSearch {
                     clientDisplayPath: clientDisplayPath
                 )
             }
-            let filterTask = Task.detached(priority: .userInitiated) { [snapshots, spec = parsed.spec] in
-                filterPathIndicesResult(snapshots: snapshots, spec: spec)
-            }
-            if Task.isCancelled { filterTask.cancel() }
-            let filterResult = await withTaskCancellationHandler {
-                await filterTask.value
-            } onCancel: {
-                filterTask.cancel()
-            }
+            let searchClient = try await AgentryCoreService.shared.searchClient()
+            let filterResult = try await filterPathIndicesResult(
+                snapshots: snapshots,
+                spec: parsed.spec,
+                client: searchClient
+            )
             if filterResult.cancelled || Task.isCancelled {
                 throw CancellationError()
             }

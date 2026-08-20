@@ -132,6 +132,43 @@ public struct CoreRegexSearchRequest: Sendable, Equatable {
     }
 }
 
+public struct CoreRegexSearchBatchRequest: Sendable, Equatable {
+    public let mode: CoreRegexSearchMode
+    public let pattern: String
+    public let subjects: [String]
+    public let caseInsensitive: Bool
+    public let wholeWord: Bool
+    public let multilineAnchors: Bool
+    public let collectMatches: Bool
+    public let maxCollectedMatches: UInt32?
+    public let contextLines: UInt16
+    public let matchPolicy: CoreMatchPolicy
+
+    public init(
+        mode: CoreRegexSearchMode = .content,
+        pattern: String,
+        subjects: [String],
+        caseInsensitive: Bool = false,
+        wholeWord: Bool = false,
+        multilineAnchors: Bool = false,
+        collectMatches: Bool = true,
+        maxCollectedMatches: UInt32? = nil,
+        contextLines: UInt16 = 0,
+        matchPolicy: CoreMatchPolicy = .contentFullBuffer
+    ) {
+        self.mode = mode
+        self.pattern = pattern
+        self.subjects = subjects
+        self.caseInsensitive = caseInsensitive
+        self.wholeWord = wholeWord
+        self.multilineAnchors = multilineAnchors
+        self.collectMatches = collectMatches
+        self.maxCollectedMatches = maxCollectedMatches
+        self.contextLines = contextLines
+        self.matchPolicy = matchPolicy
+    }
+}
+
 public struct CoreRegexLineHit: Sendable, Equatable {
     public let lineNumber: UInt32
     public let lineByteRange: CoreByteRange
@@ -170,6 +207,53 @@ public struct CoreRegexSearchResult: Sendable, Equatable {
         self.matchingLineCount = matchingLineCount
         self.cancelled = cancelled
         self.diagnostic = diagnostic
+    }
+}
+
+public struct CoreCompactRegexSubjectSummary: Sendable, Equatable {
+    public let lineRangeStart: UInt64
+    public let lineRangeCount: UInt64
+    public let hitStart: UInt64
+    public let hitCount: UInt64
+    public let matchingLineCount: UInt64
+    public let cancelled: Bool
+    public let diagnostic: CoreRegexDiagnostic
+
+    public init(
+        lineRangeStart: UInt64,
+        lineRangeCount: UInt64,
+        hitStart: UInt64,
+        hitCount: UInt64,
+        matchingLineCount: UInt64,
+        cancelled: Bool,
+        diagnostic: CoreRegexDiagnostic
+    ) {
+        self.lineRangeStart = lineRangeStart
+        self.lineRangeCount = lineRangeCount
+        self.hitStart = hitStart
+        self.hitCount = hitCount
+        self.matchingLineCount = matchingLineCount
+        self.cancelled = cancelled
+        self.diagnostic = diagnostic
+    }
+}
+
+public struct CoreCompactRegexBatchResult: Sendable, Equatable {
+    public static let lineRangeStride = 2
+    public static let hitStride = 6
+
+    public let subjectSummaries: [CoreCompactRegexSubjectSummary]
+    public let lineRangeWords: [UInt64]
+    public let hitWords: [UInt64]
+
+    public init(
+        subjectSummaries: [CoreCompactRegexSubjectSummary],
+        lineRangeWords: [UInt64],
+        hitWords: [UInt64]
+    ) {
+        self.subjectSummaries = subjectSummaries
+        self.lineRangeWords = lineRangeWords
+        self.hitWords = hitWords
     }
 }
 
@@ -349,6 +433,85 @@ public struct CoreSearchClient: Sendable {
         }
     }
 
+    public func searchRegexBatch(
+        _ request: CoreRegexSearchBatchRequest
+    ) async throws -> [CoreRegexSearchResult] {
+        guard !request.subjects.isEmpty else { return [] }
+        let context = try await bridge.prepareSearchOperation()
+        defer { try? context.transport.closeLeafCancellation(context.cancellation, identity: context.identity) }
+        do {
+            let results = try await withTaskCancellationHandler {
+                if Task.isCancelled {
+                    try? context.transport.cancelLeafCancellation(context.cancellation, identity: context.identity)
+                    throw CancellationError()
+                }
+                return try await Task.detached(priority: nil) {
+                    try context.transport.searchRegexBatch(
+                        identity: context.identity,
+                        cancellation: context.cancellation,
+                        request: request
+                    )
+                }.value
+            } onCancel: {
+                try? context.transport.cancelLeafCancellation(context.cancellation, identity: context.identity)
+            }
+            if Task.isCancelled || results.contains(where: \.cancelled) {
+                throw CancellationError()
+            }
+            guard results.count == request.subjects.count else {
+                throw CoreSearchError.malformedRange
+            }
+            for (result, subject) in zip(results, request.subjects) {
+                try Self.validate(result, subject: subject)
+            }
+            try context.transport.closeLeafCancellation(context.cancellation, identity: context.identity)
+            try await bridge.validateSearchCompletion(identity: context.identity)
+            return results
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw await bridge.mapSearchFailure(error)
+        }
+    }
+
+    public func searchRegexBatchCompactV1(
+        _ request: CoreRegexSearchBatchRequest
+    ) async throws -> CoreCompactRegexBatchResult {
+        guard !request.subjects.isEmpty else {
+            return CoreCompactRegexBatchResult(subjectSummaries: [], lineRangeWords: [], hitWords: [])
+        }
+        let context = try await bridge.prepareSearchOperation()
+        defer { try? context.transport.closeLeafCancellation(context.cancellation, identity: context.identity) }
+        do {
+            let result = try await withTaskCancellationHandler {
+                if Task.isCancelled {
+                    try? context.transport.cancelLeafCancellation(context.cancellation, identity: context.identity)
+                    throw CancellationError()
+                }
+                return try await Task.detached(priority: nil) {
+                    try context.transport.searchRegexBatchCompactV1(
+                        identity: context.identity,
+                        cancellation: context.cancellation,
+                        request: request
+                    )
+                }.value
+            } onCancel: {
+                try? context.transport.cancelLeafCancellation(context.cancellation, identity: context.identity)
+            }
+            if Task.isCancelled || result.subjectSummaries.contains(where: \.cancelled) {
+                throw CancellationError()
+            }
+            try Self.validate(result, subjects: request.subjects)
+            try context.transport.closeLeafCancellation(context.cancellation, identity: context.identity)
+            try await bridge.validateSearchCompletion(identity: context.identity)
+            return result
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw await bridge.mapSearchFailure(error)
+        }
+    }
+
     public func filterPaths(_ request: CorePathFilterRequest) async throws -> CorePathFilterResult {
         let context = try await bridge.prepareSearchOperation()
         defer { try? context.transport.closeLeafCancellation(context.cancellation, identity: context.identity) }
@@ -404,6 +567,135 @@ public struct CoreSearchClient: Sendable {
             return indices
         } catch {
             throw await bridge.mapSearchFailure(error)
+        }
+    }
+
+    private static func validate(
+        _ result: CoreCompactRegexBatchResult,
+        subjects: [String]
+    ) throws {
+        guard result.lineRangeWords.count.isMultiple(of: CoreCompactRegexBatchResult.lineRangeStride),
+              result.hitWords.count.isMultiple(of: CoreCompactRegexBatchResult.hitStride),
+              result.subjectSummaries.count == subjects.count
+        else {
+            throw CoreSearchError.malformedRange
+        }
+        let totalLineRanges = result.lineRangeWords.count / CoreCompactRegexBatchResult.lineRangeStride
+        let totalHits = result.hitWords.count / CoreCompactRegexBatchResult.hitStride
+        var expectedLineStart = 0
+        var expectedHitStart = 0
+
+        for (summary, subject) in zip(result.subjectSummaries, subjects) {
+            guard let lineStart = Int(exactly: summary.lineRangeStart),
+                  let lineCount = Int(exactly: summary.lineRangeCount),
+                  let hitStart = Int(exactly: summary.hitStart),
+                  let hitCount = Int(exactly: summary.hitCount),
+                  lineStart == expectedLineStart,
+                  hitStart == expectedHitStart,
+                  lineCount <= totalLineRanges - lineStart,
+                  hitCount <= totalHits - hitStart,
+                  summary.matchingLineCount >= summary.hitCount,
+                  summary.diagnostic.subjectByteCount == UInt64(subject.utf8.count),
+                  summary.diagnostic.hitCount == summary.hitCount,
+                  summary.diagnostic.matchingLineCount == summary.matchingLineCount,
+                  summary.diagnostic.cancelled == summary.cancelled
+            else {
+                throw CoreSearchError.malformedRange
+            }
+
+            let lineWordStart = lineStart * CoreCompactRegexBatchResult.lineRangeStride
+            let lineWordEnd = (lineStart + lineCount) * CoreCompactRegexBatchResult.lineRangeStride
+            try validateSelectedLineWords(result.lineRangeWords[lineWordStart ..< lineWordEnd], in: subject)
+
+            let hitWordStart = hitStart * CoreCompactRegexBatchResult.hitStride
+            let hitWordEnd = (hitStart + hitCount) * CoreCompactRegexBatchResult.hitStride
+            try validateHitWords(
+                result.hitWords[hitWordStart ..< hitWordEnd],
+                lineWords: result.lineRangeWords[lineWordStart ..< lineWordEnd],
+                lineCount: lineCount,
+                subject: subject
+            )
+            expectedLineStart += lineCount
+            expectedHitStart += hitCount
+        }
+        guard expectedLineStart == totalLineRanges, expectedHitStart == totalHits else {
+            throw CoreSearchError.malformedRange
+        }
+    }
+
+    private static func validateSelectedLineWords(
+        _ words: ArraySlice<UInt64>,
+        in subject: String
+    ) throws {
+        let utf8 = subject.utf8
+        var cursor = utf8.startIndex
+        var cursorOffset = 0
+        var previous: CoreByteRange?
+        for index in stride(from: words.startIndex, to: words.endIndex, by: 2) {
+            let range = CoreByteRange(start: words[index], end: words[index + 1])
+            guard range.start <= range.end,
+                  let start = Int(exactly: range.start),
+                  let end = Int(exactly: range.end),
+                  start >= cursorOffset,
+                  end <= utf8.count,
+                  previous.map({ ($0.start, $0.end) < (range.start, range.end) && $0.end <= range.start }) ?? true
+            else {
+                throw CoreSearchError.malformedRange
+            }
+            utf8.formIndex(&cursor, offsetBy: start - cursorOffset)
+            guard cursor.samePosition(in: subject) != nil else { throw CoreSearchError.malformedRange }
+            utf8.formIndex(&cursor, offsetBy: end - start)
+            guard cursor.samePosition(in: subject) != nil else { throw CoreSearchError.malformedRange }
+            cursorOffset = end
+            previous = range
+        }
+    }
+
+    private static func validateHitWords(
+        _ words: ArraySlice<UInt64>,
+        lineWords: ArraySlice<UInt64>,
+        lineCount: Int,
+        subject: String
+    ) throws {
+        let utf8 = subject.utf8
+        var cursor = utf8.startIndex
+        var cursorOffset = 0
+        var previousLineNumber: UInt64?
+        var previousSelectedLineIndex: UInt64?
+        for index in stride(from: words.startIndex, to: words.endIndex, by: 6) {
+            let lineNumber = words[index]
+            let selectedLineIndex = words[index + 1]
+            let matchStart = words[index + 2]
+            let matchEnd = words[index + 3]
+            let beforeCount = words[index + 4]
+            let afterCount = words[index + 5]
+            guard let selected = Int(exactly: selectedLineIndex),
+                  selected < lineCount,
+                  beforeCount <= selectedLineIndex,
+                  afterCount < UInt64(lineCount) - selectedLineIndex,
+                  matchStart <= matchEnd,
+                  let start = Int(exactly: matchStart),
+                  let end = Int(exactly: matchEnd),
+                  start >= cursorOffset,
+                  end <= utf8.count,
+                  previousLineNumber.map({ $0 < lineNumber }) ?? true,
+                  previousSelectedLineIndex.map({ $0 < selectedLineIndex }) ?? true
+            else {
+                throw CoreSearchError.malformedRange
+            }
+            let lineWordIndex = lineWords.startIndex + selected * 2
+            guard lineWords[lineWordIndex] <= matchStart,
+                  matchStart <= lineWords[lineWordIndex + 1]
+            else {
+                throw CoreSearchError.malformedRange
+            }
+            utf8.formIndex(&cursor, offsetBy: start - cursorOffset)
+            guard cursor.samePosition(in: subject) != nil else { throw CoreSearchError.malformedRange }
+            utf8.formIndex(&cursor, offsetBy: end - start)
+            guard cursor.samePosition(in: subject) != nil else { throw CoreSearchError.malformedRange }
+            cursorOffset = end
+            previousLineNumber = lineNumber
+            previousSelectedLineIndex = selectedLineIndex
         }
     }
 

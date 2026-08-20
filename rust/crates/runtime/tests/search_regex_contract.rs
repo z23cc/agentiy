@@ -236,6 +236,83 @@ fn five_fast_plans_and_general_pcre2_v1() {
 }
 
 #[test]
+fn prepared_batch_single_subject_is_byte_identical_v1() {
+    let single_leaf = SearchLeaf::new().unwrap();
+    let batch_leaf = SearchLeaf::new().unwrap();
+    let value = request("target", "before\ntarget\nafter");
+    let single = single_leaf.search_regex(&value).unwrap();
+    let batch = batch_leaf
+        .search_regex_batch(std::slice::from_ref(&value))
+        .unwrap();
+    assert_eq!(batch, vec![single]);
+}
+
+fn compact_ranges(words: &[u64]) -> Vec<(u64, u64)> {
+    words.chunks_exact(2).map(|word| (word[0], word[1])).collect()
+}
+
+#[test]
+fn compact_batch_layout_empty_and_sparse_v1() {
+    let leaf = SearchLeaf::new().unwrap();
+    let requests = [request("target", ""), request("target", "a\ntarget\nz")];
+    let result = leaf.search_regex_batch_compact(&requests).unwrap();
+    assert_eq!(result.subject_summaries.len(), 2);
+    assert_eq!(result.subject_summaries[0].line_range_count, 0);
+    assert_eq!(result.subject_summaries[0].hit_count, 0);
+    assert_eq!(result.subject_summaries[1].line_range_start, 0);
+    assert_eq!(result.subject_summaries[1].line_range_count, 1);
+    assert_eq!(result.subject_summaries[1].hit_start, 0);
+    assert_eq!(result.subject_summaries[1].hit_count, 1);
+    assert_eq!(compact_ranges(&result.line_range_words), vec![(2, 8)]);
+    assert_eq!(result.hit_words, vec![1, 0, 2, 8, 0, 0]);
+}
+
+#[test]
+fn compact_batch_layout_overlapping_context_v1() {
+    let leaf = SearchLeaf::new().unwrap();
+    let mut value = request("hit", "a\nb\nhit\nd\nhit\nf");
+    value.context_lines = 2;
+    let result = leaf.search_regex_batch_compact(&[value]).unwrap();
+    let summary = &result.subject_summaries[0];
+    assert_eq!(summary.line_range_count, 6);
+    assert_eq!(compact_ranges(&result.line_range_words).len(), 6);
+    assert_eq!(result.hit_words, vec![2, 2, 4, 7, 2, 2, 4, 4, 10, 13, 2, 1]);
+}
+
+#[test]
+fn compact_batch_collection_cap_v1() {
+    let leaf = SearchLeaf::new().unwrap();
+    let mut value = request("x", "x\nx\nx");
+    value.max_collected_matches = Some(1);
+    let result = leaf.search_regex_batch_compact(&[value]).unwrap();
+    let summary = &result.subject_summaries[0];
+    assert_eq!(summary.matching_line_count, 3);
+    assert_eq!(summary.hit_count, 1);
+    assert_eq!(summary.diagnostic.matching_line_count, 3);
+    assert_eq!(summary.diagnostic.hit_count, 1);
+    assert_eq!(result.hit_words.len(), 6);
+}
+
+#[test]
+fn compact_batch_subject_alignment_v1() {
+    let leaf = SearchLeaf::new().unwrap();
+    let requests = [
+        request("hit", "hit"),
+        request("hit", "none"),
+        request("hit", "before\nhit"),
+    ];
+    let result = leaf.search_regex_batch_compact(&requests).unwrap();
+    assert_eq!(result.subject_summaries.len(), requests.len());
+    assert_eq!(result.subject_summaries[0].hit_count, 1);
+    assert_eq!(result.subject_summaries[1].hit_count, 0);
+    assert_eq!(result.subject_summaries[2].hit_count, 1);
+    assert_eq!(result.subject_summaries[0].hit_start, 0);
+    assert_eq!(result.subject_summaries[1].hit_start, 1);
+    assert_eq!(result.subject_summaries[2].hit_start, 1);
+    assert_eq!(result.subject_summaries[2].line_range_start, 1);
+}
+
+#[test]
 fn regex_cache_v1() {
     let leaf = SearchLeaf::new().unwrap();
     let first = leaf.search_regex(&request("cache", "cache")).unwrap();

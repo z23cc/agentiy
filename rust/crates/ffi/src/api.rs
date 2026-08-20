@@ -4,10 +4,12 @@ use crate::generated::contract_identity::{
 };
 use crate::panic_guard::PanicGuard;
 use crate::types::{
-    AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope, CoreConfig,
-    CoreHandshake, DrainBatch, FolderSuffixRequest, HostResponse, OperationState, OversizeEvent,
-    PathFilterRequest, PathFilterResult, RegexSearchRequest, RegexSearchResult, RuntimeEvent,
-    RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
+    AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope, CompactRegexBatchResult,
+    CoreConfig, CoreHandshake, DrainBatch, FolderSuffixRequest, HostResponse, OperationState,
+    OversizeEvent,
+    PathFilterRequest, PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest,
+    RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap,
+    SubscriptionId, SubscriptionScope,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -336,7 +338,55 @@ impl CoreRuntime {
             }
             Ok(self
                 .search_leaf
-                .search_regex(&request.runtime_request())?
+                .search_regex(&request.into_runtime_request())?
+                .into())
+        })
+    }
+
+    pub fn search_regex_batch(
+        &self,
+        request: RegexSearchBatchRequest,
+    ) -> Result<Vec<RegexSearchResult>, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            let requests = request.into_runtime_requests();
+            Ok(self
+                .search_leaf
+                .search_regex_batch(&requests)?
+                .into_iter()
+                .map(Into::into)
+                .collect())
+        })
+    }
+
+    pub fn search_regex_batch_compact_v1(
+        &self,
+        request: RegexSearchBatchRequest,
+    ) -> Result<CompactRegexBatchResult, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            let requests = request.into_runtime_requests();
+            Ok(self
+                .search_leaf
+                .search_regex_batch_compact(&requests)?
                 .into())
         })
     }

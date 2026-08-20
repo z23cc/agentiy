@@ -1,6 +1,18 @@
 use std::collections::HashSet;
 
-use super::{RepairKind, SearchError};
+use super::cache::CachedRegex;
+use super::fast_plans::FastPlan;
+use super::{EngineKind, JitStatus, LimitPolicy, RepairKind, SearchError};
+
+pub(crate) struct PreparedSearch {
+    pub(crate) policy: LimitPolicy,
+    pub(crate) fast_plan: Option<FastPlan>,
+    pub(crate) engine: EngineKind,
+    pub(crate) compiled: Option<CachedRegex>,
+    pub(crate) jit_status: JitStatus,
+    pub(crate) cache_hit: bool,
+    pub(crate) repair_kind: RepairKind,
+}
 
 const MAX_PATTERN_CHARS: usize = 2_000;
 const MAX_CAPTURE_GROUPS: usize = 250;
