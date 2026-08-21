@@ -85,3 +85,9 @@ The cutover constraint binds `representative-large-subject` (one realistic sourc
 ## Cutover gate
 
 All matrix rows must name an executable test and carry passing evidence. The known-drift section must still contain only the two operational items above unless a separately reviewed old-bug proof changes the contract. Any unexplained mismatch, unbounded cancellation latency, JIT initialization failure, malformed range, or fallback to Swift/C blocks cutover.
+
+## G4 measurement closeout (2026-08-21)
+
+The representative same-semantics measurement is closed using the cargo-first authoritative harness (`rust/benchmarks/results/v1/rust-search-cargo-floors-v1.json`, HEAD `db53cf09`, 5 process runs, JIT active, full hits+context). Rust core search (A layer) and the FFI frontier both run at p99 ~0.06-0.10 ms across `representative-large-subject`, `representative-multi-file-batch`, and `representative-match-density` — an order of magnitude under the frozen runtime caps.
+
+The earlier `swift-search-reference.json` captured firstMatch semantics (stop at first hit per subject) whereas production and the candidate perform full-scan hits+context; the two are not load-comparable, so the Swift reference is superseded rather than used for a ratio. No SLO cap or ratio was relaxed. The full-stack Swift release harness remains reserved for a single final release-boundary confirmation and is not part of the day-to-day iteration loop.

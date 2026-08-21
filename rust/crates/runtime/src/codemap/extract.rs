@@ -50,6 +50,24 @@ fn line(source: &str, row: usize) -> &str {
     source.lines().nth(row).unwrap_or("")
 }
 
+/// The single-line, un-embellished declaration text: always just the
+/// signature (name/params/return type), never a function body. This is the
+/// only text that should feed `signature_details` (parameter/return-type
+/// parsing) -- see `declaration_line` for the rendering-only variant that
+/// may append extra body text for known Swift-parity golden quirks.
+fn clean_declaration_line(source: &str, capture: &Capture, language: CodeMapLanguage) -> String {
+    let raw = line(source, capture.start_row).trim();
+    if let Some(index) = raw.rfind(" {") {
+        return raw[..index].trim_end().to_owned();
+    }
+    let value = raw.trim_end_matches('{').trim_end();
+    if matches!(language, CodeMapLanguage::TypeScript | CodeMapLanguage::Tsx) {
+        value.trim_end_matches(';').to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
 fn declaration_line(source: &str, capture: &Capture, language: CodeMapLanguage) -> String {
     let raw = line(source, capture.start_row).trim();
     if language == CodeMapLanguage::Ruby && capture.end_row > capture.start_row {
@@ -62,20 +80,20 @@ fn declaration_line(source: &str, capture: &Capture, language: CodeMapLanguage) 
             return lines.join("\n").trim().to_owned();
         }
     }
-    if let Some(index) = raw.rfind(" {") {
-        if language == CodeMapLanguage::Rust && raw.contains("fn fmt(") {
-            if let Some(body) = source.lines().nth(capture.start_row + 1) {
-                return format!("{} {{\n {}", raw[..index].trim_end(), body.trim());
-            }
+    // NOTE: this branch intentionally reproduces a known legacy Swift
+    // extractor quirk (leaking the first body line into the rendered
+    // `definitionLine` for single-statement `fn fmt(...)` bodies) so the
+    // committed `rs_smoke.codemap.txt` golden stays byte-identical. It must
+    // NOT be used to derive `parameters`/`returnType` -- use
+    // `clean_declaration_line` for that. See
+    // docs/architecture/rust-codemap-compact-v1.md (Step 12 parity matrix).
+    if raw.rfind(" {").is_some() && language == CodeMapLanguage::Rust && raw.contains("fn fmt(") {
+        if let Some(body) = source.lines().nth(capture.start_row + 1) {
+            let index = raw.rfind(" {").expect("checked above");
+            return format!("{} {{\n {}", raw[..index].trim_end(), body.trim());
         }
-        return raw[..index].trim_end().to_owned();
     }
-    let value = raw.trim_end_matches('{').trim_end();
-    if matches!(language, CodeMapLanguage::TypeScript | CodeMapLanguage::Tsx) {
-        value.trim_end_matches(';').to_owned()
-    } else {
-        value.to_owned()
-    }
+    clean_declaration_line(source, capture, language)
 }
 
 fn capture_contained(outer: &Capture, inner: &Capture) -> bool {
@@ -498,7 +516,8 @@ pub fn extract_artifact(
                 if !seen_function_lines.insert(key) {
                     continue;
                 }
-                let (parameters, return_type) = signature_details(language, &declaration);
+                let signature_source = clean_declaration_line(source, capture, language);
+                let (parameters, return_type) = signature_details(language, &signature_source);
                 for ty in parameters
                     .iter()
                     .filter_map(|value| value.type_name.as_deref())

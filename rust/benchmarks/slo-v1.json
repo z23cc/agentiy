@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "status": "absolute-caps-frozen-swift-baseline-captured",
+  "status": "absolute-caps-frozen; representative same-semantics measurement closed via cargo-first floors (rust-search-cargo-floors-v1.json, HEAD db53cf09); swift firstMatch reference superseded",
   "environment": {
     "architecture": "aarch64",
     "target": "aarch64-apple-darwin",

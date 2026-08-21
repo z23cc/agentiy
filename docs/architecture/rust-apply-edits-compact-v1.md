@@ -165,3 +165,99 @@ Required parity is 100% for updated UTF-8 bytes and correctness semantics. Targe
 - Single/rewrite outcomes are `nil`. Diff-path batch outcomes are present regardless of verbosity. Literal-fast-path batch outcomes are present only when verbose, preserving current Swift behavior. When present, outcome indices are contiguous and success count equals `editsApplied`.
 - Presentation-only differential fixtures must be individually named before integration; wildcard drift allowlists remain forbidden.
 - P2-4 must add the generated FFI DTOs, Bridge single-pass validator/materializer, codegen drift check, and source-layout documentation registration if the guard requires it.
+
+
+## Step 12 batch differential: parity matrix and step-13 verdict
+
+Evidence: `Tests/RepoPromptTests/MCP/ApplyEdits/ApplyEditsRustSwiftDifferentialTests.swift` runs the
+legacy Swift `ApplyEditsEngine.default` and the production Rust seam `RustApplyEditsComputer` (real
+`AgentryCoreBridge` runtime, no mocking) over 16 fixtures spanning rewrite/single/batch,
+replace-all, escape-fallback, ambiguity, partial success, literal fast-path, indentation
+conversion, CRLF, Unicode, and two fuzzy near-misses (multi-line and single-line). Both engines'
+`apply(request:to:options:)` share the identical `ApplyEditsComputing` protocol, so this is a direct
+differential, not an approximation. Both success and thrown-error paths are captured as
+`Result<ApplyEditsResult, Error>` on both sides so single-mode's `throw`-on-unmatched/ambiguous
+behavior (vs batch-mode's `.failed` status with `outcomes`) is not silently skipped by a
+happy-path-only comparison.
+
+**12/16 fixtures: exact match** on every strict field (`updatedText`, `status`,
+`editsRequested`/`editsApplied`, `note`, `outcomes[].index/status/error`, `stats.linesChanged`,
+`stats` nil-vs-non-nil, error classification `invalidParams`/`internalError`): `rewrite_basic`,
+`single_basic`, `single_escaped_search_fallback`, `single_replace_all`, `batch_literal_fastpath`,
+`batch_unmatched_failed`, `batch_diff_success`, `batch_diff_partial_ambiguity`,
+`batch_replace_all_multi`, `crlf_line_endings`, `unicode_content`, `fuzzy_near_miss_single_line`.
+
+**Allowed drift is recorded per fixture, not blanket-excluded.** `diffChunks` shape (count,
+`startLine`, addition/removal/context type sequence) and `stats.chunks` are documented allowed
+drift (plan §3.10), but the differential still *measures and names* every instance rather than
+skipping the comparison outright -- satisfying "每个漂移必须进入具名 fixture allowlist，记录
+Swift/Rust 输出" instead of a wildcard exclusion. Two of the three drifting fixtures are genuinely
+harmless; the third is a symptom of a real defect, not independent drift -- see below.
+
+**Certified harmless** (chunk-shape/grouping differs, but `updatedText` and `stats.linesChanged` are
+identical -- the plan's required "automatic proof"):
+
+| Fixture | Field | Swift | Rust |
+| --- | --- | --- | --- |
+| `batch_diff_success` | `stats.chunks` | `2` | `1` |
+| `batch_diff_success` | `diffChunks.count` | `2` | `1` |
+| `crlf_line_endings` | `diffChunks[0].startLine` | `0` | `1` |
+| `crlf_line_endings` | `diffChunks[0]` line-type sequence | `[context, removal, addition]` | `[removal, addition]` |
+
+**Not independent drift -- a symptom of the indentation defect below** (this fixture's `updatedText`
+already fails strict comparison, so the "automatic proof" does not apply; different indentation
+almost certainly produces different chunk boundaries/context as a downstream effect of the same
+root cause, not a separately-harmless difference):
+
+| Fixture | Field | Swift | Rust |
+| --- | --- | --- | --- |
+| `indentation_tabs_file_spaces_edit` | `diffChunks[0].startLine` | `0` | `1` |
+| `indentation_tabs_file_spaces_edit` | `diffChunks[0]` line-type sequence | `[context, removal, addition]` | `[removal, addition]` |
+
+### Mismatches (4/16 fixtures)
+
+| Fixture | Field | Swift | Rust | Disposition | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `single_unmatched_throws`, `single_ambiguous_throws`, `fuzzy_near_miss_missing_semicolon` | `invalidParams` message text (classification matches on all three) | `"search block not found in file"` / `"Search text matches multiple locations (lines 1, 2)...."` | `"invalid compute request"` (identical generic text on all three) | **rust-defect (FFI contract gap), one root cause** | `CoreTransportError.applyEditsInvalidParams` (`Sources/AgentryCoreBridge/CoreBridge.swift:1072`) is a message-less generated FFI error case -- the Rust core's specific diagnostic never crosses the FFI boundary for the single-edit throw path, unlike batch-mode's `outcomes[].error`, which *is* transmitted and matched exactly on `batch_unmatched_failed`/`batch_diff_partial_ambiguity`. Fixing this needs a UniFFI/FFI contract change (add a message payload to the generated error case) plus Rust-side wiring to populate it -- an engineer task with a defined target, not a maintainer spec call. Plan §3.10 lists "ambiguity/replace-all 匹配集合" as strict, and losing the matched-line-number detail is a real information-loss regression for the calling agent, not cosmetic wording. |
+| `indentation_tabs_file_spaces_edit` | `updatedText` (+ its two chunk-shape drift rows above, as a symptom) | `"func f() {\n\tlet a = 10\n\tlet b = 2\n}\n"` | `"func f() {\n    let a = 10\n\tlet b = 2\n}\n"` | **rust-defect (feature port needed)** | Not ambiguous: Swift's `ApplyEditsEngine` deliberately detects the file's dominant indentation style (`String.detectIndentationTypeFromLines`, tabs here from `\tlet b = 2`) and re-encodes the replacement text (`encodeIndentationWithConversion`) to match it before applying. `RustApplyEditsComputer` applies the replacement text verbatim, leaving mixed tab/space indentation. This changes `updatedText` bytes, explicitly strict per plan §3.10 -- it is a missing feature in the Rust engine with a clear target (port the Swift indentation-detection/re-encode pipeline), not a design question. Not fixed this pass: it is a real pipeline port, not a contained bug. |
+
+### Coverage gaps in this fixture set (neither pass nor fail evidence)
+
+- **`internalError` classification is unexercised.** Plan §3.10 lists `invalidParams`/`internalError`
+  classification as strict, but no fixture in this set naturally reaches `ApplyEditsError.internalError`
+  through the default engine/computer (the one Swift-side trigger, an empty-chunk-generator injection
+  in `ApplyEditsCoreRecoveryTests`, is a test-only seam, not a normally reachable request shape). This
+  is a coverage gap in this pass's fixture set, not evidence of parity either way.
+- **Fuzzy-probe path engagement is inferred, not directly observed.** `fuzzy_near_miss_single_line`
+  (search `"computeSum(value)"` against source containing `"computeSum(values)"`, no exact literal
+  match) produced an identical `updatedText` on both engines, and by elimination neither side threw
+  (a throw would have surfaced as a message mismatch or a success/failure asymmetry). That is solid
+  evidence the two engines agree on this near-miss shape. Whether both sides actually routed through
+  `DiffGenerationUtility`'s bi-gram Dice fuzzy probe specifically (rather than some other path) was
+  not directly confirmed: that code path's diagnostic `print("🔍 Fuzzy probe ...")` statements are
+  gated behind `enableDetailedLogging`, which this run did not enable, so their absence from the test
+  log is inconclusive rather than negative evidence. Broader fuzzy-threshold-boundary coverage (near
+  the 0.90 Dice cutoff, multi-candidate ties) also remains unexercised.
+
+### Step 13 verdict: **NO-GO**
+
+Step 13 (delete the legacy Swift apply-edits algorithm) is **not** cleared by this pass:
+
+1. Single-mode thrown-error messages lose the ambiguity/not-found diagnostic detail across the FFI
+   boundary (all three `invalidParams`-message mismatches share this one root cause: a message-less
+   generated error case). This is explicitly a strict field per plan §3.10 ("ambiguity/replace-all
+   匹配集合"), and it needs an FFI contract change, not a query/mapping tweak.
+2. Indentation-style auto-conversion (`updatedText` bytes, strict) is not reproduced by the Rust
+   engine -- a real, well-defined feature gap, not presentation-only drift, and it also produces the
+   chunk-shape drift on that same fixture as a downstream symptom.
+
+Fuzzy near-miss parity is evidenced as matching for the one shape directly tested (`updatedText`
+identical); the specific code path taken to get there was not independently confirmed, and
+threshold-boundary coverage remains open -- neither is a blocker on its own, but both are listed so
+a future pass does not read "12/16 pass" as broader fuzzy coverage than what was actually measured.
+
+**No wildcard allowlist was used or is proposed.** All 4 named mismatches, and all 6 named
+allowed-drift instances (both engines' output recorded for each, and the 2 that are symptomatic of
+the indentation defect are labeled as such rather than folded into the "harmless" bucket), are
+individually dispositioned above per the plan's "每个漂移必须进入具名 fixture allowlist...不得使用
+通配 allowlist" requirement. `ApplyEditsRustSwiftDifferentialTests` remains red by design.
