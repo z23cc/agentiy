@@ -96,6 +96,21 @@ fn literal_ambiguity_and_replace_all_miss_messages() {
 }
 
 #[test]
+fn single_matcher_miss_preserves_invalid_params_message() {
+    let error = apply_subject(&request(
+        "present\n",
+        ApplyMode::Single {
+            operation: operation("missing", "replacement", false),
+        },
+    ))
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError::InvalidParams("search block not found in file".into())
+    );
+}
+
+#[test]
 fn reversed_two_line_selector_returns_error_instead_of_underflowing() {
     let error = apply_subject(&request(
         "header\ntarget\n",
@@ -399,6 +414,33 @@ fn leading_escaped_tab_promotion_and_tex_exemption() {
     tex_request.path_label = "file.tex".into();
     let tex = apply_subject(&tex_request).unwrap();
     assert!(tex.updated_text.contains("\\tnew"));
+}
+
+#[test]
+fn single_literal_replacement_converts_to_file_indentation_style() {
+    let result = apply_subject(&request(
+        "func f() {\n\tlet a = 1\n\tlet b = 2\n}\n",
+        ApplyMode::Single {
+            operation: operation("\tlet a = 1", "    let a = 10", false),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        result.updated_text,
+        "func f() {\n\tlet a = 10\n\tlet b = 2\n}\n"
+    );
+
+    let result = apply_subject(&request(
+        "func f() {\n    let a = 1\n    let b = 2\n}\n",
+        ApplyMode::Single {
+            operation: operation("    let a = 1", "\tlet a = 10", false),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        result.updated_text,
+        "func f() {\n    let a = 10\n    let b = 2\n}\n"
+    );
 }
 
 #[test]

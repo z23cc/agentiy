@@ -202,17 +202,6 @@ final class ApplyEditsRustSwiftDifferentialTests: XCTestCase {
             print("Apply-edits allowed-drift observations (\(driftObserved.count)):\n" + driftObserved.joined(separator: "\n"))
         }
 
-        // KNOWN GAP (P2 step-12 gate): 2 real defects remain — single-mode
-        // invalidParams messages are dropped across the FFI boundary
-        // (CoreTransportError.applyEditsInvalidParams is message-less), and the
-        // Rust engine does not port Swift's indentation-style auto-conversion.
-        // Both gate step 13 (delete the Swift apply-edits engine) and are
-        // tracked in docs/architecture/rust-apply-edits-compact-v1.md. Marked
-        // expected-failure so the harness stays committed with CI green.
-        XCTExpectFailure(
-            "P2 step-12: 2 apply-edits defects gate step-13 deletion (see rust-apply-edits-compact-v1.md)",
-            strict: false
-        )
         XCTAssertTrue(
             failures.isEmpty,
             "Apply-edits Swift/Rust differential mismatches (\(failures.count)):\n" + failures.joined(separator: "\n")

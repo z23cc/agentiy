@@ -4,7 +4,7 @@ use agentry_runtime::{
 };
 
 /// Stable error categories exported by ABI epoch 1.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error, uniffi::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, uniffi::Error)]
 pub enum CoreError {
     #[error("invalid argument")]
     InvalidArgument,
@@ -64,8 +64,8 @@ pub enum CoreError {
     CodeMapCancelled,
     #[error("codemap result violated an internal invariant")]
     CodeMapInvariant,
-    #[error("invalid apply-edits request")]
-    ApplyEditsInvalidParams,
+    #[error("{message}")]
+    ApplyEditsInvalidParams { message: String },
     #[error("apply-edits computation was cancelled")]
     ApplyEditsCancelled,
     #[error("apply-edits result violated an internal invariant")]
@@ -167,8 +167,8 @@ impl From<agentry_runtime::codemap::CodeMapError> for CoreError {
 impl From<agentry_runtime::apply_edits::ApplyError> for CoreError {
     fn from(value: agentry_runtime::apply_edits::ApplyError) -> Self {
         match value {
-            agentry_runtime::apply_edits::ApplyError::InvalidParams(_) => {
-                Self::ApplyEditsInvalidParams
+            agentry_runtime::apply_edits::ApplyError::InvalidParams(message) => {
+                Self::ApplyEditsInvalidParams { message }
             }
             agentry_runtime::apply_edits::ApplyError::Internal(_) => Self::ApplyEditsInvariant,
             agentry_runtime::apply_edits::ApplyError::Cancelled => Self::ApplyEditsCancelled,

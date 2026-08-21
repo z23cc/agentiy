@@ -408,7 +408,7 @@ enum TypeScriptCodeMapStrategy {
         }
 
         let types = match.parameterTypes ?? []
-        let parameters = types.enumerated().map {
+        var parameters = types.enumerated().map {
             ParameterInfo(
                 externalName: nil,
                 localName: "param\($0.offset)",
@@ -416,6 +416,18 @@ enum TypeScriptCodeMapStrategy {
             )
         }
         referencedTypes.insertMany(rawTypes: types)
+
+        // Rust-parity parameter extraction (see RustParitySignatureParser.swift):
+        // TS/TSX class methods, interface methods, and call/construct/index
+        // signatures all route through this shared helper rather than
+        // CodeMapGenerator's generic capture loop, so they need the same
+        // real-identifier override applied there.
+        if RustParitySignatureParser.isSupported(language) {
+            parameters = RustParitySignatureParser.parse(
+                declaration: RustParitySignatureParser.cleanSignatureLine(line, language: language),
+                language: language
+            ).parameters
+        }
 
         return (name, parameters, returnType)
     }

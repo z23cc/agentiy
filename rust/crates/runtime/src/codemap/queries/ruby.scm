@@ -25,10 +25,10 @@
 ; 3) Methods
 ; ==========================
 (method
-  name: (_) @function.definition) @function.definition
+  name: (_)) @function.definition
 
 (singleton_method
-  name: (_) @function.definition) @function.definition
+  name: (_)) @function.definition
 
 ; ==========================
 ; 4) Variables / Constants

@@ -986,38 +986,36 @@ pub struct CoreApplyEditsSubjectRequestV1 {
 
 impl CoreApplyEditsSubjectRequestV1 {
     fn into_runtime_request(self) -> Result<runtime::apply_edits::ApplySubjectRequest, CoreError> {
+        let invalid_params = || CoreError::ApplyEditsInvalidParams {
+            message: "invalid apply-edits request".into(),
+        };
         let mode = match self.mode_tag {
             0 => {
                 if !self.operations.is_empty() {
-                    return Err(CoreError::ApplyEditsInvalidParams);
+                    return Err(invalid_params());
                 }
                 runtime::apply_edits::ApplyMode::Rewrite {
-                    replacement: self
-                        .rewrite_replacement
-                        .ok_or(CoreError::ApplyEditsInvalidParams)?,
+                    replacement: self.rewrite_replacement.ok_or_else(&invalid_params)?,
                 }
             }
             1 => {
                 if self.rewrite_replacement.is_some() || self.operations.len() != 1 {
-                    return Err(CoreError::ApplyEditsInvalidParams);
+                    return Err(invalid_params());
                 }
                 let mut operations = self.operations.into_iter();
                 runtime::apply_edits::ApplyMode::Single {
-                    operation: operations
-                        .next()
-                        .ok_or(CoreError::ApplyEditsInvalidParams)?
-                        .into(),
+                    operation: operations.next().ok_or_else(&invalid_params)?.into(),
                 }
             }
             2 => {
                 if self.rewrite_replacement.is_some() || self.operations.is_empty() {
-                    return Err(CoreError::ApplyEditsInvalidParams);
+                    return Err(invalid_params());
                 }
                 runtime::apply_edits::ApplyMode::Batch {
                     operations: self.operations.into_iter().map(Into::into).collect(),
                 }
             }
-            _ => return Err(CoreError::ApplyEditsInvalidParams),
+            _ => return Err(invalid_params()),
         };
         Ok(runtime::apply_edits::ApplySubjectRequest {
             path_label: self.path_label,

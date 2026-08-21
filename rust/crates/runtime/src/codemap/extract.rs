@@ -80,6 +80,20 @@ fn declaration_line(source: &str, capture: &Capture, language: CodeMapLanguage) 
             return lines.join("\n").trim().to_owned();
         }
     }
+    // `typeAlias` captures only the alias's `type_identifier` name node (see
+    // queries/typescript.scm), which is always single-row, so `capture.end_row`
+    // never reveals a multi-line RHS object-literal type (e.g.
+    // `type User = {\n  id: string;\n};`). Re-derive the statement's true
+    // extent from source text by scanning forward until brace depth returns
+    // to zero, matching the legacy Swift extractor's collapsed rendering.
+    if matches!(language, CodeMapLanguage::TypeScript | CodeMapLanguage::Tsx)
+        && capture.name == "typeAlias"
+        && raw.contains('{')
+    {
+        if let Some(joined) = joined_brace_declaration(source, capture.start_row) {
+            return joined;
+        }
+    }
     // NOTE: this branch intentionally reproduces a known legacy Swift
     // extractor quirk (leaking the first body line into the rendered
     // `definitionLine` for single-statement `fn fmt(...)` bodies) so the
@@ -94,6 +108,41 @@ fn declaration_line(source: &str, capture: &Capture, language: CodeMapLanguage) 
         }
     }
     clean_declaration_line(source, capture, language)
+}
+
+/// Joins consecutive source lines starting at `start_row` until brace depth
+/// returns to zero, collapsing them into a single space-separated line and
+/// trimming a trailing statement terminator. Used for TS/TSX type-alias RHS
+/// object literals that span multiple source lines.
+fn joined_brace_declaration(source: &str, start_row: usize) -> Option<String> {
+    let mut depth: i32 = 0;
+    let mut opened = false;
+    let mut collected: Vec<&str> = Vec::new();
+    for candidate in source.lines().skip(start_row) {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        collected.push(trimmed);
+        for character in trimmed.chars() {
+            match character {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if opened && depth <= 0 {
+            break;
+        }
+    }
+    if collected.is_empty() {
+        return None;
+    }
+    let joined = collected.join(" ");
+    Some(joined.trim_end_matches(';').trim_end().to_owned())
 }
 
 fn capture_contained(outer: &Capture, inner: &Capture) -> bool {
@@ -268,6 +317,34 @@ fn split_parameters(value: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Access-modifier / storage-class keywords that can precede a C-family
+/// return type (`public string Label()`, `static void Rename()`, ...). The
+/// return-type derivation for C/C++/C#/Java takes everything before the
+/// function name, which otherwise leaves these keywords glued to the type.
+const LEADING_TYPE_MODIFIERS: &[&str] = &[
+    "public", "private", "protected", "internal", "static", "sealed", "override", "abstract",
+    "virtual", "unsafe", "async", "final", "synchronized", "extern", "inline", "constexpr",
+    "friend", "explicit", "mutable", "volatile", "const",
+];
+
+fn strip_leading_modifiers(value: &str) -> &str {
+    let mut remaining = value;
+    loop {
+        let trimmed = remaining.trim_start();
+        let Some(matched) = LEADING_TYPE_MODIFIERS
+            .iter()
+            .find(|modifier| {
+                trimmed.strip_prefix(**modifier).is_some_and(|rest| {
+                    rest.is_empty() || rest.starts_with(char::is_whitespace)
+                })
+            })
+        else {
+            return trimmed;
+        };
+        remaining = &trimmed[matched.len()..];
+    }
+}
+
 fn signature_details(
     language: CodeMapLanguage,
     declaration: &str,
@@ -311,6 +388,20 @@ fn signature_details(
                             Some(ty.trim().trim_end_matches('?').to_owned()),
                         )
                     })
+            } else if language == CodeMapLanguage::Go {
+                // Go parameter syntax is `name Type` (name first, type
+                // last) -- the opposite order from the C-style `type name`
+                // convention below. Using the C-style last-token-is-name
+                // heuristic here would transpose name and type.
+                let pieces: Vec<_> = raw.split_whitespace().collect();
+                if pieces.len() > 1 {
+                    (
+                        pieces[0].trim_start_matches(['&', '*']).to_owned(),
+                        Some(pieces[1..].join(" ")),
+                    )
+                } else {
+                    (format!("param{index}"), None)
+                }
             } else {
                 let pieces: Vec<_> = raw.split_whitespace().collect();
                 if pieces.len() > 1 {
@@ -335,12 +426,27 @@ fn signature_details(
         .collect();
     let tail = declaration[close + 1..].trim();
     let return_type = if let Some(value) = tail.strip_prefix("->") {
-        Some(value.trim().to_owned())
+        // Python retains its statement-terminating `:` in this tail (e.g.
+        // `def f() -> Worker:`); Rust/C++ trailing-return arrows never do.
+        // Trimming it here is safe for every `->`-using language.
+        Some(value.trim().trim_end_matches(':').trim().to_owned())
     } else if matches!(
         language,
         CodeMapLanguage::TypeScript | CodeMapLanguage::Tsx | CodeMapLanguage::Php
     ) {
-        tail.strip_prefix(':').map(|value| value.trim().to_owned())
+        tail.strip_prefix(':').map(|value| {
+            let value = value.trim();
+            // PHP interface/abstract method signatures end with `;` (no
+            // body), and unlike TS/TSX, `clean_declaration_line` does not
+            // strip it for PHP (the rendered `.definitionLine` golden
+            // intentionally keeps that trailing `;`), so strip it here,
+            // scoped to the parsed return-type value only.
+            if language == CodeMapLanguage::Php {
+                value.trim_end_matches(';').trim().to_owned()
+            } else {
+                value.to_owned()
+            }
+        })
     } else if language == CodeMapLanguage::Go && !tail.is_empty() {
         Some(tail.to_owned())
     } else if matches!(
@@ -349,7 +455,7 @@ fn signature_details(
     ) {
         let prefix = declaration[..open].trim();
         let name = prefix.split_whitespace().last().unwrap_or("");
-        let ty = prefix.strip_suffix(name).unwrap_or("").trim();
+        let ty = strip_leading_modifiers(prefix.strip_suffix(name).unwrap_or("").trim());
         (!ty.is_empty()).then(|| ty.to_owned())
     } else {
         None

@@ -722,6 +722,40 @@ mod tests {
                 include_tool_card_unified_diff: false,
             }],
         });
-        assert_eq!(apply, Err(CoreError::ApplyEditsInvalidParams));
+        assert_eq!(
+            apply,
+            Err(CoreError::ApplyEditsInvalidParams {
+                message: "invalid apply-edits request".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn apply_edits_invalid_params_preserves_runtime_message() {
+        let (core, identity, cancellation) = initialized_core();
+        let apply = core.apply_edits_batch_compact_v1(CoreApplyEditsBatchRequestV1 {
+            runtime_identity: identity,
+            cancellation,
+            contract_version: runtime::apply_edits::APPLY_EDITS_CONTRACT_VERSION_V1,
+            subjects: vec![CoreApplyEditsSubjectRequestV1 {
+                path_label: "Example.swift".to_owned(),
+                original_utf8: b"present\n".to_vec(),
+                mode_tag: 1,
+                rewrite_replacement: None,
+                operations: vec![crate::types::CoreApplyEditsOperationV1 {
+                    search: "missing".into(),
+                    replace: "replacement".into(),
+                    replace_all: false,
+                }],
+                verbose: false,
+                include_tool_card_unified_diff: false,
+            }],
+        });
+        assert_eq!(
+            apply,
+            Err(CoreError::ApplyEditsInvalidParams {
+                message: "search block not found in file".into(),
+            })
+        );
     }
 }

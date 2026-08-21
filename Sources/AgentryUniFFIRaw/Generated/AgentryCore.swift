@@ -4119,7 +4119,8 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case CodeMapServiceUnavailable
     case CodeMapCancelled
     case CodeMapInvariant
-    case ApplyEditsInvalidParams
+    case ApplyEditsInvalidParams(message: String
+    )
     case ApplyEditsCancelled
     case ApplyEditsInvariant
 
@@ -4180,7 +4181,9 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case 27: return .CodeMapServiceUnavailable
         case 28: return .CodeMapCancelled
         case 29: return .CodeMapInvariant
-        case 30: return .ApplyEditsInvalidParams
+        case 30: return .ApplyEditsInvalidParams(
+            message: try FfiConverterString.read(from: &buf)
+            )
         case 31: return .ApplyEditsCancelled
         case 32: return .ApplyEditsInvariant
 
@@ -4311,8 +4314,9 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(29))
 
 
-        case .ApplyEditsInvalidParams:
+        case let .ApplyEditsInvalidParams(message):
             writeInt(&buf, Int32(30))
+            FfiConverterString.write(message, into: &buf)
 
 
         case .ApplyEditsCancelled:

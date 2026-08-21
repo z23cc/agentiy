@@ -50,7 +50,7 @@ package enum CodeMapSyntaxArtifactBuilder {
             guard let artifact else {
                 return .readyNoSymbols
             }
-            return .ready(artifact)
+            return .ready(RustParityArtifactNormalizer.normalize(artifact, language: language))
         case let .oversize(reason):
             return .oversize(reason)
         case let .parseFailed(failure):

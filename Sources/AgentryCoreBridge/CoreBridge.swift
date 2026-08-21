@@ -53,7 +53,7 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case codeMapServiceUnavailable
     case codeMapCancelled
     case codeMapInvariant
-    case applyEditsInvalidParams
+    case applyEditsInvalidParams(String)
     case applyEditsCancelled
     case applyEditsInvariant
     case unexpected(String)
@@ -848,7 +848,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .CodeMapServiceUnavailable: .codeMapServiceUnavailable
         case .CodeMapCancelled: .codeMapCancelled
         case .CodeMapInvariant: .codeMapInvariant
-        case .ApplyEditsInvalidParams: .applyEditsInvalidParams
+        case let .ApplyEditsInvalidParams(message): .applyEditsInvalidParams(message)
         case .ApplyEditsCancelled: .applyEditsCancelled
         case .ApplyEditsInvariant: .applyEditsInvariant
         }
@@ -1068,8 +1068,10 @@ public actor AgentryCoreBridge {
             return CancellationError()
         }
         let mapped: CoreComputeError = switch error {
-        case .invalidArgument, .codeMapInvalidRequest, .applyEditsInvalidParams:
+        case .invalidArgument, .codeMapInvalidRequest:
             .invalidRequest("invalid compute request")
+        case let .applyEditsInvalidParams(message):
+            .invalidRequest(message)
         case .runtimePoisoned: .runtimePoisoned
         case .runtimeStopped: .runtimeStopped
         case .staleRuntimeIdentity, .incompatibleAbi, .internalPanic: .runtimeInvalidated

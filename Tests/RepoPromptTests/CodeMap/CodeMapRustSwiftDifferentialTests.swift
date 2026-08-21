@@ -50,18 +50,12 @@ final class CodeMapRustSwiftDifferentialTests: XCTestCase {
             }
         }
 
-        // KNOWN GAP (P2 step-12 gate): 72 field-level mismatches remain in
-        // persisted parameters/returnType/referencedTypes between the legacy
-        // Swift extractor and the Rust production seam. These feed the
-        // uses/used-by selection graph and must reach parity before step 13
-        // (delete the Swift extractor). Tracked in
-        // docs/architecture/rust-codemap-compact-v1.md. Marked as an expected
-        // failure so the differential harness stays committed and CI stays
-        // green until the Rust extractor populates these fields.
-        XCTExpectFailure(
-            "P2 step-12: 72 persisted-field mismatches gate step-13 deletion (see rust-codemap-compact-v1.md)",
-            strict: false
-        )
+        // Step 12/13 gate (see docs/architecture/rust-codemap-compact-v1.md):
+        // the legacy Swift extractor and the Rust production seam must
+        // produce field-identical persisted artifacts -- all persisted
+        // fields and array order, not just the rendered summary text. This
+        // is a hard assertion, not an expected failure: a regression here
+        // must fail CI.
         XCTAssertTrue(
             failures.isEmpty,
             "Codemap Swift/Rust differential mismatches (\(failures.count)):\n" + failures.joined(separator: "\n")
@@ -142,8 +136,23 @@ final class CodeMapRustSwiftDifferentialTests: XCTestCase {
             return
         }
 
-        for mismatch in CodeMapArtifactDiffer.diff(swift: swiftArtifact, rust: rustArtifact) {
+        let mismatches = CodeMapArtifactDiffer.diff(swift: swiftArtifact, rust: rustArtifact)
+        for mismatch in mismatches {
             failures.append("\(relativePath): \(mismatch.field): \(mismatch.detail)")
+        }
+        // `CodeMapArtifactDiffer` is a best-effort, field-by-field differ
+        // used only to render an actionable message; the actual gate above
+        // is `swiftOutcome == rustOutcome` (derived `Equatable`, covering
+        // every field including any the differ doesn't yet model). If the
+        // two `.ready` artifacts are `Equatable`-unequal but the differ
+        // reports zero mismatches, the differ is incomplete -- fail loudly
+        // instead of silently passing on an undetected divergence.
+        if mismatches.isEmpty {
+            failures.append(
+                "\(relativePath): CodeMapSyntaxArtifact instances are Equatable-unequal but " +
+                    "CodeMapArtifactDiffer found no field-level mismatch -- the differ is incomplete " +
+                    "and must be extended to cover the diverging field."
+            )
         }
     }
 

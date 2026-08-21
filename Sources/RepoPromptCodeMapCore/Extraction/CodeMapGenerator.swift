@@ -1259,6 +1259,39 @@ struct CodeMapGenerator {
                         }
                     }
 
+                    // Rust-parity parameter/return-type extraction (see
+                    // RustParitySignatureParser.swift): the production Rust
+                    // codemap engine derives real per-parameter identifiers
+                    // and closes several return-type feature gaps (PHP) that
+                    // the ad hoc regex matches above never populated. Ruby
+                    // additionally needs its name re-derived from a clean
+                    // single-line signature, since its capture range now
+                    // spans the whole (possibly multi-line) method node.
+                    if supportedLanguage == .ruby {
+                        let trimmedRawLine = rawLine.trimmingCharacters(in: .whitespaces)
+                        if trimmedRawLine.hasPrefix("def ") {
+                            let rubyName = trimmedRawLine.dropFirst(4)
+                                .prefix(while: { $0 != "(" })
+                                .trimmingCharacters(in: .whitespaces)
+                            if !rubyName.isEmpty {
+                                fnName = rubyName
+                            }
+                        }
+                        params = RustParitySignatureParser.parse(
+                            declaration: RustParitySignatureParser.cleanSignatureLine(rawLine, language: supportedLanguage),
+                            language: supportedLanguage
+                        ).parameters
+                    } else if RustParitySignatureParser.isSupported(supportedLanguage) {
+                        let parsed = RustParitySignatureParser.parse(
+                            declaration: RustParitySignatureParser.cleanSignatureLine(rawLine, language: supportedLanguage),
+                            language: supportedLanguage
+                        )
+                        params = parsed.parameters
+                        if returnType == nil {
+                            returnType = parsed.returnType
+                        }
+                    }
+
                     let modelInsertionStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
                     let fnLine = lineNo
                     let fnInfo = FunctionInfo(
@@ -1401,14 +1434,32 @@ struct CodeMapGenerator {
                 }
                 recordFallbackFunctionAttribution(.nameExtraction, since: nameExtractionStart)
 
-                let modelInsertionStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-                let params = paramTypes.enumerated().map {
+                // Rust-parity parameter/return-type extraction (see
+                // RustParitySignatureParser.swift): replaces the type-only,
+                // placeholder-named ("param0"/"param1") parameter list above
+                // with real per-parameter identifiers, and closes Go's
+                // return-type feature gap, matching the production Rust
+                // codemap engine field-for-field.
+                var params: [ParameterInfo] = paramTypes.enumerated().map {
                     ParameterInfo(
                         externalName: nil,
                         localName: "param\($0.offset)",
                         typeName: $0.element
                     )
                 }
+                if RustParitySignatureParser.isSupported(supportedLanguage) {
+                    let rawLine = lineCache.line(for: cap.range.location)
+                    let parsed = RustParitySignatureParser.parse(
+                        declaration: RustParitySignatureParser.cleanSignatureLine(rawLine, language: supportedLanguage),
+                        language: supportedLanguage
+                    )
+                    params = parsed.parameters
+                    if returnType == nil {
+                        returnType = parsed.returnType
+                    }
+                }
+
+                let modelInsertionStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
                 let fnLine = lineNo
                 let fnInfo = FunctionInfo(
                     name: fnName,

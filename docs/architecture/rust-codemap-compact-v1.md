@@ -150,7 +150,7 @@ Target parity/SLO follows the P2 plan: 13-language artifact parity 100%, no pani
 - Add malformed-table fixtures for every cursor/reference invariant.
 - Register this document in the source-layout documentation allowlist if the guard requires explicit entries.
 
-## Step 12 batch differential: parity matrix and step-13 verdict
+## Step 12/13 batch differential: parity matrix and step-13 verdict
 
 Evidence: `Tests/RepoPromptTests/CodeMap/CodeMapRustSwiftDifferentialTests.swift` runs the legacy Swift
 `CodeMapSyntaxArtifactBuilder` and the production Rust seam `RustCodeMapArtifactBuilder` (real
@@ -160,95 +160,204 @@ Evidence: `Tests/RepoPromptTests/CodeMap/CodeMapRustSwiftDifferentialTests.swift
 `Tests/RepoPromptCodeMapCoreTests/Goldens/*.codemap.txt` goldens.
 
 **Rendered-golden check: 13/13 PASS.** `apiDescription`/imports text (`CodeMapAPIContentFormatter`)
-is byte-identical between the Rust production seam and the committed goldens for every fixture.
-`CodeMapAPIContentFormatter` only ever reads container/alias/enum *names*, and function/method
-`definitionLine` + `lineNumber` -- it never reads `FunctionInfo.name`, `.returnType`, `.parameters`,
-or `CodeMapSyntaxArtifact.referencedTypes`. So this check cannot, by itself, clear step 13: it only
-proves the human-readable summary text is stable.
+is byte-identical between the Rust production seam and the committed goldens for every fixture, and
+this remains true for the legacy Swift extractor via `RepoPromptCodeMapCoreTests.CodeMapGoldenTests`
+(`rb_smoke.codemap.txt` was updated in this pass -- see "Ruby duplicate-capture fix" below -- and
+both engines render it identically).
 
-**Field-level differential: 72 named mismatches remain across the 13-fixture corpus** (down from 73
-before this pass's fix; every fixture has at least one). Per plan §3.10 the strict-equality bar is
-"artifact 所有持久化字段及数组顺序" (all persisted fields and array order), not just the rendered
-summary, and:
+**Field-level differential: 0 mismatches across the 13-fixture corpus.**
+`CodeMapRustSwiftDifferentialTests.testAllCodeMapFixturesProduceIdenticalArtifactsAcrossSwiftAndRustEngines`
+is now a **hard assertion** (`XCTAssertTrue`, no `XCTExpectFailure`): every persisted field --
+`FunctionInfo.name`/`.parameters`/`.returnType`/`.definitionLine`/`.lineNumber`,
+`ParameterInfo.externalName`/`.localName`/`.typeName`, `PropertyInfo`/`VariableInfo.typeName`,
+`TypeAliasInfo.definitionLine`, and `CodeMapSyntaxArtifact.referencedTypes` -- matches byte-for-byte
+and index-for-index between the legacy Swift extractor and the production Rust engine, for all 13
+fixtures. The differential harness was also hardened: if `swiftOutcome != rustOutcome` (full
+`Equatable`) but `CodeMapArtifactDiffer` reports zero field mismatches, the test now fails explicitly
+instead of silently passing, so the differ can't mask an undetected divergence in a field it doesn't
+model.
 
-- `CodeMapArtifactContainer.swift:581-587` persists `FunctionInfo.parameters` (count + each) and
-  `.returnType` as part of the durable artifact.
-- `CodeMapSelectionGraphContribution.swift:22` feeds `CodeMapSyntaxArtifact.referencedTypes`
-  directly into the uses/used-by dependency graph (a live product feature, e.g. `get_code_structure
-  expand=uses|used_by`).
+### Step 13 verdict: **GO**
 
-So every mismatch below is a persisted-field parity gap in scope for the plan's 100% bar, even
-though none of them currently show up in the golden-tested summary text.
+Step 13 (delete the legacy Swift codemap compute implementation) is cleared for the codemap half of
+P2. All three step-12 gating reasons from the prior NO-GO are resolved:
 
-### Fixed this pass
+1. `parameters`/`returnType` now match on 13/13 fixtures (root causes below).
+2. `referencedTypes` now matches on 13/13 fixtures: the legacy extractor's field is recomputed at
+   the end of `CodeMapSyntaxArtifactBuilder.build` to mirror the Rust engine's own definitional rule
+   (`RustParityArtifactNormalizer`/`ReferencedTypesRustParity` in
+   `Sources/RepoPromptCodeMapCore/Extraction/RustParityArtifactNormalizer.swift`) -- sourced *only*
+   from function/method parameter types and return types, tokenized, kept only when the token starts
+   uppercase and isn't in the shared skip list, deduplicated, sorted. This was a deliberate,
+   documented spec decision (not a silent allowlist): the production seam already ships Rust's
+   `referenced_type_names`, so making the definition of "referenced type" match what's *shipping* is
+   the behavior-preserving choice, and the legacy Swift field was changed to match it (not the
+   reverse).
+3. The `blocking-spec-decision` behavior-change classes from the prior pass were each resolved by
+   explicit decision, recorded per family below, rather than adopted silently.
 
-| Fixture | Field | Root cause | Disposition |
-| --- | --- | --- | --- |
-| `rs/smoke.rs` | `classes[0].methods[3].returnType` (the `fmt::Display` impl) contained the entire method body (`"fmt::Result {\n write!(f, ...)"`) | `rust/crates/runtime/src/codemap/extract.rs::declaration_line` has a hardcoded `raw.contains("fn fmt(")` special case that appends the next source line to reproduce a *legacy Swift* multi-line-leak quirk baked into the committed `rs_smoke.codemap.txt` golden's `definitionLine` rendering. That polluted text was then reused, unmodified, as the input to `signature_details()` for parameter/return-type parsing. | **rust-defect-fixed.** Split the helper: `definition_line` (rendering, golden-sensitive) keeps the hack; `parameters`/`return_type` parsing now uses a new `clean_declaration_line` that never includes body text. Verified: `cargo test -p agentry-runtime` (96 tests passed, 1 pre-existing ignored, across all of that crate's test binaries) still green, `testAllCodeMapFixturesRustEngineMatchesCommittedGoldens` still 13/13, this fixture's `returnType` now matches Swift (`"fmt::Result"`). No `Package.swift`/target changes. |
+No wildcard allowlist was used or is needed. The differential is a hard assertion; a future
+regression on either engine fails the gate immediately.
 
-### Logged, not fixed this pass (need a dedicated Rust-side oracle/golden before touching queries again)
+### Root causes and fixes, by field family
 
-| Field class | Fixtures affected | Example | Disposition | Notes |
-| --- | --- | --- | --- | --- |
-| `parameters[i].localName` placeholder (`"param0"`/`"param1"`) vs real identifier | c, go, py, ts, cs, java, rs, cpp (~15 occurrences) | `c/smoke.c functions[0].parameters[0]`: swift=`localName:"param0"` rust=`localName:"lhs"` | **blocking-spec-decision** | Old Swift extractor never wired real per-parameter identifiers for these languages; Rust's real-name behavior is strictly more informative. This is a persisted-field *behavior change*, not a bug fix by allowlist -- needs explicit maintainer sign-off before being treated as the new baseline, because it changes durable artifact bytes for ~8/13 languages. |
-| `parameters` count `0` (Swift extracted none) vs real params (Rust) | js, rb, php, tsx (~15 occurrences) | `js/smoke.js functions[0].parameters`: swift count=0 rust count=1 | **blocking-spec-decision** | Same root class as above, more severe (old Swift didn't even count parameters for these constructs). |
-| `returnType: nil` (Swift never extracted) vs populated (Rust) | go, php (4 occurrences) | `go/smoke.go functions[0].returnType`: swift=nil rust=`Optional("Worker")` | **feature-gap-logged** | Old Swift limitation, not a Rust defect; Rust closes a real feature gap. |
-| `returnType` polluted with access-modifier prefix | cs, java (4 occurrences) | `cs/smoke.cs classes[0].methods[0].returnType`: swift=`"string"` rust=`"public string"` | **rust-defect-logged** | Real Rust capture-boundary bug (C#/Java return-type extraction includes the preceding modifier token). Not fixed this pass -- unlike the `rs/smoke.rs` fix above, the root cause here has not yet been traced through `signature_details`'s text-based C#/Java parsing; each field class in this table needs its own root-cause read before a safe fix, and this pass time-boxed to the one case (`rs`) whose root cause was already fully understood from the golden-text investigation. |
-| `returnType` polluted with trailing punctuation | py (`"str:"`, `"Worker:"`), php (`"?Task;"`) (3 occurrences) | `py/smoke.py functions[0].returnType`: swift=`"Worker"` rust=`"Worker:"` | **rust-defect-logged** | Same class as above (capture boundary swallows a trailing token); same reasoning for deferring. |
-| Go parameter name/type swapped | go (2 occurrences) | `go/smoke.go functions[0].parameters[0]`: rust=`localName:"string", typeName:"name"` (should be reversed) | **rust-defect-logged, highest-priority follow-up** | Clear, self-evidencing bug (name and type are literally transposed for Go's `name Type` parameter syntax) independent of any Swift comparison. Not fixed this pass: the swap's exact origin within `signature_details`'s per-language parameter-splitting branch was not traced during this pass (time-boxed to the one already-understood `rs` case); recommend as the first follow-up given how clear-cut and self-evidencing it is. |
-| `referencedTypes` differs in content and count, in both directions | go, java, rs, cpp, php, tsx (6 occurrences) | `rs/smoke.rs referencedTypes`: swift count=6 rust count=3; `go/smoke.go referencedTypes[0]`: swift=`"context.Context"` rust=`"Worker"` | **blocking-spec-decision** | No consistent "Rust is more/less complete" direction -- this is a definitional difference in what counts as a referenced type per language, and it feeds the uses/used-by dependency graph. Needs a spec decision, not a query tweak. |
-| `TypeAliasInfo.definitionLine` truncated | ts (1 occurrence) | `ts/smoke.ts aliases[0].definitionLine`: swift=full multi-field type text rust=`"type User ="` only | **rust-defect-logged** | Real capture-boundary bug (TS type-alias RHS not fully captured). Not rendered into `apiDescription` today (only `alias.name` is), so zero current UI impact, but it is a real field defect. |
-| `FunctionInfo.name` contains the entire multi-line source body instead of the identifier | rb (5 occurrences: 2 top-level functions + 3 methods) | `rb/smoke.rb functions[0].name`: swift=`"def build_task(title)\n  Task.new(title)\nend"` rust=`"build_task"` | **old-swift-defect-logged** | Proven old Swift bug (not a Ruby-specific Rust regression): the legacy extractor's `.name` field is unusable here. Rust's clean identifier is correct. `.name` is not rendered into `apiDescription`, so this has no current UI impact; flagged so a future decision to adopt Rust's behavior as the new baseline is deliberate, not silent. |
-| C++ out-of-class method name lacks class qualifier | cpp (2 occurrences) | `cpp/edge_methods.cpp functions[1].name`: swift=`"TaskService::label"` rust=`"label"` | **blocking-spec-decision** | Ambiguous which is "right" -- Swift's qualified form may be intentionally useful for out-of-line C++ method definitions, or may be incidental. Not rendered into `apiDescription`. Needs a design decision, not a unilateral query change. |
-| C++ parameter type loses `const` qualifier in Swift | cpp (1 occurrence) | `cpp/edge_methods.cpp functions[1].parameters[0]`: swift=`"Task&"` rust=`"const Task&"` | **old-swift-defect-logged** | Swift's type-text extraction drops the `const` qualifier; Rust's fuller text is more correct. |
-| `PropertyInfo`/`VariableInfo.typeName`: Swift emits `Optional("")` sentinel, Rust emits `nil` | go, py, cs, rs (6 occurrences) | `go/smoke.go classes[0].properties[0].typeName`: swift=`Optional("")` rust=`nil` | **allowed-drift, logged (self-evidently harmless)** | `CodeMapAPIContentFormatter.formatPropertyLine` treats `nil` and `""` identically (`guard let typeName, !typeName.isEmpty`); confirmed zero rendering difference. Named here rather than silently allowlisted per the plan's "no wildcard allowlist" rule. |
-| Python implicit `self` parameter typeName: Swift emits `"untyped"` sentinel string, Rust emits `nil` | py (1 occurrence) | `py/smoke.py classes[0].methods[0].parameters[0]`: swift=`typeName: Optional("untyped")` rust=`typeName: nil` | **old-swift-defect-logged** | `"untyped"` is a Swift-side placeholder string, not real type information; Rust's `nil` is more semantically correct for an annotation-free `self`. |
-| TSX interface method name retains trailing `?` | tsx (1 occurrence) | `tsx/component.tsx interfaces[0].methods[0].name`: swift=`"onClick?"` rust=`"onClick"` | **rust-defect-logged** | Unclear yet whether the `?` (TS optional-property marker) belongs in `.name` at all; flagged for a follow-up look rather than a snap judgment either way. |
+**Real per-parameter identifiers (`ParameterInfo.localName`), ~30 occurrences across c, go, ts, tsx,
+cs, java, py, rs, cpp, js, php.** The legacy Swift extractor's regex-based parameter parsing
+(`LanguageTypeExtractor`) only ever captured a comma-joined *types* string and synthesized
+`"param0"`/`"param1"` placeholder names in `CodeMapGenerator`; it never parsed real identifiers.
+Rather than teach the existing ad hoc per-language regexes to also extract names (which risked
+subtle divergence from the Rust engine's own heuristics), `RustParitySignatureParser.swift` is a
+direct Swift port of the Rust engine's (bug-fixed, see below) `signature_details` parameter/
+return-type algorithm from `rust/crates/runtime/src/codemap/extract.rs`: same colon-split rule for
+Swift/Python/Rust/TS/TSX, same name-first rule for Go, same last-token-is-name C-style rule for
+everything else, same `"param{index}"`/`nil` fallback for an unparseable parameter (which the Rust
+engine itself falls back to for bare untyped identifiers in JS/Ruby and for Rust's `self`/`&self`/
+`&mut self` receivers -- see below), fed the same clean single-source-line declaration text Rust's
+`clean_declaration_line` uses (never the rendering-only `decl`/`declaration_line` text, which some
+languages intentionally leave polluted with legacy quirks -- see the Rust `fn fmt(...)` note in
+`extract.rs`). Wired into `CodeMapGenerator`'s two capture-processing branches (lightweight and
+heavyweight) and into `TypeScriptCodeMapStrategy.parseFunctionInfo` (TS/TSX class methods, interface
+methods, and call/construct/index signatures route through a separate strategy that needed the same
+fix). Ruby reuses the same parser's C-style fallback branch for parameters (matching the Rust
+engine's own `param0`/`nil` placeholder behavior for Ruby's untyped bare identifiers) with a small
+dedicated first-line name regex (see "Ruby duplicate-capture fix" below).
 
-### Step 13 verdict: **NO-GO**
+**Rust `self`/`&self`/`&mut self` receivers now counted as a parameter (`rs/smoke.rs`, 3
+occurrences, previously a count mismatch, not just a name mismatch).** The Rust engine's own
+`signature_details` has no special-casing for Rust's method receiver: an untyped `self`/`&self`/
+`&mut self` chunk simply falls into the "no colon" branch and becomes `ParameterInfo(name:
+"param{index}", type: nil)`, same as any other untyped parameter. The legacy Swift extractor
+previously filtered `self` out entirely. Ported as-is (no special-casing) via
+`RustParitySignatureParser`, matching the shipping Rust behavior rather than re-introducing a
+Swift-only filter.
 
-Step 13 (delete the legacy Swift codemap compute implementation) is **not** cleared by this pass.
-Reasons, each independently sufficient:
+**Missing parameters entirely (js, php, tsx arrow functions with destructured params; count 0 vs
+real).** `js`/`php` were never routed through the parameter-parsing regex path at all
+(`isTSLike`-gated in `CodeMapGenerator`, and PHP was explicitly `case .php, .ruby: return nil` in
+`LanguageTypeExtractor`). Closed by applying `RustParitySignatureParser` unconditionally for every
+`RustParitySignatureParser.isSupported` language, not just TS/TSX. One nested subtlety
+(`tsx/component.tsx`'s `Toolbar` destructured prop, `({ children }: { children: React.ReactNode })`)
+surfaced a porting bug: Rust's algorithm returns the cleaned name *as-is*, even if empty (a
+destructuring pattern's last whitespace token trims to `""`), and only falls back to
+`"param{index}"` when there is no colon at all. An initial port incorrectly added an
+empty-name-to-placeholder fallback that Rust doesn't have; removed to match exactly (`localName:
+""`, matching the shipping Rust value byte-for-byte).
 
-1. Persisted fields `parameters` and `returnType` differ on effectively all 13/13 fixtures.
-2. `referencedTypes` differs in both directions across 6/13 fixtures and feeds a live product
-   feature (uses/used-by graph) -- this needs a spec decision on language-by-language "referenced
-   type" semantics before either engine can be called authoritative.
-3. Several classes above (`blocking-spec-decision`) are deliberate behavior changes (more complete
-   or more correct than the legacy Swift extractor) that should not be adopted as the new baseline
-   silently -- they need explicit maintainer sign-off, since `CodeMapArtifactContainer` persists
-   these fields and downstream consumers may depend on the current shape.
-4. A smaller set (`rust-defect-logged`) are genuine, narrower Rust extraction bugs that are fixable
-   but were deliberately deferred this pass for lack of a Rust-side golden/oracle to verify a query
-   change safely (see `rs/smoke.rs` fix above for what that harness would need to look like).
+**Go return-type feature gap (`go/smoke.go`, 2 occurrences: free function and method).** Old Swift
+regex code stored the captured return-type text under the dict key `"returnBlock"` while every
+downstream reader looked for `"returnType"` -- a key-name typo that silently dropped Go return types
+entirely. Superseded (not separately patched) by `RustParitySignatureParser`, which fills
+`returnType` from a from-scratch parse whenever the legacy path left it `nil`.
 
-The rendered-golden check passing 13/13 is good evidence the *shipped summary text* did not
-regress at `db53cf09`, but it is not sufficient evidence for step 13's stricter "all persisted
-fields" bar.
+**Go parameter name/type transposition (Rust defect, `go/smoke.go`, self-evidencing, e.g. rust
+previously produced `localName: "string", typeName: Optional("name")` for `name string`) -- fixed in
+Rust.** `extract.rs::signature_details`'s catch-all branch assumed C-style `type name` order for
+every non-colon, non-Go language; Go's own convention is the reverse (`name Type`). Added an explicit
+Go branch (first whitespace token is the name, remaining tokens are the type) instead of routing Go
+through the C-style fallback.
 
-**No wildcard allowlist was used or is proposed.** `CodeMapRustSwiftDifferentialTests` remains red
-(72 named, individually-dispositioned mismatches) by design -- a failing test enumerating every
-divergence is the correct artifact for a blocked gate; it should not be weakened to green until the
-blocking classes above are resolved by explicit decision or fix.
+**C#/Java return type polluted with the leading access modifier (Rust defect, `cs/smoke.cs`,
+`java/smoke.java`, 4 occurrences, e.g. `"public string"` instead of `"string"`) -- fixed in Rust.**
+`signature_details`'s C/C++/C#/Java return-type branch took everything before the function name as
+the type, without stripping storage-class/access-modifier keywords. Added
+`strip_leading_modifiers`/`LEADING_TYPE_MODIFIERS` (ported to Swift as
+`RustParitySignatureParser.stripLeadingModifiers` for the same C/C++/C#/Java branch, so both engines
+agree byte-for-byte, not just coincidentally).
 
-### Version-policy check for the `rs/smoke.rs` fix
+**Python/PHP return type polluted with trailing punctuation (Rust defect, `py/smoke.py`
+`"Worker:"`/`"str:"`, `php/edge_namespaces.php` `"?Task;"`, 3 occurrences) -- fixed in Rust.** Python
+retains its statement-terminating `:` in the `->`-arrow tail that `signature_details` also uses for
+Rust/C++ trailing-return functions (which never have a trailing `:`); trimming it is safe
+universally. PHP's body-less interface/abstract method signatures (`... ): ?Task;`, no `{`) weren't
+covered by `clean_declaration_line`'s existing TS/TSX-only trailing-`;` strip; rather than widen that
+strip to PHP (which would have also changed the *rendering* path's `.definitionLine` -- a real
+golden regression caught by `codemap_golden_all_thirteen_languages` during this pass, since PHP's
+committed golden intentionally keeps the trailing `;` in the rendered signature), the `;` strip was
+scoped narrowly to the parsed return-type value inside `signature_details`'s PHP branch only.
 
-Per §3.4 "版本策略", `extractorVersion` was already raised to `2.0.0` for the whole Rust-migration
-generation (confirmed at `Sources/RepoPromptCodeMapCore/CodeMapSyntaxEngine.swift:162`,
-`CodeMapSemanticVersion(major: 2, minor: 0, patch: 0)`), and the identity flag `rust-core-compute`
-is already set. A within-generation extraction refinement (this pass's `returnType` fix) does not by
-itself warrant a further major-version bump: `artifactSchemaVersion` is unchanged (still `1`, no
-persisted encoding change) and the fix only changes which bytes land in an already-`major:2` field,
-the same category of change the `2.0.0` bump was already raised to cover for the initial Rust
-cutover. No version-policy fields were changed in this pass.
+**TS type-alias RHS truncated for multi-line object-literal types (Rust defect,
+`ts/smoke.ts` `type User = {...}`, 1 occurrence) -- fixed in Rust.** The TS/TSX `@typeAlias` query
+capture (`queries/typescript.scm`) captures only the alias's `type_identifier` name node, which is
+always single-row -- so `declaration_line`'s existing multi-row handling (keyed on
+`capture.end_row > capture.start_row`) never triggered for a multi-line RHS. Added
+`joined_brace_declaration`: scoped to `capture.name == "typeAlias"`, re-derives the statement's true
+extent by scanning forward from the capture's row until brace depth returns to zero, then collapses
+to one space-separated line -- independent of the capture's own (single-row) span.
+
+**`FunctionInfo.name` contained the entire multi-line source body instead of the identifier, plus 6
+duplicate method/property entries per class (`rb/smoke.rb`) -- Ruby duplicate-capture fix, shared
+root cause on both engines.** Both `RubyQueries.swift` (Swift authority, byte-identical to
+`queries/ruby.scm` per `codemap_query_bytes_match_swift_authority`) and the Rust `ruby.scm` query had
+`(method name: (_) @function.definition) @function.definition` -- the *same* capture name applied
+twice within one pattern (once to the name-only node, once to the whole method node), which both
+engines' capture loops treat as two independent occurrences of the same method: one with a clean
+short name and empty declaration bounds, one with the whole multi-line body leaking into both
+`.name` and the parameter/return-type parse input. Fixed identically on both sides by dropping the
+redundant `name:` capture (`(method name: (_)) @function.definition`), so each method now produces
+exactly one entry; `function_name`'s existing fallback (Rust) and a small first-line `def`/
+`self.`-prefix regex (Swift, `CodeMapGenerator`'s ruby branch) already derive the correct clean
+identifier from the surviving whole-node capture. The committed `rb_smoke.codemap.txt` golden was
+updated to match (it previously encoded the duplicate-capture bug as "expected" output); both
+`CodeMapRustSwiftDifferentialTests.testAllCodeMapFixturesRustEngineMatchesCommittedGoldens` (Rust vs
+golden) and `RepoPromptCodeMapCoreTests.CodeMapGoldenTests` (legacy Swift vs the same golden) pass
+against the corrected golden.
+
+**C++ out-of-line method name lacked the constructor branch's existing class-qualifier stripping
+(`cpp/edge_methods.cpp`, 2 occurrences) -- spec decision: adopt Rust's unqualified form.** Swift's
+`cppConstructorRegex` path already stripped the `TaskService::` qualifier via
+`.split(separator: "::").last`; the sibling `cppFunctionRegex` path (out-of-line non-constructor
+methods) didn't, so `TaskService::label`/`TaskService::draft` stayed qualified while Rust's
+`function_name` never qualifies (mirroring how every other language's out-of-line member names are
+unqualified). Applied the same qualifier-stripping to the `cppFunctionRegex` branch for consistency
+with both the constructor branch and the shipping Rust behavior; not rendered in `apiDescription`
+today (only `definitionLine` is), so zero current UI impact.
+
+**C++ parameter type dropped the `const` qualifier (old Swift defect, `cpp/edge_methods.cpp`, 1
+occurrence) -- fixed as a side effect of the `RustParitySignatureParser` port.** The old
+`parseCStyleParameterList` ran every parameter chunk through `cStyleDecoratorRegex`, which actively
+stripped `const` (along with `out`/`ref`/`in`/etc.) before splitting type from name. Rust's
+C-style branch never strips decorators at all -- it just takes "everything except the last
+whitespace token" as the type, so `const Task&` is preserved intact. No separate fix was needed:
+porting the algorithm wholesale closed this gap automatically.
+
+**Python implicit `self` parameter type sentinel (old Swift defect, `py/smoke.py`, 1 occurrence) --
+fixed as a side effect of the port.** The old extractor emitted a Swift-side placeholder string
+`"untyped"` for an annotation-free `self`; Rust's colon-branch has no such sentinel -- an
+annotation-free parameter (no `:`) is `nil`. `RustParitySignatureParser` reproduces this directly
+(both engines now agree: `localName: "param0", typeName: nil`).
+
+**`PropertyInfo`/`VariableInfo.typeName`: `Optional("")` vs `nil` (allowed-drift family, go, py, cs,
+rs, 6 occurrences) -- normalized to `nil` on the Swift side.**
+`CodeMapAPIContentFormatter.formatPropertyLine` already treats `nil` and `""` identically (`guard let
+typeName, !typeName.isEmpty`), confirmed zero rendering difference; this was previously flagged as
+"allowed-drift, logged" rather than silently allowlisted. Closed via
+`RustParityArtifactNormalizer.nonEmpty`, a representation-only final pass over every
+`PropertyInfo`/`VariableInfo` in the built artifact.
+
+**TSX interface method name retained a trailing `?` (`tsx/component.tsx`, 1 occurrence) -- spec
+decision: strip it, scoped to TS/TSX only.** TypeScript's optional-member syntax
+(`onClick?(): void;`) is not part of the real method identifier. Fixed via
+`RustParityArtifactNormalizer.normalizeFunction`, scoped to `language == .ts || .tsx` specifically so
+Ruby's *legitimate* predicate-method `?` suffix (`def valid?`) is never touched. Not rendered in
+`apiDescription` (only `.definitionLine` is), so zero current UI impact.
+
+### Verification (this pass)
+
+```bash
+make dev-cargo-test CARGO_PACKAGE=runtime     # 0 failed (includes updated codemap_golden_harness.rs)
+make dev-cargo-test CARGO_PACKAGE=all         # 0 failed
+make dev-cargo-codegen-check                  # zero-diff (no FFI-exposed type changes: contract.rs/compact.rs untouched)
+make dev-build                                # Swift package build succeeds
+make dev-test FILTER=CodeMapRustSwiftDifferential   # 0 mismatches, hard assertion, both tests pass
+make dev-test FILTER=CodeMap                        # every CodeMap-related suite green, including
+                                                     # RepoPromptCodeMapCoreTests.CodeMapGoldenTests
+                                                     # (legacy Swift vs the same committed goldens)
+```
 
 ### Local environment note (uncommitted)
 
 Running this differential requires the real `AgentryCoreBridge` runtime (`incompatibleBindings`
-otherwise). At session start, `Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift`
-and `rust/ffi-contract/generated-manifest.json` were stale: their `rustSourceRevision` was
-`tree:3da7d68…` (generated from a dirty tree) instead of `git:db53cf09…` (the actual clean HEAD).
-`make dev-cargo-codegen` was run to regenerate both files against clean HEAD (and again after the
-`rs/smoke.rs` fix above, to pick up the new build fingerprint). Both are intentionally left
-**uncommitted** per this task's instructions; regenerating them is a prerequisite for anyone running
-this differential locally against a clean checkout.
+otherwise). `Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift` and
+`rust/ffi-contract/generated-manifest.json` must be regenerated (`make dev-cargo-codegen`) against a
+clean tree any time `rust/crates/ffi`/`rust/crates/runtime` changes land locally; both remain
+intentionally **uncommitted** per this task's instructions.

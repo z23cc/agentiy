@@ -1402,11 +1402,18 @@ enum LanguageTypeExtractor {
             }
             // normal function
             if let m = line.firstMatch(of: cppFunctionRegex) {
-                let extracted = extractNamedGroups(
+                var extracted = extractNamedGroups(
                     match: m,
                     groupNames: ("returnType", "name", "paramList"),
                     indices: (1, 2, 3)
                 )
+                // Out-of-line method definitions (`TaskService::label(...)`)
+                // carry the class qualifier in the captured name; the Rust
+                // engine's `function_name` never qualifies it (matching
+                // the constructor branch above), so drop it here too.
+                if let name = extracted["name"] {
+                    extracted["name"] = name.split(separator: "::").last.map(String.init) ?? name
+                }
                 return extracted.thenParseParameters(language: language)
             }
             // trailing-return

@@ -192,7 +192,104 @@ fn line_number_at(text: &str, byte: usize) -> usize {
     text[..byte].bytes().filter(|&b| b == b'\n').count() + 1
 }
 
-fn apply_literal(text: &str, operation: &ApplyOperation) -> Result<Option<String>, ApplyError> {
+fn count_line_breaks(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut count = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' {
+            count += 1;
+            index += usize::from(index + 1 < bytes.len() && bytes[index + 1] == b'\n') + 1;
+        } else if bytes[index] == b'\n' {
+            count += 1;
+            index += 1;
+        } else {
+            index += 1;
+        }
+    }
+    count
+}
+
+fn convert_indentation(line: &str, tabs: bool) -> String {
+    let trimmed = line.trim_matches(char::is_whitespace);
+    let indentation = line.chars().take_while(|char| char.is_whitespace());
+    let indentation_chars = indentation.clone().count();
+    let tab_count = indentation.filter(|char| *char == '\t').count();
+    let is_tab_based = tab_count > 0;
+    let count = if tabs {
+        if is_tab_based {
+            tab_count
+        } else {
+            indentation_chars.div_ceil(4)
+        }
+    } else if is_tab_based {
+        tab_count * 4
+    } else {
+        indentation_chars
+    };
+    format!("{}{}", if tabs { "\t" } else { " " }.repeat(count), trimmed)
+}
+
+fn normalize_affected_lines(text: String, affected: &[bool], tabs: bool) -> String {
+    super::split_lines_preserving_endings(&text)
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if !affected.get(index).copied().unwrap_or(false) {
+                return line;
+            }
+            let content_len = line.trim_end_matches(['\r', '\n']).len();
+            let ending = &line[content_len..];
+            format!(
+                "{}{}",
+                convert_indentation(&line[..content_len], tabs),
+                ending
+            )
+        })
+        .collect()
+}
+
+fn replace_literal_matches(
+    text: &str,
+    operation: &ApplyOperation,
+    matches: &[(usize, usize)],
+    normalize_indentation: bool,
+) -> String {
+    let selected = if operation.replace_all {
+        matches
+    } else {
+        &matches[..1]
+    };
+    let mut result = String::with_capacity(text.len());
+    let mut affected = Vec::new();
+    let mut source_cursor = 0;
+    let mut output_line = 0;
+    for &(start, end) in selected {
+        let prefix = &text[source_cursor..start];
+        result.push_str(prefix);
+        output_line += count_line_breaks(prefix);
+        let replacement_start_line = output_line;
+        result.push_str(&operation.replace);
+        output_line += count_line_breaks(&operation.replace);
+        if affected.len() <= output_line {
+            affected.resize(output_line + 1, false);
+        }
+        affected[replacement_start_line..=output_line].fill(true);
+        source_cursor = end;
+    }
+    result.push_str(&text[source_cursor..]);
+    if normalize_indentation {
+        normalize_affected_lines(result, &affected, is_tab_file(&plain_lines(text)))
+    } else {
+        result
+    }
+}
+
+fn apply_literal(
+    text: &str,
+    operation: &ApplyOperation,
+    normalize_indentation: bool,
+) -> Result<Option<String>, ApplyError> {
     let matches = non_overlapping_ranges(text, &operation.search)?;
     if matches.is_empty() {
         if operation.replace_all {
@@ -223,14 +320,12 @@ fn apply_literal(text: &str, operation: &ApplyOperation) -> Result<Option<String
         operation.replace.len(),
         match_count,
     )?;
-    if operation.replace_all {
-        Ok(Some(text.replace(&operation.search, &operation.replace)))
-    } else {
-        let (start, end) = matches[0];
-        let mut result = text.to_owned();
-        result.replace_range(start..end, &operation.replace);
-        Ok(Some(result))
-    }
+    Ok(Some(replace_literal_matches(
+        text,
+        operation,
+        &matches,
+        normalize_indentation,
+    )))
 }
 
 fn plain_lines(text: &str) -> Vec<String> {
@@ -283,7 +378,7 @@ fn is_tab_file(lines: &[String]) -> bool {
         !line.trim().is_empty()
             && line
                 .chars()
-                .take_while(|c| c.is_whitespace())
+                .take_while(|c| *c == ' ' || *c == '\t')
                 .any(|c| c == '\t')
     })
 }
@@ -518,7 +613,7 @@ fn apply_single(
 ) -> Result<ApplyResult, ApplyError> {
     validate_operation(operation)?;
     let operation = resolve_escape(operation, original);
-    if let Some(updated) = apply_literal(original, &operation)? {
+    if let Some(updated) = apply_literal(original, &operation, true)? {
         return finish(
             request,
             original,
