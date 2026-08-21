@@ -606,7 +606,7 @@ actor WorkspaceSearchService {
         _ rhs: WorkspaceSearchRootPathIndex.Candidate
     ) -> Bool {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
-        switch WorkspaceFileContextStore.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
+        switch WorkspaceInventoryOrdering.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
         case .orderedAscending:
             return true
         case .orderedDescending:
@@ -620,7 +620,7 @@ actor WorkspaceSearchService {
         _ lhs: WorkspaceSearchCatalogEntry,
         _ rhs: WorkspaceSearchCatalogEntry
     ) -> Bool {
-        WorkspaceFileContextStore.searchCatalogEntryPrecedes(lhs, rhs)
+        WorkspaceInventoryOrdering.searchCatalogEntryPrecedes(lhs, rhs)
     }
 
     private static func orderEntries(_ entries: [WorkspaceSearchCatalogEntry]) -> [WorkspaceSearchCatalogEntry] {

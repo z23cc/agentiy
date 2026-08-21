@@ -808,7 +808,7 @@ final class WorkspaceSearchRootPathIndex: @unchecked Sendable {
 
     private static func candidatePrecedes(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
-        switch WorkspaceFileContextStore.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
+        switch WorkspaceInventoryOrdering.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
         case .orderedAscending:
             return true
         case .orderedDescending:
@@ -816,7 +816,7 @@ final class WorkspaceSearchRootPathIndex: @unchecked Sendable {
         case .orderedSame:
             break
         }
-        return WorkspaceFileContextStore.searchCatalogEntryPrecedes(lhs.entry, rhs.entry)
+        return WorkspaceInventoryOrdering.searchCatalogEntryPrecedes(lhs.entry, rhs.entry)
     }
 }
 
@@ -860,7 +860,7 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
             while changedPath != nil || entryIndex < entries.count {
                 if let path = changedPath, entryIndex < entries.count {
                     let entryPath = entries[entryIndex].standardizedRelativePath
-                    switch WorkspaceFileContextStore.compareUTF8Binary(path, entryPath) {
+                    switch WorkspaceInventoryOrdering.compareUTF8Binary(path, entryPath) {
                     case .orderedAscending:
                         changedPath = try reader.next()
                     case .orderedDescending:
@@ -911,7 +911,7 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
                 while changedPath != nil || entryIndex < entries.count {
                     if let path = changedPath ?? nil, entryIndex < entries.count {
                         let entryPath = entries[entryIndex].standardizedRelativePath
-                        switch WorkspaceFileContextStore.compareUTF8Binary(path, entryPath) {
+                        switch WorkspaceInventoryOrdering.compareUTF8Binary(path, entryPath) {
                         case .orderedAscending:
                             body(path)
                             changedPath = try? reader.next()
@@ -972,7 +972,7 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
             entry.displayPath == projectedDisplayPrefix + entry.standardizedRelativePath
                 && entry.standardizedFullPath == projectedAbsolutePrefix + entry.standardizedRelativePath
         }), zip(authoritativeEntries, authoritativeEntries.dropFirst()).allSatisfy({ previous, next in
-            WorkspaceFileContextStore.compareUTF8Binary(
+            WorkspaceInventoryOrdering.compareUTF8Binary(
                 previous.standardizedRelativePath,
                 next.standardizedRelativePath
             ) == .orderedAscending
@@ -998,7 +998,7 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
                 }
                 let standardizedRelativePath = StandardizedPath.relative(relativePath)
                 while authoritativeIndex < authoritativeEntries.count,
-                      WorkspaceFileContextStore.compareUTF8Binary(
+                      WorkspaceInventoryOrdering.compareUTF8Binary(
                           authoritativeEntries[authoritativeIndex].standardizedRelativePath,
                           standardizedRelativePath
                       ) == .orderedAscending
@@ -1010,7 +1010,7 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
                 }
 
                 let matchedEntry: WorkspaceSearchCatalogEntry? = if authoritativeIndex < authoritativeEntries.count,
-                                                                    WorkspaceFileContextStore.compareUTF8Binary(
+                                                                    WorkspaceInventoryOrdering.compareUTF8Binary(
                                                                         authoritativeEntries[authoritativeIndex]
                                                                             .standardizedRelativePath,
                                                                         standardizedRelativePath
@@ -1131,14 +1131,14 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
         var upperBound = relativePaths.count
         while lowerBound < upperBound {
             let middle = lowerBound + (upperBound - lowerBound) / 2
-            if WorkspaceFileContextStore.compareUTF8Binary(relativePaths[middle], path) == .orderedAscending {
+            if WorkspaceInventoryOrdering.compareUTF8Binary(relativePaths[middle], path) == .orderedAscending {
                 lowerBound = middle + 1
             } else {
                 upperBound = middle
             }
         }
         guard lowerBound < relativePaths.count,
-              WorkspaceFileContextStore.compareUTF8Binary(relativePaths[lowerBound], path) == .orderedSame
+              WorkspaceInventoryOrdering.compareUTF8Binary(relativePaths[lowerBound], path) == .orderedSame
         else { return nil }
         return lowerBound
     }
@@ -1151,7 +1151,7 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
         var upperBound = entries.count
         while lowerBound < upperBound {
             let middle = lowerBound + (upperBound - lowerBound) / 2
-            if WorkspaceFileContextStore.compareUTF8Binary(
+            if WorkspaceInventoryOrdering.compareUTF8Binary(
                 entries[middle].standardizedRelativePath,
                 relativePath
             ) == .orderedAscending {
@@ -1161,7 +1161,7 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
             }
         }
         guard lowerBound < entries.count,
-              WorkspaceFileContextStore.compareUTF8Binary(
+              WorkspaceInventoryOrdering.compareUTF8Binary(
                   entries[lowerBound].standardizedRelativePath,
                   relativePath
               ) == .orderedSame
@@ -1458,13 +1458,13 @@ final class WorkspaceProjectedPathSearchIndex: @unchecked Sendable {
 
     private static func candidatePrecedes(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
-        switch WorkspaceFileContextStore.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
+        switch WorkspaceInventoryOrdering.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
         case .orderedAscending:
             return true
         case .orderedDescending:
             return false
         case .orderedSame:
-            return WorkspaceFileContextStore.searchCatalogEntryPrecedes(lhs.entry, rhs.entry)
+            return WorkspaceInventoryOrdering.searchCatalogEntryPrecedes(lhs.entry, rhs.entry)
         }
     }
 }

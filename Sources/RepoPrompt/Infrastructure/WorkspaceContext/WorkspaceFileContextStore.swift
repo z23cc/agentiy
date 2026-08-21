@@ -2612,7 +2612,7 @@ actor WorkspaceFileContextStore {
                     return RootCatalogProjectionFile(file: file, language: language)
                 }
                 .sorted { lhs, rhs in
-                    WorkspaceFileContextStore.searchRootCatalogFilePrecedes(lhs.file, rhs.file)
+                    WorkspaceInventoryOrdering.searchRootCatalogFilePrecedes(lhs.file, rhs.file)
                 }
             self.projectionFiles = projectionFiles
             projectionFileIndexByID = Dictionary(
@@ -2649,11 +2649,6 @@ actor WorkspaceFileContextStore {
         init(_ shard: RootCatalogShard) {
             self.shard = shard
         }
-    }
-
-    private struct RootCatalogMergeCursor {
-        let shardIndex: Int
-        let elementIndex: Int
     }
 
     private struct AuthoritativeCatalogComponents {
@@ -6939,18 +6934,18 @@ actor WorkspaceFileContextStore {
 
             func directFilePrecedes(_ lhs: WorkspaceFileRecord, _ rhs: WorkspaceFileRecord) -> Bool {
                 usesRootLocalFileOrder
-                    ? Self.searchRootCatalogFilePrecedes(lhs, rhs)
-                    : Self.searchCatalogFilePrecedes(lhs, rhs)
+                    ? WorkspaceInventoryOrdering.searchRootCatalogFilePrecedes(lhs, rhs)
+                    : WorkspaceInventoryOrdering.searchCatalogFilePrecedes(lhs, rhs)
             }
 
             func projectionPrecedes(_ lhs: CatalogSortProjection, _ rhs: CatalogSortProjection) -> Bool {
-                switch Self.compareUTF8Binary(lhs.standardizedSortPath, rhs.standardizedSortPath) {
+                switch WorkspaceInventoryOrdering.compareUTF8Binary(lhs.standardizedSortPath, rhs.standardizedSortPath) {
                 case .orderedAscending:
                     true
                 case .orderedDescending:
                     false
                 case .orderedSame:
-                    Self.compareUTF8Binary(
+                    WorkspaceInventoryOrdering.compareUTF8Binary(
                         lhs.file.id.uuidString,
                         rhs.file.id.uuidString
                     ) == .orderedAscending
@@ -7034,7 +7029,7 @@ actor WorkspaceFileContextStore {
                 }
 
                 let folderStart = WorkspaceFileSearchDebugTiming.now()
-                _ = sourceFolders.sorted(by: Self.searchCatalogFolderPrecedes)
+                _ = sourceFolders.sorted(by: WorkspaceInventoryOrdering.searchCatalogFolderPrecedes)
                 let folderEnd = WorkspaceFileSearchDebugTiming.now()
                 let directIDs = direct.files.map(\.id)
                 let projectedIDs = projected.files.map(\.id)
@@ -7056,7 +7051,7 @@ actor WorkspaceFileContextStore {
                 var folderComparatorCalls = 0
                 _ = sourceFolders.sorted {
                     folderComparatorCalls += 1
-                    return Self.searchCatalogFolderPrecedes($0, $1)
+                    return WorkspaceInventoryOrdering.searchCatalogFolderPrecedes($0, $1)
                 }
 
                 guard repetitionIndex >= excludedWarmupCount else { continue }
@@ -8001,230 +7996,37 @@ actor WorkspaceFileContextStore {
         event: WorkspaceAppliedIndexBatchEvent,
         previousShard: RootCatalogShard
     ) -> RootCatalogShardBuilderOutput? {
-        let oldFilesByID = Dictionary(uniqueKeysWithValues: previousShard.files.map { ($0.id, $0) })
-        let oldFileIDsByPath = Dictionary(
-            previousShard.files.map { ($0.standardizedRelativePath, $0.id) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let oldFoldersByID = Dictionary(uniqueKeysWithValues: previousShard.folders.map { ($0.id, $0) })
-        let oldFolderIDsByPath = Dictionary(
-            previousShard.folders.map { ($0.standardizedRelativePath, $0.id) },
-            uniquingKeysWith: { first, _ in first }
-        )
-
-        let upsertedFilesByID = Dictionary(event.upsertedFiles.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        let upsertedFoldersByID = Dictionary(event.upsertedFolders.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        guard upsertedFilesByID.count == event.upsertedFiles.count,
-              upsertedFoldersByID.count == event.upsertedFolders.count,
-              event.upsertedFiles.allSatisfy({ $0.rootID == event.rootID && filesByID[$0.id] == $0 }),
-              event.upsertedFolders.allSatisfy({ $0.rootID == event.rootID && foldersByID[$0.id] == $0 })
-        else { return nil }
-        let representedFolderIDs = Set(oldFoldersByID.keys).union(upsertedFoldersByID.keys)
-        for file in upsertedFilesByID.values {
-            var parentFolderID = file.parentFolderID
-            while let folderID = parentFolderID {
-                guard representedFolderIDs.contains(folderID),
-                      let folder = foldersByID[folderID]
-                else { return nil }
-                parentFolderID = folder.parentFolderID
-            }
-        }
-
-        let removedFileIDs = Set(event.removedFileIDs)
-        let removedFolderIDs = Set(event.removedFolderIDs)
-        let removedFilePaths = Set(event.removedFilePaths.map(StandardizedPath.relative))
-        let removedFolderPaths = Set(event.removedFolderPaths.map(StandardizedPath.relative))
-        let modifiedFileIDs = Set(event.modifiedFileIDs)
-        let modifiedFolderIDs = Set(event.modifiedFolderIDs)
-        guard removedFileIDs.count == event.removedFileIDs.count,
-              removedFolderIDs.count == event.removedFolderIDs.count,
-              modifiedFileIDs.count == event.modifiedFileIDs.count,
-              modifiedFolderIDs.count == event.modifiedFolderIDs.count,
-              modifiedFileIDs.allSatisfy({ filesByID[$0]?.rootID == event.rootID }),
-              modifiedFolderIDs.allSatisfy({ foldersByID[$0]?.rootID == event.rootID })
-        else { return nil }
-
-        var touchedFileIDs = Set(upsertedFilesByID.keys)
-        var touchedFolderIDs = Set(upsertedFoldersByID.keys)
-        for id in removedFileIDs {
-            guard oldFilesByID[id] != nil else { return nil }
-            touchedFileIDs.insert(id)
-        }
-        for path in removedFilePaths {
-            guard let id = oldFileIDsByPath[path] else { return nil }
-            touchedFileIDs.insert(id)
-        }
-        for id in modifiedFileIDs {
-            guard oldFilesByID[id] != nil else { return nil }
-            touchedFileIDs.insert(id)
-        }
-        for id in removedFolderIDs {
-            guard oldFoldersByID[id] != nil else { return nil }
-            touchedFolderIDs.insert(id)
-        }
-        for path in removedFolderPaths {
-            guard let id = oldFolderIDsByPath[path] else { return nil }
-            touchedFolderIDs.insert(id)
-        }
-        for id in modifiedFolderIDs {
-            guard oldFoldersByID[id] != nil else { return nil }
-            touchedFolderIDs.insert(id)
-        }
-
-        let upsertedFilePaths = Set(upsertedFilesByID.values.map(\.standardizedRelativePath))
-        let upsertedFolderPaths = Set(upsertedFoldersByID.values.map(\.standardizedRelativePath))
-        var pathIndexChangedFileIDs = touchedFileIDs
-        for path in removedFilePaths.union(upsertedFilePaths) {
-            if let oldFileID = oldFileIDsByPath[path] {
-                pathIndexChangedFileIDs.insert(oldFileID)
-            }
-        }
-        guard removedFileIDs.isDisjoint(with: upsertedFilesByID.keys),
-              removedFolderIDs.isDisjoint(with: upsertedFoldersByID.keys),
-              removedFilePaths.isDisjoint(with: upsertedFilePaths),
-              removedFolderPaths.isDisjoint(with: upsertedFolderPaths),
-              modifiedFileIDs.isDisjoint(with: removedFileIDs),
-              modifiedFolderIDs.isDisjoint(with: removedFolderIDs)
-        else { return nil }
-
-        let logicalMutationCount = touchedFileIDs.count + touchedFolderIDs.count
-        guard logicalMutationCount <= Self.maxRootCatalogShardPatchLogicalMutationCount else {
-            return RootCatalogShardBuilderOutput(
-                files: previousShard.files,
-                folders: previousShard.folders,
-                logicalMutationCount: logicalMutationCount,
-                pathIndexChangedFileIDs: []
-            )
-        }
-
-        func insertFile(_ file: WorkspaceFileRecord, into files: inout [WorkspaceFileRecord]) {
-            var lowerBound = 0
-            var upperBound = files.count
-            while lowerBound < upperBound {
-                let midpoint = (lowerBound + upperBound) / 2
-                if Self.searchRootCatalogFilePrecedes(files[midpoint], file) {
-                    lowerBound = midpoint + 1
-                } else {
-                    upperBound = midpoint
-                }
-            }
-            files.insert(file, at: lowerBound)
-        }
-
-        func insertFolder(_ folder: WorkspaceFolderRecord, into folders: inout [WorkspaceFolderRecord]) {
-            var lowerBound = 0
-            var upperBound = folders.count
-            while lowerBound < upperBound {
-                let midpoint = (lowerBound + upperBound) / 2
-                if Self.searchCatalogFolderPrecedes(folders[midpoint], folder) {
-                    lowerBound = midpoint + 1
-                } else {
-                    upperBound = midpoint
-                }
-            }
-            folders.insert(folder, at: lowerBound)
-        }
-
-        var files = previousShard.files
-        if let touchedFileID = touchedFileIDs.first {
-            files.removeAll { file in
-                file.id == touchedFileID
-                    || removedFilePaths.contains(file.standardizedRelativePath)
-                    || upsertedFilePaths.contains(file.standardizedRelativePath)
-            }
-            if let upserted = upsertedFilesByID[touchedFileID] {
-                insertFile(upserted, into: &files)
-            } else if modifiedFileIDs.contains(touchedFileID), let modified = filesByID[touchedFileID] {
-                insertFile(modified, into: &files)
-            }
-        }
-
-        var folders = previousShard.folders
-        if let touchedFolderID = touchedFolderIDs.first {
-            folders.removeAll { folder in
-                folder.id == touchedFolderID
-                    || removedFolderPaths.contains(folder.standardizedRelativePath)
-                    || upsertedFolderPaths.contains(folder.standardizedRelativePath)
-            }
-            if let upserted = upsertedFoldersByID[touchedFolderID] {
-                insertFolder(upserted, into: &folders)
-            } else if modifiedFolderIDs.contains(touchedFolderID), let modified = foldersByID[touchedFolderID] {
-                insertFolder(modified, into: &folders)
-            }
-        }
-
+        guard let patch = WorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch(
+            event: event,
+            previousFiles: previousShard.files,
+            previousFolders: previousShard.folders,
+            filesByID: filesByID,
+            foldersByID: foldersByID,
+            maxLogicalMutationCount: Self.maxRootCatalogShardPatchLogicalMutationCount
+        ) else { return nil }
         return RootCatalogShardBuilderOutput(
-            files: files,
-            folders: folders,
-            logicalMutationCount: logicalMutationCount,
-            pathIndexChangedFileIDs: pathIndexChangedFileIDs
+            files: patch.files,
+            folders: patch.folders,
+            logicalMutationCount: patch.logicalMutationCount,
+            pathIndexChangedFileIDs: patch.pathIndexChangedFileIDs
         )
     }
 
     private func buildAuthoritativeCatalogComponents(
         roots: [WorkspaceRootRecord]
     ) -> AuthoritativeCatalogComponents {
-        let rootsByID = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
-        let allowedRootIDs = Set(rootsByID.keys)
-        let filePrecedes: (WorkspaceFileRecord, WorkspaceFileRecord) -> Bool = roots.count == 1
-            ? Self.searchRootCatalogFilePrecedes
-            : Self.searchCatalogFilePrecedes
-        #if DEBUG
-            let filterStart = WorkspaceFileSearchDebugTiming.now()
-            let filteredFiles = filesByID.values
-                .filter { allowedRootIDs.contains($0.rootID) && isDiscoverableFileID($0.id) }
-            let filteredFolders = foldersByID.values
-                .filter { allowedRootIDs.contains($0.rootID) && isDiscoverableFolderID($0.id) }
-            let filterEnd = WorkspaceFileSearchDebugTiming.now()
-            WorkspaceFileSearchDebugContext.catalogBuildObserver?.recordFilter(
-                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(since: filterStart, through: filterEnd)
-            )
-            let sortStart = WorkspaceFileSearchDebugTiming.now()
-            let fileSortStart = WorkspaceFileSearchDebugTiming.now()
-            let files = filteredFiles.sorted(by: filePrecedes)
-            let fileSortEnd = WorkspaceFileSearchDebugTiming.now()
-            let folderSortStart = WorkspaceFileSearchDebugTiming.now()
-            let folders = filteredFolders.sorted(by: Self.searchCatalogFolderPrecedes)
-            let folderSortEnd = WorkspaceFileSearchDebugTiming.now()
-            let sortEnd = WorkspaceFileSearchDebugTiming.now()
-            WorkspaceFileSearchDebugContext.catalogBuildObserver?.recordSort(
-                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(since: sortStart, through: sortEnd),
-                fileNanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
-                    since: fileSortStart,
-                    through: fileSortEnd
-                ),
-                folderNanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
-                    since: folderSortStart,
-                    through: folderSortEnd
-                ),
-                fileInputCount: filteredFiles.count,
-                folderInputCount: filteredFolders.count
-            )
-            let materializationStart = WorkspaceFileSearchDebugTiming.now()
-            let entries = files.compactMap { file -> WorkspaceSearchCatalogEntry? in
-                guard let root = rootsByID[file.rootID] else { return nil }
-                return WorkspaceSearchCatalogEntry(file: file, root: root)
-            }
-            let materializationEnd = WorkspaceFileSearchDebugTiming.now()
-            WorkspaceFileSearchDebugContext.catalogBuildObserver?.recordMaterialization(
-                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
-                    since: materializationStart,
-                    through: materializationEnd
-                )
-            )
-        #else
-            let files = filesByID.values
-                .filter { allowedRootIDs.contains($0.rootID) && isDiscoverableFileID($0.id) }
-                .sorted(by: filePrecedes)
-            let folders = foldersByID.values
-                .filter { allowedRootIDs.contains($0.rootID) && isDiscoverableFolderID($0.id) }
-                .sorted(by: Self.searchCatalogFolderPrecedes)
-            let entries = files.compactMap { file -> WorkspaceSearchCatalogEntry? in
-                guard let root = rootsByID[file.rootID] else { return nil }
-                return WorkspaceSearchCatalogEntry(file: file, root: root)
-            }
-        #endif
-        return AuthoritativeCatalogComponents(files: files, folders: folders, entries: entries)
+        let components = WorkspaceInventoryCatalogBuilders.buildAuthoritativeCatalogComponents(
+            roots: roots,
+            filesByID: filesByID,
+            foldersByID: foldersByID,
+            managedOnlyFileIDs: managedOnlyFileIDs,
+            managedOnlyFolderIDs: managedOnlyFolderIDs
+        )
+        return AuthoritativeCatalogComponents(
+            files: components.files,
+            folders: components.folders,
+            entries: components.entries
+        )
     }
 
     /// Builds the publication payload for a hidden root without consulting any
@@ -8234,10 +8036,16 @@ actor WorkspaceFileContextStore {
         root: WorkspaceRootRecord,
         indexes: RootIndexBuffers
     ) -> AuthoritativeCatalogComponents {
-        let files = indexes.filesByID.values.sorted(by: Self.searchRootCatalogFilePrecedes)
-        let folders = indexes.foldersByID.values.sorted(by: Self.searchCatalogFolderPrecedes)
-        let entries = files.map { WorkspaceSearchCatalogEntry(file: $0, root: root) }
-        return AuthoritativeCatalogComponents(files: files, folders: folders, entries: entries)
+        let components = WorkspaceInventoryCatalogBuilders.buildPendingCatalogComponents(
+            root: root,
+            filesByID: indexes.filesByID,
+            foldersByID: indexes.foldersByID
+        )
+        return AuthoritativeCatalogComponents(
+            files: components.files,
+            folders: components.folders,
+            entries: components.entries
+        )
     }
 
     private func buildAuthoritativeSearchCatalogSnapshot(
@@ -8368,139 +8176,9 @@ actor WorkspaceFileContextStore {
     private func mergeRootCatalogShards(
         _ shards: [RootCatalogShard]
     ) -> (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry]) {
-        let totalFileCount = shards.reduce(0) { $0 + $1.files.count }
-        var files: [WorkspaceFileRecord] = []
-        var entries: [WorkspaceSearchCatalogEntry] = []
-        files.reserveCapacity(totalFileCount)
-        entries.reserveCapacity(totalFileCount)
-        var heap: [RootCatalogMergeCursor] = []
-        heap.reserveCapacity(shards.count)
-
-        func cursorPrecedes(_ lhs: RootCatalogMergeCursor, _ rhs: RootCatalogMergeCursor) -> Bool {
-            let lhsFile = shards[lhs.shardIndex].files[lhs.elementIndex]
-            let rhsFile = shards[rhs.shardIndex].files[rhs.elementIndex]
-            if Self.searchCatalogFilePrecedes(lhsFile, rhsFile) { return true }
-            if Self.searchCatalogFilePrecedes(rhsFile, lhsFile) { return false }
-            if lhs.shardIndex == rhs.shardIndex { return lhs.elementIndex < rhs.elementIndex }
-            return lhs.shardIndex < rhs.shardIndex
-        }
-
-        func push(_ cursor: RootCatalogMergeCursor) {
-            heap.append(cursor)
-            var index = heap.count - 1
-            while index > 0 {
-                let parent = (index - 1) / 2
-                guard cursorPrecedes(heap[index], heap[parent]) else { break }
-                heap.swapAt(index, parent)
-                index = parent
-            }
-        }
-
-        func pop() -> RootCatalogMergeCursor? {
-            guard !heap.isEmpty else { return nil }
-            if heap.count == 1 { return heap.removeLast() }
-            let first = heap[0]
-            heap[0] = heap.removeLast()
-            var index = 0
-            while true {
-                let left = index * 2 + 1
-                guard left < heap.count else { break }
-                let right = left + 1
-                let next = right < heap.count && cursorPrecedes(heap[right], heap[left]) ? right : left
-                guard cursorPrecedes(heap[next], heap[index]) else { break }
-                heap.swapAt(index, next)
-                index = next
-            }
-            return first
-        }
-
-        for shardIndex in shards.indices where !shards[shardIndex].files.isEmpty {
-            push(RootCatalogMergeCursor(shardIndex: shardIndex, elementIndex: 0))
-        }
-        while let cursor = pop() {
-            let shard = shards[cursor.shardIndex]
-            files.append(shard.files[cursor.elementIndex])
-            entries.append(shard.entries[cursor.elementIndex])
-            let nextElementIndex = cursor.elementIndex + 1
-            if nextElementIndex < shard.files.count {
-                push(RootCatalogMergeCursor(shardIndex: cursor.shardIndex, elementIndex: nextElementIndex))
-            }
-        }
-        return (files, entries)
-    }
-
-    static func compareUTF8Binary(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        var lhsIterator = lhs.utf8.makeIterator()
-        var rhsIterator = rhs.utf8.makeIterator()
-        while true {
-            switch (lhsIterator.next(), rhsIterator.next()) {
-            case let (lhsByte?, rhsByte?):
-                if lhsByte < rhsByte { return .orderedAscending }
-                if lhsByte > rhsByte { return .orderedDescending }
-            case (nil, nil):
-                return .orderedSame
-            case (nil, _?):
-                return .orderedAscending
-            case (_?, nil):
-                return .orderedDescending
-            }
-        }
-    }
-
-    private static func searchCatalogFilePrecedes(_ lhs: WorkspaceFileRecord, _ rhs: WorkspaceFileRecord) -> Bool {
-        searchCatalogFilePrecedes(
-            lhsPath: lhs.standardizedFullPath,
-            lhsID: lhs.id,
-            rhsPath: rhs.standardizedFullPath,
-            rhsID: rhs.id
+        WorkspaceInventoryCatalogBuilders.mergeRootCatalogShardFileEntryLists(
+            shards.map { (files: $0.files, entries: $0.entries) }
         )
-    }
-
-    private static func searchRootCatalogFilePrecedes(
-        _ lhs: WorkspaceFileRecord,
-        _ rhs: WorkspaceFileRecord
-    ) -> Bool {
-        searchCatalogFilePrecedes(
-            lhsPath: lhs.standardizedRelativePath,
-            lhsID: lhs.id,
-            rhsPath: rhs.standardizedRelativePath,
-            rhsID: rhs.id
-        )
-    }
-
-    static func searchCatalogEntryPrecedes(
-        _ lhs: WorkspaceSearchCatalogEntry,
-        _ rhs: WorkspaceSearchCatalogEntry
-    ) -> Bool {
-        searchCatalogFilePrecedes(
-            lhsPath: lhs.standardizedFullPath,
-            lhsID: lhs.id,
-            rhsPath: rhs.standardizedFullPath,
-            rhsID: rhs.id
-        )
-    }
-
-    private static func searchCatalogFilePrecedes(
-        lhsPath: String,
-        lhsID: UUID,
-        rhsPath: String,
-        rhsID: UUID
-    ) -> Bool {
-        switch compareUTF8Binary(lhsPath, rhsPath) {
-        case .orderedAscending:
-            true
-        case .orderedDescending:
-            false
-        case .orderedSame:
-            compareUTF8Binary(lhsID.uuidString, rhsID.uuidString) == .orderedAscending
-        }
-    }
-
-    private static func searchCatalogFolderPrecedes(_ lhs: WorkspaceFolderRecord, _ rhs: WorkspaceFolderRecord) -> Bool {
-        if lhs.standardizedFullPath == rhs.standardizedFullPath {
-            return lhs.id.uuidString < rhs.id.uuidString
-        }
-        return lhs.standardizedFullPath < rhs.standardizedFullPath
     }
 
     #if DEBUG
@@ -14802,10 +14480,10 @@ actor WorkspaceFileContextStore {
     ) -> RootCatalogShard {
         let files = snapshot.files
             .filter { !snapshot.managedOnlyFileIDs.contains($0.id) }
-            .sorted(by: searchRootCatalogFilePrecedes)
+            .sorted(by: WorkspaceInventoryOrdering.searchRootCatalogFilePrecedes)
         let folders = snapshot.folders
             .filter { !snapshot.managedOnlyFolderIDs.contains($0.id) }
-            .sorted(by: searchCatalogFolderPrecedes)
+            .sorted(by: WorkspaceInventoryOrdering.searchCatalogFolderPrecedes)
         let entries = files.map { WorkspaceSearchCatalogEntry(file: $0, root: snapshot.root) }
         let syntaxManager = SyntaxManager()
         let projectionFiles = files.compactMap { file -> RootCatalogProjectionFile? in

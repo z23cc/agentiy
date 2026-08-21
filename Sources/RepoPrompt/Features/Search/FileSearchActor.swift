@@ -321,7 +321,7 @@ struct OrderedSearchBatchWindow {
 /// Ripgrep-style asynchronous searcher, fully cancellable.
 actor FileSearchActor {
     static func pathSearchInputPrecedes(_ lhsPath: String, _ rhsPath: String) -> Bool {
-        WorkspaceFileContextStore.compareUTF8Binary(lhsPath, rhsPath) == .orderedAscending
+        WorkspaceInventoryOrdering.compareUTF8Binary(lhsPath, rhsPath) == .orderedAscending
     }
 
     private static func descriptors(

@@ -211,7 +211,7 @@ final class WorkspaceProjectedPathSearchTests: XCTestCase {
         entries.removeAll { $0.id == deletedID || $0.id == renamedID }
         entries.append(makeEntry(path: "Added.swift", id: addedID, root: root))
         entries.append(makeEntry(path: "Renamed.swift", id: renamedID, root: root))
-        entries.sort(by: WorkspaceFileContextStore.searchCatalogEntryPrecedes)
+        entries.sort(by: WorkspaceInventoryOrdering.searchCatalogEntryPrecedes)
         var patched = try initial.applyingPatch(
             identity: identity(2),
             entries: entries,
@@ -252,7 +252,7 @@ final class WorkspaceProjectedPathSearchTests: XCTestCase {
             let renamedPath = "Cycle\(iteration)-文件.swift"
             entries.removeAll { $0.id == renamedID }
             entries.append(makeEntry(path: renamedPath, id: renamedID, root: root))
-            entries.sort(by: WorkspaceFileContextStore.searchCatalogEntryPrecedes)
+            entries.sort(by: WorkspaceInventoryOrdering.searchCatalogEntryPrecedes)
             beyondFormerThreshold = beyondFormerThreshold.applyingPatch(
                 identity: identity(UInt64(5 + iteration)),
                 entries: entries,
@@ -376,7 +376,7 @@ final class WorkspaceProjectedPathSearchTests: XCTestCase {
                 entry.id == mutableID || (iteration == 0 && entry.id == deletedID)
             }
             entries.append(makeEntry(path: "Mutable \(iteration) Å.swift", id: mutableID, root: root))
-            entries.sort(by: WorkspaceFileContextStore.searchCatalogEntryPrecedes)
+            entries.sort(by: WorkspaceInventoryOrdering.searchCatalogEntryPrecedes)
             var changedFileIDs: Set<UUID> = [mutableID]
             if iteration == 0 { changedFileIDs.insert(deletedID) }
             index = index.applyingPatch(
@@ -517,7 +517,7 @@ final class WorkspaceProjectedPathSearchTests: XCTestCase {
     ) -> [WorkspaceSearchCatalogEntry] {
         paths.map { relativePath in
             makeEntry(path: relativePath, id: idsByPath[relativePath] ?? UUID(), root: root)
-        }.sorted(by: WorkspaceFileContextStore.searchCatalogEntryPrecedes)
+        }.sorted(by: WorkspaceInventoryOrdering.searchCatalogEntryPrecedes)
     }
 
     private func makeEntry(
