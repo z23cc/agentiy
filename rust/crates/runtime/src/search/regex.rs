@@ -8,10 +8,10 @@ use super::fast_plans;
 use super::lines::LineTable;
 use super::pattern::{self, PreparedSearch};
 use super::{
-    ByteRange, CompactRegexBatchResult, CompactRegexSubjectSummary, EngineKind, JitStatus,
-    LimitFailure, LimitPolicy, MatchPolicy, RegexDiagnostic, RegexLineHit, RegexSearchMode,
-    RegexSearchRequest, RegexSearchResult, RepairKind, SearchError, COMPACT_HIT_STRIDE,
-    COMPACT_LINE_RANGE_STRIDE,
+    ByteRange, COMPACT_HIT_STRIDE, COMPACT_LINE_RANGE_STRIDE, CompactRegexBatchResult,
+    CompactRegexSubjectSummary, EngineKind, JitStatus, LimitFailure, LimitPolicy, MatchPolicy,
+    RegexDiagnostic, RegexLineHit, RegexSearchMode, RegexSearchRequest, RegexSearchResult,
+    RepairKind, SearchError,
 };
 
 const DIRECT_LINE_CANCELLATION_STRIDE: usize = 64;
@@ -483,15 +483,15 @@ impl CanonicalRegexResult {
                 .is_some_and(|(_, end)| hit.line >= *end)
             {
                 let (start, end) = intervals[interval_index];
-                interval_base = interval_base
-                    .checked_add(end - start)
-                    .ok_or_else(|| SearchError::InternalInvariant("selected line index overflow".into()))?;
+                interval_base = interval_base.checked_add(end - start).ok_or_else(|| {
+                    SearchError::InternalInvariant("selected line index overflow".into())
+                })?;
                 interval_index += 1;
             }
-            let (interval_start, interval_end) = intervals
-                .get(interval_index)
-                .copied()
-                .ok_or_else(|| SearchError::InternalInvariant("missing selected hit line".into()))?;
+            let (interval_start, interval_end) =
+                intervals.get(interval_index).copied().ok_or_else(|| {
+                    SearchError::InternalInvariant("missing selected hit line".into())
+                })?;
             if hit.line < interval_start || hit.line >= interval_end {
                 return Err(SearchError::InternalInvariant(
                     "hit line outside selected interval".into(),
@@ -499,7 +499,9 @@ impl CanonicalRegexResult {
             }
             let selected_line_index = interval_base
                 .checked_add(hit.line - interval_start)
-                .ok_or_else(|| SearchError::InternalInvariant("selected line index overflow".into()))?;
+                .ok_or_else(|| {
+                    SearchError::InternalInvariant("selected line index overflow".into())
+                })?;
             let before_count = hit.line.min(context);
             let after_count = context.min(self.line_ranges.len() - hit.line - 1);
             batch.hit_words.extend([
@@ -576,9 +578,20 @@ const fn limit_policy(policy: MatchPolicy) -> LimitPolicy {
 }
 
 fn map_compile_error(error: pcre2::Error) -> SearchError {
+    const MISSING_CLOSING_PARENTHESIS: i32 = 114;
+    const UNMATCHED_CLOSING_PARENTHESIS: i32 = 122;
+    const PARENS_QUERY_R_MISSING_CLOSING: i32 = 158;
+
     let message = error.to_string();
     let normalized = message.to_ascii_lowercase();
-    if normalized.contains("lookbehind")
+    if matches!(
+        error.code(),
+        MISSING_CLOSING_PARENTHESIS
+            | UNMATCHED_CLOSING_PARENTHESIS
+            | PARENS_QUERY_R_MISSING_CLOSING
+    ) {
+        SearchError::UnmatchedParentheses
+    } else if normalized.contains("lookbehind")
         && (normalized.contains("not fixed")
             || normalized.contains("variable")
             || normalized.contains("bounded")

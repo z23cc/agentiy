@@ -189,6 +189,9 @@ IMPLEMENTED_OPERATIONS = {
     "rust-ffi-swift-baseline-measure",
     "rust-ffi-swift-baseline-candidate",
     "rust-search-phase-profile",
+    "rust-search-comparability-audit-v2",
+    "rust-search-cargo-floors",
+    "rust-search-three-layer-floors",
     "format",
     "format-check",
     "lint",
@@ -246,7 +249,10 @@ Operation commands:
   ./conductor rust-ffi-swift-baseline-check     # two deterministic release test-binary exports
   ./conductor rust-ffi-swift-baseline-measure   # release test-binary measurement
   ./conductor rust-ffi-swift-baseline-candidate # Rust search candidate measurement + SLO gate
-  ./conductor rust-search-phase-profile [--fixture NAME] [--process-runs N]
+    ./conductor rust-search-phase-profile [--fixture NAME] [--process-runs N]
+    ./conductor rust-search-comparability-audit-v2 [--process-runs N]
+    ./conductor rust-search-cargo-floors [--process-runs N]
+    ./conductor rust-search-three-layer-floors [--process-runs N]
   ./conductor format                 # mutates first-party Swift files
   ./conductor format-check           # non-mutating SwiftFormat check
   ./conductor lint                   # non-mutating format-check + SwiftLint strict
@@ -2899,6 +2905,9 @@ def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -
         "rust-ffi-swift-baseline-measure",
         "rust-ffi-swift-baseline-candidate",
         "rust-search-phase-profile",
+        "rust-search-comparability-audit-v2",
+        "rust-search-cargo-floors",
+        "rust-search-three-layer-floors",
     }:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
@@ -3371,6 +3380,22 @@ class OperationRegistry:
             if fixture := args.get("fixture"):
                 command.extend(["--fixture", str(fixture)])
             command.extend(["--process-runs", str(args.get("processRuns") or 3)])
+            return self._rust_archive_then_command(command, "release"), ["build"], cwd, env, effective_timeout
+        if operation in {"rust-search-comparability-audit-v2", "rust-search-cargo-floors", "rust-search-three-layer-floors"}:
+            env = self._cargo_env(env)
+            if operation.endswith("audit-v2"):
+                flag = "--comparability-audit-v2"
+            elif operation.endswith("cargo-floors"):
+                flag = "--cargo-floors"
+            else:
+                flag = "--three-layer-floors"
+            command = [
+                sys.executable,
+                script("measure_rust_search_baseline.py"),
+                flag,
+                "--process-runs",
+                str(args.get("processRuns") or 3),
+            ]
             return self._rust_archive_then_command(command, "release"), ["build"], cwd, env, effective_timeout
         if operation == "format":
             return [script("swift_style.sh"), "format"], ["style", "build"], cwd, env, effective_timeout
@@ -8468,6 +8493,13 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         if ns.process_runs < 1:
             parser.error("--process-runs must be positive")
         args["fixture"] = ns.fixture
+        args["processRuns"] = ns.process_runs
+    elif operation in {"rust-search-comparability-audit-v2", "rust-search-cargo-floors", "rust-search-three-layer-floors"}:
+        parser = argparse.ArgumentParser(prog=f"conductor {operation}")
+        parser.add_argument("--process-runs", type=int, default=3)
+        ns = parser.parse_args(rest)
+        if ns.process_runs < 1:
+            parser.error("--process-runs must be positive")
         args["processRuns"] = ns.process_runs
     elif operation in {"cargo-build", "cargo-archive"}:
         parser = argparse.ArgumentParser(prog=f"conductor {operation}")

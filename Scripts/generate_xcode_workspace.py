@@ -118,15 +118,12 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "RepoPromptMCP",
         "RepoPromptShared",
         "RepoPromptC",
-        "CSwiftPCRE2",
         "RepoPromptWorkspaceCore",
         "RepoPromptDomainRuntime",
-        "RepoPromptRegexCore",
         "RepoPromptCodeMapCore",
         "TreeSitterScannerSupport",
         "RepoPromptWorkspaceCoreTests",
         "RepoPromptDomainRuntimeTests",
-        "RepoPromptRegexCoreTests",
         "RepoPromptCodeMapCoreTests",
         "RepoPromptTests",
         "CAgentryRustCore",
@@ -137,6 +134,9 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     for name in required_targets:
         if name not in targets:
             raise GeneratorError(f"Package.swift must retain target '{name}'")
+    for name in ("RepoPromptRegexCore", "CSwiftPCRE2", "RepoPromptRegexCoreTests"):
+        if name in targets:
+            raise GeneratorError(f"Removed legacy regex target must not return: '{name}'")
 
     repo_prompt = targets["RepoPrompt"]
     if repo_prompt.get("type") != "executable":

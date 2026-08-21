@@ -53,7 +53,6 @@ impl LineTable {
     pub(crate) fn into_ranges(self) -> Vec<ByteRange> {
         self.ranges
     }
-
 }
 
 impl ByteRange {

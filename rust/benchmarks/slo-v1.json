@@ -63,6 +63,13 @@
     ]
   },
   "fixtureTierDecision": "Orchestrator decision completing the original G4 representative-workload intent. Micro fixtures remain measured against the unchanged 110%/125% ratios as informational FFI boundary-tax tracking; only the representative tier decides cutover.",
+  "performanceIterationPolicy": {
+    "defaultInstrument": "cargo release A-layer core and Rust FFI-frontier harnesses",
+    "fixtureDigestRequired": true,
+    "swiftReleaseRole": "B/C layer and one final SLO gate confirmation only",
+    "swiftGateEntryCriterion": "run only after cargo A/FFI-frontier results show the unchanged representative gate is plausibly reachable",
+    "rationale": "Routine performance iteration must not pay a roughly 15-minute Swift release rebuild for a seconds-scale search sample."
+  },
   "swiftBaseline": {
     "status": "captured",
     "requiredBefore": [

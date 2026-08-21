@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod codemap;
 mod config;
 mod identity;
 mod lifecycle;

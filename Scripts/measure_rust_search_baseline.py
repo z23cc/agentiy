@@ -20,6 +20,13 @@ RESULT_PATH = ROOT / "rust/benchmarks/results/v1/swift-search-reference.json"
 CANDIDATE_RESULT_PATH = ROOT / "rust/benchmarks/results/v1/rust-search-candidate.json"
 PHASE_PROFILE_RESULT_PATH = ROOT / "rust/benchmarks/results/v1/phase-profile-v1.json"
 PHASE_PROFILE_SUMMARY_PATH = ROOT / "rust/benchmarks/results/v1/phase-profile-v1.md"
+REFERENCE_V2_RESULT_PATH = ROOT / "rust/benchmarks/results/v1/swift-search-reference-v2.json"
+CANDIDATE_V2_RESULT_PATH = ROOT / "rust/benchmarks/results/v1/rust-search-candidate-v2.json"
+COMPARABILITY_V2_SUMMARY_PATH = ROOT / "rust/benchmarks/results/v1/comparability-audit-v2.md"
+THREE_LAYER_RESULT_PATH = ROOT / "rust/benchmarks/results/v1/three-layer-floors-v1.json"
+THREE_LAYER_SUMMARY_PATH = ROOT / "rust/benchmarks/results/v1/three-layer-floors-v1.md"
+CARGO_FLOOR_RESULT_PATH = ROOT / "rust/benchmarks/results/v1/rust-search-cargo-floors-v1.json"
+CARGO_FLOOR_SUMMARY_PATH = ROOT / "rust/benchmarks/results/v1/rust-search-cargo-floors-v1.md"
 SLO_PATH = ROOT / "rust/benchmarks/slo-v1.json"
 MICRO_FIXTURE_NAMES = ("file-tree-batch", "codemap", "search-results", "transcript")
 REPRESENTATIVE_FIXTURE_NAMES = (
@@ -31,10 +38,12 @@ FIXTURE_NAMES = MICRO_FIXTURE_NAMES + REPRESENTATIVE_FIXTURE_NAMES
 EXPORT_FILTER = "RepoPromptTests.RustSearchSwiftBaselineExportTests/testExportCurrentSwiftPayloadsWhenRequested"
 MEASURE_FILTER = "RepoPromptTests.RustSearchSwiftBaselineExportTests/testMeasureCurrentSwiftPayloadsWhenRequested"
 PHASE_PROFILE_FILTER = "RepoPromptTests.RustSearchSwiftBaselineExportTests/testMeasureRustSearchPhaseProfileWhenRequested"
+THREE_LAYER_SWIFT_FILTER = "RepoPromptTests.RustSearchSwiftBaselineExportTests/testMeasureRustSearchThreeLayerFloorWhenRequested"
 EXPORT_ENV = "AGENTRY_RUST_SEARCH_SWIFT_BASELINE_EXPORT_DIR"
 FIXTURE_ENV = "AGENTRY_RUST_SEARCH_SWIFT_BASELINE_FIXTURE_DIR"
 MEASURE_ENV = "AGENTRY_RUST_SEARCH_SWIFT_BASELINE_MEASURE_OUTPUT"
 IMPLEMENTATION_ENV = "AGENTRY_RUST_SEARCH_MEASUREMENT_IMPLEMENTATION"
+FORCE_RELEASE_ARCHIVE_ENV = "AGENTRY_RUST_SEARCH_FORCE_RELEASE_ARCHIVE"
 PHASE_PROFILE_ENV = "AGENTRY_RUST_SEARCH_PHASE_PROFILE"
 PHASE_PROFILE_OUTPUT_ENV = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_OUTPUT"
 PHASE_PROFILE_FIXTURE_ENV = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_FIXTURE"
@@ -42,6 +51,15 @@ PHASE_PROFILE_ENGINE_ENV = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_ENGINE"
 PHASE_PROFILE_COLLECTION_ENV = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_COLLECTION"
 PHASE_PROFILE_BATCH_SIZE_ENV = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_BATCH_SIZE"
 PHASE_PROFILE_NO_MATCH_ENV = "AGENTRY_RUST_SEARCH_PHASE_PROFILE_NO_MATCH"
+FLOOR_OUTPUT_ENV = "AGENTRY_RUST_SEARCH_FLOOR_OUTPUT"
+FLOOR_FIXTURE_ENV = "AGENTRY_RUST_SEARCH_FLOOR_FIXTURE"
+FLOOR_LAYER_ENV = "AGENTRY_RUST_SEARCH_FLOOR_LAYER"
+CORE_FLOOR_OUTPUT_ENV = "AGENTRY_RUST_SEARCH_CORE_FLOOR_OUTPUT"
+CORE_FLOOR_FIXTURE_ENV = "AGENTRY_RUST_SEARCH_CORE_FLOOR_FIXTURE"
+CORE_FLOOR_FIXTURE_PATH_ENV = "AGENTRY_RUST_SEARCH_CORE_FLOOR_FIXTURE_PATH"
+FFI_FLOOR_OUTPUT_ENV = "AGENTRY_RUST_SEARCH_FFI_FLOOR_OUTPUT"
+FFI_FLOOR_FIXTURE_ENV = "AGENTRY_RUST_SEARCH_FFI_FLOOR_FIXTURE"
+FFI_FLOOR_FIXTURE_PATH_ENV = "AGENTRY_RUST_SEARCH_FFI_FLOOR_FIXTURE_PATH"
 
 
 def canonical_json(value: Any) -> bytes:
@@ -71,7 +89,7 @@ def run_test(test_filter: str, environment: dict[str, str], *, skip_build: bool)
         "--test-product",
         "RepoPromptTests",
     ]
-    if environment.get(IMPLEMENTATION_ENV) == "rust-search-candidate":
+    if environment.get(IMPLEMENTATION_ENV) == "rust-search-candidate" or environment.get(FORCE_RELEASE_ARCHIVE_ENV) == "1":
         command[6:6] = ["-Xswiftc", "-DAGENTRY_CORE_RELEASE_ARCHIVE"]
     if environment.get(PHASE_PROFILE_ENV) == "1":
         command[6:6] = ["-Xswiftc", "-DAGENTRY_CORE_PHASE_PROFILE"]
@@ -275,6 +293,383 @@ def archive_identity() -> dict[str, Any]:
         "bindingChecksum": manifest.get("bindingChecksum"),
         "profile": manifest.get("profile"),
     }
+
+
+def sha256_path(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def fixture_digests(fixtures: tuple[str, ...] = FIXTURE_NAMES) -> dict[str, str]:
+    return {name: sha256_path(FIXTURE_ROOT / f"{name}.json") for name in fixtures}
+
+
+def executable_identity(name_fragment: str) -> dict[str, str]:
+    candidates = [
+        path
+        for path in (ROOT / ".build").rglob("*")
+        if path.is_file() and name_fragment in path.name and os.access(path, os.X_OK)
+    ]
+    if not candidates:
+        raise RuntimeError(f"unable to locate executable containing {name_fragment!r}")
+    path = max(candidates, key=lambda candidate: candidate.stat().st_mtime_ns)
+    return {"path": str(path.relative_to(ROOT)), "sha256": sha256_path(path)}
+
+
+def relative_spread(values: list[float]) -> float:
+    mean = sum(values) / len(values)
+    return (max(values) - min(values)) / max(mean, 1e-12)
+
+
+def v2_process_spreads(process_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics = {
+        "wallP99": ("wallTimeMilliseconds", "p99"),
+        "cpuP99": ("cpuTimeMilliseconds", "p99"),
+        "applyP99": ("decodeApplySignpost", "applyMilliseconds", "p99"),
+        "allocationsP99": ("allocationsCount", "p99"),
+        "mallocBytesP99": ("mallocBytes", "p99"),
+        "peakRSS": ("peakRSSBytes",),
+    }
+    spreads: dict[str, Any] = {}
+    for fixture in FIXTURE_NAMES:
+        fixture_metrics: dict[str, Any] = {}
+        for label, path in metrics.items():
+            values: list[float] = []
+            for run_report in process_runs:
+                value: Any = run_report["payloads"][fixture]
+                for component in path:
+                    value = value[component]
+                values.append(float(value))
+            fixture_metrics[label] = {
+                "processValues": values,
+                "relativeSpread": relative_spread(values),
+            }
+        spreads[fixture] = fixture_metrics
+    return spreads
+
+
+def run_comparability_audit_v2(args: argparse.Namespace) -> None:
+    verify_committed_baseline()
+    reports: dict[str, dict[str, Any]] = {}
+    swift_built = False
+    with tempfile.TemporaryDirectory(prefix="agentry-rust-search-comparability-v2-") as temporary:
+        temporary_root = Path(temporary)
+        for label, implementation in (("reference", None), ("candidate", "rust-search-candidate")):
+            process_reports: list[dict[str, Any]] = []
+            executable: dict[str, str] | None = None
+            for process_run in range(args.process_runs):
+                raw_path = temporary_root / f"{label}-{process_run}.json"
+                environment = os.environ.copy()
+                environment[FIXTURE_ENV] = str(FIXTURE_ROOT)
+                environment[MEASURE_ENV] = str(raw_path)
+                environment[FORCE_RELEASE_ARCHIVE_ENV] = "1"
+                if implementation:
+                    environment[IMPLEMENTATION_ENV] = implementation
+                run_test(MEASURE_FILTER, environment, skip_build=swift_built)
+                swift_built = True
+                executable = executable_identity("RepoPromptTests")
+                process_reports.append(json.loads(raw_path.read_text(encoding="utf-8")))
+            if executable is None:
+                raise RuntimeError(f"{label} measurement produced no process reports")
+            reports[label] = {
+                "artifact": archive_identity() if implementation else None,
+                "fixtureDigests": fixture_digests(),
+                "processRuns": process_reports,
+                "processSpreads": v2_process_spreads(process_reports),
+                "runner": {
+                    "architecture": architecture_identity(),
+                    "compiler": swift_compiler_identity(),
+                    "profile": "release",
+                    "testDefines": ["DEBUG", "AGENTRY_CORE_RELEASE_ARCHIVE"],
+                    "testExecutable": executable,
+                },
+                "schemaVersion": 2,
+            }
+
+    for fixture in FIXTURE_NAMES:
+        reference_output = reports["reference"]["processRuns"][0]["payloads"][fixture]["workloadOutput"]
+        candidate_output = reports["candidate"]["processRuns"][0]["payloads"][fixture]["workloadOutput"]
+        if reference_output != candidate_output:
+            raise RuntimeError(f"v2 workload output mismatch for {fixture}")
+    REFERENCE_V2_RESULT_PATH.write_bytes(canonical_json(reports["reference"]))
+    CANDIDATE_V2_RESULT_PATH.write_bytes(canonical_json(reports["candidate"]))
+
+    slo = json.loads(SLO_PATH.read_text(encoding="utf-8"))
+    gate = slo["swiftBaseline"]["candidateGate"]
+    specifications = {
+        "wall": ("wallTimeMilliseconds", "p99", gate["wallP99MaximumReferenceRatio"]),
+        "cpu": ("cpuTimeMilliseconds", "p99", gate["cpuP99MaximumReferenceRatio"]),
+        "alloc": ("allocationsCount", "p99", gate["allocationsCountMaximumReferenceRatio"]),
+        "malloc": ("mallocBytes", "p99", gate["mallocBytesMaximumReferenceRatio"]),
+        "rss": ("peakRSSBytes", None, gate["peakRSSMaximumReferenceRatio"]),
+    }
+    lines = [
+        "# Rust search comparability audit v2",
+        "",
+        "Conclusion: **(c) partially equivalent** before correction. Pattern and case options matched, but the reference stopped after the first match per subject while the candidate counted all matching lines; neither side collected hits or materialized context strings. V2 makes both sides collect every matching line with two context lines and materialize equivalent `SearchMatch` strings.",
+        "",
+        "| Fixture | Metric | Paired process ratios | Worst ratio | Gate | Pass |",
+        "|---|---|---|---:|---:|---|",
+    ]
+    representative = set(REPRESENTATIVE_FIXTURE_NAMES)
+    overall_pass = True
+    for fixture in FIXTURE_NAMES:
+        for label, (metric, percentile, maximum) in specifications.items():
+            ratios = []
+            for reference_run, candidate_run in zip(
+                reports["reference"]["processRuns"], reports["candidate"]["processRuns"]
+            ):
+                reference_value: Any = reference_run["payloads"][fixture][metric]
+                candidate_value: Any = candidate_run["payloads"][fixture][metric]
+                if percentile:
+                    reference_value = reference_value[percentile]
+                    candidate_value = candidate_value[percentile]
+                ratios.append(float(candidate_value) / max(float(reference_value), 1e-12))
+            worst = max(ratios)
+            passed = fixture not in representative or worst <= float(maximum)
+            if fixture in representative:
+                overall_pass = overall_pass and passed
+            lines.append(
+                f"| {fixture} | {label} | {', '.join(f'{value:.3f}x' for value in ratios)} | "
+                f"{worst:.3f}x | {float(maximum):.2f}x | {'yes' if passed else 'no'} |"
+            )
+    lines.extend([
+        "",
+        f"Representative hard gate: **{'PASS' if overall_pass else 'FAIL'}** (SLO unchanged).",
+        "",
+        "Process spread is recorded per fixture and metric in both JSON reports using `(max-min)/mean`.",
+    ])
+    COMPARABILITY_V2_SUMMARY_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {REFERENCE_V2_RESULT_PATH.relative_to(ROOT)}")
+    print(f"Wrote {CANDIDATE_V2_RESULT_PATH.relative_to(ROOT)}")
+    print(f"Wrote {COMPARABILITY_V2_SUMMARY_PATH.relative_to(ROOT)}")
+
+
+def floor_process_spread(process_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    metric_names = sorted(process_runs[0]["totals"])
+    result: dict[str, Any] = {}
+    for metric in metric_names:
+        values = [float(run["totals"][metric]["p99"]) for run in process_runs]
+        result[metric] = {"processP99Values": values, "relativeSpread": relative_spread(values)}
+    return result
+
+
+def run_cargo_floors(args: argparse.Namespace) -> None:
+    verify_committed_baseline()
+    variants: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="agentry-rust-search-cargo-floors-") as temporary:
+        temporary_root = Path(temporary)
+        for fixture in REPRESENTATIVE_FIXTURE_NAMES:
+            fixture_path = FIXTURE_ROOT / f"{fixture}.json"
+            for layer in ("A", "FFI-frontier"):
+                process_reports: list[dict[str, Any]] = []
+                executable: dict[str, str] | None = None
+                for process_run in range(args.process_runs):
+                    raw_path = temporary_root / f"{fixture}-{layer}-{process_run}.json"
+                    environment = os.environ.copy()
+                    if layer == "A":
+                        environment[CORE_FLOOR_OUTPUT_ENV] = str(raw_path)
+                        environment[CORE_FLOOR_FIXTURE_ENV] = fixture
+                        environment[CORE_FLOOR_FIXTURE_PATH_ENV] = str(fixture_path)
+                        command = [
+                            "cargo", "test", "--manifest-path", "rust/Cargo.toml", "--locked", "--release", "-p", "agentry-runtime",
+                            "--test", "search_measurement_harness", "measure_rust_search_core_floor_v1",
+                            "--", "--ignored", "--exact",
+                        ]
+                        executable_name = "search_measurement_harness"
+                    else:
+                        environment[FFI_FLOOR_OUTPUT_ENV] = str(raw_path)
+                        environment[FFI_FLOOR_FIXTURE_ENV] = fixture
+                        environment[FFI_FLOOR_FIXTURE_PATH_ENV] = str(fixture_path)
+                        command = [
+                            "cargo", "test", "--manifest-path", "rust/Cargo.toml", "--locked", "--release", "-p", "agentry-ffi",
+                            "measurement_harness::measure_rust_search_ffi_frontier_v1", "--", "--ignored", "--exact",
+                        ]
+                        executable_name = "agentry_ffi"
+                    run(command, env=environment)
+                    executable = executable_identity(executable_name)
+                    process_reports.append(json.loads(raw_path.read_text(encoding="utf-8")))
+                if executable is None:
+                    raise RuntimeError(f"cargo floor {fixture} {layer} produced no reports")
+                variants.append({
+                    "executable": executable,
+                    "fixture": fixture,
+                    "fixtureSha256": sha256_path(fixture_path),
+                    "layer": layer,
+                    "processRuns": process_reports,
+                    "processSpread": floor_process_spread(process_reports),
+                })
+
+    for fixture in REPRESENTATIVE_FIXTURE_NAMES:
+        selected = {item["layer"]: item for item in variants if item["fixture"] == fixture}
+        for a_run, ffi_run in zip(selected["A"]["processRuns"], selected["FFI-frontier"]["processRuns"]):
+            for key in ("checksumFNV1a64", "hitCount"):
+                if a_run["workloadOutput"][key] != ffi_run["workloadOutput"][key]:
+                    raise RuntimeError(f"A/FFI-frontier output mismatch for {fixture} {key}")
+    report = {
+        "fixtureDigests": fixture_digests(REPRESENTATIVE_FIXTURE_NAMES),
+        "head": subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True
+        ).stdout.strip(),
+        "instrumentPolicy": "cargo-default; Swift release is reserved for B/C and one final SLO confirmation",
+        "processRuns": args.process_runs,
+        "profile": "release",
+        "schemaVersion": 1,
+        "variants": variants,
+    }
+    CARGO_FLOOR_RESULT_PATH.write_bytes(canonical_json(report))
+    lines = [
+        "# Rust search cargo floors v1",
+        "",
+        "Policy: **cargo is the default performance iteration instrument**. Swift release is reserved for B/C and one final SLO confirmation after cargo floors are promising.",
+        "",
+        "| Fixture | Layer | Wall p50 runs | Wall p99 runs | Spread (p99) |",
+        "|---|---|---|---|---:|",
+    ]
+    for item in variants:
+        p50s = [run["totals"]["wall"]["p50"] for run in item["processRuns"]]
+        p99s = [run["totals"]["wall"]["p99"] for run in item["processRuns"]]
+        lines.append(
+            f"| {item['fixture']} | {item['layer']} | {', '.join(f'{value:.4f} ms' for value in p50s)} | "
+            f"{', '.join(f'{value:.4f} ms' for value in p99s)} | {item['processSpread']['wall']['relativeSpread']:.2%} |"
+        )
+    CARGO_FLOOR_SUMMARY_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {CARGO_FLOOR_RESULT_PATH.relative_to(ROOT)}")
+    print(f"Wrote {CARGO_FLOOR_SUMMARY_PATH.relative_to(ROOT)}")
+
+
+def run_three_layer_floors(args: argparse.Namespace) -> None:
+    if not REFERENCE_V2_RESULT_PATH.is_file():
+        raise RuntimeError("three-layer floors require swift-search-reference-v2.json")
+    if not CARGO_FLOOR_RESULT_PATH.is_file():
+        raise RuntimeError("three-layer floors require rust-search-cargo-floors-v1.json")
+    identity = archive_identity()
+    reference = json.loads(REFERENCE_V2_RESULT_PATH.read_text(encoding="utf-8"))
+    cargo_floors = json.loads(CARGO_FLOOR_RESULT_PATH.read_text(encoding="utf-8"))
+    variants: list[dict[str, Any]] = list(cargo_floors["variants"])
+    swift_built = False
+    with tempfile.TemporaryDirectory(prefix="agentry-rust-search-three-layer-") as temporary:
+        temporary_root = Path(temporary)
+        for fixture in REPRESENTATIVE_FIXTURE_NAMES:
+            fixture_path = FIXTURE_ROOT / f"{fixture}.json"
+            for layer in ("B", "C"):
+                process_reports: list[dict[str, Any]] = []
+                executable: dict[str, str] | None = None
+                for process_run in range(args.process_runs):
+                    raw_path = temporary_root / f"{fixture}-{layer}-{process_run}.json"
+                    environment = os.environ.copy()
+                    environment[FIXTURE_ENV] = str(FIXTURE_ROOT)
+                    environment[IMPLEMENTATION_ENV] = "rust-search-candidate"
+                    environment[FLOOR_OUTPUT_ENV] = str(raw_path)
+                    environment[FLOOR_FIXTURE_ENV] = fixture
+                    environment[FLOOR_LAYER_ENV] = layer
+                    run_test(THREE_LAYER_SWIFT_FILTER, environment, skip_build=swift_built)
+                    swift_built = True
+                    executable = executable_identity("RepoPromptTests")
+                    process_reports.append(json.loads(raw_path.read_text(encoding="utf-8")))
+                if executable is None:
+                    raise RuntimeError(f"floor {fixture} {layer} produced no reports")
+                variants.append({
+                    "executable": executable,
+                    "fixture": fixture,
+                    "fixtureSha256": sha256_path(fixture_path),
+                    "layer": layer,
+                    "processRuns": process_reports,
+                    "processSpread": floor_process_spread(process_reports),
+                })
+
+    for fixture in REPRESENTATIVE_FIXTURE_NAMES:
+        selected = {item["layer"]: item for item in variants if item["fixture"] == fixture}
+        for a_run, b_run in zip(selected["A"]["processRuns"], selected["B"]["processRuns"]):
+            for key in ("checksumFNV1a64", "hitCount"):
+                if a_run["workloadOutput"][key] != b_run["workloadOutput"][key]:
+                    raise RuntimeError(f"A/B compact output mismatch for {fixture} {key}")
+        reference_output = reference["processRuns"][0]["payloads"][fixture]["workloadOutput"]
+        for c_run in selected["C"]["processRuns"]:
+            if c_run["workloadOutput"] != reference_output:
+                raise RuntimeError(f"C/reference materialized output mismatch for {fixture}")
+
+    gate = json.loads(SLO_PATH.read_text(encoding="utf-8"))["swiftBaseline"]["candidateGate"]
+    wall_limit = float(gate["wallP99MaximumReferenceRatio"])
+    analysis: dict[str, Any] = {"fixtures": {}}
+    first_failure = None
+    for fixture in REPRESENTATIVE_FIXTURE_NAMES:
+        reference_values = [
+            float(run["payloads"][fixture]["decodeApplySignpost"]["applyMilliseconds"]["p99"])
+            for run in reference["processRuns"]
+        ]
+        fixture_analysis: dict[str, Any] = {}
+        for layer in ("A", "B", "C"):
+            variant = next(item for item in variants if item["fixture"] == fixture and item["layer"] == layer)
+            layer_values = [float(run["totals"]["wall"]["p99"]) for run in variant["processRuns"]]
+            ratios = [value / max(reference_value, 1e-12) for value, reference_value in zip(layer_values, reference_values)]
+            passed = max(ratios) <= wall_limit
+            fixture_analysis[layer] = {
+                "pairedApplyWallP99Ratios": ratios,
+                "passesWallFloor": passed,
+                "referenceApplyWallP99Milliseconds": reference_values,
+                "wallP99Milliseconds": layer_values,
+            }
+            if not passed and first_failure is None:
+                first_failure = layer
+        analysis["fixtures"][fixture] = fixture_analysis
+    analysis["firstFailureLayer"] = first_failure
+    analysis["decision"] = {
+        None: "all three layers pass the corrected reference wall floor",
+        "A": "Rust scanning model review",
+        "B": "packed RustBuffer lifting path review",
+        "C": "Swift SearchMatch materialization review",
+    }[first_failure]
+    analysis["optimizationDecisions"] = {
+        "O3": "do" if first_failure == "A" else "skip",
+        "O3Reason": "A-layer failure leaves line cursor and compact packing inside the first failing boundary" if first_failure == "A" else "A core floor passes; line-cursor restructuring is not supported by the floor evidence",
+        "O5": "skip",
+        "O5Reason": "pcre2 match data is pooled per find operation; no per-match allocation mechanism was found",
+        "O6": "skip",
+        "O6Reason": "representative fixtures use PCRE2 and the prior forced-PCRE2 comparison was equivalent; direct byte-loop acceleration has no demonstrated >=5% end-to-end ceiling",
+    }
+
+    report = {
+        "analysis": analysis,
+        "artifact": {
+            **identity,
+            "coreLayerArtifactNote": "A is a release Rust test executable built from the same HEAD/profile; B/C use the recorded release archive",
+        },
+        "fixtureDigests": fixture_digests(REPRESENTATIVE_FIXTURE_NAMES),
+        "processRuns": args.process_runs,
+        "schemaVersion": 1,
+        "variants": variants,
+    }
+    THREE_LAYER_RESULT_PATH.write_bytes(canonical_json(report))
+    lines = [
+        "# Rust search three-layer floors v1",
+        "",
+        f"Decision: **{analysis['decision']}**.",
+        "",
+        "| Fixture | Layer | Wall p99 process runs | Ratio to corrected reference apply p99 | Pass |",
+        "|---|---|---|---|---|",
+    ]
+    for fixture in REPRESENTATIVE_FIXTURE_NAMES:
+        for layer in ("A", "B", "C"):
+            item = analysis["fixtures"][fixture][layer]
+            lines.append(
+                f"| {fixture} | {layer} | {', '.join(f'{value:.4f} ms' for value in item['wallP99Milliseconds'])} | "
+                f"{', '.join(f'{value:.3f}x' for value in item['pairedApplyWallP99Ratios'])} | "
+                f"{'yes' if item['passesWallFloor'] else 'no'} |"
+            )
+    decisions = analysis["optimizationDecisions"]
+    lines.extend([
+        "",
+        "## O3/O5/O6",
+        "",
+        f"- **O3: {decisions['O3']}** - {decisions['O3Reason']}.",
+        f"- **O5: {decisions['O5']}** - {decisions['O5Reason']}.",
+        f"- **O6: {decisions['O6']}** - {decisions['O6Reason']}.",
+        "",
+        "A reports wall time only because the synchronous Rust core harness intentionally adds no allocator or platform timing FFI. B/C additionally report process CPU and malloc-zone live-block/live-byte deltas.",
+    ])
+    THREE_LAYER_SUMMARY_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {THREE_LAYER_RESULT_PATH.relative_to(ROOT)}")
+    print(f"Wrote {THREE_LAYER_SUMMARY_PATH.relative_to(ROOT)}")
 
 
 def phase_profile_analysis(variants: list[dict[str, Any]]) -> dict[str, Any]:
@@ -481,13 +876,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", nargs="?", choices=("export", "check", "measure", "candidate"))
     parser.add_argument("--phase-profile", action="store_true")
+    parser.add_argument("--comparability-audit-v2", action="store_true")
+    parser.add_argument("--cargo-floors", action="store_true")
+    parser.add_argument("--three-layer-floors", action="store_true")
     parser.add_argument("--fixture", choices=REPRESENTATIVE_FIXTURE_NAMES)
     parser.add_argument("--engine-variant", choices=("production", "forced-pcre2"))
     parser.add_argument("--collection-variant", choices=("count-only", "hits", "hits-and-context"))
     parser.add_argument("--process-runs", type=int, default=3)
     args = parser.parse_args()
-    if args.phase_profile == (args.mode is not None):
-        parser.error("choose exactly one positional mode or --phase-profile")
+    if sum((args.mode is not None, args.phase_profile, args.comparability_audit_v2, args.cargo_floors, args.three_layer_floors)) != 1:
+        parser.error("choose exactly one positional mode, --phase-profile, --comparability-audit-v2, --cargo-floors, or --three-layer-floors")
     if args.process_runs < 1:
         parser.error("--process-runs must be positive")
     return args
@@ -496,7 +894,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        if args.phase_profile:
+        if args.comparability_audit_v2:
+            run_comparability_audit_v2(args)
+        elif args.cargo_floors:
+            run_cargo_floors(args)
+        elif args.three_layer_floors:
+            run_three_layer_floors(args)
+        elif args.phase_profile:
             run_phase_profile(args)
         elif args.mode == "export":
             with tempfile.TemporaryDirectory(prefix="agentry-swift-baseline-export-") as temporary:
@@ -539,11 +943,21 @@ def main() -> int:
                 write_report(raw_path, CANDIDATE_RESULT_PATH)
             comparisons = verify_candidate_gate()
             print(json.dumps({"candidateGateRatios": comparisons}, sort_keys=True))
-        completed_mode = "phase-profile" if args.phase_profile else args.mode
+        completed_mode = (
+            "comparability-audit-v2" if args.comparability_audit_v2 else
+            "cargo-floors" if args.cargo_floors else
+            "three-layer-floors" if args.three_layer_floors else
+            "phase-profile" if args.phase_profile else args.mode
+        )
         print(f"Swift search baseline {completed_mode} completed.")
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
-        failed_mode = "phase-profile" if args.phase_profile else args.mode
+        failed_mode = (
+            "comparability-audit-v2" if args.comparability_audit_v2 else
+            "cargo-floors" if args.cargo_floors else
+            "three-layer-floors" if args.three_layer_floors else
+            "phase-profile" if args.phase_profile else args.mode
+        )
         print(f"Swift search baseline {failed_mode} failed: {error}", file=sys.stderr)
         return 1
 

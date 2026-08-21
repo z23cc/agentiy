@@ -149,6 +149,10 @@ fn regex_syntax_and_lookbehind_errors_v1() {
         SearchError::UnmatchedBrackets
     );
     assert_eq!(
+        leaf.search_regex(&request("(", "x")).unwrap_err(),
+        SearchError::UnmatchedParentheses
+    );
+    assert_eq!(
         leaf.search_regex(&request("*", "x")).unwrap_err(),
         SearchError::InvalidQuantifier
     );
@@ -248,7 +252,10 @@ fn prepared_batch_single_subject_is_byte_identical_v1() {
 }
 
 fn compact_ranges(words: &[u64]) -> Vec<(u64, u64)> {
-    words.chunks_exact(2).map(|word| (word[0], word[1])).collect()
+    words
+        .chunks_exact(2)
+        .map(|word| (word[0], word[1]))
+        .collect()
 }
 
 #[test]

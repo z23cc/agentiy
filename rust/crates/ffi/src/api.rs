@@ -4,12 +4,11 @@ use crate::generated::contract_identity::{
 };
 use crate::panic_guard::PanicGuard;
 use crate::types::{
-    AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope, CompactRegexBatchResult,
-    CoreConfig, CoreHandshake, DrainBatch, FolderSuffixRequest, HostResponse, OperationState,
-    OversizeEvent,
-    PathFilterRequest, PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest,
-    RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap,
-    SubscriptionId, SubscriptionScope,
+    AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope,
+    CompactRegexBatchResult, CoreConfig, CoreHandshake, DrainBatch, FolderSuffixRequest,
+    HostResponse, OperationState, OversizeEvent, PathFilterRequest, PathFilterResult,
+    RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity,
+    ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;

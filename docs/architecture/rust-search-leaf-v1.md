@@ -130,6 +130,12 @@ P1 does not migrate or own:
 
 P1 uses typed UniFFI records/enums, including the versioned batch-wide contiguous primitive tables used by `searchRegexBatchCompactV1`. These calls are synchronous, in-process, and guarded by the existing binding checksum/build fingerprint; no persisted wire format exists. ABI epoch remains 1 for this additive export. The structured compatibility export and compact production export adapt the same canonical matcher; there is no second matching, repair, line-decoding, or fast-plan authority. Protobuf would still copy strings while adding a second schema, code generator, and runtime. The P0 event envelope remains for the event data plane and is not reused for this leaf API. G4 measurement must include the real typed-DTO FFI copying cost.
 
+## Performance measurement instrument policy
+
+Routine search performance iteration uses the release cargo harnesses as the default instrument: `agentry-runtime` measures A-layer matching, line cursor, and compact packing; `agentry-ffi` measures the Rust FFI frontier before UniFFI lifting. Every run verifies the committed representative fixture digest and records the release test executable identity. This keeps the optimization loop seconds-scale and prevents a roughly 15-minute Swift release rebuild from becoming the price of a seconds-scale sample.
+
+The Swift release harness is reserved for B/C measurement and one final unchanged-SLO confirmation. It measures UniFFI lifting plus Bridge validation at B and production `SearchMatch`/context-string materialization at C. Run that gate only after the cargo A/FFI-frontier floors show the representative thresholds are plausibly reachable; do not use repeated Swift release rebuilds as the default optimization instrument. The final gate still uses the provenance matrix, at least three clean process runs, identical fixture digests/options/JIT/cache policy, and the frozen 110% time and 125% memory ratios.
+
 ## Cutover rule
 
 The Rust implementation must pass the parity matrix before production cutover. Runtime or parity errors never trigger automatic Swift/C fallback. After cutover, rollback is source/artifact rollback only.

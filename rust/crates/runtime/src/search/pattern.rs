@@ -121,9 +121,6 @@ fn normalize(pattern: &str) -> String {
             out.push(character);
         }
     }
-    for index in opens.into_iter().rev() {
-        out.insert(index, '\\');
-    }
     if out.is_empty() {
         "(?!.*)".to_owned()
     } else {

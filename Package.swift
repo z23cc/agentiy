@@ -50,10 +50,9 @@ var repoPromptAppDependencies: [Target.Dependency] = [
     "AgentryCoreBridge",
     "RepoPromptDomainRuntime",
     "RepoPromptCodeMapCore",
-    "RepoPromptRegexCore",
     "RepoPromptWorkspaceCore",
     "RepoPromptShared",
-    "RepoPromptC", "CSwiftPCRE2",
+    "RepoPromptC",
     "Sparkle",
     .product(name: "Logging", package: "swift-log"),
     .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
@@ -176,15 +175,8 @@ let package = Package(
             path: "Sources/RepoPromptWorkspaceCore"
         ),
         .target(
-            name: "RepoPromptRegexCore",
-            dependencies: ["CSwiftPCRE2"],
-            path: "Sources/RepoPromptRegexCore",
-            swiftSettings: swift6LanguageMode
-        ),
-        .target(
             name: "RepoPromptCodeMapCore",
             dependencies: [
-                "RepoPromptRegexCore",
                 "TreeSitterScannerSupport",
                 .product(name: "SwiftTreeSitter", package: "swift-tree-sitter"),
                 .product(name: "TreeSitterC", package: "tree-sitter-c"),
@@ -224,7 +216,6 @@ let package = Package(
                 .define("DEBUG", .when(configuration: .debug))
             ]
         ),
-        .target(name: "CSwiftPCRE2", path: "Sources/CSwiftPCRE2", exclude: ["deps/sljit/sljit_src/sljitNativeARM_64.c", "deps/sljit/sljit_src/sljitSerialize.c", "deps/sljit/sljit_src/sljitUtils.c", "deps/sljit/sljit_src/sljitNativeX86_common.c", "deps/sljit/sljit_src/sljitNativeX86_64.c", "deps/sljit/sljit_src/sljitNativeX86_32.c", "deps/sljit/sljit_src/allocator_src/sljitWXExecAllocatorPosix.c", "deps/sljit/sljit_src/allocator_src/sljitProtExecAllocatorPosix.c", "deps/sljit/sljit_src/allocator_src/sljitExecAllocatorPosix.c", "deps/sljit/sljit_src/allocator_src/sljitExecAllocatorCore.c", "deps/sljit/sljit_src/allocator_src/sljitExecAllocatorApple.c"], publicHeadersPath: "include", cSettings: [.headerSearchPath("include"), .headerSearchPath("src"), .define("PCRE2_CODE_UNIT_WIDTH", to: "8"), .define("HAVE_CONFIG_H")]),
         .target(name: "RepoPromptC", path: "Sources/RepoPromptC", publicHeadersPath: "include", cSettings: [.headerSearchPath("include")]),
         // Exact-snapshot scanner ABI fallback for the JavaScript/Python manifests, whose
         // FileManager source probe evaluates false in this root package graph.
@@ -249,12 +240,6 @@ let package = Package(
             name: "RepoPromptWorkspaceCoreTests",
             dependencies: ["RepoPromptWorkspaceCore"],
             path: "Tests/RepoPromptWorkspaceCoreTests"
-        ),
-        .testTarget(
-            name: "RepoPromptRegexCoreTests",
-            dependencies: ["RepoPromptRegexCore"],
-            path: "Tests/RepoPromptRegexCoreTests",
-            swiftSettings: swift6LanguageMode
         ),
         .testTarget(
             name: "RepoPromptCodeMapCoreTests",

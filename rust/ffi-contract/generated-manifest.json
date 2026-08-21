@@ -3,15 +3,15 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "061635d16a068485a897ffaac0b93e5dade3ca7e4993b814bc0b8195d8ab531e",
+  "buildFingerprint": "1c03174835b5900f61519a5dd0fe613ddbc8c3f3d611930b22cc7c7f1f48ea65",
   "bindingChecksum": "4d5f6d0aeff23fab2b0af83ed0b6931e303e3ad4b1c181f3b608dcca7950c68e",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:23b11c9ffa1fd7dbce5a8db100929566db308728a3c03d1bef945b97627725ce",
-    "cargoLockDigest": "a9bc106edb7de7ca44d4b4ec81f1ae35e49b642f3a268f7b8a21220214c17f5d",
+    "rustSourceRevision": "tree:aefb0dd4717ee3abd6d983c8a684180d521409fe053f190d158cff8d55d6ed65",
+    "cargoLockDigest": "e88d93fadc1d87045b44d6eaf8fafbc4f7b9c53e3d7844ba6a9f51f411a2aaf6",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
     "featureSet": [],
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "b9ce0efb3519c12c399971e9b541b9d1fffae1d508c786d68c60aaf13b32ac22",
+  "archiveSha256": "63ed0a43107108c913febfc51ecaaaa7c24894cf28ffbdc37903bc3c41258611",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -43,7 +43,7 @@
   ],
   "artifactSha256": {
     "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "0d58e9c242f99006179c3985915aeea4fbb4aa0adf54b1ff78c6141934068960",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "7a9827a9c61c28dc5e2de9c9cfe54680df5489c288f7062ab1b2aa2dda096023",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "740a39251f8acadbbc760def1a1acd7489a7e3b662c1b926ea060722f561d40a",
     "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "0bb7e87467d8718b192368a4cf8d47833b2624284d46fdc0af429d4eeced1117",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"

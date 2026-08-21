@@ -7,6 +7,9 @@ mod errors;
 mod panic_guard;
 mod types;
 
+#[cfg(test)]
+mod measurement_harness;
+
 mod generated {
     pub(crate) mod contract_identity;
 }

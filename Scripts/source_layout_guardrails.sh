@@ -44,6 +44,47 @@ for dir in "${required_dirs[@]}"; do
   fi
 done
 
+removed_regex_paths=(
+  "Sources/RepoPromptRegexCore"
+  "Sources/CSwiftPCRE2"
+  "Tests/RepoPromptRegexCoreTests"
+)
+for path in "${removed_regex_paths[@]}"; do
+  if [[ -e "$path" ]]; then
+    fail "removed legacy regex path exists: $path"
+  fi
+done
+if grep -R -n -E 'RepoPromptRegexCore|CSwiftPCRE2' Package.swift Sources Tests \
+  --exclude='*.pyc' >/tmp/agentry-removed-regex-matches 2>/dev/null; then
+  fail "removed legacy regex target or module reference returned"
+  cat /tmp/agentry-removed-regex-matches >&2
+fi
+
+allowed_rust_top_level_entries=(
+  ".cargo"
+  "Cargo.lock"
+  "Cargo.toml"
+  "audit.toml"
+  "benchmarks"
+  "crates"
+  "deny.toml"
+  "ffi-contract"
+  "fuzz"
+  "rust-toolchain.toml"
+  "spikes"
+  "staging"
+  "tools"
+)
+if [[ -d rust ]]; then
+  unexpected_rust_entries="$(comm -23 \
+    <(find rust -mindepth 1 -maxdepth 1 -exec basename {} \; | sort) \
+    <(printf '%s\n' "${allowed_rust_top_level_entries[@]}" | sort))"
+  if [[ -n "$unexpected_rust_entries" ]]; then
+    fail "unexpected top-level rust path; experiments belong under rust/spikes and pre-integration crates under rust/staging"
+    printf '%s\n' "$unexpected_rust_entries" >&2
+  fi
+fi
+
 repo_prompt_entry="Sources/RepoPromptExecutable/RepoPromptExecutable.swift"
 if [[ ! -f "$repo_prompt_entry" ]]; then
   fail "required thin RepoPrompt executable entry missing: $repo_prompt_entry"
@@ -221,6 +262,9 @@ if app_by_name_dependencies.count("RepoPromptWorkspaceCore") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptWorkspaceCore")
 if app_by_name_dependencies.count("AgentryCoreBridge") != 1:
     errors.append("RepoPromptApp must depend exactly once on AgentryCoreBridge")
+for removed_target in ("RepoPromptRegexCore", "CSwiftPCRE2", "RepoPromptRegexCoreTests"):
+    if removed_target in targets:
+        errors.append(f"removed legacy regex target must not return: {removed_target}")
 for consumer in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
     dependencies = [dependency["byName"][0] for dependency in targets.get(consumer, {}).get("dependencies", []) if dependency.get("byName")]
     if consumer != "RepoPromptApp" and "RepoPromptWorkspaceCore" in dependencies:
@@ -816,6 +860,8 @@ allowed_tracked_docs=(
   "docs/architecture/context-composer.md"
   "docs/architecture/headless-mcp-runtime.md"
   "docs/architecture/provider-plugins.md"
+  "docs/architecture/rust-apply-edits-compact-v1.md"
+  "docs/architecture/rust-codemap-compact-v1.md"
   "docs/architecture/rust-ffi.md"
   "docs/architecture/rust-search-leaf-v1.md"
   "docs/architecture/rust-search-parity-v1.md"
