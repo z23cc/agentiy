@@ -29,6 +29,7 @@ required_dirs=(
   "Sources/RepoPrompt/Infrastructure/SyntaxParsing"
   "Sources/RepoPromptShared/MCP"
   "Sources/RepoPromptWorkspaceCore"
+  "Sources/RepoPromptSearchCore"
   "Sources/RepoPromptDomainRuntime"
   "Sources/CAgentryRustCore"
   "Sources/AgentryUniFFIRaw/Generated"
@@ -36,6 +37,7 @@ required_dirs=(
   "Tests/AgentryCoreBridgeTests"
   "Tests/RepoPromptTests"
   "Tests/RepoPromptWorkspaceCoreTests"
+  "Tests/RepoPromptSearchCoreTests"
   "Tests/RepoPromptDomainRuntimeTests"
 )
 for dir in "${required_dirs[@]}"; do
@@ -72,7 +74,6 @@ allowed_rust_top_level_entries=(
   "fuzz"
   "rust-toolchain.toml"
   "spikes"
-  "staging"
   "tools"
 )
 if [[ -d rust ]]; then
@@ -80,8 +81,8 @@ if [[ -d rust ]]; then
     <(find rust -mindepth 1 -maxdepth 1 -exec basename {} \; | sort) \
     <(printf '%s\n' "${allowed_rust_top_level_entries[@]}" | sort))"
   if [[ -n "$unexpected_rust_entries" ]]; then
-    fail "unexpected top-level rust path; experiments belong under rust/spikes and pre-integration crates under rust/staging"
     printf '%s\n' "$unexpected_rust_entries" >&2
+    fail "unexpected top-level rust path; experiments belong under rust/spikes and integrated crates under rust/crates"
   fi
 fi
 
@@ -230,6 +231,30 @@ else:
     if test_dependencies != ["RepoPromptWorkspaceCore"] or len(workspace_core_tests.get("dependencies", [])) != 1:
         errors.append("RepoPromptWorkspaceCoreTests must depend only on RepoPromptWorkspaceCore")
 
+search_core = targets.get("RepoPromptSearchCore")
+if search_core is None:
+    errors.append("RepoPromptSearchCore target missing")
+else:
+    search_dependencies = [dependency["byName"][0] for dependency in search_core.get("dependencies", []) if dependency.get("byName")]
+    if search_core.get("type") != "regular": errors.append("RepoPromptSearchCore must remain an internal regular target")
+    if search_core.get("path") != "Sources/RepoPromptSearchCore": errors.append("RepoPromptSearchCore target path drifted")
+    if search_dependencies != ["AgentryCoreBridge"] or len(search_core.get("dependencies", [])) != 1:
+        errors.append("RepoPromptSearchCore must depend only on AgentryCoreBridge")
+    if '"swiftLanguageMode":{"_0":"6"}' not in json.dumps(search_core.get("settings", [])).replace(" ", ""):
+        errors.append("RepoPromptSearchCore must compile in Swift 6 language mode")
+
+search_core_tests = targets.get("RepoPromptSearchCoreTests")
+if search_core_tests is None:
+    errors.append("RepoPromptSearchCoreTests target missing")
+else:
+    search_test_dependencies = [dependency["byName"][0] for dependency in search_core_tests.get("dependencies", []) if dependency.get("byName")]
+    if search_core_tests.get("type") != "test": errors.append("RepoPromptSearchCoreTests must remain a test target")
+    if search_core_tests.get("path") != "Tests/RepoPromptSearchCoreTests": errors.append("RepoPromptSearchCoreTests target path drifted")
+    if search_test_dependencies != ["RepoPromptSearchCore", "AgentryCoreBridge"] or len(search_core_tests.get("dependencies", [])) != 2:
+        errors.append("RepoPromptSearchCoreTests must depend only on RepoPromptSearchCore and AgentryCoreBridge")
+    if '"swiftLanguageMode":{"_0":"6"}' not in json.dumps(search_core_tests.get("settings", [])).replace(" ", ""):
+        errors.append("RepoPromptSearchCoreTests must compile in Swift 6 language mode")
+
 ffi_expected = {
     "CAgentryRustCore": ("regular", "Sources/CAgentryRustCore", []),
     "AgentryUniFFIRaw": ("regular", "Sources/AgentryUniFFIRaw", ["CAgentryRustCore"]),
@@ -262,10 +287,12 @@ if app_by_name_dependencies.count("RepoPromptWorkspaceCore") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptWorkspaceCore")
 if app_by_name_dependencies.count("AgentryCoreBridge") != 1:
     errors.append("RepoPromptApp must depend exactly once on AgentryCoreBridge")
+if app_by_name_dependencies.count("RepoPromptSearchCore") != 1:
+    errors.append("RepoPromptApp must depend exactly once on RepoPromptSearchCore")
 for removed_target in ("RepoPromptRegexCore", "CSwiftPCRE2", "RepoPromptRegexCoreTests"):
     if removed_target in targets:
         errors.append(f"removed legacy regex target must not return: {removed_target}")
-for consumer in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
+for consumer in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptSearchCore", "RepoPromptSearchCoreTests", "RepoPromptShared", "RepoPromptTests"):
     dependencies = [dependency["byName"][0] for dependency in targets.get(consumer, {}).get("dependencies", []) if dependency.get("byName")]
     if consumer != "RepoPromptApp" and "RepoPromptWorkspaceCore" in dependencies:
         errors.append(f"{consumer} must not directly depend on RepoPromptWorkspaceCore")
@@ -279,6 +306,7 @@ for source in Path("Sources/RepoPrompt").rglob("*.swift"):
         errors.append(f"RepoPromptApp source must not import raw Rust FFI modules: {source}")
 for product in package.get("products", []):
     if "RepoPromptWorkspaceCore" in product.get("targets", []): errors.append("RepoPromptWorkspaceCore must not be exposed as a package product")
+    if "RepoPromptSearchCore" in product.get("targets", []): errors.append("RepoPromptSearchCore must not be exposed as a package product")
 
 for identity, (url, version, revision, product) in expected_packages.items():
     requirement = f'exact: "{version}"' if version is not None else f'revision: "{revision}"'
@@ -470,6 +498,21 @@ if [[ -d "$workspace_core_source_dir" ]]; then
   elif [[ "$workspace_core_imports" != "Foundation" ]]; then
     fail "RepoPromptWorkspaceCore compiler import allowlist is Foundation only"
     printf '%s\n' "$workspace_core_imports" >&2
+  fi
+fi
+
+# RepoPromptSearchCore owns AppKit-free search values and deterministic Rust-backed filtering.
+search_core_source_dir="Sources/RepoPromptSearchCore"
+if [[ -d "$search_core_source_dir" ]]; then
+  unexpected_search_core_files="$(find "$search_core_source_dir" -type f ! -name '*.swift' -print)"
+  if [[ -n "$unexpected_search_core_files" ]]; then
+    fail "RepoPromptSearchCore contains non-Swift source files"
+    printf '%s\n' "$unexpected_search_core_files" >&2
+  fi
+  search_core_ui_imports="$(grep -R -n -E '^[[:space:]]*import[[:space:]]+(AppKit|SwiftUI)\b' "$search_core_source_dir" --include='*.swift' || true)"
+  if [[ -n "$search_core_ui_imports" ]]; then
+    fail "RepoPromptSearchCore must remain AppKit/SwiftUI free"
+    printf '%s\n' "$search_core_ui_imports" >&2
   fi
 fi
 

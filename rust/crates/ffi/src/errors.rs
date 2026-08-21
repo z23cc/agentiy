@@ -56,6 +56,20 @@ pub enum CoreError {
     SearchCancelled,
     #[error("search result violated an internal invariant")]
     SearchInvariant,
+    #[error("invalid codemap request")]
+    CodeMapInvalidRequest,
+    #[error("codemap parser or query service is unavailable")]
+    CodeMapServiceUnavailable,
+    #[error("codemap computation was cancelled")]
+    CodeMapCancelled,
+    #[error("codemap result violated an internal invariant")]
+    CodeMapInvariant,
+    #[error("invalid apply-edits request")]
+    ApplyEditsInvalidParams,
+    #[error("apply-edits computation was cancelled")]
+    ApplyEditsCancelled,
+    #[error("apply-edits result violated an internal invariant")]
+    ApplyEditsInvariant,
 }
 
 impl From<IdentifierError> for CoreError {
@@ -129,6 +143,35 @@ impl From<SearchError> for CoreError {
             SearchError::JitUnavailable(_) => Self::JitUnavailable,
             SearchError::Cancelled => Self::SearchCancelled,
             SearchError::InternalInvariant(_) => Self::SearchInvariant,
+        }
+    }
+}
+
+impl From<agentry_runtime::codemap::CodeMapError> for CoreError {
+    fn from(value: agentry_runtime::codemap::CodeMapError) -> Self {
+        match value {
+            agentry_runtime::codemap::CodeMapError::InvalidRequest(_) => {
+                Self::CodeMapInvalidRequest
+            }
+            agentry_runtime::codemap::CodeMapError::Parser(_)
+            | agentry_runtime::codemap::CodeMapError::Query(_)
+            | agentry_runtime::codemap::CodeMapError::ParserReturnedNilTree => {
+                Self::CodeMapServiceUnavailable
+            }
+            agentry_runtime::codemap::CodeMapError::Internal(_) => Self::CodeMapInvariant,
+            agentry_runtime::codemap::CodeMapError::Cancelled => Self::CodeMapCancelled,
+        }
+    }
+}
+
+impl From<agentry_runtime::apply_edits::ApplyError> for CoreError {
+    fn from(value: agentry_runtime::apply_edits::ApplyError) -> Self {
+        match value {
+            agentry_runtime::apply_edits::ApplyError::InvalidParams(_) => {
+                Self::ApplyEditsInvalidParams
+            }
+            agentry_runtime::apply_edits::ApplyError::Internal(_) => Self::ApplyEditsInvariant,
+            agentry_runtime::apply_edits::ApplyError::Cancelled => Self::ApplyEditsCancelled,
         }
     }
 }

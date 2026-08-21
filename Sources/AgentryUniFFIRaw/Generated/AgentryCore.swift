@@ -619,11 +619,15 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
+    func applyEditsBatchCompactV1(request: CoreApplyEditsBatchRequestV1) throws  -> CoreCompactApplyEditsBatchResultV1
+
     func beginShutdown(identity: RuntimeIdentity) throws  -> ShutdownReceipt
 
     func cancelOperation(identity: RuntimeIdentity, operationId: OperationId) throws  -> CancelReceipt
 
     func closeSubscription(subscriptionId: SubscriptionId) throws
+
+    func codeMapExtractBatchCompactV1(request: CoreCodeMapBatchRequestV1) throws  -> CoreCompactCodeMapBatchResultV1
 
     func createLeafCancellation(identity: RuntimeIdentity) throws  -> LeafCancellation
 
@@ -714,6 +718,16 @@ public convenience init(config: CoreConfig)throws  {
 
 
 
+open func applyEditsBatchCompactV1(request: CoreApplyEditsBatchRequestV1)throws  -> CoreCompactApplyEditsBatchResultV1  {
+    return try  FfiConverterTypeCoreCompactApplyEditsBatchResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_apply_edits_batch_compact_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreApplyEditsBatchRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
 open func beginShutdown(identity: RuntimeIdentity)throws  -> ShutdownReceipt  {
     return try  FfiConverterTypeShutdownReceipt_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -742,6 +756,16 @@ open func closeSubscription(subscriptionId: SubscriptionId)throws   {try rustCal
         FfiConverterTypeSubscriptionId_lower(subscriptionId),uniffiCallStatus
     )
 }
+}
+
+open func codeMapExtractBatchCompactV1(request: CoreCodeMapBatchRequestV1)throws  -> CoreCompactCodeMapBatchResultV1  {
+    return try  FfiConverterTypeCoreCompactCodeMapBatchResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_code_map_extract_batch_compact_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreCodeMapBatchRequestV1_lower(request),uniffiCallStatus
+    )
+})
 }
 
 open func createLeafCancellation(identity: RuntimeIdentity)throws  -> LeafCancellation  {
@@ -1459,6 +1483,838 @@ public func FfiConverterTypeCompactRegexSubjectSummary_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeCompactRegexSubjectSummary_lower(_ value: CompactRegexSubjectSummary) -> RustBuffer {
     return FfiConverterTypeCompactRegexSubjectSummary.lower(value)
+}
+
+
+public struct CoreApplyEditsBatchRequestV1 {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let contractVersion: UInt16
+    public let subjects: [CoreApplyEditsSubjectRequestV1]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, contractVersion: UInt16, subjects: [CoreApplyEditsSubjectRequestV1]) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.contractVersion = contractVersion
+        self.subjects = subjects
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreApplyEditsBatchRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreApplyEditsBatchRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreApplyEditsBatchRequestV1 {
+        return
+            try CoreApplyEditsBatchRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                subjects: FfiConverterSequenceTypeCoreApplyEditsSubjectRequestV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreApplyEditsBatchRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterSequenceTypeCoreApplyEditsSubjectRequestV1.write(value.subjects, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsBatchRequestV1_lift(_ buf: RustBuffer) throws -> CoreApplyEditsBatchRequestV1 {
+    return try FfiConverterTypeCoreApplyEditsBatchRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsBatchRequestV1_lower(_ value: CoreApplyEditsBatchRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreApplyEditsBatchRequestV1.lower(value)
+}
+
+
+public struct CoreApplyEditsOperationV1: Equatable, Hashable {
+    public let search: String
+    public let replace: String
+    public let replaceAll: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(search: String, replace: String, replaceAll: Bool) {
+        self.search = search
+        self.replace = replace
+        self.replaceAll = replaceAll
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreApplyEditsOperationV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreApplyEditsOperationV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreApplyEditsOperationV1 {
+        return
+            try CoreApplyEditsOperationV1(
+                search: FfiConverterString.read(from: &buf),
+                replace: FfiConverterString.read(from: &buf),
+                replaceAll: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreApplyEditsOperationV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.search, into: &buf)
+        FfiConverterString.write(value.replace, into: &buf)
+        FfiConverterBool.write(value.replaceAll, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsOperationV1_lift(_ buf: RustBuffer) throws -> CoreApplyEditsOperationV1 {
+    return try FfiConverterTypeCoreApplyEditsOperationV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsOperationV1_lower(_ value: CoreApplyEditsOperationV1) -> RustBuffer {
+    return FfiConverterTypeCoreApplyEditsOperationV1.lower(value)
+}
+
+
+public struct CoreApplyEditsSubjectRequestV1: Equatable, Hashable {
+    public let pathLabel: String
+    public let originalUtf8: Data
+    public let modeTag: UInt64
+    public let rewriteReplacement: String?
+    public let operations: [CoreApplyEditsOperationV1]
+    public let verbose: Bool
+    public let includeToolCardUnifiedDiff: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(pathLabel: String, originalUtf8: Data, modeTag: UInt64, rewriteReplacement: String?, operations: [CoreApplyEditsOperationV1], verbose: Bool, includeToolCardUnifiedDiff: Bool) {
+        self.pathLabel = pathLabel
+        self.originalUtf8 = originalUtf8
+        self.modeTag = modeTag
+        self.rewriteReplacement = rewriteReplacement
+        self.operations = operations
+        self.verbose = verbose
+        self.includeToolCardUnifiedDiff = includeToolCardUnifiedDiff
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreApplyEditsSubjectRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreApplyEditsSubjectRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreApplyEditsSubjectRequestV1 {
+        return
+            try CoreApplyEditsSubjectRequestV1(
+                pathLabel: FfiConverterString.read(from: &buf),
+                originalUtf8: FfiConverterData.read(from: &buf),
+                modeTag: FfiConverterUInt64.read(from: &buf),
+                rewriteReplacement: FfiConverterOptionString.read(from: &buf),
+                operations: FfiConverterSequenceTypeCoreApplyEditsOperationV1.read(from: &buf),
+                verbose: FfiConverterBool.read(from: &buf),
+                includeToolCardUnifiedDiff: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreApplyEditsSubjectRequestV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.pathLabel, into: &buf)
+        FfiConverterData.write(value.originalUtf8, into: &buf)
+        FfiConverterUInt64.write(value.modeTag, into: &buf)
+        FfiConverterOptionString.write(value.rewriteReplacement, into: &buf)
+        FfiConverterSequenceTypeCoreApplyEditsOperationV1.write(value.operations, into: &buf)
+        FfiConverterBool.write(value.verbose, into: &buf)
+        FfiConverterBool.write(value.includeToolCardUnifiedDiff, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsSubjectRequestV1_lift(_ buf: RustBuffer) throws -> CoreApplyEditsSubjectRequestV1 {
+    return try FfiConverterTypeCoreApplyEditsSubjectRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsSubjectRequestV1_lower(_ value: CoreApplyEditsSubjectRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreApplyEditsSubjectRequestV1.lower(value)
+}
+
+
+public struct CoreCodeMapBatchRequestV1 {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let contractVersion: UInt16
+    public let subjects: [CoreCodeMapSubjectRequestV1]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, contractVersion: UInt16, subjects: [CoreCodeMapSubjectRequestV1]) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.contractVersion = contractVersion
+        self.subjects = subjects
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCodeMapBatchRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCodeMapBatchRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCodeMapBatchRequestV1 {
+        return
+            try CoreCodeMapBatchRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                subjects: FfiConverterSequenceTypeCoreCodeMapSubjectRequestV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCodeMapBatchRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterSequenceTypeCoreCodeMapSubjectRequestV1.write(value.subjects, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodeMapBatchRequestV1_lift(_ buf: RustBuffer) throws -> CoreCodeMapBatchRequestV1 {
+    return try FfiConverterTypeCoreCodeMapBatchRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodeMapBatchRequestV1_lower(_ value: CoreCodeMapBatchRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreCodeMapBatchRequestV1.lower(value)
+}
+
+
+public struct CoreCodeMapSubjectRequestV1: Equatable, Hashable {
+    public let languageId: UInt16
+    public let sourceKind: CoreCodeMapSourceKindV1
+    public let sourceUtf8: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(languageId: UInt16, sourceKind: CoreCodeMapSourceKindV1, sourceUtf8: Data) {
+        self.languageId = languageId
+        self.sourceKind = sourceKind
+        self.sourceUtf8 = sourceUtf8
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCodeMapSubjectRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCodeMapSubjectRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCodeMapSubjectRequestV1 {
+        return
+            try CoreCodeMapSubjectRequestV1(
+                languageId: FfiConverterUInt16.read(from: &buf),
+                sourceKind: FfiConverterTypeCoreCodeMapSourceKindV1.read(from: &buf),
+                sourceUtf8: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCodeMapSubjectRequestV1, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.languageId, into: &buf)
+        FfiConverterTypeCoreCodeMapSourceKindV1.write(value.sourceKind, into: &buf)
+        FfiConverterData.write(value.sourceUtf8, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodeMapSubjectRequestV1_lift(_ buf: RustBuffer) throws -> CoreCodeMapSubjectRequestV1 {
+    return try FfiConverterTypeCoreCodeMapSubjectRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodeMapSubjectRequestV1_lower(_ value: CoreCodeMapSubjectRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreCodeMapSubjectRequestV1.lower(value)
+}
+
+
+public struct CoreCompactApplyEditsBatchResultV1: Equatable, Hashable {
+    public let subjectSummaries: [CoreCompactApplyEditsSubjectSummaryV1]
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let byteEditWords: [UInt64]
+    public let chunkWords: [UInt64]
+    public let diffLineWords: [UInt64]
+    public let outcomeWords: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(subjectSummaries: [CoreCompactApplyEditsSubjectSummaryV1], utf8Blob: Data, stringRangeWords: [UInt64], byteEditWords: [UInt64], chunkWords: [UInt64], diffLineWords: [UInt64], outcomeWords: [UInt64]) {
+        self.subjectSummaries = subjectSummaries
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.byteEditWords = byteEditWords
+        self.chunkWords = chunkWords
+        self.diffLineWords = diffLineWords
+        self.outcomeWords = outcomeWords
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCompactApplyEditsBatchResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCompactApplyEditsBatchResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCompactApplyEditsBatchResultV1 {
+        return
+            try CoreCompactApplyEditsBatchResultV1(
+                subjectSummaries: FfiConverterSequenceTypeCoreCompactApplyEditsSubjectSummaryV1.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                byteEditWords: FfiConverterSequenceUInt64.read(from: &buf),
+                chunkWords: FfiConverterSequenceUInt64.read(from: &buf),
+                diffLineWords: FfiConverterSequenceUInt64.read(from: &buf),
+                outcomeWords: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCompactApplyEditsBatchResultV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCoreCompactApplyEditsSubjectSummaryV1.write(value.subjectSummaries, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.byteEditWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.chunkWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.diffLineWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.outcomeWords, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactApplyEditsBatchResultV1_lift(_ buf: RustBuffer) throws -> CoreCompactApplyEditsBatchResultV1 {
+    return try FfiConverterTypeCoreCompactApplyEditsBatchResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactApplyEditsBatchResultV1_lower(_ value: CoreCompactApplyEditsBatchResultV1) -> RustBuffer {
+    return FfiConverterTypeCoreCompactApplyEditsBatchResultV1.lower(value)
+}
+
+
+public struct CoreCompactApplyEditsSubjectSummaryV1: Equatable, Hashable {
+    public let inputByteCount: UInt64
+    public let blobStart: UInt64
+    public let blobCount: UInt64
+    public let stringStart: UInt64
+    public let stringCount: UInt64
+    public let updatedTextStringIndex: UInt64
+    public let byteEditStart: UInt64
+    public let byteEditCount: UInt64
+    public let chunkStart: UInt64
+    public let chunkCount: UInt64
+    public let diffLineStart: UInt64
+    public let diffLineCount: UInt64
+    public let outcomeStart: UInt64
+    public let outcomeCount: UInt64
+    public let editsRequested: UInt64
+    public let editsApplied: UInt64
+    public let resultStatusTag: UInt64
+    public let outcomesPresent: Bool
+    public let statsPresent: Bool
+    public let linesChanged: UInt64
+    public let statsChunkCount: UInt64
+    public let noteStringIndex: UInt64
+    public let unifiedDiffStringIndex: UInt64
+    public let toolCardDiffStringIndex: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(inputByteCount: UInt64, blobStart: UInt64, blobCount: UInt64, stringStart: UInt64, stringCount: UInt64, updatedTextStringIndex: UInt64, byteEditStart: UInt64, byteEditCount: UInt64, chunkStart: UInt64, chunkCount: UInt64, diffLineStart: UInt64, diffLineCount: UInt64, outcomeStart: UInt64, outcomeCount: UInt64, editsRequested: UInt64, editsApplied: UInt64, resultStatusTag: UInt64, outcomesPresent: Bool, statsPresent: Bool, linesChanged: UInt64, statsChunkCount: UInt64, noteStringIndex: UInt64, unifiedDiffStringIndex: UInt64, toolCardDiffStringIndex: UInt64) {
+        self.inputByteCount = inputByteCount
+        self.blobStart = blobStart
+        self.blobCount = blobCount
+        self.stringStart = stringStart
+        self.stringCount = stringCount
+        self.updatedTextStringIndex = updatedTextStringIndex
+        self.byteEditStart = byteEditStart
+        self.byteEditCount = byteEditCount
+        self.chunkStart = chunkStart
+        self.chunkCount = chunkCount
+        self.diffLineStart = diffLineStart
+        self.diffLineCount = diffLineCount
+        self.outcomeStart = outcomeStart
+        self.outcomeCount = outcomeCount
+        self.editsRequested = editsRequested
+        self.editsApplied = editsApplied
+        self.resultStatusTag = resultStatusTag
+        self.outcomesPresent = outcomesPresent
+        self.statsPresent = statsPresent
+        self.linesChanged = linesChanged
+        self.statsChunkCount = statsChunkCount
+        self.noteStringIndex = noteStringIndex
+        self.unifiedDiffStringIndex = unifiedDiffStringIndex
+        self.toolCardDiffStringIndex = toolCardDiffStringIndex
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCompactApplyEditsSubjectSummaryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCompactApplyEditsSubjectSummaryV1 {
+        return
+            try CoreCompactApplyEditsSubjectSummaryV1(
+                inputByteCount: FfiConverterUInt64.read(from: &buf),
+                blobStart: FfiConverterUInt64.read(from: &buf),
+                blobCount: FfiConverterUInt64.read(from: &buf),
+                stringStart: FfiConverterUInt64.read(from: &buf),
+                stringCount: FfiConverterUInt64.read(from: &buf),
+                updatedTextStringIndex: FfiConverterUInt64.read(from: &buf),
+                byteEditStart: FfiConverterUInt64.read(from: &buf),
+                byteEditCount: FfiConverterUInt64.read(from: &buf),
+                chunkStart: FfiConverterUInt64.read(from: &buf),
+                chunkCount: FfiConverterUInt64.read(from: &buf),
+                diffLineStart: FfiConverterUInt64.read(from: &buf),
+                diffLineCount: FfiConverterUInt64.read(from: &buf),
+                outcomeStart: FfiConverterUInt64.read(from: &buf),
+                outcomeCount: FfiConverterUInt64.read(from: &buf),
+                editsRequested: FfiConverterUInt64.read(from: &buf),
+                editsApplied: FfiConverterUInt64.read(from: &buf),
+                resultStatusTag: FfiConverterUInt64.read(from: &buf),
+                outcomesPresent: FfiConverterBool.read(from: &buf),
+                statsPresent: FfiConverterBool.read(from: &buf),
+                linesChanged: FfiConverterUInt64.read(from: &buf),
+                statsChunkCount: FfiConverterUInt64.read(from: &buf),
+                noteStringIndex: FfiConverterUInt64.read(from: &buf),
+                unifiedDiffStringIndex: FfiConverterUInt64.read(from: &buf),
+                toolCardDiffStringIndex: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCompactApplyEditsSubjectSummaryV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.inputByteCount, into: &buf)
+        FfiConverterUInt64.write(value.blobStart, into: &buf)
+        FfiConverterUInt64.write(value.blobCount, into: &buf)
+        FfiConverterUInt64.write(value.stringStart, into: &buf)
+        FfiConverterUInt64.write(value.stringCount, into: &buf)
+        FfiConverterUInt64.write(value.updatedTextStringIndex, into: &buf)
+        FfiConverterUInt64.write(value.byteEditStart, into: &buf)
+        FfiConverterUInt64.write(value.byteEditCount, into: &buf)
+        FfiConverterUInt64.write(value.chunkStart, into: &buf)
+        FfiConverterUInt64.write(value.chunkCount, into: &buf)
+        FfiConverterUInt64.write(value.diffLineStart, into: &buf)
+        FfiConverterUInt64.write(value.diffLineCount, into: &buf)
+        FfiConverterUInt64.write(value.outcomeStart, into: &buf)
+        FfiConverterUInt64.write(value.outcomeCount, into: &buf)
+        FfiConverterUInt64.write(value.editsRequested, into: &buf)
+        FfiConverterUInt64.write(value.editsApplied, into: &buf)
+        FfiConverterUInt64.write(value.resultStatusTag, into: &buf)
+        FfiConverterBool.write(value.outcomesPresent, into: &buf)
+        FfiConverterBool.write(value.statsPresent, into: &buf)
+        FfiConverterUInt64.write(value.linesChanged, into: &buf)
+        FfiConverterUInt64.write(value.statsChunkCount, into: &buf)
+        FfiConverterUInt64.write(value.noteStringIndex, into: &buf)
+        FfiConverterUInt64.write(value.unifiedDiffStringIndex, into: &buf)
+        FfiConverterUInt64.write(value.toolCardDiffStringIndex, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1_lift(_ buf: RustBuffer) throws -> CoreCompactApplyEditsSubjectSummaryV1 {
+    return try FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1_lower(_ value: CoreCompactApplyEditsSubjectSummaryV1) -> RustBuffer {
+    return FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1.lower(value)
+}
+
+
+public struct CoreCompactCodeMapBatchResultV1: Equatable, Hashable {
+    public let subjectSummaries: [CoreCompactCodeMapSubjectSummaryV1]
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let stringIndexWords: [UInt64]
+    public let classWords: [UInt64]
+    public let interfaceWords: [UInt64]
+    public let aliasWords: [UInt64]
+    public let functionWords: [UInt64]
+    public let parameterWords: [UInt64]
+    public let propertyWords: [UInt64]
+    public let enumWords: [UInt64]
+    public let variableWords: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(subjectSummaries: [CoreCompactCodeMapSubjectSummaryV1], utf8Blob: Data, stringRangeWords: [UInt64], stringIndexWords: [UInt64], classWords: [UInt64], interfaceWords: [UInt64], aliasWords: [UInt64], functionWords: [UInt64], parameterWords: [UInt64], propertyWords: [UInt64], enumWords: [UInt64], variableWords: [UInt64]) {
+        self.subjectSummaries = subjectSummaries
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.stringIndexWords = stringIndexWords
+        self.classWords = classWords
+        self.interfaceWords = interfaceWords
+        self.aliasWords = aliasWords
+        self.functionWords = functionWords
+        self.parameterWords = parameterWords
+        self.propertyWords = propertyWords
+        self.enumWords = enumWords
+        self.variableWords = variableWords
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCompactCodeMapBatchResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCompactCodeMapBatchResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCompactCodeMapBatchResultV1 {
+        return
+            try CoreCompactCodeMapBatchResultV1(
+                subjectSummaries: FfiConverterSequenceTypeCoreCompactCodeMapSubjectSummaryV1.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                stringIndexWords: FfiConverterSequenceUInt64.read(from: &buf),
+                classWords: FfiConverterSequenceUInt64.read(from: &buf),
+                interfaceWords: FfiConverterSequenceUInt64.read(from: &buf),
+                aliasWords: FfiConverterSequenceUInt64.read(from: &buf),
+                functionWords: FfiConverterSequenceUInt64.read(from: &buf),
+                parameterWords: FfiConverterSequenceUInt64.read(from: &buf),
+                propertyWords: FfiConverterSequenceUInt64.read(from: &buf),
+                enumWords: FfiConverterSequenceUInt64.read(from: &buf),
+                variableWords: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCompactCodeMapBatchResultV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCoreCompactCodeMapSubjectSummaryV1.write(value.subjectSummaries, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringIndexWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.classWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.interfaceWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.aliasWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.functionWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.parameterWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.propertyWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.enumWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.variableWords, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactCodeMapBatchResultV1_lift(_ buf: RustBuffer) throws -> CoreCompactCodeMapBatchResultV1 {
+    return try FfiConverterTypeCoreCompactCodeMapBatchResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactCodeMapBatchResultV1_lower(_ value: CoreCompactCodeMapBatchResultV1) -> RustBuffer {
+    return FfiConverterTypeCoreCompactCodeMapBatchResultV1.lower(value)
+}
+
+
+public struct CoreCompactCodeMapSubjectSummaryV1: Equatable, Hashable {
+    public let languageId: UInt16
+    public let sourceByteCount: UInt64
+    public let outcomeTag: UInt64
+    public let outcomeActual: UInt64
+    public let outcomeLimit: UInt64
+    public let blob: CoreCompactTableRangeV1
+    public let strings: CoreCompactTableRangeV1
+    public let stringIndices: CoreCompactTableRangeV1
+    public let classPool: CoreCompactTableRangeV1
+    public let interfacePool: CoreCompactTableRangeV1
+    public let aliasPool: CoreCompactTableRangeV1
+    public let functionPool: CoreCompactTableRangeV1
+    public let parameterPool: CoreCompactTableRangeV1
+    public let propertyPool: CoreCompactTableRangeV1
+    public let enumPool: CoreCompactTableRangeV1
+    public let variablePool: CoreCompactTableRangeV1
+    public let imports: CoreCompactTableRangeV1
+    public let exports: CoreCompactTableRangeV1
+    public let classes: CoreCompactTableRangeV1
+    public let interfaces: CoreCompactTableRangeV1
+    public let aliases: CoreCompactTableRangeV1
+    public let literalUnions: CoreCompactTableRangeV1
+    public let functions: CoreCompactTableRangeV1
+    public let enums: CoreCompactTableRangeV1
+    public let globalVars: CoreCompactTableRangeV1
+    public let macros: CoreCompactTableRangeV1
+    public let referencedTypes: CoreCompactTableRangeV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(languageId: UInt16, sourceByteCount: UInt64, outcomeTag: UInt64, outcomeActual: UInt64, outcomeLimit: UInt64, blob: CoreCompactTableRangeV1, strings: CoreCompactTableRangeV1, stringIndices: CoreCompactTableRangeV1, classPool: CoreCompactTableRangeV1, interfacePool: CoreCompactTableRangeV1, aliasPool: CoreCompactTableRangeV1, functionPool: CoreCompactTableRangeV1, parameterPool: CoreCompactTableRangeV1, propertyPool: CoreCompactTableRangeV1, enumPool: CoreCompactTableRangeV1, variablePool: CoreCompactTableRangeV1, imports: CoreCompactTableRangeV1, exports: CoreCompactTableRangeV1, classes: CoreCompactTableRangeV1, interfaces: CoreCompactTableRangeV1, aliases: CoreCompactTableRangeV1, literalUnions: CoreCompactTableRangeV1, functions: CoreCompactTableRangeV1, enums: CoreCompactTableRangeV1, globalVars: CoreCompactTableRangeV1, macros: CoreCompactTableRangeV1, referencedTypes: CoreCompactTableRangeV1) {
+        self.languageId = languageId
+        self.sourceByteCount = sourceByteCount
+        self.outcomeTag = outcomeTag
+        self.outcomeActual = outcomeActual
+        self.outcomeLimit = outcomeLimit
+        self.blob = blob
+        self.strings = strings
+        self.stringIndices = stringIndices
+        self.classPool = classPool
+        self.interfacePool = interfacePool
+        self.aliasPool = aliasPool
+        self.functionPool = functionPool
+        self.parameterPool = parameterPool
+        self.propertyPool = propertyPool
+        self.enumPool = enumPool
+        self.variablePool = variablePool
+        self.imports = imports
+        self.exports = exports
+        self.classes = classes
+        self.interfaces = interfaces
+        self.aliases = aliases
+        self.literalUnions = literalUnions
+        self.functions = functions
+        self.enums = enums
+        self.globalVars = globalVars
+        self.macros = macros
+        self.referencedTypes = referencedTypes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCompactCodeMapSubjectSummaryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCompactCodeMapSubjectSummaryV1 {
+        return
+            try CoreCompactCodeMapSubjectSummaryV1(
+                languageId: FfiConverterUInt16.read(from: &buf),
+                sourceByteCount: FfiConverterUInt64.read(from: &buf),
+                outcomeTag: FfiConverterUInt64.read(from: &buf),
+                outcomeActual: FfiConverterUInt64.read(from: &buf),
+                outcomeLimit: FfiConverterUInt64.read(from: &buf),
+                blob: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                strings: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                stringIndices: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                classPool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                interfacePool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                aliasPool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                functionPool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                parameterPool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                propertyPool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                enumPool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                variablePool: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                imports: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                exports: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                classes: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                interfaces: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                aliases: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                literalUnions: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                functions: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                enums: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                globalVars: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                macros: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf),
+                referencedTypes: FfiConverterTypeCoreCompactTableRangeV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCompactCodeMapSubjectSummaryV1, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.languageId, into: &buf)
+        FfiConverterUInt64.write(value.sourceByteCount, into: &buf)
+        FfiConverterUInt64.write(value.outcomeTag, into: &buf)
+        FfiConverterUInt64.write(value.outcomeActual, into: &buf)
+        FfiConverterUInt64.write(value.outcomeLimit, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.blob, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.strings, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.stringIndices, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.classPool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.interfacePool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.aliasPool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.functionPool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.parameterPool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.propertyPool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.enumPool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.variablePool, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.imports, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.exports, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.classes, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.interfaces, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.aliases, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.literalUnions, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.functions, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.enums, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.globalVars, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.macros, into: &buf)
+        FfiConverterTypeCoreCompactTableRangeV1.write(value.referencedTypes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1_lift(_ buf: RustBuffer) throws -> CoreCompactCodeMapSubjectSummaryV1 {
+    return try FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1_lower(_ value: CoreCompactCodeMapSubjectSummaryV1) -> RustBuffer {
+    return FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1.lower(value)
+}
+
+
+public struct CoreCompactTableRangeV1: Equatable, Hashable {
+    public let start: UInt64
+    public let count: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(start: UInt64, count: UInt64) {
+        self.start = start
+        self.count = count
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCompactTableRangeV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCompactTableRangeV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCompactTableRangeV1 {
+        return
+            try CoreCompactTableRangeV1(
+                start: FfiConverterUInt64.read(from: &buf),
+                count: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCompactTableRangeV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.start, into: &buf)
+        FfiConverterUInt64.write(value.count, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactTableRangeV1_lift(_ buf: RustBuffer) throws -> CoreCompactTableRangeV1 {
+    return try FfiConverterTypeCoreCompactTableRangeV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCompactTableRangeV1_lower(_ value: CoreCompactTableRangeV1) -> RustBuffer {
+    return FfiConverterTypeCoreCompactTableRangeV1.lower(value)
 }
 
 
@@ -3160,6 +4016,72 @@ public func FfiConverterTypeCancelDisposition_lower(_ value: CancelDisposition) 
 
 
 
+
+public enum CoreCodeMapSourceKindV1: Equatable, Hashable {
+
+    case decoded
+    case decodeFailedUndecodable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCodeMapSourceKindV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCodeMapSourceKindV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreCodeMapSourceKindV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCodeMapSourceKindV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .decoded
+
+        case 2: return .decodeFailedUndecodable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreCodeMapSourceKindV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .decoded:
+            writeInt(&buf, Int32(1))
+
+
+        case .decodeFailedUndecodable:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodeMapSourceKindV1_lift(_ buf: RustBuffer) throws -> CoreCodeMapSourceKindV1 {
+    return try FfiConverterTypeCoreCodeMapSourceKindV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodeMapSourceKindV1_lower(_ value: CoreCodeMapSourceKindV1) -> RustBuffer {
+    return FfiConverterTypeCoreCodeMapSourceKindV1.lower(value)
+}
+
+
+
 /**
  * Stable error categories exported by ABI epoch 1.
  */
@@ -3193,6 +4115,13 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case JitUnavailable
     case SearchCancelled
     case SearchInvariant
+    case CodeMapInvalidRequest
+    case CodeMapServiceUnavailable
+    case CodeMapCancelled
+    case CodeMapInvariant
+    case ApplyEditsInvalidParams
+    case ApplyEditsCancelled
+    case ApplyEditsInvariant
 
 
 
@@ -3247,6 +4176,13 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case 23: return .JitUnavailable
         case 24: return .SearchCancelled
         case 25: return .SearchInvariant
+        case 26: return .CodeMapInvalidRequest
+        case 27: return .CodeMapServiceUnavailable
+        case 28: return .CodeMapCancelled
+        case 29: return .CodeMapInvariant
+        case 30: return .ApplyEditsInvalidParams
+        case 31: return .ApplyEditsCancelled
+        case 32: return .ApplyEditsInvariant
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -3357,6 +4293,34 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case .SearchInvariant:
             writeInt(&buf, Int32(25))
+
+
+        case .CodeMapInvalidRequest:
+            writeInt(&buf, Int32(26))
+
+
+        case .CodeMapServiceUnavailable:
+            writeInt(&buf, Int32(27))
+
+
+        case .CodeMapCancelled:
+            writeInt(&buf, Int32(28))
+
+
+        case .CodeMapInvariant:
+            writeInt(&buf, Int32(29))
+
+
+        case .ApplyEditsInvalidParams:
+            writeInt(&buf, Int32(30))
+
+
+        case .ApplyEditsCancelled:
+            writeInt(&buf, Int32(31))
+
+
+        case .ApplyEditsInvariant:
+            writeInt(&buf, Int32(32))
 
         }
     }
@@ -4481,6 +5445,131 @@ fileprivate struct FfiConverterSequenceTypeCompactRegexSubjectSummary: FfiConver
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoreApplyEditsOperationV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreApplyEditsOperationV1]
+
+    public static func write(_ value: [CoreApplyEditsOperationV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreApplyEditsOperationV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreApplyEditsOperationV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreApplyEditsOperationV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreApplyEditsOperationV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreApplyEditsSubjectRequestV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreApplyEditsSubjectRequestV1]
+
+    public static func write(_ value: [CoreApplyEditsSubjectRequestV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreApplyEditsSubjectRequestV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreApplyEditsSubjectRequestV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreApplyEditsSubjectRequestV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreApplyEditsSubjectRequestV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreCodeMapSubjectRequestV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreCodeMapSubjectRequestV1]
+
+    public static func write(_ value: [CoreCodeMapSubjectRequestV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreCodeMapSubjectRequestV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreCodeMapSubjectRequestV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreCodeMapSubjectRequestV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreCodeMapSubjectRequestV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreCompactApplyEditsSubjectSummaryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreCompactApplyEditsSubjectSummaryV1]
+
+    public static func write(_ value: [CoreCompactApplyEditsSubjectSummaryV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreCompactApplyEditsSubjectSummaryV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreCompactApplyEditsSubjectSummaryV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreCompactCodeMapSubjectSummaryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreCompactCodeMapSubjectSummaryV1]
+
+    public static func write(_ value: [CoreCompactCodeMapSubjectSummaryV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreCompactCodeMapSubjectSummaryV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreCompactCodeMapSubjectSummaryV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePathSnapshot: FfiConverterRustBuffer {
     typealias SwiftType = [PathSnapshot]
 
@@ -4618,6 +5707,9 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_apply_edits_batch_compact_v1() != 64411) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_begin_shutdown() != 40922) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4625,6 +5717,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_close_subscription() != 31003) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_code_map_extract_batch_compact_v1() != 48946) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_create_leaf_cancellation() != 701) {

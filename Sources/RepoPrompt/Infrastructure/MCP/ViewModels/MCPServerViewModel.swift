@@ -13,6 +13,7 @@ import Logging
 import MCP
 import Ontology
 import RepoPromptDomainRuntime
+import RepoPromptSearchCore
 import RepoPromptShared
 
 enum ReadFileAutoSelectionCoverageCertificateMissReason: String, CaseIterable, Hashable {

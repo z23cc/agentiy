@@ -5,10 +5,12 @@ use crate::generated::contract_identity::{
 use crate::panic_guard::PanicGuard;
 use crate::types::{
     AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope,
-    CompactRegexBatchResult, CoreConfig, CoreHandshake, DrainBatch, FolderSuffixRequest,
-    HostResponse, OperationState, OversizeEvent, PathFilterRequest, PathFilterResult,
-    RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity,
-    ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
+    CompactRegexBatchResult, CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1,
+    CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake,
+    DrainBatch, FolderSuffixRequest, HostResponse, OperationState, OversizeEvent,
+    PathFilterRequest, PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest,
+    RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap,
+    SubscriptionId, SubscriptionScope,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -82,6 +84,8 @@ impl LeafCancellation {
 pub struct CoreRuntime {
     inner: Arc<runtime::CoreRuntime>,
     search_leaf: runtime::SearchLeaf,
+    code_map_service: runtime::codemap::CodeMapService,
+    apply_edits_service: runtime::apply_edits::ApplyEditsService,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -390,6 +394,55 @@ impl CoreRuntime {
         })
     }
 
+    pub fn code_map_extract_batch_compact_v1(
+        &self,
+        request: CoreCodeMapBatchRequestV1,
+    ) -> Result<CoreCompactCodeMapBatchResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            let cancellation = request.cancellation.runtime_handle().clone();
+            Ok(self
+                .code_map_service
+                .build_batch_with_cancellation(request.into_runtime_request(), Some(&cancellation))?
+                .into())
+        })
+    }
+
+    pub fn apply_edits_batch_compact_v1(
+        &self,
+        request: CoreApplyEditsBatchRequestV1,
+    ) -> Result<CoreCompactApplyEditsBatchResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            let cancellation = request.cancellation.runtime_handle().clone();
+            Ok(self
+                .apply_edits_service
+                .apply_batch_with_cancellation(
+                    request.into_runtime_request()?,
+                    Some(&cancellation),
+                )?
+                .into())
+        })
+    }
+
     pub fn filter_paths(&self, request: PathFilterRequest) -> Result<PathFilterResult, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -455,6 +508,8 @@ impl CoreRuntime {
         Ok(Self {
             inner,
             search_leaf,
+            code_map_service: runtime::codemap::CodeMapService,
+            apply_edits_service: runtime::apply_edits::ApplyEditsService,
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),
@@ -503,6 +558,9 @@ impl CoreRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        CoreApplyEditsSubjectRequestV1, CoreCodeMapSourceKindV1, CoreCodeMapSubjectRequestV1,
+    };
 
     fn config() -> CoreConfig {
         CoreConfig {
@@ -554,5 +612,116 @@ mod tests {
         let second = core.begin_shutdown(identity).expect("duplicate shutdown");
         assert!(!first.already_started);
         assert!(second.already_started);
+    }
+
+    fn initialized_core() -> (Arc<CoreRuntime>, RuntimeIdentity, Arc<LeafCancellation>) {
+        let core = CoreRuntime::new(config()).expect("runtime creation");
+        let identity = core.initialize().expect("initialize").runtime_identity;
+        let cancellation = core
+            .create_leaf_cancellation(identity.clone())
+            .expect("leaf cancellation");
+        (core, identity, cancellation)
+    }
+
+    #[test]
+    fn compact_compute_exports_round_trip() {
+        let (core, identity, cancellation) = initialized_core();
+        let codemap = core
+            .code_map_extract_batch_compact_v1(CoreCodeMapBatchRequestV1 {
+                runtime_identity: identity.clone(),
+                cancellation: Arc::clone(&cancellation),
+                contract_version: runtime::codemap::CODEMAP_CONTRACT_VERSION_V1,
+                subjects: vec![CoreCodeMapSubjectRequestV1 {
+                    language_id: runtime::codemap::CodeMapLanguage::Swift.id(),
+                    source_kind: CoreCodeMapSourceKindV1::Decoded,
+                    source_utf8: b"struct Example { let value: Int }".to_vec(),
+                }],
+            })
+            .expect("codemap compact export");
+        assert_eq!(codemap.subject_summaries.len(), 1);
+        assert!(!codemap.string_range_words.is_empty());
+
+        let apply = core
+            .apply_edits_batch_compact_v1(CoreApplyEditsBatchRequestV1 {
+                runtime_identity: identity,
+                cancellation,
+                contract_version: runtime::apply_edits::APPLY_EDITS_CONTRACT_VERSION_V1,
+                subjects: vec![CoreApplyEditsSubjectRequestV1 {
+                    path_label: "Example.swift".to_owned(),
+                    original_utf8: b"old\n".to_vec(),
+                    mode_tag: 0,
+                    rewrite_replacement: Some("new\n".to_owned()),
+                    operations: Vec::new(),
+                    verbose: true,
+                    include_tool_card_unified_diff: true,
+                }],
+            })
+            .expect("apply-edits compact export");
+        assert_eq!(apply.subject_summaries.len(), 1);
+        assert_eq!(apply.subject_summaries[0].edits_applied, 1);
+        assert!(!apply.byte_edit_words.is_empty());
+    }
+
+    #[test]
+    fn compact_compute_exports_classify_cancellation() {
+        let (core, identity, cancellation) = initialized_core();
+        cancellation
+            .cancel(identity.clone())
+            .expect("cancel leaf computation");
+        let codemap = core.code_map_extract_batch_compact_v1(CoreCodeMapBatchRequestV1 {
+            runtime_identity: identity.clone(),
+            cancellation: Arc::clone(&cancellation),
+            contract_version: runtime::codemap::CODEMAP_CONTRACT_VERSION_V1,
+            subjects: vec![CoreCodeMapSubjectRequestV1 {
+                language_id: runtime::codemap::CodeMapLanguage::Swift.id(),
+                source_kind: CoreCodeMapSourceKindV1::Decoded,
+                source_utf8: b"struct Example {}".to_vec(),
+            }],
+        });
+        assert_eq!(codemap, Err(CoreError::CodeMapCancelled));
+
+        let apply = core.apply_edits_batch_compact_v1(CoreApplyEditsBatchRequestV1 {
+            runtime_identity: identity,
+            cancellation,
+            contract_version: runtime::apply_edits::APPLY_EDITS_CONTRACT_VERSION_V1,
+            subjects: vec![CoreApplyEditsSubjectRequestV1 {
+                path_label: "Example.swift".to_owned(),
+                original_utf8: b"old\n".to_vec(),
+                mode_tag: 0,
+                rewrite_replacement: Some("new\n".to_owned()),
+                operations: Vec::new(),
+                verbose: false,
+                include_tool_card_unified_diff: false,
+            }],
+        });
+        assert_eq!(apply, Err(CoreError::ApplyEditsCancelled));
+    }
+
+    #[test]
+    fn compact_compute_exports_classify_invalid_requests() {
+        let (core, identity, cancellation) = initialized_core();
+        let codemap = core.code_map_extract_batch_compact_v1(CoreCodeMapBatchRequestV1 {
+            runtime_identity: identity.clone(),
+            cancellation: Arc::clone(&cancellation),
+            contract_version: 2,
+            subjects: Vec::new(),
+        });
+        assert_eq!(codemap, Err(CoreError::CodeMapInvalidRequest));
+
+        let apply = core.apply_edits_batch_compact_v1(CoreApplyEditsBatchRequestV1 {
+            runtime_identity: identity,
+            cancellation,
+            contract_version: runtime::apply_edits::APPLY_EDITS_CONTRACT_VERSION_V1,
+            subjects: vec![CoreApplyEditsSubjectRequestV1 {
+                path_label: "Example.swift".to_owned(),
+                original_utf8: b"old\n".to_vec(),
+                mode_tag: 2,
+                rewrite_replacement: None,
+                operations: Vec::new(),
+                verbose: false,
+                include_tool_card_unified_diff: false,
+            }],
+        });
+        assert_eq!(apply, Err(CoreError::ApplyEditsInvalidParams));
     }
 }

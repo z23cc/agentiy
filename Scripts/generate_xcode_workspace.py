@@ -119,10 +119,12 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "RepoPromptShared",
         "RepoPromptC",
         "RepoPromptWorkspaceCore",
+        "RepoPromptSearchCore",
         "RepoPromptDomainRuntime",
         "RepoPromptCodeMapCore",
         "TreeSitterScannerSupport",
         "RepoPromptWorkspaceCoreTests",
+        "RepoPromptSearchCoreTests",
         "RepoPromptDomainRuntimeTests",
         "RepoPromptCodeMapCoreTests",
         "RepoPromptTests",
@@ -185,8 +187,35 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     if _by_name_dependencies(repo_prompt_app).count("AgentryCoreBridge") != 1:
         raise GeneratorError("RepoPromptApp must depend exactly once on AgentryCoreBridge")
 
+    search_core = targets["RepoPromptSearchCore"]
+    if search_core.get("type") != "regular":
+        raise GeneratorError("RepoPromptSearchCore must remain an internal regular target")
+    if search_core.get("path") != "Sources/RepoPromptSearchCore":
+        raise GeneratorError("RepoPromptSearchCore target path drifted")
+    if _by_name_dependencies(search_core) != ["AgentryCoreBridge"]:
+        raise GeneratorError("RepoPromptSearchCore must depend only on AgentryCoreBridge")
+    if _by_name_dependencies(repo_prompt_app).count("RepoPromptSearchCore") != 1:
+        raise GeneratorError("RepoPromptApp must depend exactly once on RepoPromptSearchCore")
+
+    search_core_tests = targets["RepoPromptSearchCoreTests"]
+    if search_core_tests.get("type") != "test":
+        raise GeneratorError("RepoPromptSearchCoreTests must remain a test target")
+    if search_core_tests.get("path") != "Tests/RepoPromptSearchCoreTests":
+        raise GeneratorError("RepoPromptSearchCoreTests target path drifted")
+    if _by_name_dependencies(search_core_tests) != ["RepoPromptSearchCore", "AgentryCoreBridge"]:
+        raise GeneratorError(
+            "RepoPromptSearchCoreTests must depend on RepoPromptSearchCore and AgentryCoreBridge"
+        )
+
     forbidden_raw_dependencies = {"CAgentryRustCore", "AgentryUniFFIRaw"}
-    for name in ("RepoPrompt", "RepoPromptApp", "RepoPromptMCP", "RepoPromptTests"):
+    for name in (
+        "RepoPrompt",
+        "RepoPromptApp",
+        "RepoPromptMCP",
+        "RepoPromptSearchCore",
+        "RepoPromptSearchCoreTests",
+        "RepoPromptTests",
+    ):
         leaked = forbidden_raw_dependencies.intersection(_by_name_dependencies(targets[name]))
         if leaked:
             raise GeneratorError(
@@ -201,6 +230,8 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
             raise GeneratorError(
                 f"Rust FFI target '{sorted(leaked)[0]}' must not be exposed as a package product"
             )
+        if "RepoPromptSearchCore" in product.get("targets", []):
+            raise GeneratorError("RepoPromptSearchCore must not be exposed as a package product")
 
     expected_test_dependencies = {
         "RepoPromptApp",

@@ -85,7 +85,14 @@
     "heapLimitExceeded",
     "jitUnavailable",
     "searchCancelled",
-    "searchInvariant"
+    "searchInvariant",
+    "codeMapInvalidRequest",
+    "codeMapServiceUnavailable",
+    "codeMapCancelled",
+    "codeMapInvariant",
+    "applyEditsInvalidParams",
+    "applyEditsCancelled",
+    "applyEditsInvariant"
   ],
   "searchLeaf": {
     "additiveInAbiEpoch": 1,
@@ -119,6 +126,75 @@
     "contentCancellation": "searchCancelled",
     "pathCancellation": "ordered-partial-result",
     "malformedRangeBehavior": "searchInvariant",
+    "productFallback": "none"
+  },
+  "codeMapCompactV1": {
+    "additiveInAbiEpoch": 1,
+    "contractVersion": 1,
+    "export": "codeMapExtractBatchCompactV1",
+    "coordinates": "utf8-byte-half-open",
+    "subjectAlignment": "input-index",
+    "languageIDs": {
+      "swift": 1,
+      "javascript": 2,
+      "cSharp": 3,
+      "python": 4,
+      "c": 5,
+      "rust": 6,
+      "cpp": 7,
+      "go": 8,
+      "java": 9,
+      "typeScript": 10,
+      "tsx": 11,
+      "php": 12,
+      "ruby": 13
+    },
+    "outcomeTags": {
+      "ready": 0,
+      "readyNoSymbols": 1,
+      "oversizeUtf8Bytes": 2,
+      "oversizeUtf16Units": 3,
+      "oversizeLines": 4,
+      "decodeFailedUndecodable": 5,
+      "parseFailedNilTree": 6,
+      "parseFailedNilRoot": 7
+    },
+    "tables": {
+      "stringRangeWords": {"stride": 2},
+      "stringIndexWords": {"stride": 1},
+      "classWords": {"stride": 5},
+      "interfaceWords": {"stride": 5},
+      "aliasWords": {"stride": 2},
+      "functionWords": {"stride": 6},
+      "parameterWords": {"stride": 3},
+      "propertyWords": {"stride": 2},
+      "enumWords": {"stride": 3},
+      "variableWords": {"stride": 3}
+    },
+    "runtimeIdentityRequired": true,
+    "requestScopedCancellation": "LeafCancellation",
+    "productFallback": "none"
+  },
+  "applyEditsCompactV1": {
+    "additiveInAbiEpoch": 1,
+    "contractVersion": 1,
+    "export": "applyEditsBatchCompactV1",
+    "coordinates": "utf8-byte-half-open",
+    "subjectAlignment": "input-index",
+    "modeTags": {"rewrite": 0, "single": 1, "batch": 2},
+    "resultStatusTags": {"success": 0, "partial": 1, "failed": 2},
+    "operationOutcomeTags": {"success": 0, "failed": 1},
+    "diffLineTags": {"context": 0, "addition": 1, "removal": 2},
+    "optionalWord": "u64::MAX",
+    "tables": {
+      "stringRangeWords": {"stride": 2},
+      "byteEditWords": {"stride": 4},
+      "chunkWords": {"stride": 8, "v1Flags": [0]},
+      "diffLineWords": {"stride": 2},
+      "outcomeWords": {"stride": 3}
+    },
+    "runtimeIdentityRequired": true,
+    "requestScopedCancellation": "LeafCancellation",
     "productFallback": "none"
   },
   "subscription": {

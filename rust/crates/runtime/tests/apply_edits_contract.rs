@@ -1,4 +1,4 @@
-use agentry_edits_staging::*;
+use agentry_runtime::apply_edits::*;
 
 fn operation(search: &str, replace: &str, replace_all: bool) -> ApplyOperation {
     ApplyOperation {
@@ -169,9 +169,12 @@ fn batch_ambiguity_is_partial_and_later_edit_succeeds() {
     assert_eq!(result.updated_text, "same\nsame\ndone\n");
     assert_eq!(result.status, ApplyStatus::Partial);
     assert_eq!(result.edits_applied, 1);
-    assert_eq!(result.outcomes.as_ref().unwrap()[0].error.as_deref(), Some(
-        "Search block matches multiple locations (lines 1, 2). Please make the block more specific or use the replace_all parameter to replace all occurrences."
-    ));
+    assert_eq!(
+        result.outcomes.as_ref().unwrap()[0].error.as_deref(),
+        Some(
+            "Search block matches multiple locations (lines 1, 2). Please make the block more specific or use the replace_all parameter to replace all occurrences."
+        )
+    );
 }
 
 #[test]
@@ -320,10 +323,12 @@ fn indentation_converts_tabs_spaces_and_absorbs_leaked_tab() {
         result.updated_text,
         "    if ready {\n            work2()\n    }\n"
     );
-    assert!(!result
-        .updated_text
-        .lines()
-        .any(|line| line.starts_with('\t')));
+    assert!(
+        !result
+            .updated_text
+            .lines()
+            .any(|line| line.starts_with('\t'))
+    );
 
     let tabs = "\tswitch value {\n\t\tcase 1: break\n\t}\n";
     let result = apply_subject(&request(

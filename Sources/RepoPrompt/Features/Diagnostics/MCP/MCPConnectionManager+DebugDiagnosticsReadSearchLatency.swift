@@ -2,6 +2,7 @@
 
 import Foundation
 import MCP
+import RepoPromptSearchCore
 import RepoPromptShared
 
 #if DEBUG

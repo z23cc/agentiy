@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptSearchCore
 
 @MainActor
 struct WindowStateComposition {

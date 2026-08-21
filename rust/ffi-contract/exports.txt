@@ -18,6 +18,8 @@ LeafCancellation.close(RuntimeIdentity) throws
 CoreRuntime.searchRegex(RegexSearchRequest) throws -> RegexSearchResult
 CoreRuntime.searchRegexBatch(RegexSearchBatchRequest) throws -> sequence<RegexSearchResult>
 CoreRuntime.searchRegexBatchCompactV1(RegexSearchBatchRequest) throws -> CompactRegexBatchResult
+CoreRuntime.codeMapExtractBatchCompactV1(CoreCodeMapBatchRequestV1) throws -> CoreCompactCodeMapBatchResultV1
+CoreRuntime.applyEditsBatchCompactV1(CoreApplyEditsBatchRequestV1) throws -> CoreCompactApplyEditsBatchResultV1
 CoreRuntime.filterPaths(PathFilterRequest) throws -> PathFilterResult
 CoreRuntime.folderSuffixIndices(FolderSuffixRequest) throws -> sequence<UInt32>
 CoreRuntime.beginShutdown(RuntimeIdentity) throws -> ShutdownReceipt

@@ -49,6 +49,13 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case jitUnavailable
     case searchCancelled
     case searchInvariant
+    case codeMapInvalidRequest
+    case codeMapServiceUnavailable
+    case codeMapCancelled
+    case codeMapInvariant
+    case applyEditsInvalidParams
+    case applyEditsCancelled
+    case applyEditsInvariant
     case unexpected(String)
 }
 
@@ -80,6 +87,16 @@ protocol CoreRuntimeTransport: Sendable {
         cancellation: any CoreLeafCancellationHandle,
         request: CoreRegexSearchBatchRequest
     ) throws -> CoreCompactRegexBatchResult
+    func codeMapExtractBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCodeMapBatchRequestV1
+    ) throws -> CoreCompactCodeMapBatchResultV1
+    func applyEditsBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreApplyEditsBatchRequestV1
+    ) throws -> CoreCompactApplyEditsBatchResultV1
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -408,6 +425,168 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func codeMapExtractBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCodeMapBatchRequestV1
+    ) throws -> CoreCompactCodeMapBatchResultV1 {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        let value: AgentryUniFFIRaw.CoreCompactCodeMapBatchResultV1
+        do {
+            value = try runtime.codeMapExtractBatchCompactV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                contractVersion: request.contractVersion,
+                subjects: request.subjects.map {
+                    .init(
+                        languageId: $0.languageID,
+                        sourceKind: $0.sourceKind == .decoded ? .decoded : .decodeFailedUndecodable,
+                        sourceUtf8: $0.sourceUTF8
+                    )
+                }
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+        let summaries = try value.subjectSummaries.map { summary in
+            guard let rawTag = UInt8(exactly: summary.outcomeTag),
+                  let outcomeTag = CoreCompactCodeMapOutcomeTag(rawValue: rawTag)
+            else { throw CoreComputeError.malformedResponse }
+            return CoreCompactCodeMapSubjectSummaryV1(
+                languageID: summary.languageId,
+                sourceByteCount: summary.sourceByteCount,
+                outcomeTag: outcomeTag,
+                outcomeActual: summary.outcomeActual,
+                outcomeLimit: summary.outcomeLimit,
+                blob: Self.compactRange(summary.blob),
+                strings: Self.compactRange(summary.strings),
+                stringIndices: Self.compactRange(summary.stringIndices),
+                classPool: Self.compactRange(summary.classPool),
+                interfacePool: Self.compactRange(summary.interfacePool),
+                aliasPool: Self.compactRange(summary.aliasPool),
+                functionPool: Self.compactRange(summary.functionPool),
+                parameterPool: Self.compactRange(summary.parameterPool),
+                propertyPool: Self.compactRange(summary.propertyPool),
+                enumPool: Self.compactRange(summary.enumPool),
+                variablePool: Self.compactRange(summary.variablePool),
+                imports: Self.compactRange(summary.imports),
+                exports: Self.compactRange(summary.exports),
+                classes: Self.compactRange(summary.classes),
+                interfaces: Self.compactRange(summary.interfaces),
+                aliases: Self.compactRange(summary.aliases),
+                literalUnions: Self.compactRange(summary.literalUnions),
+                functions: Self.compactRange(summary.functions),
+                enums: Self.compactRange(summary.enums),
+                globalVariables: Self.compactRange(summary.globalVars),
+                macros: Self.compactRange(summary.macros),
+                referencedTypes: Self.compactRange(summary.referencedTypes)
+            )
+        }
+        return .init(
+            subjectSummaries: summaries,
+            utf8Blob: value.utf8Blob,
+            stringRangeWords: value.stringRangeWords,
+            stringIndexWords: value.stringIndexWords,
+            classWords: value.classWords,
+            interfaceWords: value.interfaceWords,
+            aliasWords: value.aliasWords,
+            functionWords: value.functionWords,
+            parameterWords: value.parameterWords,
+            propertyWords: value.propertyWords,
+            enumWords: value.enumWords,
+            variableWords: value.variableWords
+        )
+    }
+
+    func applyEditsBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreApplyEditsBatchRequestV1
+    ) throws -> CoreCompactApplyEditsBatchResultV1 {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        let subjects: [AgentryUniFFIRaw.CoreApplyEditsSubjectRequestV1] = request.subjects.map { subject in
+            let modeTag: UInt64
+            let rewriteReplacement: String?
+            let operations: [CoreApplyEditsOperationV1]
+            switch subject.mode {
+            case let .rewrite(replacement):
+                modeTag = 0
+                rewriteReplacement = replacement
+                operations = []
+            case let .single(operation):
+                modeTag = 1
+                rewriteReplacement = nil
+                operations = [operation]
+            case let .batch(batch):
+                modeTag = 2
+                rewriteReplacement = nil
+                operations = batch
+            }
+            return .init(
+                pathLabel: subject.pathLabel,
+                originalUtf8: subject.originalUTF8,
+                modeTag: modeTag,
+                rewriteReplacement: rewriteReplacement,
+                operations: operations.map {
+                    .init(search: $0.search, replace: $0.replacement, replaceAll: $0.replaceAll)
+                },
+                verbose: subject.verbose,
+                includeToolCardUnifiedDiff: subject.includeToolCardUnifiedDiff
+            )
+        }
+        let value: AgentryUniFFIRaw.CoreCompactApplyEditsBatchResultV1
+        do {
+            value = try runtime.applyEditsBatchCompactV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                contractVersion: request.contractVersion,
+                subjects: subjects
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+        return .init(
+            subjectSummaries: value.subjectSummaries.map {
+                .init(
+                    inputByteCount: $0.inputByteCount,
+                    blobStart: $0.blobStart,
+                    blobCount: $0.blobCount,
+                    stringStart: $0.stringStart,
+                    stringCount: $0.stringCount,
+                    updatedTextStringIndex: $0.updatedTextStringIndex,
+                    byteEditStart: $0.byteEditStart,
+                    byteEditCount: $0.byteEditCount,
+                    chunkStart: $0.chunkStart,
+                    chunkCount: $0.chunkCount,
+                    diffLineStart: $0.diffLineStart,
+                    diffLineCount: $0.diffLineCount,
+                    outcomeStart: $0.outcomeStart,
+                    outcomeCount: $0.outcomeCount,
+                    editsRequested: $0.editsRequested,
+                    editsApplied: $0.editsApplied,
+                    resultStatusTag: $0.resultStatusTag,
+                    outcomesPresent: $0.outcomesPresent,
+                    statsPresent: $0.statsPresent,
+                    linesChanged: $0.linesChanged,
+                    statsChunkCount: $0.statsChunkCount,
+                    noteStringIndex: $0.noteStringIndex,
+                    unifiedDiffStringIndex: $0.unifiedDiffStringIndex,
+                    toolCardDiffStringIndex: $0.toolCardDiffStringIndex
+                )
+            },
+            utf8Blob: value.utf8Blob,
+            stringRangeWords: value.stringRangeWords,
+            byteEditWords: value.byteEditWords,
+            chunkWords: value.chunkWords,
+            diffLineWords: value.diffLineWords,
+            outcomeWords: value.outcomeWords
+        )
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -546,6 +725,12 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         .init(start: value.start, end: value.end)
     }
 
+    private static func compactRange(
+        _ value: AgentryUniFFIRaw.CoreCompactTableRangeV1
+    ) -> CoreCompactTableRange {
+        .init(start: value.start, count: value.count)
+    }
+
     private static func regexHit(_ value: AgentryUniFFIRaw.RegexLineHit) -> CoreRegexLineHit {
         .init(
             lineNumber: value.lineNumber,
@@ -659,6 +844,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .JitUnavailable: .jitUnavailable
         case .SearchCancelled: .searchCancelled
         case .SearchInvariant: .searchInvariant
+        case .CodeMapInvalidRequest: .codeMapInvalidRequest
+        case .CodeMapServiceUnavailable: .codeMapServiceUnavailable
+        case .CodeMapCancelled: .codeMapCancelled
+        case .CodeMapInvariant: .codeMapInvariant
+        case .ApplyEditsInvalidParams: .applyEditsInvalidParams
+        case .ApplyEditsCancelled: .applyEditsCancelled
+        case .ApplyEditsInvariant: .applyEditsInvariant
         }
     }
 }
@@ -819,6 +1011,81 @@ public actor AgentryCoreBridge {
     public func searchClient() throws -> CoreSearchClient {
         _ = try requireIdentity()
         return CoreSearchClient(bridge: self)
+    }
+
+    public func computeClient() throws -> CoreComputeClient {
+        _ = try requireIdentity()
+        return CoreComputeClient(bridge: self)
+    }
+
+    func prepareComputeOperation() throws -> CoreComputeOperationContext {
+        do {
+            let identity = try requireIdentity()
+            return try CoreComputeOperationContext(
+                transport: transport,
+                identity: identity,
+                cancellation: transport.createLeafCancellation(identity: identity)
+            )
+        } catch {
+            throw mapComputeFailure(error)
+        }
+    }
+
+    func validateComputeCompletion(identity: CoreRuntimeIdentity) throws {
+        do {
+            try validate(identity)
+        } catch {
+            throw mapComputeFailure(error)
+        }
+    }
+
+    func mapComputeFailure(_ error: Error) -> any Error {
+        if let error = error as? CoreComputeError {
+            if error == .malformedResponse {
+                invalidate()
+            }
+            return error
+        }
+        if error is CancellationError {
+            return CancellationError()
+        }
+        if let error = error as? CoreBridgeError {
+            let mapped: CoreComputeError = switch error {
+            case .runtimeInvalidated, .staleRuntimeIdentity, .incompatibleBindings: .runtimeInvalidated
+            case .runtimeStopped, .alreadyClosed: .runtimeStopped
+            case .invalidArgument: .invalidRequest("invalid argument")
+            default: .transportFailure(error.localizedDescription)
+            }
+            if mapped == .runtimeInvalidated || mapped == .runtimeStopped {
+                invalidate()
+            }
+            return mapped
+        }
+        guard let error = error as? CoreTransportError else {
+            return CoreComputeError.transportFailure(String(describing: error))
+        }
+        if error == .codeMapCancelled || error == .applyEditsCancelled {
+            return CancellationError()
+        }
+        let mapped: CoreComputeError = switch error {
+        case .invalidArgument, .codeMapInvalidRequest, .applyEditsInvalidParams:
+            .invalidRequest("invalid compute request")
+        case .runtimePoisoned: .runtimePoisoned
+        case .runtimeStopped: .runtimeStopped
+        case .staleRuntimeIdentity, .incompatibleAbi, .internalPanic: .runtimeInvalidated
+        case .codeMapServiceUnavailable: .transportFailure("codemap service unavailable")
+        case .codeMapInvariant: .transportFailure("codemap invariant failure")
+        case .applyEditsInvariant: .transportFailure("apply-edits invariant failure")
+        case let .unexpected(message): .transportFailure(message)
+        default: .transportFailure(String(describing: error))
+        }
+        switch mapped {
+        case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
+            invalidate()
+        default:
+            break
+        }
+        return mapped
     }
 
     func prepareSearchOperation() throws -> CoreSearchOperationContext {
@@ -1119,7 +1386,8 @@ public actor AgentryCoreBridge {
         case .patternTooComplex, .invalidEscape, .unmatchedBrackets, .unmatchedParentheses,
              .invalidQuantifier, .variableLengthLookbehind, .invalidPattern, .matchLimitExceeded,
              .depthLimitExceeded, .heapLimitExceeded, .jitUnavailable, .searchCancelled,
-             .searchInvariant:
+             .searchInvariant, .codeMapInvalidRequest, .codeMapServiceUnavailable, .codeMapCancelled,
+             .codeMapInvariant, .applyEditsInvalidParams, .applyEditsCancelled, .applyEditsInvariant:
             return .invalidArgument
         case let .unexpected(message): return .transportFailure(message)
         }

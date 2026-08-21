@@ -1,42 +1,59 @@
 import AgentryCoreBridge
 import Foundation
 
-enum SearchPathClause: Equatable {
+package enum SearchPathClause: Equatable {
     case exactFile(absPath: String, relPath: String, restrictedRootPath: String?)
     case exactFolder(absLower: String, relLower: String, restrictedRootPath: String?)
     case glob(pattern: String, restrictedRootPath: String?)
     case legacyPrefix(candidateLower: String)
 }
 
-struct SearchPathFilterSpec: Equatable {
-    let caseInsensitive: Bool
-    let clauses: [SearchPathClause]
+package struct SearchPathFilterSpec: Equatable {
+    package let caseInsensitive: Bool
+    package let clauses: [SearchPathClause]
+
+    package init(caseInsensitive: Bool, clauses: [SearchPathClause]) {
+        self.caseInsensitive = caseInsensitive
+        self.clauses = clauses
+    }
 }
 
-struct FileSearchPathSnapshot {
-    let standardizedFullPath: String
-    let standardizedRelativePath: String
-    let standardizedRootPath: String
-    let clientDisplayPath: String
+package struct FileSearchPathSnapshot {
+    package let standardizedFullPath: String
+    package let standardizedRelativePath: String
+    package let standardizedRootPath: String
+    package let clientDisplayPath: String
+
+    package init(
+        standardizedFullPath: String,
+        standardizedRelativePath: String,
+        standardizedRootPath: String,
+        clientDisplayPath: String
+    ) {
+        self.standardizedFullPath = standardizedFullPath
+        self.standardizedRelativePath = standardizedRelativePath
+        self.standardizedRootPath = standardizedRootPath
+        self.clientDisplayPath = clientDisplayPath
+    }
 }
 
-struct FileSearchPathFilterResult: Equatable {
-    let matchedFullPaths: [String]
-    let visitedSnapshotCount: Int
-    let cancelled: Bool
+package struct FileSearchPathFilterResult: Equatable {
+    package let matchedFullPaths: [String]
+    package let visitedSnapshotCount: Int
+    package let cancelled: Bool
 }
 
 /// Index-returning variant of `FileSearchPathFilterResult`. `matchedSnapshotIndices`
 /// holds indices into the input `snapshots` array, in snapshot iteration order, with
 /// each snapshot appearing at most once. Lets callers map matches directly back to
 /// their source array without a full-path string round trip.
-struct FileSearchPathIndexFilterResult: Equatable {
-    let matchedSnapshotIndices: [Int]
-    let visitedSnapshotCount: Int
-    let cancelled: Bool
+package struct FileSearchPathIndexFilterResult: Equatable {
+    package let matchedSnapshotIndices: [Int]
+    package let visitedSnapshotCount: Int
+    package let cancelled: Bool
 }
 
-func filterPaths(
+package func filterPaths(
     snapshots: [FileSearchPathSnapshot],
     spec: SearchPathFilterSpec,
     client: CoreSearchClient
@@ -44,7 +61,7 @@ func filterPaths(
     try await filterPathsResult(snapshots: snapshots, spec: spec, client: client).matchedFullPaths
 }
 
-func filterPathsResult(
+package func filterPathsResult(
     snapshots: [FileSearchPathSnapshot],
     spec: SearchPathFilterSpec,
     client: CoreSearchClient
@@ -66,7 +83,7 @@ func filterPathsResult(
 /// deduplicated) plus visited/cancellation metadata. Lowercase path variants are
 /// computed lazily per snapshot so exact-file and glob clauses — which never need
 /// them — do not pay for lowercasing.
-func filterPathIndicesResult(
+package func filterPathIndicesResult(
     snapshots: [FileSearchPathSnapshot],
     spec: SearchPathFilterSpec,
     client: CoreSearchClient
@@ -106,21 +123,21 @@ func filterPathIndicesResult(
 private let folderSuffixSlashTrim = CharacterSet(charactersIn: "/")
 
 @inline(__always)
-func normalizedFolderSuffixFragment(_ fragment: String, caseInsensitive: Bool = true) -> String? {
+package func normalizedFolderSuffixFragment(_ fragment: String, caseInsensitive: Bool = true) -> String? {
     let standardized = (fragment as NSString).standardizingPath as String
     let trimmed = standardized.trimmingCharacters(in: folderSuffixSlashTrim)
     guard !trimmed.isEmpty else { return nil }
     return caseInsensitive ? trimmed.lowercased() : trimmed
 }
 
-struct SearchFolderSuffixIndexEntry<T> {
-    let folder: T
-    let normalizedRelativePath: String
+package struct SearchFolderSuffixIndexEntry<T> {
+    package let folder: T
+    package let normalizedRelativePath: String
 }
 
-typealias SearchFolderSuffixIndex<T> = [String: [SearchFolderSuffixIndexEntry<T>]]
+package typealias SearchFolderSuffixIndex<T> = [String: [SearchFolderSuffixIndexEntry<T>]]
 
-func buildFolderSuffixIndex<T>(
+package func buildFolderSuffixIndex<T>(
     in foldersByFullPath: [String: T],
     relativePath: (T) -> String,
     caseInsensitive: Bool = true
@@ -144,7 +161,7 @@ func buildFolderSuffixIndex<T>(
     return index
 }
 
-func resolveFoldersBySuffixFragment<T>(
+package func resolveFoldersBySuffixFragment<T>(
     _ fragment: String,
     using suffixIndex: SearchFolderSuffixIndex<T>,
     caseInsensitive: Bool = true,
@@ -159,7 +176,7 @@ func resolveFoldersBySuffixFragment<T>(
     return indices.map { entries[Int($0)].folder }
 }
 
-func resolveFoldersBySuffixFragment<T>(
+package func resolveFoldersBySuffixFragment<T>(
     _ fragment: String,
     in foldersByFullPath: [String: T],
     relativePath: (T) -> String,

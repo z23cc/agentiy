@@ -1,6 +1,6 @@
-use crate::{
-    build_line_index, generate_diff, match_selector, process_line, render_unified, ByteEdit,
-    DiffChunk, MatchError,
+use super::{
+    ByteEdit, DiffChunk, MatchError, build_line_index, generate_diff, match_selector, process_line,
+    render_unified,
 };
 use std::collections::HashMap;
 
@@ -69,6 +69,7 @@ pub struct ApplyResult {
 pub enum ApplyError {
     InvalidParams(String),
     Internal(String),
+    Cancelled,
 }
 
 fn decode_c_style(input: &str) -> String {
@@ -163,7 +164,7 @@ fn apply_literal(text: &str, operation: &ApplyOperation) -> Result<Option<String
 }
 
 fn plain_lines(text: &str) -> Vec<String> {
-    crate::split_lines_preserving_endings(text)
+    super::split_lines_preserving_endings(text)
         .into_iter()
         .map(|line| line.trim_end_matches(['\r', '\n']).to_owned())
         .collect()
@@ -318,7 +319,9 @@ fn matcher_error(error: MatchError) -> String {
                 .map(|v| (v + 1).to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("Search block matches multiple locations (lines {lines}). Please make the block more specific or use the replace_all parameter to replace all occurrences.")
+            format!(
+                "Search block matches multiple locations (lines {lines}). Please make the block more specific or use the replace_all parameter to replace all occurrences."
+            )
         }
     }
 }
@@ -347,12 +350,12 @@ fn finish(
                 let adds = chunk
                     .lines
                     .iter()
-                    .filter(|l| l.kind == crate::DiffLineType::Addition)
+                    .filter(|l| l.kind == super::DiffLineType::Addition)
                     .count();
                 let removes = chunk
                     .lines
                     .iter()
-                    .filter(|l| l.kind == crate::DiffLineType::Removal)
+                    .filter(|l| l.kind == super::DiffLineType::Removal)
                     .count();
                 adds.max(removes)
             })
@@ -418,7 +421,7 @@ fn apply_single(
         Err(MatchError::NoMatch) => {
             return Err(ApplyError::InvalidParams(
                 "search block not found in file".into(),
-            ))
+            ));
         }
         Err(error) => return Err(ApplyError::InvalidParams(matcher_error(error))),
     };

@@ -787,3 +787,355 @@ impl FolderSuffixRequest {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreCodeMapSourceKindV1 {
+    Decoded,
+    DecodeFailedUndecodable,
+}
+
+impl From<CoreCodeMapSourceKindV1> for runtime::codemap::CodeMapSourceKind {
+    fn from(value: CoreCodeMapSourceKindV1) -> Self {
+        match value {
+            CoreCodeMapSourceKindV1::Decoded => Self::Decoded,
+            CoreCodeMapSourceKindV1::DecodeFailedUndecodable => Self::DecodeFailedUndecodable,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreCodeMapSubjectRequestV1 {
+    pub language_id: u16,
+    pub source_kind: CoreCodeMapSourceKindV1,
+    pub source_utf8: Vec<u8>,
+}
+
+impl From<CoreCodeMapSubjectRequestV1> for runtime::codemap::CodeMapSubjectRequestV1 {
+    fn from(value: CoreCodeMapSubjectRequestV1) -> Self {
+        Self {
+            language_id: value.language_id,
+            source_kind: value.source_kind.into(),
+            source_utf8: value.source_utf8,
+        }
+    }
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CoreCodeMapBatchRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
+    pub contract_version: u16,
+    pub subjects: Vec<CoreCodeMapSubjectRequestV1>,
+}
+
+impl CoreCodeMapBatchRequestV1 {
+    pub(crate) fn into_runtime_request(self) -> runtime::codemap::CodeMapBatchRequestV1 {
+        runtime::codemap::CodeMapBatchRequestV1 {
+            contract_version: self.contract_version,
+            subjects: self.subjects.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, uniffi::Record)]
+pub struct CoreCompactTableRangeV1 {
+    pub start: u64,
+    pub count: u64,
+}
+
+impl From<runtime::codemap::TableRange> for CoreCompactTableRangeV1 {
+    fn from(value: runtime::codemap::TableRange) -> Self {
+        Self {
+            start: value.start,
+            count: value.count,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreCompactCodeMapSubjectSummaryV1 {
+    pub language_id: u16,
+    pub source_byte_count: u64,
+    pub outcome_tag: u64,
+    pub outcome_actual: u64,
+    pub outcome_limit: u64,
+    pub blob: CoreCompactTableRangeV1,
+    pub strings: CoreCompactTableRangeV1,
+    pub string_indices: CoreCompactTableRangeV1,
+    pub class_pool: CoreCompactTableRangeV1,
+    pub interface_pool: CoreCompactTableRangeV1,
+    pub alias_pool: CoreCompactTableRangeV1,
+    pub function_pool: CoreCompactTableRangeV1,
+    pub parameter_pool: CoreCompactTableRangeV1,
+    pub property_pool: CoreCompactTableRangeV1,
+    pub enum_pool: CoreCompactTableRangeV1,
+    pub variable_pool: CoreCompactTableRangeV1,
+    pub imports: CoreCompactTableRangeV1,
+    pub exports: CoreCompactTableRangeV1,
+    pub classes: CoreCompactTableRangeV1,
+    pub interfaces: CoreCompactTableRangeV1,
+    pub aliases: CoreCompactTableRangeV1,
+    pub literal_unions: CoreCompactTableRangeV1,
+    pub functions: CoreCompactTableRangeV1,
+    pub enums: CoreCompactTableRangeV1,
+    pub global_vars: CoreCompactTableRangeV1,
+    pub macros: CoreCompactTableRangeV1,
+    pub referenced_types: CoreCompactTableRangeV1,
+}
+
+impl From<runtime::codemap::CompactCodeMapSubjectSummaryV1> for CoreCompactCodeMapSubjectSummaryV1 {
+    fn from(value: runtime::codemap::CompactCodeMapSubjectSummaryV1) -> Self {
+        Self {
+            language_id: value.language_id,
+            source_byte_count: value.source_byte_count,
+            outcome_tag: u64::from(value.outcome_tag as u16),
+            outcome_actual: value.outcome_actual,
+            outcome_limit: value.outcome_limit,
+            blob: value.blob.into(),
+            strings: value.strings.into(),
+            string_indices: value.string_indices.into(),
+            class_pool: value.class_pool.into(),
+            interface_pool: value.interface_pool.into(),
+            alias_pool: value.alias_pool.into(),
+            function_pool: value.function_pool.into(),
+            parameter_pool: value.parameter_pool.into(),
+            property_pool: value.property_pool.into(),
+            enum_pool: value.enum_pool.into(),
+            variable_pool: value.variable_pool.into(),
+            imports: value.imports.into(),
+            exports: value.exports.into(),
+            classes: value.classes.into(),
+            interfaces: value.interfaces.into(),
+            aliases: value.aliases.into(),
+            literal_unions: value.literal_unions.into(),
+            functions: value.functions.into(),
+            enums: value.enums.into(),
+            global_vars: value.global_vars.into(),
+            macros: value.macros.into(),
+            referenced_types: value.referenced_types.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreCompactCodeMapBatchResultV1 {
+    pub subject_summaries: Vec<CoreCompactCodeMapSubjectSummaryV1>,
+    pub utf8_blob: Vec<u8>,
+    pub string_range_words: Vec<u64>,
+    pub string_index_words: Vec<u64>,
+    pub class_words: Vec<u64>,
+    pub interface_words: Vec<u64>,
+    pub alias_words: Vec<u64>,
+    pub function_words: Vec<u64>,
+    pub parameter_words: Vec<u64>,
+    pub property_words: Vec<u64>,
+    pub enum_words: Vec<u64>,
+    pub variable_words: Vec<u64>,
+}
+
+impl From<runtime::codemap::CompactCodeMapBatchResultV1> for CoreCompactCodeMapBatchResultV1 {
+    fn from(value: runtime::codemap::CompactCodeMapBatchResultV1) -> Self {
+        Self {
+            subject_summaries: value
+                .subject_summaries
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            utf8_blob: value.utf8_blob,
+            string_range_words: value.string_range_words,
+            string_index_words: value.string_index_words,
+            class_words: value.class_words,
+            interface_words: value.interface_words,
+            alias_words: value.alias_words,
+            function_words: value.function_words,
+            parameter_words: value.parameter_words,
+            property_words: value.property_words,
+            enum_words: value.enum_words,
+            variable_words: value.variable_words,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreApplyEditsOperationV1 {
+    pub search: String,
+    pub replace: String,
+    pub replace_all: bool,
+}
+
+impl From<CoreApplyEditsOperationV1> for runtime::apply_edits::ApplyOperation {
+    fn from(value: CoreApplyEditsOperationV1) -> Self {
+        Self {
+            search: value.search,
+            replace: value.replace,
+            replace_all: value.replace_all,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreApplyEditsSubjectRequestV1 {
+    pub path_label: String,
+    pub original_utf8: Vec<u8>,
+    pub mode_tag: u64,
+    pub rewrite_replacement: Option<String>,
+    pub operations: Vec<CoreApplyEditsOperationV1>,
+    pub verbose: bool,
+    pub include_tool_card_unified_diff: bool,
+}
+
+impl CoreApplyEditsSubjectRequestV1 {
+    fn into_runtime_request(self) -> Result<runtime::apply_edits::ApplySubjectRequest, CoreError> {
+        let mode = match self.mode_tag {
+            0 => {
+                if !self.operations.is_empty() {
+                    return Err(CoreError::ApplyEditsInvalidParams);
+                }
+                runtime::apply_edits::ApplyMode::Rewrite {
+                    replacement: self
+                        .rewrite_replacement
+                        .ok_or(CoreError::ApplyEditsInvalidParams)?,
+                }
+            }
+            1 => {
+                if self.rewrite_replacement.is_some() || self.operations.len() != 1 {
+                    return Err(CoreError::ApplyEditsInvalidParams);
+                }
+                let mut operations = self.operations.into_iter();
+                runtime::apply_edits::ApplyMode::Single {
+                    operation: operations
+                        .next()
+                        .ok_or(CoreError::ApplyEditsInvalidParams)?
+                        .into(),
+                }
+            }
+            2 => {
+                if self.rewrite_replacement.is_some() || self.operations.is_empty() {
+                    return Err(CoreError::ApplyEditsInvalidParams);
+                }
+                runtime::apply_edits::ApplyMode::Batch {
+                    operations: self.operations.into_iter().map(Into::into).collect(),
+                }
+            }
+            _ => return Err(CoreError::ApplyEditsInvalidParams),
+        };
+        Ok(runtime::apply_edits::ApplySubjectRequest {
+            path_label: self.path_label,
+            original: self.original_utf8,
+            mode,
+            verbose: self.verbose,
+            include_tool_card_unified_diff: self.include_tool_card_unified_diff,
+        })
+    }
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CoreApplyEditsBatchRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
+    pub contract_version: u16,
+    pub subjects: Vec<CoreApplyEditsSubjectRequestV1>,
+}
+
+impl CoreApplyEditsBatchRequestV1 {
+    pub(crate) fn into_runtime_request(
+        self,
+    ) -> Result<runtime::apply_edits::ApplyEditsBatchRequestV1, CoreError> {
+        Ok(runtime::apply_edits::ApplyEditsBatchRequestV1 {
+            contract_version: self.contract_version,
+            subjects: self
+                .subjects
+                .into_iter()
+                .map(CoreApplyEditsSubjectRequestV1::into_runtime_request)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreCompactApplyEditsSubjectSummaryV1 {
+    pub input_byte_count: u64,
+    pub blob_start: u64,
+    pub blob_count: u64,
+    pub string_start: u64,
+    pub string_count: u64,
+    pub updated_text_string_index: u64,
+    pub byte_edit_start: u64,
+    pub byte_edit_count: u64,
+    pub chunk_start: u64,
+    pub chunk_count: u64,
+    pub diff_line_start: u64,
+    pub diff_line_count: u64,
+    pub outcome_start: u64,
+    pub outcome_count: u64,
+    pub edits_requested: u64,
+    pub edits_applied: u64,
+    pub result_status_tag: u64,
+    pub outcomes_present: bool,
+    pub stats_present: bool,
+    pub lines_changed: u64,
+    pub stats_chunk_count: u64,
+    pub note_string_index: u64,
+    pub unified_diff_string_index: u64,
+    pub tool_card_diff_string_index: u64,
+}
+
+impl From<runtime::apply_edits::CompactSubjectSummary> for CoreCompactApplyEditsSubjectSummaryV1 {
+    fn from(value: runtime::apply_edits::CompactSubjectSummary) -> Self {
+        Self {
+            input_byte_count: value.input_byte_count,
+            blob_start: value.blob_start,
+            blob_count: value.blob_count,
+            string_start: value.string_start,
+            string_count: value.string_count,
+            updated_text_string_index: value.updated_text_string_index,
+            byte_edit_start: value.byte_edit_start,
+            byte_edit_count: value.byte_edit_count,
+            chunk_start: value.chunk_start,
+            chunk_count: value.chunk_count,
+            diff_line_start: value.diff_line_start,
+            diff_line_count: value.diff_line_count,
+            outcome_start: value.outcome_start,
+            outcome_count: value.outcome_count,
+            edits_requested: value.edits_requested,
+            edits_applied: value.edits_applied,
+            result_status_tag: value.result_status_tag,
+            outcomes_present: value.outcomes_present,
+            stats_present: value.stats_present,
+            lines_changed: value.lines_changed,
+            stats_chunk_count: value.stats_chunk_count,
+            note_string_index: value.note_string_index,
+            unified_diff_string_index: value.unified_diff_string_index,
+            tool_card_diff_string_index: value.tool_card_diff_string_index,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreCompactApplyEditsBatchResultV1 {
+    pub subject_summaries: Vec<CoreCompactApplyEditsSubjectSummaryV1>,
+    pub utf8_blob: Vec<u8>,
+    pub string_range_words: Vec<u64>,
+    pub byte_edit_words: Vec<u64>,
+    pub chunk_words: Vec<u64>,
+    pub diff_line_words: Vec<u64>,
+    pub outcome_words: Vec<u64>,
+}
+
+impl From<runtime::apply_edits::CompactBatchResult> for CoreCompactApplyEditsBatchResultV1 {
+    fn from(value: runtime::apply_edits::CompactBatchResult) -> Self {
+        Self {
+            subject_summaries: value
+                .subject_summaries
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            utf8_blob: value.utf8_blob,
+            string_range_words: value.string_range_words,
+            byte_edit_words: value.byte_edit_words,
+            chunk_words: value.chunk_words,
+            diff_line_words: value.diff_line_words,
+            outcome_words: value.outcome_words,
+        }
+    }
+}

@@ -3,6 +3,7 @@ import CoreServices
 import Dispatch
 import Foundation
 import RepoPromptCodeMapCore
+import RepoPromptSearchCore
 #if DEBUG
     import CryptoKit
 #endif

@@ -1,5 +1,6 @@
 import AgentryCoreBridge
 import Foundation
+@_exported import RepoPromptSearchCore
 
 // Wildmatch flags for pattern matching
 private let WM_NOESCAPE: UInt32 = 0x01
@@ -8,40 +9,7 @@ private let WM_CASEFOLD: UInt32 = 0x10 // must match wildmatch.h
 private let WM_WILDSTAR: UInt32 = 0x40 // must match wildmatch.h
 private let WM_MATCH: Int32 = 0
 
-/// One matching line in a file.
-///
-/// `lineNumber` is **0‑based** (the first line in the file is numbered `0`).
-/// MCP tool output converts to 1-based line numbers for display (`file_search`),
-/// while internal indexing stays 0-based for array operations.
-struct SearchMatch: Hashable, Codable {
-    let filePath: String
-    let lineNumber: Int // 0‑based
-    let lineText: String // original text (no newline)
-    let contextBefore: [String]? // Lines before the match (when contextLines > 0)
-    let contextAfter: [String]? // Lines after the match (when contextLines > 0)
-
-    init(filePath: String, lineNumber: Int, lineText: String, contextBefore: [String]? = nil, contextAfter: [String]? = nil) {
-        self.filePath = filePath
-        self.lineNumber = lineNumber
-        self.lineText = lineText
-        self.contextBefore = contextBefore
-        self.contextAfter = contextAfter
-    }
-}
-
 // MARK: – NEW unified-search support –––––––––––––––––––––––––––––––––
-
-/**
- Search strategy requested by the caller.
-
- * `.auto`    – decide heuristically (path vs content vs both – see FileSearchActor).
- * `.path`    – search **only** file paths.
- * `.content` – search **only** inside files.
- * `.both`    – execute *both* path and content search stages.
- */
-enum SearchMode: String, Codable {
-    case auto, path, content, both
-}
 
 /// Enhanced search options for fine-grained control
 struct SearchOptions {
@@ -133,7 +101,9 @@ struct SearchResults: Codable {
 private struct SearchScanSummary {
     let lineMatchCount: Int
 
-    var matchedFile: Bool { lineMatchCount > 0 }
+    var matchedFile: Bool {
+        lineMatchCount > 0
+    }
 }
 
 private struct SearchContentResult {
@@ -1103,7 +1073,7 @@ actor FileSearchActor {
                 fileResults.append(contentsOf: files.map {
                     SearchFileScanBatch(
                         ordinal: $0.input.ordinal,
-                                    summary: SearchScanSummary(lineMatchCount: 0),
+                        summary: SearchScanSummary(lineMatchCount: 0),
                         errors: [($0.input.file.relativePath, failure)]
                     )
                 })
@@ -2117,7 +2087,7 @@ actor FileSearchActor {
                     index = pattern.index(after: index)
                     continue
                 }
-                if (character == ")" || character == ":"), sawFlag, !awaitingFlagAfterHyphen {
+                if character == ")" || character == ":", sawFlag, !awaitingFlagAfterHyphen {
                     return true
                 }
                 break

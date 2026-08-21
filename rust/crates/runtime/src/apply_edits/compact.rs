@@ -1,6 +1,6 @@
-use crate::{
-    apply_byte_edits, apply_chunks, ApplyResult, ApplyStatus, ByteEdit, DiffChunk, DiffLine,
-    DiffLineType, OutcomeStatus,
+use super::{
+    ApplyResult, ApplyStatus, ByteEdit, DiffChunk, DiffLine, DiffLineType, OutcomeStatus,
+    apply_byte_edits, apply_chunks,
 };
 
 pub const OPTIONAL_SENTINEL: u64 = u64::MAX;

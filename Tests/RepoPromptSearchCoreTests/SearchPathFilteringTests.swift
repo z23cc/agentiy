@@ -1,5 +1,5 @@
 import AgentryCoreBridge
-@testable import RepoPromptApp
+@testable import RepoPromptSearchCore
 import XCTest
 
 final class SearchPathFilteringTests: XCTestCase {

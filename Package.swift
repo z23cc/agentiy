@@ -50,6 +50,7 @@ var repoPromptAppDependencies: [Target.Dependency] = [
     "AgentryCoreBridge",
     "RepoPromptDomainRuntime",
     "RepoPromptCodeMapCore",
+    "RepoPromptSearchCore",
     "RepoPromptWorkspaceCore",
     "RepoPromptShared",
     "RepoPromptC",
@@ -175,6 +176,14 @@ let package = Package(
             path: "Sources/RepoPromptWorkspaceCore"
         ),
         .target(
+            name: "RepoPromptSearchCore",
+            dependencies: ["AgentryCoreBridge"],
+            path: "Sources/RepoPromptSearchCore",
+            swiftSettings: swift6LanguageMode + [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .target(
             name: "RepoPromptCodeMapCore",
             dependencies: [
                 "TreeSitterScannerSupport",
@@ -240,6 +249,12 @@ let package = Package(
             name: "RepoPromptWorkspaceCoreTests",
             dependencies: ["RepoPromptWorkspaceCore"],
             path: "Tests/RepoPromptWorkspaceCoreTests"
+        ),
+        .testTarget(
+            name: "RepoPromptSearchCoreTests",
+            dependencies: ["RepoPromptSearchCore", "AgentryCoreBridge"],
+            path: "Tests/RepoPromptSearchCoreTests",
+            swiftSettings: swift6LanguageMode
         ),
         .testTarget(
             name: "RepoPromptCodeMapCoreTests",

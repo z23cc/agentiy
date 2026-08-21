@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import os
+import XCTest
 @testable import AgentryCoreBridge
 
 final class FakeLeafCancellationHandle: CoreLeafCancellationHandle, Sendable {}
@@ -13,6 +14,10 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         var searchError: CoreTransportError?
         var searchResult: CoreRegexSearchResult?
         var compactSearchResult: CoreCompactRegexBatchResult?
+        var codeMapResult: CoreCompactCodeMapBatchResultV1?
+        var applyEditsResult: CoreCompactApplyEditsBatchResultV1?
+        var computeError: CoreTransportError?
+        var blocksCompute = false
         var blocksSearch = false
         var actions: [String] = []
         var drains: [CoreTransportDrainBatch] = []
@@ -25,6 +30,8 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
     private let state: OSAllocatedUnfairLock<State>
     let searchStarted = DispatchSemaphore(value: 0)
     let searchRelease = DispatchSemaphore(value: 0)
+    let computeStarted = DispatchSemaphore(value: 0)
+    let computeRelease = DispatchSemaphore(value: 0)
     private let readFD: Int32
     private let writeFD: Int32
 
@@ -247,6 +254,42 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         }
     }
 
+    func codeMapExtractBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCodeMapBatchRequestV1
+    ) throws -> CoreCompactCodeMapBatchResultV1 {
+        let outcome = state.withLock { value in
+            value.actions.append("codemap-compact-v1")
+            return (value.blocksCompute, value.computeError, value.codeMapResult)
+        }
+        if outcome.0 {
+            computeStarted.signal()
+            computeRelease.wait()
+        }
+        if let error = outcome.1 { throw error }
+        guard let result = outcome.2 else { throw CoreTransportError.unexpected("missing codemap fixture") }
+        return result
+    }
+
+    func applyEditsBatchCompactV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreApplyEditsBatchRequestV1
+    ) throws -> CoreCompactApplyEditsBatchResultV1 {
+        let outcome = state.withLock { value in
+            value.actions.append("apply-edits-compact-v1")
+            return (value.blocksCompute, value.computeError, value.applyEditsResult)
+        }
+        if outcome.0 {
+            computeStarted.signal()
+            computeRelease.wait()
+        }
+        if let error = outcome.1 { throw error }
+        guard let result = outcome.2 else { throw CoreTransportError.unexpected("missing apply-edits fixture") }
+        return result
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -306,6 +349,22 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         state.withLock { $0.blocksSearch = true }
     }
 
+    func returnCodeMapResult(_ result: CoreCompactCodeMapBatchResultV1) {
+        state.withLock { $0.codeMapResult = result }
+    }
+
+    func returnApplyEditsResult(_ result: CoreCompactApplyEditsBatchResultV1) {
+        state.withLock { $0.applyEditsResult = result }
+    }
+
+    func failCompute(with error: CoreTransportError) {
+        state.withLock { $0.computeError = error }
+    }
+
+    func blockCompute() {
+        state.withLock { $0.blocksCompute = true }
+    }
+
     func enqueue(_ batches: [CoreTransportDrainBatch], rearm: [Bool] = []) {
         state.withLock { value in
             value.drains.append(contentsOf: batches)
@@ -325,6 +384,7 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
             return Darwin.fcntl(descriptor, F_GETFD)
         }
     }
+
     var closeCount: Int { state.withLock { $0.closeCount } }
     var shutdownCount: Int { state.withLock { $0.shutdownCount } }
 }
@@ -336,6 +396,20 @@ extension CoreRuntimeIdentity {
         buildFingerprint: CoreExpectedIdentity.generated.buildFingerprint,
         bindingChecksum: CoreExpectedIdentity.generated.bindingChecksum
     )
+}
+
+func XCTAssertThrowsCoreErrorAsync(
+    _ expression: () async throws -> some Any,
+    verify: (Error) -> Void = { _ in },
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("expected async expression to throw", file: file, line: line)
+    } catch {
+        verify(error)
+    }
 }
 
 func fixtureCommand() throws -> CoreCommand {

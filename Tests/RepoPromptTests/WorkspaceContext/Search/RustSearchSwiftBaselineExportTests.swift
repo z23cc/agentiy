@@ -147,8 +147,10 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
             throw XCTSkip("Rust search three-layer floor measurement is opt-in")
         }
 
-        let data = try Data(contentsOf: URL(fileURLWithPath: fixtureDirectory, isDirectory: true)
-            .appendingPathComponent("\(fixtureName).json"))
+        let data = try Data(
+            contentsOf: URL(fileURLWithPath: fixtureDirectory, isDirectory: true)
+                .appendingPathComponent("\(fixtureName).json")
+        )
         let object = try JSONSerialization.jsonObject(with: data)
         let canonical = try JSONSerialization.data(
             withJSONObject: object,
@@ -180,7 +182,7 @@ final class RustSearchSwiftBaselineExportTests: XCTestCase {
                 : compactWorkloadOutput(result)
             try validate(output, against: &expectedOutput, fixtureName: fixtureName)
             jitActive = jitActive && result.subjectSummaries.allSatisfy { $0.diagnostic.jitStatus == .active }
-            cacheHits += result.subjectSummaries.filter { $0.diagnostic.cacheHit }.count
+            cacheHits += result.subjectSummaries.filter(\.diagnostic.cacheHit).count
             if iteration >= warmupIterations {
                 samples.append([
                     "cpuMilliseconds": milliseconds(cpuEnd - cpuStart),

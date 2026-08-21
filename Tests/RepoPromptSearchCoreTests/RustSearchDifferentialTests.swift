@@ -1,6 +1,6 @@
 import AgentryCoreBridge
 import Foundation
-@testable import RepoPromptApp
+@testable import RepoPromptSearchCore
 import XCTest
 
 final class RustSearchDifferentialTests: XCTestCase {
