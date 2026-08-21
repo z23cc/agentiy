@@ -74,6 +74,15 @@ final class CodeMapArtifactRuntime: @unchecked Sendable {
         try bindingEngineProvider.engine(for: self)
     }
 
+    /// Tears down this runtime's build coordinator: cancels every in-flight codemap build,
+    /// resumes their waiters with `CancellationError`, and awaits every flight's task before
+    /// returning, so a caller releasing this runtime (e.g. a test fixture or an isolated store)
+    /// cannot outlive background build work still holding this runtime's `artifactStore`/
+    /// `locatorStore`/`manifestStore` alive.
+    func shutdown() async {
+        await coordinator.shutdown()
+    }
+
     static func processWide() throws -> CodeMapArtifactRuntime {
         try processWideProvider.runtime()
     }

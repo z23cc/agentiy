@@ -496,6 +496,10 @@ final class GitViewModel: ObservableObject {
                 guard !Task.isCancelled else { break }
                 guard let request = self?.beginPeriodicGitContextRefresh() else {
                     if self == nil { break }
+                    // Zero-interval loops (test injection) must still hit a
+                    // suspension point on the idle path, or this busy-loops the
+                    // inherited MainActor executor without ever yielding.
+                    await Task.yield()
                     continue
                 }
                 let detections = await refreshGitContexts(request.rootPaths)

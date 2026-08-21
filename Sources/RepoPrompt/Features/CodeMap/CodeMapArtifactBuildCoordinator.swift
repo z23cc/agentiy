@@ -29,6 +29,11 @@ enum CodeMapArtifactBuildCoordinatorError: Error, Equatable {
     case invalidRequest(CodeMapArtifactBuildInputError)
     case locatorStoreReadFailed
     case casVerificationFailed
+    /// A flight's wall-clock watchdog fired because it was still running past
+    /// `CodeMapArtifactBuildCoordinatorPolicy.maximumFlightWallClockNanoseconds`. Distinguishable
+    /// from `.busy` so callers/tests can tell "stuck build force-timed-out" apart from ordinary
+    /// admission backpressure.
+    case flightWatchdogTimedOut
 }
 
 struct CodeMapArtifactBuildInput: @unchecked Sendable {
@@ -210,6 +215,19 @@ struct CodeMapArtifactBuildCoordinatorPolicy: Equatable {
     let backgroundAgePromotionNanoseconds: UInt64
     let maximumConsecutiveNonBackgroundAdmissionsWhileBackgroundAged: Int
     let retryAfterMilliseconds: Int
+    /// Per-flight wall-clock watchdog bound. A flight whose active phase task (CAS lookup, the
+    /// deterministic build call, or locator publication) is still running this long after the
+    /// task was (re)assigned is force-timed-out: its waiters are failed with
+    /// `.flightWatchdogTimedOut`, its task is cancelled, and its `activeBuildCount`/flight-table
+    /// slot is released via the normal `removeFlight` path. Defaults to 300s -- generous enough
+    /// to avoid false positives on legitimately slow builds (huge files, cold CAS, contended git
+    /// repos) while bounding how long a single stuck flight can saturate process-wide codemap
+    /// build admission. No existing per-phase duration telemetry in this file
+    /// (`CodeMapArtifactCoordinatorDurations`/`CodeMapArtifactBuildCoordinatorTimingAccounting`)
+    /// establishes a production p99, so 300s is a conservative ceiling rather than a
+    /// telemetry-derived value; tests override this field via policy injection to exercise the
+    /// watchdog without a real multi-minute wait.
+    let maximumFlightWallClockNanoseconds: UInt64
 
     init(
         maximumFlightCount: Int = 128,
@@ -224,7 +242,8 @@ struct CodeMapArtifactBuildCoordinatorPolicy: Equatable {
         agePromotionNanoseconds: UInt64 = 1_000_000_000,
         backgroundAgePromotionNanoseconds: UInt64 = 1_000_000_000,
         maximumConsecutiveNonBackgroundAdmissionsWhileBackgroundAged: Int = 4,
-        retryAfterMilliseconds: Int = 1000
+        retryAfterMilliseconds: Int = 1000,
+        maximumFlightWallClockNanoseconds: UInt64 = 300_000_000_000
     ) {
         precondition(maximumFlightCount > 0)
         precondition(maximumTotalWaiterCount > 0)
@@ -237,6 +256,7 @@ struct CodeMapArtifactBuildCoordinatorPolicy: Equatable {
         precondition(maximumConsecutiveDemandAdmissions > 0)
         precondition(maximumConsecutiveNonBackgroundAdmissionsWhileBackgroundAged >= 0)
         precondition(retryAfterMilliseconds > 0)
+        precondition(maximumFlightWallClockNanoseconds > 0)
         self.maximumFlightCount = maximumFlightCount
         self.maximumTotalWaiterCount = maximumTotalWaiterCount
         self.maximumWaitersPerFlight = maximumWaitersPerFlight
@@ -251,6 +271,7 @@ struct CodeMapArtifactBuildCoordinatorPolicy: Equatable {
         self.maximumConsecutiveNonBackgroundAdmissionsWhileBackgroundAged =
             maximumConsecutiveNonBackgroundAdmissionsWhileBackgroundAged
         self.retryAfterMilliseconds = retryAfterMilliseconds
+        self.maximumFlightWallClockNanoseconds = maximumFlightWallClockNanoseconds
     }
 }
 
@@ -537,6 +558,9 @@ struct CodeMapArtifactBuildCoordinatorCounters: Equatable {
     let nonBackgroundAdmissionsWhileBackgroundAged: UInt64
     let droppedHookEvents: UInt64
     let failures: UInt64
+    /// Count of flights force-timed-out by the per-flight wall-clock watchdog
+    /// (`CodeMapArtifactBuildCoordinatorPolicy.maximumFlightWallClockNanoseconds`).
+    let watchdogTimeouts: UInt64
 }
 
 struct CodeMapArtifactBuildCoordinatorTimingAccounting: Equatable {
@@ -645,6 +669,11 @@ actor CodeMapArtifactBuildCoordinator {
         var locatorPublicationHasBegun = false
         var waiters: [UUID: Waiter] = [:]
         var task: Task<Void, Never>?
+        /// Per-flight wall-clock watchdog for the currently-assigned `task`. Rescheduled every
+        /// time `task` is (re)assigned to a new phase (`startLookup`/`startBuild`/
+        /// `startLocatorPublication`) so each phase gets its own bounded window; cancelled
+        /// wherever the flight completes (`removeFlight`).
+        var watchdogTask: Task<Void, Never>?
         var enqueueNanoseconds: UInt64?
         var enqueueOrdinal: UInt64 = 0
         var acceptsNewWaiters = true
@@ -714,6 +743,7 @@ actor CodeMapArtifactBuildCoordinator {
         var agedBackgroundAdmissions: UInt64 = 0
         var nonBackgroundAdmissionsWhileBackgroundAged: UInt64 = 0
         var failures: UInt64 = 0
+        var watchdogTimeouts: UInt64 = 0
     }
 
     private struct MutableTimings {
@@ -739,6 +769,10 @@ actor CodeMapArtifactBuildCoordinator {
     private var flights: [CodeMapArtifactKey: Flight] = [:]
     private var queuedBuildKeys: [CodeMapArtifactKey] = []
     private var activeBuildCount = 0
+    /// Set to `false` by `shutdown()`. Once cleared, `registerWaiter` fails fast on every new
+    /// flight/waiter admission (the sole choke point every `resolve(_:)` path funnels through)
+    /// instead of racing a new flight into an already-shutting-down coordinator.
+    private var acceptsNewFlights = true
     private var waiterCount = 0
     private var retainedInputByteCount = 0
     private var consecutiveDemandAdmissions = 0
@@ -973,6 +1007,7 @@ actor CodeMapArtifactBuildCoordinator {
         request: CodeMapArtifactBuildRequest,
         continuation: CheckedContinuation<CodeMapArtifactBuildCoordinatorResult, Error>
     ) throws {
+        guard acceptsNewFlights else { throw busyError() }
         let joined = flights[key] != nil
         let flight: Flight
         if let existing = flights[key] {
@@ -1096,6 +1131,7 @@ actor CodeMapArtifactBuildCoordinator {
                 await self?.flightFailed(key: key, flightID: flightID, error: error)
             }
         }
+        scheduleWatchdog(for: flight)
     }
 
     private func lookupCompleted(
@@ -1261,6 +1297,7 @@ actor CodeMapArtifactBuildCoordinator {
                 await self?.buildFailed(key: key, flightID: flightID, error: error)
             }
         }
+        scheduleWatchdog(for: flight)
     }
 
     private func buildReturned(
@@ -1382,6 +1419,7 @@ actor CodeMapArtifactBuildCoordinator {
             }
             await self?.locatorPublishingFinished(key: key, flightID: flightID)
         }
+        scheduleWatchdog(for: flight)
     }
 
     private func beginNextLocatorPublication(
@@ -1598,9 +1636,77 @@ actor CodeMapArtifactBuildCoordinator {
         waiterCount -= flight.waiters.count
         releaseRetainedInputReservation(for: flight)
         flight.task = nil
+        flight.watchdogTask?.cancel()
+        flight.watchdogTask = nil
         flights.removeValue(forKey: flight.key)
         emit(hook, flight: flight)
         pruneOwnerHistory()
+    }
+
+    /// (Re)schedules `flight`'s wall-clock watchdog against its currently-assigned `task`,
+    /// cancelling any previous watchdog first. Called every time `flight.task` is (re)assigned to
+    /// a new phase, so each phase (CAS lookup, the deterministic build, locator publication) gets
+    /// its own bounded window rather than accumulating across the whole flight lifetime.
+    private func scheduleWatchdog(for flight: Flight) {
+        flight.watchdogTask?.cancel()
+        let key = flight.key
+        let id = flight.id
+        let nanoseconds = policy.maximumFlightWallClockNanoseconds
+        flight.watchdogTask = Task.detached { [weak self] in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            await self?.forceTimeoutFlightIfStillRunning(key: key, id: id)
+        }
+    }
+
+    /// Fired by a flight's watchdog after `policy.maximumFlightWallClockNanoseconds` has elapsed
+    /// since its current phase task was assigned. `id`-guarded against `flights[key]` so a
+    /// watchdog from an already-completed (and possibly key-reused) flight never touches a
+    /// different, newer flight instance -- it silently no-ops if `flight` already finished
+    /// (healthy completion always cancels the watchdog via `removeFlight`, so this only fires on
+    /// a genuinely still-running flight). Fails every waiter with a distinguishable error instead
+    /// of leaving them hung forever, and releases the concurrency slot via the normal
+    /// `removeFlight` -> `finishActiveBuild` path so a later request can proceed.
+    private func forceTimeoutFlightIfStillRunning(key: CodeMapArtifactKey, id: UUID) async {
+        guard let flight = flights[key], flight.id == id else { return }
+        increment(&counters.watchdogTimeouts)
+        let waiters = Array(flight.waiters.values)
+        flight.task?.cancel()
+        increment(&counters.sharedTaskCancellations)
+        removeFlight(flight, hook: .flightCancelled)
+        for waiter in waiters {
+            waiter.continuation.resume(throwing: CodeMapArtifactBuildCoordinatorError.flightWatchdogTimedOut)
+        }
+    }
+
+    /// Hard shutdown for runtime/store teardown: cancels every in-flight build unconditionally
+    /// (unlike `cancelWaiter`, which lets a non-preemptive transaction finish once its last
+    /// waiter detaches), resumes all waiters with `CancellationError`, and awaits every flight's
+    /// task before returning so no background work can outlive the caller. Also flips
+    /// `acceptsNewFlights` so any request racing this call fails fast via `registerWaiter`
+    /// instead of being admitted into a coordinator that is being torn down.
+    ///
+    /// Tears each flight down through the normal `removeFlight` path (rather than only clearing
+    /// `flights`) so `activeBuildCount`/`buildingKeys`/`waiterCount` are released immediately: a
+    /// flight already admitted into `.buildingNonPreemptive` only reaches `finishActiveBuild` via
+    /// `buildReturned`/`buildFailed`, both of which no-op once `flights[key]` no longer resolves
+    /// to this flight (the normal "stale completion" guard) -- so without going through
+    /// `removeFlight` here, that slot would leak forever once its late completion lands.
+    func shutdown() async {
+        acceptsNewFlights = false
+        let flightsSnapshot = Array(flights.values)
+        for flight in flightsSnapshot {
+            let waiters = Array(flight.waiters.values)
+            flight.task?.cancel()
+            removeFlight(flight, hook: .flightCancelled)
+            for waiter in waiters {
+                waiter.continuation.resume(throwing: CancellationError())
+            }
+        }
+        queuedBuildKeys.removeAll()
+        for flight in flightsSnapshot {
+            await flight.task?.value
+        }
     }
 
     private func currentFlight(key: CodeMapArtifactKey, id: UUID) -> Flight? {
@@ -1954,7 +2060,8 @@ actor CodeMapArtifactBuildCoordinator {
             agedBackgroundAdmissions: counters.agedBackgroundAdmissions,
             nonBackgroundAdmissionsWhileBackgroundAged: counters.nonBackgroundAdmissionsWhileBackgroundAged,
             droppedHookEvents: droppedHookEvents,
-            failures: counters.failures
+            failures: counters.failures,
+            watchdogTimeouts: counters.watchdogTimeouts
         )
     }
 

@@ -630,6 +630,7 @@ final class CodemapStoreFixture: @unchecked Sendable {
             if let engine = try? runtime.bindingEngine() {
                 await engine.shutdown()
             }
+            await runtime.shutdown()
         }
     }
 

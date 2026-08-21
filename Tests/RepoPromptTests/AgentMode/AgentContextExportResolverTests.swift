@@ -2881,6 +2881,14 @@ final class AgentContextExportResolverTests: WorkspaceFileContextStoreCodemapSea
                 )
             }
         )
+        // Every call site constructs its own isolated runtime with no other owner; register
+        // teardown here (once, at the single definition point) so all five call sites get their
+        // coordinator's in-flight builds cancelled/awaited before the sandbox directory is
+        // removed, instead of relying on ARC + a still-running detached build worker racing the
+        // test's own cleanup.
+        addTeardownBlock {
+            await runtime.shutdown()
+        }
         return WorkspaceFileContextStore(codemapRuntimeProvider: { runtime })
     }
 

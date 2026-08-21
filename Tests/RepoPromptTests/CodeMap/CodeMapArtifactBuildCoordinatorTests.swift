@@ -176,6 +176,91 @@ final class CodeMapArtifactBuildCoordinatorTests: XCTestCase {
         XCTAssertEqual(accounting.waiterCount, 0)
     }
 
+    func testShutdownCancelsInFlightBuildAndRejectsLateAdmissions() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let input = try makeInput("shutdown-in-flight", root: fixture.root)
+        let started = CoordinatorTestRecorder()
+        let coordinator = makeCoordinator(fixture: fixture) { _, _, _ in
+            await started.record("started")
+            // Cooperatively cancellation-observant, like a real build worker wrapped in
+            // `Task.checkCancellation()` calls -- unlike a plain gate wait, this lets
+            // `shutdown()`'s `flight.task?.cancel()` actually unwind the task promptly instead of
+            // hanging forever, so `shutdown()`'s own `await flight.task?.value` can return.
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            throw CancellationError()
+        }
+
+        let inFlight = Task { try await coordinator.resolve(request(input)) }
+        try await waitUntil { await started.count == 1 }
+        try await waitUntil { await coordinator.accounting().activeBuildCount == 1 }
+
+        await coordinator.shutdown()
+
+        await assertCancellation(inFlight)
+
+        do {
+            _ = try await coordinator.resolve(request(input))
+            XCTFail("expected rejection for admission attempted after shutdown")
+        } catch {
+            XCTAssertEqual(
+                error as? CodeMapArtifactBuildCoordinatorError,
+                .busy(retryAfterMilliseconds: CodeMapArtifactBuildCoordinatorPolicy.default.retryAfterMilliseconds)
+            )
+        }
+
+        let accounting = await coordinator.accounting()
+        XCTAssertEqual(accounting.activeFlightCount, 0)
+        XCTAssertEqual(accounting.activeBuildCount, 0)
+        XCTAssertEqual(accounting.waiterCount, 0)
+    }
+
+    func testWatchdogForceTimesOutStalledBuildAndReleasesAdmissionSlotForNextBuild() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let stalledInput = try makeInput("watchdog-stalled", root: fixture.root)
+        let healthyInput = try makeInput("watchdog-healthy", root: fixture.root)
+        // Deliberately never released: simulates a build that never completes and never observes
+        // cancellation -- the exact stuck-flight scenario the watchdog exists to bound. The
+        // watchdog does not (and is not meant to) unblock this; it only bounds the coordinator's
+        // own bookkeeping (waiters, activeBuildCount, the flight table entry).
+        let neverResumes = CoordinatorTestGate()
+        let coordinator = makeCoordinator(
+            fixture: fixture,
+            policy: CodeMapArtifactBuildCoordinatorPolicy(
+                maximumConcurrentBuildCount: 1,
+                retryAfterMilliseconds: 10,
+                maximumFlightWallClockNanoseconds: 20_000_000
+            )
+        ) { input, _, _ in
+            if input.artifactKey == stalledInput.artifactKey {
+                await neverResumes.enter()
+            }
+            return .readyNoSymbols
+        }
+
+        let stalled = Task { try await coordinator.resolve(request(stalledInput)) }
+
+        do {
+            _ = try await stalled.value
+            XCTFail("expected watchdog timeout")
+        } catch {
+            XCTAssertEqual(error as? CodeMapArtifactBuildCoordinatorError, .flightWatchdogTimedOut)
+        }
+
+        let accountingAfterTimeout = await coordinator.accounting()
+        XCTAssertEqual(accountingAfterTimeout.activeFlightCount, 0)
+        XCTAssertEqual(accountingAfterTimeout.activeBuildCount, 0)
+        XCTAssertEqual(accountingAfterTimeout.counters.watchdogTimeouts, 1)
+
+        // The admission slot must be free again: a distinct, healthy build proceeds without
+        // queuing behind the permanently-stalled flight.
+        let healthy = try await coordinator.resolve(request(healthyInput))
+        XCTAssertNotNil(ready(healthy))
+    }
+
     func testLastWaiterCancellationAtConcurrentBoundDoesNotDisturbPeerOrQueuedAdmission() async throws {
         let fixture = try makeFixture()
         defer { fixture.remove() }

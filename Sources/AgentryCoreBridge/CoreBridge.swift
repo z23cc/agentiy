@@ -916,6 +916,7 @@ public actor AgentryCoreBridge {
                   handshake.runtimeIdentity.buildFingerprint == expectedIdentity.buildFingerprint,
                   handshake.runtimeIdentity.bindingChecksum == expectedIdentity.bindingChecksum
             else {
+                noteInvalidationTrigger("handshake identity mismatch (incompatibleBindings)")
                 invalidate()
                 throw CoreBridgeError.incompatibleBindings
             }
@@ -961,15 +962,28 @@ public actor AgentryCoreBridge {
         do {
             let bootstrap = try transport.openSubscription(identity: identity, scopeID: scopeID)
             try validate(bootstrap.runtimeIdentity)
-            let initialSnapshot = try await decoder.decode(bootstrap.initialSnapshot)
-            try validate(identity)
             let pair = AsyncThrowingStream<CoreEvent, Error>.makeStream(
                 bufferingPolicy: .bufferingNewest(256)
             )
+            // Register before the decode await below: `transport.openSubscription`
+            // already made this subscription live on the Rust side (eligible for
+            // publish()/wake), so `subscriptions` must know about it before any
+            // suspension point, or a concurrent wakeFired() drain pass can silently
+            // skip its queue and starve rearm_and_recheck forever.
             subscriptions[bootstrap.subscriptionID] = CoreSubscriptionState(
                 runtimeIdentity: identity,
                 continuation: pair.continuation
             )
+            let initialSnapshot: CoreDecodedPayload
+            do {
+                initialSnapshot = try await decoder.decode(bootstrap.initialSnapshot)
+                try validate(identity)
+            } catch {
+                subscriptions.removeValue(forKey: bootstrap.subscriptionID)
+                pair.continuation.finish(throwing: error)
+                try? transport.closeSubscription(subscriptionID: bootstrap.subscriptionID, identity: identity)
+                throw error
+            }
             return CoreSubscription(
                 streamID: bootstrap.streamID,
                 initialSnapshot: initialSnapshot,
@@ -1042,6 +1056,7 @@ public actor AgentryCoreBridge {
     func mapComputeFailure(_ error: Error) -> any Error {
         if let error = error as? CoreComputeError {
             if error == .malformedResponse {
+                noteInvalidationTrigger("compute malformedResponse")
                 invalidate()
             }
             return error
@@ -1057,6 +1072,7 @@ public actor AgentryCoreBridge {
             default: .transportFailure(error.localizedDescription)
             }
             if mapped == .runtimeInvalidated || mapped == .runtimeStopped {
+                noteInvalidationTrigger("compute mapped failure: \(String(describing: error))")
                 invalidate()
             }
             return mapped
@@ -1083,6 +1099,7 @@ public actor AgentryCoreBridge {
         }
         switch mapped {
         case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
+            noteInvalidationTrigger("compute transport error: \(String(describing: error))")
             invalidate()
         default:
             break
@@ -1114,6 +1131,7 @@ public actor AgentryCoreBridge {
     func mapSearchFailure(_ error: Error) -> CoreSearchError {
         if let error = error as? CoreSearchError {
             if error == .malformedRange {
+                noteInvalidationTrigger("search malformedRange")
                 invalidate()
             }
             return error
@@ -1130,6 +1148,7 @@ public actor AgentryCoreBridge {
             default: .transportFailure(error.localizedDescription)
             }
             if mapped == .runtimeInvalidated || mapped == .runtimeStopped {
+                noteInvalidationTrigger("search mapped failure: \(String(describing: error))")
                 invalidate()
             }
             return mapped
@@ -1159,6 +1178,7 @@ public actor AgentryCoreBridge {
         }
         switch mapped {
         case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned, .malformedRange:
+            noteInvalidationTrigger("search transport error: \(String(describing: error))")
             invalidate()
         default:
             break
@@ -1271,11 +1291,16 @@ public actor AgentryCoreBridge {
         do {
             repeat {
                 try await drainAll(identity: identity)
+                // Guaranteed suspension per pass: if a registration-order bug ever
+                // reappears, the loop degrades to a yielding poll instead of a
+                // non-yielding actor monopoly that starves the registration path.
+                await Task.yield()
             } while try transport.rearmWake(identity: identity)
             try await drainAll(identity: identity)
         } catch {
             let mapped = mapTransportError(error)
             if mapped == .runtimeInvalidated {
+                noteInvalidationTrigger("wakeFired transport error: \(String(describing: error))")
                 invalidate()
             }
         }
@@ -1365,6 +1390,7 @@ public actor AgentryCoreBridge {
         }
         switch error {
         case .internalPanic, .runtimePoisoned:
+            noteInvalidationTrigger("bridge transport error: \(String(describing: error))")
             invalidate()
         default:
             break
@@ -1395,8 +1421,24 @@ public actor AgentryCoreBridge {
         }
     }
 
+    private var firstInvalidationTrigger: String?
+
+    /// Debug forensics for the full-suite mid-run invalidation investigation:
+    /// records the first raw trigger so the suite log names the poisoner.
+    private func noteInvalidationTrigger(_ description: String) {
+        guard firstInvalidationTrigger == nil else { return }
+        firstInvalidationTrigger = description
+    }
+
     private func invalidate() {
         guard lifecycle != .invalidated, lifecycle != .closed else { return }
+        #if DEBUG
+        let trigger = firstInvalidationTrigger ?? "unrecorded (see stack)"
+        print("[AgentryCoreBridge] INVALIDATED lifecycle=\(lifecycle) trigger=\(trigger)")
+        for frame in Thread.callStackSymbols.prefix(14) {
+            print("[AgentryCoreBridge]   \(frame)")
+        }
+        #endif
         lifecycle = .invalidated
         identity = nil
         finishResources(error: CoreBridgeError.runtimeInvalidated)
