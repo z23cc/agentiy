@@ -923,7 +923,7 @@ final class WorktreeAPISmokeHarnessTests: XCTestCase {
             createPathResolutionPolicy: .canonicalAliasFirst,
             selectCreatedFiles: false
         )
-        let service = ApplyEditsService(engine: .default, host: host)
+        let service = ApplyEditsService(computer: RustApplyEditsComputer(), host: host)
         let result = try await service.run(ApplyEditsRequest(
             path: lookupContext.translateInputPath("Tracked.txt"),
             mode: .single(search: "original", replace: "worktree-edited", replaceAll: false),

@@ -259,3 +259,14 @@ path and broader threshold-boundary coverage remain the non-blocking coverage ga
 
 **No wildcard allowlist is used or proposed.** All six allowed-drift instances record both engines'
 output under named fixtures. `ApplyEditsRustSwiftDifferentialTests` is now a hard green assertion.
+
+### Step 13 execution record (2026-08-21): **Done**
+
+The legacy Swift apply-edits engine (`RepoPromptDomainRuntime` ApplyEdits +
+Diffing implementations and the MCP-side legacy apply path) was deleted. All
+consumers, including the headless `agentry-mcp` binary, now use the Rust
+engine through `RustApplyEditsComputer`/`AgentryCoreService`. The 16
+differential scenarios were converted into direct expectation tests against
+the Rust seam (`ApplyEditsRustSeamExpectationTests`, values taken from the
+verified step-12 parity run) before the Swift reference implementation was
+removed, so behavioral coverage is retained without the legacy engine.

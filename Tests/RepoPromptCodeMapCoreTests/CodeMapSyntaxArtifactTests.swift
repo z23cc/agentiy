@@ -3,6 +3,21 @@ import Foundation
 import XCTest
 @testable import RepoPromptCodeMapCore
 
+/// P2 step 13: the legacy Swift `CodeMapSyntaxArtifactBuilder` was deleted
+/// once the production Rust seam (`RustCodeMapArtifactBuilder`) was verified
+/// as a hard-assertion match on all 13 fixtures (see
+/// `docs/architecture/rust-codemap-compact-v1.md`, "Step 13 verdict: GO").
+///
+/// This file used to also exercise the builder directly (decode-failed,
+/// empty/no-symbols, oversize, and parse-failure outcome mapping, plus
+/// determinism); that coverage now lives against the Rust seam in
+/// `Tests/RepoPromptTests/CodeMap/CodeMapRustBuilderOutcomeTests.swift`
+/// (moved rather than dropped, since `RustCodeMapArtifactBuilder` lives in
+/// `RepoPromptDomainRuntime`, which this target does not depend on).
+///
+/// What remains here is pure model (de)serialization coverage for
+/// `CodeMapSyntaxArtifact`/`CodeMapSyntaxArtifactOutcome`, which is
+/// unrelated to the compute engine and was not part of the Rust cutover.
 final class CodeMapSyntaxArtifactTests: XCTestCase {
     func testArtifactSerializationIsPathFreeAndRecomputesDerivedValues() throws {
         let artifact = makeArtifact()
@@ -74,120 +89,6 @@ final class CodeMapSyntaxArtifactTests: XCTestCase {
         )
     }
 
-    func testBuilderMapsDecodeEmptyNoSymbolsOversizeAndParseFailures() throws {
-        XCTAssertEqual(
-            try CodeMapSyntaxArtifactBuilder.build(
-                source: makeFailedSource(),
-                language: .swift
-            ),
-            .decodeFailed(.undecodable)
-        )
-
-        let emptySourceQuery = QueryStub { content, language in
-            XCTAssertEqual(content, "")
-            XCTAssertEqual(language, .swift)
-            return .captures([])
-        }
-        XCTAssertEqual(
-            try CodeMapSyntaxArtifactBuilder.build(
-                source: makeSource(text: ""),
-                language: .swift,
-                syntaxEngine: emptySourceQuery
-            ),
-            .readyNoSymbols
-        )
-
-        XCTAssertEqual(
-            try CodeMapSyntaxArtifactBuilder.build(
-                source: makeSource(text: "// comment only"),
-                language: .swift,
-                syntaxEngine: QueryStub { _, _ in .captures([]) }
-            ),
-            .readyNoSymbols
-        )
-        XCTAssertEqual(
-            try CodeMapSyntaxArtifactBuilder.build(
-                source: makeSource(text: "let value = 1"),
-                language: .swift,
-                syntaxEngine: QueryStub { _, _ in .oversize(.utf16Units(actual: 11, limit: 10)) }
-            ),
-            .oversize(.utf16Units(actual: 11, limit: 10))
-        )
-        XCTAssertEqual(
-            try CodeMapSyntaxArtifactBuilder.build(
-                source: makeSource(text: "let value = 1"),
-                language: .swift,
-                syntaxEngine: QueryStub { _, _ in .parseFailed(.parserReturnedNilTree) }
-            ),
-            .parseFailed(.parserReturnedNilTree)
-        )
-        XCTAssertEqual(
-            try CodeMapSyntaxArtifactBuilder.build(
-                source: makeSource(text: "let value = 1"),
-                language: .swift,
-                syntaxEngine: QueryStub { _, _ in .parseFailed(.parserReturnedNilRoot) }
-            ),
-            .parseFailed(.parserReturnedNilRoot)
-        )
-
-        let lineOversizeSource = makeSource(
-            text: String(repeating: "\n", count: CodeMapSyntaxEngine.parseLineLimit)
-        )
-        XCTAssertEqual(
-            try CodeMapSyntaxArtifactBuilder.build(source: lineOversizeSource, language: .swift),
-            .oversize(
-                .lines(
-                    actual: CodeMapSyntaxEngine.parseLineLimit + 1,
-                    limit: CodeMapSyntaxEngine.parseLineLimit
-                )
-            )
-        )
-    }
-
-    func testBuilderPropagatesExactTransientQueryError() throws {
-        XCTAssertThrowsError(
-            try CodeMapSyntaxArtifactBuilder.build(
-                source: makeSource(text: "struct Example {}"),
-                language: .swift,
-                syntaxEngine: QueryStub { _, _ in throw QueryStubError.transient }
-            )
-        ) { error in
-            XCTAssertEqual(error as? QueryStubError, .transient)
-        }
-    }
-
-    func testReadyArtifactIsDeterministicAcrossSourceMetadataAndHasNoFilenameInput() throws {
-        let content = """
-        struct Example {
-            let value: Int
-        }
-        """
-        let first = makeSource(text: content, digestSeed: 1)
-        let second = makeSource(text: content, digestSeed: 50)
-        let firstOutcome = try CodeMapSyntaxArtifactBuilder.build(source: first, language: .swift)
-        let repeatedOutcome = try CodeMapSyntaxArtifactBuilder.build(source: first, language: .swift)
-        let otherMetadataOutcome = try CodeMapSyntaxArtifactBuilder.build(source: second, language: .swift)
-
-        XCTAssertEqual(firstOutcome, repeatedOutcome)
-        XCTAssertEqual(firstOutcome, otherMetadataOutcome)
-        guard case let .ready(artifact) = firstOutcome else {
-            return XCTFail("Expected representative Swift content to produce an artifact.")
-        }
-        XCTAssertEqual(artifact.classes.map(\.name), ["Example"])
-        XCTAssertFalse(artifact.apiDescription.contains("source.swift"))
-        XCTAssertFalse(artifact.apiDescription.contains("other-name.swift"))
-
-        let javaOutcome = try CodeMapSyntaxArtifactBuilder.build(
-            source: makeSource(text: "void helper() {}"),
-            language: .java
-        )
-        guard case let .ready(javaArtifact) = javaOutcome else {
-            return XCTFail("Expected representative Java content to produce an artifact.")
-        }
-        XCTAssertEqual(javaArtifact.functions.map(\.name), ["helper"])
-        XCTAssertTrue(javaArtifact.classes.isEmpty)
-    }
-
     func testUnsupportedExtensionsRemainOutsideArtifactOutcomes() {
         XCTAssertNil(CodeMapSyntaxEngine.shared.language(forFileExtension: "unsupported"))
         XCTAssertFalse(CodeMapSyntaxEngine.supportsCodeMap(fileExtension: "unsupported"))
@@ -223,33 +124,6 @@ final class CodeMapSyntaxArtifactTests: XCTestCase {
         )
     }
 
-    private func makeSource(text: String, digestSeed: UInt8 = 1) -> CodeMapCoreSourceSnapshot {
-        let data = Data(text.utf8)
-        var digestInput = data
-        digestInput.append(digestSeed)
-        return CodeMapCoreSourceSnapshot(
-            rawByteCount: data.count,
-            rawSHA256: CodeMapRawSourceDigest(bytes: Data(SHA256.hash(data: digestInput))),
-            decoderPolicy: .workspaceAutomaticV1,
-            decodeResult: .decoded(
-                CodeMapDecodedSource(
-                    text: text,
-                    detectedEncodingRawValue: String.Encoding.utf8.rawValue
-                )
-            )
-        )
-    }
-
-    private func makeFailedSource() -> CodeMapCoreSourceSnapshot {
-        let bytes = Data([0xFF, 0xFE, 0x00, 0xD8])
-        return CodeMapCoreSourceSnapshot(
-            rawByteCount: bytes.count,
-            rawSHA256: CodeMapRawSourceDigest(bytes: Data(SHA256.hash(data: bytes))),
-            decoderPolicy: .workspaceAutomaticV1,
-            decodeResult: .failed(.undecodable)
-        )
-    }
-
     private func recursiveKeys(_ value: Any) -> [String] {
         if let dictionary = value as? [String: Any] {
             return dictionary.flatMap { key, value in [key] + recursiveKeys(value) }
@@ -259,16 +133,4 @@ final class CodeMapSyntaxArtifactTests: XCTestCase {
         }
         return []
     }
-}
-
-private struct QueryStub: CodeMapSyntaxQuerying {
-    let handler: (String, LanguageType) throws -> CodeMapSyntaxQueryOutcome
-
-    func codeMap(content: String, language: LanguageType) throws -> CodeMapSyntaxQueryOutcome {
-        try handler(content, language)
-    }
-}
-
-private enum QueryStubError: Error, Equatable {
-    case transient
 }

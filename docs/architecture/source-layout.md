@@ -41,7 +41,7 @@ Sources/
       Process/                   # process/CLI launch substrate
       Regex/                     # reusable regex adapters/toolkit
       Security/                  # keychain, signing, and secure storage
-      SyntaxParsing/             # syntax parsing and tree-sitter query infrastructure
+      SyntaxParsing/             # language detection and codemap pipeline-identity facade (Rust core owns parsing)
       UI/                        # reusable UI components, text/markdown/tooltip/mention substrate, UI services
       Utilities/                 # narrow generic utilities/extensions
       VCS/                       # git/VCS substrate
@@ -54,7 +54,6 @@ Sources/
     MCP/                         # shared app/CLI MCP control protocol definitions
   RepoPromptMCP/                 # MCP CLI implementation
   RepoPromptC/                   # C support target
-  TreeSitterScannerSupport/      # narrow exact-snapshot JavaScript/Python scanner ABI fallback
 Tests/
   RepoPromptCodeMapCoreTests/    # sole owner of pure CodeMap fixtures, goldens, and deterministic core tests
   RepoPromptSearchCoreTests/     # direct Rust-search differential and path-filtering tests
@@ -117,7 +116,7 @@ The old IDE-era Prompt selected-files panel is also removed. Do not add back `Pr
 - AppKit-free search result values and deterministic Rust-backed path filtering belong under `Sources/RepoPromptSearchCore`; direct differential and filter tests belong under `Tests/RepoPromptSearchCoreTests`. Workspace/store readiness, ingress freshness, app diagnostics, `FileViewModel`/catalog adapters, and `StoreBackedWorkspaceSearchLane` remain app-owned while they depend on `WorkspaceFileContextStore` or app telemetry authority.
 - AppKit-free MCP runtime identity/lifecycle configuration, canonical tool names, capability/admission/client classification, normalized schema fingerprints, Sendable tool definitions/bindings, the actor registry, workspace/context document and journal persistence, revision/CAS/event publication, connection/context routing, and run-launch-token authority belong under `Sources/RepoPromptDomainRuntime`; owner tests belong under `Tests/RepoPromptDomainRuntimeTests`. Application-scoped app-settings and routing registration is process-lifetime composition owned: AppDelegate startup explicitly registers canonical bindings and starts transport independently of window count, while catalog readiness only observes the canonical registry with a bounded fail-closed wait. App-side window and active-context values are presentation affinity, never domain identity or mutation authority. `RepoPromptDomainRuntime` must contain no `@MainActor`, AppKit, SwiftUI, Combine, window, or view-model dependency.
 - Deterministic synchronous CodeMap grammar descriptors, CodeMap-only queries, invocation-local parsing/extraction, provenance-free decoded source values, pipeline/key canonical encoding, artifact outcomes, and path-free canonical rendering belong under `Sources/RepoPromptCodeMapCore`; pure fixtures/goldens and owner tests belong only under `Tests/RepoPromptCodeMapCoreTests`.
-- Keep CodeMap decoding and raw-digest construction, validation/Git/worktree provenance, permits/cancellation, environment/performance aggregation, CAS/persistence, workspace authority, token/path/import presentation, syntax-query validation, UI/MCP, and selection-graph policy in `RepoPromptApp`. App syntax parsing retains direct `SwiftTreeSitter` linkage; it may consume immutable core grammar descriptors but must not share parser/cursor state.
+- Keep CodeMap decoding and raw-digest construction, validation/Git/worktree provenance, permits/cancellation, environment/performance aggregation, CAS/persistence, workspace authority, token/path/import presentation, syntax-query validation, UI/MCP, and selection-graph policy in `RepoPromptApp`. P2 step 13: syntax parsing moved to the Rust core; no Swift target links tree-sitter. `SyntaxManager` is a thin facade over `CodeMapSyntaxEngine` (language detection + pipeline-identity mirror).
 - New product-flow code goes under `Sources/RepoPrompt/Features/<FeatureName>`.
 - New app lifecycle, launch/configuration, command, root view/view-model, notification-name, and composition-root wiring goes under `Sources/RepoPrompt/App` in the `RepoPromptApp` target.
 - Keep bridging-header-sensitive support under `Sources/RepoPrompt/Support`, owned by `RepoPromptApp`, unless `Package.swift` is updated in the same change.
@@ -162,9 +161,7 @@ No top-level `Sources/RepoPrompt/Notifications` exception remains; app-wide noti
 
 ### Tree-sitter scanner linker compatibility target
 
-- `Sources/TreeSitterScannerSupport` is an internal C linker compatibility target, not a restored local grammar target. It contains byte-for-byte exact-snapshot copies of the pinned upstream JavaScript and Python `scanner.c` implementations plus their required `tree_sitter` helper headers. It does not contain parser copies, grammar definitions, queries, or CE-authored scanner code.
-- Although the upgraded grammar manifests list `scanner.c`, their `FileManager.default.fileExists` source probes evaluate false in this root package graph. A clean coordinated link without this target fails on the JavaScript/Python external-scanner ABI symbols, so `TreeSitterScannerSupport` remains necessary while CE continues linking the upstream grammar products directly.
-- [`ThirdPartyLicenses/tree-sitter/scanner-support.sha256`](../../ThirdPartyLicenses/tree-sitter/scanner-support.sha256) protects the exact snapshots from drift. Do not expand this target, restore retired local grammar directories, or mutate `.build/checkouts`. Remove the target, guardrails, checksums, and this exception together only after a future clean coordinated link proves the pinned upstream products compile their scanners.
+- P2 step 13 (2026-08-21): the entire Swift tree-sitter supply chain was deleted — the `SwiftTreeSitter` wrapper fork, all 13 grammar packages, and the `TreeSitterScannerSupport` scanner shim. Parsing runs exclusively in the Rust core (`rust/crates/runtime/src/codemap/`), which vendors the upstream grammars as Rust crates. `Scripts/source_layout_guardrails.sh` now enforces the negative: no tree-sitter package, product, target, or import may return to the Swift graph. Upstream grammar license texts remain under `ThirdPartyLicenses/tree-sitter/` because the same third-party code ships via `rust/`.
 
 ## Generated IDE artifacts
 
@@ -187,13 +184,13 @@ make guardrails
 The guardrail script verifies:
 
 - the shipped `RepoPrompt` executable source root contains only its entry file, declares exactly one `@main`, and the `RepoPromptApp` implementation declares none;
-- `RepoPromptCodeMapCore`, `RepoPromptSearchCore`, `RepoPromptWorkspaceCore`, `RepoPromptDomainRuntime`, and their owning test targets retain internal manifest topology and remain unexposed as products; the domain runtime remains AppKit/MainActor/provider/workspace-authority free, and app composition registers directly with its canonical registry without a compatibility facade; the CodeMap core owns grammar/scanner edges while the app retains direct `SwiftTreeSitter` syntax/query linkage;
+- `RepoPromptCodeMapCore`, `RepoPromptSearchCore`, `RepoPromptWorkspaceCore`, `RepoPromptDomainRuntime`, and their owning test targets retain internal manifest topology and remain unexposed as products; the domain runtime remains AppKit/MainActor/provider/workspace-authority free, and app composition registers directly with its canonical registry without a compatibility facade; the CodeMap core owns language detection and the Rust pipeline-fingerprint mirror (no tree-sitter linkage anywhere in the Swift graph);
 - `Package.swift` keeps the `RepoPrompt` executable as a thin dependency on the internal `RepoPromptApp` target at `Sources/RepoPrompt`;
 - old top-level layer buckets are absent or contain no files;
 - no `Tests`, `TestSupport`, or `Fixtures` directories exist under `Sources/RepoPrompt`;
 - `MCPControlMessages.swift` and `MCPFilesystemIdentity.swift` exist only under `Sources/RepoPromptShared/MCP`, and the `MCPExternalClientEvent` wire DTO is declared only there;
 - parser fixtures/sample inputs do not live under app syntax parsing source;
-- the RepoPrompt `SwiftTreeSitter` fork revision, exact runtime, and complete grammar requirement/resolved-revision set remain pinned in `Package.swift` and `Package.resolved`, `RepoPromptCodeMapCore` imports the grammar modules directly, `SyntaxManager` retains direct `SwiftTreeSitter` linkage for query compilation and validation, retired local grammar directories remain absent, and the narrow `TreeSitterScannerSupport` target contains only its approved exact-snapshot files with matching checksums;
+- no tree-sitter package appears in `Package.swift` or `Package.resolved`; retired local grammar directories remain absent; the codemap pipeline fingerprint mirror (`CodeMapPipelineFingerprints.swift`) stays byte-synchronized to the Rust authority via `rust/crates/runtime/tests/codemap_query_contract.rs`;
 - Agent/MCP runtime code does not depend on `WorkspaceFilesViewModel`, `FileViewModel`, or `FolderViewModel`;
 - removed native-tree/search artifact paths are not tracked again;
 - removed native-tree/search/eager-loading symbols such as `AgentFileTreeBottomPanelView`, `FileTreeViewWrapper`, `FileTreeViewController`, `NativeFileTree`, `SearchFileTreeViewModel`, `RootDescendantMaterialization`, `legacyMaterializedRootKeys`, `legacyMaterializeDescendantsRecursively`, and `legacyEager` are not referenced from app source;

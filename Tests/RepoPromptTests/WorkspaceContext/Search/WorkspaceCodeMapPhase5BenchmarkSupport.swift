@@ -31,7 +31,7 @@
             case .buildPermitWait:
                 "builder-reported content-limiter permit wait for the cold source build"
             case .deterministicBuild:
-                "coordinator-reported real deterministic CodeMapSyntaxArtifactBuilder execution"
+                "coordinator-reported real deterministic Rust codemap builder execution"
             case .casPersistAndVerify:
                 "coordinator-reported atomic CAS persistence followed by verified lookup"
             case .locatorPublication:

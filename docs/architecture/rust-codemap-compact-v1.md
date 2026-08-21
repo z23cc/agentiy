@@ -361,3 +361,32 @@ otherwise). `Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift
 `rust/ffi-contract/generated-manifest.json` must be regenerated (`make dev-cargo-codegen`) against a
 clean tree any time `rust/crates/ffi`/`rust/crates/runtime` changes land locally; both remain
 intentionally **uncommitted** per this task's instructions.
+
+### Step 13 execution record (2026-08-21): **Done**
+
+The legacy Swift codemap compute implementation was deleted: the
+`CodeMapSyntaxArtifactBuilder`/`CodeMapGenerator`/`LanguageTypeExtractor`
+extraction stack, the step-12 parity scaffolding (`RustParitySignatureParser`,
+`RustParityArtifactNormalizer`), the Swift `Queries/*.swift` authority files,
+the `TreeSitterScannerSupport` target, and all 13 Swift tree-sitter grammar
+packages plus the `swift-tree-sitter` wrapper (Package.swift no longer
+references tree-sitter at all). The headless `agentry-mcp` binary now reaches
+the same Rust core through `AgentryCoreService` (source-layout guardrail
+updated: the boundary is "no GUI/AppKit dependency", not "no Rust core").
+
+Pipeline authority inversion: the Rust engine (vendored grammar crates +
+`queries/*.scm`) is the sole authority. Swift keeps a frozen fingerprint
+mirror (`CodeMapPipelineFingerprints.swift`: grammar revision, tree-sitter ABI
+version, query SHA-256) feeding `CodeMapPipelineIdentity`; the mirror is
+machine-checked against the Rust truth by
+`rust/crates/runtime/tests/codemap_query_contract.rs`
+(`swift_pipeline_fingerprint_mirror_matches_rust_truth`), which prints the
+exact replacement block on drift, so any `.scm`/grammar change rotates
+Swift-side cache identity. Cache identity intentionally rotated once at
+cutover (query SHA now hashes the exact `.scm` bytes the Rust engine compiles
+in; ABI versions now come from the Rust grammar crates).
+
+Coverage retention: `CodeMapRustGoldenTests` asserts the Rust engine against
+all 13 committed goldens (with corpus-drift guard);
+`CodeMapRustBuilderOutcomeTests` covers outcome mapping. The Swift-vs-Rust
+differential was deleted with its reference implementation.

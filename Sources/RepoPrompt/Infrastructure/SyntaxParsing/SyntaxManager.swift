@@ -39,10 +39,6 @@ final class SyntaxManager: @unchecked Sendable {
         )
     }
 
-    func codeMap(content: String, language: LanguageType) throws -> CodeMapSyntaxQueryOutcome {
-        try CodeMapSyntaxEngine.shared.codeMap(content: content, language: language)
-    }
-
     static func isSupportedFileExtension(_ fileExtension: String) -> Bool {
         CodeMapSyntaxEngine.isSupportedFileExtension(fileExtension)
     }

@@ -9,10 +9,6 @@ package struct ApplyEditsService {
         self.host = host
     }
 
-    package init(engine: ApplyEditsEngine, host: FileEditHost) {
-        self.init(computer: engine, host: host)
-    }
-
     package func run(
         _ request: ApplyEditsRequest,
         options: ApplyEditsExecutionOptions = .default

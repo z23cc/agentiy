@@ -1,19 +1,23 @@
 import AgentryCoreBridge
 import Foundation
 
-struct RustApplyEditsComputer: ApplyEditsComputing {
-    typealias ApplyOperation = @Sendable (CoreApplyEditsBatchRequestV1) async throws -> CoreApplyEditsBatchResultV1
+/// Production Rust compute seam for `apply_edits`. Shared by the GUI app's
+/// `MCPApplyEditsToolProvider` and the standalone headless `agentry-mcp`
+/// binary's `DirectHeadlessCapabilityBackends` -- both processes reach the
+/// same Rust core through `AgentryCoreService`.
+package struct RustApplyEditsComputer: ApplyEditsComputing {
+    package typealias ApplyOperation = @Sendable (CoreApplyEditsBatchRequestV1) async throws -> CoreApplyEditsBatchResultV1
 
     private let applyOperation: ApplyOperation
 
-    init(applyOperation: @escaping ApplyOperation = { request in
+    package init(applyOperation: @escaping ApplyOperation = { request in
         let client = try await AgentryCoreService.shared.computeClient()
         return try await client.applyEditsBatchV1(request)
     }) {
         self.applyOperation = applyOperation
     }
 
-    func apply(
+    package func apply(
         request: ApplyEditsRequest,
         to originalText: String,
         options: ApplyEditsExecutionOptions

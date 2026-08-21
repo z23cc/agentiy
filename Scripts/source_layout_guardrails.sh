@@ -119,43 +119,10 @@ for file in "${shared_mcp_required_files[@]}"; do
   fi
 done
 
-# Tree-sitter uses exact upstream package products plus a narrow scanner linker shim.
-if [[ -e "src/scanner.c" ]]; then
-  fail "retired root src/scanner.c manifest-probe sentinel exists"
-fi
-tree_sitter_scanner_support_files=(
-  "Sources/TreeSitterScannerSupport/include/tree_sitter/alloc.h"
-  "Sources/TreeSitterScannerSupport/include/tree_sitter/array.h"
-  "Sources/TreeSitterScannerSupport/include/tree_sitter/parser.h"
-  "Sources/TreeSitterScannerSupport/src/javascript/scanner.c"
-  "Sources/TreeSitterScannerSupport/src/python/scanner.c"
-  "ThirdPartyLicenses/tree-sitter/scanner-support.sha256"
-)
-for file in "${tree_sitter_scanner_support_files[@]}"; do
-  if [[ ! -f "$file" ]]; then
-    fail "required TreeSitterScannerSupport compatibility file missing: $file"
-  elif ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 &&
-       [[ "$(git status --porcelain --untracked-files=all -- "$file")" != "?? $file" ]]; then
-    fail "TreeSitterScannerSupport compatibility file must be tracked or pending addition: $file"
-  fi
-done
-if [[ -d "Sources/TreeSitterScannerSupport" ]]; then
-  unexpected_tree_sitter_scanner_support_files="$(find Sources/TreeSitterScannerSupport -type f \
-    ! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/alloc.h' \
-    ! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/array.h' \
-    ! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/parser.h' \
-    ! -path 'Sources/TreeSitterScannerSupport/src/javascript/scanner.c' \
-    ! -path 'Sources/TreeSitterScannerSupport/src/python/scanner.c' \
-    -print)"
-  if [[ -n "$unexpected_tree_sitter_scanner_support_files" ]]; then
-    fail "unexpected file found under narrow TreeSitterScannerSupport compatibility target"
-    printf '%s\n' "$unexpected_tree_sitter_scanner_support_files" >&2
-  fi
-fi
-if ! tree_sitter_scanner_support_checksum_output="$(shasum -a 256 -c ThirdPartyLicenses/tree-sitter/scanner-support.sha256 2>&1)"; then
-  fail "TreeSitterScannerSupport compatibility snapshots differ from curated checksums"
-  printf '%s\n' "$tree_sitter_scanner_support_checksum_output" >&2
-fi
+# P2 step 13: the Swift tree-sitter supply chain (SwiftTreeSitter wrapper,
+# grammar packages, TreeSitterScannerSupport shim) was deleted; the Rust core
+# owns parsing. Negative guards below (inside the dump-package check) keep it
+# from returning.
 
 if ! tree_sitter_dependency_manifest_output="$(python3 <<'PY'
 import json
@@ -163,20 +130,6 @@ import re
 import subprocess
 from pathlib import Path
 
-expected_packages = {
-    "tree-sitter-c": ("https://github.com/tree-sitter/tree-sitter-c", "0.24.2", "b780e47fc780ddc8da13afa35a3f4ed5c157823d", "TreeSitterC"),
-    "tree-sitter-go": ("https://github.com/tree-sitter/tree-sitter-go", "0.25.0", "1547678a9da59885853f5f5cc8a99cc203fa2e2c", "TreeSitterGo"),
-    "tree-sitter-java": ("https://github.com/tree-sitter/tree-sitter-java", "0.23.5", "94703d5a6bed02b98e438d7cad1136c01a60ba2c", "TreeSitterJava"),
-    "tree-sitter-javascript": ("https://github.com/tree-sitter/tree-sitter-javascript", "0.25.0", "44c892e0be055ac465d5eeddae6d3e194424e7de", "TreeSitterJavaScript"),
-    "tree-sitter-python": ("https://github.com/tree-sitter/tree-sitter-python", "0.25.0", "293fdc02038ee2bf0e2e206711b69c90ac0d413f", "TreeSitterPython"),
-    "tree-sitter-rust": ("https://github.com/tree-sitter/tree-sitter-rust", "0.24.2", "77a3747266f4d621d0757825e6b11edcbf991ca5", "TreeSitterRust"),
-    "tree-sitter-typescript": ("https://github.com/tree-sitter/tree-sitter-typescript", "0.23.2", "f975a621f4e7f532fe322e13c4f79495e0a7b2e7", "TreeSitterTypeScript"),
-    "tree-sitter-ruby": ("https://github.com/tree-sitter/tree-sitter-ruby", "0.23.1", "71bd32fb7607035768799732addba884a37a6210", "TreeSitterRuby"),
-    "tree-sitter-swift": ("https://github.com/alex-pinkus/tree-sitter-swift", "0.7.3-with-generated-files", "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5", "TreeSitterSwift"),
-    "tree-sitter-c-sharp": ("https://github.com/tree-sitter/tree-sitter-c-sharp.git", "0.23.5", "cac6d5fb595f5811a076336682d5d595ac1c9e85", "TreeSitterCSharp"),
-    "tree-sitter-cpp": ("https://github.com/tree-sitter/tree-sitter-cpp", "0.23.4", "f41e1a044c8a84ea9fa8577fdd2eab92ec96de02", "TreeSitterCPP"),
-    "tree-sitter-php": ("https://github.com/tree-sitter/tree-sitter-php.git", "0.24.2", "5b5627faaa290d89eb3d01b9bf47c3bb9e797dea", "TreeSitterPHP"),
-}
 errors = []
 manifest_text = Path("Package.swift").read_text()
 resolved = json.loads(Path("Package.resolved").read_text())
@@ -308,66 +261,38 @@ for product in package.get("products", []):
     if "RepoPromptWorkspaceCore" in product.get("targets", []): errors.append("RepoPromptWorkspaceCore must not be exposed as a package product")
     if "RepoPromptSearchCore" in product.get("targets", []): errors.append("RepoPromptSearchCore must not be exposed as a package product")
 
-for identity, (url, version, revision, product) in expected_packages.items():
-    requirement = f'exact: "{version}"' if version is not None else f'revision: "{revision}"'
-    manifest_pin = f'.package(url: "{url}", {requirement})'
-    if manifest_pin not in manifest_text:
-        errors.append(f"Package.swift missing exact pin: {identity} {version or revision}")
-    pin = resolved_pins.get(identity)
-    state = pin.get("state", {}) if pin is not None else {}
-    if pin is None:
-        errors.append(f"Package.resolved missing pin: {identity}")
-    elif pin.get("location") != url or state.get("revision") != revision or state.get("version") != version:
-        errors.append(f"Package.resolved pin drift: {identity}")
-    if (product, identity) not in repo_prompt_code_map_core_products:
-        errors.append(f"RepoPromptCodeMapCore missing upstream grammar product dependency: {product} ({identity})")
 
-wrapper = resolved_pins.get("swift-tree-sitter", {})
-wrapper_url = "https://github.com/repoprompt/swift-tree-sitter.git"
-wrapper_revision = "a778ef4fb7f0d3ad00185f42ce83c688373c4361"
-wrapper_manifest_pattern = re.compile(
-    rf'\.package\(\s*url:\s*"{re.escape(wrapper_url)}",\s*revision:\s*"{wrapper_revision}"\s*\)'
-)
-if wrapper_manifest_pattern.search(manifest_text) is None:
-    errors.append("Package.swift must use the unnamed URL/revision declaration for the approved RepoPrompt SwiftTreeSitter fork")
-if wrapper.get("location") != wrapper_url or wrapper.get("state", {}) != {"revision": wrapper_revision}:
-    errors.append("SwiftTreeSitter fork location/revision drifted")
-if ("SwiftTreeSitter", "swift-tree-sitter") in repo_prompt_app_products:
-    errors.append("RepoPromptApp must not directly depend on SwiftTreeSitter")
-if ("SwiftTreeSitter", "swift-tree-sitter") not in repo_prompt_code_map_core_products:
-    errors.append("RepoPromptCodeMapCore missing direct SwiftTreeSitter product dependency")
+# P2 step 13: no tree-sitter package of any kind may return to the Swift graph.
+for banned_identity in list(resolved_pins):
+    if "tree-sitter" in banned_identity:
+        errors.append(f"tree-sitter package must not return after P2 step 13: {banned_identity}")
+if re.search(r"tree-?sitter", manifest_text, re.IGNORECASE):
+    errors.append("Package.swift must not reference tree-sitter after P2 step 13")
 if "https://github.com/ChimeHQ/SwiftTreeSitter" in manifest_text or "swifttreesitter" in resolved_pins:
     errors.append("ChimeHQ SwiftTreeSitter must not coexist with the RepoPrompt fork")
 if "https://github.com/ChimeHQ/Neon" in manifest_text or '.product(name: "Neon"' in manifest_text or "neon" in resolved_pins:
     errors.append("Neon package/product must remain removed")
 
-runtime = resolved_pins.get("tree-sitter", {})
-if runtime.get("location") != "https://github.com/tree-sitter/tree-sitter" or runtime.get("state", {}).get("version") != "0.25.10" or runtime.get("state", {}).get("revision") != "da6fe9beb4f7f67beb75914ca8e0d48ae48d6406":
-    errors.append("Tree-sitter runtime must resolve exactly to 0.25.10 / da6fe9beb4f7f67beb75914ca8e0d48ae48d6406")
-
-support = targets.get("TreeSitterScannerSupport")
-if support is None:
-    errors.append("TreeSitterScannerSupport target missing")
-else:
-    if support.get("path") != "Sources/TreeSitterScannerSupport":
-        errors.append("TreeSitterScannerSupport target path drifted")
-    if sorted(support.get("sources", [])) != ["src/javascript/scanner.c", "src/python/scanner.c"]:
-        errors.append("TreeSitterScannerSupport sources must remain exactly JavaScript/Python scanner.c")
-core_by_name_dependencies = [
-    dependency["byName"][0]
-    for dependency in repo_prompt_code_map_core_dependencies
-    if dependency.get("byName")
-]
-if core_by_name_dependencies.count("TreeSitterScannerSupport") != 1:
-    errors.append("RepoPromptCodeMapCore must directly depend exactly once on TreeSitterScannerSupport")
-if app_by_name_dependencies.count("TreeSitterScannerSupport") != 0:
-    errors.append("RepoPromptApp must not directly depend on TreeSitterScannerSupport")
+if "TreeSitterScannerSupport" in targets:
+    errors.append("TreeSitterScannerSupport target must not return after P2 step 13")
+if repo_prompt_code_map_core_dependencies:
+    errors.append("RepoPromptCodeMapCore must have no target or package dependencies after P2 step 13")
 if app_by_name_dependencies.count("RepoPromptCodeMapCore") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptCodeMapCore")
 
 # M1 headless domain runtime is an internal AppKit-free owner boundary. During the
 # two-commit migration it may be staged in Swift 5 or promoted to Swift 6, but the
 # runtime and owner tests must move together and retain complete checking.
+#
+# P2 step 13 (rust-codemap-compact-v1.md / rust-apply-edits-compact-v1.md): the
+# boundary is "no GUI/AppKit/app-lifecycle dependency", not "no Rust core". The
+# standalone headless `agentry-mcp` binary and the GUI app share one Rust core
+# runtime (`AgentryCoreService`, `RustCodeMapArtifactBuilder`,
+# `RustApplyEditsComputer`), all hosted in this target, so both processes reach
+# it through the same seam instead of each depending on the legacy Swift
+# codemap/apply-edits compute engines. `AgentryCoreBridge` is a pure compute
+# façade (Foundation/Dispatch/Darwin only, no AppKit/SwiftUI/Combine/MainActor),
+# so this remains AppKit-free.
 domain_runtime = targets.get("RepoPromptDomainRuntime")
 domain_runtime_tests = targets.get("RepoPromptDomainRuntimeTests")
 if domain_runtime is None:
@@ -385,8 +310,8 @@ else:
         for dependency in domain_runtime.get("dependencies", [])
         if "product" in dependency
     }
-    if runtime_by_name != ["RepoPromptShared", "RepoPromptC", "RepoPromptCodeMapCore"] or runtime_products != {("Logging", "swift-log"), ("MCP", "swift-sdk")} or len(domain_runtime.get("dependencies", [])) != 5:
-        errors.append("RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptC, RepoPromptCodeMapCore, Logging, and pinned MCP")
+    if runtime_by_name != ["RepoPromptShared", "RepoPromptC", "RepoPromptCodeMapCore", "AgentryCoreBridge"] or runtime_products != {("Logging", "swift-log"), ("MCP", "swift-sdk")} or len(domain_runtime.get("dependencies", [])) != 6:
+        errors.append("RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptC, RepoPromptCodeMapCore, AgentryCoreBridge, Logging, and pinned MCP")
 if domain_runtime_tests is None:
     errors.append("RepoPromptDomainRuntimeTests target missing")
 else:
@@ -442,15 +367,10 @@ if code_map_core_tests.get("path") != "Tests/RepoPromptCodeMapCoreTests":
 if core_test_dependencies != ["RepoPromptCodeMapCore"]:
     errors.append("RepoPromptCodeMapCoreTests must depend only on RepoPromptCodeMapCore")
 
-core_syntax_source = Path("Sources/RepoPromptCodeMapCore/CodeMapSyntaxEngine.swift").read_text()
-required_core_imports = {
-    "SwiftTreeSitter", "TreeSitterC", "TreeSitterCPP", "TreeSitterCSharp",
-    "TreeSitterGo", "TreeSitterJava", "TreeSitterJavaScript", "TreeSitterPHP", "TreeSitterPython",
-    "TreeSitterRuby", "TreeSitterRust", "TreeSitterSwift", "TreeSitterTSX", "TreeSitterTypeScript",
-}
-for module in sorted(required_core_imports):
-    if f"import {module}\n" not in core_syntax_source:
-        errors.append(f"CodeMapSyntaxEngine missing direct grammar/wrapper module import: {module}")
+# P2 step 13: CodeMapCore must stay free of tree-sitter imports; the Rust core owns parsing.
+for core_source in Path("Sources/RepoPromptCodeMapCore").rglob("*.swift"):
+    if re.search(r"^\s*import\s+(?:SwiftTreeSitter|TreeSitter\w+)\b", core_source.read_text(), re.MULTILINE):
+        errors.append(f"CodeMapCore source must not import tree-sitter modules after P2 step 13: {core_source}")
 bridging_header = Path("Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h").read_text()
 if "tree_sitter_" in bridging_header or "TSLanguage" in bridging_header:
     errors.append("bridging header must not redeclare Tree-sitter grammar APIs")

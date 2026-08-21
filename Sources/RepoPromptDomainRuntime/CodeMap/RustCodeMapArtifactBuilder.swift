@@ -2,29 +2,29 @@ import AgentryCoreBridge
 import Foundation
 import RepoPromptCodeMapCore
 
-enum RustCodeMapArtifactBuilderError: Error, Equatable {
+package enum RustCodeMapArtifactBuilderError: Error, Equatable {
     case unexpectedSubjectCount
     case subjectIdentityMismatch
     case numericOverflow
 }
 
-struct RustCodeMapArtifactBuilder: @unchecked Sendable {
-    typealias Extract = @Sendable (CoreCodeMapBatchRequestV1) async throws -> CoreCodeMapBatchResultV1
+/// Production Rust compute seam for CodeMap artifact extraction. Shared by
+/// the GUI app's `CodeMapArtifactBuildCoordinator` and the standalone
+/// headless `agentry-mcp` binary's `MCPDomainCanonicalWorkspaceService` --
+/// both processes reach the same Rust core through `AgentryCoreService`.
+package struct RustCodeMapArtifactBuilder: @unchecked Sendable {
+    package typealias Extract = @Sendable (CoreCodeMapBatchRequestV1) async throws -> CoreCodeMapBatchResultV1
 
     private let extract: Extract
 
-    init(extract: @escaping Extract = { request in
+    package init(extract: @escaping Extract = { request in
         let client = try await AgentryCoreService.shared.computeClient()
         return try await client.extractCodeMapBatchV1(request)
     }) {
         self.extract = extract
     }
 
-    func build(input: CodeMapArtifactBuildInput) async throws -> CodeMapSyntaxArtifactOutcome {
-        try await build(source: input.source.coreSnapshot, language: input.language)
-    }
-
-    func build(
+    package func build(
         source: CodeMapCoreSourceSnapshot,
         language: LanguageType
     ) async throws -> CodeMapSyntaxArtifactOutcome {
@@ -140,7 +140,7 @@ private extension CoreCodeMapSubjectRequestV1 {
     }
 }
 
-private extension LanguageType {
+package extension LanguageType {
     var coreCodeMapLanguageID: UInt16 {
         switch self {
         case .swift: 1

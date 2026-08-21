@@ -63,3 +63,13 @@ headers and the corresponding full ICU notice file.
 
 The ICU file is preserved in full because it contains the applicable ICU
 copyright and permission notice plus additional third-party notices.
+
+## P2 step 13 (2026-08-21)
+
+The Swift tree-sitter packages (SwiftTreeSitter wrapper, grammar packages,
+TreeSitterScannerSupport shim) were removed from the SwiftPM graph; parsing
+now runs in the Rust core, which vendors the same upstream grammars as Rust
+crates. The upstream grammar/runtime license texts in this directory are
+intentionally retained because the same third-party code still ships in the
+product via `rust/` (see rust/Cargo.lock); they are no longer listed in
+`ThirdPartyLicenses/swiftpm/inventory.tsv`, which tracks SwiftPM packages only.

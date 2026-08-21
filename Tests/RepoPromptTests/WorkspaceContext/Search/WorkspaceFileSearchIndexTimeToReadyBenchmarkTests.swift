@@ -743,51 +743,30 @@ import XCTest
                         throw BenchmarkInvariantError(message: "Phase 2 source did not decode.")
                     }
 
-                    let explicitQuery = try store(
-                        measurePhase2Synchronous {
-                            try SyntaxManager.shared.codeMap(content: decodedSource.text, language: language)
-                        },
-                        metric: .explicitLanguageQueryParse
+                    // P2 step 13: this used to measure two legacy Swift pipeline stages
+                    // separately (`SyntaxManager.codeMap` query/capture parse, then
+                    // `CodeMapGenerator.generateSyntaxArtifact` from those captures) as a
+                    // cross-check against the full `CodeMapSyntaxArtifactBuilder.build`
+                    // pipeline. Both legacy entry points were deleted once the Rust seam
+                    // (`RustCodeMapArtifactBuilder`) became the sole production compute
+                    // path, which only exposes one opaque stage -- so there is a single
+                    // measurement and no independent cross-check artifact to compare
+                    // against; `modernArtifact`/`totalArtifact` below are the same value.
+                    let totalSource = CodeMapSourceSnapshot(validatedContent: validatedContent)
+                    let modernTotalStartTime = DispatchTime.now()
+                    let modernOutcome = try await RustCodeMapArtifactBuilder().build(
+                        source: totalSource.coreSnapshot,
+                        language: language
                     )
-                    guard case let .captures(captures) = explicitQuery, !captures.isEmpty else {
-                        throw BenchmarkInvariantError(message: "Phase 2 explicit query did not return captures.")
-                    }
-
-                    func modernTerminalMeasurement() -> Phase2SynchronousMeasurement<CodeMapSyntaxArtifact?> {
-                        measurePhase2Synchronous {
-                            CodeMapGenerator.generateSyntaxArtifact(
-                                from: captures,
-                                content: decodedSource.text,
-                                language: language
-                            )
-                        }
-                    }
-
-                    let modernArtifact = try XCTUnwrap(
-                        store(modernTerminalMeasurement(), metric: .pathFreeArtifactGeneration),
-                        "Phase 2 path-free terminal did not produce an artifact."
+                    wallValues[.modernEnvelopeToReadyArtifact] = workspaceFileSearchIndexElapsedMilliseconds(
+                        from: modernTotalStartTime,
+                        to: DispatchTime.now()
                     )
-
-                    func modernTotalMeasurement() throws
-                        -> Phase2SynchronousMeasurement<(CodeMapSourceSnapshot, CodeMapSyntaxArtifactOutcome)>
-                    {
-                        try measurePhase2Synchronous {
-                            let totalSource = CodeMapSourceSnapshot(validatedContent: validatedContent)
-                            let outcome = try CodeMapSyntaxArtifactBuilder.build(
-                                source: totalSource.coreSnapshot,
-                                language: language
-                            )
-                            return (totalSource, outcome)
-                        }
-                    }
-
-                    let modernTotal = try store(
-                        modernTotalMeasurement(),
-                        metric: .modernEnvelopeToReadyArtifact
-                    )
-                    guard case let .ready(totalArtifact) = modernTotal.1 else {
+                    let modernTotal = (totalSource, modernOutcome)
+                    guard case let .ready(totalArtifact) = modernOutcome else {
                         throw BenchmarkInvariantError(message: "Phase 2 total modern pipeline was not ready.")
                     }
+                    let modernArtifact = totalArtifact
 
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.sortedKeys]

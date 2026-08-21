@@ -20,23 +20,6 @@ var packageDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", exact: "2.8.0"),
     .package(url: "https://github.com/apple/swift-system.git", exact: "1.6.4"),
     .package(url: "https://github.com/repoprompt/swift-sdk.git", revision: "85dec2fc7a27252bc33dc7728be6af6b3bd398c0"),
-    // RepoPromptApp and RepoPromptCodeMapCore share this customized wrapper/runtime graph.
-    .package(
-        url: "https://github.com/repoprompt/swift-tree-sitter.git",
-        revision: "a778ef4fb7f0d3ad00185f42ce83c688373c4361"
-    ),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-c", exact: "0.24.2"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-go", exact: "0.25.0"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-java", exact: "0.23.5"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-javascript", exact: "0.25.0"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-python", exact: "0.25.0"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-rust", exact: "0.24.2"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-typescript", exact: "0.23.2"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-ruby", exact: "0.23.1"),
-    .package(url: "https://github.com/alex-pinkus/tree-sitter-swift", exact: "0.7.3-with-generated-files"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-c-sharp.git", exact: "0.23.5"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-cpp", exact: "0.23.4"),
-    .package(url: "https://github.com/tree-sitter/tree-sitter-php.git", exact: "0.24.2"),
     .package(url: "https://github.com/jamesrochabrun/SwiftAnthropic", revision: "b7d030cd7453f314c780f5492385f73d704cbd5d"),
     .package(url: "https://github.com/repoprompt/SwiftOpenAI", revision: "1211782eb337e7968124448a20d9260df1952012"),
     .package(path: "Vendor/UniversalCharsetDetection"),
@@ -84,6 +67,7 @@ var repoPromptTestDependencies: [Target.Dependency] = [
     "RepoPromptCodeMapCore",
     "RepoPromptMCP",
     "RepoPromptShared",
+    "AgentryCoreBridge",
     .product(name: "Markdown", package: "swift-markdown")
 ]
 
@@ -163,6 +147,7 @@ let package = Package(
                 "RepoPromptShared",
                 "RepoPromptC",
                 "RepoPromptCodeMapCore",
+                "AgentryCoreBridge",
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "MCP", package: "swift-sdk")
             ],
@@ -185,22 +170,6 @@ let package = Package(
         ),
         .target(
             name: "RepoPromptCodeMapCore",
-            dependencies: [
-                "TreeSitterScannerSupport",
-                .product(name: "SwiftTreeSitter", package: "swift-tree-sitter"),
-                .product(name: "TreeSitterC", package: "tree-sitter-c"),
-                .product(name: "TreeSitterGo", package: "tree-sitter-go"),
-                .product(name: "TreeSitterJava", package: "tree-sitter-java"),
-                .product(name: "TreeSitterJavaScript", package: "tree-sitter-javascript"),
-                .product(name: "TreeSitterPython", package: "tree-sitter-python"),
-                .product(name: "TreeSitterRust", package: "tree-sitter-rust"),
-                .product(name: "TreeSitterTypeScript", package: "tree-sitter-typescript"),
-                .product(name: "TreeSitterRuby", package: "tree-sitter-ruby"),
-                .product(name: "TreeSitterSwift", package: "tree-sitter-swift"),
-                .product(name: "TreeSitterCSharp", package: "tree-sitter-c-sharp"),
-                .product(name: "TreeSitterCPP", package: "tree-sitter-cpp"),
-                .product(name: "TreeSitterPHP", package: "tree-sitter-php")
-            ],
             path: "Sources/RepoPromptCodeMapCore",
             swiftSettings: swift6LanguageMode + [
                 .define("DEBUG", .when(configuration: .debug))
@@ -226,9 +195,6 @@ let package = Package(
             ]
         ),
         .target(name: "RepoPromptC", path: "Sources/RepoPromptC", publicHeadersPath: "include", cSettings: [.headerSearchPath("include")]),
-        // Exact-snapshot scanner ABI fallback for the JavaScript/Python manifests, whose
-        // FileManager source probe evaluates false in this root package graph.
-        .target(name: "TreeSitterScannerSupport", path: "Sources/TreeSitterScannerSupport", sources: ["src/javascript/scanner.c", "src/python/scanner.c"], publicHeadersPath: "include"),
         .binaryTarget(name: "Sparkle", path: "Vendor/Sparkle/Sparkle.xcframework"),
         .testTarget(
             name: "AgentryCoreBridgeTests",

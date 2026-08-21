@@ -142,8 +142,10 @@ package struct MCPDomainCanonicalWorkspaceService: Sendable {
         let limited = Array(candidates.filter {
             CodeMapSyntaxEngine.supportsCodeMap(fileExtension: $0.pathExtension)
         }.prefix(256))
-        let files = try await Self.runBlocking {
-            try limited.map(Self.codeMapResult)
+        var files: [Value] = []
+        files.reserveCapacity(limited.count)
+        for url in limited {
+            files.append(try await Self.codeMapResult(url))
         }
         return try .object([
             "files": .array(files),
@@ -411,7 +413,7 @@ package struct MCPDomainCanonicalWorkspaceService: Sendable {
         try await MCPDomainMutationCommitContext.willCommit()
     }
 
-    private static func codeMapResult(_ url: URL) throws -> Value {
+    private static func codeMapResult(_ url: URL) async throws -> Value {
         let data = try Data(contentsOf: url)
         guard let content = String(data: data, encoding: .utf8) else {
             return .object(["path": .string(url.path), "diagnostic": .string("undecodable_source")])
@@ -427,7 +429,7 @@ package struct MCPDomainCanonicalWorkspaceService: Sendable {
                 CodeMapDecodedSource(text: content, detectedEncodingRawValue: String.Encoding.utf8.rawValue)
             )
         )
-        let outcome = try CodeMapSyntaxArtifactBuilder.build(source: snapshot, language: language)
+        let outcome = try await RustCodeMapArtifactBuilder().build(source: snapshot, language: language)
         switch outcome {
         case let .ready(artifact):
             return .object([
@@ -449,19 +451,6 @@ package struct MCPDomainCanonicalWorkspaceService: Sendable {
         case .decodeFailed:
             return .object(["path": .string(url.path), "diagnostic": .string("decode_failed")])
         }
-    }
-
-    private static func runBlocking<T: Sendable>(
-        _ operation: @escaping @Sendable () throws -> T
-    ) async throws -> T {
-        try Task.checkCancellation()
-        let value = try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(with: Result { try operation() })
-            }
-        }
-        try Task.checkCancellation()
-        return value
     }
 
     private static func files(under roots: [URL]) -> [URL] {

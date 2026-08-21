@@ -1,40 +1,44 @@
 import AgentryCoreBridge
 import Foundation
 
-protocol AgentryCoreRuntimeOwner: AnyObject, Sendable {
+package protocol AgentryCoreRuntimeOwner: AnyObject, Sendable {
     func coreSearchClient() async throws -> CoreSearchClient
     func coreComputeClient() async throws -> CoreComputeClient
     func shutdownCoreRuntime() async throws
 }
 
 extension AgentryCoreBridge: AgentryCoreRuntimeOwner {
-    func coreSearchClient() async throws -> CoreSearchClient {
+    package func coreSearchClient() async throws -> CoreSearchClient {
         try searchClient()
     }
 
-    func coreComputeClient() async throws -> CoreComputeClient {
+    package func coreComputeClient() async throws -> CoreComputeClient {
         try computeClient()
     }
 
-    func shutdownCoreRuntime() async throws {
+    package func shutdownCoreRuntime() async throws {
         _ = try close()
     }
 }
 
 /// Process-owned entry point for the Rust core runtime.
 ///
+/// Shared by the GUI app process and the standalone headless `agentry-mcp`
+/// process -- each process lazily starts and caches its own runtime
+/// instance; nothing here is app-lifecycle- or AppKit-specific.
+///
 /// The service caches the first startup task, including failure, so concurrent and
 /// later callers observe one runtime attempt. Search infrastructure failures never
 /// fall back to the legacy Swift/C search implementation.
-actor AgentryCoreService {
-    typealias StartOperation = @Sendable () async throws -> any AgentryCoreRuntimeOwner
-    typealias ShutdownOperation = @Sendable (any AgentryCoreRuntimeOwner) async throws -> Void
+package actor AgentryCoreService {
+    package typealias StartOperation = @Sendable () async throws -> any AgentryCoreRuntimeOwner
+    package typealias ShutdownOperation = @Sendable (any AgentryCoreRuntimeOwner) async throws -> Void
 
-    enum ServiceError: Error, Equatable, LocalizedError {
+    package enum ServiceError: Error, Equatable, LocalizedError {
         case searchInfrastructureUnavailable(String)
         case stopped
 
-        var errorDescription: String? {
+        package var errorDescription: String? {
             switch self {
             case let .searchInfrastructureUnavailable(description):
                 "Rust search infrastructure is unavailable: \(description)"
@@ -44,7 +48,7 @@ actor AgentryCoreService {
         }
     }
 
-    static let shared = AgentryCoreService()
+    package static let shared = AgentryCoreService()
 
     private let startOperation: StartOperation
     private let shutdownOperation: ShutdownOperation
@@ -52,7 +56,7 @@ actor AgentryCoreService {
     private var isStopped = false
     private var shutdownStarted = false
 
-    init(
+    package init(
         startOperation: @escaping StartOperation = { try await AgentryCoreBridge.start() },
         shutdownOperation: @escaping ShutdownOperation = { try await $0.shutdownCoreRuntime() }
     ) {
@@ -60,7 +64,7 @@ actor AgentryCoreService {
         self.shutdownOperation = shutdownOperation
     }
 
-    func searchClient() async throws -> CoreSearchClient {
+    package func searchClient() async throws -> CoreSearchClient {
         do {
             return try await runtime().coreSearchClient()
         } catch let error as ServiceError {
@@ -70,7 +74,7 @@ actor AgentryCoreService {
         }
     }
 
-    func computeClient() async throws -> CoreComputeClient {
+    package func computeClient() async throws -> CoreComputeClient {
         do {
             return try await runtime().coreComputeClient()
         } catch let error as ServiceError {
@@ -80,7 +84,7 @@ actor AgentryCoreService {
         }
     }
 
-    func runtime() async throws -> any AgentryCoreRuntimeOwner {
+    package func runtime() async throws -> any AgentryCoreRuntimeOwner {
         guard !isStopped else { throw ServiceError.stopped }
         let task: Task<any AgentryCoreRuntimeOwner, Error>
         if let startupTask {
@@ -104,7 +108,7 @@ actor AgentryCoreService {
     }
 
     /// Idempotently begins runtime shutdown. A failed cached startup is not retried.
-    func shutdown() async {
+    package func shutdown() async {
         guard !shutdownStarted else { return }
         shutdownStarted = true
         isStopped = true

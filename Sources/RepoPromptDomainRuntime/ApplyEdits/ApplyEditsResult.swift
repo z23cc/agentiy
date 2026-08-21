@@ -1,5 +1,18 @@
 import Foundation
 
+/// One-line verdict for every edit attempt (multi-edit only).
+package struct EditOutcome: Codable, Equatable {
+    package let index: Int // position in the `edits` array (0 for single-edit)
+    package let status: String // "success" | "failed"
+    package let error: String? // present when status == "failed"
+
+    package init(index: Int, status: String, error: String?) {
+        self.index = index
+        self.status = status
+        self.error = error
+    }
+}
+
 package enum ApplyEditsStatus: String, Equatable {
     case success
     case partial

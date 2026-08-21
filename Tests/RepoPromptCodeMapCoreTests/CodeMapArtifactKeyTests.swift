@@ -4,81 +4,40 @@ import Foundation
 import XCTest
 
 final class CodeMapArtifactKeyTests: XCTestCase {
-    func testConcurrentAllLanguageBuildsAndQueryInitializationAreDeterministic() async throws {
-        let samples: [LanguageType: String] = [
-            .swift: "struct Sample {}",
-            .js: "class Sample {}",
-            .c_sharp: "class Sample {}",
-            .python: "class Sample:\n    pass",
-            .c: "int sample(void) { return 0; }",
-            .rust: "fn sample() {}",
-            .cpp: "class Sample {};",
-            .go: "package sample\nfunc run() {}",
-            .java: "class Sample {}",
-            .ts: "class Sample {}",
-            .tsx: "const Sample = () => <div />;",
-            .php: "<?php class Sample {}",
-            .ruby: "class Sample\nend"
-        ]
-        let manager = CodeMapSyntaxEngine()
-        let repetitions = 8
-        var concurrentResults: [LanguageType: [String]] = [:]
+    // P2 step 13: `testConcurrentAllLanguageBuildsAndQueryInitializationAreDeterministic`
+    // was removed here. It exercised concurrency/determinism of the legacy
+    // Swift `CodeMapSyntaxArtifactBuilder`/`CodeMapSyntaxEngine.codeMap`
+    // execution path specifically (a task-group stress test across all 13
+    // languages using a manually constructed `CodeMapSyntaxEngine`), which
+    // no longer exists -- codemap compute now runs through the Rust core via
+    // `AgentryCoreBridge`, whose own concurrency/determinism guarantees are
+    // covered by `Tests/AgentryCoreBridgeTests`. `CodeMapSyntaxEngine` itself
+    // (grammar/query registry, `pipelineIdentity`, artifact-key facts) is
+    // still fully covered by the tests below.
 
-        try await withThrowingTaskGroup(of: (LanguageType, String).self) { group in
-            for language in LanguageType.allCases {
-                let content = try XCTUnwrap(samples[language])
-                for _ in 0 ..< repetitions {
-                    group.addTask {
-                        let outcome = try CodeMapSyntaxArtifactBuilder.build(
-                            source: CodeMapFixtureRunner.makeSourceSnapshot(content: content),
-                            language: language,
-                            syntaxEngine: manager
-                        )
-                        return try (language, Self.canonicalOutcome(outcome))
-                    }
-                }
-            }
-
-            for try await (language, outcome) in group {
-                concurrentResults[language, default: []].append(outcome)
-            }
-        }
-
-        XCTAssertEqual(Set(samples.keys), Set(LanguageType.allCases))
-        for language in LanguageType.allCases {
-            let outcomes = try XCTUnwrap(concurrentResults[language])
-            XCTAssertEqual(outcomes.count, repetitions, language.rawValue)
-            XCTAssertEqual(Set(outcomes).count, 1, language.rawValue)
-
-            let serialOutcome = try CodeMapSyntaxArtifactBuilder.build(
-                source: CodeMapFixtureRunner.makeSourceSnapshot(content: XCTUnwrap(samples[language])),
-                language: language,
-                syntaxEngine: manager
-            )
-            XCTAssertEqual(outcomes.first, try Self.canonicalOutcome(serialOutcome), language.rawValue)
-        }
-    }
-
-    func testLanguageRegistryCoversEveryLanguageAndUsesExactRegisteredQueryBytes() throws {
+    func testLanguageRegistryCoversEveryLanguageAndMirrorsRustPipelineFingerprints() throws {
         let expected = expectedRegistrations()
-        let packageManifest = try String(contentsOf: packageManifestURL(), encoding: .utf8)
         let manager = CodeMapSyntaxEngine()
         var stableIDs = Set<CodeMapPipelineLanguageID>()
 
         XCTAssertEqual(Set(expected.keys), Set(LanguageType.allCases))
+        XCTAssertEqual(Set(CodeMapPipelineFingerprints.table.keys), Set(LanguageType.allCases))
         for language in LanguageType.allCases {
             let registration = try XCTUnwrap(expected[language])
+            let fingerprint = try XCTUnwrap(CodeMapPipelineFingerprints.table[language])
             let descriptor = try manager.codeMapPipelineDescriptor(for: language)
             let identity = try manager.pipelineIdentity(for: language, decoderPolicy: .workspaceAutomaticV1)
 
             XCTAssertEqual(descriptor.stableLanguageID, registration.stableID, language.rawValue)
             XCTAssertTrue(stableIDs.insert(descriptor.stableLanguageID).inserted, language.rawValue)
             XCTAssertEqual(descriptor.grammarRevision, registration.revision, language.rawValue)
-            XCTAssertTrue(
-                packageManifest.contains(expectedPackagePin(for: language, registration: registration)),
+            XCTAssertEqual(fingerprint.grammarRevision, registration.revision, language.rawValue)
+            XCTAssertEqual(
+                descriptor.querySHA256.bytes,
+                try XCTUnwrap(Data(codeMapHexEncoded: fingerprint.querySHA256Hex)),
                 language.rawValue
             )
-            XCTAssertEqual(descriptor.queryBytes, Data(registration.query.utf8), language.rawValue)
+            XCTAssertEqual(descriptor.querySHA256.bytes.count, CodeMapSHA256Digest.byteCount, language.rawValue)
             XCTAssertGreaterThan(descriptor.treeSitterABIVersion, 0, language.rawValue)
             XCTAssertEqual(identity.languageID, descriptor.stableLanguageID, language.rawValue)
             XCTAssertEqual(identity.grammarRevision, descriptor.grammarRevision, language.rawValue)
@@ -93,11 +52,7 @@ final class CodeMapArtifactKeyTests: XCTestCase {
                 CodeMapSemanticVersion(major: 2, minor: 0, patch: 0),
                 language.rawValue
             )
-            XCTAssertEqual(
-                identity.codeMapQuerySHA256.bytes,
-                Data(SHA256.hash(data: Data(registration.query.utf8))),
-                language.rawValue
-            )
+            XCTAssertEqual(identity.codeMapQuerySHA256, descriptor.querySHA256, language.rawValue)
             XCTAssertEqual(identity.limits, referenceLimits(), language.rawValue)
             XCTAssertEqual(identity.flags, referenceFlags(for: registration.stableID).map { name, value in
                 CodeMapPipelineNamedFlag(name: name, enabled: value == 1)
@@ -108,7 +63,8 @@ final class CodeMapArtifactKeyTests: XCTestCase {
         let tsx = try manager.codeMapPipelineDescriptor(for: .tsx)
         XCTAssertNotEqual(ts.stableLanguageID, tsx.stableLanguageID)
         XCTAssertEqual(ts.grammarRevision, tsx.grammarRevision)
-        XCTAssertEqual(ts.queryBytes, tsx.queryBytes)
+        // typescript.scm and tsx.scm are intentionally byte-identical today.
+        XCTAssertEqual(ts.querySHA256, tsx.querySHA256)
     }
 
     func testCanonicalPipelineAndKeyMatchIndependentReferenceEncoder() throws {
@@ -368,94 +324,24 @@ final class CodeMapArtifactKeyTests: XCTestCase {
 
     private typealias ExpectedRegistration = (
         stableID: CodeMapPipelineLanguageID,
-        packageURL: String,
-        revision: String,
-        query: String
+        revision: String
     )
-
-    private func expectedPackagePin(
-        for language: LanguageType,
-        registration: ExpectedRegistration
-    ) -> String {
-        let version: String? = switch language {
-        case .c: "0.24.2"
-        case .cpp: "0.23.4"
-        case .c_sharp: "0.23.5"
-        case .go: "0.25.0"
-        case .java: "0.23.5"
-        case .js: "0.25.0"
-        case .python: "0.25.0"
-        case .rust: "0.24.2"
-        case .ts, .tsx: "0.23.2"
-        case .ruby: "0.23.1"
-        case .php: "0.24.2"
-        case .swift: "0.7.3-with-generated-files"
-        }
-        let requirement = version.map { "exact: \"\($0)\"" }
-            ?? "revision: \"\(registration.revision)\""
-        return ".package(url: \"\(registration.packageURL)\", \(requirement))"
-    }
-
-    private static func canonicalOutcome(_ outcome: CodeMapSyntaxArtifactOutcome) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return try XCTUnwrap(String(data: encoder.encode(outcome), encoding: .utf8))
-    }
 
     private func expectedRegistrations() -> [LanguageType: ExpectedRegistration] {
         [
-            .swift: (
-                .swift, "https://github.com/alex-pinkus/tree-sitter-swift",
-                "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5", swiftCodeMapQuery
-            ),
-            .js: (
-                .javascript, "https://github.com/tree-sitter/tree-sitter-javascript",
-                "44c892e0be055ac465d5eeddae6d3e194424e7de", javascriptCodeMapQuery
-            ),
-            .c_sharp: (
-                .cSharp, "https://github.com/tree-sitter/tree-sitter-c-sharp.git",
-                "cac6d5fb595f5811a076336682d5d595ac1c9e85", csharpCodeMapQuery
-            ),
-            .python: (
-                .python, "https://github.com/tree-sitter/tree-sitter-python",
-                "293fdc02038ee2bf0e2e206711b69c90ac0d413f", pythonCodeMapQuery
-            ),
-            .c: (
-                .c, "https://github.com/tree-sitter/tree-sitter-c",
-                "b780e47fc780ddc8da13afa35a3f4ed5c157823d", cCodeMapQuery
-            ),
-            .rust: (
-                .rust, "https://github.com/tree-sitter/tree-sitter-rust",
-                "77a3747266f4d621d0757825e6b11edcbf991ca5", rustCodeMapQuery
-            ),
-            .cpp: (
-                .cpp, "https://github.com/tree-sitter/tree-sitter-cpp",
-                "f41e1a044c8a84ea9fa8577fdd2eab92ec96de02", cppCodeMapQuery
-            ),
-            .go: (
-                .go, "https://github.com/tree-sitter/tree-sitter-go",
-                "1547678a9da59885853f5f5cc8a99cc203fa2e2c", goCodeMapQuery
-            ),
-            .java: (
-                .java, "https://github.com/tree-sitter/tree-sitter-java",
-                "94703d5a6bed02b98e438d7cad1136c01a60ba2c", javaCodeMapQuery
-            ),
-            .ts: (
-                .typescript, "https://github.com/tree-sitter/tree-sitter-typescript",
-                "f975a621f4e7f532fe322e13c4f79495e0a7b2e7", typeScriptCodeMapQuery
-            ),
-            .tsx: (
-                .tsx, "https://github.com/tree-sitter/tree-sitter-typescript",
-                "f975a621f4e7f532fe322e13c4f79495e0a7b2e7", typeScriptCodeMapQuery
-            ),
-            .php: (
-                .php, "https://github.com/tree-sitter/tree-sitter-php.git",
-                "5b5627faaa290d89eb3d01b9bf47c3bb9e797dea", phpCodeMapQuery
-            ),
-            .ruby: (
-                .ruby, "https://github.com/tree-sitter/tree-sitter-ruby",
-                "71bd32fb7607035768799732addba884a37a6210", rubyCodeMapQuery
-            )
+            .swift: (.swift, "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"),
+            .js: (.javascript, "44c892e0be055ac465d5eeddae6d3e194424e7de"),
+            .c_sharp: (.cSharp, "cac6d5fb595f5811a076336682d5d595ac1c9e85"),
+            .python: (.python, "293fdc02038ee2bf0e2e206711b69c90ac0d413f"),
+            .c: (.c, "b780e47fc780ddc8da13afa35a3f4ed5c157823d"),
+            .rust: (.rust, "77a3747266f4d621d0757825e6b11edcbf991ca5"),
+            .cpp: (.cpp, "f41e1a044c8a84ea9fa8577fdd2eab92ec96de02"),
+            .go: (.go, "1547678a9da59885853f5f5cc8a99cc203fa2e2c"),
+            .java: (.java, "94703d5a6bed02b98e438d7cad1136c01a60ba2c"),
+            .ts: (.typescript, "f975a621f4e7f532fe322e13c4f79495e0a7b2e7"),
+            .tsx: (.tsx, "f975a621f4e7f532fe322e13c4f79495e0a7b2e7"),
+            .php: (.php, "5b5627faaa290d89eb3d01b9bf47c3bb9e797dea"),
+            .ruby: (.ruby, "71bd32fb7607035768799732addba884a37a6210")
         ]
     }
 
@@ -646,11 +532,4 @@ final class CodeMapArtifactKeyTests: XCTestCase {
         try CodeMapArtifactKey(source: source, pipelineIdentity: pipelineIdentity)
     }
 
-    private func packageManifestURL() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Package.swift")
-    }
 }

@@ -1393,7 +1393,7 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             await holdingService.setContentReadChunkHandlerForTesting(nil)
         }
 
-        func testStoreBackedSearchUsesRevisionLineIndexIdentityAndWarmContentSnapshot() async throws {
+        func testStoreBackedSearchUsesRustLineDecodingAndWarmContentSnapshot() async throws {
             let root = try makeTemporaryRoot(name: "StoreBackedRevisionIdentity")
             try write("let revisionIdentityToken = true\n", to: root.appendingPathComponent("A.swift"))
             let store = WorkspaceFileContextStore()
@@ -1408,16 +1408,17 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
                 store: store
             )
             let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
-            let lineIndexRows = capture.stages.filter {
+            let legacyLineIndexRows = capture.stages.filter {
                 $0.stageName == String(describing: EditFlowPerf.Stage.Search.lineIndexLookup)
             }
             let cache = await store.searchDecodedContentCacheSnapshotForTesting()
 
             XCTAssertEqual(cold.matches?.count, 1)
             XCTAssertEqual(warm.matches, cold.matches)
-            XCTAssertFalse(lineIndexRows.isEmpty)
-            XCTAssertTrue(lineIndexRows.allSatisfy { $0.sanitizedDimensions.contains("scanKind=revision") })
-            XCTAssertTrue(lineIndexRows.allSatisfy { !$0.sanitizedDimensions.contains("hash-fallback") })
+            XCTAssertTrue(
+                legacyLineIndexRows.isEmpty,
+                "Rust owns line decoding; production must not build a duplicate Swift line index"
+            )
             XCTAssertEqual(
                 capture.stages
                     .filter { $0.stageName == String(describing: EditFlowPerf.Stage.FileSystem.contentReadWorkerPermitWait) }

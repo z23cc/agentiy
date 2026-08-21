@@ -43,7 +43,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             createPathResolutionPolicy: .canonicalAliasFirst,
             selectCreatedFiles: false
         )
-        let result = try await ApplyEditsService(engine: .default, host: host).run(
+        let result = try await ApplyEditsService(computer: RustApplyEditsComputer(), host: host).run(
             ApplyEditsRequest(
                 path: match.canonicalPath,
                 mode: .single(search: "nested", replace: "edited", replaceAll: false),
@@ -95,7 +95,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             createPathResolutionPolicy: .canonicalAliasFirst,
             selectCreatedFiles: false
         )
-        _ = try await ApplyEditsService(engine: .default, host: host).run(
+        _ = try await ApplyEditsService(computer: RustApplyEditsComputer(), host: host).run(
             ApplyEditsRequest(
                 path: match.canonicalPath,
                 mode: .single(search: "root", replace: "edited", replaceAll: false),
@@ -459,7 +459,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         }
         XCTAssertEqual(roundTripMatch.file.id, match.file.id)
         let host = WorkspaceFileEditHost(store: store, target: .existing(roundTripMatch.file))
-        _ = try await ApplyEditsService(engine: .default, host: host).run(
+        _ = try await ApplyEditsService(computer: RustApplyEditsComputer(), host: host).run(
             ApplyEditsRequest(
                 path: match.canonicalPath,
                 mode: .single(search: "worktree", replace: "edited", replaceAll: false),
@@ -546,7 +546,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             return XCTFail("Expected the target file")
         }
         let host = WorkspaceFileEditHost(store: store, target: .existing(match.file))
-        let preview = try await ApplyEditsService(engine: .default, host: host).preview(
+        let preview = try await ApplyEditsService(computer: RustApplyEditsComputer(), host: host).preview(
             ApplyEditsRequest(
                 path: match.canonicalPath,
                 mode: .single(search: "reviewed", replace: "approved", replaceAll: false),
@@ -599,7 +599,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             return XCTFail("Expected the streamed target file")
         }
         let host = WorkspaceFileEditHost(store: store, target: .existing(match.file))
-        let preview = try await ApplyEditsService(engine: .default, host: host).preview(
+        let preview = try await ApplyEditsService(computer: RustApplyEditsComputer(), host: host).preview(
             ApplyEditsRequest(
                 path: match.canonicalPath,
                 mode: .single(search: "reviewed", replace: "approved", replaceAll: false),

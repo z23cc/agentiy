@@ -352,7 +352,10 @@ struct CodeMapArtifactBuilderClient: @unchecked Sendable {
                 let buildStart = clock.nowNanoseconds()
                 let permitWait = Self.duration(from: permitStart, to: buildStart)
                 try Task.checkCancellation()
-                let outcome = try await rustBuilder.build(input: input)
+                let outcome = try await rustBuilder.build(
+                    source: input.source.coreSnapshot,
+                    language: input.language
+                )
                 let buildEnd = clock.nowNanoseconds()
                 try Task.checkCancellation()
                 return CodeMapArtifactBuilderExecution(

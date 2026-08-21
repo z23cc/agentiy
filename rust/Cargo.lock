@@ -44,6 +44,7 @@ dependencies = [
  "pcre2",
  "proptest",
  "serde_json",
+ "sha2",
  "tokio",
  "tree-sitter",
  "tree-sitter-c",

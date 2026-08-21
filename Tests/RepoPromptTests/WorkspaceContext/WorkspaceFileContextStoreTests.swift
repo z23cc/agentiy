@@ -6050,7 +6050,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 createPathResolutionPolicy: .canonicalAliasFirst,
                 selectCreatedFiles: false
             )
-            let service = ApplyEditsService(engine: .default, host: host)
+            let service = ApplyEditsService(computer: RustApplyEditsComputer(), host: host)
 
             let request = ApplyEditsRequest(
                 path: "Created.swift",
@@ -6226,7 +6226,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 createPathResolutionPolicy: .canonicalAliasFirst,
                 selectCreatedFiles: false
             )
-            let editService = ApplyEditsService(engine: .default, host: editHost)
+            let editService = ApplyEditsService(computer: RustApplyEditsComputer(), host: editHost)
             _ = try await editService.run(ApplyEditsRequest(
                 path: "secret.ignored",
                 mode: .single(search: "token", replace: "edited", replaceAll: false),
@@ -6793,7 +6793,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 createPathResolutionPolicy: .canonicalAliasFirst,
                 selectCreatedFiles: false
             )
-            let service = ApplyEditsService(engine: .default, host: host)
+            let service = ApplyEditsService(computer: RustApplyEditsComputer(), host: host)
             let request = ApplyEditsRequest(
                 path: "Deleted.swift",
                 mode: .single(search: "Deleted", replace: "Edited", replaceAll: false),
@@ -7436,7 +7436,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 createPathResolutionPolicy: .canonicalAliasFirst,
                 selectCreatedFiles: false
             )
-            let service = ApplyEditsService(engine: .default, host: host)
+            let service = ApplyEditsService(computer: RustApplyEditsComputer(), host: host)
             let request = ApplyEditsRequest(
                 path: "A.swift",
                 mode: .single(search: "freshApplyToken", replace: "editedApplyToken", replaceAll: false),

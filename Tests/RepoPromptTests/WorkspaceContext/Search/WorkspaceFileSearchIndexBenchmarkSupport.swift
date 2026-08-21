@@ -338,8 +338,11 @@
         enum WorkspaceCodeMapPhase2BenchmarkMetric: String, CaseIterable {
             case validatedRawRead
             case envelopeHashAndDecode
-            case explicitLanguageQueryParse
-            case pathFreeArtifactGeneration
+            /// P2 step 13: the legacy Swift codemap pipeline (`explicitLanguageQueryParse`
+            /// stage via `SyntaxManager.codeMap`, `pathFreeArtifactGeneration` stage via
+            /// `CodeMapGenerator.generateSyntaxArtifact`) was deleted once the Rust seam
+            /// (`RustCodeMapArtifactBuilder`) replaced it in production; only the single
+            /// opaque `modernEnvelopeToReadyArtifact` stage remains to measure.
             case modernEnvelopeToReadyArtifact
 
             var unit: String {

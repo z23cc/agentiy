@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,46 +8,78 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
 
-fn swift_query(file: &str) -> String {
-    let source = fs::read_to_string(
-        repo_root()
-            .join("Sources/RepoPromptCodeMapCore/Queries")
-            .join(file),
-    )
-    .unwrap();
-    let start = source.find("#\"\"\"").unwrap() + 4;
-    let end = source[start..].find("\"\"\"#").unwrap() + start;
-    source[start..end].to_owned()
+/// P2 step 13: the legacy Swift codemap extraction stack (and its
+/// `Queries/*.swift` authority files) was deleted. The Rust engine is now the
+/// sole pipeline authority: the vendored `queries/*.scm` bytes, the vendored
+/// grammar crates' ABI versions, and the frozen grammar revisions below are
+/// the truth. The Swift side keeps only a frozen fingerprint mirror
+/// (`CodeMapPipelineFingerprints.swift`) used for cache/pipeline identity;
+/// this test forces that mirror to stay byte-identical to the Rust truth so
+/// any `.scm`/grammar change rotates Swift-side cache identity.
+const MIRROR_RELATIVE_PATH: &str =
+    "Sources/RepoPromptCodeMapCore/CodeMapPipelineFingerprints.swift";
+const BEGIN_MARKER: &str = "    // GENERATED-BEGIN: rust codemap pipeline authority";
+const END_MARKER: &str = "    // GENERATED-END: rust codemap pipeline authority";
+
+const LANGUAGES: [(CodeMapLanguage, &str); 13] = [
+    (CodeMapLanguage::Swift, "swift"),
+    (CodeMapLanguage::JavaScript, "js"),
+    (CodeMapLanguage::CSharp, "c_sharp"),
+    (CodeMapLanguage::Python, "python"),
+    (CodeMapLanguage::C, "c"),
+    (CodeMapLanguage::Rust, "rust"),
+    (CodeMapLanguage::Cpp, "cpp"),
+    (CodeMapLanguage::Go, "go"),
+    (CodeMapLanguage::Java, "java"),
+    (CodeMapLanguage::TypeScript, "ts"),
+    (CodeMapLanguage::Tsx, "tsx"),
+    (CodeMapLanguage::Php, "php"),
+    (CodeMapLanguage::Ruby, "ruby"),
+];
+
+fn hex(bytes: impl AsRef<[u8]>) -> String {
+    bytes
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn expected_generated_block() -> String {
+    let mut out = String::new();
+    out.push_str(
+        "    package static let table: [LanguageType: CodeMapPipelineFingerprint] = [\n",
+    );
+    for (language, swift_key) in LANGUAGES {
+        let langdesc = descriptor(language);
+        let abi = langdesc.tree_sitter_language().abi_version();
+        let sha = hex(Sha256::digest(langdesc.query.as_bytes()));
+        out.push_str(&format!(
+            "        .{swift_key}: CodeMapPipelineFingerprint(\n            grammarRevision: \"{}\",\n            treeSitterABIVersion: {abi},\n            querySHA256Hex: \"{sha}\"\n        ),\n",
+            langdesc.grammar_revision
+        ));
+    }
+    out.push_str("    ]\n");
+    out
 }
 
 #[test]
-fn codemap_query_bytes_match_swift_authority() {
-    let entries = [
-        (CodeMapLanguage::Swift, "SwiftQueries.swift"),
-        (CodeMapLanguage::JavaScript, "JavaScriptQueries.swift"),
-        (CodeMapLanguage::CSharp, "cSharpQueries.swift"),
-        (CodeMapLanguage::Python, "PythonQueries.swift"),
-        (CodeMapLanguage::C, "cQueries.swift"),
-        (CodeMapLanguage::Rust, "RustQueries.swift"),
-        (CodeMapLanguage::Cpp, "cppQueries.swift"),
-        (CodeMapLanguage::Go, "GoQueries.swift"),
-        (CodeMapLanguage::Java, "JavaQueries.swift"),
-        (CodeMapLanguage::TypeScript, "typeScript.swift"),
-        (CodeMapLanguage::Tsx, "typeScript.swift"),
-        (CodeMapLanguage::Php, "phpQueries.swift"),
-        (CodeMapLanguage::Ruby, "RubyQueries.swift"),
-    ];
-    for (language, file) in entries {
-        // Compare query content with EOF-newline normalization: the Swift
-        // authority literals end with trailing blank lines that the repo
-        // whitespace gate forbids in checked-in .scm files. Content parity
-        // (everything before the final newlines) remains byte-exact.
-        assert_eq!(
-            descriptor(language).query.trim_end_matches('\n').as_bytes(),
-            swift_query(file).trim_end_matches('\n').as_bytes(),
-            "{language}"
-        );
-    }
+fn swift_pipeline_fingerprint_mirror_matches_rust_truth() {
+    let path = repo_root().join(MIRROR_RELATIVE_PATH);
+    let source = fs::read_to_string(&path).unwrap_or_default();
+    let expected = expected_generated_block();
+    let actual = source.find(BEGIN_MARKER).and_then(|start| {
+        let body_start = start + BEGIN_MARKER.len() + 1;
+        source[body_start..]
+            .find(END_MARKER)
+            .map(|end| source[body_start..body_start + end].to_owned())
+    });
+    assert_eq!(
+        actual.as_deref(),
+        Some(expected.as_str()),
+        "Swift pipeline fingerprint mirror is out of sync with the Rust authority.\n\
+         Replace the block between the GENERATED markers in {MIRROR_RELATIVE_PATH} with exactly:\n\n{expected}"
+    );
 }
 
 #[test]

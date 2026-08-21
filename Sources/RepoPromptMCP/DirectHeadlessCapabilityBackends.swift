@@ -100,7 +100,7 @@ actor DirectHeadlessFilesystemBackend: DomainFilesystemMutationBackend {
             verbose: parsed.verbose
         )
         let host = DirectHeadlessFileEditHost(target: url, roots: snapshot.roots)
-        let result = try await ApplyEditsService(engine: .default, host: host).run(
+        let result = try await ApplyEditsService(computer: RustApplyEditsComputer(), host: host).run(
             canonicalRequest,
             options: ApplyEditsExecutionOptions(includeToolCardUnifiedDiff: false)
         )
