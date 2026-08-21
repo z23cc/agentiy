@@ -32,6 +32,9 @@
         case watchdogNoProgress
         case watchdogRecoveryExhausted
         case prioritizeRestart
+        case workerRuntimeUnavailable
+        case runtimeUnavailable
+        case unloadDrainTimedOut
     }
 
     enum WorkspaceCodemapManifestFailureReason: String, CaseIterable, Hashable {

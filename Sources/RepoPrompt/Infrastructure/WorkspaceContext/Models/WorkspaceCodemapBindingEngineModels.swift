@@ -56,6 +56,7 @@ struct WorkspaceCodemapBindingEnginePolicy: Equatable {
     let graphIndexRetryJitterPercent: UInt64
     let graphIndexWorkerNoProgressTimeoutMilliseconds: UInt64
     let maximumGraphIndexWorkerRecoveryCount: UInt64
+    let graphIndexUnloadDrainTimeoutMilliseconds: UInt64
 
     init(
         maximumRootCount: Int = 64,
@@ -105,7 +106,8 @@ struct WorkspaceCodemapBindingEnginePolicy: Equatable {
         graphIndexRetryMaximumMilliseconds: UInt64 = 30000,
         graphIndexRetryJitterPercent: UInt64 = 20,
         graphIndexWorkerNoProgressTimeoutMilliseconds: UInt64 = 120_000,
-        maximumGraphIndexWorkerRecoveryCount: UInt64 = 3
+        maximumGraphIndexWorkerRecoveryCount: UInt64 = 3,
+        graphIndexUnloadDrainTimeoutMilliseconds: UInt64 = 60000
     ) {
         precondition(maximumRootCount > 0)
         precondition(maximumActiveRequestCountPerRoot > 0)
@@ -163,6 +165,7 @@ struct WorkspaceCodemapBindingEnginePolicy: Equatable {
         precondition(graphIndexRetryJitterPercent <= 100)
         precondition(graphIndexWorkerNoProgressTimeoutMilliseconds > 0)
         precondition(maximumGraphIndexWorkerRecoveryCount > 0)
+        precondition(graphIndexUnloadDrainTimeoutMilliseconds > 0)
         self.maximumRootCount = maximumRootCount
         self.maximumActiveRequestCountPerRoot = maximumActiveRequestCountPerRoot
         self.maximumActiveRequestCount = maximumActiveRequestCount
@@ -215,6 +218,7 @@ struct WorkspaceCodemapBindingEnginePolicy: Equatable {
         self.graphIndexRetryJitterPercent = graphIndexRetryJitterPercent
         self.graphIndexWorkerNoProgressTimeoutMilliseconds = graphIndexWorkerNoProgressTimeoutMilliseconds
         self.maximumGraphIndexWorkerRecoveryCount = maximumGraphIndexWorkerRecoveryCount
+        self.graphIndexUnloadDrainTimeoutMilliseconds = graphIndexUnloadDrainTimeoutMilliseconds
     }
 }
 
@@ -495,6 +499,8 @@ enum WorkspaceCodemapBindingEngineHookKind: String, Hashable {
     case graphIndexRootOvertake
     case graphIndexExplicitOvertake
     case graphIndexBudget
+    case graphIndexRuntimeUnavailable
+    case graphIndexUnloadDrainTimedOut
     #if DEBUG
         case graphIndexPhaseEntered
         case graphIndexPageAccepted
@@ -706,6 +712,8 @@ struct WorkspaceCodemapBindingEngineCounters: Equatable {
     var graphIndexExplicitOvertakes: UInt64 = 0
     var graphIndexBudgetRejections: UInt64 = 0
     var graphIndexCancelledBatches: UInt64 = 0
+    var graphIndexRuntimeUnavailableRejections: UInt64 = 0
+    var graphIndexUnloadDrainTimeouts: UInt64 = 0
 
     init(initialValue: UInt64 = 0) {
         capabilityResolutions = initialValue
@@ -789,6 +797,8 @@ struct WorkspaceCodemapBindingEngineCounters: Equatable {
         graphIndexExplicitOvertakes = initialValue
         graphIndexBudgetRejections = initialValue
         graphIndexCancelledBatches = initialValue
+        graphIndexRuntimeUnavailableRejections = initialValue
+        graphIndexUnloadDrainTimeouts = initialValue
     }
 }
 
@@ -805,6 +815,7 @@ enum WorkspaceCodemapGraphIndexWorkerCompletionReason: String, Hashable {
     case watchdogNoProgress
     case watchdogRecoveryExhausted
     case prioritizeRestart
+    case runtimeUnavailable
 }
 
 enum WorkspaceCodemapGraphIndexWorkerRecoveryState: Hashable {

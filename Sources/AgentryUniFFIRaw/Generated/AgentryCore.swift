@@ -641,6 +641,8 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func initialize() throws  -> CoreHandshake
 
+    func inventoryComputeV1(request: CoreInventoryComputeRequestV1) throws  -> CoreInventoryComputeResultV1
+
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
 
     func rearmWake(identity: RuntimeIdentity) throws  -> Bool
@@ -823,6 +825,16 @@ open func initialize()throws  -> CoreHandshake  {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_initialize(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryComputeV1(request: CoreInventoryComputeRequestV1)throws  -> CoreInventoryComputeResultV1  {
+    return try  FfiConverterTypeCoreInventoryComputeResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_compute_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreInventoryComputeRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -2451,6 +2463,354 @@ public func FfiConverterTypeCoreHandshake_lift(_ buf: RustBuffer) throws -> Core
 #endif
 public func FfiConverterTypeCoreHandshake_lower(_ value: CoreHandshake) -> RustBuffer {
     return FfiConverterTypeCoreHandshake.lower(value)
+}
+
+
+/**
+ * Compact-v1 request driving all four `WorkspaceInventoryCatalogBuilders` ports
+ * (`agentry_runtime::inventory`), tagged by `operation`. See
+ * `rust/crates/runtime/src/inventory/compact.rs` for the pool-plus-ranges wire shape and which
+ * fields each operation reads.
+ */
+public struct CoreInventoryComputeRequestV1 {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let contractVersion: UInt16
+    public let operation: UInt16
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let stringIndexWords: [UInt64]
+    public let uuidWords: [UInt64]
+    public let rootWords: [UInt64]
+    public let fileWords: [UInt64]
+    public let folderWords: [UInt64]
+    public let entryWords: [UInt64]
+    public let shardWords: [UInt64]
+    public let roots: CoreInventoryTableRangeV1
+    public let filesById: CoreInventoryTableRangeV1
+    public let foldersById: CoreInventoryTableRangeV1
+    public let managedOnlyFileIds: CoreInventoryTableRangeV1
+    public let managedOnlyFolderIds: CoreInventoryTableRangeV1
+    public let previousFiles: CoreInventoryTableRangeV1
+    public let previousFolders: CoreInventoryTableRangeV1
+    public let eventRootIdHi: UInt64
+    public let eventRootIdLo: UInt64
+    public let eventUpsertedFiles: CoreInventoryTableRangeV1
+    public let eventUpsertedFolders: CoreInventoryTableRangeV1
+    public let eventRemovedFileIds: CoreInventoryTableRangeV1
+    public let eventRemovedFolderIds: CoreInventoryTableRangeV1
+    public let eventRemovedFilePaths: CoreInventoryTableRangeV1
+    public let eventRemovedFolderPaths: CoreInventoryTableRangeV1
+    public let eventModifiedFileIds: CoreInventoryTableRangeV1
+    public let eventModifiedFolderIds: CoreInventoryTableRangeV1
+    public let maxLogicalMutationCount: UInt64
+    public let shards: CoreInventoryTableRangeV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, contractVersion: UInt16, operation: UInt16, utf8Blob: Data, stringRangeWords: [UInt64], stringIndexWords: [UInt64], uuidWords: [UInt64], rootWords: [UInt64], fileWords: [UInt64], folderWords: [UInt64], entryWords: [UInt64], shardWords: [UInt64], roots: CoreInventoryTableRangeV1, filesById: CoreInventoryTableRangeV1, foldersById: CoreInventoryTableRangeV1, managedOnlyFileIds: CoreInventoryTableRangeV1, managedOnlyFolderIds: CoreInventoryTableRangeV1, previousFiles: CoreInventoryTableRangeV1, previousFolders: CoreInventoryTableRangeV1, eventRootIdHi: UInt64, eventRootIdLo: UInt64, eventUpsertedFiles: CoreInventoryTableRangeV1, eventUpsertedFolders: CoreInventoryTableRangeV1, eventRemovedFileIds: CoreInventoryTableRangeV1, eventRemovedFolderIds: CoreInventoryTableRangeV1, eventRemovedFilePaths: CoreInventoryTableRangeV1, eventRemovedFolderPaths: CoreInventoryTableRangeV1, eventModifiedFileIds: CoreInventoryTableRangeV1, eventModifiedFolderIds: CoreInventoryTableRangeV1, maxLogicalMutationCount: UInt64, shards: CoreInventoryTableRangeV1) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.contractVersion = contractVersion
+        self.operation = operation
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.stringIndexWords = stringIndexWords
+        self.uuidWords = uuidWords
+        self.rootWords = rootWords
+        self.fileWords = fileWords
+        self.folderWords = folderWords
+        self.entryWords = entryWords
+        self.shardWords = shardWords
+        self.roots = roots
+        self.filesById = filesById
+        self.foldersById = foldersById
+        self.managedOnlyFileIds = managedOnlyFileIds
+        self.managedOnlyFolderIds = managedOnlyFolderIds
+        self.previousFiles = previousFiles
+        self.previousFolders = previousFolders
+        self.eventRootIdHi = eventRootIdHi
+        self.eventRootIdLo = eventRootIdLo
+        self.eventUpsertedFiles = eventUpsertedFiles
+        self.eventUpsertedFolders = eventUpsertedFolders
+        self.eventRemovedFileIds = eventRemovedFileIds
+        self.eventRemovedFolderIds = eventRemovedFolderIds
+        self.eventRemovedFilePaths = eventRemovedFilePaths
+        self.eventRemovedFolderPaths = eventRemovedFolderPaths
+        self.eventModifiedFileIds = eventModifiedFileIds
+        self.eventModifiedFolderIds = eventModifiedFolderIds
+        self.maxLogicalMutationCount = maxLogicalMutationCount
+        self.shards = shards
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreInventoryComputeRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreInventoryComputeRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreInventoryComputeRequestV1 {
+        return
+            try CoreInventoryComputeRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                operation: FfiConverterUInt16.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                stringIndexWords: FfiConverterSequenceUInt64.read(from: &buf),
+                uuidWords: FfiConverterSequenceUInt64.read(from: &buf),
+                rootWords: FfiConverterSequenceUInt64.read(from: &buf),
+                fileWords: FfiConverterSequenceUInt64.read(from: &buf),
+                folderWords: FfiConverterSequenceUInt64.read(from: &buf),
+                entryWords: FfiConverterSequenceUInt64.read(from: &buf),
+                shardWords: FfiConverterSequenceUInt64.read(from: &buf),
+                roots: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                filesById: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                foldersById: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                managedOnlyFileIds: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                managedOnlyFolderIds: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                previousFiles: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                previousFolders: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventRootIdHi: FfiConverterUInt64.read(from: &buf),
+                eventRootIdLo: FfiConverterUInt64.read(from: &buf),
+                eventUpsertedFiles: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventUpsertedFolders: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventRemovedFileIds: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventRemovedFolderIds: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventRemovedFilePaths: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventRemovedFolderPaths: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventModifiedFileIds: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                eventModifiedFolderIds: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                maxLogicalMutationCount: FfiConverterUInt64.read(from: &buf),
+                shards: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreInventoryComputeRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterUInt16.write(value.operation, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringIndexWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.uuidWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.rootWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.fileWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.folderWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.entryWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.shardWords, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.roots, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.filesById, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.foldersById, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.managedOnlyFileIds, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.managedOnlyFolderIds, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.previousFiles, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.previousFolders, into: &buf)
+        FfiConverterUInt64.write(value.eventRootIdHi, into: &buf)
+        FfiConverterUInt64.write(value.eventRootIdLo, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventUpsertedFiles, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventUpsertedFolders, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventRemovedFileIds, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventRemovedFolderIds, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventRemovedFilePaths, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventRemovedFolderPaths, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventModifiedFileIds, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.eventModifiedFolderIds, into: &buf)
+        FfiConverterUInt64.write(value.maxLogicalMutationCount, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.shards, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryComputeRequestV1_lift(_ buf: RustBuffer) throws -> CoreInventoryComputeRequestV1 {
+    return try FfiConverterTypeCoreInventoryComputeRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryComputeRequestV1_lower(_ value: CoreInventoryComputeRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreInventoryComputeRequestV1.lower(value)
+}
+
+
+public struct CoreInventoryComputeResultV1: Equatable, Hashable {
+    public let operation: UInt16
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let uuidWords: [UInt64]
+    public let fileWords: [UInt64]
+    public let folderWords: [UInt64]
+    public let entryWords: [UInt64]
+    public let componentsFiles: CoreInventoryTableRangeV1
+    public let componentsFolders: CoreInventoryTableRangeV1
+    public let componentsEntries: CoreInventoryTableRangeV1
+    public let shardPatchOutcome: UInt16
+    public let shardPatchFiles: CoreInventoryTableRangeV1
+    public let shardPatchFolders: CoreInventoryTableRangeV1
+    public let shardPatchLogicalMutationCount: UInt64
+    public let shardPatchChangedFileIds: CoreInventoryTableRangeV1
+    public let mergedFiles: CoreInventoryTableRangeV1
+    public let mergedEntries: CoreInventoryTableRangeV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(operation: UInt16, utf8Blob: Data, stringRangeWords: [UInt64], uuidWords: [UInt64], fileWords: [UInt64], folderWords: [UInt64], entryWords: [UInt64], componentsFiles: CoreInventoryTableRangeV1, componentsFolders: CoreInventoryTableRangeV1, componentsEntries: CoreInventoryTableRangeV1, shardPatchOutcome: UInt16, shardPatchFiles: CoreInventoryTableRangeV1, shardPatchFolders: CoreInventoryTableRangeV1, shardPatchLogicalMutationCount: UInt64, shardPatchChangedFileIds: CoreInventoryTableRangeV1, mergedFiles: CoreInventoryTableRangeV1, mergedEntries: CoreInventoryTableRangeV1) {
+        self.operation = operation
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.uuidWords = uuidWords
+        self.fileWords = fileWords
+        self.folderWords = folderWords
+        self.entryWords = entryWords
+        self.componentsFiles = componentsFiles
+        self.componentsFolders = componentsFolders
+        self.componentsEntries = componentsEntries
+        self.shardPatchOutcome = shardPatchOutcome
+        self.shardPatchFiles = shardPatchFiles
+        self.shardPatchFolders = shardPatchFolders
+        self.shardPatchLogicalMutationCount = shardPatchLogicalMutationCount
+        self.shardPatchChangedFileIds = shardPatchChangedFileIds
+        self.mergedFiles = mergedFiles
+        self.mergedEntries = mergedEntries
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreInventoryComputeResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreInventoryComputeResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreInventoryComputeResultV1 {
+        return
+            try CoreInventoryComputeResultV1(
+                operation: FfiConverterUInt16.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                uuidWords: FfiConverterSequenceUInt64.read(from: &buf),
+                fileWords: FfiConverterSequenceUInt64.read(from: &buf),
+                folderWords: FfiConverterSequenceUInt64.read(from: &buf),
+                entryWords: FfiConverterSequenceUInt64.read(from: &buf),
+                componentsFiles: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                componentsFolders: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                componentsEntries: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                shardPatchOutcome: FfiConverterUInt16.read(from: &buf),
+                shardPatchFiles: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                shardPatchFolders: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                shardPatchLogicalMutationCount: FfiConverterUInt64.read(from: &buf),
+                shardPatchChangedFileIds: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                mergedFiles: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf),
+                mergedEntries: FfiConverterTypeCoreInventoryTableRangeV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreInventoryComputeResultV1, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.operation, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.uuidWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.fileWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.folderWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.entryWords, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.componentsFiles, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.componentsFolders, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.componentsEntries, into: &buf)
+        FfiConverterUInt16.write(value.shardPatchOutcome, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.shardPatchFiles, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.shardPatchFolders, into: &buf)
+        FfiConverterUInt64.write(value.shardPatchLogicalMutationCount, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.shardPatchChangedFileIds, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.mergedFiles, into: &buf)
+        FfiConverterTypeCoreInventoryTableRangeV1.write(value.mergedEntries, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryComputeResultV1_lift(_ buf: RustBuffer) throws -> CoreInventoryComputeResultV1 {
+    return try FfiConverterTypeCoreInventoryComputeResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryComputeResultV1_lower(_ value: CoreInventoryComputeResultV1) -> RustBuffer {
+    return FfiConverterTypeCoreInventoryComputeResultV1.lower(value)
+}
+
+
+public struct CoreInventoryTableRangeV1: Equatable, Hashable {
+    public let start: UInt64
+    public let count: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(start: UInt64, count: UInt64) {
+        self.start = start
+        self.count = count
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreInventoryTableRangeV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreInventoryTableRangeV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreInventoryTableRangeV1 {
+        return
+            try CoreInventoryTableRangeV1(
+                start: FfiConverterUInt64.read(from: &buf),
+                count: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreInventoryTableRangeV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.start, into: &buf)
+        FfiConverterUInt64.write(value.count, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryTableRangeV1_lift(_ buf: RustBuffer) throws -> CoreInventoryTableRangeV1 {
+    return try FfiConverterTypeCoreInventoryTableRangeV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryTableRangeV1_lower(_ value: CoreInventoryTableRangeV1) -> RustBuffer {
+    return FfiConverterTypeCoreInventoryTableRangeV1.lower(value)
 }
 
 
@@ -4123,6 +4483,10 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case ApplyEditsCancelled
     case ApplyEditsInvariant
+    case InventoryInvalidRequest(message: String
+    )
+    case InventoryCancelled
+    case InventoryInvariant
 
 
 
@@ -4186,6 +4550,11 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             )
         case 31: return .ApplyEditsCancelled
         case 32: return .ApplyEditsInvariant
+        case 33: return .InventoryInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 34: return .InventoryCancelled
+        case 35: return .InventoryInvariant
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4325,6 +4694,19 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case .ApplyEditsInvariant:
             writeInt(&buf, Int32(32))
+
+
+        case let .InventoryInvalidRequest(message):
+            writeInt(&buf, Int32(33))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case .InventoryCancelled:
+            writeInt(&buf, Int32(34))
+
+
+        case .InventoryInvariant:
+            writeInt(&buf, Int32(35))
 
         }
     }
@@ -5742,6 +6124,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_initialize() != 13097) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_compute_v1() != 53870) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_open_subscription() != 16674) {

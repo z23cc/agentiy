@@ -6,6 +6,7 @@ pub mod apply_edits;
 pub mod codemap;
 mod config;
 mod identity;
+pub mod inventory;
 mod lifecycle;
 mod operation;
 mod registry;

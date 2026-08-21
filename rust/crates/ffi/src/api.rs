@@ -7,10 +7,10 @@ use crate::types::{
     AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope,
     CompactRegexBatchResult, CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1,
     CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake,
-    DrainBatch, FolderSuffixRequest, HostResponse, OperationState, OversizeEvent,
-    PathFilterRequest, PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest,
-    RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap,
-    SubscriptionId, SubscriptionScope,
+    CoreInventoryComputeRequestV1, CoreInventoryComputeResultV1, DrainBatch, FolderSuffixRequest,
+    HostResponse, OperationState, OversizeEvent, PathFilterRequest, PathFilterResult,
+    RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity,
+    ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -86,6 +86,7 @@ pub struct CoreRuntime {
     search_leaf: runtime::SearchLeaf,
     code_map_service: runtime::codemap::CodeMapService,
     apply_edits_service: runtime::apply_edits::ApplyEditsService,
+    inventory_service: runtime::inventory::InventoryComputeService,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -443,6 +444,29 @@ impl CoreRuntime {
         })
     }
 
+    pub fn inventory_compute_v1(
+        &self,
+        request: CoreInventoryComputeRequestV1,
+    ) -> Result<CoreInventoryComputeResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            let cancellation = request.cancellation.runtime_handle().clone();
+            Ok(self
+                .inventory_service
+                .compute_with_cancellation(&request.into_runtime_request(), Some(&cancellation))?
+                .into())
+        })
+    }
+
     pub fn filter_paths(&self, request: PathFilterRequest) -> Result<PathFilterResult, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -510,6 +534,7 @@ impl CoreRuntime {
             search_leaf,
             code_map_service: runtime::codemap::CodeMapService,
             apply_edits_service: runtime::apply_edits::ApplyEditsService,
+            inventory_service: runtime::inventory::InventoryComputeService,
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),

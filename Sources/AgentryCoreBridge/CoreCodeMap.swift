@@ -466,9 +466,11 @@ private enum CoreCodeMapCompactValidator {
             guard let start = Int(exactly: row[0]), let end = Int(exactly: row[1]),
                   start == expectedByte, start <= end, end <= blobEnd,
                   isUTF8Boundary(start, in: value.utf8Blob), isUTF8Boundary(end, in: value.utf8Blob),
-                  let string = String(data: value.utf8Blob[start ..< end], encoding: .utf8)
+                  String(data: value.utf8Blob[start ..< end], encoding: .utf8) != nil
             else { throw CoreComputeError.malformedResponse }
-            strings.append(string)
+            // Non-stripping decode: keep a legitimate leading U+FEFF aligned
+            // with the Rust engine's byte offsets.
+            strings.append(String(decoding: value.utf8Blob[start ..< end], as: UTF8.self))
             expectedByte = end
         }
         guard expectedByte == blobEnd else { throw CoreComputeError.malformedResponse }

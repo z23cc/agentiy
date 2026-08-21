@@ -833,6 +833,11 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .InternalPanic: .internalPanic
         case .PatternTooComplex: .patternTooComplex
         case .InvalidEscape: .invalidEscape
+        // Interim mapping for the in-progress P3-2 inventory seam: its Swift
+        // wiring owns the final typed mapping; until then surface verbatim.
+        case let .InventoryInvalidRequest(message): .unexpected("inventory invalid request: \(message)")
+        case .InventoryCancelled: .unexpected("inventory cancelled")
+        case .InventoryInvariant: .unexpected("inventory invariant failure")
         case .UnmatchedBrackets: .unmatchedBrackets
         case .UnmatchedParentheses: .unmatchedParentheses
         case .InvalidQuantifier: .invalidQuantifier
@@ -1056,8 +1061,11 @@ public actor AgentryCoreBridge {
     func mapComputeFailure(_ error: Error) -> any Error {
         if let error = error as? CoreComputeError {
             if error == .malformedResponse {
-                noteInvalidationTrigger("compute malformedResponse")
-                invalidate()
+                // Per-request contract violation (e.g. a wire bug for one payload
+                // shape): fail this request loudly but do NOT stickily invalidate
+                // the process-wide runtime — that converts one bad response into
+                // a cascade failure for every later caller in the process.
+                noteInvalidationTrigger("compute malformedResponse (request-scoped, runtime kept)")
             }
             return error
         }
@@ -1131,8 +1139,9 @@ public actor AgentryCoreBridge {
     func mapSearchFailure(_ error: Error) -> CoreSearchError {
         if let error = error as? CoreSearchError {
             if error == .malformedRange {
-                noteInvalidationTrigger("search malformedRange")
-                invalidate()
+                // Request-scoped decode violation: see the compute malformedResponse
+                // note — do not poison the shared runtime for one bad response.
+                noteInvalidationTrigger("search malformedRange (request-scoped, runtime kept)")
             }
             return error
         }
@@ -1177,7 +1186,7 @@ public actor AgentryCoreBridge {
         default: .transportFailure(String(describing: error))
         }
         switch mapped {
-        case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned, .malformedRange:
+        case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
             noteInvalidationTrigger("search transport error: \(String(describing: error))")
             invalidate()
         default:

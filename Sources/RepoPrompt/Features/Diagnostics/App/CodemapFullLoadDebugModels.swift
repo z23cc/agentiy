@@ -259,6 +259,7 @@ import Foundation
             case .persistingManifestCache: "persisting_manifest_cache"
             case .suspendedBusy: "suspended_busy"
             case .budgetLimited: "budget_limited"
+            case .runtimeUnavailable: "runtime_unavailable"
             case .complete: "complete"
             case .cancelled: "cancelled"
             case .superseded: "superseded"

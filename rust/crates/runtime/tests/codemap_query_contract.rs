@@ -47,9 +47,7 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
 
 fn expected_generated_block() -> String {
     let mut out = String::new();
-    out.push_str(
-        "    package static let table: [LanguageType: CodeMapPipelineFingerprint] = [\n",
-    );
+    out.push_str("    package static let table: [LanguageType: CodeMapPipelineFingerprint] = [\n");
     for (language, swift_key) in LANGUAGES {
         let langdesc = descriptor(language);
         let abi = langdesc.tree_sitter_language().abi_version();

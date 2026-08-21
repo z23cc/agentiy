@@ -70,6 +70,12 @@ pub enum CoreError {
     ApplyEditsCancelled,
     #[error("apply-edits result violated an internal invariant")]
     ApplyEditsInvariant,
+    #[error("{message}")]
+    InventoryInvalidRequest { message: String },
+    #[error("inventory computation was cancelled")]
+    InventoryCancelled,
+    #[error("inventory result violated an internal invariant")]
+    InventoryInvariant,
 }
 
 impl From<IdentifierError> for CoreError {
@@ -172,6 +178,22 @@ impl From<agentry_runtime::apply_edits::ApplyError> for CoreError {
             }
             agentry_runtime::apply_edits::ApplyError::Internal(_) => Self::ApplyEditsInvariant,
             agentry_runtime::apply_edits::ApplyError::Cancelled => Self::ApplyEditsCancelled,
+        }
+    }
+}
+
+impl From<agentry_runtime::inventory::InventoryComputeError> for CoreError {
+    fn from(value: agentry_runtime::inventory::InventoryComputeError) -> Self {
+        match value {
+            agentry_runtime::inventory::InventoryComputeError::InvalidRequest(message) => {
+                Self::InventoryInvalidRequest { message }
+            }
+            agentry_runtime::inventory::InventoryComputeError::Builder(_) => {
+                Self::InventoryInvariant
+            }
+            agentry_runtime::inventory::InventoryComputeError::Cancelled => {
+                Self::InventoryCancelled
+            }
         }
     }
 }

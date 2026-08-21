@@ -1,4 +1,5 @@
 #if DEBUG
+    import AgentryCoreBridge
     import Foundation
     @testable import RepoPromptApp
     import XCTest
@@ -1281,6 +1282,120 @@
             let accounting = await fixture.engine.accounting()
             XCTAssertEqual(accounting.counters.manifestWrites, 1)
             XCTAssertEqual(accounting.counters.manifestFailures, 0)
+        }
+
+        // MARK: - Full-suite hang regression (docs/investigations/full-suite-test-hang-2026-08-21.md)
+
+        /// Layer 1: a candidate resolution that hits a terminal runtime/bridge error (a stickily
+        /// invalidated core, in this case) must finish the graph-index job terminally instead of
+        /// folding into `.transient`/`.retry` -- which, before this fix, would retry with capped
+        /// exponential backoff forever, since the underlying error never clears. Before the fix
+        /// this test times out waiting for a terminal phase that never arrives; after the fix it
+        /// resolves quickly.
+        func testTerminalRuntimeErrorFinishesGraphIndexJobWithoutInfiniteRetry() async throws {
+            let repository = try makeRepositoryFixture(name: #function)
+            let root = try repository.makeRepository(
+                named: "repository",
+                files: ["Sources/Feature.swift": SwiftFixtureSource.emptyStruct("Feature")]
+            )
+            let runtime = try CodeMapArtifactRuntime(
+                rootURL: makeSecureDirectory(in: repository.sandbox, named: "artifacts"),
+                builder: CodeMapArtifactBuilderClient(build: { _, _, _ in
+                    throw CoreComputeError.runtimeInvalidated
+                })
+            )
+            let fixture = try await makeEngineFixture(
+                root: root,
+                runtime: runtime,
+                projectionCatalogFactory: pagedCatalogFactory(
+                    root: root,
+                    paths: ["Sources/Feature.swift"]
+                )
+            )
+            guard case .registered = await fixture.engine.registerRoot(fixture.registration) else {
+                return XCTFail("Expected graph root registration.")
+            }
+            let launch = await fixture.engine.scheduleGraphIndex(rootEpoch: fixture.rootEpoch)
+            XCTAssertEqual(launch, .handedOff)
+
+            try await AsyncTestWait.waitUntil(
+                "terminal runtime-unavailable graph worker completion",
+                timeout: 15
+            ) {
+                guard let job = await fixture.engine.debugGraphIndexJobSnapshot(
+                    rootEpoch: fixture.rootEpoch
+                ) else { return false }
+                return job.phase == .runtimeUnavailable && !job.workerPresent
+            }
+            let observedJob = await fixture.engine.debugGraphIndexJobSnapshot(
+                rootEpoch: fixture.rootEpoch
+            )
+            let job = try XCTUnwrap(observedJob)
+            XCTAssertFalse(job.workerPresent)
+            XCTAssertEqual(job.lastWorkerCompletionReason, .runtimeUnavailable)
+
+            let accounting = await fixture.engine.accounting()
+            XCTAssertGreaterThanOrEqual(accounting.counters.graphIndexRuntimeUnavailableRejections, 1)
+
+            // The job already reached a terminal phase, so `unloadRoot` should return promptly --
+            // it must not still be awaiting a job stuck in an infinite retry loop.
+            let unloadStarted = DispatchTime.now()
+            await fixture.engine.unloadRoot(rootEpoch: fixture.rootEpoch)
+            let unloadElapsedSeconds = Double(
+                DispatchTime.now().uptimeNanoseconds - unloadStarted.uptimeNanoseconds
+            ) / 1_000_000_000
+            XCTAssertLessThan(unloadElapsedSeconds, 5)
+        }
+
+        /// Layer 2 (defense in depth): `unloadRoot`'s wait for a draining graph-index task must be
+        /// bounded. This installs a deliberately never-finishing (but cancellation-responsive)
+        /// stand-in task directly into the engine's draining-task bookkeeping -- simulating an
+        /// admitted graph-index job that, for any as-yet-undiscovered reason, never reaches its
+        /// currentness boundary -- and asserts `unloadRoot` still returns within the configured
+        /// bound (rather than hanging forever) and that the timeout is counted.
+        func testUnloadRootBoundsWaitForNeverFinishingDrainingGraphIndexTask() async throws {
+            let repository = try makeRepositoryFixture(name: #function)
+            let root = try repository.makeRepository(
+                named: "repository",
+                files: ["README.md": "fixture"]
+            )
+            let runtime = try CodeMapArtifactRuntime(
+                rootURL: makeSecureDirectory(in: repository.sandbox, named: "artifacts")
+            )
+            let policy = WorkspaceCodemapBindingEnginePolicy(
+                graphIndexUnloadDrainTimeoutMilliseconds: 200
+            )
+            let fixture = try await makeEngineFixture(
+                root: root,
+                runtime: runtime,
+                policy: policy,
+                projectionCatalogFactory: emptyCatalogFactory()
+            )
+            guard case .registered = await fixture.engine.registerRoot(fixture.registration) else {
+                return XCTFail("Expected graph root registration.")
+            }
+
+            let neverFinishingTask = Task<Void, Never> {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            }
+            await fixture.engine.debugInstallDrainingGraphIndexTaskForTesting(
+                rootEpoch: fixture.rootEpoch,
+                task: neverFinishingTask
+            )
+
+            let unloadStarted = DispatchTime.now()
+            await fixture.engine.unloadRoot(rootEpoch: fixture.rootEpoch)
+            let elapsedSeconds = Double(
+                DispatchTime.now().uptimeNanoseconds - unloadStarted.uptimeNanoseconds
+            ) / 1_000_000_000
+            XCTAssertLessThan(elapsedSeconds, 5, "unloadRoot should return within the bounded drain timeout")
+
+            let accounting = await fixture.engine.accounting()
+            XCTAssertEqual(accounting.counters.graphIndexUnloadDrainTimeouts, 1)
+
+            _ = await neverFinishingTask.value
         }
     }
 

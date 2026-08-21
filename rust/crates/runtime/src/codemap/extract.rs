@@ -322,23 +322,38 @@ fn split_parameters(value: &str) -> Vec<&str> {
 /// return-type derivation for C/C++/C#/Java takes everything before the
 /// function name, which otherwise leaves these keywords glued to the type.
 const LEADING_TYPE_MODIFIERS: &[&str] = &[
-    "public", "private", "protected", "internal", "static", "sealed", "override", "abstract",
-    "virtual", "unsafe", "async", "final", "synchronized", "extern", "inline", "constexpr",
-    "friend", "explicit", "mutable", "volatile", "const",
+    "public",
+    "private",
+    "protected",
+    "internal",
+    "static",
+    "sealed",
+    "override",
+    "abstract",
+    "virtual",
+    "unsafe",
+    "async",
+    "final",
+    "synchronized",
+    "extern",
+    "inline",
+    "constexpr",
+    "friend",
+    "explicit",
+    "mutable",
+    "volatile",
+    "const",
 ];
 
 fn strip_leading_modifiers(value: &str) -> &str {
     let mut remaining = value;
     loop {
         let trimmed = remaining.trim_start();
-        let Some(matched) = LEADING_TYPE_MODIFIERS
-            .iter()
-            .find(|modifier| {
-                trimmed.strip_prefix(**modifier).is_some_and(|rest| {
-                    rest.is_empty() || rest.starts_with(char::is_whitespace)
-                })
-            })
-        else {
+        let Some(matched) = LEADING_TYPE_MODIFIERS.iter().find(|modifier| {
+            trimmed
+                .strip_prefix(**modifier)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        }) else {
             return trimmed;
         };
         remaining = &trimmed[matched.len()..];

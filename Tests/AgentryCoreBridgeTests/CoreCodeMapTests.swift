@@ -57,7 +57,7 @@ final class CoreCodeMapTests: XCTestCase {
         _ = try transport.beginShutdown(identity: handshake.runtimeIdentity)
     }
 
-    func testMalformedUTF8ScalarTableInvalidatesBridgeFailClosed() async throws {
+    func testMalformedUTF8ScalarTableFailsRequestScopedAndKeepsRuntime() async throws {
         let transport = FakeCoreTransport()
         transport.returnCodeMapResult(malformedScalarFixture())
         let bridge = AgentryCoreBridge(transport: transport)
@@ -71,11 +71,13 @@ final class CoreCodeMapTests: XCTestCase {
         } verify: {
             XCTAssertEqual($0 as? CoreComputeError, .malformedResponse)
         }
-        await XCTAssertThrowsCoreErrorAsync {
-            try await bridge.computeClient()
-        } verify: {
-            XCTAssertEqual($0 as? CoreBridgeError, .runtimeInvalidated)
-        }
+        // Policy (hang postmortem 2026-08-22): malformed responses are
+        // request-scoped; the runtime must stay serviceable. Sticky
+        // invalidation remains reserved for poison/panic/identity failures
+        // (see testPoisonedComputeInvalidatesBridge below).
+        _ = try await bridge.computeClient()
+        _ = try await bridge.runtimeIdentity()
+        _ = try await bridge.close()
     }
 
     func testPoisonedComputeInvalidatesBridge() async throws {

@@ -35,7 +35,7 @@ final class CoreApplyEditsTests: XCTestCase {
         _ = try await bridge.close()
     }
 
-    func testMalformedApplyReconstructionInvalidatesBridgeFailClosed() async throws {
+    func testMalformedApplyReconstructionFailsRequestScopedAndKeepsRuntime() async throws {
         let transport = FakeCoreTransport()
         transport.returnApplyEditsResult(applyFixture(updated: "b"))
         let bridge = AgentryCoreBridge(transport: transport)
@@ -49,11 +49,14 @@ final class CoreApplyEditsTests: XCTestCase {
         } verify: {
             XCTAssertEqual($0 as? CoreComputeError, .malformedResponse)
         }
-        await XCTAssertThrowsCoreErrorAsync {
-            try await bridge.computeClient()
-        } verify: {
-            XCTAssertEqual($0 as? CoreBridgeError, .runtimeInvalidated)
-        }
+        // Policy (hang postmortem 2026-08-22): a malformed response is a
+        // request-scoped contract violation — it must fail loudly for that
+        // request but must NOT stickily invalidate the process-wide runtime
+        // (one bad payload shape previously cascaded into failures/hangs for
+        // every later caller in the process). The runtime stays serviceable.
+        _ = try await bridge.computeClient()
+        _ = try await bridge.runtimeIdentity()
+        _ = try await bridge.close()
     }
 
     func testDetachedApplyDoesNotBlockActorAndCancellationDropsLateResult() async throws {

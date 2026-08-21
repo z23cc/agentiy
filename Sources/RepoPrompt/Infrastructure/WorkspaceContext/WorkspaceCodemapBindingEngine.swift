@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Foundation
 import RepoPromptCodeMapCore
 
@@ -452,6 +453,7 @@ actor WorkspaceCodemapBindingEngine {
     private enum GraphIndexCandidateResolution {
         case entry(WorkspaceCodemapGraphIndexEntry, manifestRecord: CodeMapRootManifestRecord?)
         case transient
+        case runtimeUnavailable
         case budget(WorkspaceCodemapGraphIndexBudget)
     }
 
@@ -468,6 +470,7 @@ actor WorkspaceCodemapBindingEngine {
         case restartGeneration
         case restartPage
         case budgetLimited
+        case runtimeUnavailable
         case cancelled
         case superseded
     }
@@ -1046,7 +1049,7 @@ actor WorkspaceCodemapBindingEngine {
             switch existing.phase {
             case .complete:
                 return .handedOff
-            case .budgetLimited:
+            case .budgetLimited, .runtimeUnavailable:
                 return .handedOff
             case .cancelled, .superseded:
                 _ = cancelGraphIndexJob(rootEpoch: rootEpoch, terminalPhase: existing.phase)
@@ -1185,7 +1188,7 @@ actor WorkspaceCodemapBindingEngine {
         case .cancelled, .superseded:
             _ = cancelGraphIndexJob(rootEpoch: rootEpoch, terminalPhase: job.phase)
             return scheduleGraphIndex(rootEpoch: rootEpoch) == .handedOff ? .scheduled : .unavailable
-        case .budgetLimited:
+        case .budgetLimited, .runtimeUnavailable:
             return .unavailable
         case .scheduled, .waitingForAdmission, .readingCatalogPage, .loadingEnvelopes,
              .classifyingBatch, .resolvingArtifacts, .stagingManifestCache,
@@ -1513,7 +1516,7 @@ actor WorkspaceCodemapBindingEngine {
         pruneAdmissionHistory()
         recordCancellationTelemetry(cancellationBatch.cancelledRequestCount)
         for task in graphIndexTasks {
-            await task.value
+            await awaitDrainingGraphIndexTask(task)
         }
         if let manifestWriterSession {
             await runtime.manifestStore.endManifestWriterSession(manifestWriterSession)
@@ -1588,7 +1591,7 @@ actor WorkspaceCodemapBindingEngine {
             _ = await task.value
         }
         for task in graphIndexTasks {
-            await task.value
+            await awaitDrainingGraphIndexTask(task)
         }
         for writerSession in manifestWriterSessions {
             await runtime.manifestStore.endManifestWriterSession(writerSession)
@@ -1978,6 +1981,19 @@ actor WorkspaceCodemapBindingEngine {
             return true
         }
 
+        /// Seeds a draining graph-index task directly, bypassing the normal
+        /// schedule/admit/cancel machinery, so tests can exercise `unloadRoot`'s bounded drain
+        /// wait (`awaitDrainingGraphIndexTask`) against an arbitrary stand-in task without needing
+        /// to drive a real admitted graph-index job into that exact state.
+        func debugInstallDrainingGraphIndexTaskForTesting(
+            rootEpoch: WorkspaceCodemapRootEpoch,
+            task: Task<Void, Never>
+        ) {
+            let jobID = UUID()
+            drainingGraphIndexTasks[jobID] = task
+            drainingGraphIndexRootEpochs[jobID] = rootEpoch
+        }
+
         func debugSetGraphIndexTerminalPhaseForTesting(
             rootEpoch: WorkspaceCodemapRootEpoch,
             phase: WorkspaceCodemapGraphIndexPhase
@@ -2330,6 +2346,9 @@ actor WorkspaceCodemapBindingEngine {
                 return
             case .budgetLimited:
                 completionReason = .budgetLimited
+                return
+            case .runtimeUnavailable:
+                completionReason = .runtimeUnavailable
                 return
             case .cancelled:
                 completionReason = Task.isCancelled ? .cancelled : .currentnessLost
@@ -2925,6 +2944,9 @@ actor WorkspaceCodemapBindingEngine {
                     )
                 case .transient:
                     return .retry
+                case .runtimeUnavailable:
+                    finishGraphIndexForRuntimeUnavailable(jobID: jobID, rootEpoch: rootEpoch)
+                    return .runtimeUnavailable
                 case let .budget(budget):
                     finishGraphIndexForBudget(jobID: jobID, rootEpoch: rootEpoch, budget: budget)
                     return .budgetLimited
@@ -3977,6 +3999,9 @@ actor WorkspaceCodemapBindingEngine {
                     manifestRecord: nil
                 )
             } catch {
+                if Self.isTerminalRuntimeError(error) {
+                    return .runtimeUnavailable
+                }
                 return .transient
             }
             guard !Task.isCancelled,
@@ -4056,6 +4081,9 @@ actor WorkspaceCodemapBindingEngine {
                     manifestRecord: nil
                 )
             } catch {
+                if Self.isTerminalRuntimeError(error) {
+                    return .runtimeUnavailable
+                }
                 return .transient
             }
             guard !Task.isCancelled,
@@ -4080,6 +4108,9 @@ actor WorkspaceCodemapBindingEngine {
                     target: .source(input)
                 ))
             } catch {
+                if Self.isTerminalRuntimeError(error) {
+                    return .runtimeUnavailable
+                }
                 return .transient
             }
             guard !Task.isCancelled,
@@ -4103,6 +4134,48 @@ actor WorkspaceCodemapBindingEngine {
         case .unavailable, .securityExcluded, .unsupported:
             return .transient
         }
+    }
+
+    /// Classifies whether `error` represents the Rust runtime/bridge having reached a terminal,
+    /// non-retryable state (sticky invalidation, incompatible bindings, or the artifact-build
+    /// coordinator's own flight wall-clock watchdog firing) rather than an ordinary transient
+    /// failure. A graph-index candidate resolution that hits one of these must not fold into
+    /// `.transient`/`.retry`: retrying forever against a runtime that will never recover spins the
+    /// graph-index job's retry loop indefinitely with no terminal case (see the full-suite test
+    /// hang investigation, `docs/investigations/full-suite-test-hang-2026-08-21.md`).
+    ///
+    /// Verified by reading `RustCodeMapArtifactBuilder`/`CodeMapArtifactBuildCoordinator`: today
+    /// these errors propagate unwrapped from `AgentryCoreService`/`CoreComputeClient` through the
+    /// coordinator's flight machinery to this call site, so a direct type match is sufficient.
+    private static func isTerminalRuntimeError(_ error: Error) -> Bool {
+        if let computeError = error as? CoreComputeError {
+            switch computeError {
+            case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
+                return true
+            case .invalidRequest, .malformedResponse, .transportFailure:
+                return false
+            }
+        }
+        if let bridgeError = error as? CoreBridgeError {
+            switch bridgeError {
+            case .runtimeInvalidated, .runtimeStopped, .alreadyClosed, .incompatibleBindings:
+                // `.runtimeStopped` is not in the task brief's literal list, but its own
+                // description ("The Rust runtime has stopped.") is exactly as terminal as
+                // `.runtimeInvalidated` -- treating it as transient would leave the same
+                // retry-forever gap open for a runtime that stopped instead of one that was
+                // invalidated.
+                return true
+            case .notInitialized, .invalidIdentifier, .invalidFingerprint, .staleRuntimeIdentity,
+                 .operationConflict, .deadlineExpired, .subscriptionNotFound,
+                 .queueLimitExceeded, .payloadTooLarge, .shutdownTimedOut, .invalidArgument,
+                 .transportFailure:
+                return false
+            }
+        }
+        if case CodeMapArtifactBuildCoordinatorError.flightWatchdogTimedOut = error {
+            return true
+        }
+        return false
     }
 
     private func graphIndexEntry(
@@ -5025,6 +5098,31 @@ actor WorkspaceCodemapBindingEngine {
         )
     }
 
+    /// Finishes a graph-index job terminally after a candidate resolution observed a terminal
+    /// runtime/bridge error (`GraphIndexCandidateResolution.runtimeUnavailable`). Mirrors
+    /// `finishGraphIndexForBudget`'s shape: release in-flight resources, record a distinguishable
+    /// terminal phase/counter, and do not reschedule or retry. Without this, a stickily-invalidated
+    /// bridge would otherwise fold into `.transient`/`.retry` and the job's `while !Task.isCancelled`
+    /// retry loop in `runGraphIndex` would back off and retry forever, since the underlying error
+    /// never clears.
+    private func finishGraphIndexForRuntimeUnavailable(jobID: UUID, rootEpoch: WorkspaceCodemapRootEpoch) {
+        guard var job = graphIndexJobs[rootEpoch], job.id == jobID else { return }
+        incrementCounter(\.graphIndexRuntimeUnavailableRejections)
+        job.phase = .runtimeUnavailable
+        job.phaseEnteredUptimeNanoseconds = uptimeNanoseconds()
+        job.progress = graphIndexProgress(job.progress, phase: .runtimeUnavailable)
+        job.inBatchProgress = nil
+        job.pageStartProcessedCandidateBaseline = nil
+        job.retry = nil
+        job.checkpoint = makeGraphIndexCheckpoint(job)
+        graphIndexJobs[rootEpoch] = job
+        emit(
+            .graphIndexRuntimeUnavailable,
+            rootEpoch: rootEpoch,
+            graphIndexPhase: .runtimeUnavailable
+        )
+    }
+
     private func supersedeGraphIndexJob(jobID: UUID, rootEpoch: WorkspaceCodemapRootEpoch) {
         guard var job = graphIndexJobs[rootEpoch], job.id == jobID else { return }
         job.phase = .superseded
@@ -5238,7 +5336,7 @@ actor WorkspaceCodemapBindingEngine {
         case .admissionUnavailable, .checkpointTransitionRejected, .generationResetRejected,
              .retryCancelled:
             reason
-        case .complete, .budgetLimited, .cancelled, .superseded, .currentnessLost,
+        case .complete, .budgetLimited, .runtimeUnavailable, .cancelled, .superseded, .currentnessLost,
              .watchdogNoProgress, .watchdogRecoveryExhausted, .prioritizeRestart:
             nil
         }
@@ -5263,7 +5361,7 @@ actor WorkspaceCodemapBindingEngine {
 
     private func graphIndexJobPhaseIsTerminal(_ phase: WorkspaceCodemapGraphIndexPhase) -> Bool {
         switch phase {
-        case .budgetLimited, .complete, .cancelled, .superseded:
+        case .budgetLimited, .runtimeUnavailable, .complete, .cancelled, .superseded:
             true
         case .scheduled, .waitingForAdmission, .readingCatalogPage, .loadingEnvelopes,
              .classifyingBatch, .resolvingArtifacts, .stagingManifestCache,
@@ -5289,6 +5387,7 @@ actor WorkspaceCodemapBindingEngine {
             case .watchdogNoProgress: .watchdogNoProgress
             case .watchdogRecoveryExhausted: .watchdogRecoveryExhausted
             case .prioritizeRestart: .prioritizeRestart
+            case .runtimeUnavailable: .workerRuntimeUnavailable
             }
         }
     #endif
@@ -5305,6 +5404,46 @@ actor WorkspaceCodemapBindingEngine {
     private func discardGraphIndexManifestStages(_ job: inout GraphIndexJob) {
         releaseGraphIndexManifestStageStorage(&job)
         job.manifestSealState = .discarded
+    }
+
+    /// Bounds the wait for a draining graph-index job task collected by `cancelGraphIndexJob`.
+    ///
+    /// `cancelGraphIndexJob` deliberately does not force-cancel an admitted, active graph-index
+    /// batch — the transaction is treated as non-preemptive so the worker can reach its own
+    /// currentness boundary cleanly. That assumption fails if the worker never reaches a terminal
+    /// phase (for example, a retry loop with no terminal case for a given failure — see
+    /// `docs/investigations/full-suite-test-hang-2026-08-21.md`), in which case an unbounded
+    /// `await task.value` here would wedge the caller (root unload / shutdown) forever. Race the
+    /// wait against a generous, policy-configurable timeout; force-cancel and keep draining if it
+    /// fires, so a single stuck job can no longer block unload/shutdown indefinitely. This is
+    /// defense in depth: Layer 1 (terminal-error classification in `resolveGraphIndexCandidate`)
+    /// is expected to prevent the known retry-forever shape from reaching this wait at all.
+    private func awaitDrainingGraphIndexTask(_ task: Task<Void, Never>) async {
+        let timeoutMilliseconds = policy.graphIndexUnloadDrainTimeoutMilliseconds
+        let scaledNanoseconds = timeoutMilliseconds.multipliedReportingOverflow(by: 1_000_000)
+        let timeoutNanoseconds = scaledNanoseconds.overflow ? UInt64.max : scaledNanoseconds.partialValue
+        let timedOut = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+            group.addTask {
+                await task.value
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return true
+            }
+            let timedOut = await group.next() ?? false
+            if timedOut {
+                task.cancel()
+            }
+            group.cancelAll()
+            return timedOut
+        }
+        guard timedOut else { return }
+        // `withTaskGroup` implicitly awaits every child task before returning (including the one
+        // awaiting `task.value`), so by this point the forced cancellation above has already been
+        // observed and `task` has finished running.
+        incrementCounter(\.graphIndexUnloadDrainTimeouts)
+        emit(.graphIndexUnloadDrainTimedOut)
     }
 
     @discardableResult
@@ -9749,6 +9888,8 @@ actor WorkspaceCodemapBindingEngine {
             case .graphIndexCoverageCancelled, .graphIndexBatchCancelled: .cancelled
             case .graphIndexCoverageSuperseded: .superseded
             case .graphIndexBudget: .budgetLimited
+            case .graphIndexRuntimeUnavailable: .runtimeUnavailable
+            case .graphIndexUnloadDrainTimedOut: .unloadDrainTimedOut
             case .graphIndexCoverageComplete: .complete
             case .graphIndexPhaseEntered: .phaseEntered
             case .graphIndexPageAccepted: .pageAccepted

@@ -329,8 +329,14 @@ private enum CoreApplyEditsCompactValidator {
             let ranges = try Ranges(summary)
             guard cursors.starts(ranges), ranges.inBounds(totals),
                   summary.inputByteCount == UInt64(input.originalUTF8.count),
-                  let original = String(data: input.originalUTF8, encoding: .utf8)
+                  String(data: input.originalUTF8, encoding: .utf8) != nil
             else { throw CoreComputeError.malformedResponse }
+            // Non-stripping decode: Foundation's String(data:encoding:) removes a
+            // leading U+FEFF BOM, desynchronizing Swift-side validation from the
+            // Rust engine's byte offsets (which operate on the exact request
+            // bytes). Validity is enforced by the strict guard above; the working
+            // copy must round-trip the bytes exactly.
+            let original = String(decoding: input.originalUTF8, as: UTF8.self)
 
             let strings = try validateStrings(value, ranges: ranges)
             func string(_ index: UInt64) throws -> String {
@@ -384,9 +390,12 @@ private enum CoreApplyEditsCompactValidator {
             guard let start = Int(exactly: row[0]), let end = Int(exactly: row[1]),
                   start == byteCursor, start <= end, end <= blobEnd,
                   applyUTF8Boundary(start, in: value.utf8Blob), applyUTF8Boundary(end, in: value.utf8Blob),
-                  let string = String(data: value.utf8Blob[start ..< end], encoding: .utf8)
+                  String(data: value.utf8Blob[start ..< end], encoding: .utf8) != nil
             else { throw CoreComputeError.malformedResponse }
-            output.append(string)
+            // Non-stripping decode (see the `original` note above): a string that
+            // legitimately begins with U+FEFF (e.g. BOM-preserving updatedText)
+            // must keep it so byte offsets stay aligned with the Rust engine.
+            output.append(String(decoding: value.utf8Blob[start ..< end], as: UTF8.self))
             byteCursor = end
         }
         guard byteCursor == blobEnd else { throw CoreComputeError.malformedResponse }

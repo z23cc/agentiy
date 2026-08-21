@@ -160,7 +160,7 @@ final class CoreSearchTests: XCTestCase {
         _ = try await bridge.close()
     }
 
-    func testPoisonAndMalformedRangesInvalidateBridgeFailClosed() async throws {
+    func testPoisonInvalidatesBridgeWhileMalformedRangeStaysRequestScoped() async throws {
         let poisonTransport = FakeCoreTransport()
         poisonTransport.failSearch(with: .runtimePoisoned)
         let poisoned = AgentryCoreBridge(transport: poisonTransport)
@@ -204,9 +204,12 @@ final class CoreSearchTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await rangeClient.searchRegex(.init(pattern: ".", subject: "🙂"))) {
             XCTAssertEqual($0 as? CoreSearchError, .malformedRange)
         }
-        await XCTAssertThrowsErrorAsync(try await ranged.searchClient()) {
-            XCTAssertEqual($0 as? CoreBridgeError, .runtimeInvalidated)
-        }
+        // Policy (hang postmortem 2026-08-22): malformed ranges are
+        // request-scoped — the request fails loudly, the runtime stays
+        // serviceable. Sticky invalidation is reserved for poison/panic/
+        // identity failures (poisoned bridge above).
+        _ = try await ranged.searchClient()
+        _ = try await ranged.close()
     }
 
     func testCompactBatchPreservesSubjectAlignmentAndContextArithmetic() async throws {
@@ -242,9 +245,9 @@ final class CoreSearchTests: XCTestCase {
         ))) {
             XCTAssertEqual($0 as? CoreSearchError, .malformedRange)
         }
-        await XCTAssertThrowsErrorAsync(try await bridge.searchClient()) {
-            XCTAssertEqual($0 as? CoreBridgeError, .runtimeInvalidated)
-        }
+        // Request-scoped (hang postmortem 2026-08-22): the runtime survives.
+        _ = try await bridge.searchClient()
+        _ = try await bridge.close()
     }
 
     func testCompactBatchRejectsOutOfBoundsSubjectSlices() async throws {
