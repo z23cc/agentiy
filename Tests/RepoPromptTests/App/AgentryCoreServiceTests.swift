@@ -142,6 +142,10 @@ private final class AgentryCoreServiceTestRuntime: AgentryCoreRuntimeOwner, @unc
         throw AgentryCoreServiceTestFailure.startup
     }
 
+    func coreComputeClient() async throws -> CoreComputeClient {
+        throw AgentryCoreServiceTestFailure.startup
+    }
+
     func shutdownCoreRuntime() async throws {
         lock.withLock { stopped = true }
     }

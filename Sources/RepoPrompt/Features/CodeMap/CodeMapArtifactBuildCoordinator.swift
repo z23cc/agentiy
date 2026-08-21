@@ -332,6 +332,7 @@ struct CodeMapArtifactBuilderClient: @unchecked Sendable {
     ) async throws -> CodeMapArtifactBuilderExecution
 
     init(
+        rustBuilder: RustCodeMapArtifactBuilder = RustCodeMapArtifactBuilder(),
         clock: CodeMapArtifactBuildCoordinatorClock = .continuous,
         withPermit: @escaping @Sendable (
             UUID,
@@ -351,18 +352,7 @@ struct CodeMapArtifactBuilderClient: @unchecked Sendable {
                 let buildStart = clock.nowNanoseconds()
                 let permitWait = Self.duration(from: permitStart, to: buildStart)
                 try Task.checkCancellation()
-                let performanceOptions = CodeMapPerfRuntime.makeGeneratorOptions()
-                let performanceCollector = CodeMapPerfRuntime.makeGeneratorStats()
-                let outcome = try CodeMapSyntaxArtifactBuilder.build(
-                    source: input.source.coreSnapshot,
-                    language: input.language,
-                    performanceOptions: performanceOptions,
-                    performanceCollector: performanceCollector
-                )
-                if let performanceCollector {
-                    CodeMapPerfRuntime.sharedPipelineStats?.mergeSyntaxCodeMapStats(performanceCollector)
-                    CodeMapPerfRuntime.sharedPipelineStats?.mergeGeneratorStats(performanceCollector)
-                }
+                let outcome = try await rustBuilder.build(input: input)
                 let buildEnd = clock.nowNanoseconds()
                 try Task.checkCancellation()
                 return CodeMapArtifactBuilderExecution(

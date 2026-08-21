@@ -167,7 +167,7 @@ final class MCPApplyEditsToolProvider: MCPAppToolProviding {
                 selectCreatedFiles: true,
                 mutationRootMappings: mutationRootMappings
             )
-            let service = ApplyEditsService(engine: .default, host: host)
+            let service = ApplyEditsService(computer: RustApplyEditsComputer(), host: host)
 
             let runPurpose: MCPRunPurpose? = if let connectionID = metadata.connectionID {
                 await ServerNetworkManager.shared.runPurpose(for: connectionID)

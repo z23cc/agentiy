@@ -1,0 +1,3 @@
+# libFuzzer runtime output (crash repro inputs, coverage) must not be committed.
+/artifacts/
+/coverage/

@@ -3,12 +3,17 @@ import Foundation
 
 protocol AgentryCoreRuntimeOwner: AnyObject, Sendable {
     func coreSearchClient() async throws -> CoreSearchClient
+    func coreComputeClient() async throws -> CoreComputeClient
     func shutdownCoreRuntime() async throws
 }
 
 extension AgentryCoreBridge: AgentryCoreRuntimeOwner {
     func coreSearchClient() async throws -> CoreSearchClient {
         try searchClient()
+    }
+
+    func coreComputeClient() async throws -> CoreComputeClient {
+        try computeClient()
     }
 
     func shutdownCoreRuntime() async throws {
@@ -58,6 +63,16 @@ actor AgentryCoreService {
     func searchClient() async throws -> CoreSearchClient {
         do {
             return try await runtime().coreSearchClient()
+        } catch let error as ServiceError {
+            throw error
+        } catch {
+            throw ServiceError.searchInfrastructureUnavailable(String(reflecting: error))
+        }
+    }
+
+    func computeClient() async throws -> CoreComputeClient {
+        do {
+            return try await runtime().coreComputeClient()
         } catch let error as ServiceError {
             throw error
         } catch {

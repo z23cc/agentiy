@@ -207,6 +207,7 @@ run_pr_ready_path_validations() {
   local mcp_product_paths_pattern='^(Sources/RepoPromptMCP/|Sources/RepoPromptShared/)'
   local xcode_full_validation_paths_pattern='^(Package\.swift|Package\.resolved|Makefile|Scripts/generate_xcode_workspace\.py|Scripts/xcode_developer_workflow\.sh|\.github/workflows/xcode-workspace\.yml)$'
   local xcode_generator_test_paths_pattern='^(Package\.swift|Package\.resolved|Makefile|Scripts/generate_xcode_workspace\.py|Scripts/xcode_developer_workflow\.sh|Scripts/test_xcode_workspace_generator\.py|\.github/workflows/xcode-workspace\.yml)$'
+  local rust_validation_paths_pattern='^(rust/|Sources/AgentryUniFFIRaw/Generated/|Sources/CAgentryRustCore/|Sources/AgentryCoreBridge/|Tests/AgentryCoreBridgeTests/)'
 
   local has_control_plane_changes=0
   local has_ci_app_test_runner_changes=0
@@ -217,6 +218,7 @@ run_pr_ready_path_validations() {
   local has_mcp_product_changes=0
   local has_xcode_generator_test_changes=0
   local has_xcode_full_validation_changes=0
+  local has_rust_validation_changes=0
   local changed_path_count=0
   local file
 
@@ -231,6 +233,7 @@ run_pr_ready_path_validations() {
     [[ "$file" =~ $mcp_product_paths_pattern ]] && has_mcp_product_changes=1
     [[ "$file" =~ $xcode_generator_test_paths_pattern ]] && has_xcode_generator_test_changes=1
     [[ "$file" =~ $xcode_full_validation_paths_pattern ]] && has_xcode_full_validation_changes=1
+    [[ "$file" =~ $rust_validation_paths_pattern ]] && has_rust_validation_changes=1
   done < "$files"
 
   local selected_lane_ids=()
@@ -243,6 +246,9 @@ run_pr_ready_path_validations() {
   (( has_mcp_product_changes )) && selected_lane_ids+=(mcp_build)
   (( has_xcode_generator_test_changes )) && selected_lane_ids+=(xcode_generator_tests)
   (( has_xcode_full_validation_changes )) && selected_lane_ids+=(xcode_workspace_validation)
+  if (( has_rust_validation_changes )); then
+    selected_lane_ids+=(rust_tests rust_codegen_check rust_deny rust_audit)
+  fi
   if (( ${#selected_lane_ids[@]} )); then
     timing_record_selection "$changed_path_count" "${selected_lane_ids[@]}"
   else
@@ -303,6 +309,27 @@ run_pr_ready_path_validations() {
     log "Validate generated Xcode workspace"
     make xcode-validate
     timing_phase_pass xcode_workspace_validation
+  fi
+  if (( has_rust_validation_changes )); then
+    timing_phase_start rust_tests
+    log "Run coordinated Rust tests"
+    make dev-cargo-test
+    timing_phase_pass rust_tests
+
+    timing_phase_start rust_codegen_check
+    log "Check deterministic Rust code generation"
+    make dev-cargo-codegen-check
+    timing_phase_pass rust_codegen_check
+
+    timing_phase_start rust_deny
+    log "Check Rust dependency and license policy"
+    make dev-cargo-deny
+    timing_phase_pass rust_deny
+
+    timing_phase_start rust_audit
+    log "Audit Rust dependencies"
+    make dev-cargo-audit
+    timing_phase_pass rust_audit
   fi
 }
 

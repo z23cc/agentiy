@@ -11,8 +11,8 @@ pub use compact::{
     validate_compact_batch,
 };
 pub use diff::{
-    ByteEdit, DiffChunk, DiffLine, DiffLineType, apply_byte_edits, apply_chunks, generate_diff,
-    render_unified, split_lines_preserving_endings,
+    ByteEdit, DiffChunk, DiffError, DiffLine, DiffLineType, apply_byte_edits, apply_chunks,
+    generate_diff, render_unified, split_lines_preserving_endings,
 };
 pub use engine::{
     ApplyError, ApplyMode, ApplyOperation, ApplyResult, ApplyStatus, ApplySubjectRequest,

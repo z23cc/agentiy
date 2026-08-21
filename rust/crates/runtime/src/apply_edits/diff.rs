@@ -31,11 +31,21 @@ pub struct ByteEdit {
     pub new_end: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+const MAX_DIFF_INPUT_UTF8_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DIFF_LINES_PER_SIDE: usize = 100_000;
+const MAX_DIFF_WORK_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DIFF_RENDER_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffError {
+    TooLarge,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Op {
-    Equal(String),
-    Add(String),
-    Delete(String),
+    Equal,
+    Add(usize),
+    Delete(usize),
 }
 
 /// Splits without normalizing CRLF/CR/LF and keeps every ending on its line.
@@ -78,18 +88,63 @@ fn line_offsets(lines: &[String]) -> Vec<usize> {
     result
 }
 
+fn validate_diff_input(text: &str) -> Result<(), DiffError> {
+    if text.len() > MAX_DIFF_INPUT_UTF8_BYTES {
+        return Err(DiffError::TooLarge);
+    }
+    let mut lines = 0usize;
+    let mut index = 0usize;
+    let bytes = text.as_bytes();
+    while index < bytes.len() {
+        lines += 1;
+        if lines > MAX_DIFF_LINES_PER_SIDE {
+            return Err(DiffError::TooLarge);
+        }
+        while index < bytes.len() && bytes[index] != b'\r' && bytes[index] != b'\n' {
+            index += 1;
+        }
+        if index < bytes.len() {
+            if bytes[index] == b'\r' && index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Myers O((N+M)D) shortest edit script over byte-preserving lines.
-fn myers_ops(old: &[String], new: &[String]) -> Vec<Op> {
+fn myers_ops(old: &[String], new: &[String]) -> Result<Vec<Op>, DiffError> {
     let n = old.len() as isize;
     let m = new.len() as isize;
-    let max = (n + m) as usize;
+    let max = old
+        .len()
+        .checked_add(new.len())
+        .ok_or(DiffError::TooLarge)?;
     let offset = max as isize + 1;
-    let mut v = vec![0isize; max * 2 + 3];
+    let v_len = max
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(3))
+        .ok_or(DiffError::TooLarge)?;
+    let row_bytes = v_len
+        .checked_mul(std::mem::size_of::<isize>())
+        .ok_or(DiffError::TooLarge)?;
+    if row_bytes > MAX_DIFF_WORK_BYTES {
+        return Err(DiffError::TooLarge);
+    }
+    let mut v = vec![0isize; v_len];
     v[(offset + 1) as usize] = 0;
     let mut trace = Vec::new();
     let mut final_d = 0;
 
     'outer: for d in 0..=max {
+        let working_bytes = row_bytes
+            .checked_mul(trace.len() + 2)
+            .ok_or(DiffError::TooLarge)?;
+        if working_bytes > MAX_DIFF_WORK_BYTES {
+            return Err(DiffError::TooLarge);
+        }
         trace.push(v.clone());
         for k in (-(d as isize)..=d as isize).step_by(2) {
             let slot = (offset + k) as usize;
@@ -127,7 +182,7 @@ fn myers_ops(old: &[String], new: &[String]) -> Vec<Op> {
         let previous_x = previous[(offset + previous_k) as usize];
         let previous_y = previous_x - previous_k;
         while x > previous_x && y > previous_y {
-            reversed.push(Op::Equal(old[(x - 1) as usize].clone()));
+            reversed.push(Op::Equal);
             x -= 1;
             y -= 1;
         }
@@ -135,34 +190,40 @@ fn myers_ops(old: &[String], new: &[String]) -> Vec<Op> {
             break;
         }
         if x == previous_x {
-            reversed.push(Op::Add(new[(y - 1) as usize].clone()));
+            reversed.push(Op::Add((y - 1) as usize));
             y -= 1;
         } else {
-            reversed.push(Op::Delete(old[(x - 1) as usize].clone()));
+            reversed.push(Op::Delete((x - 1) as usize));
             x -= 1;
         }
     }
     reversed.reverse();
-    reversed
+    Ok(reversed)
 }
 
-pub fn generate_diff(original: &str, updated: &str) -> (Vec<ByteEdit>, Vec<DiffChunk>) {
+pub fn generate_diff(
+    original: &str,
+    updated: &str,
+) -> Result<(Vec<ByteEdit>, Vec<DiffChunk>), DiffError> {
     if original == updated {
-        return (Vec::new(), Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
+    validate_diff_input(original)?;
+    validate_diff_input(updated)?;
     let old_lines = split_lines_preserving_endings(original);
     let new_lines = split_lines_preserving_endings(updated);
     let old_offsets = line_offsets(&old_lines);
     let new_offsets = line_offsets(&new_lines);
-    let ops = myers_ops(&old_lines, &new_lines);
+    let ops = myers_ops(&old_lines, &new_lines)?;
 
     let mut byte_edits = Vec::new();
     let mut chunks = Vec::new();
+    let mut diff_content_bytes = 0usize;
     let mut old_line = 0;
     let mut new_line = 0;
     let mut index = 0;
     while index < ops.len() {
-        if matches!(ops[index], Op::Equal(_)) {
+        if matches!(ops[index], Op::Equal) {
             old_line += 1;
             new_line += 1;
             index += 1;
@@ -171,23 +232,37 @@ pub fn generate_diff(original: &str, updated: &str) -> (Vec<ByteEdit>, Vec<DiffC
         let start_old = old_line;
         let start_new = new_line;
         let mut diff_lines = Vec::new();
-        while index < ops.len() && !matches!(ops[index], Op::Equal(_)) {
-            match &ops[index] {
-                Op::Delete(line) => {
+        while index < ops.len() && !matches!(ops[index], Op::Equal) {
+            match ops[index] {
+                Op::Delete(line_index) => {
+                    let line = &old_lines[line_index];
+                    diff_content_bytes = diff_content_bytes
+                        .checked_add(line.len())
+                        .ok_or(DiffError::TooLarge)?;
+                    if diff_content_bytes > MAX_DIFF_RENDER_BYTES {
+                        return Err(DiffError::TooLarge);
+                    }
                     diff_lines.push(DiffLine {
                         kind: DiffLineType::Removal,
                         content: line.clone(),
                     });
                     old_line += 1;
                 }
-                Op::Add(line) => {
+                Op::Add(line_index) => {
+                    let line = &new_lines[line_index];
+                    diff_content_bytes = diff_content_bytes
+                        .checked_add(line.len())
+                        .ok_or(DiffError::TooLarge)?;
+                    if diff_content_bytes > MAX_DIFF_RENDER_BYTES {
+                        return Err(DiffError::TooLarge);
+                    }
                     diff_lines.push(DiffLine {
                         kind: DiffLineType::Addition,
                         content: line.clone(),
                     });
                     new_line += 1;
                 }
-                Op::Equal(_) => unreachable!(),
+                Op::Equal => unreachable!(),
             }
             index += 1;
         }
@@ -207,7 +282,7 @@ pub fn generate_diff(original: &str, updated: &str) -> (Vec<ByteEdit>, Vec<DiffC
         });
         byte_edits.push(edit);
     }
-    (byte_edits, chunks)
+    Ok((byte_edits, chunks))
 }
 
 pub fn apply_byte_edits(original: &[u8], updated: &[u8], edits: &[ByteEdit]) -> Option<Vec<u8>> {
@@ -291,12 +366,37 @@ pub fn apply_chunks(original: &str, chunks: &[DiffChunk]) -> Option<String> {
     Some(lines.concat())
 }
 
-pub fn render_unified(path: &str, chunks: &[DiffChunk]) -> Option<String> {
+pub fn render_unified(path: &str, chunks: &[DiffChunk]) -> Result<Option<String>, DiffError> {
     if chunks.is_empty() {
-        return None;
+        return Ok(None);
     }
     let path = path.strip_prefix('/').unwrap_or(path);
-    let mut output = format!("--- a/{path}\n+++ b/{path}\n");
+    let mut estimated_size = 14usize
+        .checked_add(path.len().checked_mul(2).ok_or(DiffError::TooLarge)?)
+        .ok_or(DiffError::TooLarge)?;
+    for chunk in chunks {
+        estimated_size = estimated_size.checked_add(128).ok_or(DiffError::TooLarge)?;
+        for line in &chunk.lines {
+            estimated_size = estimated_size
+                .checked_add(
+                    line.content
+                        .trim_end_matches(['\r', '\n'])
+                        .len()
+                        .checked_add(2)
+                        .ok_or(DiffError::TooLarge)?,
+                )
+                .ok_or(DiffError::TooLarge)?;
+        }
+        if estimated_size > MAX_DIFF_RENDER_BYTES {
+            return Err(DiffError::TooLarge);
+        }
+    }
+    let mut output = String::with_capacity(estimated_size);
+    output.push_str("--- a/");
+    output.push_str(path);
+    output.push_str("\n+++ b/");
+    output.push_str(path);
+    output.push('\n');
     let mut delta = 0isize;
     for chunk in chunks {
         let old_count = chunk
@@ -325,5 +425,5 @@ pub fn render_unified(path: &str, chunks: &[DiffChunk]) -> Option<String> {
         }
         delta += new_count as isize - old_count as isize;
     }
-    Some(output)
+    Ok(Some(output))
 }

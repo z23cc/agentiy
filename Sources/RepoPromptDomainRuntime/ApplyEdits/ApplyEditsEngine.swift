@@ -1,6 +1,6 @@
 import Foundation
 
-package struct ApplyEditsEngine {
+package struct ApplyEditsEngine: ApplyEditsComputing, @unchecked Sendable {
     package let diffEngine: DiffChunkGenerator
     package let patchApplier: DiffChunkApplier
     package let unifiedDiffRenderer: UnifiedDiffRendering

@@ -9,11 +9,40 @@ cargo-fuzz = true
 
 [dependencies]
 agentry-proto = { path = "../crates/proto", version = "=0.1.0" }
+agentry-runtime = { path = "../crates/runtime", version = "=0.1.0" }
 libfuzzer-sys = "=0.4.13"
 
 [[bin]]
 name = "envelope_decode"
 path = "fuzz_targets/envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "regex_search"
+path = "fuzz_targets/regex_search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path_filter"
+path = "fuzz_targets/path_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "apply_edits_request"
+path = "fuzz_targets/apply_edits_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codemap_request"
+path = "fuzz_targets/codemap_request.rs"
 test = false
 doc = false
 bench = false

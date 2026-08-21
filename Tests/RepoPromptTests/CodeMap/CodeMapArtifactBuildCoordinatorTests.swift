@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import CryptoKit
 import Darwin
 import Foundation
@@ -1964,6 +1965,36 @@ final class CodeMapArtifactBuildCoordinatorTests: XCTestCase {
         }
     }
 
+    func testProductionBuilderRoutesCodeMapExtractionThroughRustAdapter() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let content = "struct RustSeamMarker { let value: Int }"
+        let input = try makeInput(content, root: fixture.root, language: .swift)
+        let requests = CoreCodeMapRequestRecorder()
+        let rustBuilder = RustCodeMapArtifactBuilder { request in
+            await requests.record(request)
+            return CoreCodeMapBatchResultV1(subjects: [
+                CoreCodeMapSubjectResultV1(
+                    languageID: 1,
+                    sourceByteCount: UInt64(content.utf8.count),
+                    outcome: .readyNoSymbols
+                )
+            ])
+        }
+
+        let execution = try await CodeMapArtifactBuilderClient(rustBuilder: rustBuilder)
+            .execute(input, UUID(), .demand)
+
+        XCTAssertEqual(execution.outcome, .readyNoSymbols)
+        let recorded = await requests.requests
+        XCTAssertEqual(recorded.count, 1)
+        XCTAssertEqual(recorded[0].contractVersion, CoreCodeMapBatchRequestV1.contractVersion)
+        XCTAssertEqual(recorded[0].subjects.count, 1)
+        XCTAssertEqual(recorded[0].subjects[0].languageID, 1)
+        XCTAssertEqual(recorded[0].subjects[0].sourceKind, .decoded)
+        XCTAssertEqual(recorded[0].subjects[0].sourceUTF8, Data(content.utf8))
+    }
+
     func testDefaultEffectivePermitBoundRunsRealMixedLanguageParsesAndMatchesSerialGoldens() async throws {
         let fixture = try makeFixture()
         defer { fixture.remove() }
@@ -2583,5 +2614,13 @@ private extension [Task<CodeMapArtifactBuildCoordinatorResult, Error>] {
             try await results.append(task.value)
         }
         return results
+    }
+}
+
+private actor CoreCodeMapRequestRecorder {
+    private(set) var requests: [CoreCodeMapBatchRequestV1] = []
+
+    func record(_ request: CoreCodeMapBatchRequestV1) {
+        requests.append(request)
     }
 }

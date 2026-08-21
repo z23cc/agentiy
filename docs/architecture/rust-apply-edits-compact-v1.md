@@ -36,6 +36,9 @@ CoreApplyEditsOperationV1
 - Escape fallback, matching, and replacement content are not preprocessed by Swift.
 - `searchStartLine` is not a wire field. The current public Swift request and operation models do not carry it. It is an internal, zero-based lower bound derived by the batch cursor per normalized search block: single edit starts at zero; a successful batch match advances that search block's cursor to at least `firstChunk.startLine + rawSearchLineCount`; `replaceAll` advances its local scan to the previous global match end.
 - Empty batch maps to the existing invalid-params meaning `edits array cannot be empty`.
+- Single and batch operations reject a `search` that is empty or contains only whitespace/newlines with invalid params; an empty selector is never interpreted as a match.
+- Each subject's rolling and final updated UTF-8 text is limited to 64 MiB. The engine checks the prospective size before every literal replacement and matcher patch application; exceeding the limit returns invalid params with `result size limit exceeded` and never truncates output.
+- Diff generation is independently bounded: original and updated inputs are each limited to 64 MiB and 100,000 byte-preserving lines; the retained Myers trace is limited to 64 MiB; semantic chunk line content and estimated unified-diff rendering are each limited to 64 MiB. Exceeding any diff bound returns invalid params with `diff too large` and produces no partial preview. Updated text remains the apply result authority, while byte edits and unfiltered chunks remain required reconstruction outputs; unified-diff text is rendered only when `verbose` or `includeToolCardUnifiedDiff` requests it.
 
 ## Required algorithm order
 

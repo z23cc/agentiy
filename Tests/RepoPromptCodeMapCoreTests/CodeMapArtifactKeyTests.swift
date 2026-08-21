@@ -84,6 +84,16 @@ final class CodeMapArtifactKeyTests: XCTestCase {
             XCTAssertEqual(identity.grammarRevision, descriptor.grammarRevision, language.rawValue)
             XCTAssertEqual(identity.treeSitterABIVersion, descriptor.treeSitterABIVersion, language.rawValue)
             XCTAssertEqual(
+                identity.extractorVersion,
+                CodeMapSemanticVersion(major: 2, minor: 0, patch: 0),
+                language.rawValue
+            )
+            XCTAssertEqual(
+                identity.generatorVersion,
+                CodeMapSemanticVersion(major: 2, minor: 0, patch: 0),
+                language.rawValue
+            )
+            XCTAssertEqual(
                 identity.codeMapQuerySHA256.bytes,
                 Data(SHA256.hash(data: Data(registration.query.utf8))),
                 language.rawValue
@@ -146,13 +156,13 @@ final class CodeMapArtifactKeyTests: XCTestCase {
             rawByteCount: 0x0102_0304_0506_0708,
             pipelineIdentity: identity
         )
-        let expectedCanonical = try XCTUnwrap(Data(base64Encoded: "Y29kZW1hcC1hcnRpZmFjdC1rZXktdjEgISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+PwECAwQFBgcIAAAB9WNvZGVtYXAtcGlwZWxpbmUtaWRlbnRpdHktdjEAAAAFc3dpZnQAAAAWd29ya3NwYWNlLWF1dG9tYXRpYy12MQAAACgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAADgABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fAAAAAQAAAAIAAAADAAAABAAAAAUAAAAGAAAABwAAAAgAAAAEAAAAJGpzdHMtbWF4LWFwcGVuZGVkLWNvbnRpbnVhdGlvbi1saW5lcwAAAAAAAABQAAAAEHBhcnNlLWxpbmUtY291bnQAAAAAAABhqAAAABZwYXJzZS11dGYxNi1jb2RlLXVuaXRzAAAAAAAW42AAAAAQcGFyc2UtdXRmOC1ieXRlcwAAAAAATEtAAAAABgAAABtmaWxlbmFtZS1tYWluLWNsYXNzLXNoYXBpbmcAAAAAGWpzdHMtc2lnbmF0dXJlLWV4dHJhY3Rpb24AAAAAFmxpZ2h0d2VpZ2h0LWV4dHJhY3Rpb24AAAAAH3BhdGgtZnJlZS1hcnRpZmFjdC1maW5hbGl6YXRpb24BAAAAFHN3aWZ0LXJhbmdlLXN0cmF0ZWd5AQAAABl0eXBlc2NyaXB0LXJhbmdlLXN0cmF0ZWd5AA=="))
+        let expectedCanonical = try XCTUnwrap(Data(base64Encoded: "Y29kZW1hcC1hcnRpZmFjdC1rZXktdjEgISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+PwECAwQFBgcIAAACC2NvZGVtYXAtcGlwZWxpbmUtaWRlbnRpdHktdjEAAAAFc3dpZnQAAAAWd29ya3NwYWNlLWF1dG9tYXRpYy12MQAAACgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAADgABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fAAAAAQAAAAIAAAADAAAABAAAAAUAAAAGAAAABwAAAAgAAAAEAAAAJGpzdHMtbWF4LWFwcGVuZGVkLWNvbnRpbnVhdGlvbi1saW5lcwAAAAAAAABQAAAAEHBhcnNlLWxpbmUtY291bnQAAAAAAABhqAAAABZwYXJzZS11dGYxNi1jb2RlLXVuaXRzAAAAAAAW42AAAAAQcGFyc2UtdXRmOC1ieXRlcwAAAAAATEtAAAAABwAAABtmaWxlbmFtZS1tYWluLWNsYXNzLXNoYXBpbmcAAAAAGWpzdHMtc2lnbmF0dXJlLWV4dHJhY3Rpb24AAAAAFmxpZ2h0d2VpZ2h0LWV4dHJhY3Rpb24AAAAAH3BhdGgtZnJlZS1hcnRpZmFjdC1maW5hbGl6YXRpb24BAAAAEXJ1c3QtY29yZS1jb21wdXRlAQAAABRzd2lmdC1yYW5nZS1zdHJhdGVneQEAAAAZdHlwZXNjcmlwdC1yYW5nZS1zdHJhdGVneQA="))
 
         let expectedDigestSegments: [UInt64] = [
-            0xF1F1_1877_9CBA_26F2,
-            0x5DE7_DD0D_3D69_879B,
-            0xB81D_E344_696F_03B4,
-            0xB667_8418_C3D0_F5DE
+            0x948D_CA17_DEE1_E696,
+            0xD1F3_BDA6_0098_EA9D,
+            0x15E0_B203_3EC6_05B4,
+            0x9FF4_9F6B_5E4F_E10B
         ]
 
         XCTAssertEqual(key.canonicalBytes, expectedCanonical)
@@ -192,12 +202,12 @@ final class CodeMapArtifactKeyTests: XCTestCase {
         try mutations.append(("query digest", copyIdentity(baseline, queryDigest: CodeMapSHA256Digest(bytes: queryBytes))))
 
         let versionMutations: [(String, CodeMapSemanticVersion, CodeMapSemanticVersion)] = [
-            ("extractor major", CodeMapSemanticVersion(major: 2, minor: 0, patch: 0), baseline.generatorVersion),
-            ("extractor minor", CodeMapSemanticVersion(major: 1, minor: 1, patch: 0), baseline.generatorVersion),
-            ("extractor patch", CodeMapSemanticVersion(major: 1, minor: 0, patch: 1), baseline.generatorVersion),
-            ("generator major", baseline.extractorVersion, CodeMapSemanticVersion(major: 2, minor: 0, patch: 0)),
-            ("generator minor", baseline.extractorVersion, CodeMapSemanticVersion(major: 1, minor: 1, patch: 0)),
-            ("generator patch", baseline.extractorVersion, CodeMapSemanticVersion(major: 1, minor: 0, patch: 1))
+            ("extractor major", CodeMapSemanticVersion(major: 3, minor: 0, patch: 0), baseline.generatorVersion),
+            ("extractor minor", CodeMapSemanticVersion(major: 2, minor: 1, patch: 0), baseline.generatorVersion),
+            ("extractor patch", CodeMapSemanticVersion(major: 2, minor: 0, patch: 1), baseline.generatorVersion),
+            ("generator major", baseline.extractorVersion, CodeMapSemanticVersion(major: 3, minor: 0, patch: 0)),
+            ("generator minor", baseline.extractorVersion, CodeMapSemanticVersion(major: 2, minor: 1, patch: 0)),
+            ("generator patch", baseline.extractorVersion, CodeMapSemanticVersion(major: 2, minor: 0, patch: 1))
         ]
         for (name, extractor, generator) in versionMutations {
             try mutations.append((name, copyIdentity(baseline, extractorVersion: extractor, generatorVersion: generator)))
@@ -570,6 +580,7 @@ final class CodeMapArtifactKeyTests: XCTestCase {
             ("jsts-signature-extraction", isJSTS ? 1 : 0),
             ("lightweight-extraction", isLightweight ? 1 : 0),
             ("path-free-artifact-finalization", 1),
+            ("rust-core-compute", 1),
             ("swift-range-strategy", languageID == .swift ? 1 : 0),
             ("typescript-range-strategy", languageID == .typescript || languageID == .tsx ? 1 : 0)
         ]

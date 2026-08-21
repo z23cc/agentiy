@@ -38,6 +38,10 @@ PHASE_IDS = [
     "mcp_build",
     "xcode_generator_tests",
     "xcode_workspace_validation",
+    "rust_tests",
+    "rust_codegen_check",
+    "rust_deny",
+    "rust_audit",
 ]
 
 GUARDRAILS_TARGET = "guardrails"
@@ -50,6 +54,16 @@ REPOPROMPT_BUILD_TARGET = "dev-swift-build PRODUCT=Agentry"
 MCP_BUILD_TARGET = "dev-swift-build PRODUCT=agentry-mcp"
 XCODE_GENERATOR_TEST_TARGET = "xcode-generator-test"
 XCODE_VALIDATE_TARGET = "xcode-validate"
+RUST_TEST_TARGET = "dev-cargo-test"
+RUST_CODEGEN_CHECK_TARGET = "dev-cargo-codegen-check"
+RUST_DENY_TARGET = "dev-cargo-deny"
+RUST_AUDIT_TARGET = "dev-cargo-audit"
+RUST_VALIDATION_TARGETS = [
+    RUST_TEST_TARGET,
+    RUST_CODEGEN_CHECK_TARGET,
+    RUST_DENY_TARGET,
+    RUST_AUDIT_TARGET,
+]
 ORDINARY_SUBPROCESS_TIMEOUT_SECONDS = 90
 HEAVYWEIGHT_MAKE_TARGETS = [
     CONDUCTOR_SELFTEST_TARGET,
@@ -61,6 +75,7 @@ HEAVYWEIGHT_MAKE_TARGETS = [
     MCP_BUILD_TARGET,
     XCODE_GENERATOR_TEST_TARGET,
     XCODE_VALIDATE_TARGET,
+    *RUST_VALIDATION_TARGETS,
 ]
 
 
@@ -600,6 +615,45 @@ class ContributionPreflightTests(unittest.TestCase):
             self.assert_make_lines_equal(env, [GUARDRAILS_TARGET])
             self.assertNotIn(XCODE_GENERATOR_TEST_TARGET, self.make_lines(env))
             self.assertNotIn(XCODE_VALIDATE_TARGET, self.make_lines(env))
+
+    def test_pr_ready_runs_rust_validation_for_sensitive_boundary_changes(self) -> None:
+        cases = [
+            (
+                "Rust workspace",
+                "rust/crates/runtime/src/lib.rs",
+                [GUARDRAILS_TARGET, *RUST_VALIDATION_TARGETS],
+            ),
+            (
+                "generated Swift binding",
+                "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift",
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, *RUST_VALIDATION_TARGETS],
+            ),
+            (
+                "generated C boundary",
+                "Sources/CAgentryRustCore/include/AgentryCoreFFI.h",
+                [GUARDRAILS_TARGET, *RUST_VALIDATION_TARGETS],
+            ),
+            (
+                "Swift bridge",
+                "Sources/AgentryCoreBridge/CoreBridge.swift",
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, *RUST_VALIDATION_TARGETS],
+            ),
+            (
+                "Swift bridge tests",
+                "Tests/AgentryCoreBridgeTests/CoreBridgeTests.swift",
+                [GUARDRAILS_TARGET, SWIFT_LINT_TARGET, *RUST_VALIDATION_TARGETS],
+            ),
+        ]
+
+        for name, outgoing_path, expected_make_lines in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                repo, preflight, env = self.create_repo(Path(tmp), outgoing_path=outgoing_path)
+
+                result = self.run_preflight(repo, preflight, env, "pr-ready")
+
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assert_make_lines_equal(env, expected_make_lines)
+                self.assertIn("PR-ready preflight passed", result.stdout)
 
     def test_pr_ready_selects_expected_heavyweight_targets_by_changed_path(self) -> None:
         cases = [

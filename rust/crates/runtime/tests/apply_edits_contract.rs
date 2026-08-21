@@ -96,12 +96,108 @@ fn literal_ambiguity_and_replace_all_miss_messages() {
 }
 
 #[test]
+fn reversed_two_line_selector_returns_error_instead_of_underflowing() {
+    let error = apply_subject(&request(
+        "header\ntarget\n",
+        ApplyMode::Single {
+            operation: operation("target\nheader", "replacement", false),
+        },
+    ))
+    .unwrap_err();
+    assert!(matches!(error, ApplyError::InvalidParams(_)));
+}
+
+#[test]
+fn fuzzy_selector_past_file_end_returns_invalid_params() {
+    let error = apply_subject(&request(
+        "hello world\n",
+        ApplyMode::Single {
+            operation: operation("hello worle\nmissing selector line", "replacement", false),
+        },
+    ))
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError::InvalidParams("matched search block range exceeds file bounds".into())
+    );
+}
+
+#[test]
+fn empty_search_is_invalid() {
+    for search in ["", "\n", " \t\r\n"] {
+        let error = apply_subject(&request(
+            "content\n",
+            ApplyMode::Single {
+                operation: operation(search, "replacement", true),
+            },
+        ))
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ApplyError::InvalidParams("search cannot be empty for replace operations".into())
+        );
+    }
+}
+
+#[test]
 fn empty_batch_is_invalid() {
     let error =
         apply_subject(&request("x\n", ApplyMode::Batch { operations: vec![] })).unwrap_err();
     assert_eq!(
         error,
         ApplyError::InvalidParams("edits array cannot be empty".into())
+    );
+}
+
+#[test]
+fn chained_replace_all_rejects_before_unbounded_match_allocation() {
+    let original = "a".repeat(8 * 1024);
+    let expansion = "a".repeat(8);
+    let error = apply_subject(&request(
+        &original,
+        ApplyMode::Batch {
+            operations: vec![
+                operation("a", &expansion, true),
+                operation("a", &expansion, true),
+                operation("a", &expansion, true),
+            ],
+        },
+    ))
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError::InvalidParams("too many replacements (maximum 100000 per operation)".into())
+    );
+}
+
+#[test]
+fn replace_all_rejects_estimated_result_over_64_mib_before_materializing() {
+    let original = "a".repeat(8 * 1024);
+    let expansion = "a".repeat(8 * 1024 + 1);
+    let error = apply_subject(&request(
+        &original,
+        ApplyMode::Single {
+            operation: operation("a", &expansion, true),
+        },
+    ))
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError::InvalidParams("result size limit exceeded (maximum 64 MiB)".into())
+    );
+}
+
+#[test]
+fn rewrite_rejects_diff_with_too_many_changed_lines() {
+    let original = "old\n".repeat(100_001);
+    let replacement = "new\n".repeat(100_001);
+    let error = apply_subject(&request(&original, ApplyMode::Rewrite { replacement })).unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError::InvalidParams(
+            "diff too large (maximum 64 MiB working/rendered data and 100000 lines per side)"
+                .into()
+        )
     );
 }
 
@@ -427,7 +523,7 @@ fn compact_validator_rejects_malformed_ranges_and_flags() {
 fn myers_diff_and_chunk_apply_cover_disjoint_changes() {
     let original = "a\nb\nc\nd\n";
     let updated = "A\nb\nc\nD\n";
-    let (edits, chunks) = generate_diff(original, updated);
+    let (edits, chunks) = generate_diff(original, updated).unwrap();
     assert_eq!(edits.len(), 2);
     assert_eq!(chunks.len(), 2);
     assert_eq!(apply_chunks(original, &chunks).unwrap(), updated);
@@ -447,7 +543,7 @@ fn myers_handles_empty_create_delete_and_property_matrix() {
         ("😀\r\nx", "😀\r\ny"),
         ("no final newline", "different final newline"),
     ] {
-        let (edits, chunks) = generate_diff(original, updated);
+        let (edits, chunks) = generate_diff(original, updated).unwrap();
         assert_eq!(apply_chunks(original, &chunks).as_deref(), Some(updated));
         assert_eq!(
             apply_byte_edits(original.as_bytes(), updated.as_bytes(), &edits).as_deref(),

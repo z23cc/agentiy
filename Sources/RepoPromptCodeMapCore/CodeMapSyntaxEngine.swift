@@ -159,8 +159,8 @@ package struct CodeMapSyntaxEngine: CodeMapSyntaxPerformanceQuerying, Sendable {
             codeMapQuerySHA256: CodeMapSHA256Digest(
                 bytes: Data(SHA256.hash(data: descriptor.queryBytes))
             ),
-            extractorVersion: CodeMapSemanticVersion(major: 1, minor: 0, patch: 0),
-            generatorVersion: CodeMapSemanticVersion(major: 1, minor: 0, patch: 0),
+            extractorVersion: CodeMapSemanticVersion(major: 2, minor: 0, patch: 0),
+            generatorVersion: CodeMapSemanticVersion(major: 2, minor: 0, patch: 0),
             artifactSchemaVersion: 1,
             oversizeParsePolicyVersion: 1,
             limits: [
@@ -183,6 +183,7 @@ package struct CodeMapSyntaxEngine: CodeMapSyntaxPerformanceQuerying, Sendable {
                     enabled: Self.isLightweight(language: languageType)
                 ),
                 CodeMapPipelineNamedFlag(name: "path-free-artifact-finalization", enabled: true),
+                CodeMapPipelineNamedFlag(name: "rust-core-compute", enabled: true),
                 CodeMapPipelineNamedFlag(name: "swift-range-strategy", enabled: languageType == .swift),
                 CodeMapPipelineNamedFlag(
                     name: "typescript-range-strategy",

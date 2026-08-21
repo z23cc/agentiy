@@ -99,6 +99,7 @@ package struct CodeMapPipelineIdentity: Hashable, Sendable {
         "jsts-signature-extraction",
         "lightweight-extraction",
         "path-free-artifact-finalization",
+        "rust-core-compute",
         "swift-range-strategy",
         "typescript-range-strategy"
     ]

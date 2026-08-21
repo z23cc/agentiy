@@ -1,12 +1,16 @@
 import Foundation
 
 package struct ApplyEditsService {
-    package let engine: ApplyEditsEngine
+    package let computer: any ApplyEditsComputing
     package let host: FileEditHost
 
-    package init(engine: ApplyEditsEngine, host: FileEditHost) {
-        self.engine = engine
+    package init(computer: any ApplyEditsComputing, host: FileEditHost) {
+        self.computer = computer
         self.host = host
+    }
+
+    package init(engine: ApplyEditsEngine, host: FileEditHost) {
+        self.init(computer: engine, host: host)
     }
 
     package func run(
@@ -74,7 +78,7 @@ package struct ApplyEditsService {
             EditFlowPerf.Stage.ApplyEdits.hostRead,
             EditFlowPerf.Dimensions(fileBytes: originalText.utf8.count)
         )
-        let result = try await engine.apply(request: request, to: originalText, options: options)
+        let result = try await computer.apply(request: request, to: originalText, options: options)
         return (exists: true, originalText: originalText, result: result)
     }
 

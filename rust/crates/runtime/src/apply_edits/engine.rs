@@ -4,6 +4,10 @@ use super::{
 };
 use std::collections::HashMap;
 
+const MAX_RESULT_UTF8_BYTES: usize = 64 * 1024 * 1024;
+const MAX_MATCH_POSITIONS: usize = 100_000;
+const MAX_REPLACE_ALL_ITERATIONS: usize = 100_000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApplyMode {
     Rewrite { replacement: String },
@@ -96,19 +100,74 @@ fn decode_c_style(input: &str) -> String {
     output
 }
 
-fn non_overlapping_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
+fn result_size_limit_error() -> ApplyError {
+    ApplyError::InvalidParams("result size limit exceeded (maximum 64 MiB)".into())
+}
+
+fn diff_too_large_error() -> ApplyError {
+    ApplyError::InvalidParams(
+        "diff too large (maximum 64 MiB working/rendered data and 100000 lines per side)".into(),
+    )
+}
+
+fn too_many_replacements_error() -> ApplyError {
+    ApplyError::InvalidParams(format!(
+        "too many replacements (maximum {MAX_REPLACE_ALL_ITERATIONS} per operation)"
+    ))
+}
+
+fn ensure_result_size(size: usize) -> Result<(), ApplyError> {
+    if size > MAX_RESULT_UTF8_BYTES {
+        return Err(result_size_limit_error());
+    }
+    Ok(())
+}
+
+fn checked_replacement_size(
+    text_size: usize,
+    search_size: usize,
+    replacement_size: usize,
+    match_count: usize,
+) -> Result<usize, ApplyError> {
+    let removed = search_size
+        .checked_mul(match_count)
+        .ok_or_else(result_size_limit_error)?;
+    let added = replacement_size
+        .checked_mul(match_count)
+        .ok_or_else(result_size_limit_error)?;
+    let size = text_size
+        .checked_sub(removed)
+        .and_then(|size| size.checked_add(added))
+        .ok_or_else(result_size_limit_error)?;
+    ensure_result_size(size)?;
+    Ok(size)
+}
+
+fn validate_operation(operation: &ApplyOperation) -> Result<(), ApplyError> {
+    if operation.search.trim().is_empty() {
+        return Err(ApplyError::InvalidParams(
+            "search cannot be empty for replace operations".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn non_overlapping_ranges(text: &str, needle: &str) -> Result<Vec<(usize, usize)>, ApplyError> {
     if needle.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut ranges = Vec::new();
     let mut cursor = 0;
     while let Some(local) = text[cursor..].find(needle) {
+        if ranges.len() >= MAX_MATCH_POSITIONS {
+            return Err(too_many_replacements_error());
+        }
         let start = cursor + local;
         let end = start + needle.len();
         ranges.push((start, end));
         cursor = end;
     }
-    ranges
+    Ok(ranges)
 }
 
 fn resolve_escape(operation: &ApplyOperation, original: &str) -> ApplyOperation {
@@ -134,7 +193,7 @@ fn line_number_at(text: &str, byte: usize) -> usize {
 }
 
 fn apply_literal(text: &str, operation: &ApplyOperation) -> Result<Option<String>, ApplyError> {
-    let matches = non_overlapping_ranges(text, &operation.search);
+    let matches = non_overlapping_ranges(text, &operation.search)?;
     if matches.is_empty() {
         if operation.replace_all {
             return Err(ApplyError::InvalidParams(
@@ -153,6 +212,17 @@ fn apply_literal(text: &str, operation: &ApplyOperation) -> Result<Option<String
             "Search text matches multiple locations (lines {lines}). Please make the search more specific or use replace_all=true."
         )));
     }
+    let match_count = if operation.replace_all {
+        matches.len()
+    } else {
+        1
+    };
+    checked_replacement_size(
+        text.len(),
+        operation.search.len(),
+        operation.replace.len(),
+        match_count,
+    )?;
     if operation.replace_all {
         Ok(Some(text.replace(&operation.search, &operation.replace)))
     } else {
@@ -283,15 +353,58 @@ struct LinePatch {
     replacement: Vec<String>,
 }
 
-fn apply_line_patches(original: &[String], patches: &[LinePatch]) -> Option<Vec<String>> {
+fn apply_line_patches(
+    original: &[String],
+    patches: &[LinePatch],
+    ending: &str,
+    trailing: bool,
+) -> Result<Option<Vec<String>>, ApplyError> {
     let mut lines = original.to_vec();
     let mut adjusted: Vec<_> = patches.iter().map(|p| p.start).collect();
     for (index, patch) in patches.iter().enumerate() {
         let start = adjusted[index];
-        if start + patch.old_count > lines.len() {
-            return None;
-        }
-        lines.splice(start..start + patch.old_count, patch.replacement.clone());
+        let Some(end) = start.checked_add(patch.old_count) else {
+            return Ok(None);
+        };
+        let Some(removed) = lines.get(start..end) else {
+            return Ok(None);
+        };
+        let current_bytes = lines.iter().try_fold(0usize, |total, line| {
+            total
+                .checked_add(line.len())
+                .ok_or_else(result_size_limit_error)
+        })?;
+        let removed_bytes = removed.iter().try_fold(0usize, |total, line| {
+            total
+                .checked_add(line.len())
+                .ok_or_else(result_size_limit_error)
+        })?;
+        let replacement_bytes = patch.replacement.iter().try_fold(0usize, |total, line| {
+            total
+                .checked_add(line.len())
+                .ok_or_else(result_size_limit_error)
+        })?;
+        let line_count = lines
+            .len()
+            .checked_sub(patch.old_count)
+            .and_then(|count| count.checked_add(patch.replacement.len()))
+            .ok_or_else(result_size_limit_error)?;
+        let separator_count = line_count
+            .saturating_sub(1)
+            .checked_add(usize::from(trailing && line_count > 0))
+            .ok_or_else(result_size_limit_error)?;
+        let result_size = current_bytes
+            .checked_sub(removed_bytes)
+            .and_then(|size| size.checked_add(replacement_bytes))
+            .and_then(|size| {
+                ending
+                    .len()
+                    .checked_mul(separator_count)
+                    .and_then(|separators| size.checked_add(separators))
+            })
+            .ok_or_else(result_size_limit_error)?;
+        ensure_result_size(result_size)?;
+        lines.splice(start..end, patch.replacement.clone());
         let delta = patch.replacement.len() as isize - patch.old_count as isize;
         for later in index + 1..patches.len() {
             if adjusted[later] > start {
@@ -300,7 +413,20 @@ fn apply_line_patches(original: &[String], patches: &[LinePatch]) -> Option<Vec<
             }
         }
     }
-    Some(lines)
+    Ok(Some(lines))
+}
+
+fn checked_line_slice(
+    file: &[String],
+    start: usize,
+    count: usize,
+) -> Result<&[String], ApplyError> {
+    let end = start.checked_add(count).ok_or_else(|| {
+        ApplyError::InvalidParams("matched search block range exceeds file bounds".into())
+    })?;
+    file.get(start..end).ok_or_else(|| {
+        ApplyError::InvalidParams("matched search block range exceeds file bounds".into())
+    })
 }
 
 fn matcher_error(error: MatchError) -> String {
@@ -336,13 +462,19 @@ fn finish(
     status: ApplyStatus,
     outcomes: Option<Vec<OperationOutcome>>,
 ) -> Result<ApplyResult, ApplyError> {
-    let (byte_edits, chunks) = generate_diff(original, &updated);
+    ensure_result_size(updated.len())?;
+    let (byte_edits, chunks) =
+        generate_diff(original, &updated).map_err(|_| diff_too_large_error())?;
     if original != updated && chunks.is_empty() {
         return Err(ApplyError::Internal(
             "diff generation produced no changes.".into(),
         ));
     }
-    let rendered = render_unified(&request.path_label, &chunks);
+    let rendered = if request.verbose || request.include_tool_card_unified_diff {
+        render_unified(&request.path_label, &chunks).map_err(|_| diff_too_large_error())?
+    } else {
+        None
+    };
     let lines_changed = (!chunks.is_empty()).then(|| {
         chunks
             .iter()
@@ -384,6 +516,7 @@ fn apply_single(
     original: &str,
     operation: &ApplyOperation,
 ) -> Result<ApplyResult, ApplyError> {
+    validate_operation(operation)?;
     let operation = resolve_escape(operation, original);
     if let Some(updated) = apply_literal(original, &operation)? {
         return finish(
@@ -425,12 +558,15 @@ fn apply_single(
         }
         Err(error) => return Err(ApplyError::InvalidParams(matcher_error(error))),
     };
+    let matched_lines = checked_line_slice(&file, start, selector.len())?;
     let replacement = corrected_replacement(
-        &file[start..start + selector.len()],
+        matched_lines,
         &selector,
         &plain_lines(&operation.replace),
         &request.path_label,
     );
+    let ending = dominant_ending(original);
+    let trailing = original.ends_with(ending);
     let updated_lines = apply_line_patches(
         &file,
         &[LinePatch {
@@ -438,10 +574,10 @@ fn apply_single(
             old_count: selector.len(),
             replacement,
         }],
-    )
+        ending,
+        trailing,
+    )?
     .ok_or_else(|| ApplyError::Internal("diff application failed".into()))?;
-    let ending = dominant_ending(original);
-    let trailing = original.ends_with(ending);
     let mut updated = updated_lines.join(ending);
     if trailing {
         updated.push_str(ending);
@@ -458,23 +594,38 @@ fn apply_single(
     )
 }
 
-fn try_literal_batch(operations: &[ApplyOperation], original: &str) -> Option<String> {
+fn try_literal_batch(
+    operations: &[ApplyOperation],
+    original: &str,
+) -> Result<Option<String>, ApplyError> {
     let mut text = original.to_owned();
     for operation in operations {
-        let matches = non_overlapping_ranges(&text, &operation.search);
+        let matches = non_overlapping_ranges(&text, &operation.search)?;
         if operation.replace_all {
             if matches.is_empty() {
-                return None;
+                return Ok(None);
             }
+            checked_replacement_size(
+                text.len(),
+                operation.search.len(),
+                operation.replace.len(),
+                matches.len(),
+            )?;
             text = text.replace(&operation.search, &operation.replace);
         } else {
             if matches.len() != 1 {
-                return None;
+                return Ok(None);
             }
+            checked_replacement_size(
+                text.len(),
+                operation.search.len(),
+                operation.replace.len(),
+                1,
+            )?;
             text.replace_range(matches[0].0..matches[0].1, &operation.replace);
         }
     }
-    Some(text)
+    Ok(Some(text))
 }
 
 fn apply_batch(
@@ -487,11 +638,14 @@ fn apply_batch(
             "edits array cannot be empty".into(),
         ));
     }
+    for operation in operations {
+        validate_operation(operation)?;
+    }
     let resolved: Vec<_> = operations
         .iter()
         .map(|op| resolve_escape(op, original))
         .collect();
-    if let Some(updated) = try_literal_batch(&resolved, original) {
+    if let Some(updated) = try_literal_batch(&resolved, original)? {
         let outcomes = request.verbose.then(|| {
             resolved
                 .iter()
@@ -550,11 +704,19 @@ fn apply_batch(
             loop {
                 match match_selector(&processed_selector, &processed, &full_index, next, false) {
                     Ok(start) => {
-                        if start + selector.len() > file.len() {
+                        let Some(end) = start.checked_add(selector.len()) else {
+                            failure = Some("matched search block range exceeds file bounds".into());
+                            break;
+                        };
+                        if file.get(start..end).is_none() {
+                            failure = Some("matched search block range exceeds file bounds".into());
                             break;
                         }
+                        if matches.len() >= MAX_REPLACE_ALL_ITERATIONS {
+                            return Err(too_many_replacements_error());
+                        }
                         matches.push(start);
-                        next = start + selector.len();
+                        next = end;
                     }
                     Err(MatchError::NoMatch) => break,
                     Err(error) => {
@@ -598,8 +760,9 @@ fn apply_batch(
         };
         if outcome.status == OutcomeStatus::Success {
             for start in &matches {
+                let matched_lines = checked_line_slice(&file, *start, selector.len())?;
                 let replacement = corrected_replacement(
-                    &file[*start..*start + selector.len()],
+                    matched_lines,
                     &selector,
                     &plain_lines(&operation.replace),
                     &request.path_label,
@@ -611,7 +774,12 @@ fn apply_batch(
                 });
             }
             if let Some(first) = matches.first() {
-                cursors.insert(key, minimum.max(first + selector.len()));
+                let end = first.checked_add(selector.len()).ok_or_else(|| {
+                    ApplyError::InvalidParams(
+                        "matched search block range exceeds file bounds".into(),
+                    )
+                })?;
+                cursors.insert(key, minimum.max(end));
             }
         }
         outcomes.push(outcome);
@@ -632,10 +800,10 @@ fn apply_batch(
             Some(outcomes),
         );
     }
-    let updated_lines = apply_line_patches(&file, &patches)
-        .ok_or_else(|| ApplyError::Internal("diff application failed".into()))?;
     let ending = dominant_ending(original);
     let trailing = original.ends_with(ending);
+    let updated_lines = apply_line_patches(&file, &patches, ending, trailing)?
+        .ok_or_else(|| ApplyError::Internal("diff application failed".into()))?;
     let mut updated = updated_lines.join(ending);
     if trailing {
         updated.push_str(ending);
@@ -661,16 +829,19 @@ pub fn apply_subject(request: &ApplySubjectRequest) -> Result<ApplyResult, Apply
     let original = std::str::from_utf8(&request.original)
         .map_err(|_| ApplyError::InvalidParams("originalUTF8 is not valid UTF-8".into()))?;
     match &request.mode {
-        ApplyMode::Rewrite { replacement } => finish(
-            request,
-            original,
-            replacement.clone(),
-            None,
-            1,
-            1,
-            ApplyStatus::Success,
-            None,
-        ),
+        ApplyMode::Rewrite { replacement } => {
+            ensure_result_size(replacement.len())?;
+            finish(
+                request,
+                original,
+                replacement.clone(),
+                None,
+                1,
+                1,
+                ApplyStatus::Success,
+                None,
+            )
+        }
         ApplyMode::Single { operation } => apply_single(request, original, operation),
         ApplyMode::Batch { operations } => apply_batch(request, original, operations),
     }

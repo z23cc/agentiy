@@ -9,6 +9,11 @@ package enum ApplyEditsStatus: String, Equatable {
 package struct ApplyEditsStats: Equatable {
     package let linesChanged: Int
     package let chunks: Int
+
+    package init(linesChanged: Int, chunks: Int) {
+        self.linesChanged = linesChanged
+        self.chunks = chunks
+    }
 }
 
 package struct ApplyEditsLineStats: Equatable {
@@ -29,6 +34,34 @@ package struct ApplyEditsResult: Equatable {
     package let editsApplied: Int
     package let status: ApplyEditsStatus
     package let outcomes: [EditOutcome]?
+
+    package init(
+        updatedText: String,
+        diffChunks: [DiffChunk],
+        unifiedDiff: String?,
+        toolCardUnifiedDiff: String?,
+        stats: ApplyEditsStats?,
+        note: String?,
+        fileCreated: Bool,
+        fileOverwritten: Bool,
+        editsRequested: Int,
+        editsApplied: Int,
+        status: ApplyEditsStatus,
+        outcomes: [EditOutcome]?
+    ) {
+        self.updatedText = updatedText
+        self.diffChunks = diffChunks
+        self.unifiedDiff = unifiedDiff
+        self.toolCardUnifiedDiff = toolCardUnifiedDiff
+        self.stats = stats
+        self.note = note
+        self.fileCreated = fileCreated
+        self.fileOverwritten = fileOverwritten
+        self.editsRequested = editsRequested
+        self.editsApplied = editsApplied
+        self.status = status
+        self.outcomes = outcomes
+    }
 
     package func withFileMetadata(created: Bool, overwritten: Bool) -> ApplyEditsResult {
         ApplyEditsResult(

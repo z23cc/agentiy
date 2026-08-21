@@ -282,13 +282,15 @@ pub fn match_selector(
     if count > 1 {
         let mut second: Vec<_> = positions(&selector[1], index, minimum_match_index)
             .into_iter()
-            .filter_map(|p| (p > minimum_match_index).then_some(p - 1))
+            .filter_map(|p| p.checked_sub(1))
+            .filter(|&p| p >= minimum_match_index)
             .collect();
         if second.is_empty() {
             second = fuzzy_positions(&selector[1].strict, index, minimum_match_index, threshold)
                 .0
                 .into_iter()
-                .filter_map(|p| (p > minimum_match_index).then_some(p - 1))
+                .filter_map(|p| p.checked_sub(1))
+                .filter(|&p| p >= minimum_match_index)
                 .collect();
         }
         let intersection: Vec<_> = starts
@@ -307,7 +309,10 @@ pub fn match_selector(
     let required_medium = count.min(3);
     let mut valid = Vec::new();
     for start in starts {
-        if start + count > content.len() {
+        let Some(end) = start.checked_add(count) else {
+            continue;
+        };
+        if content.get(start..end).is_none() {
             continue;
         }
         let head = (0..head_len)

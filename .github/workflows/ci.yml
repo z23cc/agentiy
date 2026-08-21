@@ -165,6 +165,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
 
+      - name: Install pinned Rust validation tools
+        run: |
+          cargo install cargo-deny --version 0.18.3 --locked
+          cargo install cargo-audit --version 0.21.2 --locked
+          cargo install cargo-fuzz --version 0.12.0 --locked
+          cargo deny --version
+          cargo audit --version
+          cargo fuzz --version
+
       - name: Check Rust formatting
         working-directory: rust
         run: cargo fmt --all -- --check
@@ -177,23 +186,52 @@ jobs:
         working-directory: rust
         run: cargo run --locked -p xtask -- generate --check
 
-      - name: Check Rust dependency policy when available
+      - name: Check Rust dependency policy
         working-directory: rust
-        run: |
-          if command -v cargo-deny >/dev/null 2>&1; then
-            cargo deny check
-          else
-            echo "::notice::cargo-deny is unavailable on this runner; dependency policy check skipped"
-          fi
+        run: cargo deny check
 
-      - name: Audit Rust dependencies when available
+      - name: Audit Rust dependencies
         working-directory: rust
-        run: |
-          if command -v cargo-audit >/dev/null 2>&1; then
-            cargo audit --file Cargo.lock
-          else
-            echo "::notice::cargo-audit is unavailable on this runner; advisory audit skipped"
-          fi
+        run: cargo audit --file Cargo.lock
+
+      - name: Fuzz envelope decoding for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run envelope_decode corpus/envelope_decode -- -max_total_time=60
+
+      - name: Fuzz regex search for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run regex_search corpus/regex_search -- -max_total_time=60
+
+      - name: Fuzz path filtering for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run path_filter corpus/path_filter -- -max_total_time=60
+
+      - name: Fuzz apply-edits requests for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run apply_edits_request corpus/apply_edits_request -- -max_total_time=60
+
+      - name: Fuzz codemap requests for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run codemap_request corpus/codemap_request -- -max_total_time=60
+
+      - name: Test Rust bridge in debug configuration
+        run: make dev-test TEST_PRODUCT=AgentryCoreBridgeTests CONFIGURATION=debug
+
+      - name: Test Rust bridge in release configuration
+        run: make dev-test TEST_PRODUCT=AgentryCoreBridgeTests CONFIGURATION=release
+
+      - name: Test Rust bridge with ThreadSanitizer
+        run: make dev-test TEST_PRODUCT=AgentryCoreBridgeTests CONFIGURATION=debug SANITIZE=thread
 
   provider-tests:
     name: Provider Tests
