@@ -4,7 +4,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub const TARGET: &str = "aarch64-apple-darwin";
 pub const MINIMUM_MACOS: &str = "14.0";
@@ -112,28 +111,12 @@ pub fn digest_bytes(bytes: &[u8]) -> String {
 }
 
 fn source_revision(repo_root: &Path) -> Result<String> {
-    let mut command = Command::new("git");
-    command.args(["status", "--porcelain=v1", "--untracked-files=all", "--"]);
-    command.args(BUILD_INPUT_PATHS);
-    let output = command
-        .current_dir(repo_root)
-        .output()
-        .context("run git status for Rust source revision")?;
-    if output.status.success() {
-        let status = String::from_utf8(output.stdout)?;
-        let dirty_build_input = status
-            .lines()
-            .any(|line| !line.ends_with(GENERATED_CONTRACT_IDENTITY));
-        if !dirty_build_input {
-            let head = Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(repo_root)
-                .output()?;
-            if head.status.success() {
-                return Ok(format!("git:{}", String::from_utf8(head.stdout)?.trim()));
-            }
-        }
-    }
+    // Always the content digest of the Rust build inputs. The earlier
+    // clean-tree fast path returned `git:<HEAD>`, which rotated the build
+    // fingerprint on EVERY commit (HEAD changes even when no Rust input
+    // changed), immediately invalidating the just-committed binding identity.
+    // The content form is deterministic, identical for identical inputs
+    // regardless of git state, and changes exactly when a build input changes.
     Ok(format!("tree:{}", digest_build_inputs(repo_root)?))
 }
 
