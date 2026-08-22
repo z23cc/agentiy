@@ -4885,17 +4885,25 @@ actor WorkspaceFileContextStore {
                             fallback: reason
                         )
                     case let .planned(planHandle):
-                        let authoritativeFileCount = state.fileIDsByRelativePath.values.count(where: {
-                            isDiscoverableFileID($0)
-                        })
-                        let authoritativeFolderCount = state.folderIDsByRelativePath.count(where: { relativePath, folderID in
-                            !relativePath.isEmpty && isDiscoverableFolderID(folderID)
-                        })
+                        // P4-6a / bucket C: rewired onto the two O(1)-aggregate-shaped
+                        // functions plus one batched `inventoryPathLookups` call over the
+                        // whole manifest, replacing 5 inline table reads (§4.3.1.2). The
+                        // manifest is materialized before the single lookup call rather
+                        // than resolved per-record, so this is one call per scan, not one
+                        // call per record. `state` (captured before this branch's awaits)
+                        // is passed explicitly to both helpers so this shadow comparison
+                        // keeps comparing against the exact snapshot it compared against
+                        // pre-refactor -- no new staleness window. Named test:
+                        // `testPrepareSessionWorktreeOwnershipShadowComparisonMatchesManifestAgainstBatchedLookup`.
+                        let authoritativeFileCount = discoverableFileCount(in: state)
+                        let authoritativeFolderCount = discoverableFolderCount(in: state)
                         var plannedFileCount = 0
                         var plannedFolderCount = 0
                         var matches = true
                         do {
                             let reader = try planHandle.makeReader()
+                            var manifestRecords: [(relativePath: String, disposition: WorkspaceRootTargetSeedPlanDisposition)] = []
+                            var queriedPaths: Set<String> = []
                             while let record = try reader.next() {
                                 guard let relativePath = String(data: record.relativePathBytes, encoding: .utf8),
                                       Data(relativePath.utf8) == record.relativePathBytes
@@ -4903,24 +4911,29 @@ actor WorkspaceFileContextStore {
                                     matches = false
                                     continue
                                 }
-                                switch record.disposition {
+                                manifestRecords.append((relativePath, record.disposition))
+                                queriedPaths.insert(relativePath)
+                            }
+                            let lookups = inventoryPathLookups(in: state, relativePaths: queriedPaths)
+                            for (relativePath, disposition) in manifestRecords {
+                                switch disposition {
                                 case .ordinaryFile:
                                     plannedFileCount += 1
-                                    guard let fileID = state.fileIDsByRelativePath[relativePath],
-                                          isDiscoverableFileID(fileID)
+                                    guard lookups.files[relativePath]?.fileID != nil,
+                                          lookups.files[relativePath]?.isDiscoverable == true
                                     else { matches = false
                                         continue
                                     }
                                 case .ordinaryDirectory:
                                     plannedFolderCount += 1
-                                    guard let folderID = state.folderIDsByRelativePath[relativePath],
-                                          isDiscoverableFolderID(folderID)
+                                    guard lookups.folders[relativePath]?.folderID != nil,
+                                          lookups.folders[relativePath]?.isDiscoverable == true
                                     else { matches = false
                                         continue
                                     }
                                 case .policyIgnoredTrackedFile:
-                                    if let fileID = state.fileIDsByRelativePath[relativePath],
-                                       isDiscoverableFileID(fileID)
+                                    if lookups.files[relativePath]?.fileID != nil,
+                                       lookups.files[relativePath]?.isDiscoverable == true
                                     { matches = false }
                                 case .baseTombstone:
                                     break
@@ -6681,27 +6694,141 @@ actor WorkspaceFileContextStore {
             .sorted { $0.standardizedRelativePath < $1.standardizedRelativePath }
     }
 
+    // MARK: - P4-6a fact-returning inventory read surface
+    //
+    // `inventoryRecordFacts` is the Swift-authority precursor to Rust's
+    // `inventoryResolveRecords` (docs/architecture/rust-inventory-scope-v1.md §5.3,
+    // docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md §4.3.1.1). It
+    // returns per-id INDEPENDENT FACTS about exactly the ten inventory tables named in
+    // Appendix A of that design -- never a verdict. Every codemap call site (B1/B3) and
+    // `appliedIndexRecordLookup` itself compose their own predicate from these facts;
+    // this function filters nothing and must never gain a table it doesn't already
+    // read here. Absent ids resolve to `record == nil`; the other fields are then
+    // meaningless and must not be consulted (mirrors R1 gating R2..R5 in the reference
+    // predicate).
+    //
+    // Deliberately excluded from the fact block, and left as call-site reads exactly
+    // where they sit today: `rootStatesByID` existence/`publishedSeededAuthorityIsQueryable`
+    // (function-level gates, not per-id facts -- folding them in here would silently add
+    // a clause at every B1 site, none of which gates on them today), and any
+    // codemap-owned state (`catalogGenerationsByRootID`, `codemapSessionsByRootEpoch`,
+    // `allowedRootIDs`, path-shape validation) which is not one of the ten inventory
+    // tables and is out of P4's scope entirely.
+    struct WorkspaceInventoryFileRecordFact {
+        /// R1: `filesByID[fileID]`. `nil` means the id does not exist; every other
+        /// field is then meaningless.
+        let record: WorkspaceFileRecord?
+        /// R3: the record's own root's `fileIDsByRelativePath[record.standardizedRelativePath] == fileID`.
+        let pathRoundTripsToSelf: Bool
+        /// R4: `isDiscoverableFileID(fileID)`.
+        let isDiscoverable: Bool
+    }
+
+    struct WorkspaceInventoryFolderRecordFact {
+        /// R1: `foldersByID[folderID]`. `nil` means the id does not exist; every other
+        /// field is then meaningless.
+        let record: WorkspaceFolderRecord?
+        /// R3: the record's own root's `folderIDsByRelativePath[record.standardizedRelativePath] == folderID`.
+        let pathRoundTripsToSelf: Bool
+        /// R4: `isDiscoverableFolderID(folderID)`.
+        let isDiscoverable: Bool
+    }
+
+    /// One synchronous, atomic read of the ten inventory tables for every requested id,
+    /// files and folders together in a single call so per-scan callers (codemap) and
+    /// `appliedIndexRecordLookup` share one DEBUG request-count instrumentation point
+    /// (P4-6a done-when: the four `appliedIndexRecordLookupDiagnosticsForTesting`
+    /// consumers observe the per-scan call shape). No `await` occurs anywhere in this
+    /// function, so all facts are mutually consistent against one generation.
+    func inventoryRecordFacts(
+        fileIDs: [UUID],
+        folderIDs: [UUID]
+    ) -> (
+        filesByID: [UUID: WorkspaceInventoryFileRecordFact],
+        foldersByID: [UUID: WorkspaceInventoryFolderRecordFact]
+    ) {
+        #if DEBUG
+            appliedIndexRecordLookupRequestCountForTesting += 1
+            appliedIndexRecordLookupRequestedRecordCountForTesting += fileIDs.count + folderIDs.count
+        #endif
+        var files: [UUID: WorkspaceInventoryFileRecordFact] = [:]
+        files.reserveCapacity(fileIDs.count)
+        for fileID in fileIDs {
+            guard let record = filesByID[fileID] else {
+                files[fileID] = WorkspaceInventoryFileRecordFact(
+                    record: nil,
+                    pathRoundTripsToSelf: false,
+                    isDiscoverable: false
+                )
+                continue
+            }
+            let roundTrips = rootStatesByID[record.rootID]?
+                .fileIDsByRelativePath[record.standardizedRelativePath] == fileID
+            files[fileID] = WorkspaceInventoryFileRecordFact(
+                record: record,
+                pathRoundTripsToSelf: roundTrips,
+                isDiscoverable: isDiscoverableFileID(fileID)
+            )
+        }
+
+        var folders: [UUID: WorkspaceInventoryFolderRecordFact] = [:]
+        folders.reserveCapacity(folderIDs.count)
+        for folderID in folderIDs {
+            guard let record = foldersByID[folderID] else {
+                folders[folderID] = WorkspaceInventoryFolderRecordFact(
+                    record: nil,
+                    pathRoundTripsToSelf: false,
+                    isDiscoverable: false
+                )
+                continue
+            }
+            let roundTrips = rootStatesByID[record.rootID]?
+                .folderIDsByRelativePath[record.standardizedRelativePath] == folderID
+            folders[folderID] = WorkspaceInventoryFolderRecordFact(
+                record: record,
+                pathRoundTripsToSelf: roundTrips,
+                isDiscoverable: isDiscoverableFolderID(folderID)
+            )
+        }
+
+        return (files, folders)
+    }
+
+    /// Verdict-returning facade over `inventoryRecordFacts`, kept byte-for-byte
+    /// behavior-identical to its pre-P4-6a form for its two existing external
+    /// consumers (`AgentContextFileBrowseService`, `WorkspaceFilesViewModel`), per
+    /// design §4.3.1 point 5 ("it is already a supported external API... becomes a
+    /// thin facade"). R5 (`filesByID[fileID] == record`) is dropped rather than
+    /// emulated: both operands come from the same live synchronous read with no
+    /// `await` between bind and compare, so on an actor the comparison is an
+    /// unfalsifiable tautology (design §4.3.1.1 result 2, D-11). The DEBUG counters
+    /// increment exactly once per call, on every path, matching the pre-refactor
+    /// function which incremented before its early-return guard.
     func appliedIndexRecordLookup(
         rootID: UUID,
         fileIDs: [UUID],
         folderIDs: [UUID]
     ) -> WorkspaceAppliedIndexRecordLookup? {
-        #if DEBUG
-            appliedIndexRecordLookupRequestCountForTesting += 1
-            appliedIndexRecordLookupRequestedRecordCountForTesting += fileIDs.count + folderIDs.count
-        #endif
         guard publishedSeededAuthorityIsQueryable(rootID: rootID),
               let state = rootStatesByID[rootID]
-        else { return nil }
+        else {
+            #if DEBUG
+                appliedIndexRecordLookupRequestCountForTesting += 1
+                appliedIndexRecordLookupRequestedRecordCountForTesting += fileIDs.count + folderIDs.count
+            #endif
+            return nil
+        }
+
+        let facts = inventoryRecordFacts(fileIDs: fileIDs, folderIDs: folderIDs)
 
         var matchingFilesByID: [UUID: WorkspaceFileRecord] = [:]
         matchingFilesByID.reserveCapacity(fileIDs.count)
         for fileID in fileIDs {
-            guard let record = filesByID[fileID],
+            guard let fact = facts.filesByID[fileID],
+                  let record = fact.record,
                   record.rootID == rootID,
-                  state.fileIDsByRelativePath[record.standardizedRelativePath] == fileID,
-                  isDiscoverableFileID(fileID),
-                  filesByID[fileID] == record
+                  fact.pathRoundTripsToSelf,
+                  fact.isDiscoverable
             else { continue }
             matchingFilesByID[fileID] = record
         }
@@ -6709,11 +6836,11 @@ actor WorkspaceFileContextStore {
         var matchingFoldersByID: [UUID: WorkspaceFolderRecord] = [:]
         matchingFoldersByID.reserveCapacity(folderIDs.count)
         for folderID in folderIDs {
-            guard let record = foldersByID[folderID],
+            guard let fact = facts.foldersByID[folderID],
+                  let record = fact.record,
                   record.rootID == rootID,
-                  state.folderIDsByRelativePath[record.standardizedRelativePath] == folderID,
-                  isDiscoverableFolderID(folderID),
-                  foldersByID[folderID] == record
+                  fact.pathRoundTripsToSelf,
+                  fact.isDiscoverable
             else { continue }
             matchingFoldersByID[folderID] = record
         }
@@ -6724,6 +6851,153 @@ actor WorkspaceFileContextStore {
             filesByID: matchingFilesByID,
             foldersByID: matchingFoldersByID
         )
+    }
+
+    // MARK: - P4-6a path-keyed inventory read surface
+
+    struct WorkspaceInventoryPathFileFact {
+        /// `state.fileIDsByRelativePath[path]` for the queried root's state.
+        let fileID: UUID?
+        /// `filesByID[fileID]`, present only when `fileID` resolved.
+        let record: WorkspaceFileRecord?
+        /// `isDiscoverableFileID(fileID)`; `false` when `fileID` is `nil`.
+        let isDiscoverable: Bool
+    }
+
+    struct WorkspaceInventoryPathFolderFact {
+        /// `state.folderIDsByRelativePath[path]` for the queried root's state.
+        let folderID: UUID?
+        /// `foldersByID[folderID]`, present only when `folderID` resolved.
+        let record: WorkspaceFolderRecord?
+        /// `isDiscoverableFolderID(folderID)`; `false` when `folderID` is `nil`.
+        let isDiscoverable: Bool
+    }
+
+    /// Batch path→ID fact lookup, the Swift-authority precursor to Rust's
+    /// `inventoryLookupPaths` (design §4.3.1.1 result 3, §4.3.1.2; architecture §5.3).
+    /// Serves B3 (`destructiveCodemapGraphFence`, `retainCodemapRootStatusCoverageAcrossPathInvalidation`),
+    /// the path-keyed B1 sites, and bucket C's `prepareSessionWorktreeOwnership` manifest
+    /// loop. One call per scan resolves every requested relative path against one root's
+    /// `fileIDsByRelativePath` / `folderIDsByRelativePath`, atomically with the id-keyed
+    /// records they resolve to — facts, not a verdict; absent paths resolve to `nil` ids.
+    func inventoryPathLookups(
+        rootID: UUID,
+        relativePaths: some Sequence<String>
+    ) -> (
+        files: [String: WorkspaceInventoryPathFileFact],
+        folders: [String: WorkspaceInventoryPathFolderFact]
+    ) {
+        guard let state = rootStatesByID[rootID] else { return ([:], [:]) }
+        return inventoryPathLookups(in: state, relativePaths: relativePaths)
+    }
+
+    /// State-scoped overload: resolves paths against a caller-held `RootState` value
+    /// (rather than a fresh `rootStatesByID[rootID]` read) so async call sites that
+    /// captured `state` before a suspension point compare against exactly the same
+    /// path-table snapshot they compared against pre-refactor -- no live-table
+    /// substitution, no new staleness window. `filesByID` / `foldersByID` /
+    /// discoverability are still actor-wide live reads either way, matching the
+    /// pre-refactor call sites, which only captured the per-root path maps.
+    private func inventoryPathLookups(
+        in state: RootState,
+        relativePaths: some Sequence<String>
+    ) -> (
+        files: [String: WorkspaceInventoryPathFileFact],
+        folders: [String: WorkspaceInventoryPathFolderFact]
+    ) {
+        var files: [String: WorkspaceInventoryPathFileFact] = [:]
+        var folders: [String: WorkspaceInventoryPathFolderFact] = [:]
+        #if DEBUG
+            var requestedPathCountForTesting = 0
+        #endif
+        for path in relativePaths {
+            #if DEBUG
+                requestedPathCountForTesting += 1
+            #endif
+            if files[path] == nil {
+                let fileID = state.fileIDsByRelativePath[path]
+                files[path] = WorkspaceInventoryPathFileFact(
+                    fileID: fileID,
+                    record: fileID.flatMap { filesByID[$0] },
+                    isDiscoverable: fileID.map(isDiscoverableFileID) ?? false
+                )
+            }
+            if folders[path] == nil {
+                let folderID = state.folderIDsByRelativePath[path]
+                folders[path] = WorkspaceInventoryPathFolderFact(
+                    folderID: folderID,
+                    record: folderID.flatMap { foldersByID[$0] },
+                    isDiscoverable: folderID.map(isDiscoverableFolderID) ?? false
+                )
+            }
+        }
+        #if DEBUG
+            appliedIndexRecordLookupRequestCountForTesting += 1
+            appliedIndexRecordLookupRequestedRecordCountForTesting += requestedPathCountForTesting
+        #endif
+        return (files, folders)
+    }
+
+    /// State-scoped id-keyed overload, mirroring `inventoryPathLookups(in:relativePaths:)`:
+    /// resolves against a caller-held `RootState` snapshot rather than a fresh
+    /// `rootStatesByID` read, for async call sites (site 4) whose pre-refactor form
+    /// validated path round-trips against a `state` captured before an earlier
+    /// suspension point, not against live tables at time of use. `filesByID` and
+    /// discoverability are still actor-wide live reads either way.
+    private func inventoryFileRecordFacts(
+        in state: RootState,
+        fileIDs: some Sequence<UUID>
+    ) -> [UUID: WorkspaceInventoryFileRecordFact] {
+        var facts: [UUID: WorkspaceInventoryFileRecordFact] = [:]
+        #if DEBUG
+            var requestedCountForTesting = 0
+        #endif
+        for fileID in fileIDs {
+            #if DEBUG
+                requestedCountForTesting += 1
+            #endif
+            guard facts[fileID] == nil else { continue }
+            guard let record = filesByID[fileID] else {
+                facts[fileID] = WorkspaceInventoryFileRecordFact(record: nil, pathRoundTripsToSelf: false, isDiscoverable: false)
+                continue
+            }
+            let roundTrips = state.fileIDsByRelativePath[record.standardizedRelativePath] == fileID
+            facts[fileID] = WorkspaceInventoryFileRecordFact(
+                record: record,
+                pathRoundTripsToSelf: roundTrips,
+                isDiscoverable: isDiscoverableFileID(fileID)
+            )
+        }
+        #if DEBUG
+            appliedIndexRecordLookupRequestCountForTesting += 1
+            appliedIndexRecordLookupRequestedRecordCountForTesting += requestedCountForTesting
+        #endif
+        return facts
+    }
+
+    // MARK: - P4-6a bucket-C aggregates (§4.3.1.2)
+    //
+    // Swift-authority precursor to Rust's O(1) `discoverableFileCount` /
+    // `discoverableFolderCount` per-root counters. The Rust side maintains these
+    // incrementally at every one of the 16 A2 mutation scopes (Appendix A) and pins
+    // them with a counter-equals-traversal differential (P4-3a done-when); that
+    // incremental-maintenance machinery and its differential are NOT built here --
+    // undertaking it now, without that differential harness, across 16 mutation sites
+    // in a step whose gate is behavior preservation would trade a correctness risk
+    // (a missed decrement silently diverging the counter from ground truth) for an
+    // optimization this step does not require, since Swift already computes the count
+    // cheaply today. What P4-6a rewires is the *call shape*: `prepareSessionWorktreeOwnership`
+    // now calls one named, documented function instead of inlining the traversal, so
+    // the P4-6b cutover replaces this function's body with a field read and touches no
+    // call site. Flagged explicitly, not silently deferred -- see the P4-6a report.
+    private func discoverableFileCount(in state: RootState) -> Int {
+        state.fileIDsByRelativePath.values.count(where: isDiscoverableFileID)
+    }
+
+    private func discoverableFolderCount(in state: RootState) -> Int {
+        state.folderIDsByRelativePath.count(where: { relativePath, folderID in
+            !relativePath.isEmpty && isDiscoverableFolderID(folderID)
+        })
     }
 
     func appliedIndexRootSnapshot(rootID: UUID) -> WorkspaceAppliedIndexRootSnapshot? {
@@ -11180,19 +11454,25 @@ actor WorkspaceFileContextStore {
         return await state.service.fullPath(forRelativePath: StandardizedPath.relative(relativePath))
     }
 
+    // P4-6a / B1 site 1 (id-keyed, sync). One batched `inventoryRecordFacts` call
+    // before the scan, replacing per-item `filesByID` / discoverability / path
+    // round-trip reads. Named test:
+    // `testCodemapAutomaticSelectionSourceIdentitiesSkipsManagedOnlyFiles`.
     func codemapAutomaticSelectionSourceIdentities(
         forFileIDs sourceFileIDs: [UUID],
         rootScope: WorkspaceLookupRootScope
     ) -> [WorkspaceCodemapAutomaticSelectionSourceIdentity] {
         let allowedRootIDs = Set(rootsForPathLookup(scope: rootScope).map(\.id))
+        let facts = inventoryRecordFacts(fileIDs: sourceFileIDs, folderIDs: []).filesByID
         var seenFileIDs = Set<UUID>()
         return sourceFileIDs.compactMap { fileID in
             guard seenFileIDs.insert(fileID).inserted,
-                  let file = filesByID[fileID],
+                  let fact = facts[fileID],
+                  let file = fact.record,
                   allowedRootIDs.contains(file.rootID),
-                  isDiscoverableFileID(fileID),
+                  fact.isDiscoverable,
                   let state = rootStatesByID[file.rootID],
-                  state.fileIDsByRelativePath[file.standardizedRelativePath] == fileID,
+                  fact.pathRoundTripsToSelf,
                   catalogGenerationsByRootID[file.rootID] != nil
             else { return nil }
             let rootEpoch = WorkspaceCodemapRootEpoch(
@@ -11238,12 +11518,16 @@ actor WorkspaceFileContextStore {
         let effectiveRootLabels = defaultRootLabels.merging(logicalRootDisplayNamesByRootID) {
             _, supplied in supplied
         }
+        // P4-6a / B1 site 2 (id-keyed, sync, per-clause failure attribution). One
+        // batched `inventoryRecordFacts` call before the scan. Named test:
+        // `testCodemapOperationPresentationCandidatesServesManagedOnlyFile`.
+        let facts = inventoryRecordFacts(fileIDs: fileIDs, folderIDs: []).filesByID
         var seenFileIDs = Set<UUID>()
         var candidates: [WorkspaceCodemapOperationPresentationCandidate] = []
         var issues: [WorkspaceCodemapOperationCandidateIssue] = []
 
         for fileID in fileIDs where seenFileIDs.insert(fileID).inserted {
-            guard let file = filesByID[fileID], isDiscoverableFileID(fileID) else {
+            guard let fact = facts[fileID], let file = fact.record, fact.isDiscoverable else {
                 issues.append(.fileNotCataloged(fileID))
                 continue
             }
@@ -11252,7 +11536,7 @@ actor WorkspaceFileContextStore {
                 continue
             }
             guard let state = rootStatesByID[file.rootID],
-                  state.fileIDsByRelativePath[file.standardizedRelativePath] == fileID,
+                  fact.pathRoundTripsToSelf,
                   let catalogGeneration = catalogGenerationsByRootID[file.rootID]
             else {
                 issues.append(.fileNotCataloged(fileID))
@@ -11286,12 +11570,17 @@ actor WorkspaceFileContextStore {
         }
         let completeRootCatalogs: [WorkspaceCodemapOperationCompleteRootCatalogReceipt]
         if includeCompleteRootCatalogs {
+            // Same site (4th occurrence): one batched `inventoryRecordFacts` call per
+            // root scan, replacing the per-file `isDiscoverableFileID` / `filesByID`
+            // read inside `.filter`.
             completeRootCatalogs = rootsForPathLookup(scope: rootScope).compactMap { root in
                 guard let state = rootStatesByID[root.id],
                       let catalogGeneration = catalogGenerationsByRootID[root.id]
                 else { return nil }
-                let supportedFileIDs = state.fileIDsByRelativePath.values.filter { fileID in
-                    guard isDiscoverableFileID(fileID), let file = filesByID[fileID] else { return false }
+                let rootFileIDs = Array(state.fileIDsByRelativePath.values)
+                let rootFacts = inventoryRecordFacts(fileIDs: rootFileIDs, folderIDs: []).filesByID
+                let supportedFileIDs = rootFileIDs.filter { fileID in
+                    guard let fact = rootFacts[fileID], fact.isDiscoverable, let file = fact.record else { return false }
                     let fileExtension = (file.name as NSString).pathExtension
                     return SyntaxManager.supportsCodeMap(fileExtension: fileExtension)
                 }.sorted { $0.uuidString < $1.uuidString }
@@ -11436,14 +11725,23 @@ actor WorkspaceFileContextStore {
                 continue
             }
 
+            // P4-6a / B1 site 3 (id-keyed, async, D-8). One batched
+            // `inventoryRecordFacts` call per root scan -- entirely before this
+            // function's first `await` (`engine.selectionGraph` below), so no new
+            // staleness window opens. The post-await re-check further down
+            // (`currentSession.engine === engine`, `currentSession.authority == session.authority`,
+            // root lifetime) is this site's existing D-8 anchor and is untouched.
+            // Named test: `testResolveAutomaticCodemapSelectionServesManagedOnlyFile`.
+            let facts = inventoryRecordFacts(fileIDs: rootSources.map(\.fileID), folderIDs: []).filesByID
             var validSources: [WorkspaceCodemapAutomaticSelectionSourceIdentity] = []
             var sourceIssues: [WorkspaceCodemapAutomaticSelectionIssue] = []
             for source in rootSources {
                 guard source.catalogGeneration == session.authority.catalogGeneration,
-                      let file = filesByID[source.fileID],
+                      let fact = facts[source.fileID],
+                      let file = fact.record,
                       file.rootID == rootEpoch.rootID,
-                      isDiscoverableFileID(source.fileID),
-                      state.fileIDsByRelativePath[file.standardizedRelativePath] == source.fileID
+                      fact.isDiscoverable,
+                      fact.pathRoundTripsToSelf
                 else {
                     sourceIssues.append(.sourceNotCataloged(source))
                     continue
@@ -11773,10 +12071,17 @@ actor WorkspaceFileContextStore {
                 rootWideFailure = true
                 issues.append(.graphRevoked(rootEpoch, reason))
             }
+            // P4-6a / B1 site 4 (id-keyed, async, D-8; PC-1 discoverability gap --
+            // must stay absent). `state` is the same captured snapshot the post-await
+            // code already reads elsewhere in this scope (no live re-fetch): one
+            // batched `inventoryFileRecordFacts(in:fileIDs:)` call per scan. Named
+            // test: `testRevalidateAutomaticCodemapSelectionServesManagedOnlyFile`.
+            let seedFacts = inventoryFileRecordFacts(in: state, fileIDs: rootReceipt.sources.map(\.fileID))
             for seed in rootReceipt.sources {
-                guard let file = filesByID[seed.fileID],
+                guard let fact = seedFacts[seed.fileID],
+                      let file = fact.record,
                       file.rootID == rootEpoch.rootID,
-                      state.fileIDsByRelativePath[file.standardizedRelativePath] == seed.fileID,
+                      fact.pathRoundTripsToSelf,
                       (
                           currentSession.pathGenerationsByRelativePath[file.standardizedRelativePath]
                               ?? currentSession.authority.ingressGeneration
@@ -11796,10 +12101,12 @@ actor WorkspaceFileContextStore {
             }
             var validRootTargets: [WorkspaceCodemapAutomaticSelectionTarget] = []
             if !rootWideFailure {
+                let targetFacts = inventoryFileRecordFacts(in: state, fileIDs: rootReceipt.targets.map(\.fileID))
                 for target in rootReceipt.targets {
-                    guard let file = filesByID[target.fileID],
+                    guard let fact = targetFacts[target.fileID],
+                          let file = fact.record,
                           file.rootID == rootEpoch.rootID,
-                          state.fileIDsByRelativePath[file.standardizedRelativePath] == target.fileID,
+                          fact.pathRoundTripsToSelf,
                           target.catalogGeneration == currentSession.authority.catalogGeneration,
                           target.logicalPath.standardizedRelativePath == file.standardizedRelativePath,
                           (
@@ -12554,14 +12861,20 @@ actor WorkspaceFileContextStore {
         #if DEBUG
             codemapArtifactDemandRequestCountForTesting += 1
         #endif
-        guard let file = filesByID[fileID] else {
+        // P4-6a / B1 site 5 (id-keyed, async, no generation/lifetime re-check to
+        // piggyback D-8 on -- per-iteration batch-of-one calls at each of this site's
+        // two independent read points, matching its pre-refactor re-read-after-await
+        // shape exactly rather than hoisting across the `await` below. R5
+        // (`filesByID[file.id] == file`) is dropped here: both operands are the same
+        // live synchronous read with no intervening `await` (§4.3.1.1 result 2).
+        let firstPassFact = inventoryRecordFacts(fileIDs: [fileID], folderIDs: []).filesByID[fileID]
+        guard let file = firstPassFact?.record else {
             return .init(result: .unavailable(.fileNotCataloged), ownership: .notAcquired)
         }
         guard let state = rootStatesByID[file.rootID] else {
             return .init(result: .unavailable(.rootNotLoaded), ownership: .notAcquired)
         }
-        guard state.fileIDsByRelativePath[file.standardizedRelativePath] == file.id,
-              filesByID[file.id] == file
+        guard firstPassFact?.pathRoundTripsToSelf == true
         else {
             return .init(result: .unavailable(.fileNotCataloged), ownership: .notAcquired)
         }
@@ -12649,11 +12962,14 @@ actor WorkspaceFileContextStore {
 
         if codemapSessionsByRootEpoch[rootEpoch] == nil {
             let eligibility = await resolveCodemapEligibility(authority: authority)
+            // D-8 (batch-of-one, fresh post-await read): `currentFile == file` is the
+            // captured-operand form (D-11) -- `file` was bound before this `await`, so
+            // this comparison is genuinely falsifiable and must not be dropped.
+            let postEligibilityFact = inventoryRecordFacts(fileIDs: [file.id], folderIDs: []).filesByID[file.id]
             guard codemapPreflightAuthorityIsCurrent(authority),
-                  let currentFile = filesByID[file.id],
+                  let currentFile = postEligibilityFact?.record,
                   currentFile == file,
-                  rootStatesByID[file.rootID]?
-                  .fileIDsByRelativePath[file.standardizedRelativePath] == file.id
+                  postEligibilityFact?.pathRoundTripsToSelf == true
             else {
                 return .init(result: .unavailable(.staleCurrentness), ownership: .notAcquired)
             }
@@ -12846,12 +13162,17 @@ actor WorkspaceFileContextStore {
         var requestIssues: [WorkspaceCodemapStructureIssueRecord] = []
         var seedsByRootEpoch: [WorkspaceCodemapRootEpoch: [UUID]] = [:]
         var seedPathsByFileID: [UUID: String] = [:]
+        // P4-6a / B1 site 6 (id-keyed, async; no generation/lifetime clause to
+        // piggyback D-8 on for this synchronous seed-resolution scan -- one batched
+        // call before the loop is safe here since nothing in this loop awaits).
+        // Named test: `testQueryCodemapStructureGraphsServesManagedOnlyFile`.
         var seenFileIDs = Set<UUID>()
+        let seedFacts = inventoryRecordFacts(fileIDs: seedFileIDs, folderIDs: []).filesByID
         for fileID in seedFileIDs where seenFileIDs.insert(fileID).inserted {
-            guard let file = filesByID[fileID], isDiscoverableFileID(fileID),
+            guard let fact = seedFacts[fileID], let file = fact.record, fact.isDiscoverable,
                   allowedRootIDs.contains(file.rootID),
                   let state = rootStatesByID[file.rootID],
-                  state.fileIDsByRelativePath[file.standardizedRelativePath] == fileID
+                  fact.pathRoundTripsToSelf
             else {
                 requestIssues.append(WorkspaceCodemapStructureIssueRecord(
                     code: "path_not_found",
@@ -12901,13 +13222,19 @@ actor WorkspaceFileContextStore {
                     updatesPending: false,
                     reconciling: false,
                     receipt: nil,
-                    seeds: rootSeedIDs.map {
-                        WorkspaceCodemapGraphStructureSeed(
-                            fileID: $0,
-                            standardizedRelativePath: filesByID[$0]?.standardizedRelativePath,
-                            state: .notIndexed
-                        )
-                    },
+                    // Deliberately unguarded, matching pre-refactor: no discoverability
+                    // filter, no path round-trip check -- a fresh per-iteration batch
+                    // fetch over `rootSeedIDs`, not a per-item table subscript.
+                    seeds: {
+                        let sizeLimitFacts = inventoryRecordFacts(fileIDs: rootSeedIDs, folderIDs: []).filesByID
+                        return rootSeedIDs.map {
+                            WorkspaceCodemapGraphStructureSeed(
+                                fileID: $0,
+                                standardizedRelativePath: sizeLimitFacts[$0]?.record?.standardizedRelativePath,
+                                state: .notIndexed
+                            )
+                        }
+                    }(),
                     nodes: [],
                     edges: [],
                     unresolved: [],
@@ -13525,6 +13852,8 @@ actor WorkspaceFileContextStore {
             guard allowedRootIDs == Set(receipt.completeRootCatalogs.map(\.rootEpoch.rootID)) else {
                 return .stale(.rootScope)
             }
+            // P4-6a / B1 site 7 (id-keyed, async, D-8; full reference predicate
+            // intact -- no discoverability gap here). One batched call per root scan.
             for catalog in receipt.completeRootCatalogs {
                 guard let state = rootStatesByID[catalog.rootEpoch.rootID],
                       state.lifetimeID == catalog.rootEpoch.rootLifetimeID
@@ -13532,8 +13861,10 @@ actor WorkspaceFileContextStore {
                 guard catalogGenerationsByRootID[catalog.rootEpoch.rootID] == catalog.catalogGeneration else {
                     return .stale(.rootEpoch(catalog.rootEpoch))
                 }
-                let currentSupportedFileIDs = state.fileIDsByRelativePath.values.filter { fileID in
-                    guard isDiscoverableFileID(fileID), let file = filesByID[fileID] else { return false }
+                let rootFileIDs = Array(state.fileIDsByRelativePath.values)
+                let rootFacts = inventoryRecordFacts(fileIDs: rootFileIDs, folderIDs: []).filesByID
+                let currentSupportedFileIDs = rootFileIDs.filter { fileID in
+                    guard let fact = rootFacts[fileID], fact.isDiscoverable, let file = fact.record else { return false }
                     return SyntaxManager.supportsCodeMap(
                         fileExtension: (file.name as NSString).pathExtension
                     )
@@ -13544,6 +13875,11 @@ actor WorkspaceFileContextStore {
             }
         }
 
+        // D-8: one batched call over `receipt.candidates` -- this whole function's
+        // only `await` (the trailing `revalidateAutomaticCodemapSelection` call) is
+        // strictly after every table read in this function, so no new staleness
+        // window opens by hoisting here.
+        let candidateFacts = inventoryRecordFacts(fileIDs: receipt.candidates.map(\.fileID), folderIDs: []).filesByID
         for candidate in receipt.candidates {
             let rootEpoch = candidate.rootEpoch
             guard allowedRootIDs.contains(rootEpoch.rootID),
@@ -13551,10 +13887,11 @@ actor WorkspaceFileContextStore {
                   state.lifetimeID == rootEpoch.rootLifetimeID
             else { return .stale(.rootEpoch(rootEpoch)) }
             guard catalogGenerationsByRootID[rootEpoch.rootID] == candidate.catalogGeneration,
-                  let file = filesByID[candidate.fileID],
+                  let fact = candidateFacts[candidate.fileID],
+                  let file = fact.record,
                   file.rootID == rootEpoch.rootID,
-                  isDiscoverableFileID(candidate.fileID),
-                  state.fileIDsByRelativePath[file.standardizedRelativePath] == candidate.fileID,
+                  fact.isDiscoverable,
+                  fact.pathRoundTripsToSelf,
                   candidate.logicalPath.rootDisplayName == (
                       receipt.logicalRootDisplayNamesByRootID[rootEpoch.rootID] ?? state.root.name
                   ),
@@ -14450,6 +14787,21 @@ actor WorkspaceFileContextStore {
         return codemapGraphIndexCatalogShardAndToken(authority: authority) != nil
     }
 
+    // P4-6a / B2 (the projected-shard call shape, design §4.3.1's "other two codemap
+    // shapes"). `codemapGraphIndexCatalogShardBuildSnapshot` (actor-isolated capture)
+    // and `buildCodemapGraphIndexCatalogShard` (nonisolated static, run inside
+    // `Task.detached` by `ensureCodemapGraphIndexCatalogShard` above) together are the
+    // "single projected-shard function" this step's remit describes; they are
+    // deliberately NOT merged into one Swift function, because doing so would
+    // collapse the actor-isolated/off-actor split the design calls out as essential
+    // ("the sort/filter/projection work happens off the actor" -- §4.3.1; "this site
+    // ... must not be serialized behind an in-flight authoritative rebuild" -- §5.2).
+    // This snapshot capture already reads each root's full table in one synchronous
+    // pass (no per-item guard chain to route through a fact primitive -- there is no
+    // predicate here, only a whole-root materialization), so it is left as-is; the
+    // pair is documented together as this step's B2 read-shape boundary. Swift stays
+    // authoritative; the future `inventoryOpenProjectedShard` delegation point is
+    // exactly this pair's call site (`ensureCodemapGraphIndexCatalogShard`).
     private func codemapGraphIndexCatalogShardBuildSnapshot(
         authority: CodemapRootAuthority
     ) -> CodemapGraphIndexCatalogShardBuildSnapshot? {
@@ -14581,6 +14933,20 @@ actor WorkspaceFileContextStore {
         ))
         var pathByteCount: UInt64 = 0
         var nextIndex = startIndex
+        // P4-6a / B2 (`readCodemapGraphIndexCatalogPage`, async, D-8/D-11). One
+        // batched `inventoryRecordFacts` call over this page's candidate ids, hoisted
+        // before the loop (fully synchronous from here to the end of the function --
+        // no new staleness window). `fact.record == file` is the D-11 captured-operand
+        // form: `file` comes from `current.shard.projectionFiles[nextIndex].file`, a
+        // record frozen into the shard behind the earlier `await
+        // ensureCodemapGraphIndexCatalogShard`, and the comparison is genuinely
+        // falsifiable -- it is preserved, not dropped. `state.fileIDsByRelativePath[...]`
+        // stays a direct read: it checks the *captured* file's own path, which the
+        // fact primitive (keyed by live-record path) cannot substitute for.
+        let pageFacts = inventoryRecordFacts(
+            fileIDs: current.shard.projectionFiles[startIndex...].map(\.file.id),
+            folderIDs: []
+        ).filesByID
         while nextIndex < current.shard.projectionFiles.count,
               entries.count < request.maximumEntryCount
         {
@@ -14589,8 +14955,9 @@ actor WorkspaceFileContextStore {
             guard let state = rootStatesByID[authority.rootEpoch.rootID],
                   state.lifetimeID == authority.rootEpoch.rootLifetimeID,
                   state.fileIDsByRelativePath[file.standardizedRelativePath] == file.id,
-                  filesByID[file.id] == file,
-                  isDiscoverableFileID(file.id),
+                  let fact = pageFacts[file.id],
+                  fact.record == file,
+                  fact.isDiscoverable,
                   let identity = WorkspaceCodemapArtifactBindingIdentity(
                       rootID: authority.rootEpoch.rootID,
                       rootLifetimeID: authority.rootEpoch.rootLifetimeID,
@@ -14678,13 +15045,21 @@ actor WorkspaceFileContextStore {
               initialSession.authority == authority
         else { return false }
 
+        // P4-6a / B1 site 9 (path-keyed, async, D-8): one batched
+        // `inventoryPathLookups` call over this synchronous scan of `update.changes`
+        // (no `await` before this point in the function). R4 (discoverability) stays
+        // absent, per §4.3.1.1's six-site gap registry (PC-4) -- must not be added.
+        let firstPassLookups = inventoryPathLookups(
+            rootID: authority.rootEpoch.rootID,
+            relativePaths: update.changes.map(\.standardizedRelativePath)
+        )
         let securityExcludedPaths = Set(update.changes.compactMap { change -> String? in
             guard change.state == .securityExcluded,
                   change.standardizedRelativePath == StandardizedPath.relative(change.standardizedRelativePath),
                   !change.standardizedRelativePath.isEmpty,
-                  let state = rootStatesByID[authority.rootEpoch.rootID],
-                  state.fileIDsByRelativePath[change.standardizedRelativePath] == change.fileID,
-                  let file = filesByID[change.fileID],
+                  let fact = firstPassLookups.files[change.standardizedRelativePath],
+                  fact.fileID == change.fileID,
+                  let file = fact.record,
                   file.rootID == authority.rootEpoch.rootID,
                   file.standardizedRelativePath == change.standardizedRelativePath
             else { return nil }
@@ -14720,6 +15095,15 @@ actor WorkspaceFileContextStore {
               var session = codemapSessionsByRootEpoch[authority.rootEpoch],
               session.authority == authority
         else { return false }
+        // D-8: a fresh, independent batched lookup -- not reused from `firstPassLookups`.
+        // The `await`s above (engine.selectionGraph / graph.latestSnapshot /
+        // graph.fenceFiles) are exactly the staleness window D-8 exists to detect;
+        // re-deriving `session` and re-checking `codemapAuthorityIsCurrent` just above
+        // is the site's existing generation re-check this hoist piggybacks on.
+        let secondPassLookups = inventoryPathLookups(
+            rootID: authority.rootEpoch.rootID,
+            relativePaths: update.changes.map(\.standardizedRelativePath)
+        )
         var appliedChanges: [WorkspaceCodemapMarkerReadinessChange] = []
         for change in update.changes {
             guard change.standardizedRelativePath == StandardizedPath.relative(
@@ -14730,9 +15114,9 @@ actor WorkspaceFileContextStore {
                     rootEpoch: authority.rootEpoch,
                     relativePath: change.standardizedRelativePath
                 ),
-                let state = rootStatesByID[authority.rootEpoch.rootID],
-                state.fileIDsByRelativePath[change.standardizedRelativePath] == change.fileID,
-                let file = filesByID[change.fileID],
+                let fact = secondPassLookups.files[change.standardizedRelativePath],
+                fact.fileID == change.fileID,
+                let file = fact.record,
                 file.rootID == authority.rootEpoch.rootID,
                 file.standardizedRelativePath == change.standardizedRelativePath
             else { continue }
@@ -14793,6 +15177,15 @@ actor WorkspaceFileContextStore {
             return await acceptCodemapMarkerReadinessUpdate(update, authority: authority)
         }
 
+        // P4-6a test shim (site 11, PC-6 gap): `codemapDemandIsCurrent` is `private`;
+        // it takes no authority parameter (it re-derives everything from the ticket),
+        // so this shim is a direct pass-through with no setup of its own.
+        func codemapDemandIsCurrentForTesting(
+            _ ticket: WorkspaceCodemapArtifactDemandTicket
+        ) -> Bool {
+            codemapDemandIsCurrent(ticket)
+        }
+
         func codemapMarkerReadinessSnapshotForTesting(
             rootEpoch: WorkspaceCodemapRootEpoch
         ) -> (revision: UInt64, changes: [WorkspaceCodemapMarkerReadinessChange])? {
@@ -14835,6 +15228,14 @@ actor WorkspaceFileContextStore {
         }
     #endif
 
+    // P4-6a / B1 site 8 (path-keyed, sync). `rootStatesByID[rootEpoch.rootID]`
+    // existence is no longer bound as a standalone gate: `inventoryPathLookups`
+    // returns an absent fact for a missing root, which fails the second guard exactly
+    // as the original's combined guard failed on a missing `state` -- provably
+    // equivalent because this function's only observable effect is its return value
+    // (no side effects, no per-clause diagnostics). R4 (discoverability) stays absent
+    // per §4.3.1.1's six-site gap registry (PC-3) -- must not be added. Named test:
+    // `testCodemapManifestCandidateReturnsCandidateForManagedOnlyFile`.
     private func codemapManifestCandidate(
         rootEpoch: WorkspaceCodemapRootEpoch,
         relativePath: String,
@@ -14842,7 +15243,6 @@ actor WorkspaceFileContextStore {
     ) -> WorkspaceCodemapManifestBindingCandidate? {
         guard rootEpoch == authority.rootEpoch,
               codemapAuthorityIsCurrent(authority),
-              let state = rootStatesByID[rootEpoch.rootID],
               let session = codemapSessionsByRootEpoch[rootEpoch],
               session.authority == authority
         else { return nil }
@@ -14852,9 +15252,14 @@ actor WorkspaceFileContextStore {
               !StandardizedPath.containsNUL(relativePath),
               standardizedRelativePath == relativePath,
               standardizedRelativePath != "..",
-              !standardizedRelativePath.hasPrefix("../"),
-              let fileID = state.fileIDsByRelativePath[standardizedRelativePath],
-              let file = filesByID[fileID],
+              !standardizedRelativePath.hasPrefix("../")
+        else { return nil }
+        let fact = inventoryPathLookups(
+            rootID: rootEpoch.rootID,
+            relativePaths: [standardizedRelativePath]
+        ).files[standardizedRelativePath]
+        guard let fileID = fact?.fileID,
+              let file = fact?.record,
               file.rootID == rootEpoch.rootID,
               file.standardizedRelativePath == standardizedRelativePath,
               let identity = WorkspaceCodemapArtifactBindingIdentity(
@@ -14884,17 +15289,27 @@ actor WorkspaceFileContextStore {
         ownerID: UUID,
         authority: CodemapRootAuthority
     ) async throws -> ValidatedRawFileContentSnapshot {
+        // P4-6a / B1 site 10 (path-keyed, async, D-8). `state` stays a direct read
+        // (needed below for `.service` / `.root`, not folded into the fact). R4
+        // (discoverability) stays absent per §4.3.1.1's six-site gap registry (PC-5).
         guard WorkspaceCodemapRootEpoch(
             rootID: identity.rootID,
             rootLifetimeID: identity.rootLifetimeID
         ) == authority.rootEpoch,
             codemapAuthorityIsCurrent(authority),
             let state = rootStatesByID[identity.rootID],
-            state.root.standardizedFullPath == identity.standardizedRootPath,
-            let fileID = state.fileIDsByRelativePath[identity.standardizedRelativePath],
-            fileID == identity.fileID,
-            let file = filesByID[fileID],
-            file.standardizedFullPath == identity.standardizedFullPath
+            state.root.standardizedFullPath == identity.standardizedRootPath
+        else {
+            throw WorkspaceCodemapBindingIntegrationRoutingError.routeDetached(authority.rootEpoch)
+        }
+        let firstPassFact = inventoryPathLookups(
+            in: state,
+            relativePaths: [identity.standardizedRelativePath]
+        ).files[identity.standardizedRelativePath]
+        guard let fileID = firstPassFact?.fileID,
+              fileID == identity.fileID,
+              let file = firstPassFact?.record,
+              file.standardizedFullPath == identity.standardizedFullPath
         else {
             throw WorkspaceCodemapBindingIntegrationRoutingError.routeDetached(authority.rootEpoch)
         }
@@ -14914,12 +15329,23 @@ actor WorkspaceFileContextStore {
             workloadClass: .codemap,
             schedulerOwnerID: ownerID
         )
+        // D-8: a fresh, independent lookup against `currentState`, re-fetched after
+        // the `loadValidatedRawContent` await above -- this is the site's own
+        // pre-existing post-await re-check (lifetimeID + root path + path→id), now
+        // routed through the shared fact primitive rather than direct table reads.
         guard codemapAuthorityIsCurrent(authority),
               let currentState = rootStatesByID[identity.rootID],
               currentState.lifetimeID == identity.rootLifetimeID,
-              currentState.root.standardizedFullPath == identity.standardizedRootPath,
-              currentState.fileIDsByRelativePath[identity.standardizedRelativePath] == identity.fileID,
-              let currentFile = filesByID[identity.fileID],
+              currentState.root.standardizedFullPath == identity.standardizedRootPath
+        else {
+            throw WorkspaceCodemapBindingIntegrationRoutingError.routeDetached(authority.rootEpoch)
+        }
+        let secondPassFact = inventoryPathLookups(
+            in: currentState,
+            relativePaths: [identity.standardizedRelativePath]
+        ).files[identity.standardizedRelativePath]
+        guard secondPassFact?.fileID == identity.fileID,
+              let currentFile = secondPassFact?.record,
               currentFile.standardizedFullPath == identity.standardizedFullPath
         else {
             throw WorkspaceCodemapBindingIntegrationRoutingError.routeDetached(authority.rootEpoch)
@@ -14952,6 +15378,9 @@ actor WorkspaceFileContextStore {
             codemapAuthorityMatchesLoadedRoot(authority)
     }
 
+    // P4-6a / B1 site 11 (path-keyed, sync). R4 (discoverability) stays absent per
+    // §4.3.1.1's six-site gap registry (PC-6) -- must not be added. Named test:
+    // `testCodemapDemandIsCurrentTrueForManagedOnlyFile`.
     private func codemapDemandIsCurrent(
         _ ticket: WorkspaceCodemapArtifactDemandTicket
     ) -> Bool {
@@ -14969,10 +15398,14 @@ actor WorkspaceFileContextStore {
               (
                   session.pathGenerationsByRelativePath[record.identity.standardizedRelativePath]
                       ?? session.authority.ingressGeneration
-              ) == ticket.pathGeneration,
-              let state = rootStatesByID[ticket.rootEpoch.rootID],
-              state.fileIDsByRelativePath[record.identity.standardizedRelativePath] == ticket.fileID,
-              filesByID[ticket.fileID]?.rootID == ticket.rootEpoch.rootID
+              ) == ticket.pathGeneration
+        else { return false }
+        let fact = inventoryPathLookups(
+            rootID: ticket.rootEpoch.rootID,
+            relativePaths: [record.identity.standardizedRelativePath]
+        ).files[record.identity.standardizedRelativePath]
+        guard fact?.fileID == ticket.fileID,
+              fact?.record?.rootID == ticket.rootEpoch.rootID
         else { return false }
         return true
     }
@@ -15316,6 +15749,11 @@ actor WorkspaceFileContextStore {
         return (token, task)
     }
 
+    // P4-6a / B3: `state.fileIDsByRelativePath[path]` rewired onto `inventoryPathLookups`,
+    // hoisted once for the whole batch (this function is fully synchronous -- no D-8
+    // window). `state` itself is still read directly for the unrelated `lifetimeID`
+    // gate, which is not one of the ten inventory tables. Named test:
+    // `testRetainCodemapRootStatusCoverageSkipsPathsAbsentFromProjectionOrAlreadyInvalidated`.
     private func retainCodemapRootStatusCoverageAcrossPathInvalidation(
         rootEpoch: WorkspaceCodemapRootEpoch,
         standardizedRelativePaths: Set<String>
@@ -15327,8 +15765,9 @@ actor WorkspaceFileContextStore {
               let shard = codemapGraphIndexCatalogShardAndToken(authority: authority)?.shard
         else { return }
 
+        let lookups = inventoryPathLookups(rootID: rootEpoch.rootID, relativePaths: standardizedRelativePaths).files
         for path in standardizedRelativePaths {
-            guard let fileID = state.fileIDsByRelativePath[path],
+            guard let fileID = lookups[path]?.fileID,
                   shard.projectionFileIndexByID[fileID] != nil,
                   baseline.invalidatedCandidateFileIDs.insert(fileID).inserted
             else { continue }
@@ -15394,24 +15833,41 @@ actor WorkspaceFileContextStore {
         )
     }
 
+    // P4-6a / B3: rewired onto `inventoryPathLookups`. `rootStatesByID[rootID]` missing
+    // is no longer an early-return guard -- `inventoryPathLookups` returns empty fact
+    // maps for a missing root, every path then resolves to `fileID == nil`, `fileIDs`
+    // stays empty, and the function returns `nil` exactly as it did before, just via
+    // the shared empty-facts path rather than a dedicated guard. Named test:
+    // `testDestructiveCodemapGraphFenceReturnsNilWhenRootStateMissingOrNoCommandsMatch`.
     private func destructiveCodemapGraphFence(
         rootID: UUID,
         commands: [CodemapInvalidationCommand]
     ) -> (fileIDs: Set<UUID>, reason: WorkspaceCodemapGraphFenceReason)? {
-        guard let fileIDsByRelativePath = rootStatesByID[rootID]?.fileIDsByRelativePath else { return nil }
+        let queriedPaths: Set<String> = commands.reduce(into: []) { paths, command in
+            switch command {
+            case let .deleted(commandPaths), let .securityExcluded(commandPaths):
+                paths.formUnion(commandPaths)
+            case let .renamed(from, to):
+                paths.insert(from)
+                paths.insert(to)
+            case .modified, .watcherGap, .checkout, .repositoryAuthority, .catalogAdvanced, .unload:
+                break
+            }
+        }
+        let lookups = inventoryPathLookups(rootID: rootID, relativePaths: queriedPaths).files
         var fileIDs = Set<UUID>()
         var reason: WorkspaceCodemapGraphFenceReason = .deleted
         for command in commands {
             switch command {
             case let .deleted(paths):
-                fileIDs.formUnion(paths.compactMap { fileIDsByRelativePath[$0] })
+                fileIDs.formUnion(paths.compactMap { lookups[$0]?.fileID })
             case let .renamed(from, to):
                 reason = .renamed
-                if let fileID = fileIDsByRelativePath[from] { fileIDs.insert(fileID) }
-                if let fileID = fileIDsByRelativePath[to] { fileIDs.insert(fileID) }
+                if let fileID = lookups[from]?.fileID { fileIDs.insert(fileID) }
+                if let fileID = lookups[to]?.fileID { fileIDs.insert(fileID) }
             case let .securityExcluded(paths):
                 reason = .securityExcluded
-                fileIDs.formUnion(paths.compactMap { fileIDsByRelativePath[$0] })
+                fileIDs.formUnion(paths.compactMap { lookups[$0]?.fileID })
             case .modified, .watcherGap, .checkout, .repositoryAuthority, .catalogAdvanced, .unload:
                 break
             }

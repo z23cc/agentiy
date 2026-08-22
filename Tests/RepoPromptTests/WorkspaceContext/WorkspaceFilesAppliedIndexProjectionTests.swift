@@ -389,6 +389,8 @@ import XCTest
             XCTAssertEqual(diagnostics.directIDLookupMissCount, 2)
             XCTAssertEqual(diagnostics.canonicalResyncCount, 0)
             XCTAssertEqual(diagnostics.handledGenerationByRootID[root.id], canonical.generation)
+            // P4-6a: these counters now aggregate every fact-returning call site, not
+            // only `appliedIndexRecordLookup` -- verified empirically unchanged here.
             let storeDiagnostics = await store.appliedIndexRecordLookupDiagnosticsForTesting()
             XCTAssertEqual(storeDiagnostics.lookupRequests, 1)
             XCTAssertEqual(storeDiagnostics.requestedRecords, 2)

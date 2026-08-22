@@ -95,6 +95,10 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(lookup?.generation, 0)
             XCTAssertEqual(lookup?.filesByID, [first.id: first])
             XCTAssertEqual(lookup?.foldersByID, [sources.id: sources])
+            // P4-6a: these counters now aggregate every fact-returning call site
+            // (`inventoryRecordFacts`/`inventoryFileRecordFacts`/`inventoryPathLookups`),
+            // not only `appliedIndexRecordLookup` -- verified empirically to be
+            // unchanged here since this scenario never establishes a codemap session.
             let diagnostics = await store.appliedIndexRecordLookupDiagnosticsForTesting()
             XCTAssertEqual(diagnostics.lookupRequests, 1)
             XCTAssertEqual(diagnostics.requestedRecords, 3)
