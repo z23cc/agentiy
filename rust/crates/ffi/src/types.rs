@@ -1897,6 +1897,63 @@ impl From<runtime::inventory_scope::InventoryDeltaReceipt> for InventoryDeltaRec
     }
 }
 
+// ---- discovery mint site (§4.1.1 of the P4 design doc; docs/architecture/rust-inventory-
+// scope-v1.md's "Discovery mint site" section) -- additive parallel to the id-supplied
+// `BulkChunkReceiptV1` / `InventoryDeltaCommandV1` / `InventoryDeltaReceiptV1` above, which are
+// unchanged. ----------------------------------------------------------------------------------
+
+/// `inventoryPushBulkChunkDiscovery`'s receipt: the usual staged counts, plus the minted file/
+/// folder ids (each a raw 16-byte UUID, matching `root_id`'s `Vec<u8>` convention elsewhere in
+/// this file) in the same order as the discovery bulk chunk's input record vectors.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct BulkChunkDiscoveryReceiptV1 {
+    pub files_staged: u64,
+    pub folders_staged: u64,
+    pub minted_file_ids: Vec<Vec<u8>>,
+    pub minted_folder_ids: Vec<Vec<u8>>,
+}
+
+/// `InventoryDeltaCommandV1`'s discovery counterpart: identical shape, `event_bytes` carries the
+/// compact `inventory-scope-v1` **discovery** delta blob --
+/// `runtime::inventory_scope::encode_discovery_delta_event` / `decode_discovery_delta_event`.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct InventoryDeltaDiscoveryCommandV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub root_id: Vec<u8>,
+    pub root_lifetime_id: String,
+    pub watcher_accepted_watermark: Option<u64>,
+    pub requires_full_resync: bool,
+    pub expected_applied_index_generation: Option<u64>,
+    pub source: String,
+    pub event_bytes: Vec<u8>,
+}
+
+/// `inventoryApplyDeltaDiscoveryV1`'s receipt: the usual delta receipt fields, plus the minted
+/// file/folder ids in the same order as the discovery event's `upserted_files`/`upserted_folders`
+/// on the input command. Populated even on a `Rejected` outcome -- see
+/// `runtime::inventory_scope::InventoryDeltaDiscoveryReceipt`'s doc comment for why that's safe.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryDeltaDiscoveryReceiptV1 {
+    pub applied_index_generation: u64,
+    pub catalog_generation: Option<u64>,
+    pub outcome: InventoryApplyOutcomeV1,
+    pub minted_file_ids: Vec<Vec<u8>>,
+    pub minted_folder_ids: Vec<Vec<u8>>,
+}
+
+impl From<runtime::inventory_scope::InventoryDeltaDiscoveryReceipt> for InventoryDeltaDiscoveryReceiptV1 {
+    fn from(value: runtime::inventory_scope::InventoryDeltaDiscoveryReceipt) -> Self {
+        Self {
+            applied_index_generation: value.receipt.applied_index_generation,
+            catalog_generation: value.receipt.catalog_generation,
+            outcome: value.receipt.outcome.into(),
+            minted_file_ids: value.minted_file_ids.iter().map(|id| id.to_vec()).collect(),
+            minted_folder_ids: value.minted_folder_ids.iter().map(|id| id.to_vec()).collect(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum InventoryHandleInvalidationReasonV1 {
     RootClosed,

@@ -65,6 +65,14 @@ pub const OPTIONAL_WORD: u64 = u64::MAX;
 /// modification_date_bits(1) = 14. Identical layout to `inventory::contract::RECORD_STRIDE`
 /// (deliberately: this is the same nine-field Swift shape, just interned).
 pub const RECORD_STRIDE: usize = 14;
+/// Words per **discovery** record row: root_id(2) + name(1) + relative_path(1) +
+/// standardized_relative_path(1) + full_path(1) + standardized_full_path(1) +
+/// parent_folder_id_present(1) + parent_folder_id(2) + modification_date_present(1) +
+/// modification_date_bits(1) = 12. The same nine-field shape as [`RECORD_STRIDE`] minus the
+/// caller-supplied `id` -- the discovery path (§4.1.1: "Rust mints v4-shaped UUIDs from a
+/// per-scope CSPRNG") mints one instead. **Additive, parallel to [`RECORD_STRIDE`]**: the
+/// id-supplied row shape/decode used by bulk-load and delta replay is untouched byte-for-byte.
+pub const DISCOVERY_RECORD_STRIDE: usize = 12;
 /// Words per fact row (`CompactRecordBlockV1`/`CompactLookupResultV1`, contract doc §5.3):
 /// requested_key_hi(1) + requested_key_lo(1) [id or, for lookup, an opaque request ordinal] +
 /// exists(1) + file_id_present(1) + file_id_hi(1) + file_id_lo(1) + folder_id_present(1) +
@@ -108,10 +116,14 @@ pub enum MessageKind {
     RootUnloaded = 10,
     ShardFallback = 11,
     ResnapshotRequired = 12,
+    // ---- discovery mint site (§4.1.1): additive, parallel to BulkChunk/DeltaEvent. Carries the
+    // same nine-field record shape minus the caller-supplied `id` -- see `DISCOVERY_RECORD_STRIDE`.
+    DiscoveryBulkChunk = 13,
+    DiscoveryDeltaEvent = 14,
 }
 
 impl MessageKind {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 14] = [
         Self::BulkChunk,
         Self::DeltaEvent,
         Self::ResolveRequest,
@@ -124,6 +136,8 @@ impl MessageKind {
         Self::RootUnloaded,
         Self::ShardFallback,
         Self::ResnapshotRequired,
+        Self::DiscoveryBulkChunk,
+        Self::DiscoveryDeltaEvent,
     ];
 
     fn from_id(id: u16) -> Option<Self> {
@@ -604,6 +618,392 @@ fn decode_folder_rows(
             })
         })
         .collect()
+}
+
+// ---- discovery records (§4.1.1: id-less input, Rust mints on decode-and-stage) ----------------
+//
+// `DiscoveredFileRecord`/`DiscoveredFolderRecord` are the same nine-field shape as
+// `InventoryFileRecord`/`InventoryFolderRecord` minus `id`. They exist only as the decode-side
+// output of the discovery wire messages below; `InventoryScope::push_bulk_chunk_discovery` /
+// `apply_delta_discovery` (`scope.rs`) mint an id for each one and hand the fully-formed record
+// to the *existing, unchanged* `push_bulk_chunk`/`apply_delta` staging logic -- this module never
+// mints anything itself, it only carries id-less records across the wire.
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveredFileRecord {
+    pub root_id: InventoryUuid,
+    pub name: String,
+    pub relative_path: String,
+    pub standardized_relative_path: String,
+    pub full_path: String,
+    pub standardized_full_path: String,
+    pub parent_folder_id: Option<InventoryUuid>,
+    pub modification_date: Option<f64>,
+}
+
+impl DiscoveredFileRecord {
+    #[must_use]
+    pub fn into_minted(self, id: InventoryUuid) -> InventoryFileRecord {
+        InventoryFileRecord {
+            id,
+            root_id: self.root_id,
+            name: self.name,
+            relative_path: self.relative_path,
+            standardized_relative_path: self.standardized_relative_path,
+            full_path: self.full_path,
+            standardized_full_path: self.standardized_full_path,
+            parent_folder_id: self.parent_folder_id,
+            modification_date: self.modification_date,
+        }
+    }
+}
+
+/// See `DiscoveredFileRecord` doc comment: identical shape, for `InventoryFolderRecord`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveredFolderRecord {
+    pub root_id: InventoryUuid,
+    pub name: String,
+    pub relative_path: String,
+    pub standardized_relative_path: String,
+    pub full_path: String,
+    pub standardized_full_path: String,
+    pub parent_folder_id: Option<InventoryUuid>,
+    pub modification_date: Option<f64>,
+}
+
+impl DiscoveredFolderRecord {
+    #[must_use]
+    pub fn into_minted(self, id: InventoryUuid) -> InventoryFolderRecord {
+        InventoryFolderRecord {
+            id,
+            root_id: self.root_id,
+            name: self.name,
+            relative_path: self.relative_path,
+            standardized_relative_path: self.standardized_relative_path,
+            full_path: self.full_path,
+            standardized_full_path: self.standardized_full_path,
+            parent_folder_id: self.parent_folder_id,
+            modification_date: self.modification_date,
+        }
+    }
+}
+
+/// `InventoryAppliedIndexBatchEvent`'s discovery-path counterpart: `upserted_files`/
+/// `upserted_folders` carry id-less records; everything else (removals, modifications --
+/// operations that reference an *already-known* id) is identical, because a removal or
+/// modification is never a discovery event by definition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InventoryDiscoveryAppliedIndexBatchEvent {
+    pub root_id: InventoryUuid,
+    pub upserted_files: Vec<DiscoveredFileRecord>,
+    pub upserted_folders: Vec<DiscoveredFolderRecord>,
+    pub removed_file_ids: Vec<InventoryUuid>,
+    pub removed_folder_ids: Vec<InventoryUuid>,
+    pub removed_file_paths: Vec<String>,
+    pub removed_folder_paths: Vec<String>,
+    pub modified_file_ids: Vec<InventoryUuid>,
+    pub modified_folder_ids: Vec<InventoryUuid>,
+}
+
+/// Appends one discovery record row ([`DISCOVERY_RECORD_STRIDE`] layout) to `words`. Mirrors
+/// `push_record_row` minus the `id` fields.
+#[allow(clippy::too_many_arguments)]
+fn push_discovery_record_row(
+    words: &mut Vec<u64>,
+    pool: &mut InternPoolBuilder,
+    root_id: &InventoryUuid,
+    name: &str,
+    relative_path: &str,
+    standardized_relative_path: &str,
+    full_path: &str,
+    standardized_full_path: &str,
+    parent_folder_id: Option<InventoryUuid>,
+    modification_date: Option<f64>,
+) {
+    let (root_hi, root_lo) = uuid_to_words(root_id);
+    let (parent_present, parent_hi, parent_lo) = optional_uuid_to_words(parent_folder_id);
+    let (mod_present, mod_bits) = match modification_date {
+        Some(value) => (1, value.to_bits()),
+        None => (0, 0),
+    };
+    words.extend([
+        root_hi,
+        root_lo,
+        pool.intern(name),
+        pool.intern(relative_path),
+        pool.intern(standardized_relative_path),
+        pool.intern(full_path),
+        pool.intern(standardized_full_path),
+        parent_present,
+        parent_hi,
+        parent_lo,
+        mod_present,
+        mod_bits,
+    ]);
+}
+
+struct DecodedDiscoveryRecordRow {
+    root_id: InventoryUuid,
+    name: String,
+    relative_path: String,
+    standardized_relative_path: String,
+    full_path: String,
+    standardized_full_path: String,
+    parent_folder_id: Option<InventoryUuid>,
+    modification_date: Option<f64>,
+}
+
+fn read_discovery_record_row(
+    row: &[u64],
+    pool: &InternPoolReader<'_>,
+) -> Result<DecodedDiscoveryRecordRow, WireError> {
+    let &[root_hi, root_lo, name_idx, relative_path_idx, standardized_relative_path_idx, full_path_idx, standardized_full_path_idx, parent_present, parent_hi, parent_lo, mod_present, mod_bits] =
+        row
+    else {
+        return Err(WireError::Malformed("discovery record row"));
+    };
+    let modification_date = match mod_present {
+        0 => None,
+        1 => {
+            let value = f64::from_bits(mod_bits);
+            if value.is_nan() {
+                return Err(WireError::Malformed("modification_date"));
+            }
+            Some(value)
+        }
+        _ => return Err(WireError::Malformed("modification_date presence flag")),
+    };
+    Ok(DecodedDiscoveryRecordRow {
+        root_id: uuid_from_words(root_hi, root_lo),
+        name: pool.resolve(name_idx)?.to_owned(),
+        relative_path: pool.resolve(relative_path_idx)?.to_owned(),
+        standardized_relative_path: pool.resolve(standardized_relative_path_idx)?.to_owned(),
+        full_path: pool.resolve(full_path_idx)?.to_owned(),
+        standardized_full_path: pool.resolve(standardized_full_path_idx)?.to_owned(),
+        parent_folder_id: optional_uuid_from_words(parent_present, parent_hi, parent_lo)?,
+        modification_date,
+    })
+}
+
+fn push_discovered_file_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, file: &DiscoveredFileRecord) {
+    push_discovery_record_row(
+        words,
+        pool,
+        &file.root_id,
+        &file.name,
+        &file.relative_path,
+        &file.standardized_relative_path,
+        &file.full_path,
+        &file.standardized_full_path,
+        file.parent_folder_id,
+        file.modification_date,
+    );
+}
+
+fn push_discovered_folder_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, folder: &DiscoveredFolderRecord) {
+    push_discovery_record_row(
+        words,
+        pool,
+        &folder.root_id,
+        &folder.name,
+        &folder.relative_path,
+        &folder.standardized_relative_path,
+        &folder.full_path,
+        &folder.standardized_full_path,
+        folder.parent_folder_id,
+        folder.modification_date,
+    );
+}
+
+fn decode_discovered_file_rows(
+    words: &[u64],
+    pool: &InternPoolReader<'_>,
+) -> Result<Vec<DiscoveredFileRecord>, WireError> {
+    if words.len() % DISCOVERY_RECORD_STRIDE != 0 {
+        return Err(WireError::Malformed("discovered file row stride"));
+    }
+    if words.len() / DISCOVERY_RECORD_STRIDE > MAX_ROWS_PER_CALL {
+        return Err(WireError::Oversize("discovered file rows"));
+    }
+    words
+        .chunks_exact(DISCOVERY_RECORD_STRIDE)
+        .map(|row| {
+            let decoded = read_discovery_record_row(row, pool)?;
+            Ok(DiscoveredFileRecord {
+                root_id: decoded.root_id,
+                name: decoded.name,
+                relative_path: decoded.relative_path,
+                standardized_relative_path: decoded.standardized_relative_path,
+                full_path: decoded.full_path,
+                standardized_full_path: decoded.standardized_full_path,
+                parent_folder_id: decoded.parent_folder_id,
+                modification_date: decoded.modification_date,
+            })
+        })
+        .collect()
+}
+
+fn decode_discovered_folder_rows(
+    words: &[u64],
+    pool: &InternPoolReader<'_>,
+) -> Result<Vec<DiscoveredFolderRecord>, WireError> {
+    if words.len() % DISCOVERY_RECORD_STRIDE != 0 {
+        return Err(WireError::Malformed("discovered folder row stride"));
+    }
+    if words.len() / DISCOVERY_RECORD_STRIDE > MAX_ROWS_PER_CALL {
+        return Err(WireError::Oversize("discovered folder rows"));
+    }
+    words
+        .chunks_exact(DISCOVERY_RECORD_STRIDE)
+        .map(|row| {
+            let decoded = read_discovery_record_row(row, pool)?;
+            Ok(DiscoveredFolderRecord {
+                root_id: decoded.root_id,
+                name: decoded.name,
+                relative_path: decoded.relative_path,
+                standardized_relative_path: decoded.standardized_relative_path,
+                full_path: decoded.full_path,
+                standardized_full_path: decoded.standardized_full_path,
+                parent_folder_id: decoded.parent_folder_id,
+                modification_date: decoded.modification_date,
+            })
+        })
+        .collect()
+}
+
+// ================================================================================================
+// Discovery bulk-load chunk: `inventoryPushBulkChunkDiscovery`'s payload. Additive parallel to
+// `encode_bulk_chunk`/`decode_bulk_chunk` above, which are untouched.
+// ================================================================================================
+
+#[must_use]
+pub fn encode_discovery_bulk_chunk(
+    files: &[DiscoveredFileRecord],
+    folders: &[DiscoveredFolderRecord],
+) -> Vec<u8> {
+    let mut pool = InternPoolBuilder::new();
+    let mut file_words = Vec::with_capacity(files.len() * DISCOVERY_RECORD_STRIDE);
+    for file in files {
+        push_discovered_file_row(&mut file_words, &mut pool, file);
+    }
+    let mut folder_words = Vec::with_capacity(folders.len() * DISCOVERY_RECORD_STRIDE);
+    for folder in folders {
+        push_discovered_folder_row(&mut folder_words, &mut pool, folder);
+    }
+    let (blob, range_words) = pool.finish();
+
+    let mut writer = Writer::header(MessageKind::DiscoveryBulkChunk);
+    writer.write_words(&file_words).expect("bounded by caller");
+    writer.write_words(&folder_words).expect("bounded by caller");
+    writer.write_words(&range_words).expect("bounded by caller");
+    writer.write_blob(&blob).expect("bounded by caller");
+    writer.finish()
+}
+
+pub fn decode_discovery_bulk_chunk(
+    bytes: &[u8],
+) -> Result<(Vec<DiscoveredFileRecord>, Vec<DiscoveredFolderRecord>), WireError> {
+    let mut reader = Reader::open(bytes, MessageKind::DiscoveryBulkChunk)?;
+    let file_words = reader.read_words(MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE, "discovered file rows")?;
+    let folder_words =
+        reader.read_words(MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE, "discovered folder rows")?;
+    let range_words = reader.read_words(MAX_WORDS_PER_SECTION, "string_range_words")?;
+    let blob = reader.read_blob("utf8_blob")?;
+    reader.finish()?;
+
+    let pool = InternPoolReader::new(blob, &range_words)?;
+    let files = decode_discovered_file_rows(&file_words, &pool)?;
+    let folders = decode_discovered_folder_rows(&folder_words, &pool)?;
+    Ok((files, folders))
+}
+
+// ================================================================================================
+// Discovery delta event: `InventoryDeltaCommandV1`'s discovery counterpart. Additive parallel to
+// `encode_delta_event`/`decode_delta_event` above, which are untouched.
+// ================================================================================================
+
+#[must_use]
+pub fn encode_discovery_delta_event(event: &InventoryDiscoveryAppliedIndexBatchEvent) -> Vec<u8> {
+    let mut pool = InternPoolBuilder::new();
+    let mut upserted_file_words = Vec::with_capacity(event.upserted_files.len() * DISCOVERY_RECORD_STRIDE);
+    for file in &event.upserted_files {
+        push_discovered_file_row(&mut upserted_file_words, &mut pool, file);
+    }
+    let mut upserted_folder_words =
+        Vec::with_capacity(event.upserted_folders.len() * DISCOVERY_RECORD_STRIDE);
+    for folder in &event.upserted_folders {
+        push_discovered_folder_row(&mut upserted_folder_words, &mut pool, folder);
+    }
+    let mut removed_file_ids = Vec::with_capacity(event.removed_file_ids.len() * 2);
+    push_uuid_list(&mut removed_file_ids, &event.removed_file_ids);
+    let mut removed_folder_ids = Vec::with_capacity(event.removed_folder_ids.len() * 2);
+    push_uuid_list(&mut removed_folder_ids, &event.removed_folder_ids);
+    let mut removed_file_paths = Vec::with_capacity(event.removed_file_paths.len());
+    push_string_list(&mut removed_file_paths, &mut pool, &event.removed_file_paths);
+    let mut removed_folder_paths = Vec::with_capacity(event.removed_folder_paths.len());
+    push_string_list(&mut removed_folder_paths, &mut pool, &event.removed_folder_paths);
+    let mut modified_file_ids = Vec::with_capacity(event.modified_file_ids.len() * 2);
+    push_uuid_list(&mut modified_file_ids, &event.modified_file_ids);
+    let mut modified_folder_ids = Vec::with_capacity(event.modified_folder_ids.len() * 2);
+    push_uuid_list(&mut modified_folder_ids, &event.modified_folder_ids);
+    let (root_hi, root_lo) = uuid_to_words(&event.root_id);
+    let (blob, range_words) = pool.finish();
+
+    let mut writer = Writer::header(MessageKind::DiscoveryDeltaEvent);
+    writer.write_words(&[root_hi, root_lo]).expect("bounded");
+    writer.write_words(&upserted_file_words).expect("bounded by caller");
+    writer.write_words(&upserted_folder_words).expect("bounded by caller");
+    writer.write_words(&removed_file_ids).expect("bounded by caller");
+    writer.write_words(&removed_folder_ids).expect("bounded by caller");
+    writer.write_words(&removed_file_paths).expect("bounded by caller");
+    writer.write_words(&removed_folder_paths).expect("bounded by caller");
+    writer.write_words(&modified_file_ids).expect("bounded by caller");
+    writer.write_words(&modified_folder_ids).expect("bounded by caller");
+    writer.write_words(&range_words).expect("bounded by caller");
+    writer.write_blob(&blob).expect("bounded by caller");
+    writer.finish()
+}
+
+pub fn decode_discovery_delta_event(
+    bytes: &[u8],
+) -> Result<InventoryDiscoveryAppliedIndexBatchEvent, WireError> {
+    let mut reader = Reader::open(bytes, MessageKind::DiscoveryDeltaEvent)?;
+    let root_id_words = reader.read_words(2, "root_id")?;
+    let &[root_hi, root_lo] = root_id_words.as_slice() else {
+        return Err(WireError::Malformed("root_id"));
+    };
+    let upserted_file_words =
+        reader.read_words(MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE, "upserted discovered file rows")?;
+    let upserted_folder_words = reader.read_words(
+        MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE,
+        "upserted discovered folder rows",
+    )?;
+    let removed_file_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "removed_file_ids")?;
+    let removed_folder_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "removed_folder_ids")?;
+    let removed_file_path_words = reader.read_words(MAX_PATHS_PER_CALL, "removed_file_paths")?;
+    let removed_folder_path_words = reader.read_words(MAX_PATHS_PER_CALL, "removed_folder_paths")?;
+    let modified_file_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "modified_file_ids")?;
+    let modified_folder_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "modified_folder_ids")?;
+    let range_words = reader.read_words(MAX_WORDS_PER_SECTION, "string_range_words")?;
+    let blob = reader.read_blob("utf8_blob")?;
+    reader.finish()?;
+
+    let pool = InternPoolReader::new(blob, &range_words)?;
+    Ok(InventoryDiscoveryAppliedIndexBatchEvent {
+        root_id: uuid_from_words(root_hi, root_lo),
+        upserted_files: decode_discovered_file_rows(&upserted_file_words, &pool)?,
+        upserted_folders: decode_discovered_folder_rows(&upserted_folder_words, &pool)?,
+        removed_file_ids: decode_uuid_list(&removed_file_id_words, "removed_file_ids")?,
+        removed_folder_ids: decode_uuid_list(&removed_folder_id_words, "removed_folder_ids")?,
+        removed_file_paths: decode_string_list(&removed_file_path_words, &pool, "removed_file_paths")?,
+        removed_folder_paths: decode_string_list(
+            &removed_folder_path_words,
+            &pool,
+            "removed_folder_paths",
+        )?,
+        modified_file_ids: decode_uuid_list(&modified_file_id_words, "modified_file_ids")?,
+        modified_folder_ids: decode_uuid_list(&modified_folder_id_words, "modified_folder_ids")?,
+    })
 }
 
 fn push_uuid_list(words: &mut Vec<u64>, ids: &[InventoryUuid]) {
@@ -1370,8 +1770,10 @@ fn descriptor() -> String {
          kinds=bulkChunk:{bulk_chunk},deltaEvent:{delta_event},resolveRequest:{resolve_request},\
 lookupRequest:{lookup_request},factBlock:{fact_block},queryRequest:{query_request},\
 queryResponse:{query_response},generationAdvanced:{generation_advanced},rootPublished:{root_published},\
-rootUnloaded:{root_unloaded},shardFallback:{shard_fallback},resnapshotRequired:{resnapshot_required}\n\
-         strides=stringRange:{string_range},record:{record},factRow:{fact_row},candidate:{candidate}\n\
+rootUnloaded:{root_unloaded},shardFallback:{shard_fallback},resnapshotRequired:{resnapshot_required},\
+discoveryBulkChunk:{discovery_bulk_chunk},discoveryDeltaEvent:{discovery_delta_event}\n\
+         strides=stringRange:{string_range},record:{record},discoveryRecord:{discovery_record},\
+factRow:{fact_row},candidate:{candidate}\n\
          optionalWord={optional_word}\n\
          limits=blob:{max_blob},string:{max_string},words:{max_words},rows:{max_rows},ids:{max_ids},\
 paths:{max_paths}\n\
@@ -1394,6 +1796,10 @@ modifiedCount\n\
          sections.rootUnloaded=rootId,rootLifetimeId\n\
          sections.shardFallback=rootId,reasonTag\n\
          sections.resnapshotRequired=rootPresent,rootId,reasonTag\n\
+         sections.discoveryBulkChunk=discoveredFileWords,discoveredFolderWords,stringRangeWords,blob\n\
+         sections.discoveryDeltaEvent=rootId,upsertedDiscoveredFileWords,upsertedDiscoveredFolderWords,\
+removedFileIds,removedFolderIds,removedFilePaths,removedFolderPaths,modifiedFileIds,modifiedFolderIds,\
+stringRangeWords,blob\n\
          fallbackReasonOrder=missingReusableShard:0,generationGap:1,fullResync:2,\
 unsafeOrAmbiguousBatch:3,retentionBoundary:4,patchThresholdExceeded:5,patchApplicationBackstop:6,\
 shadowValidationMismatch:7\n\
@@ -1411,8 +1817,11 @@ shadowValidationMismatch:7\n\
         root_unloaded = MessageKind::RootUnloaded as u16,
         shard_fallback = MessageKind::ShardFallback as u16,
         resnapshot_required = MessageKind::ResnapshotRequired as u16,
+        discovery_bulk_chunk = MessageKind::DiscoveryBulkChunk as u16,
+        discovery_delta_event = MessageKind::DiscoveryDeltaEvent as u16,
         string_range = STRING_RANGE_STRIDE,
         record = RECORD_STRIDE,
+        discovery_record = DISCOVERY_RECORD_STRIDE,
         fact_row = FACT_ROW_STRIDE,
         candidate = CANDIDATE_ROW_STRIDE,
         optional_word = OPTIONAL_WORD,
@@ -1765,7 +2174,7 @@ mod tests {
         // until its hardcoded constant is updated to match -- the drift can never pass silently.
         assert_eq!(
             fingerprint(),
-            "55c1365669c255965599349d27b470523428a85db4bf8709647b082fff0a63a9"
+            "c46b159823c150a40ab0b13ceba561d33c0645452a5e688e9fa0f17b2261210f"
         );
     }
 

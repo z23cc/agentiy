@@ -97,19 +97,22 @@ pub use query::{
 pub use registry::{ScopeRegistry, ScopeRegistryError};
 pub use resolve::{LookupPathsOutcome, build_projected_shard};
 pub use scope::{
+    BulkChunkDiscoveryReceipt, InventoryDeltaDiscoveryCommand, InventoryDeltaDiscoveryReceipt,
     InventoryGenerationReceipt, InventoryPublishMode, InventoryScope, InventoryScopeConfig,
     RootUnloadReceipt, ScopeError, SnapshotPage,
 };
 pub use state_machine::{RootCounters, RootState};
 pub use wire::{
-    FactBlock, FactRow, GenerationAdvancedEvent, INVENTORY_SCOPE_CONTRACT_VERSION_V1,
+    DiscoveredFileRecord, DiscoveredFolderRecord, FactBlock, FactRow, GenerationAdvancedEvent,
+    INVENTORY_SCOPE_CONTRACT_VERSION_V1, InventoryDiscoveryAppliedIndexBatchEvent,
     QueryCandidateRow, ResnapshotReason, ResnapshotRequiredEvent, RootLifecycleEvent,
-    ShardFallbackEvent, WireError, decode_bulk_chunk, decode_delta_event, decode_fact_block,
+    ShardFallbackEvent, WireError, decode_bulk_chunk, decode_delta_event,
+    decode_discovery_bulk_chunk, decode_discovery_delta_event, decode_fact_block,
     decode_generation_advanced, decode_lookup_request, decode_query_request,
     decode_query_response, decode_resnapshot_required, decode_resolve_request,
     decode_root_published, decode_root_unloaded, decode_shard_fallback, encode_bulk_chunk,
-    encode_delta_event, encode_fact_block, encode_generation_advanced, encode_lookup_request,
-    encode_query_request, encode_query_response, encode_resnapshot_required,
-    encode_resolve_request, encode_root_published, encode_root_unloaded, encode_shard_fallback,
-    uuid_to_words,
+    encode_delta_event, encode_discovery_bulk_chunk, encode_discovery_delta_event,
+    encode_fact_block, encode_generation_advanced, encode_lookup_request, encode_query_request,
+    encode_query_response, encode_resnapshot_required, encode_resolve_request,
+    encode_root_published, encode_root_unloaded, encode_shard_fallback, uuid_to_words,
 };

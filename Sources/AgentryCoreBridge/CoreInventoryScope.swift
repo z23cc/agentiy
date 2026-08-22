@@ -60,6 +60,12 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
 
+    func inventoryPushBulkChunkDiscovery(
+        identity: CoreRuntimeIdentity, scopeID: String, bulkLoadID: UInt64, rootID: Data, bytes: Data
+    ) throws -> AgentryUniFFIRaw.BulkChunkDiscoveryReceiptV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
     func inventoryCommitBulkLoad(
         identity: CoreRuntimeIdentity, scopeID: String, bulkLoadID: UInt64
     ) throws -> AgentryUniFFIRaw.InventoryGenerationReceiptV1 {
@@ -81,6 +87,20 @@ extension CoreRuntimeTransport {
         source: String,
         eventBytes: Data
     ) throws -> AgentryUniFFIRaw.InventoryDeltaReceiptV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
+    func inventoryApplyDeltaDiscoveryV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String,
+        watcherAcceptedWatermark: UInt64?,
+        requiresFullResync: Bool,
+        expectedAppliedIndexGeneration: UInt64?,
+        source: String,
+        eventBytes: Data
+    ) throws -> AgentryUniFFIRaw.InventoryDeltaDiscoveryReceiptV1 {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
 
@@ -208,6 +228,26 @@ extension AgentryCoreBridge {
         }
     }
 
+    func inventoryPushBulkChunkDiscovery(
+        scopeID: String,
+        bulkLoadID: UInt64,
+        rootID: UUID,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.BulkChunkDiscoveryReceiptV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryPushBulkChunkDiscovery(
+                identity: identity,
+                scopeID: scopeID,
+                bulkLoadID: bulkLoadID,
+                rootID: coreInventoryUUIDData(rootID),
+                bytes: bytes
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
     func inventoryCommitBulkLoad(scopeID: String, bulkLoadID: UInt64) throws -> AgentryUniFFIRaw.InventoryGenerationReceiptV1 {
         let identity = try requireIdentity()
         do {
@@ -239,6 +279,34 @@ extension AgentryCoreBridge {
         let identity = try requireIdentity()
         do {
             return try transport.inventoryApplyDeltaV1(
+                identity: identity,
+                scopeID: scopeID,
+                rootID: coreInventoryUUIDData(rootID),
+                rootLifetimeID: rootLifetimeID,
+                watcherAcceptedWatermark: watcherAcceptedWatermark,
+                requiresFullResync: requiresFullResync,
+                expectedAppliedIndexGeneration: expectedAppliedIndexGeneration,
+                source: source,
+                eventBytes: eventBytes
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryApplyDeltaDiscoveryV1(
+        scopeID: String,
+        rootID: UUID,
+        rootLifetimeID: String,
+        watcherAcceptedWatermark: UInt64?,
+        requiresFullResync: Bool,
+        expectedAppliedIndexGeneration: UInt64?,
+        source: String,
+        eventBytes: Data
+    ) throws -> AgentryUniFFIRaw.InventoryDeltaDiscoveryReceiptV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryApplyDeltaDiscoveryV1(
                 identity: identity,
                 scopeID: scopeID,
                 rootID: coreInventoryUUIDData(rootID),
@@ -387,6 +455,48 @@ public struct CoreInventoryDeltaCommand: Sendable {
     }
 }
 
+/// §4.1.1 discovery mint site: `CoreInventoryDeltaCommand`'s discovery counterpart -- `event`
+/// carries id-less upserts.
+public struct CoreInventoryDeltaDiscoveryCommand: Sendable {
+    public var rootID: UUID
+    public var rootLifetimeID: String
+    public var watcherAcceptedWatermark: UInt64?
+    public var requiresFullResync: Bool
+    public var expectedAppliedIndexGeneration: UInt64?
+    public var source: String
+    public var event: CoreInventoryDiscoveryAppliedIndexBatchEventV1
+
+    public init(
+        rootID: UUID,
+        rootLifetimeID: String,
+        watcherAcceptedWatermark: UInt64? = nil,
+        requiresFullResync: Bool = false,
+        expectedAppliedIndexGeneration: UInt64? = nil,
+        source: String,
+        event: CoreInventoryDiscoveryAppliedIndexBatchEventV1
+    ) {
+        self.rootID = rootID
+        self.rootLifetimeID = rootLifetimeID
+        self.watcherAcceptedWatermark = watcherAcceptedWatermark
+        self.requiresFullResync = requiresFullResync
+        self.expectedAppliedIndexGeneration = expectedAppliedIndexGeneration
+        self.source = source
+        self.event = event
+    }
+}
+
+/// §4.1.1 discovery mint site: `CoreInventoryDeltaReceipt`'s discovery counterpart -- carries the
+/// Rust-minted ids, in the same order as the command's `event.upsertedFiles`/`upsertedFolders`.
+/// Populated even on a `.rejected` outcome (minting happens before the gate runs) -- see
+/// `runtime::inventory_scope::InventoryDeltaDiscoveryReceipt`'s doc comment.
+public struct CoreInventoryDeltaDiscoveryReceipt: Sendable, Equatable {
+    public let appliedIndexGeneration: UInt64
+    public let catalogGeneration: UInt64?
+    public let outcome: CoreInventoryDeltaReceipt.Outcome
+    public let mintedFileIDs: [UUID]
+    public let mintedFolderIDs: [UUID]
+}
+
 /// Mirrors Rust's `QueryHaystackVariant` (`rust/crates/runtime/src/inventory_scope/query.rs`) --
 /// `from_wire`'s two cases, in wire-value order. P4-5's index comparison arm always uses
 /// `.indexKey` (the ordered candidate list from `WorkspaceSearchRootPathIndex`'s C-engine-backed
@@ -501,6 +611,24 @@ public final class CoreInventoryScope: @unchecked Sendable {
         return (receipt.filesStaged, receipt.foldersStaged)
     }
 
+    /// §4.1.1 discovery mint site: `files`/`folders` carry no caller-supplied `id` -- Rust mints
+    /// one for each and this returns them in the same order as the input arrays.
+    public func pushBulkChunkDiscovery(
+        bulkLoadID: UInt64,
+        rootID: UUID,
+        files: [CoreDiscoveredFileRecordV1],
+        folders: [CoreDiscoveredFolderRecordV1]
+    ) async throws -> (filesStaged: UInt64, foldersStaged: UInt64, mintedFileIDs: [UUID], mintedFolderIDs: [UUID]) {
+        let bytes = CoreInventoryScopeWire.encodeDiscoveryBulkChunk(files: files, folders: folders)
+        let receipt = try await bridge.inventoryPushBulkChunkDiscovery(scopeID: scopeID, bulkLoadID: bulkLoadID, rootID: rootID, bytes: bytes)
+        return (
+            receipt.filesStaged,
+            receipt.foldersStaged,
+            try receipt.mintedFileIds.map(coreInventoryUUID(fromData:)),
+            try receipt.mintedFolderIds.map(coreInventoryUUID(fromData:))
+        )
+    }
+
     public func commitBulkLoad(bulkLoadID: UInt64) async throws -> CoreInventoryGenerationReceipt {
         let receipt = try await bridge.inventoryCommitBulkLoad(scopeID: scopeID, bulkLoadID: bulkLoadID)
         return CoreInventoryGenerationReceipt(generation: receipt.generation, rootLifetimeID: receipt.rootLifetimeId)
@@ -531,6 +659,35 @@ public final class CoreInventoryScope: @unchecked Sendable {
             appliedIndexGeneration: receipt.appliedIndexGeneration,
             catalogGeneration: receipt.catalogGeneration,
             outcome: outcome
+        )
+    }
+
+    /// §4.1.1 discovery mint site: `command.event`'s upserts carry no caller-supplied `id` --
+    /// Rust mints one for each; the receipt's `mintedFileIDs`/`mintedFolderIDs` echo them in
+    /// `event.upsertedFiles`/`upsertedFolders` order.
+    public func applyDeltaDiscovery(_ command: CoreInventoryDeltaDiscoveryCommand) async throws -> CoreInventoryDeltaDiscoveryReceipt {
+        let eventBytes = CoreInventoryScopeWire.encodeDiscoveryDeltaEvent(command.event)
+        let receipt = try await bridge.inventoryApplyDeltaDiscoveryV1(
+            scopeID: scopeID,
+            rootID: command.rootID,
+            rootLifetimeID: command.rootLifetimeID,
+            watcherAcceptedWatermark: command.watcherAcceptedWatermark,
+            requiresFullResync: command.requiresFullResync,
+            expectedAppliedIndexGeneration: command.expectedAppliedIndexGeneration,
+            source: command.source,
+            eventBytes: eventBytes
+        )
+        let outcome: CoreInventoryDeltaReceipt.Outcome = switch receipt.outcome {
+        case .patched: .patched
+        case .rebuiltAuthoritative: .rebuiltAuthoritative
+        case let .rejected(reason): .rejected(reason: String(describing: reason))
+        }
+        return CoreInventoryDeltaDiscoveryReceipt(
+            appliedIndexGeneration: receipt.appliedIndexGeneration,
+            catalogGeneration: receipt.catalogGeneration,
+            outcome: outcome,
+            mintedFileIDs: try receipt.mintedFileIds.map(coreInventoryUUID(fromData:)),
+            mintedFolderIDs: try receipt.mintedFolderIds.map(coreInventoryUUID(fromData:))
         )
     }
 
@@ -829,12 +986,16 @@ private enum CoreInventoryScopeMessageKind: UInt16 {
     case rootUnloaded = 10
     case shardFallback = 11
     case resnapshotRequired = 12
+    // ---- discovery mint site (§4.1.1): additive, parallel to bulkChunk/deltaEvent.
+    case discoveryBulkChunk = 13
+    case discoveryDeltaEvent = 14
 }
 
 private let coreInventoryScopeContractVersionV1: UInt16 = 1
 private let coreInventoryScopeStringRangeStride = 2
 private let coreInventoryScopeOptionalWord = UInt64.max
 private let coreInventoryScopeRecordStride = 14
+private let coreInventoryScopeDiscoveryRecordStride = 12
 private let coreInventoryScopeCandidateRowStride = 11
 private let coreInventoryScopeMaxWordsPerSection = 8 * 1024 * 1024
 private let coreInventoryScopeMaxRowsPerCall = 200_000
@@ -1104,6 +1265,138 @@ enum CoreInventoryScopeWire {
             )
         }
         return CoreInventoryAppliedIndexBatchEventV1(
+            rootID: coreInventoryUUID(fromHi: rootIDWords[0], lo: rootIDWords[1]),
+            upsertedFiles: upsertedFiles,
+            upsertedFolders: upsertedFolders,
+            removedFileIDs: try decodeUUIDWordList(removedFileIDWords),
+            removedFolderIDs: try decodeUUIDWordList(removedFolderIDWords),
+            removedFilePaths: try removedFilePathWords.map { try pool.resolve($0) },
+            removedFolderPaths: try removedFolderPathWords.map { try pool.resolve($0) },
+            modifiedFileIDs: try decodeUUIDWordList(modifiedFileIDWords),
+            modifiedFolderIDs: try decodeUUIDWordList(modifiedFolderIDWords)
+        )
+    }
+
+    // ---- discovery mint site (§4.1.1): additive parallel to encodeBulkChunk/decodeBulkChunk and
+    // encodeDeltaEvent/decodeDeltaEvent above, which are unchanged.
+
+    static func encodeDiscoveryBulkChunk(files: [CoreDiscoveredFileRecordV1], folders: [CoreDiscoveredFolderRecordV1]) -> Data {
+        var pool = CoreInventoryScopeInternPool()
+        var fileWords: [UInt64] = []
+        fileWords.reserveCapacity(files.count * coreInventoryScopeDiscoveryRecordStride)
+        for file in files { pushDiscoveryRecordRow(&fileWords, &pool, file: file) }
+        var folderWords: [UInt64] = []
+        folderWords.reserveCapacity(folders.count * coreInventoryScopeDiscoveryRecordStride)
+        for folder in folders { pushDiscoveryRecordRow(&folderWords, &pool, folder: folder) }
+
+        var writer = CoreInventoryScopeWriter()
+        writer.writeHeader(kind: .discoveryBulkChunk)
+        writer.writeWords(fileWords)
+        writer.writeWords(folderWords)
+        writer.writeWords(pool.rangeWords)
+        writer.writeBlob(pool.blob)
+        return writer.buffer
+    }
+
+    static func decodeDiscoveryBulkChunk(_ data: Data) throws -> ([CoreDiscoveredFileRecordV1], [CoreDiscoveredFolderRecordV1]) {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .discoveryBulkChunk)
+        let fileWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let folderWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let rangeWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let blob = try reader.readBlob()
+        try reader.finish()
+        let pool = CoreInventoryScopePoolReader(blob: blob, rangeWords: rangeWords)
+        let files = try decodeDiscoveryRecordRows(fileWords, pool: pool).map { row in
+            CoreDiscoveredFileRecordV1(
+                rootID: row.rootID, name: row.name, relativePath: row.relativePath,
+                standardizedRelativePath: row.standardizedRelativePath, fullPath: row.fullPath,
+                standardizedFullPath: row.standardizedFullPath, parentFolderID: row.parentFolderID,
+                modificationDate: row.modificationDate
+            )
+        }
+        let folders = try decodeDiscoveryRecordRows(folderWords, pool: pool).map { row in
+            CoreDiscoveredFolderRecordV1(
+                rootID: row.rootID, name: row.name, relativePath: row.relativePath,
+                standardizedRelativePath: row.standardizedRelativePath, fullPath: row.fullPath,
+                standardizedFullPath: row.standardizedFullPath, parentFolderID: row.parentFolderID,
+                modificationDate: row.modificationDate
+            )
+        }
+        return (files, folders)
+    }
+
+    static func encodeDiscoveryDeltaEvent(_ event: CoreInventoryDiscoveryAppliedIndexBatchEventV1) -> Data {
+        var pool = CoreInventoryScopeInternPool()
+        var upsertedFileWords: [UInt64] = []
+        for file in event.upsertedFiles { pushDiscoveryRecordRow(&upsertedFileWords, &pool, file: file) }
+        var upsertedFolderWords: [UInt64] = []
+        for folder in event.upsertedFolders { pushDiscoveryRecordRow(&upsertedFolderWords, &pool, folder: folder) }
+        var removedFileIDWords: [UInt64] = []
+        for id in event.removedFileIDs { let (hi, lo) = coreInventoryUUIDWords(id); removedFileIDWords.append(hi); removedFileIDWords.append(lo) }
+        var removedFolderIDWords: [UInt64] = []
+        for id in event.removedFolderIDs { let (hi, lo) = coreInventoryUUIDWords(id); removedFolderIDWords.append(hi); removedFolderIDWords.append(lo) }
+        var removedFilePathWords: [UInt64] = []
+        for path in event.removedFilePaths { removedFilePathWords.append(pool.intern(path)) }
+        var removedFolderPathWords: [UInt64] = []
+        for path in event.removedFolderPaths { removedFolderPathWords.append(pool.intern(path)) }
+        var modifiedFileIDWords: [UInt64] = []
+        for id in event.modifiedFileIDs { let (hi, lo) = coreInventoryUUIDWords(id); modifiedFileIDWords.append(hi); modifiedFileIDWords.append(lo) }
+        var modifiedFolderIDWords: [UInt64] = []
+        for id in event.modifiedFolderIDs { let (hi, lo) = coreInventoryUUIDWords(id); modifiedFolderIDWords.append(hi); modifiedFolderIDWords.append(lo) }
+        let (rootHi, rootLo) = coreInventoryUUIDWords(event.rootID)
+
+        var writer = CoreInventoryScopeWriter()
+        writer.writeHeader(kind: .discoveryDeltaEvent)
+        writer.writeWords([rootHi, rootLo])
+        writer.writeWords(upsertedFileWords)
+        writer.writeWords(upsertedFolderWords)
+        writer.writeWords(removedFileIDWords)
+        writer.writeWords(removedFolderIDWords)
+        writer.writeWords(removedFilePathWords)
+        writer.writeWords(removedFolderPathWords)
+        writer.writeWords(modifiedFileIDWords)
+        writer.writeWords(modifiedFolderIDWords)
+        writer.writeWords(pool.rangeWords)
+        writer.writeBlob(pool.blob)
+        return writer.buffer
+    }
+
+    static func decodeDiscoveryDeltaEvent(_ data: Data) throws -> CoreInventoryDiscoveryAppliedIndexBatchEventV1 {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .discoveryDeltaEvent)
+        let rootIDWords = try reader.readWords(maxWords: 2)
+        guard rootIDWords.count == 2 else { throw CoreInventoryScopeWireError.malformed }
+        let upsertedFileWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let upsertedFolderWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFileIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFolderIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFilePathWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFolderPathWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let modifiedFileIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let modifiedFolderIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let rangeWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let blob = try reader.readBlob()
+        try reader.finish()
+        let pool = CoreInventoryScopePoolReader(blob: blob, rangeWords: rangeWords)
+
+        let upsertedFiles = try decodeDiscoveryRecordRows(upsertedFileWords, pool: pool).map { row in
+            CoreDiscoveredFileRecordV1(
+                rootID: row.rootID, name: row.name, relativePath: row.relativePath,
+                standardizedRelativePath: row.standardizedRelativePath, fullPath: row.fullPath,
+                standardizedFullPath: row.standardizedFullPath, parentFolderID: row.parentFolderID,
+                modificationDate: row.modificationDate
+            )
+        }
+        let upsertedFolders = try decodeDiscoveryRecordRows(upsertedFolderWords, pool: pool).map { row in
+            CoreDiscoveredFolderRecordV1(
+                rootID: row.rootID, name: row.name, relativePath: row.relativePath,
+                standardizedRelativePath: row.standardizedRelativePath, fullPath: row.fullPath,
+                standardizedFullPath: row.standardizedFullPath, parentFolderID: row.parentFolderID,
+                modificationDate: row.modificationDate
+            )
+        }
+        return CoreInventoryDiscoveryAppliedIndexBatchEventV1(
             rootID: coreInventoryUUID(fromHi: rootIDWords[0], lo: rootIDWords[1]),
             upsertedFiles: upsertedFiles,
             upsertedFolders: upsertedFolders,
@@ -1398,6 +1691,103 @@ enum CoreInventoryScopeWire {
         return rows
     }
 
+    private struct DecodedDiscoveryRecordRow {
+        let rootID: UUID
+        let name: String
+        let relativePath: String
+        let standardizedRelativePath: String
+        let fullPath: String
+        let standardizedFullPath: String
+        let parentFolderID: UUID?
+        let modificationDate: Date?
+    }
+
+    private static func pushDiscoveryRecordRow(_ words: inout [UInt64], _ pool: inout CoreInventoryScopeInternPool, file: CoreDiscoveredFileRecordV1) {
+        pushDiscoveryRecordRow(
+            &words, &pool, rootID: file.rootID, name: file.name, relativePath: file.relativePath,
+            standardizedRelativePath: file.standardizedRelativePath, fullPath: file.fullPath,
+            standardizedFullPath: file.standardizedFullPath, parentFolderID: file.parentFolderID,
+            modificationDate: file.modificationDate
+        )
+    }
+
+    private static func pushDiscoveryRecordRow(_ words: inout [UInt64], _ pool: inout CoreInventoryScopeInternPool, folder: CoreDiscoveredFolderRecordV1) {
+        pushDiscoveryRecordRow(
+            &words, &pool, rootID: folder.rootID, name: folder.name, relativePath: folder.relativePath,
+            standardizedRelativePath: folder.standardizedRelativePath, fullPath: folder.fullPath,
+            standardizedFullPath: folder.standardizedFullPath, parentFolderID: folder.parentFolderID,
+            modificationDate: folder.modificationDate
+        )
+    }
+
+    private static func pushDiscoveryRecordRow(
+        _ words: inout [UInt64],
+        _ pool: inout CoreInventoryScopeInternPool,
+        rootID: UUID,
+        name: String,
+        relativePath: String,
+        standardizedRelativePath: String,
+        fullPath: String,
+        standardizedFullPath: String,
+        parentFolderID: UUID?,
+        modificationDate: Date?
+    ) {
+        let (rootHi, rootLo) = coreInventoryUUIDWords(rootID)
+        var parentPresent: UInt64 = 0
+        var parentHi: UInt64 = 0
+        var parentLo: UInt64 = 0
+        if let parentFolderID {
+            let (hi, lo) = coreInventoryUUIDWords(parentFolderID)
+            parentPresent = 1
+            parentHi = hi
+            parentLo = lo
+        }
+        var modPresent: UInt64 = 0
+        var modBits: UInt64 = 0
+        if let modificationDate {
+            modPresent = 1
+            modBits = modificationDate.timeIntervalSinceReferenceDate.bitPattern
+        }
+        words.append(contentsOf: [
+            rootHi, rootLo,
+            pool.intern(name), pool.intern(relativePath), pool.intern(standardizedRelativePath),
+            pool.intern(fullPath), pool.intern(standardizedFullPath),
+            parentPresent, parentHi, parentLo, modPresent, modBits,
+        ])
+    }
+
+    private static func decodeDiscoveryRecordRows(_ words: [UInt64], pool: CoreInventoryScopePoolReader) throws -> [DecodedDiscoveryRecordRow] {
+        guard words.count % coreInventoryScopeDiscoveryRecordStride == 0 else { throw CoreInventoryScopeWireError.malformed }
+        var rows: [DecodedDiscoveryRecordRow] = []
+        rows.reserveCapacity(words.count / coreInventoryScopeDiscoveryRecordStride)
+        var index = 0
+        while index < words.count {
+            let row = words[index ..< index + coreInventoryScopeDiscoveryRecordStride]
+            let rootHi = row[row.startIndex], rootLo = row[row.startIndex + 1]
+            let nameIdx = row[row.startIndex + 2], relIdx = row[row.startIndex + 3]
+            let stdRelIdx = row[row.startIndex + 4], fullIdx = row[row.startIndex + 5]
+            let stdFullIdx = row[row.startIndex + 6]
+            let parentPresent = row[row.startIndex + 7]
+            let parentHi = row[row.startIndex + 8], parentLo = row[row.startIndex + 9]
+            let modPresent = row[row.startIndex + 10]
+            let modBits = row[row.startIndex + 11]
+            let parentFolderID: UUID? = parentPresent == 1 ? coreInventoryUUID(fromHi: parentHi, lo: parentLo) : nil
+            let modificationDate: Date? = modPresent == 1 ? Date(timeIntervalSinceReferenceDate: Double(bitPattern: modBits)) : nil
+            rows.append(DecodedDiscoveryRecordRow(
+                rootID: coreInventoryUUID(fromHi: rootHi, lo: rootLo),
+                name: try pool.resolve(nameIdx),
+                relativePath: try pool.resolve(relIdx),
+                standardizedRelativePath: try pool.resolve(stdRelIdx),
+                fullPath: try pool.resolve(fullIdx),
+                standardizedFullPath: try pool.resolve(stdFullIdx),
+                parentFolderID: parentFolderID,
+                modificationDate: modificationDate
+            ))
+            index += coreInventoryScopeDiscoveryRecordStride
+        }
+        return rows
+    }
+
     /// Structural fingerprint lock (charter §15.3 item 6): SHA-256 of the same canonical ASCII
     /// descriptor `agentry_runtime::inventory_scope::wire::descriptor()` builds on the Rust side.
     /// Deliberately NOT a Swift `Hashable`-derived hash for the same reason the Rust side isn't
@@ -1407,8 +1797,8 @@ enum CoreInventoryScopeWire {
         let descriptor = """
         inventory-scope-v1
         version=1
-        kinds=bulkChunk:1,deltaEvent:2,resolveRequest:3,lookupRequest:4,factBlock:5,queryRequest:6,queryResponse:7,generationAdvanced:8,rootPublished:9,rootUnloaded:10,shardFallback:11,resnapshotRequired:12
-        strides=stringRange:2,record:14,factRow:18,candidate:11
+        kinds=bulkChunk:1,deltaEvent:2,resolveRequest:3,lookupRequest:4,factBlock:5,queryRequest:6,queryResponse:7,generationAdvanced:8,rootPublished:9,rootUnloaded:10,shardFallback:11,resnapshotRequired:12,discoveryBulkChunk:13,discoveryDeltaEvent:14
+        strides=stringRange:2,record:14,discoveryRecord:12,factRow:18,candidate:11
         optionalWord=18446744073709551615
         limits=blob:67108864,string:65536,words:8388608,rows:200000,ids:50000,paths:50000
         endianness=words:little-endian,uuidHalves:big-endian
@@ -1424,6 +1814,8 @@ enum CoreInventoryScopeWire {
         sections.rootUnloaded=rootId,rootLifetimeId
         sections.shardFallback=rootId,reasonTag
         sections.resnapshotRequired=rootPresent,rootId,reasonTag
+        sections.discoveryBulkChunk=discoveredFileWords,discoveredFolderWords,stringRangeWords,blob
+        sections.discoveryDeltaEvent=rootId,upsertedDiscoveredFileWords,upsertedDiscoveredFolderWords,removedFileIds,removedFolderIds,removedFilePaths,removedFolderPaths,modifiedFileIds,modifiedFolderIds,stringRangeWords,blob
         fallbackReasonOrder=missingReusableShard:0,generationGap:1,fullResync:2,unsafeOrAmbiguousBatch:3,retentionBoundary:4,patchThresholdExceeded:5,patchApplicationBackstop:6,shadowValidationMismatch:7
         resnapshotReasonOrder=gap:0,overflow:1,backstop:2,identityChanged:3
 

@@ -497,3 +497,133 @@ The 10k-path session-startup budget (§8's `slo-v1.json` registration) is set to
 This document is registered in `Scripts/source_layout_guardrails.sh`'s `allowed_tracked_docs`
 allowlist in the same change that adds it (guardrail 8), per the design's promotion-path
 requirement (§12): failing to do so blocked an earlier ADR gate and is not optional bookkeeping.
+
+## 11. Amendment: the discovery mint site (file/folder UUID minting)
+
+**Status: landed alongside this amendment, pre-P4-6b.** This section documents a gap discovered
+during P4-6b gate verification and closed before the cutover, not a new design decision requiring
+its own review cycle -- the design doc's §4.1 item 3 and §4.1.1 already mandated this capability
+as part of the indivisible items-1-8 unit; it was simply never built.
+
+### 11.0 The claim-vs-built discrepancy, stated honestly
+
+P4-3a's commit message and this document's earlier sections describe "UUID minting with test
+seed" as part of P4-3a's landed, cargo-tested scope. What actually landed was `ids.rs`'s
+`UuidMinter`, used exclusively to mint `InventoryScopeId` and `RootLifetimeId` — **scope and root
+lifetime identity, not file/folder record identity.** Every mutation entry point
+(`inventoryPushBulkChunk`, `inventoryApplyDeltaV1`) required the caller to supply `id` on every
+`InventoryFileRecord`/`InventoryFolderRecord`; nothing in `bulk_load.rs`, `delta.rs`,
+`identity_maps.rs`, `resolve.rs`, or the wire's `RECORD_STRIDE` row shape carried any provision for
+an absent id. Neither this contract doc nor `descriptor()`/`fingerprint()` ever specified file/
+folder minting. §4.1.1's explicit requirement — "Rust mints v4-shaped UUIDs from a per-scope
+CSPRNG, with a test-only deterministic seed" — was undischarged. This was caught by direct
+inspection of the Rust source (not by a failing test, since no test asserted the capability
+existed) during P4-6b's pre-cutover re-verification, and is recorded here rather than silently
+patched over.
+
+### 11.1 The mint site
+
+`InventoryScope` gains a second `UuidMinter` field, `record_minter`, kept deliberately independent
+of `lifetime_minter`'s stream (a test-seeded scope's record ids and lifetime ids must not
+coincidentally share a sequence). `new_seeded_for_testing(seed)` derives the record stream as
+`seed ^ RECORD_MINTER_SEED_SALT` rather than adding a second caller-facing seed parameter, so the
+existing public constructor signature is unchanged.
+
+File/folder record identity requires RFC4122 version-4 shape (the byte pattern
+`Foundation.UUID()` already produces at today's pre-cutover Swift mint site), unlike
+`InventoryScopeId`/`RootLifetimeId`, which are opaque internal tokens never round-tripped through
+`Foundation.UUID`. `UuidMinter::next_v4_bytes()` is `next_bytes()` with the version nibble (byte 6,
+high 4 bits → `0100`) and variant bits (byte 8, high 2 bits → `10`) forced, added alongside the
+existing `next_bytes()` (unchanged, still used for scope/lifetime minting).
+
+`InventoryScope::mint_file_id()` / `mint_folder_id()` are the two `&self`-callable entry points
+(interior-mutable via `record_minter`'s own `AtomicU64`, matching every other minter call site in
+this module).
+
+### 11.2 Additive wire shape: `DiscoveredFileRecord` / `DiscoveredFolderRecord`
+
+**The existing id-supplied `RECORD_STRIDE` (14 words), `bulkChunk`, and `deltaEvent` message kinds
+are unchanged, byte-for-byte** — this amendment does not touch them. A parallel, additive
+`DISCOVERY_RECORD_STRIDE` (12 words: the same nine-field row shape minus the two `id` words) backs
+two new message kinds:
+
+```text
+MessageKind::DiscoveryBulkChunk = 13    // sections: discoveredFileWords, discoveredFolderWords,
+                                         //   stringRangeWords, blob
+MessageKind::DiscoveryDeltaEvent = 14   // sections: rootId, upsertedDiscoveredFileWords,
+                                         //   upsertedDiscoveredFolderWords, removedFileIds,
+                                         //   removedFolderIds, removedFilePaths,
+                                         //   removedFolderPaths, modifiedFileIds,
+                                         //   modifiedFolderIds, stringRangeWords, blob
+```
+
+`DiscoveredFileRecord` / `DiscoveredFolderRecord` (Rust-only intermediate types, `wire.rs`) carry
+`root_id`, `name`, `relative_path`, `standardized_relative_path`, `full_path`,
+`standardized_full_path`, `parent_folder_id`, `modification_date` — every field of
+`InventoryFileRecord`/`InventoryFolderRecord` except `id`. `InventoryDiscoveryAppliedIndexBatchEvent`
+mirrors `InventoryAppliedIndexBatchEvent` with `upserted_files`/`upserted_folders` carrying the
+id-less shape; every other field (removals, modifications — operations that by definition
+reference an *already-known* id) is identical.
+
+The Swift mirror (`CoreInventoryScopeWire` in `AgentryCoreBridge/CoreInventoryScope.swift`) carries
+the matching additive types (`CoreDiscoveredFileRecordV1`/`CoreDiscoveredFolderRecordV1`/
+`CoreInventoryDiscoveryAppliedIndexBatchEventV1`) and codec functions
+(`encodeDiscoveryBulkChunk`/`decodeDiscoveryBulkChunk`,
+`encodeDiscoveryDeltaEvent`/`decodeDiscoveryDeltaEvent`), fingerprint-locked to `wire.rs` exactly
+as the id-supplied shapes already are (§15.3 item 6; `InventoryScopeWireFingerprintTests.swift`).
+
+### 11.3 New scope methods and FFI exports
+
+`InventoryScope::push_bulk_chunk_discovery` / `apply_delta_discovery` mint an id for each decoded
+discovered record, then call the **existing, unchanged** `push_bulk_chunk` / `apply_delta` with the
+now-fully-formed records — every gate (watermark, generation, lifetime), the patch/rebuild state
+machine, and the published-generation bookkeeping are identical to the id-supplied path's already-
+tested behavior. The receipt (`BulkChunkDiscoveryReceipt` / `InventoryDeltaDiscoveryReceipt`) echoes
+the minted ids **in the same order as the input record vectors** (or, for delta, in
+`event.upserted_files`/`upserted_folders` order) so the caller — which knows the discovered paths
+in that order but not yet their ids — can zip them back together.
+
+```text
+CoreRuntime.inventoryPushBulkChunkDiscovery(RuntimeIdentity, InventoryScopeId, BulkLoadId, RootId,
+    bytes) throws -> BulkChunkDiscoveryReceiptV1
+CoreRuntime.inventoryApplyDeltaDiscoveryV1(InventoryDeltaDiscoveryCommandV1)
+    throws -> InventoryDeltaDiscoveryReceiptV1
+```
+
+Minted ids are populated **even on a `Rejected` outcome** — minting happens before the gate runs
+(the ids are needed to build the event the gate evaluates), so a caller must not attempt to
+"un-mint" or reuse ids from a rejected delta; they are safe to discard (ids are cheap, per-scope,
+never persisted).
+
+`CoreInventoryScope.pushBulkChunkDiscovery` / `applyDeltaDiscovery` (Swift facade,
+`AgentryCoreBridge`) are the corresponding public entry points, threaded through the same five
+layers (`CoreRuntimeTransport` protocol requirement + default-unavailable extension,
+`AgentryCoreBridge`'s real transport implementation, `AgentryCoreBridge`'s UUID-based wrapper,
+`CoreInventoryScope`'s typed facade) the id-supplied path already uses.
+
+### 11.4 Path→ID stability invariant (§4.1.1), restated as a testable contract
+
+- A path with an **already-known id** is never re-minted: reuse the known id through the ordinary
+  id-supplied `applyDelta`/`pushBulkChunk` path (the "modify" case).
+- A path being staged for the **first time in a root lifetime**, or **re-added after removal**,
+  goes through the discovery path and always mints a fresh id — discovery mints unconditionally on
+  every call; it is the caller's responsibility (Swift's discovery/mutation pipeline, landed at
+  P4-6b) to route a path to the id-supplied path once its id is known, never to discovery on every
+  observation of the same path.
+
+Proven end-to-end through the real FFI round trip in
+`Tests/AgentryCoreBridgeTests/CoreInventoryScopeDiscoveryTests.swift`
+(`testPathIdentityIsStableAcrossModifyButMintsAFreshIdAcrossRemoveThenReDiscovery`); seeded
+deterministic minting and RFC4122 v4 shape are proven at the cargo level against the bare
+`UuidMinter` (`rust/crates/runtime/src/inventory_scope/ids.rs`'s
+`v4_bytes_are_deterministic_under_a_seeded_minter` / `v4_bytes_are_shaped_as_rfc4122_version_4`) —
+the FFI layer has no seeded-scope constructor (production always opens a fresh-entropy scope), so
+there is nothing further to prove about seeding through the bridge.
+
+### 11.5 What this amendment does not do
+
+It does not change any id-supplied wire byte, FFI signature, or Swift call site's behavior — every
+addition here is a new, parallel surface. It does not itself wire Swift's discovery/mutation
+pipeline (`WorkspaceFileContextStore`'s `indexFiles`/`indexFolders`/`ensureParentFolderID`) onto
+these new exports — that wiring is P4-6b's own scope, now unblocked by this amendment rather than
+discharged by it.

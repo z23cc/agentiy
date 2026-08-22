@@ -23,11 +23,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::inventory::{InventoryFileRecord, InventoryFolderRecord};
+use crate::inventory::{InventoryFileRecord, InventoryFolderRecord, InventoryUuid};
 use crate::{EventClass, EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, SubscriptionHub};
 
 use super::bulk_load::{BulkLoadError, BulkLoadTable};
 use super::delta::{InventoryDeltaCommand, InventoryDeltaReceipt};
+use super::wire::{DiscoveredFileRecord, DiscoveredFolderRecord, InventoryDiscoveryAppliedIndexBatchEvent};
 use super::diagnostics::{HandleDiagnostics, InventoryDiagnosticsV1, RootDiagnostics};
 use super::fallback::{
     InventoryApplyOutcome, InventoryRejectionReason, RootCatalogShardFallbackReason,
@@ -104,6 +105,42 @@ pub struct InventoryGenerationReceipt {
     pub token: GenerationToken,
 }
 
+/// [`InventoryScope::push_bulk_chunk_discovery`]'s receipt (§4.1.1): the minted file/folder ids,
+/// in the same order as the input vectors the caller supplied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BulkChunkDiscoveryReceipt {
+    pub minted_file_ids: Vec<InventoryUuid>,
+    pub minted_folder_ids: Vec<InventoryUuid>,
+}
+
+/// [`InventoryDeltaCommand`]'s discovery counterpart: identical shape, `event` carries id-less
+/// upserts.
+#[derive(Clone, Debug)]
+pub struct InventoryDeltaDiscoveryCommand {
+    pub scope_id: InventoryScopeId,
+    pub root_id: RootId,
+    pub root_lifetime_id: RootLifetimeId,
+    pub watcher_accepted_watermark: Option<u64>,
+    pub requires_full_resync: bool,
+    pub expected_applied_index_generation: Option<u64>,
+    pub source: String,
+    pub event: InventoryDiscoveryAppliedIndexBatchEvent,
+}
+
+/// [`InventoryScope::apply_delta_discovery`]'s receipt: the normal [`InventoryDeltaReceipt`] plus
+/// the minted file/folder ids, in the same order as `event.upserted_files`/`upserted_folders` on
+/// the input command. **The minted ids are populated even on a `Rejected` outcome** -- minting
+/// happens before the gate runs (the ids are needed to *build* the event the gate evaluates), so
+/// a caller must not assume a rejected delta's minted ids were "not really minted"; they were
+/// minted and then never staged anywhere, which is safe (ids are cheap, per-scope, and never
+/// persisted) but is worth stating so a caller doesn't try to "un-mint" or reuse them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryDeltaDiscoveryReceipt {
+    pub receipt: InventoryDeltaReceipt,
+    pub minted_file_ids: Vec<InventoryUuid>,
+    pub minted_folder_ids: Vec<InventoryUuid>,
+}
+
 /// **Flagged minimal choice:** the contract names `InventoryPublishModeV1` as a
 /// `inventoryCommitBulkLoad` parameter without enumerating its cases beyond `atomicPublish`; this
 /// is the only variant P4-3a models.
@@ -136,6 +173,11 @@ pub struct InventoryScope {
     scope_id: InventoryScopeId,
     config: InventoryScopeConfig,
     lifetime_minter: UuidMinter,
+    /// §4.1.1's discovery mint site: mints file/folder record identity, deliberately on its own
+    /// `UuidMinter` stream (never `lifetime_minter`'s) so a test-seeded scope's record ids and
+    /// lifetime ids are independent sequences. `&self`-callable like every other minter here
+    /// (`UuidMinter::next_bytes`/`next_v4_bytes` are interior-mutable via their own `AtomicU64`).
+    record_minter: UuidMinter,
     state: Mutex<ScopeState>,
     longest_critical_section_nanos: AtomicU64,
     rebuild_test_barrier: Mutex<Option<Arc<Barrier>>>,
@@ -161,6 +203,12 @@ pub struct InventoryScope {
     publish_failure_count: AtomicU64,
 }
 
+/// Splitmix64 salt XORed into a caller-supplied seed to derive the record minter's seed from the
+/// lifetime minter's, so `new_seeded_for_testing(seed)` gives two independent-but-deterministic
+/// streams from one caller-facing parameter rather than adding a second seed argument (which
+/// would ripple through every existing call site of an already-`pub` test constructor).
+const RECORD_MINTER_SEED_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
+
 impl InventoryScope {
     #[must_use]
     pub fn new(
@@ -168,10 +216,12 @@ impl InventoryScope {
         scope_id: InventoryScopeId,
         config: InventoryScopeConfig,
     ) -> Self {
-        Self::with_minter(identity, scope_id, config, UuidMinter::fresh())
+        Self::with_minters(identity, scope_id, config, UuidMinter::fresh(), UuidMinter::fresh())
     }
 
-    /// Deterministic construction for tests: `RootLifetimeId`s are minted from a seeded stream.
+    /// Deterministic construction for tests: `RootLifetimeId`s and record ids are each minted
+    /// from their own seeded stream (record stream seeded with `seed ^ RECORD_MINTER_SEED_SALT`
+    /// so the two never coincidentally produce the same byte sequence).
     #[must_use]
     pub fn new_seeded_for_testing(
         identity: RuntimeIdentity,
@@ -179,20 +229,28 @@ impl InventoryScope {
         config: InventoryScopeConfig,
         seed: u64,
     ) -> Self {
-        Self::with_minter(identity, scope_id, config, UuidMinter::seeded(seed))
+        Self::with_minters(
+            identity,
+            scope_id,
+            config,
+            UuidMinter::seeded(seed),
+            UuidMinter::seeded(seed ^ RECORD_MINTER_SEED_SALT),
+        )
     }
 
-    fn with_minter(
+    fn with_minters(
         identity: RuntimeIdentity,
         scope_id: InventoryScopeId,
         config: InventoryScopeConfig,
         lifetime_minter: UuidMinter,
+        record_minter: UuidMinter,
     ) -> Self {
         Self {
             identity,
             scope_id,
             config,
             lifetime_minter,
+            record_minter,
             state: Mutex::new(ScopeState {
                 closed: false,
                 roots: HashMap::new(),
@@ -617,6 +675,59 @@ impl InventoryScope {
         )
     }
 
+    /// Discovery-path counterpart to [`Self::apply_delta`] (§4.1.1): `command.event`'s upserts
+    /// carry no caller-supplied id -- this mints one for each via [`Self::mint_file_id`]/
+    /// [`Self::mint_folder_id`], builds the equivalent fully-formed [`InventoryDeltaCommand`],
+    /// and applies it through the *exact same, unchanged* [`Self::apply_delta`] the id-supplied
+    /// path uses -- every gate (watermark, generation, lifetime), the patch/rebuild state
+    /// machine, and the published-generation bookkeeping are identical to today's tested path.
+    pub fn apply_delta_discovery(
+        &self,
+        identity: &RuntimeIdentity,
+        command: InventoryDeltaDiscoveryCommand,
+    ) -> InventoryDeltaDiscoveryReceipt {
+        let upserted_files: Vec<InventoryFileRecord> = command
+            .event
+            .upserted_files
+            .into_iter()
+            .map(|discovered| discovered.into_minted(self.mint_file_id()))
+            .collect();
+        let upserted_folders: Vec<InventoryFolderRecord> = command
+            .event
+            .upserted_folders
+            .into_iter()
+            .map(|discovered| discovered.into_minted(self.mint_folder_id()))
+            .collect();
+        let minted_file_ids: Vec<InventoryUuid> = upserted_files.iter().map(|file| file.id).collect();
+        let minted_folder_ids: Vec<InventoryUuid> =
+            upserted_folders.iter().map(|folder| folder.id).collect();
+        let full_command = InventoryDeltaCommand {
+            scope_id: command.scope_id,
+            root_id: command.root_id,
+            root_lifetime_id: command.root_lifetime_id,
+            watcher_accepted_watermark: command.watcher_accepted_watermark,
+            requires_full_resync: command.requires_full_resync,
+            expected_applied_index_generation: command.expected_applied_index_generation,
+            source: command.source,
+            event: crate::inventory::InventoryAppliedIndexBatchEvent {
+                root_id: command.event.root_id,
+                upserted_files,
+                upserted_folders,
+                removed_file_ids: command.event.removed_file_ids,
+                removed_folder_ids: command.event.removed_folder_ids,
+                removed_file_paths: command.event.removed_file_paths,
+                removed_folder_paths: command.event.removed_folder_paths,
+                modified_file_ids: command.event.modified_file_ids,
+                modified_folder_ids: command.event.modified_folder_ids,
+            },
+        };
+        InventoryDeltaDiscoveryReceipt {
+            receipt: self.apply_delta(identity, full_command),
+            minted_file_ids,
+            minted_folder_ids,
+        }
+    }
+
     // -------------------------------------------------------------------------------- bulk load
 
     pub fn begin_bulk_load(
@@ -657,6 +768,51 @@ impl InventoryScope {
             state
                 .bulk_loads
                 .push_chunk(bulk_load_id, root_id, files, folders)
+        })
+    }
+
+    /// Mints a fresh RFC4122-v4-shaped file record id from this scope's dedicated
+    /// `record_minter` stream (§4.1.1's discovery mint site -- never `lifetime_minter`'s).
+    #[must_use]
+    pub fn mint_file_id(&self) -> InventoryUuid {
+        self.record_minter.next_v4_bytes()
+    }
+
+    /// See [`Self::mint_file_id`]: identical stream, for folder record identity.
+    #[must_use]
+    pub fn mint_folder_id(&self) -> InventoryUuid {
+        self.record_minter.next_v4_bytes()
+    }
+
+    /// Discovery-path counterpart to [`Self::push_bulk_chunk`] (§4.1.1): `discovered_files`/
+    /// `discovered_folders` carry no caller-supplied `id` -- this mints one for each via
+    /// [`Self::mint_file_id`]/[`Self::mint_folder_id`], then stages the now-fully-formed records
+    /// through the *exact same, unchanged* [`Self::push_bulk_chunk`] the id-supplied path uses.
+    /// The receipt echoes the minted ids **in the same order as the input vectors** so the caller
+    /// (which knows the discovered paths in that same order but not yet their ids) can zip them
+    /// back together.
+    pub fn push_bulk_chunk_discovery(
+        &self,
+        identity: &RuntimeIdentity,
+        bulk_load_id: BulkLoadId,
+        root_id: RootId,
+        discovered_files: Vec<DiscoveredFileRecord>,
+        discovered_folders: Vec<DiscoveredFolderRecord>,
+    ) -> Result<BulkChunkDiscoveryReceipt, BulkLoadError> {
+        let files: Vec<InventoryFileRecord> = discovered_files
+            .into_iter()
+            .map(|discovered| discovered.into_minted(self.mint_file_id()))
+            .collect();
+        let folders: Vec<InventoryFolderRecord> = discovered_folders
+            .into_iter()
+            .map(|discovered| discovered.into_minted(self.mint_folder_id()))
+            .collect();
+        let minted_file_ids: Vec<InventoryUuid> = files.iter().map(|file| file.id).collect();
+        let minted_folder_ids: Vec<InventoryUuid> = folders.iter().map(|folder| folder.id).collect();
+        self.push_bulk_chunk(identity, bulk_load_id, root_id, files, folders)?;
+        Ok(BulkChunkDiscoveryReceipt {
+            minted_file_ids,
+            minted_folder_ids,
         })
     }
 

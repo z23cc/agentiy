@@ -675,6 +675,16 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func inventoryAbortBulkLoad(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64) throws
 
+    /**
+     * Discovery-path counterpart to [`Self::inventory_apply_delta_v1`] (§4.1.1):
+     * `command.event_bytes` is the compact discovery delta blob (id-less upserts) --
+     * `runtime::inventory_scope::decode_discovery_delta_event`. Mints an id for each upserted
+     * record and applies the equivalent fully-formed delta through the *exact same* gate/patch/
+     * rebuild path `inventory_apply_delta_v1` uses; the receipt echoes the minted ids in
+     * `upserted_files`/`upserted_folders` order.
+     */
+    func inventoryApplyDeltaDiscoveryV1(command: InventoryDeltaDiscoveryCommandV1) throws  -> InventoryDeltaDiscoveryReceiptV1
+
     func inventoryApplyDeltaV1(command: InventoryDeltaCommandV1) throws  -> InventoryDeltaReceiptV1
 
     func inventoryBeginBulkLoad(identity: RuntimeIdentity, scopeId: String, rootId: Data, rootLifetimeId: String) throws  -> UInt64
@@ -700,6 +710,15 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
     func inventoryOpenSnapshot(request: InventorySnapshotRequestV1) throws  -> InventorySnapshotHandleV1
 
     func inventoryPushBulkChunk(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, rootId: Data, bytes: Data) throws  -> BulkChunkReceiptV1
+
+    /**
+     * Discovery-path counterpart to [`Self::inventory_push_bulk_chunk`] (§4.1.1): `bytes` is the
+     * compact discovery bulk-chunk blob (id-less records) --
+     * `runtime::inventory_scope::decode_discovery_bulk_chunk`. Mints an id for each decoded
+     * record and stages it through the *exact same* `InventoryScope::push_bulk_chunk` the
+     * id-supplied path uses; the receipt echoes the minted ids in input order.
+     */
+    func inventoryPushBulkChunkDiscovery(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, rootId: Data, bytes: Data) throws  -> BulkChunkDiscoveryReceiptV1
 
     func inventoryQuery(request: CompactQueryV1) throws  -> CompactQueryResultV1
 
@@ -941,6 +960,24 @@ open func inventoryAbortBulkLoad(identity: RuntimeIdentity, scopeId: String, bul
 }
 }
 
+    /**
+     * Discovery-path counterpart to [`Self::inventory_apply_delta_v1`] (§4.1.1):
+     * `command.event_bytes` is the compact discovery delta blob (id-less upserts) --
+     * `runtime::inventory_scope::decode_discovery_delta_event`. Mints an id for each upserted
+     * record and applies the equivalent fully-formed delta through the *exact same* gate/patch/
+     * rebuild path `inventory_apply_delta_v1` uses; the receipt echoes the minted ids in
+     * `upserted_files`/`upserted_folders` order.
+     */
+open func inventoryApplyDeltaDiscoveryV1(command: InventoryDeltaDiscoveryCommandV1)throws  -> InventoryDeltaDiscoveryReceiptV1  {
+    return try  FfiConverterTypeInventoryDeltaDiscoveryReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_apply_delta_discovery_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeInventoryDeltaDiscoveryCommandV1_lower(command),uniffiCallStatus
+    )
+})
+}
+
 open func inventoryApplyDeltaV1(command: InventoryDeltaCommandV1)throws  -> InventoryDeltaReceiptV1  {
     return try  FfiConverterTypeInventoryDeltaReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -1078,6 +1115,27 @@ open func inventoryPushBulkChunk(identity: RuntimeIdentity, scopeId: String, bul
     return try  FfiConverterTypeBulkChunkReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_inventory_push_bulk_chunk(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(bulkLoadId),
+        FfiConverterData.lower(rootId),
+        FfiConverterData.lower(bytes),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Discovery-path counterpart to [`Self::inventory_push_bulk_chunk`] (§4.1.1): `bytes` is the
+     * compact discovery bulk-chunk blob (id-less records) --
+     * `runtime::inventory_scope::decode_discovery_bulk_chunk`. Mints an id for each decoded
+     * record and stages it through the *exact same* `InventoryScope::push_bulk_chunk` the
+     * id-supplied path uses; the receipt echoes the minted ids in input order.
+     */
+open func inventoryPushBulkChunkDiscovery(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, rootId: Data, bytes: Data)throws  -> BulkChunkDiscoveryReceiptV1  {
+    return try  FfiConverterTypeBulkChunkDiscoveryReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_push_bulk_chunk_discovery(
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterString.lower(scopeId),
@@ -1513,6 +1571,73 @@ public func FfiConverterTypeAdmissionReceipt_lift(_ buf: RustBuffer) throws -> A
 #endif
 public func FfiConverterTypeAdmissionReceipt_lower(_ value: AdmissionReceipt) -> RustBuffer {
     return FfiConverterTypeAdmissionReceipt.lower(value)
+}
+
+
+/**
+ * `inventoryPushBulkChunkDiscovery`'s receipt: the usual staged counts, plus the minted file/
+ * folder ids (each a raw 16-byte UUID, matching `root_id`'s `Vec<u8>` convention elsewhere in
+ * this file) in the same order as the discovery bulk chunk's input record vectors.
+ */
+public struct BulkChunkDiscoveryReceiptV1: Equatable, Hashable {
+    public let filesStaged: UInt64
+    public let foldersStaged: UInt64
+    public let mintedFileIds: [Data]
+    public let mintedFolderIds: [Data]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(filesStaged: UInt64, foldersStaged: UInt64, mintedFileIds: [Data], mintedFolderIds: [Data]) {
+        self.filesStaged = filesStaged
+        self.foldersStaged = foldersStaged
+        self.mintedFileIds = mintedFileIds
+        self.mintedFolderIds = mintedFolderIds
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BulkChunkDiscoveryReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBulkChunkDiscoveryReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BulkChunkDiscoveryReceiptV1 {
+        return
+            try BulkChunkDiscoveryReceiptV1(
+                filesStaged: FfiConverterUInt64.read(from: &buf),
+                foldersStaged: FfiConverterUInt64.read(from: &buf),
+                mintedFileIds: FfiConverterSequenceData.read(from: &buf),
+                mintedFolderIds: FfiConverterSequenceData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BulkChunkDiscoveryReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.filesStaged, into: &buf)
+        FfiConverterUInt64.write(value.foldersStaged, into: &buf)
+        FfiConverterSequenceData.write(value.mintedFileIds, into: &buf)
+        FfiConverterSequenceData.write(value.mintedFolderIds, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBulkChunkDiscoveryReceiptV1_lift(_ buf: RustBuffer) throws -> BulkChunkDiscoveryReceiptV1 {
+    return try FfiConverterTypeBulkChunkDiscoveryReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBulkChunkDiscoveryReceiptV1_lower(_ value: BulkChunkDiscoveryReceiptV1) -> RustBuffer {
+    return FfiConverterTypeBulkChunkDiscoveryReceiptV1.lower(value)
 }
 
 
@@ -4627,6 +4752,165 @@ public func FfiConverterTypeInventoryDeltaCommandV1_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeInventoryDeltaCommandV1_lower(_ value: InventoryDeltaCommandV1) -> RustBuffer {
     return FfiConverterTypeInventoryDeltaCommandV1.lower(value)
+}
+
+
+/**
+ * `InventoryDeltaCommandV1`'s discovery counterpart: identical shape, `event_bytes` carries the
+ * compact `inventory-scope-v1` **discovery** delta blob --
+ * `runtime::inventory_scope::encode_discovery_delta_event` / `decode_discovery_delta_event`.
+ */
+public struct InventoryDeltaDiscoveryCommandV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let rootId: Data
+    public let rootLifetimeId: String
+    public let watcherAcceptedWatermark: UInt64?
+    public let requiresFullResync: Bool
+    public let expectedAppliedIndexGeneration: UInt64?
+    public let source: String
+    public let eventBytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, rootId: Data, rootLifetimeId: String, watcherAcceptedWatermark: UInt64?, requiresFullResync: Bool, expectedAppliedIndexGeneration: UInt64?, source: String, eventBytes: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.rootId = rootId
+        self.rootLifetimeId = rootLifetimeId
+        self.watcherAcceptedWatermark = watcherAcceptedWatermark
+        self.requiresFullResync = requiresFullResync
+        self.expectedAppliedIndexGeneration = expectedAppliedIndexGeneration
+        self.source = source
+        self.eventBytes = eventBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryDeltaDiscoveryCommandV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryDeltaDiscoveryCommandV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryDeltaDiscoveryCommandV1 {
+        return
+            try InventoryDeltaDiscoveryCommandV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                rootId: FfiConverterData.read(from: &buf),
+                rootLifetimeId: FfiConverterString.read(from: &buf),
+                watcherAcceptedWatermark: FfiConverterOptionUInt64.read(from: &buf),
+                requiresFullResync: FfiConverterBool.read(from: &buf),
+                expectedAppliedIndexGeneration: FfiConverterOptionUInt64.read(from: &buf),
+                source: FfiConverterString.read(from: &buf),
+                eventBytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryDeltaDiscoveryCommandV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterString.write(value.rootLifetimeId, into: &buf)
+        FfiConverterOptionUInt64.write(value.watcherAcceptedWatermark, into: &buf)
+        FfiConverterBool.write(value.requiresFullResync, into: &buf)
+        FfiConverterOptionUInt64.write(value.expectedAppliedIndexGeneration, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterData.write(value.eventBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaDiscoveryCommandV1_lift(_ buf: RustBuffer) throws -> InventoryDeltaDiscoveryCommandV1 {
+    return try FfiConverterTypeInventoryDeltaDiscoveryCommandV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaDiscoveryCommandV1_lower(_ value: InventoryDeltaDiscoveryCommandV1) -> RustBuffer {
+    return FfiConverterTypeInventoryDeltaDiscoveryCommandV1.lower(value)
+}
+
+
+/**
+ * `inventoryApplyDeltaDiscoveryV1`'s receipt: the usual delta receipt fields, plus the minted
+ * file/folder ids in the same order as the discovery event's `upserted_files`/`upserted_folders`
+ * on the input command. Populated even on a `Rejected` outcome -- see
+ * `runtime::inventory_scope::InventoryDeltaDiscoveryReceipt`'s doc comment for why that's safe.
+ */
+public struct InventoryDeltaDiscoveryReceiptV1: Equatable, Hashable {
+    public let appliedIndexGeneration: UInt64
+    public let catalogGeneration: UInt64?
+    public let outcome: InventoryApplyOutcomeV1
+    public let mintedFileIds: [Data]
+    public let mintedFolderIds: [Data]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(appliedIndexGeneration: UInt64, catalogGeneration: UInt64?, outcome: InventoryApplyOutcomeV1, mintedFileIds: [Data], mintedFolderIds: [Data]) {
+        self.appliedIndexGeneration = appliedIndexGeneration
+        self.catalogGeneration = catalogGeneration
+        self.outcome = outcome
+        self.mintedFileIds = mintedFileIds
+        self.mintedFolderIds = mintedFolderIds
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryDeltaDiscoveryReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryDeltaDiscoveryReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryDeltaDiscoveryReceiptV1 {
+        return
+            try InventoryDeltaDiscoveryReceiptV1(
+                appliedIndexGeneration: FfiConverterUInt64.read(from: &buf),
+                catalogGeneration: FfiConverterOptionUInt64.read(from: &buf),
+                outcome: FfiConverterTypeInventoryApplyOutcomeV1.read(from: &buf),
+                mintedFileIds: FfiConverterSequenceData.read(from: &buf),
+                mintedFolderIds: FfiConverterSequenceData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryDeltaDiscoveryReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.appliedIndexGeneration, into: &buf)
+        FfiConverterOptionUInt64.write(value.catalogGeneration, into: &buf)
+        FfiConverterTypeInventoryApplyOutcomeV1.write(value.outcome, into: &buf)
+        FfiConverterSequenceData.write(value.mintedFileIds, into: &buf)
+        FfiConverterSequenceData.write(value.mintedFolderIds, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaDiscoveryReceiptV1_lift(_ buf: RustBuffer) throws -> InventoryDeltaDiscoveryReceiptV1 {
+    return try FfiConverterTypeInventoryDeltaDiscoveryReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaDiscoveryReceiptV1_lower(_ value: InventoryDeltaDiscoveryReceiptV1) -> RustBuffer {
+    return FfiConverterTypeInventoryDeltaDiscoveryReceiptV1.lower(value)
 }
 
 
@@ -8846,6 +9130,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceData: FfiConverterRustBuffer {
+    typealias SwiftType = [Data]
+
+    public static func write(_ value: [Data], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Data] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Data]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterData.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeByteRange: FfiConverterRustBuffer {
     typealias SwiftType = [ByteRange]
 
@@ -9297,6 +9606,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_abort_bulk_load() != 60975) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_apply_delta_discovery_v1() != 29075) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_apply_delta_v1() != 14784) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -9334,6 +9646,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_push_bulk_chunk() != 34942) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_push_bulk_chunk_discovery() != 32247) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_query() != 23154) {

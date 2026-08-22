@@ -13,7 +13,8 @@ use crate::types::{
     CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
     CorePathSearchFindResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
     DrainBatch, FolderSuffixRequest, HostResponse,
-    InventoryDeltaCommandV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
+    BulkChunkDiscoveryReceiptV1, InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1,
+    InventoryDeltaDiscoveryReceiptV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
     InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
     InventoryProjectedShardRequestV1, InventoryPublishModeV1,
     InventoryResolveRequestV1, InventoryRootLifetimeV1, InventoryRootOpenV1,
@@ -785,6 +786,44 @@ impl CoreRuntime {
         })
     }
 
+    /// Discovery-path counterpart to [`Self::inventory_push_bulk_chunk`] (§4.1.1): `bytes` is the
+    /// compact discovery bulk-chunk blob (id-less records) --
+    /// `runtime::inventory_scope::decode_discovery_bulk_chunk`. Mints an id for each decoded
+    /// record and stages it through the *exact same* `InventoryScope::push_bulk_chunk` the
+    /// id-supplied path uses; the receipt echoes the minted ids in input order.
+    pub fn inventory_push_bulk_chunk_discovery(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        bulk_load_id: u64,
+        root_id: Vec<u8>,
+        bytes: Vec<u8>,
+    ) -> Result<BulkChunkDiscoveryReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let root_id = parse_root_id(&root_id)?;
+            let (files, folders) =
+                runtime::inventory_scope::decode_discovery_bulk_chunk(&bytes).map_err(wire_error)?;
+            let files_staged = files.len() as u64;
+            let folders_staged = folders.len() as u64;
+            let receipt = scope.push_bulk_chunk_discovery(
+                &identity,
+                runtime::inventory_scope::BulkLoadId::from_raw(bulk_load_id),
+                root_id,
+                files,
+                folders,
+            )?;
+            Ok(BulkChunkDiscoveryReceiptV1 {
+                files_staged,
+                folders_staged,
+                minted_file_ids: receipt.minted_file_ids.iter().map(|id| id.to_vec()).collect(),
+                minted_folder_ids: receipt.minted_folder_ids.iter().map(|id| id.to_vec()).collect(),
+            })
+        })
+    }
+
     pub fn inventory_commit_bulk_load(
         &self,
         identity: RuntimeIdentity,
@@ -850,6 +889,38 @@ impl CoreRuntime {
                 event,
             };
             Ok(scope.apply_delta(&identity, runtime_command).into())
+        })
+    }
+
+    /// Discovery-path counterpart to [`Self::inventory_apply_delta_v1`] (§4.1.1):
+    /// `command.event_bytes` is the compact discovery delta blob (id-less upserts) --
+    /// `runtime::inventory_scope::decode_discovery_delta_event`. Mints an id for each upserted
+    /// record and applies the equivalent fully-formed delta through the *exact same* gate/patch/
+    /// rebuild path `inventory_apply_delta_v1` uses; the receipt echoes the minted ids in
+    /// `upserted_files`/`upserted_folders` order.
+    pub fn inventory_apply_delta_discovery_v1(
+        &self,
+        command: InventoryDeltaDiscoveryCommandV1,
+    ) -> Result<InventoryDeltaDiscoveryReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&command.runtime_identity)?;
+            let scope = self.inventory_scope(&command.scope_id)?;
+            let root_id = parse_root_id(&command.root_id)?;
+            let root_lifetime_id = parse_root_lifetime_id(&command.root_lifetime_id)?;
+            let event = runtime::inventory_scope::decode_discovery_delta_event(&command.event_bytes)
+                .map_err(wire_error)?;
+            let runtime_command = runtime::inventory_scope::InventoryDeltaDiscoveryCommand {
+                scope_id: scope.scope_id(),
+                root_id,
+                root_lifetime_id,
+                watcher_accepted_watermark: command.watcher_accepted_watermark,
+                requires_full_resync: command.requires_full_resync,
+                expected_applied_index_generation: command.expected_applied_index_generation,
+                source: command.source,
+                event,
+            };
+            Ok(scope.apply_delta_discovery(&identity, runtime_command).into())
         })
     }
 

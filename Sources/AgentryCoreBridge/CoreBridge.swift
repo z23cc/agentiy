@@ -209,6 +209,15 @@ protocol CoreRuntimeTransport: Sendable {
         rootID: Data,
         bytes: Data
     ) throws -> AgentryUniFFIRaw.BulkChunkReceiptV1
+    /// §4.1.1 discovery mint site: `bytes` is the compact **discovery** bulk-chunk blob
+    /// (id-less records); the receipt carries the Rust-minted ids in input order.
+    func inventoryPushBulkChunkDiscovery(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bulkLoadID: UInt64,
+        rootID: Data,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.BulkChunkDiscoveryReceiptV1
     func inventoryCommitBulkLoad(
         identity: CoreRuntimeIdentity,
         scopeID: String,
@@ -226,6 +235,20 @@ protocol CoreRuntimeTransport: Sendable {
         source: String,
         eventBytes: Data
     ) throws -> AgentryUniFFIRaw.InventoryDeltaReceiptV1
+    /// §4.1.1 discovery mint site: `eventBytes` is the compact **discovery** delta blob
+    /// (id-less upserts); the receipt carries the Rust-minted ids in
+    /// `upserted_files`/`upserted_folders` order.
+    func inventoryApplyDeltaDiscoveryV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String,
+        watcherAcceptedWatermark: UInt64?,
+        requiresFullResync: Bool,
+        expectedAppliedIndexGeneration: UInt64?,
+        source: String,
+        eventBytes: Data
+    ) throws -> AgentryUniFFIRaw.InventoryDeltaDiscoveryReceiptV1
     func inventoryOpenSnapshot(
         identity: CoreRuntimeIdentity,
         scopeID: String,
@@ -1310,6 +1333,26 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func inventoryPushBulkChunkDiscovery(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bulkLoadID: UInt64,
+        rootID: Data,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.BulkChunkDiscoveryReceiptV1 {
+        do {
+            return try runtime.inventoryPushBulkChunkDiscovery(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                bulkLoadId: bulkLoadID,
+                rootId: rootID,
+                bytes: bytes
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func inventoryCommitBulkLoad(
         identity: CoreRuntimeIdentity,
         scopeID: String,
@@ -1348,6 +1391,34 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     ) throws -> AgentryUniFFIRaw.InventoryDeltaReceiptV1 {
         do {
             return try runtime.inventoryApplyDeltaV1(command: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID,
+                rootLifetimeId: rootLifetimeID,
+                watcherAcceptedWatermark: watcherAcceptedWatermark,
+                requiresFullResync: requiresFullResync,
+                expectedAppliedIndexGeneration: expectedAppliedIndexGeneration,
+                source: source,
+                eventBytes: eventBytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryApplyDeltaDiscoveryV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String,
+        watcherAcceptedWatermark: UInt64?,
+        requiresFullResync: Bool,
+        expectedAppliedIndexGeneration: UInt64?,
+        source: String,
+        eventBytes: Data
+    ) throws -> AgentryUniFFIRaw.InventoryDeltaDiscoveryReceiptV1 {
+        do {
+            return try runtime.inventoryApplyDeltaDiscoveryV1(command: .init(
                 runtimeIdentity: Self.rawIdentity(identity),
                 scopeId: scopeID,
                 rootId: rootID,

@@ -93,6 +93,108 @@ public struct CoreInventoryFolderRecordV1: Sendable, Equatable {
     }
 }
 
+/// §4.1.1 discovery mint site: the same nine-field shape as `CoreInventoryFileRecordV1` minus
+/// `id` -- Rust mints a v4-shaped UUID for each of these when staged via
+/// `CoreInventoryScope.pushBulkChunkDiscovery` / `applyDeltaDiscovery`.
+public struct CoreDiscoveredFileRecordV1: Sendable, Equatable {
+    public let rootID: UUID
+    public let name: String
+    public let relativePath: String
+    public let standardizedRelativePath: String
+    public let fullPath: String
+    public let standardizedFullPath: String
+    public let parentFolderID: UUID?
+    public let modificationDate: Date?
+
+    public init(
+        rootID: UUID,
+        name: String,
+        relativePath: String,
+        standardizedRelativePath: String,
+        fullPath: String,
+        standardizedFullPath: String,
+        parentFolderID: UUID?,
+        modificationDate: Date?
+    ) {
+        self.rootID = rootID
+        self.name = name
+        self.relativePath = relativePath
+        self.standardizedRelativePath = standardizedRelativePath
+        self.fullPath = fullPath
+        self.standardizedFullPath = standardizedFullPath
+        self.parentFolderID = parentFolderID
+        self.modificationDate = modificationDate
+    }
+}
+
+/// See `CoreDiscoveredFileRecordV1` doc comment: identical shape, for folder identity.
+public struct CoreDiscoveredFolderRecordV1: Sendable, Equatable {
+    public let rootID: UUID
+    public let name: String
+    public let relativePath: String
+    public let standardizedRelativePath: String
+    public let fullPath: String
+    public let standardizedFullPath: String
+    public let parentFolderID: UUID?
+    public let modificationDate: Date?
+
+    public init(
+        rootID: UUID,
+        name: String,
+        relativePath: String,
+        standardizedRelativePath: String,
+        fullPath: String,
+        standardizedFullPath: String,
+        parentFolderID: UUID?,
+        modificationDate: Date?
+    ) {
+        self.rootID = rootID
+        self.name = name
+        self.relativePath = relativePath
+        self.standardizedRelativePath = standardizedRelativePath
+        self.fullPath = fullPath
+        self.standardizedFullPath = standardizedFullPath
+        self.parentFolderID = parentFolderID
+        self.modificationDate = modificationDate
+    }
+}
+
+/// `CoreInventoryAppliedIndexBatchEventV1`'s discovery counterpart: `upsertedFiles`/
+/// `upsertedFolders` carry id-less records; everything else is identical.
+public struct CoreInventoryDiscoveryAppliedIndexBatchEventV1: Sendable, Equatable {
+    public let rootID: UUID
+    public let upsertedFiles: [CoreDiscoveredFileRecordV1]
+    public let upsertedFolders: [CoreDiscoveredFolderRecordV1]
+    public let removedFileIDs: [UUID]
+    public let removedFolderIDs: [UUID]
+    public let removedFilePaths: [String]
+    public let removedFolderPaths: [String]
+    public let modifiedFileIDs: [UUID]
+    public let modifiedFolderIDs: [UUID]
+
+    public init(
+        rootID: UUID,
+        upsertedFiles: [CoreDiscoveredFileRecordV1],
+        upsertedFolders: [CoreDiscoveredFolderRecordV1],
+        removedFileIDs: [UUID],
+        removedFolderIDs: [UUID],
+        removedFilePaths: [String],
+        removedFolderPaths: [String],
+        modifiedFileIDs: [UUID],
+        modifiedFolderIDs: [UUID]
+    ) {
+        self.rootID = rootID
+        self.upsertedFiles = upsertedFiles
+        self.upsertedFolders = upsertedFolders
+        self.removedFileIDs = removedFileIDs
+        self.removedFolderIDs = removedFolderIDs
+        self.removedFilePaths = removedFilePaths
+        self.removedFolderPaths = removedFolderPaths
+        self.modifiedFileIDs = modifiedFileIDs
+        self.modifiedFolderIDs = modifiedFolderIDs
+    }
+}
+
 public struct CoreInventorySearchCatalogEntryV1: Sendable, Equatable {
     public let id: UUID
     public let rootID: UUID

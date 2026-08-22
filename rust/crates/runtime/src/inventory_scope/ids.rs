@@ -192,6 +192,22 @@ impl UuidMinter {
             None => fresh_entropy_bytes(),
         }
     }
+
+    /// Mints raw bytes shaped as an RFC4122 version-4 UUID (version nibble `0100` at byte 6's
+    /// high bits, variant bits `10` at byte 8's two high bits). This is the shape file/folder
+    /// record identity requires (§4.1.1 of `docs/designs/p4-workspace-inventory-authority-v2-
+    /// 2026-08-22.md`: "Rust mints v4-shaped UUIDs from a per-scope CSPRNG"), matching what
+    /// Swift's `Foundation.UUID()` already produces at today's pre-cutover Swift-side mint site
+    /// (`WorkspaceFileRecord.id`'s default). `next_bytes` is unchanged and still used for
+    /// `InventoryScopeId`/`RootLifetimeId` -- those are opaque internal tokens, never round-
+    /// tripped through `Foundation.UUID`, so they do not need this shape.
+    #[must_use]
+    pub fn next_v4_bytes(&self) -> [u8; 16] {
+        let mut bytes = self.next_bytes();
+        bytes[6] = (bytes[6] & 0x0F) | 0x40;
+        bytes[8] = (bytes[8] & 0x3F) | 0x80;
+        bytes
+    }
 }
 
 impl Default for UuidMinter {
@@ -265,6 +281,33 @@ mod tests {
         // conversion this hub-addressing depends on).
         let other = InventoryScopeId::mint(&minter);
         assert_ne!(other.to_subscription_scope_id(), derived);
+    }
+
+    #[test]
+    fn v4_bytes_are_shaped_as_rfc4122_version_4() {
+        let minter = UuidMinter::seeded(99);
+        for _ in 0..64 {
+            let bytes = minter.next_v4_bytes();
+            assert_eq!(bytes[6] & 0xF0, 0x40, "version nibble must be 4: {bytes:02x?}");
+            assert_eq!(bytes[8] & 0xC0, 0x80, "variant bits must be RFC4122 (10): {bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn v4_bytes_are_deterministic_under_a_seeded_minter() {
+        let a = UuidMinter::seeded(1234);
+        let b = UuidMinter::seeded(1234);
+        assert_eq!(a.next_v4_bytes(), b.next_v4_bytes());
+        assert_eq!(a.next_v4_bytes(), b.next_v4_bytes());
+    }
+
+    #[test]
+    fn v4_bytes_advance_and_do_not_repeat_within_a_short_burst() {
+        let minter = UuidMinter::seeded(5);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..256 {
+            assert!(seen.insert(minter.next_v4_bytes()));
+        }
     }
 
     #[test]
