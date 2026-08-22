@@ -47,4 +47,18 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "inventory_scope_bulk_chunk"
+path = "fuzz_targets/inventory_scope_bulk_chunk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inventory_scope_delta_event"
+path = "fuzz_targets/inventory_scope_delta_event.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

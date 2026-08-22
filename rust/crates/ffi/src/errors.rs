@@ -1,7 +1,10 @@
 use agentry_proto::DecodeError;
+use agentry_runtime::inventory_scope::{BulkLoadError, ScopeError, ScopeRegistryError};
 use agentry_runtime::{
     IdentifierError, IdentityError, RegistryError, RuntimeError, SearchError, SubscriptionError,
 };
+
+use crate::types::InventoryHandleInvalidationReasonV1;
 
 /// Stable error categories exported by ABI epoch 1.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, uniffi::Error)]
@@ -92,6 +95,26 @@ pub enum CoreError {
     TokenAccountingInvalidRequest { message: String },
     #[error("token-accounting computation was cancelled")]
     TokenAccountingCancelled,
+    #[error("unknown inventory scope")]
+    InventoryScopeUnknownScope,
+    #[error("unknown inventory root")]
+    InventoryScopeUnknownRoot,
+    #[error("inventory root lifetime mismatch")]
+    InventoryScopeLifetimeMismatch,
+    #[error("inventory root has no published generation yet")]
+    InventoryScopeNoPublishedGeneration,
+    #[error("unknown inventory bulk load")]
+    InventoryScopeBulkLoadUnknown,
+    #[error("inventory bulk load is already terminal")]
+    InventoryScopeBulkLoadAlreadyTerminal,
+    #[error("inventory bulk load root mismatch")]
+    InventoryScopeBulkLoadRootMismatch,
+    #[error("inventory snapshot handle invalidated")]
+    InventoryHandleInvalidated {
+        reason: InventoryHandleInvalidationReasonV1,
+    },
+    #[error("{message}")]
+    InventoryScopeInvalidRequest { message: String },
 }
 
 impl From<IdentifierError> for CoreError {
@@ -260,6 +283,37 @@ impl From<agentry_runtime::tokenacct::TokenAccountingError> for CoreError {
             agentry_runtime::tokenacct::TokenAccountingError::Cancelled => {
                 Self::TokenAccountingCancelled
             }
+        }
+    }
+}
+
+impl From<ScopeError> for CoreError {
+    fn from(value: ScopeError) -> Self {
+        match value {
+            ScopeError::IdentityMismatch => Self::StaleRuntimeIdentity,
+            ScopeError::ScopeClosed => Self::RuntimeStopped,
+            ScopeError::UnknownRoot => Self::InventoryScopeUnknownRoot,
+            ScopeError::LifetimeMismatch => Self::InventoryScopeLifetimeMismatch,
+            ScopeError::NoPublishedGeneration => Self::InventoryScopeNoPublishedGeneration,
+        }
+    }
+}
+
+impl From<ScopeRegistryError> for CoreError {
+    fn from(value: ScopeRegistryError) -> Self {
+        match value {
+            ScopeRegistryError::IdentityMismatch => Self::StaleRuntimeIdentity,
+            ScopeRegistryError::UnknownScope => Self::InventoryScopeUnknownScope,
+        }
+    }
+}
+
+impl From<BulkLoadError> for CoreError {
+    fn from(value: BulkLoadError) -> Self {
+        match value {
+            BulkLoadError::Unknown => Self::InventoryScopeBulkLoadUnknown,
+            BulkLoadError::AlreadyTerminal => Self::InventoryScopeBulkLoadAlreadyTerminal,
+            BulkLoadError::RootMismatch => Self::InventoryScopeBulkLoadRootMismatch,
         }
     }
 }

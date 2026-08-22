@@ -13,6 +13,13 @@ path = "src/lib.rs"
 agentry-proto.workspace = true
 nix = { workspace = true, features = ["fs"] }
 pcre2.workspace = true
+# P4-4: `inventory_scope::wire::fingerprint()` hashes the `inventory-scope-v1` schema descriptor
+# with a fixed, portable algorithm so the Swift mirror can independently reproduce it (a
+# `std::hash::Hash`/`DefaultHasher`-based fingerprint would only lock Rust against itself -- see
+# that function's doc comment). Already a pinned workspace dependency used in production code
+# elsewhere (`tools/xtask/src/identity.rs`) and previously present here only as a dev-dependency
+# (test-only harnesses); promoted to a real dependency rather than adding a new crate to the tree.
+sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tree-sitter.workspace = true
 tree-sitter-c.workspace = true
@@ -31,7 +38,6 @@ tree-sitter-typescript.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 
 [lints]
 workspace = true

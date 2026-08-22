@@ -83,6 +83,14 @@ pub struct RootState {
     /// open snapshot handle, mapped to that reference count. Populated/decremented by the scope
     /// as handles open/close (`note_handle_opened_for_generation` / `_closed_`).
     pub retained_generation_refcounts: HashMap<u64, usize>,
+    /// P4-4: mints out-of-band generation numbers for `inventoryOpenProjectedShard`'s derived,
+    /// non-authoritative `RootGeneration` artifacts (`resolve::build_projected_shard`). Counts
+    /// DOWN from `u64::MAX` so a projected shard's synthetic generation number can never collide
+    /// with a real published generation (`next_generation` counts up from 0) -- if it did, a
+    /// projected-shard handle would be indistinguishable from a real snapshot handle to
+    /// `HandleTable::refcount_for_generation`'s (root_id, generation_number) lookup, corrupting
+    /// the live-generation-cap accounting in `publish`/`note_handle_closed_for_generation`.
+    pub projected_shard_mint_counter: u64,
 }
 
 impl RootState {
@@ -107,7 +115,17 @@ impl RootState {
             counters: RootCounters::new(),
             live_generation_cap,
             retained_generation_refcounts: HashMap::new(),
+            projected_shard_mint_counter: 0,
         }
+    }
+
+    /// Mints the next out-of-band generation number for a projected shard (see the field doc
+    /// comment above). Infallible in practice: exhausting `u64::MAX` projected-shard opens for a
+    /// single root within one process lifetime is not a real scenario.
+    pub fn mint_projected_shard_generation(&mut self) -> u64 {
+        let value = u64::MAX - self.projected_shard_mint_counter;
+        self.projected_shard_mint_counter += 1;
+        value
     }
 
     #[must_use]

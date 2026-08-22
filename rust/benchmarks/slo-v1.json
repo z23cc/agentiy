@@ -203,5 +203,33 @@
       "D-1 N=1 is provisional pending a real FFI-dispatch-tax measurement at P4-4",
       "keep the per-scope locking default for P4-3a"
     ]
+  },
+  "p4FourResults": {
+    "step": "P4-4 -- FFI + bridge surface (E-2 partial re-run, this step's exit gate per the design's own instruction)",
+    "decision": "E-2 partially discharged: wire-byte truth now measured through the real bridge; time-to-first-paint, B2 MainActor frame budget, mention-query, and process-level peak RSS remain BLOCKED pending P4-6b/P4-7 UI and consumer-rewiring infrastructure that does not exist yet.",
+    "criteria": {
+      "wireByteTruth100kFiles": {
+        "status": "measured",
+        "measuredBytes": 24424360,
+        "measuredMiB": 23.29,
+        "corpus": "100000 files + 500 folders, synthetic, release profile",
+        "designEstimateMiB": "12-20",
+        "note": "Modestly above the design's estimate; attributed to four distinct per-record path strings over a sharded synthetic directory structure producing more unique substrings than a flatter real-repo corpus would -- see rust/crates/runtime/src/inventory_scope/wire.rs's e2_probe module doc comment. Reproduce with: cargo test -p agentry-runtime --release -- --ignored --nocapture e2_wire_byte_truth_100k",
+        "reference": "rust/crates/runtime/src/inventory_scope/wire.rs::e2_probe::e2_wire_byte_truth_100k"
+      },
+      "rootBootstrapTimeToFirstPaint": {"status": "blocked", "blockedOn": "P4-6b (@MainActor UI wiring)"},
+      "b2ProjectedShardMainActorFrameBudget": {"status": "blocked", "blockedOn": "P4-6b (@MainActor UI wiring); the Rust/FFI/bridge half of inventoryOpenProjectedShard is implemented and tested at P4-4"},
+      "mentionSuggestionQueryLatency": {"status": "blocked", "blockedOn": "P4-7 (AgentFileTagSuggestionService rewiring); inventoryQuery's Suggestion haystack variant is implemented and tested at P4-4 against a synthetic corpus, not the real caller"},
+      "peakRSSProcessLevel": {"status": "blocked", "blockedOn": "P4-6b (no comparable whole-process Swift-vs-Rust deployment exists pre-cutover)"}
+    },
+    "d1DispatchTax": {
+      "status": "not re-derived",
+      "note": "P4-2 condition 3 asked P4-4 to re-derive D-1's N from a real FFI-dispatch-tax measurement now that the bridge exists. Not measured this step (a proper per-call-vs-batched-N-delta timing differential through the Swift bridge is out of this step's remaining scope); N remains 1 (unchanged). Recorded as a deviation, not silently dropped -- a follow-up for whichever step next touches inventoryApplyDeltaV1's batching."
+    },
+    "followUpConditions": [
+      "re-run the four still-blocked E-2 criteria in full once P4-6b (UI wiring) and P4-7 (suggestion-service rewiring) land",
+      "measure real FFI-dispatch tax through the bridge and re-derive D-1's N (P4-2 condition 3, still open)",
+      "add a Swift-side memory-footprint probe alongside the P4-6b peak-RSS re-run (P4-2 condition 2)"
+    ]
   }
 }

@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "d8cdc82eb27a71c981ed876d895d0f634f174ddfa22bf9b3c8b813770adb5941",
-  "bindingChecksum": "9b8d569102c72716aeabd304d20f11e3bfdfe9566eb3d2235ef6eec0e2c19700",
+  "buildFingerprint": "399716453a69c5681243368d659b95bc4365c6195e3195ed753385ac606c0434",
+  "bindingChecksum": "43a8ea4faf014bd1315017bd9b74912e9bbd88c84c04461ed2edbcb650e7e2a9",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:3bde94968d4f7e5b27228cdc88e9bfc213385e6f4179c01b4289b18d05dcbd15",
+    "rustSourceRevision": "tree:e7d5fd79f36003144c47a08cfe0db166e3c195a7fbb1d1469d54f736c398ff05",
     "cargoLockDigest": "600a4863620e2b0cca5777cfea9901b94511f08349c53d542cfeb3fd100f0764",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "afbff70a3d934c64717b3382aeab0739291e9f3b36b99b2774dc8a10d2d9322c",
+  "archiveSha256": "f2457812640cc16e334383be9352086e87350bc4d01b229ce5749e7f26d8bc4d",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -41,12 +41,29 @@
     "CoreRuntime.applyEditsBatchCompactV1(CoreApplyEditsBatchRequestV1) throws -> CoreCompactApplyEditsBatchResultV1",
     "CoreRuntime.filterPaths(PathFilterRequest) throws -> PathFilterResult",
     "CoreRuntime.folderSuffixIndices(FolderSuffixRequest) throws -> sequence<UInt32>",
-    "CoreRuntime.beginShutdown(RuntimeIdentity) throws -> ShutdownReceipt"
+    "CoreRuntime.beginShutdown(RuntimeIdentity) throws -> ShutdownReceipt",
+    "CoreRuntime.inventoryOpenScope(RuntimeIdentity, CoreInventoryScopeConfigV1) throws -> InventoryScopeHandleV1",
+    "CoreRuntime.inventoryCloseScope(RuntimeIdentity, string) throws",
+    "CoreRuntime.inventoryOpenRoot(InventoryRootOpenV1) throws -> InventoryRootLifetimeV1",
+    "CoreRuntime.inventoryCloseRoot(RuntimeIdentity, string, sequence<u8>, string) throws -> InventoryRootUnloadReceiptV1",
+    "CoreRuntime.inventoryScopeDiagnostics(RuntimeIdentity, string) throws -> InventoryDiagnosticsV1",
+    "CoreRuntime.inventoryBeginBulkLoad(RuntimeIdentity, string, sequence<u8>, string) throws -> u64",
+    "CoreRuntime.inventoryPushBulkChunk(RuntimeIdentity, string, u64, sequence<u8>, bytes) throws -> BulkChunkReceiptV1",
+    "CoreRuntime.inventoryCommitBulkLoad(RuntimeIdentity, string, u64, InventoryPublishModeV1) throws -> InventoryGenerationReceiptV1",
+    "CoreRuntime.inventoryAbortBulkLoad(RuntimeIdentity, string, u64) throws",
+    "CoreRuntime.inventoryApplyDeltaV1(InventoryDeltaCommandV1) throws -> InventoryDeltaReceiptV1",
+    "CoreRuntime.inventoryOpenSnapshot(InventorySnapshotRequestV1) throws -> InventorySnapshotHandleV1",
+    "CoreRuntime.inventorySnapshotPage(RuntimeIdentity, string, u64, u64, u64) throws -> CompactInventoryPageV1",
+    "CoreRuntime.inventoryCloseSnapshot(string, u64) throws",
+    "CoreRuntime.inventoryLookupPaths(RuntimeIdentity, string, u64, bytes) throws -> CompactLookupResultV1",
+    "CoreRuntime.inventoryQuery(CompactQueryV1) throws -> CompactQueryResultV1",
+    "CoreRuntime.inventoryResolveRecords(InventoryResolveRequestV1) throws -> CompactRecordBlockV1",
+    "CoreRuntime.inventoryOpenProjectedShard(InventoryProjectedShardRequestV1) throws -> InventorySnapshotHandleV1"
   ],
   "artifactSha256": {
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "09c563146e5210c297d044c5e64a79360ed483e5f6b970d2f136db1fb21ff7cc",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "b3c78ca45e914d1fbaff40aa3b0844518e285210b6d48f4dff4120d4fcaae5cf",
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "14c65c25b23564a12031b64ab4eb90458ea6e3dc81896f1b8a9ea03007c5d8be",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "9f3379fcee17fc1e910ea6882771dd5dfa0fa318ab2389daafcf197bd1dc2a86",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "5d6c9028c72beb00cf46a06d28c836b881cc7ffb11d51c3cf22645d7f0073fc3",
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "ec312b9dfd7cee7d45930655fadbd6273d2e04162f2a4588a65d5a7ef5e5d665",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"
   }

@@ -92,7 +92,16 @@
     "codeMapInvariant",
     "applyEditsInvalidParams",
     "applyEditsCancelled",
-    "applyEditsInvariant"
+    "applyEditsInvariant",
+    "inventoryScopeUnknownScope",
+    "inventoryScopeUnknownRoot",
+    "inventoryScopeLifetimeMismatch",
+    "inventoryScopeNoPublishedGeneration",
+    "inventoryScopeBulkLoadUnknown",
+    "inventoryScopeBulkLoadAlreadyTerminal",
+    "inventoryScopeBulkLoadRootMismatch",
+    "inventoryHandleInvalidated",
+    "inventoryScopeInvalidRequest"
   ],
   "searchLeaf": {
     "additiveInAbiEpoch": 1,
@@ -195,6 +204,50 @@
     },
     "runtimeIdentityRequired": true,
     "requestScopedCancellation": "LeafCancellation",
+    "productFallback": "none"
+  },
+  "inventoryScopeV1": {
+    "additiveInAbiEpoch": 1,
+    "abiEpochDecision": "no bump: additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9 (P3-3/P3-4), each of which added CoreRuntime exports without bumping abiEpoch",
+    "contractDoc": "docs/architecture/rust-inventory-scope-v1.md",
+    "designDoc": "docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md",
+    "wireContractVersion": 1,
+    "messageKinds": {
+      "bulkChunk": 1,
+      "deltaEvent": 2,
+      "resolveRequest": 3,
+      "lookupRequest": 4,
+      "factBlock": 5,
+      "queryRequest": 6,
+      "queryResponse": 7
+    },
+    "tables": {
+      "stringRangeWords": {"stride": 2},
+      "recordWords": {"stride": 14},
+      "factRowWords": {"stride": 18},
+      "candidateRowWords": {"stride": 11}
+    },
+    "optionalWord": "u64::MAX",
+    "limits": {
+      "maxBlobBytes": 67108864,
+      "maxStringLenBytes": 65536,
+      "maxWordsPerSection": 8388608,
+      "maxRowsPerCall": 200000,
+      "maxIdsPerCall": 50000,
+      "maxPathsPerCall": 50000
+    },
+    "handleBasedReads": ["inventorySnapshotPage", "inventoryLookupPaths", "inventoryQuery"],
+    "handleInvalidation": "typed CoreError (inventoryHandleInvalidated), not a panic -- contract §4 layer 3",
+    "liveTruthReads": {
+      "inventoryResolveRecords": "scope+root, optional expectedCatalogGeneration staleness guard",
+      "inventoryLookupPaths": "handle selects the root; facts still read against the scope's live identity maps, not the handle's frozen generation -- see InventoryScope::lookup_paths's doc comment"
+    },
+    "swiftMirrorFingerprint": {
+      "mechanism": "SHA-256 of a canonical ASCII descriptor string both sides independently construct (NOT std::hash::Hash/DefaultHasher, which is unstable across Rust releases)",
+      "rustSource": "agentry_runtime::inventory_scope::wire::fingerprint",
+      "swiftTest": "Tests/AgentryCoreBridgeTests/InventoryScopeWireFingerprintTests.swift"
+    },
+    "runtimeIdentityRequired": true,
     "productFallback": "none"
   },
   "subscription": {

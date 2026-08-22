@@ -23,3 +23,27 @@ CoreRuntime.applyEditsBatchCompactV1(CoreApplyEditsBatchRequestV1) throws -> Cor
 CoreRuntime.filterPaths(PathFilterRequest) throws -> PathFilterResult
 CoreRuntime.folderSuffixIndices(FolderSuffixRequest) throws -> sequence<UInt32>
 CoreRuntime.beginShutdown(RuntimeIdentity) throws -> ShutdownReceipt
+
+# P4-4: inventory-scope-v1 FFI surface (docs/architecture/rust-inventory-scope-v1.md §5).
+# ABI epoch unchanged at 1: additive-only, no existing export's signature changed -- same
+# precedent as cc22c7e1/a756190d/2803d3d9, each of which added exports without bumping the epoch.
+# `sequence<u8>` (RootId, a 16-byte InventoryUuid) and `bytes` (the inventory-scope-v1 wire blob)
+# are deliberately distinct: the former is a small fixed-shape id, the latter an opaque,
+# fail-closed-decoded payload this crate's own codec owns end to end.
+CoreRuntime.inventoryOpenScope(RuntimeIdentity, CoreInventoryScopeConfigV1) throws -> InventoryScopeHandleV1
+CoreRuntime.inventoryCloseScope(RuntimeIdentity, string) throws
+CoreRuntime.inventoryOpenRoot(InventoryRootOpenV1) throws -> InventoryRootLifetimeV1
+CoreRuntime.inventoryCloseRoot(RuntimeIdentity, string, sequence<u8>, string) throws -> InventoryRootUnloadReceiptV1
+CoreRuntime.inventoryScopeDiagnostics(RuntimeIdentity, string) throws -> InventoryDiagnosticsV1
+CoreRuntime.inventoryBeginBulkLoad(RuntimeIdentity, string, sequence<u8>, string) throws -> u64
+CoreRuntime.inventoryPushBulkChunk(RuntimeIdentity, string, u64, sequence<u8>, bytes) throws -> BulkChunkReceiptV1
+CoreRuntime.inventoryCommitBulkLoad(RuntimeIdentity, string, u64, InventoryPublishModeV1) throws -> InventoryGenerationReceiptV1
+CoreRuntime.inventoryAbortBulkLoad(RuntimeIdentity, string, u64) throws
+CoreRuntime.inventoryApplyDeltaV1(InventoryDeltaCommandV1) throws -> InventoryDeltaReceiptV1
+CoreRuntime.inventoryOpenSnapshot(InventorySnapshotRequestV1) throws -> InventorySnapshotHandleV1
+CoreRuntime.inventorySnapshotPage(RuntimeIdentity, string, u64, u64, u64) throws -> CompactInventoryPageV1
+CoreRuntime.inventoryCloseSnapshot(string, u64) throws
+CoreRuntime.inventoryLookupPaths(RuntimeIdentity, string, u64, bytes) throws -> CompactLookupResultV1
+CoreRuntime.inventoryQuery(CompactQueryV1) throws -> CompactQueryResultV1
+CoreRuntime.inventoryResolveRecords(InventoryResolveRequestV1) throws -> CompactRecordBlockV1
+CoreRuntime.inventoryOpenProjectedShard(InventoryProjectedShardRequestV1) throws -> InventorySnapshotHandleV1

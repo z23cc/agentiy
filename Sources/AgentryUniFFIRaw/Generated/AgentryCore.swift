@@ -673,7 +673,41 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func initialize() throws  -> CoreHandshake
 
+    func inventoryAbortBulkLoad(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64) throws
+
+    func inventoryApplyDeltaV1(command: InventoryDeltaCommandV1) throws  -> InventoryDeltaReceiptV1
+
+    func inventoryBeginBulkLoad(identity: RuntimeIdentity, scopeId: String, rootId: Data, rootLifetimeId: String) throws  -> UInt64
+
+    func inventoryCloseRoot(identity: RuntimeIdentity, scopeId: String, rootId: Data, rootLifetimeId: String) throws  -> InventoryRootUnloadReceiptV1
+
+    func inventoryCloseScope(identity: RuntimeIdentity, scopeId: String) throws
+
+    func inventoryCloseSnapshot(scopeId: String, handleId: UInt64) throws
+
+    func inventoryCommitBulkLoad(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, publishMode: InventoryPublishModeV1) throws  -> InventoryGenerationReceiptV1
+
     func inventoryComputeV1(request: CoreInventoryComputeRequestV1) throws  -> CoreInventoryComputeResultV1
+
+    func inventoryLookupPaths(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, bytes: Data) throws  -> CompactLookupResultV1
+
+    func inventoryOpenProjectedShard(request: InventoryProjectedShardRequestV1) throws  -> InventorySnapshotHandleV1
+
+    func inventoryOpenRoot(request: InventoryRootOpenV1) throws  -> InventoryRootLifetimeV1
+
+    func inventoryOpenScope(identity: RuntimeIdentity, config: CoreInventoryScopeConfigV1) throws  -> InventoryScopeHandleV1
+
+    func inventoryOpenSnapshot(request: InventorySnapshotRequestV1) throws  -> InventorySnapshotHandleV1
+
+    func inventoryPushBulkChunk(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, rootId: Data, bytes: Data) throws  -> BulkChunkReceiptV1
+
+    func inventoryQuery(request: CompactQueryV1) throws  -> CompactQueryResultV1
+
+    func inventoryResolveRecords(request: InventoryResolveRequestV1) throws  -> CompactRecordBlockV1
+
+    func inventoryScopeDiagnostics(identity: RuntimeIdentity, scopeId: String) throws  -> InventoryDiagnosticsV1
+
+    func inventorySnapshotPage(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, offset: UInt64, limit: UInt64) throws  -> CompactInventoryPageV1
 
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
 
@@ -896,12 +930,205 @@ open func initialize()throws  -> CoreHandshake  {
 })
 }
 
+open func inventoryAbortBulkLoad(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_abort_bulk_load(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(bulkLoadId),uniffiCallStatus
+    )
+}
+}
+
+open func inventoryApplyDeltaV1(command: InventoryDeltaCommandV1)throws  -> InventoryDeltaReceiptV1  {
+    return try  FfiConverterTypeInventoryDeltaReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_apply_delta_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeInventoryDeltaCommandV1_lower(command),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryBeginBulkLoad(identity: RuntimeIdentity, scopeId: String, rootId: Data, rootLifetimeId: String)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_begin_bulk_load(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(rootId),
+        FfiConverterString.lower(rootLifetimeId),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryCloseRoot(identity: RuntimeIdentity, scopeId: String, rootId: Data, rootLifetimeId: String)throws  -> InventoryRootUnloadReceiptV1  {
+    return try  FfiConverterTypeInventoryRootUnloadReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_close_root(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(rootId),
+        FfiConverterString.lower(rootLifetimeId),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryCloseScope(identity: RuntimeIdentity, scopeId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_close_scope(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+}
+}
+
+open func inventoryCloseSnapshot(scopeId: String, handleId: UInt64)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_close_snapshot(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(handleId),uniffiCallStatus
+    )
+}
+}
+
+open func inventoryCommitBulkLoad(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, publishMode: InventoryPublishModeV1)throws  -> InventoryGenerationReceiptV1  {
+    return try  FfiConverterTypeInventoryGenerationReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_commit_bulk_load(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(bulkLoadId),
+        FfiConverterTypeInventoryPublishModeV1_lower(publishMode),uniffiCallStatus
+    )
+})
+}
+
 open func inventoryComputeV1(request: CoreInventoryComputeRequestV1)throws  -> CoreInventoryComputeResultV1  {
     return try  FfiConverterTypeCoreInventoryComputeResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_inventory_compute_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreInventoryComputeRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryLookupPaths(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, bytes: Data)throws  -> CompactLookupResultV1  {
+    return try  FfiConverterTypeCompactLookupResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_lookup_paths(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(handleId),
+        FfiConverterData.lower(bytes),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryOpenProjectedShard(request: InventoryProjectedShardRequestV1)throws  -> InventorySnapshotHandleV1  {
+    return try  FfiConverterTypeInventorySnapshotHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_open_projected_shard(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeInventoryProjectedShardRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryOpenRoot(request: InventoryRootOpenV1)throws  -> InventoryRootLifetimeV1  {
+    return try  FfiConverterTypeInventoryRootLifetimeV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_open_root(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeInventoryRootOpenV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryOpenScope(identity: RuntimeIdentity, config: CoreInventoryScopeConfigV1)throws  -> InventoryScopeHandleV1  {
+    return try  FfiConverterTypeInventoryScopeHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_open_scope(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterTypeCoreInventoryScopeConfigV1_lower(config),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryOpenSnapshot(request: InventorySnapshotRequestV1)throws  -> InventorySnapshotHandleV1  {
+    return try  FfiConverterTypeInventorySnapshotHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_open_snapshot(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeInventorySnapshotRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryPushBulkChunk(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, rootId: Data, bytes: Data)throws  -> BulkChunkReceiptV1  {
+    return try  FfiConverterTypeBulkChunkReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_push_bulk_chunk(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(bulkLoadId),
+        FfiConverterData.lower(rootId),
+        FfiConverterData.lower(bytes),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryQuery(request: CompactQueryV1)throws  -> CompactQueryResultV1  {
+    return try  FfiConverterTypeCompactQueryResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_query(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCompactQueryV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryResolveRecords(request: InventoryResolveRequestV1)throws  -> CompactRecordBlockV1  {
+    return try  FfiConverterTypeCompactRecordBlockV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_resolve_records(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeInventoryResolveRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func inventoryScopeDiagnostics(identity: RuntimeIdentity, scopeId: String)throws  -> InventoryDiagnosticsV1  {
+    return try  FfiConverterTypeInventoryDiagnosticsV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_scope_diagnostics(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+})
+}
+
+open func inventorySnapshotPage(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, offset: UInt64, limit: UInt64)throws  -> CompactInventoryPageV1  {
+    return try  FfiConverterTypeCompactInventoryPageV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_snapshot_page(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(handleId),
+        FfiConverterUInt64.lower(offset),
+        FfiConverterUInt64.lower(limit),uniffiCallStatus
     )
 })
 }
@@ -1289,6 +1516,60 @@ public func FfiConverterTypeAdmissionReceipt_lower(_ value: AdmissionReceipt) ->
 }
 
 
+public struct BulkChunkReceiptV1: Equatable, Hashable {
+    public let filesStaged: UInt64
+    public let foldersStaged: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(filesStaged: UInt64, foldersStaged: UInt64) {
+        self.filesStaged = filesStaged
+        self.foldersStaged = foldersStaged
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BulkChunkReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBulkChunkReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BulkChunkReceiptV1 {
+        return
+            try BulkChunkReceiptV1(
+                filesStaged: FfiConverterUInt64.read(from: &buf),
+                foldersStaged: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BulkChunkReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.filesStaged, into: &buf)
+        FfiConverterUInt64.write(value.foldersStaged, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBulkChunkReceiptV1_lift(_ buf: RustBuffer) throws -> BulkChunkReceiptV1 {
+    return try FfiConverterTypeBulkChunkReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBulkChunkReceiptV1_lower(_ value: BulkChunkReceiptV1) -> RustBuffer {
+    return FfiConverterTypeBulkChunkReceiptV1.lower(value)
+}
+
+
 public struct ByteRange: Equatable, Hashable {
     public let start: UInt64
     public let end: UInt64
@@ -1464,6 +1745,324 @@ public func FfiConverterTypeCommandEnvelope_lift(_ buf: RustBuffer) throws -> Co
 #endif
 public func FfiConverterTypeCommandEnvelope_lower(_ value: CommandEnvelope) -> RustBuffer {
     return FfiConverterTypeCommandEnvelope.lower(value)
+}
+
+
+public struct CompactInventoryPageV1: Equatable, Hashable {
+    /**
+     * `runtime::inventory_scope::encode_bulk_chunk(files, &[])` -- files only, folders section
+     * always empty (snapshot pages are file rows; see contract doc §5.3).
+     */
+    public let bytes: Data
+    public let returnedCount: UInt64
+    /**
+     * **Flagged simplification:** `true` iff exactly `limit` rows were returned. This is exact
+     * except at a page boundary that lands precisely on the last row (a page of exactly `limit`
+     * remaining rows is indistinguishable from "more may follow" without an extra count query) --
+     * a caller that pages until an empty/undersized page still terminates correctly, just
+     * possibly one empty round trip later than a precise count would allow.
+     */
+    public let hasMore: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `runtime::inventory_scope::encode_bulk_chunk(files, &[])` -- files only, folders section
+         * always empty (snapshot pages are file rows; see contract doc §5.3).
+         */bytes: Data, returnedCount: UInt64,
+        /**
+         * **Flagged simplification:** `true` iff exactly `limit` rows were returned. This is exact
+         * except at a page boundary that lands precisely on the last row (a page of exactly `limit`
+         * remaining rows is indistinguishable from "more may follow" without an extra count query) --
+         * a caller that pages until an empty/undersized page still terminates correctly, just
+         * possibly one empty round trip later than a precise count would allow.
+         */hasMore: Bool) {
+        self.bytes = bytes
+        self.returnedCount = returnedCount
+        self.hasMore = hasMore
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompactInventoryPageV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompactInventoryPageV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompactInventoryPageV1 {
+        return
+            try CompactInventoryPageV1(
+                bytes: FfiConverterData.read(from: &buf),
+                returnedCount: FfiConverterUInt64.read(from: &buf),
+                hasMore: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompactInventoryPageV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.bytes, into: &buf)
+        FfiConverterUInt64.write(value.returnedCount, into: &buf)
+        FfiConverterBool.write(value.hasMore, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactInventoryPageV1_lift(_ buf: RustBuffer) throws -> CompactInventoryPageV1 {
+    return try FfiConverterTypeCompactInventoryPageV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactInventoryPageV1_lower(_ value: CompactInventoryPageV1) -> RustBuffer {
+    return FfiConverterTypeCompactInventoryPageV1.lower(value)
+}
+
+
+public struct CompactLookupResultV1: Equatable, Hashable {
+    /**
+     * Identical fact shape to `CompactRecordBlockV1`, keyed by path.
+     */
+    public let bytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Identical fact shape to `CompactRecordBlockV1`, keyed by path.
+         */bytes: Data) {
+        self.bytes = bytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompactLookupResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompactLookupResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompactLookupResultV1 {
+        return
+            try CompactLookupResultV1(
+                bytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompactLookupResultV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactLookupResultV1_lift(_ buf: RustBuffer) throws -> CompactLookupResultV1 {
+    return try FfiConverterTypeCompactLookupResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactLookupResultV1_lower(_ value: CompactLookupResultV1) -> RustBuffer {
+    return FfiConverterTypeCompactLookupResultV1.lower(value)
+}
+
+
+public struct CompactQueryResultV1: Equatable, Hashable {
+    /**
+     * `runtime::inventory_scope::encode_query_response`.
+     */
+    public let bytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `runtime::inventory_scope::encode_query_response`.
+         */bytes: Data) {
+        self.bytes = bytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompactQueryResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompactQueryResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompactQueryResultV1 {
+        return
+            try CompactQueryResultV1(
+                bytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompactQueryResultV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactQueryResultV1_lift(_ buf: RustBuffer) throws -> CompactQueryResultV1 {
+    return try FfiConverterTypeCompactQueryResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactQueryResultV1_lower(_ value: CompactQueryResultV1) -> RustBuffer {
+    return FfiConverterTypeCompactQueryResultV1.lower(value)
+}
+
+
+public struct CompactQueryV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let handleId: UInt64
+    /**
+     * `runtime::inventory_scope::encode_query_request`.
+     */
+    public let bytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, handleId: UInt64,
+        /**
+         * `runtime::inventory_scope::encode_query_request`.
+         */bytes: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.handleId = handleId
+        self.bytes = bytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompactQueryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompactQueryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompactQueryV1 {
+        return
+            try CompactQueryV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                handleId: FfiConverterUInt64.read(from: &buf),
+                bytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompactQueryV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterUInt64.write(value.handleId, into: &buf)
+        FfiConverterData.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactQueryV1_lift(_ buf: RustBuffer) throws -> CompactQueryV1 {
+    return try FfiConverterTypeCompactQueryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactQueryV1_lower(_ value: CompactQueryV1) -> RustBuffer {
+    return FfiConverterTypeCompactQueryV1.lower(value)
+}
+
+
+public struct CompactRecordBlockV1: Equatable, Hashable {
+    /**
+     * `runtime::inventory_scope::encode_fact_block` -- carries the whole-block `stale` case as
+     * data (contract doc §5.3), never as a thrown error.
+     */
+    public let bytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `runtime::inventory_scope::encode_fact_block` -- carries the whole-block `stale` case as
+         * data (contract doc §5.3), never as a thrown error.
+         */bytes: Data) {
+        self.bytes = bytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CompactRecordBlockV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCompactRecordBlockV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CompactRecordBlockV1 {
+        return
+            try CompactRecordBlockV1(
+                bytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CompactRecordBlockV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactRecordBlockV1_lift(_ buf: RustBuffer) throws -> CompactRecordBlockV1 {
+    return try FfiConverterTypeCompactRecordBlockV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCompactRecordBlockV1_lower(_ value: CompactRecordBlockV1) -> RustBuffer {
+    return FfiConverterTypeCompactRecordBlockV1.lower(value)
 }
 
 
@@ -2901,6 +3500,72 @@ public func FfiConverterTypeCoreInventoryComputeResultV1_lower(_ value: CoreInve
 }
 
 
+public struct CoreInventoryScopeConfigV1: Equatable, Hashable {
+    public let liveGenerationCap: UInt64
+    public let maxPatchLogicalMutationCount: UInt64
+    /**
+     * Lower-cased, no leading dot (contract doc §6: Swift-owned codemap-capable-extension
+     * policy, passed in at scope-open time rather than resolved implicitly inside Rust).
+     */
+    public let codemapCapableExtensions: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(liveGenerationCap: UInt64, maxPatchLogicalMutationCount: UInt64,
+        /**
+         * Lower-cased, no leading dot (contract doc §6: Swift-owned codemap-capable-extension
+         * policy, passed in at scope-open time rather than resolved implicitly inside Rust).
+         */codemapCapableExtensions: [String]) {
+        self.liveGenerationCap = liveGenerationCap
+        self.maxPatchLogicalMutationCount = maxPatchLogicalMutationCount
+        self.codemapCapableExtensions = codemapCapableExtensions
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreInventoryScopeConfigV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreInventoryScopeConfigV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreInventoryScopeConfigV1 {
+        return
+            try CoreInventoryScopeConfigV1(
+                liveGenerationCap: FfiConverterUInt64.read(from: &buf),
+                maxPatchLogicalMutationCount: FfiConverterUInt64.read(from: &buf),
+                codemapCapableExtensions: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreInventoryScopeConfigV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.liveGenerationCap, into: &buf)
+        FfiConverterUInt64.write(value.maxPatchLogicalMutationCount, into: &buf)
+        FfiConverterSequenceString.write(value.codemapCapableExtensions, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryScopeConfigV1_lift(_ buf: RustBuffer) throws -> CoreInventoryScopeConfigV1 {
+    return try FfiConverterTypeCoreInventoryScopeConfigV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreInventoryScopeConfigV1_lower(_ value: CoreInventoryScopeConfigV1) -> RustBuffer {
+    return FfiConverterTypeCoreInventoryScopeConfigV1.lower(value)
+}
+
+
 public struct CoreInventoryTableRangeV1: Equatable, Hashable {
     public let start: UInt64
     public let count: UInt64
@@ -3864,6 +4529,906 @@ public func FfiConverterTypeHostResponse_lift(_ buf: RustBuffer) throws -> HostR
 #endif
 public func FfiConverterTypeHostResponse_lower(_ value: HostResponse) -> RustBuffer {
     return FfiConverterTypeHostResponse.lower(value)
+}
+
+
+public struct InventoryDeltaCommandV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let rootId: Data
+    public let rootLifetimeId: String
+    public let watcherAcceptedWatermark: UInt64?
+    public let requiresFullResync: Bool
+    public let expectedAppliedIndexGeneration: UInt64?
+    public let source: String
+    /**
+     * The compact `inventory-scope-v1` delta blob (contract doc §5.1) --
+     * `runtime::inventory_scope::encode_delta_event` / `decode_delta_event`.
+     */
+    public let eventBytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, rootId: Data, rootLifetimeId: String, watcherAcceptedWatermark: UInt64?, requiresFullResync: Bool, expectedAppliedIndexGeneration: UInt64?, source: String,
+        /**
+         * The compact `inventory-scope-v1` delta blob (contract doc §5.1) --
+         * `runtime::inventory_scope::encode_delta_event` / `decode_delta_event`.
+         */eventBytes: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.rootId = rootId
+        self.rootLifetimeId = rootLifetimeId
+        self.watcherAcceptedWatermark = watcherAcceptedWatermark
+        self.requiresFullResync = requiresFullResync
+        self.expectedAppliedIndexGeneration = expectedAppliedIndexGeneration
+        self.source = source
+        self.eventBytes = eventBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryDeltaCommandV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryDeltaCommandV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryDeltaCommandV1 {
+        return
+            try InventoryDeltaCommandV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                rootId: FfiConverterData.read(from: &buf),
+                rootLifetimeId: FfiConverterString.read(from: &buf),
+                watcherAcceptedWatermark: FfiConverterOptionUInt64.read(from: &buf),
+                requiresFullResync: FfiConverterBool.read(from: &buf),
+                expectedAppliedIndexGeneration: FfiConverterOptionUInt64.read(from: &buf),
+                source: FfiConverterString.read(from: &buf),
+                eventBytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryDeltaCommandV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterString.write(value.rootLifetimeId, into: &buf)
+        FfiConverterOptionUInt64.write(value.watcherAcceptedWatermark, into: &buf)
+        FfiConverterBool.write(value.requiresFullResync, into: &buf)
+        FfiConverterOptionUInt64.write(value.expectedAppliedIndexGeneration, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterData.write(value.eventBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaCommandV1_lift(_ buf: RustBuffer) throws -> InventoryDeltaCommandV1 {
+    return try FfiConverterTypeInventoryDeltaCommandV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaCommandV1_lower(_ value: InventoryDeltaCommandV1) -> RustBuffer {
+    return FfiConverterTypeInventoryDeltaCommandV1.lower(value)
+}
+
+
+public struct InventoryDeltaReceiptV1: Equatable, Hashable {
+    public let appliedIndexGeneration: UInt64
+    public let catalogGeneration: UInt64?
+    public let outcome: InventoryApplyOutcomeV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(appliedIndexGeneration: UInt64, catalogGeneration: UInt64?, outcome: InventoryApplyOutcomeV1) {
+        self.appliedIndexGeneration = appliedIndexGeneration
+        self.catalogGeneration = catalogGeneration
+        self.outcome = outcome
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryDeltaReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryDeltaReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryDeltaReceiptV1 {
+        return
+            try InventoryDeltaReceiptV1(
+                appliedIndexGeneration: FfiConverterUInt64.read(from: &buf),
+                catalogGeneration: FfiConverterOptionUInt64.read(from: &buf),
+                outcome: FfiConverterTypeInventoryApplyOutcomeV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryDeltaReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.appliedIndexGeneration, into: &buf)
+        FfiConverterOptionUInt64.write(value.catalogGeneration, into: &buf)
+        FfiConverterTypeInventoryApplyOutcomeV1.write(value.outcome, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaReceiptV1_lift(_ buf: RustBuffer) throws -> InventoryDeltaReceiptV1 {
+    return try FfiConverterTypeInventoryDeltaReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDeltaReceiptV1_lower(_ value: InventoryDeltaReceiptV1) -> RustBuffer {
+    return FfiConverterTypeInventoryDeltaReceiptV1.lower(value)
+}
+
+
+public struct InventoryDiagnosticsV1: Equatable, Hashable {
+    public let liveGenerationCapPerRoot: UInt64
+    public let maxPatchLogicalMutationCount: UInt64
+    public let publishedShardCount: UInt64
+    public let totalBuildCount: UInt64
+    public let totalBackstopCount: UInt64
+    public let singleShardCompositionReuseCount: UInt64
+    public let genericMergeElementVisitCount: UInt64
+    public let shadowComparisonCount: UInt64
+    public let shadowMismatchCount: UInt64
+    public let lastShadowByteCount: UInt64
+    public let roots: [InventoryRootDiagnosticsV1]
+    public let longestCriticalSectionNanos: UInt64
+    public let openHandleCount: UInt64
+    public let oldestOpenHandleAgeMillis: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(liveGenerationCapPerRoot: UInt64, maxPatchLogicalMutationCount: UInt64, publishedShardCount: UInt64, totalBuildCount: UInt64, totalBackstopCount: UInt64, singleShardCompositionReuseCount: UInt64, genericMergeElementVisitCount: UInt64, shadowComparisonCount: UInt64, shadowMismatchCount: UInt64, lastShadowByteCount: UInt64, roots: [InventoryRootDiagnosticsV1], longestCriticalSectionNanos: UInt64, openHandleCount: UInt64, oldestOpenHandleAgeMillis: UInt64?) {
+        self.liveGenerationCapPerRoot = liveGenerationCapPerRoot
+        self.maxPatchLogicalMutationCount = maxPatchLogicalMutationCount
+        self.publishedShardCount = publishedShardCount
+        self.totalBuildCount = totalBuildCount
+        self.totalBackstopCount = totalBackstopCount
+        self.singleShardCompositionReuseCount = singleShardCompositionReuseCount
+        self.genericMergeElementVisitCount = genericMergeElementVisitCount
+        self.shadowComparisonCount = shadowComparisonCount
+        self.shadowMismatchCount = shadowMismatchCount
+        self.lastShadowByteCount = lastShadowByteCount
+        self.roots = roots
+        self.longestCriticalSectionNanos = longestCriticalSectionNanos
+        self.openHandleCount = openHandleCount
+        self.oldestOpenHandleAgeMillis = oldestOpenHandleAgeMillis
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryDiagnosticsV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryDiagnosticsV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryDiagnosticsV1 {
+        return
+            try InventoryDiagnosticsV1(
+                liveGenerationCapPerRoot: FfiConverterUInt64.read(from: &buf),
+                maxPatchLogicalMutationCount: FfiConverterUInt64.read(from: &buf),
+                publishedShardCount: FfiConverterUInt64.read(from: &buf),
+                totalBuildCount: FfiConverterUInt64.read(from: &buf),
+                totalBackstopCount: FfiConverterUInt64.read(from: &buf),
+                singleShardCompositionReuseCount: FfiConverterUInt64.read(from: &buf),
+                genericMergeElementVisitCount: FfiConverterUInt64.read(from: &buf),
+                shadowComparisonCount: FfiConverterUInt64.read(from: &buf),
+                shadowMismatchCount: FfiConverterUInt64.read(from: &buf),
+                lastShadowByteCount: FfiConverterUInt64.read(from: &buf),
+                roots: FfiConverterSequenceTypeInventoryRootDiagnosticsV1.read(from: &buf),
+                longestCriticalSectionNanos: FfiConverterUInt64.read(from: &buf),
+                openHandleCount: FfiConverterUInt64.read(from: &buf),
+                oldestOpenHandleAgeMillis: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryDiagnosticsV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.liveGenerationCapPerRoot, into: &buf)
+        FfiConverterUInt64.write(value.maxPatchLogicalMutationCount, into: &buf)
+        FfiConverterUInt64.write(value.publishedShardCount, into: &buf)
+        FfiConverterUInt64.write(value.totalBuildCount, into: &buf)
+        FfiConverterUInt64.write(value.totalBackstopCount, into: &buf)
+        FfiConverterUInt64.write(value.singleShardCompositionReuseCount, into: &buf)
+        FfiConverterUInt64.write(value.genericMergeElementVisitCount, into: &buf)
+        FfiConverterUInt64.write(value.shadowComparisonCount, into: &buf)
+        FfiConverterUInt64.write(value.shadowMismatchCount, into: &buf)
+        FfiConverterUInt64.write(value.lastShadowByteCount, into: &buf)
+        FfiConverterSequenceTypeInventoryRootDiagnosticsV1.write(value.roots, into: &buf)
+        FfiConverterUInt64.write(value.longestCriticalSectionNanos, into: &buf)
+        FfiConverterUInt64.write(value.openHandleCount, into: &buf)
+        FfiConverterOptionUInt64.write(value.oldestOpenHandleAgeMillis, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDiagnosticsV1_lift(_ buf: RustBuffer) throws -> InventoryDiagnosticsV1 {
+    return try FfiConverterTypeInventoryDiagnosticsV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryDiagnosticsV1_lower(_ value: InventoryDiagnosticsV1) -> RustBuffer {
+    return FfiConverterTypeInventoryDiagnosticsV1.lower(value)
+}
+
+
+public struct InventoryGenerationReceiptV1: Equatable, Hashable {
+    public let rootId: Data
+    public let generation: UInt64
+    public let rootLifetimeId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rootId: Data, generation: UInt64, rootLifetimeId: String) {
+        self.rootId = rootId
+        self.generation = generation
+        self.rootLifetimeId = rootLifetimeId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryGenerationReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryGenerationReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryGenerationReceiptV1 {
+        return
+            try InventoryGenerationReceiptV1(
+                rootId: FfiConverterData.read(from: &buf),
+                generation: FfiConverterUInt64.read(from: &buf),
+                rootLifetimeId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryGenerationReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterUInt64.write(value.generation, into: &buf)
+        FfiConverterString.write(value.rootLifetimeId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryGenerationReceiptV1_lift(_ buf: RustBuffer) throws -> InventoryGenerationReceiptV1 {
+    return try FfiConverterTypeInventoryGenerationReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryGenerationReceiptV1_lower(_ value: InventoryGenerationReceiptV1) -> RustBuffer {
+    return FfiConverterTypeInventoryGenerationReceiptV1.lower(value)
+}
+
+
+public struct InventoryProjectedShardRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let rootId: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, rootId: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.rootId = rootId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryProjectedShardRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryProjectedShardRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryProjectedShardRequestV1 {
+        return
+            try InventoryProjectedShardRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                rootId: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryProjectedShardRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterData.write(value.rootId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryProjectedShardRequestV1_lift(_ buf: RustBuffer) throws -> InventoryProjectedShardRequestV1 {
+    return try FfiConverterTypeInventoryProjectedShardRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryProjectedShardRequestV1_lower(_ value: InventoryProjectedShardRequestV1) -> RustBuffer {
+    return FfiConverterTypeInventoryProjectedShardRequestV1.lower(value)
+}
+
+
+public struct InventoryResolveRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let rootId: Data
+    public let expectedCatalogGeneration: UInt64?
+    /**
+     * `runtime::inventory_scope::encode_resolve_request(file_ids, folder_ids)`.
+     */
+    public let bytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, rootId: Data, expectedCatalogGeneration: UInt64?,
+        /**
+         * `runtime::inventory_scope::encode_resolve_request(file_ids, folder_ids)`.
+         */bytes: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.rootId = rootId
+        self.expectedCatalogGeneration = expectedCatalogGeneration
+        self.bytes = bytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryResolveRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryResolveRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryResolveRequestV1 {
+        return
+            try InventoryResolveRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                rootId: FfiConverterData.read(from: &buf),
+                expectedCatalogGeneration: FfiConverterOptionUInt64.read(from: &buf),
+                bytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryResolveRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterOptionUInt64.write(value.expectedCatalogGeneration, into: &buf)
+        FfiConverterData.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryResolveRequestV1_lift(_ buf: RustBuffer) throws -> InventoryResolveRequestV1 {
+    return try FfiConverterTypeInventoryResolveRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryResolveRequestV1_lower(_ value: InventoryResolveRequestV1) -> RustBuffer {
+    return FfiConverterTypeInventoryResolveRequestV1.lower(value)
+}
+
+
+public struct InventoryRootDiagnosticsV1: Equatable, Hashable {
+    public let rootId: Data
+    public let lifetimeId: String?
+    public let publishedTopologyGeneration: UInt64?
+    public let liveTopologyGenerations: [UInt64]
+    public let retainedTopologyGenerations: [UInt64]
+    public let buildCount: UInt64
+    public let pathIndexBuildCount: UInt64
+    public let overlayPathIndexBuildCount: UInt64
+    public let patchCount: UInt64
+    public let authoritativeRebuildCount: UInt64
+    public let fallbackCount: UInt64
+    /**
+     * Fixed order matching `RootCatalogShardFallbackReason::ALL` (§5c's 8-case table, in the
+     * same order this crate's own `zeroed_fallback_reason_counts` iterates).
+     */
+    public let fallbackReasonCounts: [UInt64]
+    public let lastAppliedIndexGeneration: UInt64?
+    public let deltaStateDirty: Bool
+    public let backstopCount: UInt64
+    public let maxLiveGenerationCount: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rootId: Data, lifetimeId: String?, publishedTopologyGeneration: UInt64?, liveTopologyGenerations: [UInt64], retainedTopologyGenerations: [UInt64], buildCount: UInt64, pathIndexBuildCount: UInt64, overlayPathIndexBuildCount: UInt64, patchCount: UInt64, authoritativeRebuildCount: UInt64, fallbackCount: UInt64,
+        /**
+         * Fixed order matching `RootCatalogShardFallbackReason::ALL` (§5c's 8-case table, in the
+         * same order this crate's own `zeroed_fallback_reason_counts` iterates).
+         */fallbackReasonCounts: [UInt64], lastAppliedIndexGeneration: UInt64?, deltaStateDirty: Bool, backstopCount: UInt64, maxLiveGenerationCount: UInt64) {
+        self.rootId = rootId
+        self.lifetimeId = lifetimeId
+        self.publishedTopologyGeneration = publishedTopologyGeneration
+        self.liveTopologyGenerations = liveTopologyGenerations
+        self.retainedTopologyGenerations = retainedTopologyGenerations
+        self.buildCount = buildCount
+        self.pathIndexBuildCount = pathIndexBuildCount
+        self.overlayPathIndexBuildCount = overlayPathIndexBuildCount
+        self.patchCount = patchCount
+        self.authoritativeRebuildCount = authoritativeRebuildCount
+        self.fallbackCount = fallbackCount
+        self.fallbackReasonCounts = fallbackReasonCounts
+        self.lastAppliedIndexGeneration = lastAppliedIndexGeneration
+        self.deltaStateDirty = deltaStateDirty
+        self.backstopCount = backstopCount
+        self.maxLiveGenerationCount = maxLiveGenerationCount
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryRootDiagnosticsV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryRootDiagnosticsV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryRootDiagnosticsV1 {
+        return
+            try InventoryRootDiagnosticsV1(
+                rootId: FfiConverterData.read(from: &buf),
+                lifetimeId: FfiConverterOptionString.read(from: &buf),
+                publishedTopologyGeneration: FfiConverterOptionUInt64.read(from: &buf),
+                liveTopologyGenerations: FfiConverterSequenceUInt64.read(from: &buf),
+                retainedTopologyGenerations: FfiConverterSequenceUInt64.read(from: &buf),
+                buildCount: FfiConverterUInt64.read(from: &buf),
+                pathIndexBuildCount: FfiConverterUInt64.read(from: &buf),
+                overlayPathIndexBuildCount: FfiConverterUInt64.read(from: &buf),
+                patchCount: FfiConverterUInt64.read(from: &buf),
+                authoritativeRebuildCount: FfiConverterUInt64.read(from: &buf),
+                fallbackCount: FfiConverterUInt64.read(from: &buf),
+                fallbackReasonCounts: FfiConverterSequenceUInt64.read(from: &buf),
+                lastAppliedIndexGeneration: FfiConverterOptionUInt64.read(from: &buf),
+                deltaStateDirty: FfiConverterBool.read(from: &buf),
+                backstopCount: FfiConverterUInt64.read(from: &buf),
+                maxLiveGenerationCount: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryRootDiagnosticsV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterOptionString.write(value.lifetimeId, into: &buf)
+        FfiConverterOptionUInt64.write(value.publishedTopologyGeneration, into: &buf)
+        FfiConverterSequenceUInt64.write(value.liveTopologyGenerations, into: &buf)
+        FfiConverterSequenceUInt64.write(value.retainedTopologyGenerations, into: &buf)
+        FfiConverterUInt64.write(value.buildCount, into: &buf)
+        FfiConverterUInt64.write(value.pathIndexBuildCount, into: &buf)
+        FfiConverterUInt64.write(value.overlayPathIndexBuildCount, into: &buf)
+        FfiConverterUInt64.write(value.patchCount, into: &buf)
+        FfiConverterUInt64.write(value.authoritativeRebuildCount, into: &buf)
+        FfiConverterUInt64.write(value.fallbackCount, into: &buf)
+        FfiConverterSequenceUInt64.write(value.fallbackReasonCounts, into: &buf)
+        FfiConverterOptionUInt64.write(value.lastAppliedIndexGeneration, into: &buf)
+        FfiConverterBool.write(value.deltaStateDirty, into: &buf)
+        FfiConverterUInt64.write(value.backstopCount, into: &buf)
+        FfiConverterUInt64.write(value.maxLiveGenerationCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootDiagnosticsV1_lift(_ buf: RustBuffer) throws -> InventoryRootDiagnosticsV1 {
+    return try FfiConverterTypeInventoryRootDiagnosticsV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootDiagnosticsV1_lower(_ value: InventoryRootDiagnosticsV1) -> RustBuffer {
+    return FfiConverterTypeInventoryRootDiagnosticsV1.lower(value)
+}
+
+
+public struct InventoryRootLifetimeV1: Equatable, Hashable {
+    public let rootId: Data
+    public let rootLifetimeId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rootId: Data, rootLifetimeId: String) {
+        self.rootId = rootId
+        self.rootLifetimeId = rootLifetimeId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryRootLifetimeV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryRootLifetimeV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryRootLifetimeV1 {
+        return
+            try InventoryRootLifetimeV1(
+                rootId: FfiConverterData.read(from: &buf),
+                rootLifetimeId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryRootLifetimeV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterString.write(value.rootLifetimeId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootLifetimeV1_lift(_ buf: RustBuffer) throws -> InventoryRootLifetimeV1 {
+    return try FfiConverterTypeInventoryRootLifetimeV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootLifetimeV1_lower(_ value: InventoryRootLifetimeV1) -> RustBuffer {
+    return FfiConverterTypeInventoryRootLifetimeV1.lower(value)
+}
+
+
+public struct InventoryRootOpenV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let rootId: Data
+    public let name: String
+    public let standardizedFullPath: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, rootId: Data, name: String, standardizedFullPath: String) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.rootId = rootId
+        self.name = name
+        self.standardizedFullPath = standardizedFullPath
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryRootOpenV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryRootOpenV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryRootOpenV1 {
+        return
+            try InventoryRootOpenV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                rootId: FfiConverterData.read(from: &buf),
+                name: FfiConverterString.read(from: &buf),
+                standardizedFullPath: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryRootOpenV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.standardizedFullPath, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootOpenV1_lift(_ buf: RustBuffer) throws -> InventoryRootOpenV1 {
+    return try FfiConverterTypeInventoryRootOpenV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootOpenV1_lower(_ value: InventoryRootOpenV1) -> RustBuffer {
+    return FfiConverterTypeInventoryRootOpenV1.lower(value)
+}
+
+
+public struct InventoryRootUnloadReceiptV1: Equatable, Hashable {
+    public let rootId: Data
+    public let rootLifetimeId: String
+    public let finalGeneration: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rootId: Data, rootLifetimeId: String, finalGeneration: UInt64?) {
+        self.rootId = rootId
+        self.rootLifetimeId = rootLifetimeId
+        self.finalGeneration = finalGeneration
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryRootUnloadReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryRootUnloadReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryRootUnloadReceiptV1 {
+        return
+            try InventoryRootUnloadReceiptV1(
+                rootId: FfiConverterData.read(from: &buf),
+                rootLifetimeId: FfiConverterString.read(from: &buf),
+                finalGeneration: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryRootUnloadReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterString.write(value.rootLifetimeId, into: &buf)
+        FfiConverterOptionUInt64.write(value.finalGeneration, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootUnloadReceiptV1_lift(_ buf: RustBuffer) throws -> InventoryRootUnloadReceiptV1 {
+    return try FfiConverterTypeInventoryRootUnloadReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRootUnloadReceiptV1_lower(_ value: InventoryRootUnloadReceiptV1) -> RustBuffer {
+    return FfiConverterTypeInventoryRootUnloadReceiptV1.lower(value)
+}
+
+
+public struct InventoryScopeHandleV1: Equatable, Hashable {
+    public let scopeId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(scopeId: String) {
+        self.scopeId = scopeId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryScopeHandleV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryScopeHandleV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryScopeHandleV1 {
+        return
+            try InventoryScopeHandleV1(
+                scopeId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryScopeHandleV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.scopeId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryScopeHandleV1_lift(_ buf: RustBuffer) throws -> InventoryScopeHandleV1 {
+    return try FfiConverterTypeInventoryScopeHandleV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryScopeHandleV1_lower(_ value: InventoryScopeHandleV1) -> RustBuffer {
+    return FfiConverterTypeInventoryScopeHandleV1.lower(value)
+}
+
+
+public struct InventorySnapshotHandleV1: Equatable, Hashable {
+    public let handleId: UInt64
+    public let generation: UInt64
+    public let rootLifetimeId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(handleId: UInt64, generation: UInt64, rootLifetimeId: String) {
+        self.handleId = handleId
+        self.generation = generation
+        self.rootLifetimeId = rootLifetimeId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventorySnapshotHandleV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventorySnapshotHandleV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventorySnapshotHandleV1 {
+        return
+            try InventorySnapshotHandleV1(
+                handleId: FfiConverterUInt64.read(from: &buf),
+                generation: FfiConverterUInt64.read(from: &buf),
+                rootLifetimeId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventorySnapshotHandleV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.handleId, into: &buf)
+        FfiConverterUInt64.write(value.generation, into: &buf)
+        FfiConverterString.write(value.rootLifetimeId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventorySnapshotHandleV1_lift(_ buf: RustBuffer) throws -> InventorySnapshotHandleV1 {
+    return try FfiConverterTypeInventorySnapshotHandleV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventorySnapshotHandleV1_lower(_ value: InventorySnapshotHandleV1) -> RustBuffer {
+    return FfiConverterTypeInventorySnapshotHandleV1.lower(value)
+}
+
+
+public struct InventorySnapshotRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let rootId: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, rootId: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.rootId = rootId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventorySnapshotRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventorySnapshotRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventorySnapshotRequestV1 {
+        return
+            try InventorySnapshotRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                rootId: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventorySnapshotRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterData.write(value.rootId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventorySnapshotRequestV1_lift(_ buf: RustBuffer) throws -> InventorySnapshotRequestV1 {
+    return try FfiConverterTypeInventorySnapshotRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventorySnapshotRequestV1_lower(_ value: InventorySnapshotRequestV1) -> RustBuffer {
+    return FfiConverterTypeInventorySnapshotRequestV1.lower(value)
 }
 
 
@@ -5362,6 +6927,17 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case TokenAccountingInvalidRequest(message: String
     )
     case TokenAccountingCancelled
+    case InventoryScopeUnknownScope
+    case InventoryScopeUnknownRoot
+    case InventoryScopeLifetimeMismatch
+    case InventoryScopeNoPublishedGeneration
+    case InventoryScopeBulkLoadUnknown
+    case InventoryScopeBulkLoadAlreadyTerminal
+    case InventoryScopeBulkLoadRootMismatch
+    case InventoryHandleInvalidated(reason: InventoryHandleInvalidationReasonV1
+    )
+    case InventoryScopeInvalidRequest(message: String
+    )
 
 
 
@@ -5446,6 +7022,19 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
             )
         case 43: return .TokenAccountingCancelled
+        case 44: return .InventoryScopeUnknownScope
+        case 45: return .InventoryScopeUnknownRoot
+        case 46: return .InventoryScopeLifetimeMismatch
+        case 47: return .InventoryScopeNoPublishedGeneration
+        case 48: return .InventoryScopeBulkLoadUnknown
+        case 49: return .InventoryScopeBulkLoadAlreadyTerminal
+        case 50: return .InventoryScopeBulkLoadRootMismatch
+        case 51: return .InventoryHandleInvalidated(
+            reason: try FfiConverterTypeInventoryHandleInvalidationReasonV1.read(from: &buf)
+            )
+        case 52: return .InventoryScopeInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5635,6 +7224,44 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case .TokenAccountingCancelled:
             writeInt(&buf, Int32(43))
 
+
+        case .InventoryScopeUnknownScope:
+            writeInt(&buf, Int32(44))
+
+
+        case .InventoryScopeUnknownRoot:
+            writeInt(&buf, Int32(45))
+
+
+        case .InventoryScopeLifetimeMismatch:
+            writeInt(&buf, Int32(46))
+
+
+        case .InventoryScopeNoPublishedGeneration:
+            writeInt(&buf, Int32(47))
+
+
+        case .InventoryScopeBulkLoadUnknown:
+            writeInt(&buf, Int32(48))
+
+
+        case .InventoryScopeBulkLoadAlreadyTerminal:
+            writeInt(&buf, Int32(49))
+
+
+        case .InventoryScopeBulkLoadRootMismatch:
+            writeInt(&buf, Int32(50))
+
+
+        case let .InventoryHandleInvalidated(reason):
+            writeInt(&buf, Int32(51))
+            FfiConverterTypeInventoryHandleInvalidationReasonV1.write(reason, into: &buf)
+
+
+        case let .InventoryScopeInvalidRequest(message):
+            writeInt(&buf, Int32(52))
+            FfiConverterString.write(message, into: &buf)
+
         }
     }
 }
@@ -5745,6 +7372,316 @@ public func FfiConverterTypeEngineKind_lift(_ buf: RustBuffer) throws -> EngineK
 #endif
 public func FfiConverterTypeEngineKind_lower(_ value: EngineKind) -> RustBuffer {
     return FfiConverterTypeEngineKind.lower(value)
+}
+
+
+
+
+public enum InventoryApplyOutcomeV1: Equatable, Hashable {
+
+    case patched
+    case rebuiltAuthoritative
+    case rejected(reason: InventoryRejectionReasonV1
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryApplyOutcomeV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryApplyOutcomeV1: FfiConverterRustBuffer {
+    typealias SwiftType = InventoryApplyOutcomeV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryApplyOutcomeV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .patched
+
+        case 2: return .rebuiltAuthoritative
+
+        case 3: return .rejected(reason: try FfiConverterTypeInventoryRejectionReasonV1.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: InventoryApplyOutcomeV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .patched:
+            writeInt(&buf, Int32(1))
+
+
+        case .rebuiltAuthoritative:
+            writeInt(&buf, Int32(2))
+
+
+        case let .rejected(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeInventoryRejectionReasonV1.write(reason, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryApplyOutcomeV1_lift(_ buf: RustBuffer) throws -> InventoryApplyOutcomeV1 {
+    return try FfiConverterTypeInventoryApplyOutcomeV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryApplyOutcomeV1_lower(_ value: InventoryApplyOutcomeV1) -> RustBuffer {
+    return FfiConverterTypeInventoryApplyOutcomeV1.lower(value)
+}
+
+
+
+
+public enum InventoryHandleInvalidationReasonV1: Equatable, Hashable {
+
+    case rootClosed
+    case scopeClosed
+    case identityChanged
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryHandleInvalidationReasonV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryHandleInvalidationReasonV1: FfiConverterRustBuffer {
+    typealias SwiftType = InventoryHandleInvalidationReasonV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryHandleInvalidationReasonV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .rootClosed
+
+        case 2: return .scopeClosed
+
+        case 3: return .identityChanged
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: InventoryHandleInvalidationReasonV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .rootClosed:
+            writeInt(&buf, Int32(1))
+
+
+        case .scopeClosed:
+            writeInt(&buf, Int32(2))
+
+
+        case .identityChanged:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryHandleInvalidationReasonV1_lift(_ buf: RustBuffer) throws -> InventoryHandleInvalidationReasonV1 {
+    return try FfiConverterTypeInventoryHandleInvalidationReasonV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryHandleInvalidationReasonV1_lower(_ value: InventoryHandleInvalidationReasonV1) -> RustBuffer {
+    return FfiConverterTypeInventoryHandleInvalidationReasonV1.lower(value)
+}
+
+
+
+
+public enum InventoryPublishModeV1: Equatable, Hashable {
+
+    case atomicPublish
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryPublishModeV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryPublishModeV1: FfiConverterRustBuffer {
+    typealias SwiftType = InventoryPublishModeV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryPublishModeV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .atomicPublish
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: InventoryPublishModeV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .atomicPublish:
+            writeInt(&buf, Int32(1))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryPublishModeV1_lift(_ buf: RustBuffer) throws -> InventoryPublishModeV1 {
+    return try FfiConverterTypeInventoryPublishModeV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryPublishModeV1_lower(_ value: InventoryPublishModeV1) -> RustBuffer {
+    return FfiConverterTypeInventoryPublishModeV1.lower(value)
+}
+
+
+
+
+public enum InventoryRejectionReasonV1: Equatable, Hashable {
+
+    case staleWatermark(expected: UInt64, actual: UInt64
+    )
+    case lifetimeMismatch
+    case generationGap(expected: UInt64, actual: UInt64
+    )
+    case unknownRoot
+    case scopeClosed
+    case identityMismatch
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryRejectionReasonV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryRejectionReasonV1: FfiConverterRustBuffer {
+    typealias SwiftType = InventoryRejectionReasonV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryRejectionReasonV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .staleWatermark(expected: try FfiConverterUInt64.read(from: &buf), actual: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 2: return .lifetimeMismatch
+
+        case 3: return .generationGap(expected: try FfiConverterUInt64.read(from: &buf), actual: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 4: return .unknownRoot
+
+        case 5: return .scopeClosed
+
+        case 6: return .identityMismatch
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: InventoryRejectionReasonV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .staleWatermark(expected,actual):
+            writeInt(&buf, Int32(1))
+            FfiConverterUInt64.write(expected, into: &buf)
+            FfiConverterUInt64.write(actual, into: &buf)
+
+
+        case .lifetimeMismatch:
+            writeInt(&buf, Int32(2))
+
+
+        case let .generationGap(expected,actual):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(expected, into: &buf)
+            FfiConverterUInt64.write(actual, into: &buf)
+
+
+        case .unknownRoot:
+            writeInt(&buf, Int32(4))
+
+
+        case .scopeClosed:
+            writeInt(&buf, Int32(5))
+
+
+        case .identityMismatch:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRejectionReasonV1_lift(_ buf: RustBuffer) throws -> InventoryRejectionReasonV1 {
+    return try FfiConverterTypeInventoryRejectionReasonV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryRejectionReasonV1_lower(_ value: InventoryRejectionReasonV1) -> RustBuffer {
+    return FfiConverterTypeInventoryRejectionReasonV1.lower(value)
 }
 
 
@@ -6957,6 +8894,31 @@ fileprivate struct FfiConverterSequenceTypeCoreCompactCodeMapSubjectSummaryV1: F
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeInventoryRootDiagnosticsV1: FfiConverterRustBuffer {
+    typealias SwiftType = [InventoryRootDiagnosticsV1]
+
+    public static func write(_ value: [InventoryRootDiagnosticsV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeInventoryRootDiagnosticsV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [InventoryRootDiagnosticsV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [InventoryRootDiagnosticsV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeInventoryRootDiagnosticsV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePathSnapshot: FfiConverterRustBuffer {
     typealias SwiftType = [PathSnapshot]
 
@@ -7178,7 +9140,58 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_initialize() != 13097) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_abort_bulk_load() != 60975) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_apply_delta_v1() != 14784) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_begin_bulk_load() != 48133) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_close_root() != 40761) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_close_scope() != 27985) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_close_snapshot() != 57241) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_commit_bulk_load() != 58244) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_compute_v1() != 53870) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_lookup_paths() != 31712) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_open_projected_shard() != 59151) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_open_root() != 59323) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_open_scope() != 35549) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_open_snapshot() != 44371) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_push_bulk_chunk() != 34942) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_query() != 23154) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_resolve_records() != 25142) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_scope_diagnostics() != 13298) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_snapshot_page() != 11462) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_open_subscription() != 16674) {

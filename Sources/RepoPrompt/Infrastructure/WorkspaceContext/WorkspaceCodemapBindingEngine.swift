@@ -4170,6 +4170,15 @@ actor WorkspaceCodemapBindingEngine {
                  .queueLimitExceeded, .payloadTooLarge, .shutdownTimedOut, .invalidArgument,
                  .transportFailure:
                 return false
+            case .inventoryScopeUnknownScope, .inventoryScopeUnknownRoot, .inventoryScopeLifetimeMismatch,
+                 .inventoryScopeNoPublishedGeneration, .inventoryScopeBulkLoadUnknown,
+                 .inventoryScopeBulkLoadAlreadyTerminal, .inventoryScopeBulkLoadRootMismatch,
+                 .inventoryHandleInvalidated, .inventoryScopeInvalidRequest:
+                // P4-4: per-call inventory-scope-v1 business-outcome/request errors (unknown
+                // scope/root, lifetime mismatch, bulk-load state, an invalidated snapshot handle,
+                // a malformed request). None of these indicate the runtime itself is broken --
+                // same classification as `.invalidArgument`/`.transportFailure` above.
+                return false
             }
         }
         if case CodeMapArtifactBuildCoordinatorError.flightWatchdogTimedOut = error {

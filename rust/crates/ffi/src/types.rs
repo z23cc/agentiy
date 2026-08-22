@@ -1564,3 +1564,390 @@ impl From<runtime::inventory::InventoryComputeResultV1> for CoreInventoryCompute
         }
     }
 }
+
+// ================================================================================================
+// P4-4: `inventory-scope-v1` FFI surface (contract doc §5.3; design §11 P4-4). `RootId` is
+// `agentry_runtime::inventory::InventoryUuid` (`[u8; 16]`), exposed here as `Vec<u8>` (matching
+// how file/folder/root ids already round-trip through the crate's other inventory surfaces).
+// `InventoryScopeId`/`RootLifetimeId` are scope-minted (never caller-supplied) and exposed as
+// their `Display` impl's 32-lowercase-hex-char form, parsed back by `parse_hex16`. Deliberate
+// divergence from the contract's model-level pseudocode, flagged once here rather than at every
+// call site: `ScopeRegistry` holds multiple concurrently open scopes with independently-counted
+// `SnapshotHandleId`/`BulkLoadId` values, so every handle-based call below also takes an explicit
+// `scope_id` to route to the right `InventoryScope` -- the contract's pseudocode omits it because
+// it describes the model from inside one already-selected `InventoryScope`.
+// ================================================================================================
+
+pub(crate) fn parse_root_id(bytes: &[u8]) -> Result<runtime::inventory_scope::RootId, CoreError> {
+    <[u8; 16]>::try_from(bytes).map_err(|_| CoreError::InventoryScopeInvalidRequest {
+        message: "root_id must be exactly 16 bytes".to_owned(),
+    })
+}
+
+fn parse_hex16<T>(value: &str, from_bytes: impl FnOnce([u8; 16]) -> T, field: &'static str) -> Result<T, CoreError> {
+    if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CoreError::InventoryScopeInvalidRequest {
+            message: format!("{field} must be 32 lowercase hex characters"),
+        });
+    }
+    let mut bytes = [0u8; 16];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(chunk).expect("ascii hexdigit checked above");
+        bytes[index] = u8::from_str_radix(text, 16).map_err(|_| CoreError::InventoryScopeInvalidRequest {
+            message: format!("{field} contains invalid hex"),
+        })?;
+    }
+    Ok(from_bytes(bytes))
+}
+
+pub(crate) fn parse_inventory_scope_id(
+    value: &str,
+) -> Result<runtime::inventory_scope::InventoryScopeId, CoreError> {
+    parse_hex16(value, runtime::inventory_scope::InventoryScopeId::from_bytes, "scope_id")
+}
+
+pub(crate) fn parse_root_lifetime_id(
+    value: &str,
+) -> Result<runtime::inventory_scope::RootLifetimeId, CoreError> {
+    parse_hex16(value, runtime::inventory_scope::RootLifetimeId::from_bytes, "root_lifetime_id")
+}
+
+pub(crate) fn wire_error(error: runtime::inventory_scope::WireError) -> CoreError {
+    CoreError::InventoryScopeInvalidRequest {
+        message: error.to_string(),
+    }
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CoreInventoryScopeConfigV1 {
+    pub live_generation_cap: u64,
+    pub max_patch_logical_mutation_count: u64,
+    /// Lower-cased, no leading dot (contract doc §6: Swift-owned codemap-capable-extension
+    /// policy, passed in at scope-open time rather than resolved implicitly inside Rust).
+    pub codemap_capable_extensions: Vec<String>,
+}
+
+impl CoreInventoryScopeConfigV1 {
+    pub(crate) fn runtime_config(&self) -> Result<runtime::inventory_scope::InventoryScopeConfig, CoreError> {
+        let live_generation_cap =
+            usize::try_from(self.live_generation_cap).map_err(|_| CoreError::InvalidArgument)?;
+        let max_patch_logical_mutation_count = usize::try_from(self.max_patch_logical_mutation_count)
+            .map_err(|_| CoreError::InvalidArgument)?;
+        Ok(runtime::inventory_scope::InventoryScopeConfig {
+            live_generation_cap,
+            max_patch_logical_mutation_count,
+            codemap_capable_extensions: self
+                .codemap_capable_extensions
+                .iter()
+                .map(|extension| extension.to_ascii_lowercase())
+                .collect(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryScopeHandleV1 {
+    pub scope_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryRootOpenV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub root_id: Vec<u8>,
+    pub name: String,
+    pub standardized_full_path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryRootLifetimeV1 {
+    pub root_id: Vec<u8>,
+    pub root_lifetime_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryRootUnloadReceiptV1 {
+    pub root_id: Vec<u8>,
+    pub root_lifetime_id: String,
+    pub final_generation: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryRootDiagnosticsV1 {
+    pub root_id: Vec<u8>,
+    pub lifetime_id: Option<String>,
+    pub published_topology_generation: Option<u64>,
+    pub live_topology_generations: Vec<u64>,
+    pub retained_topology_generations: Vec<u64>,
+    pub build_count: u64,
+    pub path_index_build_count: u64,
+    pub overlay_path_index_build_count: u64,
+    pub patch_count: u64,
+    pub authoritative_rebuild_count: u64,
+    pub fallback_count: u64,
+    /// Fixed order matching `RootCatalogShardFallbackReason::ALL` (§5c's 8-case table, in the
+    /// same order this crate's own `zeroed_fallback_reason_counts` iterates).
+    pub fallback_reason_counts: Vec<u64>,
+    pub last_applied_index_generation: Option<u64>,
+    pub delta_state_dirty: bool,
+    pub backstop_count: u64,
+    pub max_live_generation_count: u64,
+}
+
+impl From<runtime::inventory_scope::RootDiagnostics> for InventoryRootDiagnosticsV1 {
+    fn from(value: runtime::inventory_scope::RootDiagnostics) -> Self {
+        let fallback_reason_counts = runtime::inventory_scope::RootCatalogShardFallbackReason::ALL
+            .into_iter()
+            .map(|reason| value.fallback_reason_counts.get(&reason).copied().unwrap_or(0))
+            .collect();
+        Self {
+            root_id: value.root_id.to_vec(),
+            lifetime_id: value.lifetime_id.map(|id| id.to_string()),
+            published_topology_generation: value.published_topology_generation,
+            live_topology_generations: value.live_topology_generations,
+            retained_topology_generations: value.retained_topology_generations,
+            build_count: value.build_count,
+            path_index_build_count: value.path_index_build_count,
+            overlay_path_index_build_count: value.overlay_path_index_build_count,
+            patch_count: value.patch_count,
+            authoritative_rebuild_count: value.authoritative_rebuild_count,
+            fallback_count: value.fallback_count,
+            fallback_reason_counts,
+            last_applied_index_generation: value.last_applied_index_generation,
+            delta_state_dirty: value.delta_state_dirty,
+            backstop_count: value.backstop_count,
+            max_live_generation_count: value.max_live_generation_count,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryDiagnosticsV1 {
+    pub live_generation_cap_per_root: u64,
+    pub max_patch_logical_mutation_count: u64,
+    pub published_shard_count: u64,
+    pub total_build_count: u64,
+    pub total_backstop_count: u64,
+    pub single_shard_composition_reuse_count: u64,
+    pub generic_merge_element_visit_count: u64,
+    pub shadow_comparison_count: u64,
+    pub shadow_mismatch_count: u64,
+    pub last_shadow_byte_count: u64,
+    pub roots: Vec<InventoryRootDiagnosticsV1>,
+    pub longest_critical_section_nanos: u64,
+    pub open_handle_count: u64,
+    pub oldest_open_handle_age_millis: Option<u64>,
+}
+
+impl From<runtime::inventory_scope::InventoryDiagnosticsV1> for InventoryDiagnosticsV1 {
+    fn from(value: runtime::inventory_scope::InventoryDiagnosticsV1) -> Self {
+        Self {
+            live_generation_cap_per_root: value.live_generation_cap_per_root as u64,
+            max_patch_logical_mutation_count: value.max_patch_logical_mutation_count as u64,
+            published_shard_count: value.published_shard_count,
+            total_build_count: value.total_build_count,
+            total_backstop_count: value.total_backstop_count,
+            single_shard_composition_reuse_count: value.single_shard_composition_reuse_count,
+            generic_merge_element_visit_count: value.generic_merge_element_visit_count,
+            shadow_comparison_count: value.shadow_comparison_count,
+            shadow_mismatch_count: value.shadow_mismatch_count,
+            last_shadow_byte_count: value.last_shadow_byte_count,
+            roots: value.roots.into_iter().map(Into::into).collect(),
+            longest_critical_section_nanos: u64::try_from(value.longest_critical_section.as_nanos())
+                .unwrap_or(u64::MAX),
+            open_handle_count: value.handles.open_count as u64,
+            oldest_open_handle_age_millis: value
+                .handles
+                .oldest_open_age
+                .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct BulkChunkReceiptV1 {
+    pub files_staged: u64,
+    pub folders_staged: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum InventoryPublishModeV1 {
+    AtomicPublish,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryGenerationReceiptV1 {
+    pub root_id: Vec<u8>,
+    pub generation: u64,
+    pub root_lifetime_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryDeltaCommandV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub root_id: Vec<u8>,
+    pub root_lifetime_id: String,
+    pub watcher_accepted_watermark: Option<u64>,
+    pub requires_full_resync: bool,
+    pub expected_applied_index_generation: Option<u64>,
+    pub source: String,
+    /// The compact `inventory-scope-v1` delta blob (contract doc §5.1) --
+    /// `runtime::inventory_scope::encode_delta_event` / `decode_delta_event`.
+    pub event_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum InventoryRejectionReasonV1 {
+    StaleWatermark { expected: u64, actual: u64 },
+    LifetimeMismatch,
+    GenerationGap { expected: u64, actual: u64 },
+    UnknownRoot,
+    ScopeClosed,
+    IdentityMismatch,
+}
+
+impl From<runtime::inventory_scope::InventoryRejectionReason> for InventoryRejectionReasonV1 {
+    fn from(value: runtime::inventory_scope::InventoryRejectionReason) -> Self {
+        match value {
+            runtime::inventory_scope::InventoryRejectionReason::StaleWatermark { expected, actual } => {
+                Self::StaleWatermark { expected, actual }
+            }
+            runtime::inventory_scope::InventoryRejectionReason::LifetimeMismatch => Self::LifetimeMismatch,
+            runtime::inventory_scope::InventoryRejectionReason::GenerationGap { expected, actual } => {
+                Self::GenerationGap { expected, actual }
+            }
+            runtime::inventory_scope::InventoryRejectionReason::UnknownRoot => Self::UnknownRoot,
+            runtime::inventory_scope::InventoryRejectionReason::ScopeClosed => Self::ScopeClosed,
+            runtime::inventory_scope::InventoryRejectionReason::IdentityMismatch => Self::IdentityMismatch,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum InventoryApplyOutcomeV1 {
+    Patched,
+    RebuiltAuthoritative,
+    Rejected { reason: InventoryRejectionReasonV1 },
+}
+
+impl From<runtime::inventory_scope::InventoryApplyOutcome> for InventoryApplyOutcomeV1 {
+    fn from(value: runtime::inventory_scope::InventoryApplyOutcome) -> Self {
+        match value {
+            runtime::inventory_scope::InventoryApplyOutcome::Patched => Self::Patched,
+            runtime::inventory_scope::InventoryApplyOutcome::RebuiltAuthoritative => {
+                Self::RebuiltAuthoritative
+            }
+            runtime::inventory_scope::InventoryApplyOutcome::Rejected(reason) => {
+                Self::Rejected { reason: reason.into() }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryDeltaReceiptV1 {
+    pub applied_index_generation: u64,
+    pub catalog_generation: Option<u64>,
+    pub outcome: InventoryApplyOutcomeV1,
+}
+
+impl From<runtime::inventory_scope::InventoryDeltaReceipt> for InventoryDeltaReceiptV1 {
+    fn from(value: runtime::inventory_scope::InventoryDeltaReceipt) -> Self {
+        Self {
+            applied_index_generation: value.applied_index_generation,
+            catalog_generation: value.catalog_generation,
+            outcome: value.outcome.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum InventoryHandleInvalidationReasonV1 {
+    RootClosed,
+    ScopeClosed,
+    IdentityChanged,
+}
+
+impl From<runtime::inventory_scope::InvalidationReason> for InventoryHandleInvalidationReasonV1 {
+    fn from(value: runtime::inventory_scope::InvalidationReason) -> Self {
+        match value {
+            runtime::inventory_scope::InvalidationReason::RootClosed => Self::RootClosed,
+            runtime::inventory_scope::InvalidationReason::ScopeClosed => Self::ScopeClosed,
+            runtime::inventory_scope::InvalidationReason::IdentityChanged => Self::IdentityChanged,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventorySnapshotRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub root_id: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventorySnapshotHandleV1 {
+    pub handle_id: u64,
+    pub generation: u64,
+    pub root_lifetime_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CompactInventoryPageV1 {
+    /// `runtime::inventory_scope::encode_bulk_chunk(files, &[])` -- files only, folders section
+    /// always empty (snapshot pages are file rows; see contract doc §5.3).
+    pub bytes: Vec<u8>,
+    pub returned_count: u64,
+    /// **Flagged simplification:** `true` iff exactly `limit` rows were returned. This is exact
+    /// except at a page boundary that lands precisely on the last row (a page of exactly `limit`
+    /// remaining rows is indistinguishable from "more may follow" without an extra count query) --
+    /// a caller that pages until an empty/undersized page still terminates correctly, just
+    /// possibly one empty round trip later than a precise count would allow.
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryResolveRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub root_id: Vec<u8>,
+    pub expected_catalog_generation: Option<u64>,
+    /// `runtime::inventory_scope::encode_resolve_request(file_ids, folder_ids)`.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CompactRecordBlockV1 {
+    /// `runtime::inventory_scope::encode_fact_block` -- carries the whole-block `stale` case as
+    /// data (contract doc §5.3), never as a thrown error.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CompactLookupResultV1 {
+    /// Identical fact shape to `CompactRecordBlockV1`, keyed by path.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CompactQueryV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub handle_id: u64,
+    /// `runtime::inventory_scope::encode_query_request`.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CompactQueryResultV1 {
+    /// `runtime::inventory_scope::encode_query_response`.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryProjectedShardRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub root_id: Vec<u8>,
+}

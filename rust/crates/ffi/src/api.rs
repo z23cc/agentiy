@@ -4,16 +4,25 @@ use crate::generated::contract_identity::{
 };
 use crate::panic_guard::PanicGuard;
 use crate::types::{
-    AdmissionDisposition, AdmissionReceipt, CancelReceipt, CommandEnvelope,
-    CompactRegexBatchResult, CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1,
-    CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake,
-    CoreInventoryComputeRequestV1, CoreInventoryComputeResultV1, CorePathMatchResolveRequestV1,
-    CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1,
-    CorePathSearchFindRequestV1, CorePathSearchFindResultV1, CoreTokenAccountingRequestV1,
-    CoreTokenAccountingResultV1, DrainBatch, FolderSuffixRequest, HostResponse, OperationState,
-    OversizeEvent, PathFilterRequest, PathFilterResult, RegexSearchBatchRequest,
-    RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt,
-    SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
+    AdmissionDisposition, AdmissionReceipt, BulkChunkReceiptV1, CancelReceipt, CommandEnvelope,
+    CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1, CompactQueryV1,
+    CompactRecordBlockV1, CompactRegexBatchResult, CoreApplyEditsBatchRequestV1,
+    CoreCodeMapBatchRequestV1, CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1,
+    CoreConfig, CoreHandshake, CoreInventoryComputeRequestV1, CoreInventoryComputeResultV1,
+    CoreInventoryScopeConfigV1, CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1,
+    CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
+    CorePathSearchFindResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
+    DrainBatch, FolderSuffixRequest, HostResponse,
+    InventoryDeltaCommandV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
+    InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
+    InventoryProjectedShardRequestV1, InventoryPublishModeV1,
+    InventoryResolveRequestV1, InventoryRootLifetimeV1, InventoryRootOpenV1,
+    InventoryRootUnloadReceiptV1, InventoryScopeHandleV1, InventorySnapshotHandleV1,
+    InventorySnapshotRequestV1, OperationState, OversizeEvent,
+    PathFilterRequest, PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest,
+    RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap,
+    SubscriptionId, SubscriptionScope, parse_inventory_scope_id, parse_root_id,
+    parse_root_lifetime_id, wire_error,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -94,6 +103,7 @@ pub struct CoreRuntime {
     path_resolve_service: runtime::pathmatch::PathMatchResolveService,
     path_search_service: runtime::pathsearch::PathSearchFindService,
     token_accounting_service: runtime::tokenacct::TokenAccountingService,
+    inventory_scope_registry: runtime::inventory_scope::ScopeRegistry,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -626,6 +636,431 @@ impl CoreRuntime {
         })
     }
 
+    // ============================================================================================
+    // P4-4: `inventory-scope-v1` FFI surface (contract doc §5.3; design §11 P4-4). All calls are
+    // synchronous and fast (control/bulk/ingest/read planes), matching every other export in this
+    // file -- none traverse the P0 operation registry.
+    // ============================================================================================
+
+    pub fn inventory_open_scope(
+        &self,
+        identity: RuntimeIdentity,
+        config: CoreInventoryScopeConfigV1,
+    ) -> Result<InventoryScopeHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self
+                .inventory_scope_registry
+                .open_scope(identity, config.runtime_config()?);
+            Ok(InventoryScopeHandleV1 {
+                scope_id: scope.scope_id().to_string(),
+            })
+        })
+    }
+
+    pub fn inventory_close_scope(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope_id = parse_inventory_scope_id(&scope_id)?;
+            self.inventory_scope_registry
+                .close_scope(&identity, scope_id)?;
+            Ok(())
+        })
+    }
+
+    pub fn inventory_open_root(
+        &self,
+        request: InventoryRootOpenV1,
+    ) -> Result<InventoryRootLifetimeV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            let scope = self.inventory_scope(&request.scope_id)?;
+            let root_id = parse_root_id(&request.root_id)?;
+            let lifetime = scope.open_root(&identity, root_id, request.name, request.standardized_full_path)?;
+            Ok(InventoryRootLifetimeV1 {
+                root_id: request.root_id,
+                root_lifetime_id: lifetime.to_string(),
+            })
+        })
+    }
+
+    pub fn inventory_close_root(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        root_id: Vec<u8>,
+        root_lifetime_id: String,
+    ) -> Result<InventoryRootUnloadReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let parsed_root_id = parse_root_id(&root_id)?;
+            let lifetime = parse_root_lifetime_id(&root_lifetime_id)?;
+            let receipt = scope.close_root(&identity, parsed_root_id, lifetime)?;
+            Ok(InventoryRootUnloadReceiptV1 {
+                root_id,
+                root_lifetime_id,
+                final_generation: receipt.final_generation,
+            })
+        })
+    }
+
+    pub fn inventory_scope_diagnostics(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<InventoryDiagnosticsV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            Ok(scope.diagnostics(&identity)?.into())
+        })
+    }
+
+    pub fn inventory_begin_bulk_load(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        root_id: Vec<u8>,
+        root_lifetime_id: String,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let root_id = parse_root_id(&root_id)?;
+            let lifetime = parse_root_lifetime_id(&root_lifetime_id)?;
+            let bulk_load_id = scope.begin_bulk_load(&identity, root_id, lifetime)?;
+            Ok(bulk_load_id.raw())
+        })
+    }
+
+    pub fn inventory_push_bulk_chunk(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        bulk_load_id: u64,
+        root_id: Vec<u8>,
+        bytes: Vec<u8>,
+    ) -> Result<BulkChunkReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let root_id = parse_root_id(&root_id)?;
+            let (files, folders) = runtime::inventory_scope::decode_bulk_chunk(&bytes).map_err(wire_error)?;
+            let files_staged = files.len() as u64;
+            let folders_staged = folders.len() as u64;
+            scope.push_bulk_chunk(
+                &identity,
+                runtime::inventory_scope::BulkLoadId::from_raw(bulk_load_id),
+                root_id,
+                files,
+                folders,
+            )?;
+            Ok(BulkChunkReceiptV1 {
+                files_staged,
+                folders_staged,
+            })
+        })
+    }
+
+    pub fn inventory_commit_bulk_load(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        bulk_load_id: u64,
+        _publish_mode: InventoryPublishModeV1,
+    ) -> Result<InventoryGenerationReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let receipt = scope.commit_bulk_load(
+                &identity,
+                runtime::inventory_scope::BulkLoadId::from_raw(bulk_load_id),
+                runtime::inventory_scope::InventoryPublishMode::AtomicPublish,
+            )?;
+            Ok(InventoryGenerationReceiptV1 {
+                root_id: receipt.root_id.to_vec(),
+                generation: receipt.generation,
+                root_lifetime_id: receipt.token.root_lifetime().to_string(),
+            })
+        })
+    }
+
+    pub fn inventory_abort_bulk_load(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        bulk_load_id: u64,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            scope.abort_bulk_load(
+                &identity,
+                runtime::inventory_scope::BulkLoadId::from_raw(bulk_load_id),
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn inventory_apply_delta_v1(
+        &self,
+        command: InventoryDeltaCommandV1,
+    ) -> Result<InventoryDeltaReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&command.runtime_identity)?;
+            let scope = self.inventory_scope(&command.scope_id)?;
+            let root_id = parse_root_id(&command.root_id)?;
+            let root_lifetime_id = parse_root_lifetime_id(&command.root_lifetime_id)?;
+            let event = runtime::inventory_scope::decode_delta_event(&command.event_bytes)
+                .map_err(wire_error)?;
+            let runtime_command = runtime::inventory_scope::InventoryDeltaCommand {
+                scope_id: scope.scope_id(),
+                root_id,
+                root_lifetime_id,
+                watcher_accepted_watermark: command.watcher_accepted_watermark,
+                requires_full_resync: command.requires_full_resync,
+                expected_applied_index_generation: command.expected_applied_index_generation,
+                source: command.source,
+                event,
+            };
+            Ok(scope.apply_delta(&identity, runtime_command).into())
+        })
+    }
+
+    pub fn inventory_open_snapshot(
+        &self,
+        request: InventorySnapshotRequestV1,
+    ) -> Result<InventorySnapshotHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            let scope = self.inventory_scope(&request.scope_id)?;
+            let root_id = parse_root_id(&request.root_id)?;
+            let handle_id = scope.open_snapshot(&identity, root_id, "ffi")?;
+            match scope.read_snapshot(handle_id) {
+                runtime::inventory_scope::HandleReadOutcome::Open { generation } => {
+                    Ok(InventorySnapshotHandleV1 {
+                        handle_id: handle_id.raw(),
+                        generation: generation.generation,
+                        root_lifetime_id: generation.root_lifetime.to_string(),
+                    })
+                }
+                runtime::inventory_scope::HandleReadOutcome::HandleInvalidated { reason } => {
+                    Err(handle_invalidated(reason))
+                }
+            }
+        })
+    }
+
+    pub fn inventory_snapshot_page(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        handle_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<CompactInventoryPageV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let offset = usize::try_from(offset).map_err(|_| CoreError::InvalidArgument)?;
+            let limit = usize::try_from(limit).map_err(|_| CoreError::InvalidArgument)?;
+            let handle_id = runtime::inventory_scope::SnapshotHandleId::from_raw(handle_id);
+            // `snapshot_page` implicitly validates identity via the handle's owning scope having
+            // already been identity-checked at open time; no separate per-call identity token is
+            // threaded through the handle itself (matches the read plane's existing shape).
+            let _ = &identity;
+            match scope.snapshot_page(handle_id, offset, limit) {
+                Ok(files) => {
+                    let returned_count = files.len() as u64;
+                    let has_more = files.len() == limit && limit > 0;
+                    Ok(CompactInventoryPageV1 {
+                        bytes: runtime::inventory_scope::encode_bulk_chunk(&files, &[]),
+                        returned_count,
+                        has_more,
+                    })
+                }
+                Err(reason) => Err(handle_invalidated(reason)),
+            }
+        })
+    }
+
+    pub fn inventory_close_snapshot(
+        &self,
+        scope_id: String,
+        handle_id: u64,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let scope = self.inventory_scope(&scope_id)?;
+            scope.close_snapshot(runtime::inventory_scope::SnapshotHandleId::from_raw(handle_id));
+            Ok(())
+        })
+    }
+
+    pub fn inventory_lookup_paths(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        handle_id: u64,
+        bytes: Vec<u8>,
+    ) -> Result<CompactLookupResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let paths = runtime::inventory_scope::decode_lookup_request(&bytes).map_err(wire_error)?;
+            let handle_id = runtime::inventory_scope::SnapshotHandleId::from_raw(handle_id);
+            match scope.lookup_paths(&identity, handle_id, &paths)? {
+                runtime::inventory_scope::LookupPathsOutcome::Facts {
+                    generation,
+                    root_lifetime,
+                    rows,
+                } => {
+                    let (root_lifetime_hi, root_lifetime_lo) =
+                        runtime::inventory_scope::uuid_to_words(root_lifetime.as_bytes());
+                    Ok(CompactLookupResultV1 {
+                        bytes: runtime::inventory_scope::encode_fact_block(
+                            &runtime::inventory_scope::FactBlock {
+                                generation,
+                                root_lifetime_hi,
+                                root_lifetime_lo,
+                                rows,
+                            },
+                        ),
+                    })
+                }
+                runtime::inventory_scope::LookupPathsOutcome::HandleInvalidated { reason } => {
+                    Err(handle_invalidated(reason))
+                }
+            }
+        })
+    }
+
+    pub fn inventory_query(&self, request: CompactQueryV1) -> Result<CompactQueryResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            let scope = self.inventory_scope(&request.scope_id)?;
+            let decoded = runtime::inventory_scope::decode_query_request(&request.bytes).map_err(wire_error)?;
+            let haystack_variant =
+                runtime::inventory_scope::QueryHaystackVariant::from_wire(decoded.haystack_variant)
+                    .ok_or_else(|| CoreError::InventoryScopeInvalidRequest {
+                        message: "unknown haystack variant".to_owned(),
+                    })?;
+            let query_request = runtime::inventory_scope::InventoryQueryRequest {
+                pattern: decoded.pattern,
+                limit: usize::try_from(decoded.limit).map_err(|_| CoreError::InvalidArgument)?,
+                haystack_variant,
+                prefix: runtime::inventory_scope::QueryPrefix {
+                    non_empty_relative_prefix: decoded.non_empty_relative_prefix,
+                    empty_relative_path_value: decoded.empty_relative_path_value,
+                },
+            };
+            let handle_id = runtime::inventory_scope::SnapshotHandleId::from_raw(request.handle_id);
+            match scope.query(&identity, handle_id, query_request)? {
+                runtime::inventory_scope::QueryReadOutcome::Open(result) => {
+                    let candidates: Vec<runtime::inventory_scope::QueryCandidateRow> = result
+                        .candidates
+                        .into_iter()
+                        .map(|candidate| runtime::inventory_scope::QueryCandidateRow {
+                            id: candidate.entry.id,
+                            root_id: candidate.entry.root_id,
+                            name: candidate.entry.name,
+                            relative_path: candidate.entry.relative_path,
+                            standardized_relative_path: candidate.entry.standardized_relative_path,
+                            full_path: candidate.entry.full_path,
+                            standardized_full_path: candidate.entry.standardized_full_path,
+                            display_path: candidate.display_path,
+                            score: candidate.score,
+                        })
+                        .collect();
+                    Ok(CompactQueryResultV1 {
+                        bytes: runtime::inventory_scope::encode_query_response(
+                            Some(result.generation),
+                            &candidates,
+                        ),
+                    })
+                }
+                runtime::inventory_scope::QueryReadOutcome::HandleInvalidated { reason } => {
+                    Err(handle_invalidated(reason))
+                }
+            }
+        })
+    }
+
+    pub fn inventory_resolve_records(
+        &self,
+        request: InventoryResolveRequestV1,
+    ) -> Result<CompactRecordBlockV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            let scope = self.inventory_scope(&request.scope_id)?;
+            let root_id = parse_root_id(&request.root_id)?;
+            let (file_ids, folder_ids) =
+                runtime::inventory_scope::decode_resolve_request(&request.bytes).map_err(wire_error)?;
+            let (generation, root_lifetime, rows) = scope.resolve_records(
+                &identity,
+                root_id,
+                request.expected_catalog_generation,
+                &file_ids,
+                &folder_ids,
+            )?;
+            let (root_lifetime_hi, root_lifetime_lo) =
+                runtime::inventory_scope::uuid_to_words(root_lifetime.as_bytes());
+            Ok(CompactRecordBlockV1 {
+                bytes: runtime::inventory_scope::encode_fact_block(&runtime::inventory_scope::FactBlock {
+                    generation,
+                    root_lifetime_hi,
+                    root_lifetime_lo,
+                    rows,
+                }),
+            })
+        })
+    }
+
+    pub fn inventory_open_projected_shard(
+        &self,
+        request: InventoryProjectedShardRequestV1,
+    ) -> Result<InventorySnapshotHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            let scope = self.inventory_scope(&request.scope_id)?;
+            let root_id = parse_root_id(&request.root_id)?;
+            let handle_id = scope.open_projected_shard(&identity, root_id, "ffi-projected-shard")?;
+            match scope.read_snapshot(handle_id) {
+                runtime::inventory_scope::HandleReadOutcome::Open { generation } => {
+                    Ok(InventorySnapshotHandleV1 {
+                        handle_id: handle_id.raw(),
+                        generation: generation.generation,
+                        root_lifetime_id: generation.root_lifetime.to_string(),
+                    })
+                }
+                runtime::inventory_scope::HandleReadOutcome::HandleInvalidated { reason } => {
+                    Err(handle_invalidated(reason))
+                }
+            }
+        })
+    }
+
     pub fn begin_shutdown(&self, identity: RuntimeIdentity) -> Result<ShutdownReceipt, CoreError> {
         self.guard(|| {
             self.require_initialized()?;
@@ -671,6 +1106,17 @@ pub fn core_panic_forensics() -> Vec<String> {
         .collect()
 }
 
+/// Maps a P4-4 handle-based read's business-outcome invalidation into the thrown `CoreError`
+/// channel (contract doc §4 layer 3): the contract's own pseudocode declares these reads
+/// `throws`, and UniFFI's typed-error mechanism is exactly the "business outcome, not a panic"
+/// modeling this reason wants -- see `InventoryHandleInvalidationReasonV1`'s doc comment in
+/// `types.rs`.
+fn handle_invalidated(reason: runtime::inventory_scope::InvalidationReason) -> CoreError {
+    CoreError::InventoryHandleInvalidated {
+        reason: InventoryHandleInvalidationReasonV1::from(reason),
+    }
+}
+
 impl CoreRuntime {
     fn create(config: CoreConfig) -> Result<Self, CoreError> {
         let identity = runtime::RuntimeIdentity::fresh(CORE_BUILD_FINGERPRINT, BINDING_CHECKSUM)?;
@@ -689,6 +1135,7 @@ impl CoreRuntime {
             path_resolve_service: runtime::pathmatch::PathMatchResolveService,
             path_search_service: runtime::pathsearch::PathSearchFindService,
             token_accounting_service: runtime::tokenacct::TokenAccountingService,
+            inventory_scope_registry: runtime::inventory_scope::ScopeRegistry::new(),
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),
@@ -728,6 +1175,19 @@ impl CoreRuntime {
         }
     }
 
+    /// Routes a `scope_id` string to its `InventoryScope` (see `types.rs`'s P4-4 section doc
+    /// comment for why every handle-based inventory-scope export takes an explicit `scope_id`
+    /// rather than relying on the contract's implicit-scope pseudocode).
+    fn inventory_scope(
+        &self,
+        scope_id: &str,
+    ) -> Result<std::sync::Arc<runtime::inventory_scope::InventoryScope>, CoreError> {
+        let scope_id = parse_inventory_scope_id(scope_id)?;
+        self.inventory_scope_registry
+            .get(scope_id)
+            .ok_or(CoreError::InventoryScopeUnknownScope)
+    }
+
     #[cfg(test)]
     fn panic_for_test(&self) -> Result<(), CoreError> {
         self.guard(|| panic!("test-only panic injection"))
@@ -739,6 +1199,7 @@ mod tests {
     use super::*;
     use crate::types::{
         CoreApplyEditsSubjectRequestV1, CoreCodeMapSourceKindV1, CoreCodeMapSubjectRequestV1,
+        InventoryApplyOutcomeV1, InventoryRejectionReasonV1,
     };
 
     fn config() -> CoreConfig {
@@ -1084,6 +1545,362 @@ mod tests {
             Err(CoreError::TokenAccountingInvalidRequest {
                 message: "unknown contract version 2".into(),
             })
+        );
+    }
+
+    // ============================================================================================
+    // P4-4: end-to-end inventory-scope-v1 FFI surface tests. Exercises every export added in this
+    // step through the real UniFFI-facing `CoreRuntime` methods (not the underlying
+    // `agentry_runtime::inventory_scope` API directly), so a wire-encoding or FFI-glue bug here is
+    // caught before the Swift bridge exists to catch it a second time.
+    // ============================================================================================
+
+    fn sample_file(seed: u8, root_id: [u8; 16], relative_path: &str, name: &str) -> runtime::inventory::InventoryFileRecord {
+        runtime::inventory::InventoryFileRecord {
+            id: [seed; 16],
+            root_id,
+            name: name.to_owned(),
+            relative_path: relative_path.to_owned(),
+            standardized_relative_path: relative_path.to_owned(),
+            full_path: format!("/repo/{relative_path}"),
+            standardized_full_path: format!("/repo/{relative_path}"),
+            parent_folder_id: None,
+            modification_date: None,
+        }
+    }
+
+    #[test]
+    fn inventory_scope_full_lifecycle_round_trips_through_the_ffi_surface() {
+        let (core, identity, _cancellation) = initialized_core();
+        let root_id = vec![9u8; 16];
+
+        let scope = core
+            .inventory_open_scope(
+                identity.clone(),
+                CoreInventoryScopeConfigV1 {
+                    live_generation_cap: 8,
+                    max_patch_logical_mutation_count: 1,
+                    codemap_capable_extensions: vec!["swift".to_owned()],
+                },
+            )
+            .expect("open scope");
+
+        let lifetime = core
+            .inventory_open_root(InventoryRootOpenV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                name: "root".to_owned(),
+                standardized_full_path: "/repo".to_owned(),
+            })
+            .expect("open root");
+
+        // Bulk load two files, one of which is codemap-capable (`.swift`).
+        let bulk_load_id = core
+            .inventory_begin_bulk_load(
+                identity.clone(),
+                scope.scope_id.clone(),
+                root_id.clone(),
+                lifetime.root_lifetime_id.clone(),
+            )
+            .expect("begin bulk load");
+        let files = vec![
+            sample_file(1, [9; 16], "App.swift", "App.swift"),
+            sample_file(2, [9; 16], "README.md", "README.md"),
+        ];
+        let chunk_bytes = runtime::inventory_scope::encode_bulk_chunk(&files, &[]);
+        let chunk_receipt = core
+            .inventory_push_bulk_chunk(
+                identity.clone(),
+                scope.scope_id.clone(),
+                bulk_load_id,
+                root_id.clone(),
+                chunk_bytes,
+            )
+            .expect("push bulk chunk");
+        assert_eq!(chunk_receipt.files_staged, 2);
+        assert_eq!(chunk_receipt.folders_staged, 0);
+
+        let generation_receipt = core
+            .inventory_commit_bulk_load(
+                identity.clone(),
+                scope.scope_id.clone(),
+                bulk_load_id,
+                InventoryPublishModeV1::AtomicPublish,
+            )
+            .expect("commit bulk load");
+        assert_eq!(generation_receipt.generation, 0);
+
+        // Read plane: open a snapshot, page it, and see both files.
+        let snapshot = core
+            .inventory_open_snapshot(InventorySnapshotRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+            })
+            .expect("open snapshot");
+        assert_eq!(snapshot.generation, 0);
+
+        let page = core
+            .inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), snapshot.handle_id, 0, 10)
+            .expect("snapshot page");
+        let (paged_files, paged_folders) =
+            runtime::inventory_scope::decode_bulk_chunk(&page.bytes).expect("decode page");
+        assert_eq!(paged_files.len(), 2);
+        assert!(paged_folders.is_empty());
+        assert_eq!(page.returned_count, 2);
+        assert!(!page.has_more);
+
+        // inventoryLookupPaths via the open handle.
+        let lookup_bytes = runtime::inventory_scope::encode_lookup_request(&[
+            "App.swift".to_owned(),
+            "missing.swift".to_owned(),
+        ]);
+        let lookup_result = core
+            .inventory_lookup_paths(identity.clone(), scope.scope_id.clone(), snapshot.handle_id, lookup_bytes)
+            .expect("lookup paths");
+        let lookup_block =
+            runtime::inventory_scope::decode_fact_block(&lookup_result.bytes).expect("decode lookup block");
+        assert_eq!(lookup_block.generation, Some(0));
+        assert!(lookup_block.rows[0].exists);
+        assert_eq!(lookup_block.rows[0].name.as_deref(), Some("App.swift"));
+        assert!(!lookup_block.rows[1].exists);
+
+        // inventoryQuery (IndexKey variant) via the same handle.
+        // Leading+trailing star: the index key is `displayPath + "\n" + standardizedFullPath`
+        // (`path_search_index_key`), so a bare "App" prefix would only match a key that starts
+        // with it -- our display path is prefixed with the root name ("root/App.swift..."). An
+        // explicit `*App*` matches anywhere in the composed key regardless of anchoring.
+        let query_bytes =
+            runtime::inventory_scope::encode_query_request("*App*", 10, 0, "root/", "root");
+        let query_result = core
+            .inventory_query(CompactQueryV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                handle_id: snapshot.handle_id,
+                bytes: query_bytes,
+            })
+            .expect("query");
+        let (query_generation, candidates) =
+            runtime::inventory_scope::decode_query_response(&query_result.bytes).expect("decode query response");
+        assert_eq!(query_generation, Some(0));
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "App.swift");
+
+        // inventoryResolveRecords (scope+root, live truth, not handle-based).
+        let resolve_bytes = runtime::inventory_scope::encode_resolve_request(&[[1u8; 16], [99u8; 16]], &[]);
+        let resolve_result = core
+            .inventory_resolve_records(InventoryResolveRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                expected_catalog_generation: None,
+                bytes: resolve_bytes,
+            })
+            .expect("resolve records");
+        let resolve_block =
+            runtime::inventory_scope::decode_fact_block(&resolve_result.bytes).expect("decode resolve block");
+        assert_eq!(resolve_block.generation, Some(0));
+        assert!(resolve_block.rows[0].exists);
+        assert!(!resolve_block.rows[1].exists);
+
+        // A stale `expected_catalog_generation` produces a whole-block stale outcome, not an error.
+        let resolve_bytes_stale = runtime::inventory_scope::encode_resolve_request(&[[1u8; 16]], &[]);
+        let stale_result = core
+            .inventory_resolve_records(InventoryResolveRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                expected_catalog_generation: Some(999),
+                bytes: resolve_bytes_stale,
+            })
+            .expect("resolve records (stale)");
+        let stale_block =
+            runtime::inventory_scope::decode_fact_block(&stale_result.bytes).expect("decode stale block");
+        assert_eq!(stale_block.generation, None);
+        assert!(stale_block.rows.is_empty());
+
+        // inventoryOpenProjectedShard (B2): only the `.swift` file is codemap-capable.
+        let shard = core
+            .inventory_open_projected_shard(InventoryProjectedShardRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+            })
+            .expect("open projected shard");
+        let shard_page = core
+            .inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), shard.handle_id, 0, 10)
+            .expect("shard page");
+        let (shard_files, _) = runtime::inventory_scope::decode_bulk_chunk(&shard_page.bytes).expect("decode shard page");
+        assert_eq!(shard_files.len(), 1);
+        assert_eq!(shard_files[0].name, "App.swift");
+
+        // Ingest: apply a delta adding a third file, then diagnostics reflect it.
+        let event = runtime::inventory::InventoryAppliedIndexBatchEvent {
+            root_id: [9; 16],
+            upserted_files: vec![sample_file(3, [9; 16], "Extra.swift", "Extra.swift")],
+            upserted_folders: Vec::new(),
+            removed_file_ids: Vec::new(),
+            removed_folder_ids: Vec::new(),
+            removed_file_paths: Vec::new(),
+            removed_folder_paths: Vec::new(),
+            modified_file_ids: Vec::new(),
+            modified_folder_ids: Vec::new(),
+        };
+        let delta_receipt = core
+            .inventory_apply_delta_v1(InventoryDeltaCommandV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                root_lifetime_id: lifetime.root_lifetime_id.clone(),
+                watcher_accepted_watermark: None,
+                requires_full_resync: false,
+                // `commit_bulk_load` already advanced `last_applied_index_generation` to 1
+                // (contract §5.1's D-4 "one owner mutates maps and tables in one critical
+                // section"); `None` bypasses the optional generation-gap check entirely rather
+                // than asserting a value this test doesn't otherwise need to pin.
+                expected_applied_index_generation: None,
+                source: "test".to_owned(),
+                event_bytes: runtime::inventory_scope::encode_delta_event(&event),
+            })
+            .expect("apply delta");
+        assert!(matches!(
+            delta_receipt.outcome,
+            InventoryApplyOutcomeV1::Patched | InventoryApplyOutcomeV1::RebuiltAuthoritative
+        ));
+        // 1 (bulk-load commit) + 1 (this delta) = 2.
+        assert_eq!(delta_receipt.applied_index_generation, 2);
+
+        let diagnostics = core
+            .inventory_scope_diagnostics(identity.clone(), scope.scope_id.clone())
+            .expect("diagnostics");
+        assert_eq!(diagnostics.roots.len(), 1);
+        assert!(diagnostics.roots[0].build_count >= 2);
+
+        // A read against the (now-closed-by-a-later-generation) old snapshot handle must still
+        // resolve -- open handles are never invalidated by a mutation, only by root/scope
+        // close or identity change (§4 layer 2/3).
+        let old_page = core
+            .inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), snapshot.handle_id, 0, 10)
+            .expect("old snapshot handle still readable");
+        let (old_files, _) = runtime::inventory_scope::decode_bulk_chunk(&old_page.bytes).expect("decode");
+        assert_eq!(old_files.len(), 2, "the old handle keeps seeing its own frozen generation");
+
+        // Close everything; every close is idempotent, and closing the root invalidates the
+        // remaining open handles (a subsequent page read is a typed `HandleInvalidated` error,
+        // not a panic).
+        core.inventory_close_snapshot(scope.scope_id.clone(), snapshot.handle_id)
+            .expect("close snapshot");
+        core.inventory_close_snapshot(scope.scope_id.clone(), snapshot.handle_id)
+            .expect("closing twice is idempotent");
+
+        let unload_receipt = core
+            .inventory_close_root(
+                identity.clone(),
+                scope.scope_id.clone(),
+                root_id.clone(),
+                lifetime.root_lifetime_id.clone(),
+            )
+            .expect("close root");
+        assert_eq!(unload_receipt.final_generation, Some(1));
+
+        let after_close = core.inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), shard.handle_id, 0, 10);
+        assert_eq!(
+            after_close,
+            Err(CoreError::InventoryHandleInvalidated {
+                reason: InventoryHandleInvalidationReasonV1::RootClosed,
+            })
+        );
+
+        core.inventory_close_scope(identity.clone(), scope.scope_id.clone())
+            .expect("close scope");
+        core.inventory_close_scope(identity, scope.scope_id)
+            .expect("closing twice is idempotent");
+    }
+
+    #[test]
+    fn inventory_scope_open_root_rejects_unknown_scope_and_wrong_lifetime() {
+        let (core, identity, _cancellation) = initialized_core();
+        let bogus_scope_id = "0".repeat(32);
+        let result = core.inventory_open_root(InventoryRootOpenV1 {
+            runtime_identity: identity,
+            scope_id: bogus_scope_id,
+            root_id: vec![1u8; 16],
+            name: "root".to_owned(),
+            standardized_full_path: "/repo".to_owned(),
+        });
+        assert_eq!(result, Err(CoreError::InventoryScopeUnknownScope));
+    }
+
+    #[test]
+    fn inventory_apply_delta_rejects_a_stale_watermark_as_a_business_outcome_not_an_error() {
+        let (core, identity, _cancellation) = initialized_core();
+        let scope = core
+            .inventory_open_scope(identity.clone(), CoreInventoryScopeConfigV1 {
+                live_generation_cap: 8,
+                max_patch_logical_mutation_count: 1,
+                codemap_capable_extensions: Vec::new(),
+            })
+            .expect("open scope");
+        let root_id = vec![5u8; 16];
+        let lifetime = core
+            .inventory_open_root(InventoryRootOpenV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                name: "root".to_owned(),
+                standardized_full_path: "/repo".to_owned(),
+            })
+            .expect("open root");
+
+        let make_event = |seed: u8| runtime::inventory::InventoryAppliedIndexBatchEvent {
+            root_id: [5; 16],
+            upserted_files: vec![sample_file(seed, [5; 16], "A.swift", "A.swift")],
+            upserted_folders: Vec::new(),
+            removed_file_ids: Vec::new(),
+            removed_folder_ids: Vec::new(),
+            removed_file_paths: Vec::new(),
+            removed_folder_paths: Vec::new(),
+            modified_file_ids: Vec::new(),
+            modified_folder_ids: Vec::new(),
+        };
+
+        let first = core
+            .inventory_apply_delta_v1(InventoryDeltaCommandV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                root_lifetime_id: lifetime.root_lifetime_id.clone(),
+                watcher_accepted_watermark: Some(100),
+                requires_full_resync: false,
+                expected_applied_index_generation: None,
+                source: "watcher".to_owned(),
+                event_bytes: runtime::inventory_scope::encode_delta_event(&make_event(1)),
+            })
+            .expect("first delta admitted");
+        assert!(!matches!(first.outcome, InventoryApplyOutcomeV1::Rejected { .. }));
+
+        let stale = core
+            .inventory_apply_delta_v1(InventoryDeltaCommandV1 {
+                runtime_identity: identity,
+                scope_id: scope.scope_id,
+                root_id,
+                root_lifetime_id: lifetime.root_lifetime_id,
+                watcher_accepted_watermark: Some(50),
+                requires_full_resync: false,
+                expected_applied_index_generation: None,
+                source: "watcher".to_owned(),
+                event_bytes: runtime::inventory_scope::encode_delta_event(&make_event(2)),
+            })
+            .expect("stale delta is a business outcome, not a thrown error");
+        assert_eq!(
+            stale.outcome,
+            InventoryApplyOutcomeV1::Rejected {
+                reason: InventoryRejectionReasonV1::StaleWatermark {
+                    expected: 100,
+                    actual: 50,
+                },
+            }
         );
     }
 }

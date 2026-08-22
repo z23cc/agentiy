@@ -67,7 +67,23 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case pathSearchCancelled
     case tokenAccountingInvalidRequest(String)
     case tokenAccountingCancelled
+    case inventoryScopeUnknownScope
+    case inventoryScopeUnknownRoot
+    case inventoryScopeLifetimeMismatch
+    case inventoryScopeNoPublishedGeneration
+    case inventoryScopeBulkLoadUnknown
+    case inventoryScopeBulkLoadAlreadyTerminal
+    case inventoryScopeBulkLoadRootMismatch
+    case inventoryHandleInvalidated(CoreInventoryHandleInvalidationReason)
+    case inventoryScopeInvalidRequest(String)
     case unexpected(String)
+}
+
+/// Mirrors `AgentryUniFFIRaw.InventoryHandleInvalidationReasonV1` (contract doc §4 layer 3).
+public enum CoreInventoryHandleInvalidationReason: Sendable, Equatable {
+    case rootClosed
+    case scopeClosed
+    case identityChanged
 }
 
 protocol CoreRuntimeTransport: Sendable {
@@ -144,6 +160,83 @@ protocol CoreRuntimeTransport: Sendable {
         request: CoreFolderSuffixRequest
     ) throws -> [UInt32]
     func beginShutdown(identity: CoreRuntimeIdentity) throws -> CoreShutdownReceipt
+
+    // ---- P4-4: inventory-scope-v1 (docs/architecture/rust-inventory-scope-v1.md §5) ----------
+    //
+    // Deliberate, flagged deviation from this protocol's usual full-insulation convention: these
+    // methods pass the raw `AgentryUniFFIRaw` request/response records straight through (beyond
+    // translating `identity` and mapping errors) rather than defining a parallel Swift-only
+    // mirror struct for every one of them. Every field on these records is already a plain
+    // Sendable value type (`String`/`Data`/`UInt64`/enum) -- no Rust-object handle crosses this
+    // boundary -- so the insulation a full mirror would buy is smaller here than for the
+    // one-shot compute requests above, and P4-4's remaining scope (Swift mirror wire codec,
+    // fingerprint test, bridge tests) is large enough that this is the pragmatic cut.
+    func inventoryOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreInventoryScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.InventoryScopeHandleV1
+    func inventoryCloseScope(identity: CoreRuntimeIdentity, scopeID: String) throws
+    func inventoryOpenRoot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        name: String,
+        standardizedFullPath: String
+    ) throws -> AgentryUniFFIRaw.InventoryRootLifetimeV1
+    func inventoryCloseRoot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String
+    ) throws -> AgentryUniFFIRaw.InventoryRootUnloadReceiptV1
+    func inventoryScopeDiagnostics(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.InventoryDiagnosticsV1
+    func inventoryBeginBulkLoad(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String
+    ) throws -> UInt64
+    func inventoryPushBulkChunk(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bulkLoadID: UInt64,
+        rootID: Data,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.BulkChunkReceiptV1
+    func inventoryCommitBulkLoad(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bulkLoadID: UInt64
+    ) throws -> AgentryUniFFIRaw.InventoryGenerationReceiptV1
+    func inventoryAbortBulkLoad(identity: CoreRuntimeIdentity, scopeID: String, bulkLoadID: UInt64) throws
+    func inventoryApplyDeltaV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String,
+        watcherAcceptedWatermark: UInt64?,
+        requiresFullResync: Bool,
+        expectedAppliedIndexGeneration: UInt64?,
+        source: String,
+        eventBytes: Data
+    ) throws -> AgentryUniFFIRaw.InventoryDeltaReceiptV1
+    func inventoryOpenSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
+    func inventorySnapshotPage(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1
+    func inventoryCloseSnapshot(scopeID: String, handleID: UInt64) throws
+
     /// Forensic strings for the most recent panic(s) recorded by the Rust
     /// process-wide panic hook, most-recent last -- not scoped to this
     /// transport's runtime instance, and not limited to panics that a
@@ -1088,6 +1181,211 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    // ---- P4-4: inventory-scope-v1 -------------------------------------------------------------
+
+    func inventoryOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreInventoryScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.InventoryScopeHandleV1 {
+        do {
+            return try runtime.inventoryOpenScope(identity: Self.rawIdentity(identity), config: config)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryCloseScope(identity: CoreRuntimeIdentity, scopeID: String) throws {
+        do {
+            try runtime.inventoryCloseScope(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryOpenRoot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        name: String,
+        standardizedFullPath: String
+    ) throws -> AgentryUniFFIRaw.InventoryRootLifetimeV1 {
+        do {
+            return try runtime.inventoryOpenRoot(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID,
+                name: name,
+                standardizedFullPath: standardizedFullPath
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryCloseRoot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String
+    ) throws -> AgentryUniFFIRaw.InventoryRootUnloadReceiptV1 {
+        do {
+            return try runtime.inventoryCloseRoot(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID,
+                rootLifetimeId: rootLifetimeID
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryScopeDiagnostics(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.InventoryDiagnosticsV1 {
+        do {
+            return try runtime.inventoryScopeDiagnostics(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryBeginBulkLoad(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String
+    ) throws -> UInt64 {
+        do {
+            return try runtime.inventoryBeginBulkLoad(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID,
+                rootLifetimeId: rootLifetimeID
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryPushBulkChunk(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bulkLoadID: UInt64,
+        rootID: Data,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.BulkChunkReceiptV1 {
+        do {
+            return try runtime.inventoryPushBulkChunk(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                bulkLoadId: bulkLoadID,
+                rootId: rootID,
+                bytes: bytes
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryCommitBulkLoad(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bulkLoadID: UInt64
+    ) throws -> AgentryUniFFIRaw.InventoryGenerationReceiptV1 {
+        do {
+            return try runtime.inventoryCommitBulkLoad(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                bulkLoadId: bulkLoadID,
+                publishMode: .atomicPublish
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryAbortBulkLoad(identity: CoreRuntimeIdentity, scopeID: String, bulkLoadID: UInt64) throws {
+        do {
+            try runtime.inventoryAbortBulkLoad(identity: Self.rawIdentity(identity), scopeId: scopeID, bulkLoadId: bulkLoadID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryApplyDeltaV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        rootLifetimeID: String,
+        watcherAcceptedWatermark: UInt64?,
+        requiresFullResync: Bool,
+        expectedAppliedIndexGeneration: UInt64?,
+        source: String,
+        eventBytes: Data
+    ) throws -> AgentryUniFFIRaw.InventoryDeltaReceiptV1 {
+        do {
+            return try runtime.inventoryApplyDeltaV1(command: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID,
+                rootLifetimeId: rootLifetimeID,
+                watcherAcceptedWatermark: watcherAcceptedWatermark,
+                requiresFullResync: requiresFullResync,
+                expectedAppliedIndexGeneration: expectedAppliedIndexGeneration,
+                source: source,
+                eventBytes: eventBytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryOpenSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
+        do {
+            return try runtime.inventoryOpenSnapshot(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventorySnapshotPage(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1 {
+        do {
+            return try runtime.inventorySnapshotPage(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                handleId: handleID,
+                offset: offset,
+                limit: limit
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryCloseSnapshot(scopeID: String, handleID: UInt64) throws {
+        do {
+            try runtime.inventoryCloseSnapshot(scopeId: scopeID, handleId: handleID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private static func map(_ error: Error) -> CoreTransportError {
         guard let error = error as? AgentryUniFFIRaw.CoreError else {
             return .unexpected(String(describing: error))
@@ -1136,6 +1434,25 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .ApplyEditsInvalidParams(message): .applyEditsInvalidParams(message)
         case .ApplyEditsCancelled: .applyEditsCancelled
         case .ApplyEditsInvariant: .applyEditsInvariant
+        case .InventoryScopeUnknownScope: .inventoryScopeUnknownScope
+        case .InventoryScopeUnknownRoot: .inventoryScopeUnknownRoot
+        case .InventoryScopeLifetimeMismatch: .inventoryScopeLifetimeMismatch
+        case .InventoryScopeNoPublishedGeneration: .inventoryScopeNoPublishedGeneration
+        case .InventoryScopeBulkLoadUnknown: .inventoryScopeBulkLoadUnknown
+        case .InventoryScopeBulkLoadAlreadyTerminal: .inventoryScopeBulkLoadAlreadyTerminal
+        case .InventoryScopeBulkLoadRootMismatch: .inventoryScopeBulkLoadRootMismatch
+        case let .InventoryHandleInvalidated(reason): .inventoryHandleInvalidated(Self.handleInvalidationReason(reason))
+        case let .InventoryScopeInvalidRequest(message): .inventoryScopeInvalidRequest(message)
+        }
+    }
+
+    private static func handleInvalidationReason(
+        _ reason: AgentryUniFFIRaw.InventoryHandleInvalidationReasonV1
+    ) -> CoreInventoryHandleInvalidationReason {
+        switch reason {
+        case .rootClosed: .rootClosed
+        case .scopeClosed: .scopeClosed
+        case .identityChanged: .identityChanged
         }
     }
 }
@@ -1148,7 +1465,7 @@ public actor AgentryCoreBridge {
         case closed
     }
 
-    private let transport: any CoreRuntimeTransport
+    let transport: any CoreRuntimeTransport
     private let expectedIdentity: CoreExpectedIdentity
     private let decoder: any CoreEventDecoding
     private var identity: CoreRuntimeIdentity?
@@ -1676,7 +1993,7 @@ public actor AgentryCoreBridge {
         }
     }
 
-    private func requireIdentity() throws -> CoreRuntimeIdentity {
+    func requireIdentity() throws -> CoreRuntimeIdentity {
         switch lifecycle {
         case .running:
             guard let identity else { throw CoreBridgeError.notInitialized }
@@ -1699,7 +2016,7 @@ public actor AgentryCoreBridge {
         }
     }
 
-    private func mapTransportError(_ error: Error) -> CoreBridgeError {
+    func mapTransportError(_ error: Error) -> CoreBridgeError {
         if let error = error as? CoreBridgeError {
             return error
         }
@@ -1742,6 +2059,15 @@ public actor AgentryCoreBridge {
              .pathSearchInvalidRequest, .pathSearchCancelled,
              .tokenAccountingInvalidRequest, .tokenAccountingCancelled:
             return .invalidArgument
+        case .inventoryScopeUnknownScope: return .inventoryScopeUnknownScope
+        case .inventoryScopeUnknownRoot: return .inventoryScopeUnknownRoot
+        case .inventoryScopeLifetimeMismatch: return .inventoryScopeLifetimeMismatch
+        case .inventoryScopeNoPublishedGeneration: return .inventoryScopeNoPublishedGeneration
+        case .inventoryScopeBulkLoadUnknown: return .inventoryScopeBulkLoadUnknown
+        case .inventoryScopeBulkLoadAlreadyTerminal: return .inventoryScopeBulkLoadAlreadyTerminal
+        case .inventoryScopeBulkLoadRootMismatch: return .inventoryScopeBulkLoadRootMismatch
+        case let .inventoryHandleInvalidated(reason): return .inventoryHandleInvalidated(reason)
+        case let .inventoryScopeInvalidRequest(message): return .inventoryScopeInvalidRequest(message)
         case let .unexpected(message): return .transportFailure(message)
         }
     }

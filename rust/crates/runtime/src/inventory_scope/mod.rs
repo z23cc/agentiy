@@ -10,15 +10,21 @@
 //! with generation tokens, bulk-load staging with atomic commit, `InventoryDiagnosticsV1`, and the
 //! §5.2.1 locking model with longest-critical-section instrumentation.
 //!
-//! **Explicitly out of scope for this step** (owned by later steps, not this one -- see the
-//! design's migration-order DAG, §11): the `inventory-scope-v1` wire codec, the FFI/bridge
-//! surface, `inventoryQuery`/`inventoryOpenProjectedShard`/`inventoryResolveRecords`, and
-//! event-plane publication into `SubscriptionHub`. Zero FFI dependency: this module imports
-//! nothing from `uniffi` or the `ffi` crate, and `lib.rs` adds only its module line.
+//! **Explicitly out of scope for P4-3a/P4-3b** (owned by P4-4, not those steps -- see the
+//! design's migration-order DAG, §11): the FFI/bridge surface and event-plane publication into
+//! `SubscriptionHub` remain outside this module (that lives in `rust/crates/ffi` and
+//! `Sources/AgentryCoreBridge`). Zero FFI dependency here still holds: this module imports
+//! nothing from `uniffi` or the `ffi` crate.
 //!
 //! **P4-3b landed in this module** (index orchestration into the scope, cargo-only): the
 //! `path_index` submodule, welded onto `RootGeneration` and wired through
 //! `state_machine::attempt_patch`/`rebuild_generation` per §4.1.0's co-location invariant.
+//!
+//! **P4-4 landed in this module** (cargo-only additions the FFI crate then exposes): the
+//! `wire` submodule (the `inventory-scope-v1` codec: interning, fail-closed decode, limits) and
+//! `query`/`resolve` (the `inventoryQuery` / `inventoryResolveRecords` / `inventoryLookupPaths` /
+//! `inventoryOpenProjectedShard` domain logic, added as new `InventoryScope` methods in
+//! `scope.rs`).
 //!
 //! Module map:
 //! - `ids`: explicit typed identifiers + the UUID minter (production + seeded-for-test modes).
@@ -55,9 +61,12 @@ pub mod identity_maps;
 pub mod ids;
 pub mod ingress_gate;
 pub mod path_index;
+pub mod query;
 pub mod registry;
+pub mod resolve;
 pub mod scope;
 pub mod state_machine;
+pub mod wire;
 
 pub use bulk_load::{BulkLoadError, BulkLoadStaging, BulkLoadTable};
 pub use delta::{InventoryDeltaCommand, InventoryDeltaReceipt};
@@ -76,9 +85,21 @@ pub use path_index::{
     BuildKind, OverlayHistoryMetrics, PathIndexCandidate, ProjectedPathIndex, RelativePathBase,
     RootPathIndex,
 };
+pub use query::{
+    InventoryQueryCandidate, InventoryQueryRequest, InventoryQueryResult, QueryHaystackVariant,
+    QueryPrefix, QueryReadOutcome,
+};
 pub use registry::{ScopeRegistry, ScopeRegistryError};
+pub use resolve::{LookupPathsOutcome, build_projected_shard};
 pub use scope::{
     InventoryGenerationReceipt, InventoryPublishMode, InventoryScope, InventoryScopeConfig,
     RootUnloadReceipt, ScopeError,
 };
 pub use state_machine::{RootCounters, RootState};
+pub use wire::{
+    FactBlock, FactRow, INVENTORY_SCOPE_CONTRACT_VERSION_V1, QueryCandidateRow, WireError,
+    decode_bulk_chunk, decode_delta_event, decode_fact_block, decode_lookup_request,
+    decode_query_request, decode_query_response, decode_resolve_request, encode_bulk_chunk,
+    encode_delta_event, encode_fact_block, encode_lookup_request, encode_query_request,
+    encode_query_response, encode_resolve_request, uuid_to_words,
+};

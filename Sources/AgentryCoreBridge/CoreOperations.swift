@@ -146,6 +146,15 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case payloadTooLarge
     case shutdownTimedOut
     case invalidArgument
+    case inventoryScopeUnknownScope
+    case inventoryScopeUnknownRoot
+    case inventoryScopeLifetimeMismatch
+    case inventoryScopeNoPublishedGeneration
+    case inventoryScopeBulkLoadUnknown
+    case inventoryScopeBulkLoadAlreadyTerminal
+    case inventoryScopeBulkLoadRootMismatch
+    case inventoryHandleInvalidated(CoreInventoryHandleInvalidationReason)
+    case inventoryScopeInvalidRequest(String)
     case transportFailure(String)
 }
 
@@ -167,6 +176,15 @@ extension CoreBridgeError: LocalizedError {
         case .payloadTooLarge: "The payload exceeds the core boundary limit."
         case .shutdownTimedOut: "The core shutdown deadline elapsed."
         case .invalidArgument: "The core rejected an invalid argument."
+        case .inventoryScopeUnknownScope: "The inventory scope is unknown or already closed."
+        case .inventoryScopeUnknownRoot: "The inventory root is unknown."
+        case .inventoryScopeLifetimeMismatch: "The inventory root lifetime no longer matches."
+        case .inventoryScopeNoPublishedGeneration: "The inventory root has no published generation yet."
+        case .inventoryScopeBulkLoadUnknown: "The inventory bulk load is unknown."
+        case .inventoryScopeBulkLoadAlreadyTerminal: "The inventory bulk load already committed or aborted."
+        case .inventoryScopeBulkLoadRootMismatch: "The inventory bulk load does not match the given root."
+        case let .inventoryHandleInvalidated(reason): "The inventory snapshot handle was invalidated: \(reason)."
+        case let .inventoryScopeInvalidRequest(message): "Invalid inventory-scope-v1 request: \(message)"
         case let .transportFailure(message): "Rust FFI transport failure: \(message)"
         }
     }

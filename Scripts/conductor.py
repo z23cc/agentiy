@@ -76,7 +76,12 @@ CARGO_OPERATIONS = {
     "cargo-audit",
     "cargo-fuzz",
 }
-CARGO_FUZZ_TARGETS = {"envelope_decode"}
+CARGO_FUZZ_TARGETS = {
+    "envelope_decode",
+    # P4-4: inventory-scope-v1 decode fuzz targets (rust/fuzz/fuzz_targets/inventory_scope_*.rs).
+    "inventory_scope_bulk_chunk",
+    "inventory_scope_delta_event",
+}
 CARGO_FUZZ_TOOLCHAIN = "nightly-2026-08-15"
 CARGO_TARGET = "aarch64-apple-darwin"
 CARGO_PACKAGE_NAMES = {
@@ -243,7 +248,7 @@ Operation commands:
   ./conductor cargo-archive [--profile debug|release]
   ./conductor cargo-deny
   ./conductor cargo-audit
-  ./conductor cargo-fuzz [--target envelope_decode] [--seconds 1..300]
+  ./conductor cargo-fuzz [--target envelope_decode|inventory_scope_bulk_chunk|inventory_scope_delta_event] [--seconds 1..300]
   ./conductor xcode-rust-link-validate
   ./conductor rust-ffi-swift-baseline-export    # release test binary; never launches the app
   ./conductor rust-ffi-swift-baseline-check     # two deterministic release test-binary exports
@@ -3307,7 +3312,9 @@ class OperationRegistry:
             fuzz_seconds = int(args.get("seconds") or 60)
             if operation == "cargo-fuzz":
                 if fuzz_target not in CARGO_FUZZ_TARGETS:
-                    raise ConductorError("cargo fuzz target must be envelope_decode")
+                    raise ConductorError(
+                        f"cargo fuzz target must be one of: {', '.join(sorted(CARGO_FUZZ_TARGETS))}"
+                    )
                 if not 1 <= fuzz_seconds <= 300:
                     raise ConductorError("cargo fuzz seconds must be between 1 and 300")
                 if set(args) - {"target", "seconds"}:

@@ -290,6 +290,7 @@ fn retention_boundary_lets_the_mutation_proceed_and_clears_published_topology_ge
         InventoryScopeConfig {
             live_generation_cap: 1,
             max_patch_logical_mutation_count: 1,
+            codemap_capable_extensions: std::collections::HashSet::new(),
         },
     );
     let root = root_id(1);
@@ -367,6 +368,7 @@ fn patch_threshold_exceeded_falls_back_to_rebuild() {
         InventoryScopeConfig {
             live_generation_cap: 8,
             max_patch_logical_mutation_count: 1,
+            codemap_capable_extensions: std::collections::HashSet::new(),
         },
     );
     let root = root_id(1);

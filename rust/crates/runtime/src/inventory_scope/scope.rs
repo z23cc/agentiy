@@ -46,6 +46,13 @@ pub struct InventoryScopeConfig {
     pub live_generation_cap: usize,
     /// D-1's N, set to 1 per P4-2 §9b's provisional finding.
     pub max_patch_logical_mutation_count: usize,
+    /// P4-4 (contract doc §6 / design §5.3): "the codemap-capable extension->language table
+    /// (`SyntaxManager.supportsCodeMap`, `CodeMapSyntaxEngine.extensionToLanguage`) is
+    /// Swift-owned policy passed **in** at `inventoryOpenScope` as scope configuration, not
+    /// resolved implicitly inside Rust." Lower-cased extensions, no leading dot (matches
+    /// `resolve::extension_of`'s normalization). Consumed by
+    /// [`InventoryScope::open_projected_shard`].
+    pub codemap_capable_extensions: std::collections::HashSet<String>,
 }
 
 impl Default for InventoryScopeConfig {
@@ -53,6 +60,7 @@ impl Default for InventoryScopeConfig {
         Self {
             live_generation_cap: 8,
             max_patch_logical_mutation_count: 1,
+            codemap_capable_extensions: std::collections::HashSet::new(),
         }
     }
 }
@@ -654,6 +662,132 @@ impl InventoryScope {
             }
             state.handles.close_handle(handle_id);
         });
+    }
+
+    // ------------------------------------------------------------------- P4-4 read/query surface
+
+    /// `inventoryResolveRecords` (contract doc §5.3): batch, binding-validated point lookup by
+    /// id, against the scope's *live* identity maps (this is deliberate, not a handle-pinned
+    /// read: B1/B3's real callers need current-state truth, e.g. discoverability at the moment
+    /// of a codemap binding check, the same way `appliedIndexRecordLookup` reads the live maps
+    /// today). `expected_catalog_generation` is the contract's optional staleness guard: a
+    /// mismatch against the root's current generation returns a whole-block stale outcome
+    /// (`generation: None`) rather than computing per-row facts against a generation the caller
+    /// didn't ask for.
+    pub fn resolve_records(
+        &self,
+        identity: &RuntimeIdentity,
+        root_id: RootId,
+        expected_catalog_generation: Option<u64>,
+        file_ids: &[crate::inventory::InventoryUuid],
+        folder_ids: &[crate::inventory::InventoryUuid],
+    ) -> Result<(Option<u64>, RootLifetimeId, Vec<super::wire::FactRow>), ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            let root = state.roots.get(&root_id).ok_or(ScopeError::UnknownRoot)?;
+            let generation = root.published.as_ref().map(|generation| generation.generation);
+            if let Some(expected) = expected_catalog_generation {
+                if Some(expected) != generation {
+                    return Ok((None, root.root_lifetime, Vec::new()));
+                }
+            }
+            Ok((
+                generation,
+                root.root_lifetime,
+                super::resolve::resolve_by_ids(root, file_ids, folder_ids),
+            ))
+        })
+    }
+
+    /// `inventoryLookupPaths`: the identical fact shape, keyed by path, against the same live
+    /// identity maps as `resolve_records` (see that method's doc comment). Handle-based per
+    /// contract doc §5.3's read-plane listing: the `SnapshotHandleId` selects which root's live
+    /// maps to read and is validated (an invalidated handle is a typed business outcome, not
+    /// silently ignored), but does not pin the read to that handle's captured generation.
+    pub fn lookup_paths(
+        &self,
+        identity: &RuntimeIdentity,
+        handle_id: SnapshotHandleId,
+        paths: &[String],
+    ) -> Result<super::resolve::LookupPathsOutcome, ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| match state.handles.read(handle_id) {
+            HandleReadOutcome::HandleInvalidated { reason } => {
+                Ok(super::resolve::LookupPathsOutcome::HandleInvalidated { reason })
+            }
+            HandleReadOutcome::Open { generation } => {
+                let root_id = generation.root_id;
+                let Some(root) = state.roots.get(&root_id) else {
+                    return Ok(super::resolve::LookupPathsOutcome::HandleInvalidated {
+                        reason: InvalidationReason::RootClosed,
+                    });
+                };
+                let live_generation = root.published.as_ref().map(|generation| generation.generation);
+                Ok(super::resolve::LookupPathsOutcome::Facts {
+                    generation: live_generation,
+                    root_lifetime: root.root_lifetime,
+                    rows: super::resolve::lookup_by_paths(root, paths),
+                })
+            }
+        })
+    }
+
+    /// `inventoryQuery` (contract doc §5.3/§6): filtered/ranked query against the generation a
+    /// `SnapshotHandleId` was opened over, per the requested haystack variant and per-root
+    /// display prefix.
+    pub fn query(
+        &self,
+        identity: &RuntimeIdentity,
+        handle_id: SnapshotHandleId,
+        request: super::query::InventoryQueryRequest,
+    ) -> Result<super::query::QueryReadOutcome, ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| match state.handles.read(handle_id) {
+            HandleReadOutcome::HandleInvalidated { reason } => {
+                Ok(super::query::QueryReadOutcome::HandleInvalidated { reason })
+            }
+            HandleReadOutcome::Open { generation } => Ok(super::query::QueryReadOutcome::Open(
+                super::query::run_query(&generation, &request),
+            )),
+        })
+    }
+
+    /// `inventoryOpenProjectedShard` (B2): builds the codemap graph-index catalog shard
+    /// authority-side under the scope's configured `codemap_capable_extensions` (contract doc
+    /// §6: this policy is passed in at `inventoryOpenScope`, not per-call) and opens a snapshot
+    /// handle over it, paged the same way as any other snapshot (`inventorySnapshotPage`).
+    pub fn open_projected_shard(
+        &self,
+        identity: &RuntimeIdentity,
+        root_id: RootId,
+        origin_tag: &'static str,
+    ) -> Result<SnapshotHandleId, ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            let root = state.roots.get_mut(&root_id).ok_or(ScopeError::UnknownRoot)?;
+            let synthetic_generation = root.mint_projected_shard_generation();
+            let shard = super::resolve::build_projected_shard(
+                root,
+                &self.config.codemap_capable_extensions,
+                synthetic_generation,
+            )
+            .ok_or(ScopeError::NoPublishedGeneration)?;
+            Ok(state.handles.open_handle(root_id, shard, origin_tag))
+        })
     }
 
     // ------------------------------------------------------------------------------ diagnostics

@@ -224,6 +224,18 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
         run: cargo fuzz run codemap_request corpus/codemap_request -- -max_total_time=60
 
+      - name: Fuzz inventory-scope-v1 bulk chunk decode for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run inventory_scope_bulk_chunk corpus/inventory_scope_bulk_chunk -- -max_total_time=60
+
+      - name: Fuzz inventory-scope-v1 delta event decode for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run inventory_scope_delta_event corpus/inventory_scope_delta_event -- -max_total_time=60
+
       - name: Test Rust bridge in debug configuration
         run: make dev-test TEST_PRODUCT=AgentryCoreBridgeTests CONFIGURATION=debug
 
