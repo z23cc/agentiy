@@ -1472,6 +1472,75 @@ impl From<runtime::pathsearch::PathSearchFindResponseV1> for CorePathSearchFindR
     }
 }
 
+// ---- Token accounting (P3-4, DIFFERENTIAL-ONLY) --------------------------------------------
+
+/// Compact-v1 batch request driving `TokenAccountingService` (`agentry_runtime::tokenacct`) --
+/// a batch of entry rows plus a batch of component-breakdown rows in ONE call. See
+/// `rust/crates/runtime/src/tokenacct/wire.rs`'s module doc for the wire shape and, critically,
+/// why this is a DIFFERENTIAL-TEST-ONLY shape rather than the eventual production entry point.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CoreTokenAccountingRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
+    pub contract_version: u16,
+
+    pub utf8_blob: Vec<u8>,
+    pub string_range_words: Vec<u64>,
+    pub entry_words: Vec<u64>,
+    pub component_words: Vec<u64>,
+}
+
+impl CoreTokenAccountingRequestV1 {
+    pub(crate) fn into_runtime_request(self) -> runtime::tokenacct::TokenAccountingRequestV1 {
+        runtime::tokenacct::TokenAccountingRequestV1 {
+            contract_version: self.contract_version,
+            utf8_blob: self.utf8_blob,
+            string_range_words: self.string_range_words,
+            entry_words: self.entry_words,
+            component_words: self.component_words,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreTokenAccountingResultV1 {
+    pub entry_result_words: Vec<u64>,
+    pub entry_formatted: Vec<String>,
+    pub entry_percentage: Vec<f64>,
+    pub aggregate_words: Vec<u64>,
+    pub combined_display_tokens: u64,
+    pub total_display_tokens: u64,
+    pub code_map_content: String,
+    pub code_map_file_count: u64,
+    pub code_map_token_count: u64,
+    pub folder_names: Vec<String>,
+    pub folder_token_counts: Vec<u64>,
+    pub folder_formatted: Vec<String>,
+    pub folder_percentage: Vec<f64>,
+    pub component_result_words: Vec<u64>,
+}
+
+impl From<runtime::tokenacct::TokenAccountingResponseV1> for CoreTokenAccountingResultV1 {
+    fn from(value: runtime::tokenacct::TokenAccountingResponseV1) -> Self {
+        Self {
+            entry_result_words: value.entry_result_words,
+            entry_formatted: value.entry_formatted,
+            entry_percentage: value.entry_percentage,
+            aggregate_words: value.aggregate_words,
+            combined_display_tokens: value.combined_display_tokens,
+            total_display_tokens: value.total_display_tokens,
+            code_map_content: value.code_map_content,
+            code_map_file_count: value.code_map_file_count,
+            code_map_token_count: value.code_map_token_count,
+            folder_names: value.folder_names,
+            folder_token_counts: value.folder_token_counts,
+            folder_formatted: value.folder_formatted,
+            folder_percentage: value.folder_percentage,
+            component_result_words: value.component_result_words,
+        }
+    }
+}
+
 impl From<runtime::inventory::InventoryComputeResultV1> for CoreInventoryComputeResultV1 {
     fn from(value: runtime::inventory::InventoryComputeResultV1) -> Self {
         Self {

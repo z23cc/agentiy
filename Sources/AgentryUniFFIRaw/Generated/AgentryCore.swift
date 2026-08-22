@@ -704,6 +704,15 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func searchRegexBatchCompactV1(request: RegexSearchBatchRequest) throws  -> CompactRegexBatchResult
 
+    /**
+     * P3-4: DIFFERENTIAL-ONLY batch entry driving `TokenAccountingService`
+     * (`agentry_runtime::tokenacct`) -- a batch of entry rows plus a batch of
+     * component-breakdown rows in ONE call. See
+     * `rust/crates/runtime/src/tokenacct/wire.rs`'s module doc: this is explicitly NOT the
+     * eventual production shape.
+     */
+    func tokenAccountingV1(request: CoreTokenAccountingRequestV1) throws  -> CoreTokenAccountingResultV1
+
     func tryDrain(subscriptionId: SubscriptionId, maxEvents: UInt32, maxBytes: UInt64) throws  -> DrainBatch
 
 }
@@ -984,6 +993,23 @@ open func searchRegexBatchCompactV1(request: RegexSearchBatchRequest)throws  -> 
     uniffi_agentry_ffi_fn_method_coreruntime_search_regex_batch_compact_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeRegexSearchBatchRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * P3-4: DIFFERENTIAL-ONLY batch entry driving `TokenAccountingService`
+     * (`agentry_runtime::tokenacct`) -- a batch of entry rows plus a batch of
+     * component-breakdown rows in ONE call. See
+     * `rust/crates/runtime/src/tokenacct/wire.rs`'s module doc: this is explicitly NOT the
+     * eventual production shape.
+     */
+open func tokenAccountingV1(request: CoreTokenAccountingRequestV1)throws  -> CoreTokenAccountingResultV1  {
+    return try  FfiConverterTypeCoreTokenAccountingResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_token_accounting_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreTokenAccountingRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -3444,6 +3470,188 @@ public func FfiConverterTypeCorePathSearchFindResultV1_lower(_ value: CorePathSe
 }
 
 
+/**
+ * Compact-v1 batch request driving `TokenAccountingService` (`agentry_runtime::tokenacct`) --
+ * a batch of entry rows plus a batch of component-breakdown rows in ONE call. See
+ * `rust/crates/runtime/src/tokenacct/wire.rs`'s module doc for the wire shape and, critically,
+ * why this is a DIFFERENTIAL-TEST-ONLY shape rather than the eventual production entry point.
+ */
+public struct CoreTokenAccountingRequestV1 {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let contractVersion: UInt16
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let entryWords: [UInt64]
+    public let componentWords: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, contractVersion: UInt16, utf8Blob: Data, stringRangeWords: [UInt64], entryWords: [UInt64], componentWords: [UInt64]) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.contractVersion = contractVersion
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.entryWords = entryWords
+        self.componentWords = componentWords
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreTokenAccountingRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreTokenAccountingRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreTokenAccountingRequestV1 {
+        return
+            try CoreTokenAccountingRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                entryWords: FfiConverterSequenceUInt64.read(from: &buf),
+                componentWords: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreTokenAccountingRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.entryWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.componentWords, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTokenAccountingRequestV1_lift(_ buf: RustBuffer) throws -> CoreTokenAccountingRequestV1 {
+    return try FfiConverterTypeCoreTokenAccountingRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTokenAccountingRequestV1_lower(_ value: CoreTokenAccountingRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreTokenAccountingRequestV1.lower(value)
+}
+
+
+public struct CoreTokenAccountingResultV1: Equatable, Hashable {
+    public let entryResultWords: [UInt64]
+    public let entryFormatted: [String]
+    public let entryPercentage: [Double]
+    public let aggregateWords: [UInt64]
+    public let combinedDisplayTokens: UInt64
+    public let totalDisplayTokens: UInt64
+    public let codeMapContent: String
+    public let codeMapFileCount: UInt64
+    public let codeMapTokenCount: UInt64
+    public let folderNames: [String]
+    public let folderTokenCounts: [UInt64]
+    public let folderFormatted: [String]
+    public let folderPercentage: [Double]
+    public let componentResultWords: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(entryResultWords: [UInt64], entryFormatted: [String], entryPercentage: [Double], aggregateWords: [UInt64], combinedDisplayTokens: UInt64, totalDisplayTokens: UInt64, codeMapContent: String, codeMapFileCount: UInt64, codeMapTokenCount: UInt64, folderNames: [String], folderTokenCounts: [UInt64], folderFormatted: [String], folderPercentage: [Double], componentResultWords: [UInt64]) {
+        self.entryResultWords = entryResultWords
+        self.entryFormatted = entryFormatted
+        self.entryPercentage = entryPercentage
+        self.aggregateWords = aggregateWords
+        self.combinedDisplayTokens = combinedDisplayTokens
+        self.totalDisplayTokens = totalDisplayTokens
+        self.codeMapContent = codeMapContent
+        self.codeMapFileCount = codeMapFileCount
+        self.codeMapTokenCount = codeMapTokenCount
+        self.folderNames = folderNames
+        self.folderTokenCounts = folderTokenCounts
+        self.folderFormatted = folderFormatted
+        self.folderPercentage = folderPercentage
+        self.componentResultWords = componentResultWords
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreTokenAccountingResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreTokenAccountingResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreTokenAccountingResultV1 {
+        return
+            try CoreTokenAccountingResultV1(
+                entryResultWords: FfiConverterSequenceUInt64.read(from: &buf),
+                entryFormatted: FfiConverterSequenceString.read(from: &buf),
+                entryPercentage: FfiConverterSequenceDouble.read(from: &buf),
+                aggregateWords: FfiConverterSequenceUInt64.read(from: &buf),
+                combinedDisplayTokens: FfiConverterUInt64.read(from: &buf),
+                totalDisplayTokens: FfiConverterUInt64.read(from: &buf),
+                codeMapContent: FfiConverterString.read(from: &buf),
+                codeMapFileCount: FfiConverterUInt64.read(from: &buf),
+                codeMapTokenCount: FfiConverterUInt64.read(from: &buf),
+                folderNames: FfiConverterSequenceString.read(from: &buf),
+                folderTokenCounts: FfiConverterSequenceUInt64.read(from: &buf),
+                folderFormatted: FfiConverterSequenceString.read(from: &buf),
+                folderPercentage: FfiConverterSequenceDouble.read(from: &buf),
+                componentResultWords: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreTokenAccountingResultV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceUInt64.write(value.entryResultWords, into: &buf)
+        FfiConverterSequenceString.write(value.entryFormatted, into: &buf)
+        FfiConverterSequenceDouble.write(value.entryPercentage, into: &buf)
+        FfiConverterSequenceUInt64.write(value.aggregateWords, into: &buf)
+        FfiConverterUInt64.write(value.combinedDisplayTokens, into: &buf)
+        FfiConverterUInt64.write(value.totalDisplayTokens, into: &buf)
+        FfiConverterString.write(value.codeMapContent, into: &buf)
+        FfiConverterUInt64.write(value.codeMapFileCount, into: &buf)
+        FfiConverterUInt64.write(value.codeMapTokenCount, into: &buf)
+        FfiConverterSequenceString.write(value.folderNames, into: &buf)
+        FfiConverterSequenceUInt64.write(value.folderTokenCounts, into: &buf)
+        FfiConverterSequenceString.write(value.folderFormatted, into: &buf)
+        FfiConverterSequenceDouble.write(value.folderPercentage, into: &buf)
+        FfiConverterSequenceUInt64.write(value.componentResultWords, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTokenAccountingResultV1_lift(_ buf: RustBuffer) throws -> CoreTokenAccountingResultV1 {
+    return try FfiConverterTypeCoreTokenAccountingResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTokenAccountingResultV1_lower(_ value: CoreTokenAccountingResultV1) -> RustBuffer {
+    return FfiConverterTypeCoreTokenAccountingResultV1.lower(value)
+}
+
+
 public struct DrainBatch: Equatable, Hashable {
     public let events: [RuntimeEvent]
     public let hasMore: Bool
@@ -5126,6 +5334,9 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case PathSearchInvalidRequest(message: String
     )
     case PathSearchCancelled
+    case TokenAccountingInvalidRequest(message: String
+    )
+    case TokenAccountingCancelled
 
 
 
@@ -5206,6 +5417,10 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
             )
         case 41: return .PathSearchCancelled
+        case 42: return .TokenAccountingInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 43: return .TokenAccountingCancelled
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5385,6 +5600,15 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case .PathSearchCancelled:
             writeInt(&buf, Int32(41))
+
+
+        case let .TokenAccountingInvalidRequest(message):
+            writeInt(&buf, Int32(42))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case .TokenAccountingCancelled:
+            writeInt(&buf, Int32(43))
 
         }
     }
@@ -6483,6 +6707,31 @@ fileprivate struct FfiConverterSequenceInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceDouble: FfiConverterRustBuffer {
+    typealias SwiftType = [Double]
+
+    public static func write(_ value: [Double], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterDouble.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Double] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Double]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterDouble.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -6906,6 +7155,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_search_regex_batch_compact_v1() != 41042) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_token_accounting_v1() != 43024) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_try_drain() != 27207) {

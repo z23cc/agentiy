@@ -88,6 +88,10 @@ pub enum CoreError {
     PathSearchInvalidRequest { message: String },
     #[error("path-search computation was cancelled")]
     PathSearchCancelled,
+    #[error("{message}")]
+    TokenAccountingInvalidRequest { message: String },
+    #[error("token-accounting computation was cancelled")]
+    TokenAccountingCancelled,
 }
 
 impl From<IdentifierError> for CoreError {
@@ -242,6 +246,19 @@ impl From<agentry_runtime::pathsearch::PathSearchFindError> for CoreError {
             }
             agentry_runtime::pathsearch::PathSearchFindError::Cancelled => {
                 Self::PathSearchCancelled
+            }
+        }
+    }
+}
+
+impl From<agentry_runtime::tokenacct::TokenAccountingError> for CoreError {
+    fn from(value: agentry_runtime::tokenacct::TokenAccountingError) -> Self {
+        match value {
+            agentry_runtime::tokenacct::TokenAccountingError::InvalidRequest(message) => {
+                Self::TokenAccountingInvalidRequest { message }
+            }
+            agentry_runtime::tokenacct::TokenAccountingError::Cancelled => {
+                Self::TokenAccountingCancelled
             }
         }
     }

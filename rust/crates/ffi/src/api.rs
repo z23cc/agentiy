@@ -9,10 +9,11 @@ use crate::types::{
     CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake,
     CoreInventoryComputeRequestV1, CoreInventoryComputeResultV1, CorePathMatchResolveRequestV1,
     CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1,
-    CorePathSearchFindRequestV1, CorePathSearchFindResultV1, DrainBatch, FolderSuffixRequest,
-    HostResponse, OperationState, OversizeEvent, PathFilterRequest, PathFilterResult,
-    RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity,
-    ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
+    CorePathSearchFindRequestV1, CorePathSearchFindResultV1, CoreTokenAccountingRequestV1,
+    CoreTokenAccountingResultV1, DrainBatch, FolderSuffixRequest, HostResponse, OperationState,
+    OversizeEvent, PathFilterRequest, PathFilterResult, RegexSearchBatchRequest,
+    RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt,
+    SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -92,6 +93,7 @@ pub struct CoreRuntime {
     path_match_service: runtime::pathmatch::PathMatchScoreService,
     path_resolve_service: runtime::pathmatch::PathMatchResolveService,
     path_search_service: runtime::pathsearch::PathSearchFindService,
+    token_accounting_service: runtime::tokenacct::TokenAccountingService,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -548,6 +550,34 @@ impl CoreRuntime {
         })
     }
 
+    /// P3-4: DIFFERENTIAL-ONLY batch entry driving `TokenAccountingService`
+    /// (`agentry_runtime::tokenacct`) -- a batch of entry rows plus a batch of
+    /// component-breakdown rows in ONE call. See
+    /// `rust/crates/runtime/src/tokenacct/wire.rs`'s module doc: this is explicitly NOT the
+    /// eventual production shape.
+    pub fn token_accounting_v1(
+        &self,
+        request: CoreTokenAccountingRequestV1,
+    ) -> Result<CoreTokenAccountingResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            let cancellation = request.cancellation.runtime_handle().clone();
+            Ok(self
+                .token_accounting_service
+                .compute_with_cancellation(&request.into_runtime_request(), Some(&cancellation))?
+                .into())
+        })
+    }
+
     pub fn filter_paths(&self, request: PathFilterRequest) -> Result<PathFilterResult, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -619,6 +649,7 @@ impl CoreRuntime {
             path_match_service: runtime::pathmatch::PathMatchScoreService,
             path_resolve_service: runtime::pathmatch::PathMatchResolveService,
             path_search_service: runtime::pathsearch::PathSearchFindService,
+            token_accounting_service: runtime::tokenacct::TokenAccountingService,
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),
@@ -927,6 +958,67 @@ mod tests {
         assert_eq!(
             invalid,
             Err(CoreError::PathSearchInvalidRequest {
+                message: "unknown contract version 2".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn token_accounting_v1_round_trips_one_entry_and_one_component_row() {
+        let (core, identity, cancellation) = initialized_core();
+        let mut runtime_request = runtime::tokenacct::TokenAccountingRequestV1::default();
+        runtime_request.contract_version = runtime::tokenacct::TOKEN_ACCOUNTING_CONTRACT_VERSION_V1;
+        runtime_request.push_content_entry(0, None, Some(("hello world", 11)), None, "src/a.swift");
+        runtime_request.push_component("prompt text", "", "", "", "", false);
+
+        let request = crate::types::CoreTokenAccountingRequestV1 {
+            runtime_identity: identity,
+            cancellation,
+            contract_version: runtime_request.contract_version,
+            utf8_blob: runtime_request.utf8_blob,
+            string_range_words: runtime_request.string_range_words,
+            entry_words: runtime_request.entry_words,
+            component_words: runtime_request.component_words,
+        };
+
+        let result = core
+            .token_accounting_v1(request)
+            .expect("token-accounting compact export");
+        assert_eq!(result.entry_result_words[0], 0, "render_mode full");
+        assert!(result.component_result_words[0] > 0, "prompt tokens");
+        assert_eq!(result.folder_names, vec!["src".to_owned()]);
+    }
+
+    #[test]
+    fn token_accounting_v1_classifies_cancellation_and_invalid_requests() {
+        let (core, identity, cancellation) = initialized_core();
+        cancellation
+            .cancel(identity.clone())
+            .expect("cancel leaf computation");
+        let cancelled = core.token_accounting_v1(crate::types::CoreTokenAccountingRequestV1 {
+            runtime_identity: identity.clone(),
+            cancellation: Arc::clone(&cancellation),
+            contract_version: runtime::tokenacct::TOKEN_ACCOUNTING_CONTRACT_VERSION_V1,
+            utf8_blob: Vec::new(),
+            string_range_words: Vec::new(),
+            entry_words: Vec::new(),
+            component_words: Vec::new(),
+        });
+        assert_eq!(cancelled, Err(CoreError::TokenAccountingCancelled));
+
+        let (core, identity, cancellation) = initialized_core();
+        let invalid = core.token_accounting_v1(crate::types::CoreTokenAccountingRequestV1 {
+            runtime_identity: identity,
+            cancellation,
+            contract_version: 2,
+            utf8_blob: Vec::new(),
+            string_range_words: Vec::new(),
+            entry_words: Vec::new(),
+            component_words: Vec::new(),
+        });
+        assert_eq!(
+            invalid,
+            Err(CoreError::TokenAccountingInvalidRequest {
                 message: "unknown contract version 2".into(),
             })
         );

@@ -14,6 +14,7 @@ pub mod pathsearch;
 mod registry;
 mod search;
 mod subscription;
+pub mod tokenacct;
 mod wake_pipe;
 
 pub use config::RuntimeConfig;
