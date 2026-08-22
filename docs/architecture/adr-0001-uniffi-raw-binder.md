@@ -7,7 +7,7 @@
 
 ## Context
 
-The rewrite charter, `docs/designs/rust-core-swiftui-shell-rewrite-2026-08-20.md` §5, requires a narrow Rust-core/SwiftUI-shell boundary rather than a second product/runtime authority. Section 15.4 makes the binding choice conditional on evidence: accept the candidate only within the capabilities actually proven by the §15.2 gates, and reject it when a required boundary behavior is unsupported or a gate fails.
+The rewrite charter, `docs/architecture/agentry-rewrite-charter.md` §5 (tracked snapshot of `docs/designs/rust-core-swiftui-shell-rewrite-2026-08-20.md`, which remains the living, gitignored working copy), requires a narrow Rust-core/SwiftUI-shell boundary rather than a second product/runtime authority. Section 15.4 makes the binding choice conditional on evidence: accept the candidate only within the capabilities actually proven by the §15.2 gates, and reject it when a required boundary behavior is unsupported or a gate fails.
 
 Phase 0 evaluates UniFFI 0.32.0 only as a generated raw binder beneath a project-owned Swift bridge. It does not authorize UniFFI to own runtime lifecycle, cancellation, streaming, payload delivery, or the product API. The authoritative project gate definitions, evidence, and gaps are in [`rust-ffi.md`](rust-ffi.md#g1g8-final-status-summary).
 

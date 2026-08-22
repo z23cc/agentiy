@@ -56,6 +56,27 @@ LEGACY_PROOF_LINES = {
         '"REPOPROMPT_MCP_HEADLESS_PROFILE_DIR": legacyProfile.path',
         '"REPOPROMPT_MCP_WORKING_DIRS": legacyRoot.path',
     ),
+    # ADR-0002 narrates the identity-reset ruling itself and must name the
+    # retired identity it replaced; this is historical evidence, not a live
+    # surface reintroducing it.
+    "docs/architecture/adr-0002-hard-fork-baseline-identity-reset.md": (
+        "identity guard sweep including upstream's original `com.pvncher.repoprompt` namespace",
+        "no import or migration of the old `RepoPrompt CE` root",
+        "No first-run migration path exists from the old `RepoPrompt CE` install",
+    ),
+    # docs/architecture/agentry-rewrite-charter.md is a frozen, version-controlled
+    # snapshot of the pre-rename design narrative (ADR ruling 14). It must name the
+    # retired identity to be a faithful historical record; these five lines are the
+    # full, exhaustive set of forbidden-token occurrences in the snapshot as of the
+    # ADR ruling 14 commit and are read as history, not as a live/prescriptive
+    # surface reintroducing the retired identity.
+    "docs/architecture/agentry-rewrite-charter.md": (
+        "RepoPrompt CE 的正式 hard fork",
+        "本文回答：如果长期将 RepoPrompt CE 演进为",
+        "上游原始命名空间 `com.pvncher.repoprompt` 全量",
+        "不读取、不迁移旧 `RepoPrompt CE` 目录",
+        "CLI 与 MCP 服务名：`rpce-cli-debug` → `agentry-cli-debug`",
+    ),
 }
 HISTORICAL_CHANGELOG = "Sources/RepoPrompt/App/Changelog.swift"
 HISTORICAL_CHANGELOG_LINE = (

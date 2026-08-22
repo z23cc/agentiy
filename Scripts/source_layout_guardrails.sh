@@ -819,6 +819,16 @@ print_matches \
 # promoted into the contributor-facing documentation set.
 allowed_tracked_docs=(
   "docs/architecture/adr-0001-uniffi-raw-binder.md"
+  "docs/architecture/adr-0002-hard-fork-baseline-identity-reset.md"
+  "docs/architecture/adr-0003-rust-first-authority-non-waivable-contracts.md"
+  "docs/architecture/adr-0004-utf8-text-contract-natural-sort.md"
+  "docs/architecture/adr-0005-pcre2-jit-regex-engine.md"
+  "docs/architecture/adr-0006-release-and-stopgap-policies.md"
+  "docs/architecture/adr-0007-toolchain-supply-chain-controls.md"
+  "docs/architecture/adr-0008-migration-economics-benchmark-gate.md"
+  "docs/architecture/adr-0009-data-plane-schema-and-protocol-authority.md"
+  "docs/architecture/adr-0010-vcs-backend-cli-subprocess-canonical.md"
+  "docs/architecture/agentry-rewrite-charter.md"
   "docs/architecture/codex-app-server-schema-gate.md"
   "docs/architecture/context-composer.md"
   "docs/architecture/headless-mcp-runtime.md"

@@ -6,7 +6,7 @@
 **Supported Rust target:** `aarch64-apple-darwin` only
 **Minimum macOS deployment target:** 14.0
 
-This document freezes the acceptance gates, boundary contracts, fixture policy, and dependency ownership for the Agentry Rust FFI skeleton. It does not yet accept UniFFI for product use, migrate a product domain, connect `RepoPromptApp`, or create a second runtime authority. The strategic source is `docs/designs/rust-core-swiftui-shell-rewrite-2026-08-20.md`; the machine-readable contract is `rust/ffi-contract/abi-v1.json`.
+This document freezes the acceptance gates, boundary contracts, fixture policy, and dependency ownership for the Agentry Rust FFI skeleton. It does not yet accept UniFFI for product use, migrate a product domain, connect `RepoPromptApp`, or create a second runtime authority. The strategic source is `docs/architecture/agentry-rewrite-charter.md` (tracked snapshot of `docs/designs/rust-core-swiftui-shell-rewrite-2026-08-20.md`, which remains the living, gitignored working copy); the machine-readable contract is `rust/ffi-contract/abi-v1.json`.
 
 ## Scope and non-goals
 
