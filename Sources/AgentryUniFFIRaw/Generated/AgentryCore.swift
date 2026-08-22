@@ -685,6 +685,15 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func pathMatchScoreV1(request: CorePathMatchScoreRequestV1) throws  -> CorePathMatchScoreResultV1
 
+    /**
+     * P3-3 slice-2b phase 2: DIFFERENTIAL-ONLY batch entry driving `PathSearchFindService`
+     * (`agentry_runtime::pathsearch`) -- a whole corpus plus a batch of queries in ONE call,
+     * existing solely to drive a byte-exact Rust-vs-Swift(-vs-C) differential test. See
+     * `rust/crates/runtime/src/pathsearch/wire.rs`'s module doc: this is explicitly NOT the
+     * eventual production shape (which needs the P4 stateful scope-registry handle primitive).
+     */
+    func pathSearchFindV1(request: CorePathSearchFindRequestV1) throws  -> CorePathSearchFindResultV1
+
     func rearmWake(identity: RuntimeIdentity) throws  -> Bool
 
     func respondHostRequest(response: HostResponse) throws
@@ -909,6 +918,23 @@ open func pathMatchScoreV1(request: CorePathMatchScoreRequestV1)throws  -> CoreP
     uniffi_agentry_ffi_fn_method_coreruntime_path_match_score_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCorePathMatchScoreRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * P3-3 slice-2b phase 2: DIFFERENTIAL-ONLY batch entry driving `PathSearchFindService`
+     * (`agentry_runtime::pathsearch`) -- a whole corpus plus a batch of queries in ONE call,
+     * existing solely to drive a byte-exact Rust-vs-Swift(-vs-C) differential test. See
+     * `rust/crates/runtime/src/pathsearch/wire.rs`'s module doc: this is explicitly NOT the
+     * eventual production shape (which needs the P4 stateful scope-registry handle primitive).
+     */
+open func pathSearchFindV1(request: CorePathSearchFindRequestV1)throws  -> CorePathSearchFindResultV1  {
+    return try  FfiConverterTypeCorePathSearchFindResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_path_search_find_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCorePathSearchFindRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -3279,6 +3305,145 @@ public func FfiConverterTypeCorePathMatchScoreResultV1_lower(_ value: CorePathMa
 }
 
 
+/**
+ * Compact-v1 batch request driving `PathSearchFindService` (`agentry_runtime::pathsearch`) --
+ * a whole corpus plus a batch of queries in ONE call. See
+ * `rust/crates/runtime/src/pathsearch/wire.rs`'s module doc for the pool-plus-flat-corpus wire
+ * shape and, critically, why this is a DIFFERENTIAL-TEST-ONLY shape rather than the eventual
+ * production entry point (production needs the P4 stateful scope-registry handle primitive).
+ */
+public struct CorePathSearchFindRequestV1 {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let contractVersion: UInt16
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let corpusPathIndices: [UInt64]
+    public let queryWords: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, contractVersion: UInt16, utf8Blob: Data, stringRangeWords: [UInt64], corpusPathIndices: [UInt64], queryWords: [UInt64]) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.contractVersion = contractVersion
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.corpusPathIndices = corpusPathIndices
+        self.queryWords = queryWords
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CorePathSearchFindRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePathSearchFindRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePathSearchFindRequestV1 {
+        return
+            try CorePathSearchFindRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                corpusPathIndices: FfiConverterSequenceUInt64.read(from: &buf),
+                queryWords: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CorePathSearchFindRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.corpusPathIndices, into: &buf)
+        FfiConverterSequenceUInt64.write(value.queryWords, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathSearchFindRequestV1_lift(_ buf: RustBuffer) throws -> CorePathSearchFindRequestV1 {
+    return try FfiConverterTypeCorePathSearchFindRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathSearchFindRequestV1_lower(_ value: CorePathSearchFindRequestV1) -> RustBuffer {
+    return FfiConverterTypeCorePathSearchFindRequestV1.lower(value)
+}
+
+
+public struct CorePathSearchFindResultV1: Equatable, Hashable {
+    public let resultOrdinals: [UInt64]
+    public let resultRangeWords: [UInt64]
+    public let statsWords: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(resultOrdinals: [UInt64], resultRangeWords: [UInt64], statsWords: [UInt64]) {
+        self.resultOrdinals = resultOrdinals
+        self.resultRangeWords = resultRangeWords
+        self.statsWords = statsWords
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CorePathSearchFindResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePathSearchFindResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePathSearchFindResultV1 {
+        return
+            try CorePathSearchFindResultV1(
+                resultOrdinals: FfiConverterSequenceUInt64.read(from: &buf),
+                resultRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                statsWords: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CorePathSearchFindResultV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceUInt64.write(value.resultOrdinals, into: &buf)
+        FfiConverterSequenceUInt64.write(value.resultRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.statsWords, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathSearchFindResultV1_lift(_ buf: RustBuffer) throws -> CorePathSearchFindResultV1 {
+    return try FfiConverterTypeCorePathSearchFindResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathSearchFindResultV1_lower(_ value: CorePathSearchFindResultV1) -> RustBuffer {
+    return FfiConverterTypeCorePathSearchFindResultV1.lower(value)
+}
+
+
 public struct DrainBatch: Equatable, Hashable {
     public let events: [RuntimeEvent]
     public let hasMore: Bool
@@ -4958,6 +5123,9 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case PathResolveInvalidRequest(message: String
     )
     case PathResolveCancelled
+    case PathSearchInvalidRequest(message: String
+    )
+    case PathSearchCancelled
 
 
 
@@ -5034,6 +5202,10 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
             )
         case 39: return .PathResolveCancelled
+        case 40: return .PathSearchInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 41: return .PathSearchCancelled
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5204,6 +5376,15 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case .PathResolveCancelled:
             writeInt(&buf, Int32(39))
+
+
+        case let .PathSearchInvalidRequest(message):
+            writeInt(&buf, Int32(40))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case .PathSearchCancelled:
+            writeInt(&buf, Int32(41))
 
         }
     }
@@ -6707,6 +6888,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_path_match_score_v1() != 427) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_path_search_find_v1() != 16570) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_rearm_wake() != 46704) {

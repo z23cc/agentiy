@@ -355,3 +355,57 @@ fn projected_find_not_cancelled_completes_normally() {
     assert_eq!(matches.len(), 10);
     assert!(!stats.cancelled);
 }
+
+/// Regression for the phase-2 scratch-buffer hoist: a `MatchScratch` reused across calls with
+/// DIFFERENT token/subject lengths (longer-then-shorter, and vice versa) must never leak a stale
+/// `true` bit from a previous, longer DP row into a shorter one -- `matches_with_scratch` clears
+/// and resizes both rows on every call, but this pins that behavior against regression and
+/// cross-checks every call against the non-reused `matches` convenience wrapper.
+#[test]
+fn glob_matches_with_scratch_reuse_does_not_leak_state_across_calls() {
+    use super::glob::{MatchScratch, matches, matches_with_scratch};
+
+    let long = decompose("*.composite-target.swift");
+    let Mode::Glob(long_tokens) = long.mode else {
+        panic!("expected glob mode");
+    };
+    let short = decompose("a?");
+    let Mode::Glob(short_tokens) = short.mode else {
+        panic!("expected glob mode");
+    };
+
+    let mut scratch = MatchScratch::new();
+
+    // Warm the scratch buffers with a long token sequence over a long subject.
+    assert!(matches_with_scratch(
+        b"a.composite-target.swift",
+        &long_tokens,
+        &mut scratch
+    ));
+
+    // A much shorter token/subject pair reused on the same scratch must not see stale `true`
+    // bits left over from the longer previous call.
+    assert!(matches_with_scratch(b"ax", &short_tokens, &mut scratch));
+    assert!(!matches_with_scratch(b"b", &short_tokens, &mut scratch));
+    assert!(!matches_with_scratch(b"", &short_tokens, &mut scratch));
+    assert_eq!(
+        matches_with_scratch(b"ax", &short_tokens, &mut scratch),
+        matches(b"ax", &short_tokens)
+    );
+
+    // And back to the long pair again, reusing the now-shrunk scratch.
+    assert!(matches_with_scratch(
+        b"a.composite-target.swift",
+        &long_tokens,
+        &mut scratch
+    ));
+    assert!(!matches_with_scratch(
+        b"a.composite-target.SWIFT-nope",
+        &long_tokens,
+        &mut scratch
+    ));
+    assert_eq!(
+        matches_with_scratch(b"a.composite-target.swift", &long_tokens, &mut scratch),
+        matches(b"a.composite-target.swift", &long_tokens)
+    );
+}

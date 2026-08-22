@@ -9,10 +9,10 @@ use crate::types::{
     CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake,
     CoreInventoryComputeRequestV1, CoreInventoryComputeResultV1, CorePathMatchResolveRequestV1,
     CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1,
-    DrainBatch, FolderSuffixRequest, HostResponse, OperationState, OversizeEvent,
-    PathFilterRequest, PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest,
-    RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap,
-    SubscriptionId, SubscriptionScope,
+    CorePathSearchFindRequestV1, CorePathSearchFindResultV1, DrainBatch, FolderSuffixRequest,
+    HostResponse, OperationState, OversizeEvent, PathFilterRequest, PathFilterResult,
+    RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity,
+    ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -91,6 +91,7 @@ pub struct CoreRuntime {
     inventory_service: runtime::inventory::InventoryComputeService,
     path_match_service: runtime::pathmatch::PathMatchScoreService,
     path_resolve_service: runtime::pathmatch::PathMatchResolveService,
+    path_search_service: runtime::pathsearch::PathSearchFindService,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -519,6 +520,34 @@ impl CoreRuntime {
         })
     }
 
+    /// P3-3 slice-2b phase 2: DIFFERENTIAL-ONLY batch entry driving `PathSearchFindService`
+    /// (`agentry_runtime::pathsearch`) -- a whole corpus plus a batch of queries in ONE call,
+    /// existing solely to drive a byte-exact Rust-vs-Swift(-vs-C) differential test. See
+    /// `rust/crates/runtime/src/pathsearch/wire.rs`'s module doc: this is explicitly NOT the
+    /// eventual production shape (which needs the P4 stateful scope-registry handle primitive).
+    pub fn path_search_find_v1(
+        &self,
+        request: CorePathSearchFindRequestV1,
+    ) -> Result<CorePathSearchFindResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            request
+                .cancellation
+                .validate_identity(&request.runtime_identity)?;
+            if request.cancellation.runtime_handle().identity() != &identity
+                || request.cancellation.runtime_handle().is_closed()
+            {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            let cancellation = request.cancellation.runtime_handle().clone();
+            Ok(self
+                .path_search_service
+                .compute_with_cancellation(&request.into_runtime_request(), Some(&cancellation))?
+                .into())
+        })
+    }
+
     pub fn filter_paths(&self, request: PathFilterRequest) -> Result<PathFilterResult, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -589,6 +618,7 @@ impl CoreRuntime {
             inventory_service: runtime::inventory::InventoryComputeService,
             path_match_service: runtime::pathmatch::PathMatchScoreService,
             path_resolve_service: runtime::pathmatch::PathMatchResolveService,
+            path_search_service: runtime::pathsearch::PathSearchFindService,
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),
@@ -834,6 +864,70 @@ mod tests {
             apply,
             Err(CoreError::ApplyEditsInvalidParams {
                 message: "search block not found in file".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn path_search_find_v1_round_trips_find_and_projected_queries() {
+        let (core, identity, cancellation) = initialized_core();
+        let mut request = crate::types::CorePathSearchFindRequestV1 {
+            runtime_identity: identity,
+            cancellation,
+            contract_version: runtime::pathsearch::PATH_SEARCH_CONTRACT_VERSION_V1,
+            utf8_blob: Vec::new(),
+            string_range_words: Vec::new(),
+            corpus_path_indices: Vec::new(),
+            query_words: Vec::new(),
+        };
+        let mut runtime_request = runtime::pathsearch::PathSearchFindRequestV1::default();
+        runtime_request.push_corpus_path("a/App.swift");
+        runtime_request.push_corpus_path("b/App.swift");
+        runtime_request.push_find_query("App.swift", 10);
+        request.utf8_blob = runtime_request.utf8_blob;
+        request.string_range_words = runtime_request.string_range_words;
+        request.corpus_path_indices = runtime_request.corpus_path_indices;
+        request.query_words = runtime_request.query_words;
+
+        let result = core
+            .path_search_find_v1(request)
+            .expect("path-search compact export");
+        assert_eq!(result.result_ordinals, vec![0, 1]);
+        assert_eq!(result.result_range_words, vec![0, 2]);
+        assert_eq!(result.stats_words, vec![0; 5]);
+    }
+
+    #[test]
+    fn path_search_find_v1_classifies_cancellation_and_invalid_requests() {
+        let (core, identity, cancellation) = initialized_core();
+        cancellation
+            .cancel(identity.clone())
+            .expect("cancel leaf computation");
+        let cancelled = core.path_search_find_v1(crate::types::CorePathSearchFindRequestV1 {
+            runtime_identity: identity.clone(),
+            cancellation: Arc::clone(&cancellation),
+            contract_version: runtime::pathsearch::PATH_SEARCH_CONTRACT_VERSION_V1,
+            utf8_blob: Vec::new(),
+            string_range_words: Vec::new(),
+            corpus_path_indices: Vec::new(),
+            query_words: Vec::new(),
+        });
+        assert_eq!(cancelled, Err(CoreError::PathSearchCancelled));
+
+        let (core, identity, cancellation) = initialized_core();
+        let invalid = core.path_search_find_v1(crate::types::CorePathSearchFindRequestV1 {
+            runtime_identity: identity,
+            cancellation,
+            contract_version: 2,
+            utf8_blob: Vec::new(),
+            string_range_words: Vec::new(),
+            corpus_path_indices: Vec::new(),
+            query_words: Vec::new(),
+        });
+        assert_eq!(
+            invalid,
+            Err(CoreError::PathSearchInvalidRequest {
+                message: "unknown contract version 2".into(),
             })
         );
     }

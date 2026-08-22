@@ -97,6 +97,10 @@ impl PathSearchIndex {
         let capacity = limit.min(self.len());
         let mut heap: Vec<usize> = Vec::with_capacity(capacity);
         let mut scratch = Vec::with_capacity(scratch_bytes);
+        // Hoisted out of the scan loop below (phase-1 perf note: "hoist glob scratch buffers
+        // before wiring live") so `glob::matches_with_scratch` doesn't allocate two fresh
+        // `Vec<bool>` DP rows per candidate -- see `glob::MatchScratch`'s doc.
+        let mut match_scratch = glob::MatchScratch::new();
 
         for index in 0..self.len() {
             if index % 64 == 0 {
@@ -122,7 +126,9 @@ impl PathSearchIndex {
                 Mode::SpaceAnd(terms) => terms
                     .iter()
                     .all(|term| glob::ascii_case_insensitive_contains(&scratch, term)),
-                Mode::Glob(tokens) => glob::matches(&scratch, tokens),
+                Mode::Glob(tokens) => {
+                    glob::matches_with_scratch(&scratch, tokens, &mut match_scratch)
+                }
             };
 
             if matched {

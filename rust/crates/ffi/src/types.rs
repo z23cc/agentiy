@@ -1424,6 +1424,54 @@ impl From<runtime::pathmatch::PathMatchResolveResultV1> for CorePathMatchResolve
     }
 }
 
+// ---- Path search (P3-3 slice 2b phase 2, DIFFERENTIAL-ONLY) ------------------------------
+
+/// Compact-v1 batch request driving `PathSearchFindService` (`agentry_runtime::pathsearch`) --
+/// a whole corpus plus a batch of queries in ONE call. See
+/// `rust/crates/runtime/src/pathsearch/wire.rs`'s module doc for the pool-plus-flat-corpus wire
+/// shape and, critically, why this is a DIFFERENTIAL-TEST-ONLY shape rather than the eventual
+/// production entry point (production needs the P4 stateful scope-registry handle primitive).
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CorePathSearchFindRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
+    pub contract_version: u16,
+
+    pub utf8_blob: Vec<u8>,
+    pub string_range_words: Vec<u64>,
+    pub corpus_path_indices: Vec<u64>,
+    pub query_words: Vec<u64>,
+}
+
+impl CorePathSearchFindRequestV1 {
+    pub(crate) fn into_runtime_request(self) -> runtime::pathsearch::PathSearchFindRequestV1 {
+        runtime::pathsearch::PathSearchFindRequestV1 {
+            contract_version: self.contract_version,
+            utf8_blob: self.utf8_blob,
+            string_range_words: self.string_range_words,
+            corpus_path_indices: self.corpus_path_indices,
+            query_words: self.query_words,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CorePathSearchFindResultV1 {
+    pub result_ordinals: Vec<u64>,
+    pub result_range_words: Vec<u64>,
+    pub stats_words: Vec<u64>,
+}
+
+impl From<runtime::pathsearch::PathSearchFindResponseV1> for CorePathSearchFindResultV1 {
+    fn from(value: runtime::pathsearch::PathSearchFindResponseV1) -> Self {
+        Self {
+            result_ordinals: value.result_ordinals,
+            result_range_words: value.result_range_words,
+            stats_words: value.stats_words,
+        }
+    }
+}
+
 impl From<runtime::inventory::InventoryComputeResultV1> for CoreInventoryComputeResultV1 {
     fn from(value: runtime::inventory::InventoryComputeResultV1) -> Self {
         Self {

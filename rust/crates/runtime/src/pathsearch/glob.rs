@@ -234,6 +234,25 @@ pub fn ascii_case_insensitive_contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window.iter().zip(needle).all(|(&h, &n)| fold(h) == fold(n)))
 }
 
+/// Reusable DP scratch buffers for [`matches_with_scratch`], hoisting the two per-call
+/// `Vec<bool>` allocations [`matches`] would otherwise make on every invocation -- the phase-1
+/// perf note ("hoist glob scratch buffers before wiring live"). Callers that invoke matching in a
+/// tight loop over many subjects against the same token sequence (e.g. `engine::projected_find`'s
+/// per-candidate scan) should construct one `MatchScratch` before the loop and reuse it via
+/// [`matches_with_scratch`] instead of calling [`matches`] per candidate.
+#[derive(Debug, Default)]
+pub struct MatchScratch {
+    prev: Vec<bool>,
+    current: Vec<bool>,
+}
+
+impl MatchScratch {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Matches `subject` against a compiled [`Token`] sequence, requiring the **entire** subject to
 /// be consumed (this is what makes a leading [`Token::StarAny`] behave like a free-start regex
 /// and its absence behave like a `^`-anchored one, and what makes the always-present-in-wildcard-
@@ -244,32 +263,51 @@ pub fn ascii_case_insensitive_contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// (`[^/]*` and `.*`) instead of one. This recognizes the same regular language as the C-built
 /// POSIX ERE for these constructs without invoking any regex engine — see the parity argument in
 /// the `pathsearch` module doc.
+///
+/// Reuses `scratch`'s two `Vec<bool>` rows instead of allocating fresh ones each call -- both
+/// rows are unconditionally cleared and resized to `tokens.len() + 1` at the top of every call, so
+/// no state from a previous (possibly longer- or shorter-token) call can leak into this one.
 #[must_use]
-pub fn matches(subject: &[u8], tokens: &[Token]) -> bool {
+pub fn matches_with_scratch(subject: &[u8], tokens: &[Token], scratch: &mut MatchScratch) -> bool {
     let m = tokens.len();
 
-    // Row 0: subject prefix of length 0. Only star tokens can match zero bytes.
-    let mut prev = vec![false; m + 1];
-    prev[0] = true;
+    // Row 0: subject prefix of length 0. Only star tokens can match zero bytes. `clear()` +
+    // `resize()` always yields an all-`false` row regardless of the buffer's prior contents/
+    // length, so this is behaviorally identical to a fresh `vec![false; m + 1]`.
+    scratch.prev.clear();
+    scratch.prev.resize(m + 1, false);
+    scratch.prev[0] = true;
     for (k, token) in tokens.iter().enumerate() {
         if matches!(token, Token::StarAny | Token::StarNonSlash) {
-            prev[k + 1] = prev[k];
+            scratch.prev[k + 1] = scratch.prev[k];
         }
     }
 
-    let mut current = vec![false; m + 1];
+    scratch.current.clear();
+    scratch.current.resize(m + 1, false);
     for &subject_byte in subject {
-        current[0] = false;
+        scratch.current[0] = false;
         for (k, token) in tokens.iter().enumerate() {
-            current[k + 1] = match *token {
-                Token::Lit(c) => prev[k] && fold(subject_byte) == fold(c),
-                Token::AnyNonSlash => prev[k] && subject_byte != b'/',
-                Token::StarNonSlash => current[k] || (prev[k + 1] && subject_byte != b'/'),
-                Token::StarAny => current[k] || prev[k + 1],
+            scratch.current[k + 1] = match *token {
+                Token::Lit(c) => scratch.prev[k] && fold(subject_byte) == fold(c),
+                Token::AnyNonSlash => scratch.prev[k] && subject_byte != b'/',
+                Token::StarNonSlash => {
+                    scratch.current[k] || (scratch.prev[k + 1] && subject_byte != b'/')
+                }
+                Token::StarAny => scratch.current[k] || scratch.prev[k + 1],
             };
         }
-        std::mem::swap(&mut prev, &mut current);
+        std::mem::swap(&mut scratch.prev, &mut scratch.current);
     }
 
-    prev[m]
+    scratch.prev[m]
+}
+
+/// Convenience wrapper over [`matches_with_scratch`] that allocates a throwaway [`MatchScratch`]
+/// for a single call. Prefer [`matches_with_scratch`] with a hoisted, reused `MatchScratch` in any
+/// loop that matches many subjects against the same token sequence.
+#[must_use]
+pub fn matches(subject: &[u8], tokens: &[Token]) -> bool {
+    let mut scratch = MatchScratch::new();
+    matches_with_scratch(subject, tokens, &mut scratch)
 }

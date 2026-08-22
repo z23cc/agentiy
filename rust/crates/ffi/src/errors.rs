@@ -84,6 +84,10 @@ pub enum CoreError {
     PathResolveInvalidRequest { message: String },
     #[error("path-resolve computation was cancelled")]
     PathResolveCancelled,
+    #[error("{message}")]
+    PathSearchInvalidRequest { message: String },
+    #[error("path-search computation was cancelled")]
+    PathSearchCancelled,
 }
 
 impl From<IdentifierError> for CoreError {
@@ -225,6 +229,19 @@ impl From<agentry_runtime::pathmatch::PathMatchResolveError> for CoreError {
             }
             agentry_runtime::pathmatch::PathMatchResolveError::Cancelled => {
                 Self::PathResolveCancelled
+            }
+        }
+    }
+}
+
+impl From<agentry_runtime::pathsearch::PathSearchFindError> for CoreError {
+    fn from(value: agentry_runtime::pathsearch::PathSearchFindError) -> Self {
+        match value {
+            agentry_runtime::pathsearch::PathSearchFindError::InvalidRequest(message) => {
+                Self::PathSearchInvalidRequest { message }
+            }
+            agentry_runtime::pathsearch::PathSearchFindError::Cancelled => {
+                Self::PathSearchCancelled
             }
         }
     }

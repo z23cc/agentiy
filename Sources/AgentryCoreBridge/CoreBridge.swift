@@ -63,6 +63,8 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case pathMatchCancelled
     case pathResolveInvalidRequest(String)
     case pathResolveCancelled
+    case pathSearchInvalidRequest(String)
+    case pathSearchCancelled
     case unexpected(String)
 }
 
@@ -119,6 +121,11 @@ protocol CoreRuntimeTransport: Sendable {
         cancellation: any CoreLeafCancellationHandle,
         request: CoreCompactPathMatchResolveRequestV1
     ) throws -> CoreCompactPathMatchResolveResultV1
+    func pathSearchFindV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCompactPathSearchFindRequestV1
+    ) throws -> CoreCompactPathSearchFindResultV1
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -753,6 +760,35 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    func pathSearchFindV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCompactPathSearchFindRequestV1
+    ) throws -> CoreCompactPathSearchFindResultV1 {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        let value: AgentryUniFFIRaw.CorePathSearchFindResultV1
+        do {
+            value = try runtime.pathSearchFindV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                contractVersion: request.contractVersion,
+                utf8Blob: request.utf8Blob,
+                stringRangeWords: request.stringRangeWords,
+                corpusPathIndices: request.corpusPathIndices,
+                queryWords: request.queryWords
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+        return CoreCompactPathSearchFindResultV1(
+            resultOrdinals: value.resultOrdinals,
+            resultRangeWords: value.resultRangeWords,
+            statsWords: value.statsWords
+        )
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -1018,6 +1054,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .PathMatchCancelled: .pathMatchCancelled
         case let .PathResolveInvalidRequest(message): .pathResolveInvalidRequest(message)
         case .PathResolveCancelled: .pathResolveCancelled
+        case let .PathSearchInvalidRequest(message): .pathSearchInvalidRequest(message)
+        case .PathSearchCancelled: .pathSearchCancelled
         case .UnmatchedBrackets: .unmatchedBrackets
         case .UnmatchedParentheses: .unmatchedParentheses
         case .InvalidQuantifier: .invalidQuantifier
@@ -1269,7 +1307,7 @@ public actor AgentryCoreBridge {
             return CoreComputeError.transportFailure(String(describing: error))
         }
         if error == .codeMapCancelled || error == .applyEditsCancelled || error == .inventoryCancelled
-            || error == .pathMatchCancelled || error == .pathResolveCancelled
+            || error == .pathMatchCancelled || error == .pathResolveCancelled || error == .pathSearchCancelled
         {
             return CancellationError()
         }
@@ -1283,6 +1321,8 @@ public actor AgentryCoreBridge {
         case let .pathMatchInvalidRequest(message):
             .invalidRequest(message)
         case let .pathResolveInvalidRequest(message):
+            .invalidRequest(message)
+        case let .pathSearchInvalidRequest(message):
             .invalidRequest(message)
         case .runtimePoisoned: .runtimePoisoned
         case .runtimeStopped: .runtimeStopped
@@ -1616,7 +1656,8 @@ public actor AgentryCoreBridge {
              .codeMapInvariant, .applyEditsInvalidParams, .applyEditsCancelled, .applyEditsInvariant,
              .inventoryInvalidRequest, .inventoryCancelled, .inventoryInvariant,
              .pathMatchInvalidRequest, .pathMatchCancelled,
-             .pathResolveInvalidRequest, .pathResolveCancelled:
+             .pathResolveInvalidRequest, .pathResolveCancelled,
+             .pathSearchInvalidRequest, .pathSearchCancelled:
             return .invalidArgument
         case let .unexpected(message): return .transportFailure(message)
         }

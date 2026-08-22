@@ -3,12 +3,15 @@
 //! `Sources/RepoPromptC/include/path_search.h`), whose contract is documented and consumed by
 //! the Swift wrapper `Sources/RepoPrompt/Infrastructure/WorkspaceContext/Search/PathSearchIndex.swift`.
 //!
-//! # Phase scope (P3-3 slice 2b phase 1)
+//! # Phase scope (P3-3 slice 2b phase 2)
 //!
-//! This module is **cargo-only**: it is a self-contained behavioral port with no FFI wiring, no
-//! `rust/crates/ffi` changes, and no generated-bindings regeneration. A later phase wires this
-//! engine behind FFI, replaces the C implementation on the Swift side with a differential/shadow
-//! comparison, and eventually deletes `Sources/RepoPromptC/src/Utils/path_search.c`.
+//! Phase 1 (60df20a5) was cargo-only: a self-contained behavioral port with no FFI wiring. This
+//! phase adds a DIFFERENTIAL-ONLY batch FFI entry (`wire.rs`'s `PathSearchFindService`, wired
+//! behind `rust/crates/ffi`'s `path_search_find_v1`) that exists solely to drive a byte-exact
+//! Rust-vs-Swift(-vs-C) differential test. It deliberately does NOT replace the C implementation
+//! on the Swift side, does NOT delete `path_search.c`, and is NOT the eventual production shape
+//! -- see `wire.rs`'s module doc for why (production cutover needs the P4 stateful scope-registry
+//! handle primitive, not a stateless whole-corpus-per-call FFI entry).
 //!
 //! # Byte-exact parity goal
 //!
@@ -31,13 +34,22 @@
 //! the module doc there, and `engine` for the two engine entry points
 //! (`PathSearchIndex::find`, `PathSearchIndex::projected_find`).
 
+mod contract;
 mod engine;
 mod glob;
 mod index;
+mod wire;
 
+pub use contract::{
+    PATH_SEARCH_CONTRACT_VERSION_V1, QUERY_STRIDE, RESULT_RANGE_STRIDE, STATS_STRIDE,
+    STRING_RANGE_STRIDE,
+};
 pub use engine::{PathSearchCancellation, PathSearchWorkStats, ProjectedSearchOutcome};
 pub use glob::{Mode, PatternParts, Token, decompose};
 pub use index::{PathSearchIndex, PathSearchMatch, ProjectedPathSearchMatch};
+pub use wire::{
+    PathSearchFindError, PathSearchFindRequestV1, PathSearchFindResponseV1, PathSearchFindService,
+};
 
 #[cfg(test)]
 mod tests;
