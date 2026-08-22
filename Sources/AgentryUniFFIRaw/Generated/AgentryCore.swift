@@ -529,6 +529,38 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
+    typealias FfiType = Double
+    typealias SwiftType = Double
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Double {
+        return try lift(readDouble(&buf))
+    }
+
+    public static func write(_ value: Double, into buf: inout [UInt8]) {
+        writeDouble(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -644,6 +676,8 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
     func inventoryComputeV1(request: CoreInventoryComputeRequestV1) throws  -> CoreInventoryComputeResultV1
 
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
+
+    func pathMatchScoreV1(request: CorePathMatchScoreRequestV1) throws  -> CorePathMatchScoreResultV1
 
     func rearmWake(identity: RuntimeIdentity) throws  -> Bool
 
@@ -845,6 +879,16 @@ open func openSubscription(scope: SubscriptionScope)throws  -> SubscriptionBoots
     uniffi_agentry_ffi_fn_method_coreruntime_open_subscription(
             self.uniffiCloneHandle(),
         FfiConverterTypeSubscriptionScope_lower(scope),uniffiCallStatus
+    )
+})
+}
+
+open func pathMatchScoreV1(request: CorePathMatchScoreRequestV1)throws  -> CorePathMatchScoreResultV1  {
+    return try  FfiConverterTypeCorePathMatchScoreResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_path_match_score_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCorePathMatchScoreRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -2814,6 +2858,163 @@ public func FfiConverterTypeCoreInventoryTableRangeV1_lower(_ value: CoreInvento
 }
 
 
+/**
+ * Compact-v1 batch request driving `PathMatchScoreService` (`agentry_runtime::pathmatch`). See
+ * `rust/crates/runtime/src/pathmatch/score.rs` for the pool-plus-ranges wire shape and the
+ * scoring-kernel scope-boundary documentation (what is/isn't ported vs. kept Swift-side).
+ */
+public struct CorePathMatchScoreRequestV1 {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let contractVersion: UInt16
+    public let threshold: Double
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let charCountWords: [UInt64]
+    public let cleanedByteLenWords: [UInt64]
+    public let queryIndices: [UInt64]
+    public let candidateWords: [UInt64]
+    public let candidateTailIndices: [UInt64]
+    public let selectedRootOrdinals: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, contractVersion: UInt16, threshold: Double, utf8Blob: Data, stringRangeWords: [UInt64], charCountWords: [UInt64], cleanedByteLenWords: [UInt64], queryIndices: [UInt64], candidateWords: [UInt64], candidateTailIndices: [UInt64], selectedRootOrdinals: [UInt64]) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.contractVersion = contractVersion
+        self.threshold = threshold
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.charCountWords = charCountWords
+        self.cleanedByteLenWords = cleanedByteLenWords
+        self.queryIndices = queryIndices
+        self.candidateWords = candidateWords
+        self.candidateTailIndices = candidateTailIndices
+        self.selectedRootOrdinals = selectedRootOrdinals
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CorePathMatchScoreRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePathMatchScoreRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePathMatchScoreRequestV1 {
+        return
+            try CorePathMatchScoreRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                threshold: FfiConverterDouble.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                charCountWords: FfiConverterSequenceUInt64.read(from: &buf),
+                cleanedByteLenWords: FfiConverterSequenceUInt64.read(from: &buf),
+                queryIndices: FfiConverterSequenceUInt64.read(from: &buf),
+                candidateWords: FfiConverterSequenceUInt64.read(from: &buf),
+                candidateTailIndices: FfiConverterSequenceUInt64.read(from: &buf),
+                selectedRootOrdinals: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CorePathMatchScoreRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterDouble.write(value.threshold, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.charCountWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.cleanedByteLenWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.queryIndices, into: &buf)
+        FfiConverterSequenceUInt64.write(value.candidateWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.candidateTailIndices, into: &buf)
+        FfiConverterSequenceUInt64.write(value.selectedRootOrdinals, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchScoreRequestV1_lift(_ buf: RustBuffer) throws -> CorePathMatchScoreRequestV1 {
+    return try FfiConverterTypeCorePathMatchScoreRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchScoreRequestV1_lower(_ value: CorePathMatchScoreRequestV1) -> RustBuffer {
+    return FfiConverterTypeCorePathMatchScoreRequestV1.lower(value)
+}
+
+
+public struct CorePathMatchScoreResultV1: Equatable, Hashable {
+    public let matchedOrdinals: [UInt64]
+    public let matchedScoresScaled: [Int64]
+    public let matchedScoresBits: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(matchedOrdinals: [UInt64], matchedScoresScaled: [Int64], matchedScoresBits: [UInt64]) {
+        self.matchedOrdinals = matchedOrdinals
+        self.matchedScoresScaled = matchedScoresScaled
+        self.matchedScoresBits = matchedScoresBits
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CorePathMatchScoreResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePathMatchScoreResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePathMatchScoreResultV1 {
+        return
+            try CorePathMatchScoreResultV1(
+                matchedOrdinals: FfiConverterSequenceUInt64.read(from: &buf),
+                matchedScoresScaled: FfiConverterSequenceInt64.read(from: &buf),
+                matchedScoresBits: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CorePathMatchScoreResultV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceUInt64.write(value.matchedOrdinals, into: &buf)
+        FfiConverterSequenceInt64.write(value.matchedScoresScaled, into: &buf)
+        FfiConverterSequenceUInt64.write(value.matchedScoresBits, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchScoreResultV1_lift(_ buf: RustBuffer) throws -> CorePathMatchScoreResultV1 {
+    return try FfiConverterTypeCorePathMatchScoreResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchScoreResultV1_lower(_ value: CorePathMatchScoreResultV1) -> RustBuffer {
+    return FfiConverterTypeCorePathMatchScoreResultV1.lower(value)
+}
+
+
 public struct DrainBatch: Equatable, Hashable {
     public let events: [RuntimeEvent]
     public let hasMore: Bool
@@ -4487,6 +4688,9 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case InventoryCancelled
     case InventoryInvariant
+    case PathMatchInvalidRequest(message: String
+    )
+    case PathMatchCancelled
 
 
 
@@ -4555,6 +4759,10 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             )
         case 34: return .InventoryCancelled
         case 35: return .InventoryInvariant
+        case 36: return .PathMatchInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 37: return .PathMatchCancelled
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4707,6 +4915,15 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case .InventoryInvariant:
             writeInt(&buf, Int32(35))
+
+
+        case let .PathMatchInvalidRequest(message):
+            writeInt(&buf, Int32(36))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case .PathMatchCancelled:
+            writeInt(&buf, Int32(37))
 
         }
     }
@@ -5756,6 +5973,31 @@ fileprivate struct FfiConverterSequenceUInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceInt64: FfiConverterRustBuffer {
+    typealias SwiftType = [Int64]
+
+    public static func write(_ value: [Int64], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterInt64.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Int64] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Int64]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterInt64.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -6130,6 +6372,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_open_subscription() != 16674) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_path_match_score_v1() != 427) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_rearm_wake() != 46704) {

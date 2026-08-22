@@ -59,6 +59,8 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case inventoryInvalidRequest(String)
     case inventoryCancelled
     case inventoryInvariant
+    case pathMatchInvalidRequest(String)
+    case pathMatchCancelled
     case unexpected(String)
 }
 
@@ -105,6 +107,11 @@ protocol CoreRuntimeTransport: Sendable {
         cancellation: any CoreLeafCancellationHandle,
         request: CoreCompactInventoryRequestV1
     ) throws -> CoreCompactInventoryResultV1
+    func pathMatchScoreBatchV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCompactPathMatchRequestV1
+    ) throws -> CoreCompactPathMatchResultV1
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -663,6 +670,40 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    func pathMatchScoreBatchV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCompactPathMatchRequestV1
+    ) throws -> CoreCompactPathMatchResultV1 {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        let value: AgentryUniFFIRaw.CorePathMatchScoreResultV1
+        do {
+            value = try runtime.pathMatchScoreV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                contractVersion: request.contractVersion,
+                threshold: request.threshold,
+                utf8Blob: request.utf8Blob,
+                stringRangeWords: request.stringRangeWords,
+                charCountWords: request.charCountWords,
+                cleanedByteLenWords: request.cleanedByteLenWords,
+                queryIndices: request.queryIndices,
+                candidateWords: request.candidateWords,
+                candidateTailIndices: request.candidateTailIndices,
+                selectedRootOrdinals: request.selectedRootOrdinals
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+        return CoreCompactPathMatchResultV1(
+            matchedOrdinals: value.matchedOrdinals,
+            matchedScoresScaled: value.matchedScoresScaled,
+            matchedScoresBits: value.matchedScoresBits
+        )
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -924,6 +965,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .InventoryInvalidRequest(message): .inventoryInvalidRequest(message)
         case .InventoryCancelled: .inventoryCancelled
         case .InventoryInvariant: .inventoryInvariant
+        case let .PathMatchInvalidRequest(message): .pathMatchInvalidRequest(message)
+        case .PathMatchCancelled: .pathMatchCancelled
         case .UnmatchedBrackets: .unmatchedBrackets
         case .UnmatchedParentheses: .unmatchedParentheses
         case .InvalidQuantifier: .invalidQuantifier
@@ -1174,7 +1217,9 @@ public actor AgentryCoreBridge {
         guard let error = error as? CoreTransportError else {
             return CoreComputeError.transportFailure(String(describing: error))
         }
-        if error == .codeMapCancelled || error == .applyEditsCancelled || error == .inventoryCancelled {
+        if error == .codeMapCancelled || error == .applyEditsCancelled || error == .inventoryCancelled
+            || error == .pathMatchCancelled
+        {
             return CancellationError()
         }
         let mapped: CoreComputeError = switch error {
@@ -1183,6 +1228,8 @@ public actor AgentryCoreBridge {
         case let .applyEditsInvalidParams(message):
             .invalidRequest(message)
         case let .inventoryInvalidRequest(message):
+            .invalidRequest(message)
+        case let .pathMatchInvalidRequest(message):
             .invalidRequest(message)
         case .runtimePoisoned: .runtimePoisoned
         case .runtimeStopped: .runtimeStopped
@@ -1514,7 +1561,8 @@ public actor AgentryCoreBridge {
              .depthLimitExceeded, .heapLimitExceeded, .jitUnavailable, .searchCancelled,
              .searchInvariant, .codeMapInvalidRequest, .codeMapServiceUnavailable, .codeMapCancelled,
              .codeMapInvariant, .applyEditsInvalidParams, .applyEditsCancelled, .applyEditsInvariant,
-             .inventoryInvalidRequest, .inventoryCancelled, .inventoryInvariant:
+             .inventoryInvalidRequest, .inventoryCancelled, .inventoryInvariant,
+             .pathMatchInvalidRequest, .pathMatchCancelled:
             return .invalidArgument
         case let .unexpected(message): return .transportFailure(message)
         }

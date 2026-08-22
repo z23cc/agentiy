@@ -76,6 +76,10 @@ pub enum CoreError {
     InventoryCancelled,
     #[error("inventory result violated an internal invariant")]
     InventoryInvariant,
+    #[error("{message}")]
+    PathMatchInvalidRequest { message: String },
+    #[error("path-match score computation was cancelled")]
+    PathMatchCancelled,
 }
 
 impl From<IdentifierError> for CoreError {
@@ -194,6 +198,17 @@ impl From<agentry_runtime::inventory::InventoryComputeError> for CoreError {
             agentry_runtime::inventory::InventoryComputeError::Cancelled => {
                 Self::InventoryCancelled
             }
+        }
+    }
+}
+
+impl From<agentry_runtime::pathmatch::PathMatchScoreError> for CoreError {
+    fn from(value: agentry_runtime::pathmatch::PathMatchScoreError) -> Self {
+        match value {
+            agentry_runtime::pathmatch::PathMatchScoreError::InvalidRequest(message) => {
+                Self::PathMatchInvalidRequest { message }
+            }
+            agentry_runtime::pathmatch::PathMatchScoreError::Cancelled => Self::PathMatchCancelled,
         }
     }
 }

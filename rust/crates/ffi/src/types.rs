@@ -1271,6 +1271,65 @@ pub struct CoreInventoryComputeResultV1 {
     pub merged_entries: CoreInventoryTableRangeV1,
 }
 
+// ---- Path match (P3-3 slice 1) -------------------------------------------------------------
+
+/// Compact-v1 batch request driving `PathMatchScoreService` (`agentry_runtime::pathmatch`). See
+/// `rust/crates/runtime/src/pathmatch/score.rs` for the pool-plus-ranges wire shape and the
+/// scoring-kernel scope-boundary documentation (what is/isn't ported vs. kept Swift-side).
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CorePathMatchScoreRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
+    pub contract_version: u16,
+    pub threshold: f64,
+
+    pub utf8_blob: Vec<u8>,
+    pub string_range_words: Vec<u64>,
+    pub char_count_words: Vec<u64>,
+    pub cleaned_byte_len_words: Vec<u64>,
+
+    pub query_indices: Vec<u64>,
+
+    pub candidate_words: Vec<u64>,
+    pub candidate_tail_indices: Vec<u64>,
+
+    pub selected_root_ordinals: Vec<u64>,
+}
+
+impl CorePathMatchScoreRequestV1 {
+    pub(crate) fn into_runtime_request(self) -> runtime::pathmatch::PathMatchScoreRequestV1 {
+        runtime::pathmatch::PathMatchScoreRequestV1 {
+            contract_version: self.contract_version,
+            threshold: self.threshold,
+            utf8_blob: self.utf8_blob,
+            string_range_words: self.string_range_words,
+            char_count_words: self.char_count_words,
+            cleaned_byte_len_words: self.cleaned_byte_len_words,
+            query_indices: self.query_indices,
+            candidate_words: self.candidate_words,
+            candidate_tail_indices: self.candidate_tail_indices,
+            selected_root_ordinals: self.selected_root_ordinals,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CorePathMatchScoreResultV1 {
+    pub matched_ordinals: Vec<u64>,
+    pub matched_scores_scaled: Vec<i64>,
+    pub matched_scores_bits: Vec<u64>,
+}
+
+impl From<runtime::pathmatch::PathMatchScoreResultV1> for CorePathMatchScoreResultV1 {
+    fn from(value: runtime::pathmatch::PathMatchScoreResultV1) -> Self {
+        Self {
+            matched_ordinals: value.matched_ordinals,
+            matched_scores_scaled: value.matched_scores_scaled,
+            matched_scores_bits: value.matched_scores_bits,
+        }
+    }
+}
+
 impl From<runtime::inventory::InventoryComputeResultV1> for CoreInventoryComputeResultV1 {
     fn from(value: runtime::inventory::InventoryComputeResultV1) -> Self {
         Self {

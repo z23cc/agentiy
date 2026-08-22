@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "7f312359f9ad7608e66b41f3616d927fb3477f419f5f29a37625abb5304a482d",
+  "buildFingerprint": "cb334666e6e757c3a66ddab62ee26014589533b9c9aeffbb40eb89cd2bb34aed",
   "bindingChecksum": "9b8d569102c72716aeabd304d20f11e3bfdfe9566eb3d2235ef6eec0e2c19700",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:569f5968b70b4d244aa29cdbe3d7901a8efb09c03d22b4d36b85b6ca20fdcd12",
+    "rustSourceRevision": "tree:18cfceba5de164cc05ed826595271d677dd4dac56fc594bfaacaf5f9b40c0f35",
     "cargoLockDigest": "600a4863620e2b0cca5777cfea9901b94511f08349c53d542cfeb3fd100f0764",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "56ea198698f4b1d9495fffdb4de5fdb08534e606a078ecc10d13f5a715704c4b",
+  "archiveSha256": "2e43ffa0732737c78ec8e12441950c02992bc6be5607452d1b0115b2edea9015",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -44,9 +44,9 @@
     "CoreRuntime.beginShutdown(RuntimeIdentity) throws -> ShutdownReceipt"
   ],
   "artifactSha256": {
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "d3b55e7f5ee71b76fe7cd3fbaf7c7825d7ec89e2cc77c0c386485da2432bab59",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "99f1b1df5cb1c9507cacd5b902d9b1399399171c615d9e69d7d9f355152a5b56",
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "eece7ee8910a56778b0104736b418cb0ab940e20544f51d1802dee31116c065e",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "a82e954bb9c8de6029158f93c379ed479c6bb87168b2b718a1cd47fa92a95949",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "541545257095ef707177d829f857c856e309ded74df71082bb63c80026ea6ce1",
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "377c65db35922180a7290a42ab91964a1508332e734149fdb4de00d31262970e",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"
   }

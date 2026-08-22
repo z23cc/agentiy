@@ -9,6 +9,7 @@ mod identity;
 pub mod inventory;
 mod lifecycle;
 mod operation;
+pub mod pathmatch;
 mod registry;
 mod search;
 mod subscription;

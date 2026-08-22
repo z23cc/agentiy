@@ -1960,8 +1960,11 @@ enum PathMatcher {
 
     // MARK: - Helper Functions
 
+    /// Visibility note (P3-3 slice 1): relaxed from `private` for the same reason as
+    /// `computeWeightedMatchScorePrecleaned` above -- the differential test needs to clean query
+    /// components exactly like production does upstream of that call.
     @inline(__always)
-    private static func cleaned(_ str: String) -> String {
+    static func cleaned(_ str: String) -> String {
         // Quick ASCII probe: if all bytes < 0x80, skip folding entirely
         var isASCII = true
         for b in str.utf8 {
@@ -2287,7 +2290,12 @@ enum PathMatcher {
     }
 
     /// Variant that expects user components already cleaned (reduces per-candidate work).
-    private static func computeWeightedMatchScorePrecleaned(
+    ///
+    /// Visibility note (P3-3 slice 1): this is intentionally NOT `private` so
+    /// `PathMatchRustSwiftDifferentialTests` (`@testable import RepoPromptApp`) can drive the
+    /// exact same scoring kernel the Rust port mirrors, rather than a re-implementation. All
+    /// existing call sites are in this file, so this is an additive-only visibility relaxation.
+    static func computeWeightedMatchScorePrecleaned(
         item: AnyItem,
         userComponentsClean: [String],
         threshold: Double
