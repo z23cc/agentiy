@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "step": "TD-4 -- slice-2 economics gate (GO/NO-GO, ADR-0008) for design docs/designs/textdecode-policy-v2-2026-08-22.md section 11 TD-4 / section 10 X-3",
+  "designDoc": "docs/designs/textdecode-policy-v2-2026-08-22.md",
+  "resultsMarkdown": "rust/benchmarks/results/v1/td4-textdecode-slice2-gate-v1.md",
+  "harnesses": {
+    "cargoSide": {
+      "path": "rust/crates/runtime/src/textdecode/td4_benchmark_probe.rs",
+      "envGate": "RP_RUN_TEXTDECODE_CUTOVER_BENCHMARK=1",
+      "reproduction": "cd rust && RP_RUN_TEXTDECODE_CUTOVER_BENCHMARK=1 cargo test -p agentry-runtime --release textdecode::td4_benchmark_probe -- --nocapture",
+      "measures": "pure textdecode() throughput, no FFI, mixed 3-category corpus (utf8-dominant/bom/legacy-shift-jis), file-count scale points 100/1k/10k/100k"
+    },
+    "swiftSide": {
+      "path": "Tests/RepoPromptTests/WorkspaceContext/TextDecodeCutoverBenchmarkTests.swift",
+      "envGate": "RP_RUN_TEXTDECODE_CUTOVER_BENCHMARK=1",
+      "reproduction": "RP_RUN_TEXTDECODE_CUTOVER_BENCHMARK=1 make dev-test FILTER=TextDecodeCutoverBenchmarkTests",
+      "measures": "decodeWorkspaceAutomaticV1 (Swift reference) vs RustApplyEditsComputer's .raw seam (differential-shaped candidate: decode + rewrite-to-empty apply-edits op + envelope + one batched FFI round trip per scale point), same corpus/scale as cargo side, plus a 30-sample unbatched per-call latency probe (evidence only, unscored)"
+    }
+  },
+  "seamCaveat": "No standalone Rust decode FFI export exists (design section 6.1: textdecode() is embedded inside the codemap and apply-edits FFI handlers only). The Swift-side candidate number is measured through RustApplyEditsComputer's production .raw source-kind path -- a real, shipped FFI seam, but one that does strictly more work than decode alone (full apply-edits diff/chunk/envelope construction). This is the 'differential-shaped, not production-shape' fallback the task pre-authorizes; it is expected to OVERSTATE the cost of TD-5's actual candidate (a lean content-read path with no apply-edits envelope), by an amount not quantified in this run.",
+  "profileCaveat": "All Swift-side numbers in this run are DEBUG profile (unoptimized) on both sides of the FFI boundary -- the coordinated daemon's 'test' operation defaults to debug and a release rebuild (~15 min per rust/benchmarks/slo-v1.json's performanceIterationPolicy rationale) was not attempted this session, consistent with that same policy's instruction to lead with cargo-side evidence and with this session's explicit machine-light/low-interference constraint (a prior attempt at this exact benchmark at 5 measured iterations coincided with the coordinated daemon's control socket becoming briefly unresponsive; iteration count was reduced to 3 and not raised again). This mirrors the exact precedent already recorded in slo-v1.json's inventoryScopeV1.swiftBaseline note (P4-1's Swift baseline was also captured debug-profile with release re-capture named as a precondition for the P4-6b cutover gate specifically, not for every prior gate).",
+  "measured": {
+    "cargoOnlyDecodePureFunctionReleaseProfile": {
+      "profile": "release",
+      "note": "textdecode() alone, no FFI -- the cleanest number in this run",
+      "perFileMicrosecondsBySize": { "100": 2.308, "1000": 2.312, "10000": 2.330, "100000": 2.382 },
+      "characterization": "flat across four orders of magnitude in file count -- pure O(n) per-call cost, no batching artifact"
+    },
+    "cargoOnlyDecodePureFunctionDebugProfile": {
+      "profile": "debug",
+      "note": "same function, debug profile -- isolates the decode-only debug/release ratio for decomposing the Swift-harness FFI+envelope number below",
+      "perFileMicrosecondsBySize": { "100": 33.081, "1000": 22.422, "10000": 22.437, "100000": 22.617 },
+      "debugToReleaseRatio": "approximately 9.5-9.8x at N>=1000 (100-file row has cold-cache/warmup noise)"
+    },
+    "swiftDecodeOnlyDebugProfile": {
+      "function": "decodeWorkspaceAutomaticV1 (today's live ladder-1 entry point)",
+      "profile": "debug",
+      "perFileMicrosecondsBySize": { "100": 15.964, "1000": 15.190, "10000": 15.109, "100000": 15.051 },
+      "characterization": "flat across scale, same shape as the Rust cargo numbers"
+    },
+    "rustCandidateBatchedFfiPlusApplyEditsEnvelopeDebugProfile": {
+      "seam": "RustApplyEditsComputer .raw path, one batched FFI call per scale point carrying N subjects",
+      "profile": "debug (both Rust archive and Swift build)",
+      "perFileMicrosecondsBySize": { "100": 168.335, "1000": 168.899, "10000": 171.572, "100000": 173.705 },
+      "p50RatioVsSwiftDecodeOnly": { "100": 10.545, "1000": 11.119, "10000": 11.356, "100000": 11.541 },
+      "p99RatioVsSwiftDecodeOnly": { "100": 10.192, "1000": 10.980, "10000": 11.348, "100000": 11.428 },
+      "characterization": "flat across scale (no cliff at 10k/100k) -- a fixed per-item tax, NOT a whole-batch-round-trip pathology like P3-2c's inventory finding. Decomposed against the debug-profile cargo-only decode number: approximately 146-151us/file of the ~168-174us total is NOT decode (envelope construction: diff/chunk building for the rewrite-to-empty operation, wire marshaling, FFI crossing amortized per-item within the batch)."
+    },
+    "rustCandidateUnbatchedPerCallLatencyDebugProfile": {
+      "n": 30,
+      "scoring": "UNSCORED evidence only -- no TD-1 floor exists for the absolute-latency-floor side of X-3 (TD-1 landed deletion-only, 3cc2d098; see design section 11 TD-1 vs what actually landed)",
+      "p50Microseconds": 198.0,
+      "p99Microseconds": 398.8,
+      "note": "higher than the batched per-file number (168-174us), as expected: each of the 30 samples pays its own FFI round trip independently rather than amortizing one crossing across many subjects -- directionally confirms batching is worth doing for TD-5, consistent with the design's own assumption (section 11 TD-5: 'batched where the existing chunked-read loop already groups work')."
+    }
+  },
+  "x3Scoring": {
+    "relativeBoundTenKHundredK": {
+      "criterion": "batched decode throughput within 1.10x of today's Swift chain at 10k/100k (design section 10 X-3)",
+      "asMeasuredThisSession": "NOT MET -- 11.3-11.5x, not 1.10x -- BUT this number is confounded by (a) debug profile on the Rust side and (b) the differential-shaped seam doing substantially more work than decode alone (full apply-edits envelope). Decomposed decode-only comparison (debug Rust textdecode alone, 22.4-22.6us vs Swift debug decode-alone, 15.05-15.11us) is only a 1.48-1.49x ratio at the SAME (debug) profile -- much closer to, though still over, the bound. The release-profile cargo-only decode number (2.3us) vs Swift's (unmeasured) release decode number would very likely close this specific sub-comparison given the 9.5-9.8x debug/release ratio measured directly above, but nothing in this run establishes what fraction of the ~146-151us envelope tax would also shrink under release optimization, so it is not asserted here.",
+      "verdict": "gate not evidenced as met or missed at production (release) profile this session -- inconclusive by design, not a negative finding"
+    },
+    "absoluteBoundHundredOneK": {
+      "criterion": "absolute per-file latency at 100/1k under a pre-registered TD-1 floor (design section 10 X-3)",
+      "asMeasuredThisSession": "UNSCORED -- no floor was ever registered (TD-1 landed deletion-only, 3cc2d098, per docs/designs/textdecode-policy-v2-2026-08-22.md section 11's TD-1 entry vs the actual landed commit). Registering a floor now, after seeing these numbers, would invert ADR-0008's explicit ordering requirement ('register... before looking at the Rust candidate's results'). Measured absolute numbers are recorded above as evidence only."
+    }
+  },
+  "verdict": {
+    "outcome": "DEFER",
+    "decisionNote": "Per ADR-0008 (established with P3-2c), a DEFER verdict identifying the specific structural/measurement gap and naming a concrete retry precondition is a legitimate, gate-closing outcome -- not a design failure and not evidence the port itself is wrong. This DEFER is NOT a claim that the Rust candidate is too slow; the cleanest available number (release-profile decode-only compute) is favorable (~6.5x faster than Swift's whole debug decode chain). It reflects that no release-profile, apples-to-apples-enough measurement was completed this session to responsibly score X-3's relative bound.",
+    "namedPreconditionsToRetry": [
+      "Re-run TextDecodeCutoverBenchmarkTests under release profile for both the Rust FFI archive and the Swift test binary (this session deliberately did not attempt this: ~15-minute cost per slo-v1.json's own policy rationale, plus an observed coordinated-daemon socket-responsiveness issue at 5 measured iterations against a shared, actively-building checkout -- see the machine-light note above).",
+      "OR build a dedicated decode-only FFI entry point (no apply-edits envelope) so the candidate side stops carrying diff/chunk-construction work irrelevant to TD-5's real content-read candidate, removing the differential-shaped confound entirely rather than needing to estimate around it.",
+      "TD-1's SLO-floor registration for X-3's absolute-latency-floor side (100/1k) was never completed and should land before TD-4 is re-run, per ADR-0008's ordering requirement -- registering it now, informed by this session's numbers, would be exactly the SLO-shopping ADR-0008 exists to prevent."
+    ],
+    "trackingParallel": "Mirrors design section 10 open question 1's existing pattern for a slice-2 DEFER: slice 1 (TD-3, already landed) is unaffected; the general FileSystemService content-read path (TD-5) remains an explicitly named, charter-visible follow-up, not a silent 'done'."
+  }
+}

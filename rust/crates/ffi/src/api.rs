@@ -1123,6 +1123,29 @@ pub fn core_panic_forensics() -> Vec<String> {
         .collect()
 }
 
+/// Module-level (not tied to any `CoreRuntime` instance) drain of the
+/// process-wide WARN/ERROR diagnostics ring buffer -- see
+/// `agentry_runtime::observability` for the full rationale (rewrite charter
+/// §11.7's tracing/os_log bridge, deliberately callback-free and not built
+/// on the `tracing` crate). Mirrors `core_panic_forensics` in every
+/// structural respect: a free function so it is readable with no live
+/// `CoreRuntime` object, and deliberately NOT routed through `PanicGuard`,
+/// since diagnostics recorded on the way to a poisoning are exactly the
+/// ones a poisoned runtime must still be able to answer.
+///
+/// Destructive: each call drains (removes) the buffered events, so the
+/// Swift caller decides its own drain cadence and never sees the same event
+/// twice -- charter §9.5's pull-based, no-payload-callback drain shape,
+/// applied to this smaller diagnostics ring rather than the main
+/// subscription event queue.
+#[uniffi::export]
+pub fn core_diagnostics_drain() -> Vec<String> {
+    runtime::drain_diagnostics()
+        .iter()
+        .map(runtime::DiagnosticRecord::describe)
+        .collect()
+}
+
 /// Maps a P4-4 handle-based read's business-outcome invalidation into the thrown `CoreError`
 /// channel (contract doc §4 layer 3): the contract's own pseudocode declares these reads
 /// `throws`, and UniFFI's typed-error mechanism is exactly the "business outcome, not a panic"

@@ -9,6 +9,7 @@ mod identity;
 pub mod inventory;
 pub mod inventory_scope;
 mod lifecycle;
+mod observability;
 mod operation;
 mod panic_forensics;
 pub mod pathmatch;
@@ -28,6 +29,7 @@ pub use operation::{
     AdmissionOutcome, AdmissionRequest, CancelOutcome, IdentifierError, OperationDiagnostics,
     OperationId, OperationSnapshot, OperationState, RequestFingerprint, ScopeId, TerminalOutcome,
 };
+pub use observability::{DiagnosticRecord, DiagnosticSeverity, drain_diagnostics, record_diagnostic};
 pub use panic_forensics::{PanicRecord, install_panic_hook, recent_panics};
 pub use registry::{OperationRegistry, RegistryError};
 pub use search::{

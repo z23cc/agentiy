@@ -11,6 +11,10 @@
 mod contract;
 mod decode;
 #[cfg(test)]
+mod r11_gate_probe;
+#[cfg(test)]
+mod td4_benchmark_probe;
+#[cfg(test)]
 mod tests;
 
 pub use contract::{

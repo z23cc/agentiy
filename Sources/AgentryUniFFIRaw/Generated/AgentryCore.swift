@@ -9193,6 +9193,30 @@ fileprivate struct FfiConverterSequenceOptionTypeCorePathMatchResolveLocationV1:
     }
 }
 /**
+ * Module-level (not tied to any `CoreRuntime` instance) drain of the
+ * process-wide WARN/ERROR diagnostics ring buffer -- see
+ * `agentry_runtime::observability` for the full rationale (rewrite charter
+ * §11.7's tracing/os_log bridge, deliberately callback-free and not built
+ * on the `tracing` crate). Mirrors `core_panic_forensics` in every
+ * structural respect: a free function so it is readable with no live
+ * `CoreRuntime` object, and deliberately NOT routed through `PanicGuard`,
+ * since diagnostics recorded on the way to a poisoning are exactly the
+ * ones a poisoned runtime must still be able to answer.
+ *
+ * Destructive: each call drains (removes) the buffered events, so the
+ * Swift caller decides its own drain cadence and never sees the same event
+ * twice -- charter §9.5's pull-based, no-payload-callback drain shape,
+ * applied to this smaller diagnostics ring rather than the main
+ * subscription event queue.
+ */
+public func coreDiagnosticsDrain() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_func_core_diagnostics_drain(uniffiCallStatus
+    )
+})
+}
+/**
  * Module-level (not tied to any `CoreRuntime` instance) panic forensics for
  * the last (up to a few) panics recorded anywhere in this process, most-
  * recent last. This is the primary forensics entry point: `CoreRuntime::new`
@@ -9230,6 +9254,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_agentry_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_func_core_diagnostics_drain() != 65159) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_func_core_panic_forensics() != 20183) {
         return InitializationResult.apiChecksumMismatch

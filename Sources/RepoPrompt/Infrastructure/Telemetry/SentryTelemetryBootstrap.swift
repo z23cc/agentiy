@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Foundation
 
 #if AGENTRY_SENTRY_ENABLED
@@ -37,7 +38,7 @@ enum SentryTelemetryBootstrap {
                     options.environment = "production"
                     options.debug = false
                 #endif
-                options.tracesSampleRate = performanceTracingEnabled ? 0.05 : 0
+                options.tracesSampleRate = NSNumber(value: performanceTracingEnabled ? 0.05 : 0)
                 // Do not let SDK defaults or future configuration attach distribution metadata.
                 options.dist = nil
                 options.add(inAppInclude: "RepoPrompt")
@@ -67,6 +68,9 @@ enum SentryTelemetryBootstrap {
                 }
             }
             started = true
+            CorePanicForensicsBridge.setObserver { event in
+                reportRustPanic(trigger: event.trigger, panicRecords: event.panicRecords)
+            }
         #endif
     }
 
@@ -101,6 +105,7 @@ enum SentryTelemetryBootstrap {
         #if AGENTRY_SENTRY_ENABLED
             performanceTracingEnabled = false
             guard started else { return }
+            CorePanicForensicsBridge.setObserver(nil)
             SentrySDK.close()
             started = false
             // Sentry Cocoa does not expose a stable public API in 9.17.1 for selectively
@@ -170,6 +175,55 @@ enum SentryTelemetryBootstrap {
             }
         #endif
     }
+
+    /// Reports a Rust core panic -- already surfaced to the original caller
+    /// as a mapped `.internalPanic` / `.runtimePoisoned` error -- as a single
+    /// Sentry event, attaching the Rust panic ring buffer (message, source
+    /// location, backtrace) so the failure stays diagnosable in production
+    /// without a native crash report. This is the production counterpart to
+    /// the DEBUG-only `print` in `AgentryCoreBridge.invalidate()`: same
+    /// trigger, same forensics, routed to Sentry instead of stdout. Single
+    /// channel -- no sentry-rust SDK, no second event pipeline (rewrite
+    /// charter §11.7). Goes through the same `beforeSend`/`scrub` pipeline as
+    /// every other event, so it respects the existing telemetry enable/
+    /// disable switch and path/secret redaction.
+    static func reportRustPanic(trigger: String, panicRecords: [String]) {
+        #if AGENTRY_SENTRY_ENABLED
+            guard !panicRecords.isEmpty else { return }
+            Task { @MainActor in
+                guard started else { return }
+                let event = Event(level: .fatal)
+                let exception = Exception(
+                    value: panicRecords.last.map(truncatedPanicRecord),
+                    type: "RustCorePanic"
+                )
+                let mechanism = Mechanism(type: "rust_core_panic")
+                mechanism.handled = NSNumber(value: false)
+                exception.mechanism = mechanism
+                event.exceptions = [exception]
+                event.extra = [
+                    "rust_panic_trigger": trigger,
+                    "rust_panic_records": panicRecords.map(truncatedPanicRecord)
+                ]
+                SentrySDK.capture(event: event)
+            }
+        #endif
+    }
+
+    #if AGENTRY_SENTRY_ENABLED
+        /// Bounds a single ring-buffer record (message + forced-capture
+        /// backtrace, potentially several KB) before it goes into a Sentry
+        /// event -- up to four records worst case (`panic_forensics.rs`'s
+        /// `CAPACITY`), and a Sentry event payload is not meant to carry raw
+        /// multi-KB backtraces per entry.
+        private static let maxPanicRecordLength = 4000
+
+        private static func truncatedPanicRecord(_ record: String) -> String {
+            guard record.count > maxPanicRecordLength else { return record }
+            let prefix = record.prefix(maxPanicRecordLength)
+            return "\(prefix)… [truncated \(record.count - maxPanicRecordLength) chars]"
+        }
+    #endif
 
     static func increment(_ metric: Metric, value: Int = 1, attributes: @autoclosure () -> [Attribute] = []) {
         // Manual metrics deferred pending a less fragile telemetry design.

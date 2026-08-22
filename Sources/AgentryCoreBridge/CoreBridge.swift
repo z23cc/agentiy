@@ -1542,6 +1542,17 @@ public actor AgentryCoreBridge {
         AgentryUniFFIRaw.corePanicForensics()
     }
 
+    /// Process-wide WARN/ERROR diagnostics drain, callable with no live
+    /// bridge/transport instance -- same shape as `corePanicForensics()`
+    /// above, backing `agentry_runtime::observability` (rewrite charter
+    /// §11.7's tracing/os_log bridge). Destructive: each call removes the
+    /// drained events, so callers should own their own drain cadence (e.g.
+    /// a periodic app-observability tick) rather than calling this
+    /// speculatively from multiple places.
+    public static func coreDiagnosticsDrain() -> [String] {
+        AgentryUniFFIRaw.coreDiagnosticsDrain()
+    }
+
     init(
         transport: any CoreRuntimeTransport,
         expectedIdentity: CoreExpectedIdentity = .generated,
@@ -1779,10 +1790,11 @@ public actor AgentryCoreBridge {
         }
         switch mapped {
         case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
+            let panicForensics = panicForensicsRecords(for: error)
             noteInvalidationTrigger(
-                "compute transport error: \(String(describing: error))\(panicForensicsSuffix(for: error))"
+                "compute transport error: \(String(describing: error))\(panicForensicsSuffix(panicForensics))"
             )
-            invalidate()
+            invalidate(panicForensics: panicForensics)
         default:
             break
         }
@@ -1861,10 +1873,11 @@ public actor AgentryCoreBridge {
         }
         switch mapped {
         case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
+            let panicForensics = panicForensicsRecords(for: error)
             noteInvalidationTrigger(
-                "search transport error: \(String(describing: error))\(panicForensicsSuffix(for: error))"
+                "search transport error: \(String(describing: error))\(panicForensicsSuffix(panicForensics))"
             )
-            invalidate()
+            invalidate(panicForensics: panicForensics)
         default:
             break
         }
@@ -2075,10 +2088,11 @@ public actor AgentryCoreBridge {
         }
         switch error {
         case .internalPanic, .runtimePoisoned:
+            let panicForensics = panicForensicsRecords(for: error)
             noteInvalidationTrigger(
-                "bridge transport error: \(String(describing: error))\(panicForensicsSuffix(for: error))"
+                "bridge transport error: \(String(describing: error))\(panicForensicsSuffix(panicForensics))"
             )
-            invalidate()
+            invalidate(panicForensics: panicForensics)
         default:
             break
         }
@@ -2138,21 +2152,30 @@ public actor AgentryCoreBridge {
         firstInvalidationTrigger = description
     }
 
-    /// Appends the Rust-side panic ring buffer to a trigger description when
-    /// `error` is exactly the panic-driven poisoning case -- `internalPanic`
+    /// Rust panic ring-buffer records relevant to `error`, or empty when
+    /// `error` is not the panic-driven poisoning case -- `internalPanic`
     /// (first call after the unwind) or `runtimePoisoned` (every call after
     /// that). Any other transport error is unrelated to a panic, so forensics
     /// would be noise there. Fetches through `transport.panicForensics()`
     /// directly, not through any guarded path, since it must keep working
     /// exactly when the runtime it is explaining has just been poisoned.
-    private func panicForensicsSuffix(for error: CoreTransportError) -> String {
-        guard error == .internalPanic || error == .runtimePoisoned else { return "" }
-        let forensics = transport.panicForensics()
-        guard !forensics.isEmpty else { return "" }
-        return " panicForensics=\(forensics)"
+    private func panicForensicsRecords(for error: CoreTransportError) -> [String] {
+        guard error == .internalPanic || error == .runtimePoisoned else { return [] }
+        return transport.panicForensics()
     }
 
-    private func invalidate() {
+    private func panicForensicsSuffix(_ records: [String]) -> String {
+        guard !records.isEmpty else { return "" }
+        return " panicForensics=\(records)"
+    }
+
+    /// - Parameter panicForensics: Non-empty only when this invalidation was
+    ///   caused by an `.internalPanic` / `.runtimePoisoned` transport error --
+    ///   see the three call sites above. Drives the single production
+    ///   diagnostics channel (`CorePanicForensicsBridge`); ordinary
+    ///   invalidations (handshake mismatch, stale identity, shutdown) never
+    ///   populate it and never notify.
+    private func invalidate(panicForensics: [String] = []) {
         guard lifecycle != .invalidated, lifecycle != .closed else { return }
         #if DEBUG
         let trigger = firstInvalidationTrigger ?? "unrecorded (see stack)"
@@ -2161,6 +2184,14 @@ public actor AgentryCoreBridge {
             print("[AgentryCoreBridge]   \(frame)")
         }
         #endif
+        if !panicForensics.isEmpty {
+            CorePanicForensicsBridge.notify(
+                CorePanicForensicsEvent(
+                    trigger: firstInvalidationTrigger ?? "unrecorded (see stack)",
+                    panicRecords: panicForensics
+                )
+            )
+        }
         lifecycle = .invalidated
         identity = nil
         finishResources(error: CoreBridgeError.runtimeInvalidated)

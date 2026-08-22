@@ -190,6 +190,40 @@
       }
     }
   },
+  "textdecodeV1": {
+    "status": "TD-4 slice-2 economics gate complete: verdict DEFER (not a negative-economics finding -- release-profile decode-only compute is favorable; no release-profile apples-to-apples FFI-seam measurement was completed this session). See textdecodeResults below and rust/benchmarks/results/v1/td4-textdecode-slice2-gate-v1.md.",
+    "designDoc": "docs/designs/textdecode-policy-v2-2026-08-22.md",
+    "contractDoc": "not yet landed -- TD-1's contract-doc/fixture-corpus/SLO-floor-registration step did not land in full (docs/designs/textdecode-policy-v2-2026-08-22.md section 11 TD-1 vs the actual landed commit 3cc2d098, deletion-only)",
+    "registeredBeforeCandidateExists": false,
+    "registrationOrderingCaveat": "ADR-0008 requires the SLO floor registered before the candidate's numbers are seen. TD-1 never registered X-3's absolute-latency-floor side (100/1k). This entry is being added AFTER TD-4's measurement run for record-keeping only -- the absolute-latency numbers in textdecodeResults are recorded as unscored evidence, not graded against a floor, specifically to avoid inverting that ordering.",
+    "x3SliceTwoEconomicsGate": {
+      "description": "batched decode throughput vs today's Swift chain at 100/1k/10k/100k-file scale (design section 10 X-3, modeled on P4's E-1 shape)",
+      "relativeCapLargeRoots": {
+        "sizes": [10000, 100000],
+        "appliesTo": "rust-candidate-vs-swift-reference",
+        "maximumReferenceRatio": 1.1,
+        "referenceStatus": "measured at debug profile only, through a differential-shaped (apply-edits-envelope-bundled) seam -- see td4-textdecode-slice2-gate-v1.md section 3.4/3.5 for why this is not scored as a clean pass/fail against 1.10x this session",
+        "measuredDebugProfileRatio10kMinus100k": [11.356, 11.541]
+      },
+      "absoluteCapsSmallRoots": {
+        "sizes": [100, 1000],
+        "appliesTo": "rust-candidate-only",
+        "status": "no floor was ever registered (see registrationOrderingCaveat) -- measured numbers recorded as unscored evidence in textdecodeResults only"
+      }
+    }
+  },
+  "textdecodeResults": {
+    "step": "TD-4 -- Slice-2 economics gate (GO/NO-GO gate)",
+    "decision": "DEFER",
+    "decisionNote": "Cleanest measured number (release-profile, no-FFI, no-envelope pure textdecode() compute: ~2.3us/file, flat 100-100k) is favorable. The only available FFI-seam measurement is debug-profile and confounded by an unrelated apply-edits-envelope cost (~146-151us/file of the ~168-174us/file total); this is not a scored pass or fail against the 1.10x bound, per rust/benchmarks/results/v1/td4-textdecode-slice2-gate-v1.md's reasoning.",
+    "resultsJson": "rust/benchmarks/results/v1/td4-textdecode-slice2-gate-v1.json",
+    "resultsMarkdown": "rust/benchmarks/results/v1/td4-textdecode-slice2-gate-v1.md",
+    "followUpConditions": [
+      "re-run TextDecodeCutoverBenchmarkTests under release profile once safe to pay the ~15-minute rebuild without contending with concurrent heavy daemon activity",
+      "or build a dedicated decode-only FFI entry point to remove the apply-edits-envelope confound",
+      "land TD-1's still-missing SLO-floor registration before re-running the gate"
+    ]
+  },
   "p4TwoResults": {
     "step": "P4-2 -- De-risking experiments (GO/NO-GO gate)",
     "decision": "GO-with-E2-deferred",

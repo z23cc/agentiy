@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "step": "R11 investigation -- what should the TD-5 write-back gate key on (design docs/designs/textdecode-policy-v2-2026-08-22.md section 18.1/18.4, open question 6)",
+  "designDoc": "docs/designs/textdecode-policy-v2-2026-08-22.md",
+  "resultsMarkdown": "rust/benchmarks/results/v1/r11-textdecode-writeback-gate-v1.md",
+  "harness": "rust/crates/runtime/src/textdecode/r11_gate_probe.rs (cargo test, always-run, no env gate, small deterministic corpus)",
+  "reproduction": "cd rust && cargo test -p agentry-runtime --release textdecode::r11_gate_probe -- --nocapture",
+  "pinnedVersions": {
+    "chardetng": "1.0.0",
+    "encoding_rs": "0.8.35"
+  },
+  "candidatesEvaluated": {
+    "1_bomPinnedOnly": {
+      "source": "design section 18.1 candidate 1",
+      "status": "not re-measured here -- design section 18.1 already confirms this is TD-2's actual current behavior; free, insufficient alone for R11's legacy-multi-byte population"
+    },
+    "2_detectedEncodingChangedVsCached": {
+      "source": "design section 18.1 candidate 2",
+      "status": "not re-measured here -- design section 18.1 already argues this is a supplementary signal only, fires on second read of an already-cached path, not first open"
+    },
+    "3_highBitByteDensityHeuristic": {
+      "source": "design section 18.1 candidate 3, made concrete and measured by this investigation",
+      "measured": {
+        "lossyPopulationDensityRange": [
+          0.704,
+          0.905
+        ],
+        "cleanWindows1252ControlDensity": 0.065,
+        "cleanAllCyrillicWindows1251ControlDensity": 0.846,
+        "finding": "a naive density greater than 0.5 threshold flags every measured lossy case AND the genuine, clean, all-Cyrillic control -- the two populations are not density-separable in this corpus. Confirms section 18.1 candidate 3's own named false-positive risk empirically, not just theoretically."
+      }
+    },
+    "4_roundTripReencodeOracle": {
+      "source": "named explicitly by the task, not evaluated in section 18.1",
+      "measured": {
+        "recallOnConstructedLossyCorpus": "0/6 (0 percent)",
+        "corpus": [
+          "truncated-shift-jis (R11 core case, matches design section 18.1's own tests.rs 532-551 construction)",
+          "mid-sequence-corrupted-shift-jis",
+          "mixed-encoding-splice (shift-jis+euc-jp concatenation)",
+          "truncated-big5",
+          "truncated-gb18030",
+          "truncated-euc-kr"
+        ],
+        "mechanism": "every case above reclassifies to a single-byte legacy label (windows-1252 x5, GBK x1) whose encoding_rs decode/encode pair is a total, injective byte-scalar mapping over all 256 byte values -- re-encoding the (wrong, garbled) decoded text via the (wrong) detected label reproduces the original raw bytes exactly, so the oracle reports every case as clean.",
+        "falsePositiveCheck": "0/1 -- correctly reports the clean windows-1252 control as clean",
+        "costOverheadRatio": 1.163,
+        "costNote": "single-sample measurement (137-byte Shift-JIS buffer, 5000 iterations release profile): decode-only about 5.1-7.4us per call, decode+reencode about 6.0-8.8us per call (variance between runs is environmental, not corpus-dependent). A second full pass over the buffer, roughly 16-19 percent wall-time overhead at this size for the Legacy-label subset only (BOM-pinned UTF-16/UTF-32 cases do not need it -- had_replacements already covers them)."
+      },
+      "verdict": "FALSE NEGATIVE for R11's core population. Not a partial-coverage gap -- 0 percent recall on every constructed corruption shape (truncation, mid-sequence, cross-encoding splice) across every legacy multi-byte candidate tested."
+    },
+    "5_windows1252C1GapByteSignal": {
+      "source": "novel, proposed by this investigation as a narrower alternative to density",
+      "description": "the 5 WHATWG windows-1252 gap bytes (0x81, 0x8D, 0x8F, 0x90, 0x9D) map to C1 control scalars rather than erroring (design section 10 R5, section 18.1) -- genuine natural-language windows-1252 text essentially never contains them (no printable glyph was ever assigned). Their presence in Legacy(WINDOWS_1252)-labeled decoded text is a candidate discriminator.",
+      "measured": {
+        "recallOnWindows1252LabeledLossySubset": "2/5 (40 percent) -- of the 5 lossy cases that specifically reclassify to windows-1252 (the GBK-labeled splice case is out of this narrow signal's scope by construction)",
+        "falsePositiveCheck": "0/3 (strengthened from an initial n=1 check after adversarial review) -- three deliberately varied clean windows-1252 controls, including two constructed specifically to be dense in the legitimately-assigned 0x80-0x9F printable range (curly quotes, dashes, bullet, trademark, dagger, per-mille, angle quotes, Scaron/Zcaron/OE), none contain a gap byte. n=3 is still small; this is 'no false positive found under adversarial construction', not a proof of zero false-positive rate."
+      },
+      "verdict": "Zero measured false positives across 3 adversarially-varied clean controls (up from 1), but incomplete recall (40 percent on its own applicable subset) and inapplicable to non-windows-1252 reclassification targets (the measured GBK case). NOT recommended as a hard/binding write-back gate at this evidence level (n=3 false-positive testing is not sufficient basis to block a user's save) -- recommended, if used at all, as a non-blocking supplementary/advisory signal only. See section 18.4 for the full recommendation."
+    }
+  },
+  "summary": {
+    "recallByCandidate": {
+      "roundTripReencode": "0 percent",
+      "densityHeuristicAlone": "100 percent recall but also 100 percent false-positive on the hostile clean control -- not usable as a hard gate",
+      "c1GapByteSignal": "40 percent on its applicable subset, 0/3 false positive (adversarially strengthened, still small-n)"
+    },
+    "conclusion": "No single cheap signal measured here closes R11 for the legacy-multi-byte single-byte-fallback-reclassification population without either missing it entirely (round-trip), risking blocking legitimate dense non-Latin-script content (density alone), or resting on too small an evidence base to justify a hard gate (C1-gap-byte signal, n=3 false-positive testing). See section 18.4 for the composite recommendation: the disclosed accept-the-residual-risk path carries the recommendation, with the gap-byte signal available only as a non-blocking advisory addition, not a binding TD-5 done-when criterion."
+  }
+}

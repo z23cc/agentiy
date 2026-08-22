@@ -483,6 +483,12 @@ void uniffi_agentry_ffi_fn_method_leafcancellation_cancel(uint64_t ptr, RustBuff
 void uniffi_agentry_ffi_fn_method_leafcancellation_close(uint64_t ptr, RustBuffer identity, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_FN_FUNC_CORE_DIAGNOSTICS_DRAIN
+#define UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_FN_FUNC_CORE_DIAGNOSTICS_DRAIN
+RustBuffer uniffi_agentry_ffi_fn_func_core_diagnostics_drain(RustCallStatus *_Nonnull out_status
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_FN_FUNC_CORE_PANIC_FORENSICS
 #define UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_FN_FUNC_CORE_PANIC_FORENSICS
 RustBuffer uniffi_agentry_ffi_fn_func_core_panic_forensics(RustCallStatus *_Nonnull out_status
@@ -747,6 +753,12 @@ void ffi_agentry_ffi_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_AGENTRY_FFI_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_AGENTRY_FFI_RUST_FUTURE_COMPLETE_VOID
 void ffi_agentry_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_CHECKSUM_FUNC_CORE_DIAGNOSTICS_DRAIN
+#define UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_CHECKSUM_FUNC_CORE_DIAGNOSTICS_DRAIN
+uint16_t uniffi_agentry_ffi_checksum_func_core_diagnostics_drain(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_CHECKSUM_FUNC_CORE_PANIC_FORENSICS
