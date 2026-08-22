@@ -103,6 +103,14 @@ pub struct CoreRuntime {
 impl CoreRuntime {
     #[uniffi::constructor]
     pub fn new(config: CoreConfig) -> Result<Arc<Self>, CoreError> {
+        // Belt-and-suspenders alongside `agentry_runtime::CoreRuntime::new`'s
+        // own install call: that one covers every `PanicGuard`-wrapped export
+        // on an already-constructed instance, but `Self::create` below still
+        // does identity/config work (e.g. `RuntimeIdentity::fresh`) *before*
+        // reaching the runtime crate's constructor. Installing here first
+        // closes that narrow pre-construction window too. Idempotent (`Once`),
+        // so calling it from both sites is free.
+        runtime::install_panic_hook();
         match catch_unwind(AssertUnwindSafe(|| Self::create(config))) {
             Ok(result) => result.map(Arc::new),
             Err(_) => Err(CoreError::InternalPanic),
@@ -630,6 +638,37 @@ impl CoreRuntime {
             })
         })
     }
+
+    /// Instance-scoped sibling of the module-level `core_panic_forensics`,
+    /// kept for callers that already hold a `CoreRuntime` and would rather
+    /// not thread a second top-level import through. Same data, same "not
+    /// routed through `self.guard()`" reasoning -- see `core_panic_forensics`
+    /// for the full explanation.
+    pub fn panic_forensics(&self) -> Vec<String> {
+        core_panic_forensics()
+    }
+}
+
+/// Module-level (not tied to any `CoreRuntime` instance) panic forensics for
+/// the last (up to a few) panics recorded anywhere in this process, most-
+/// recent last. This is the primary forensics entry point: `CoreRuntime::new`
+/// (the `#[uniffi::constructor]` above) can itself panic during
+/// `Self::create` -- before any `CoreRuntime` object exists for a caller to
+/// call an instance method on -- so a free function is what makes *that*
+/// failure recoverable too, not just a poisoned-after-construction instance.
+/// Deliberately NOT routed through any `PanicGuard`: once poisoned,
+/// `PanicGuard::call` short-circuits every other export with
+/// `RuntimePoisoned` before running the operation, so a guarded forensics
+/// accessor could never be read after the exact failure it exists to
+/// explain. The backing ring buffer (`agentry_runtime::recent_panics`) is
+/// process-wide, filled by the panic hook installed once per process (see
+/// both call sites of `install_panic_hook`).
+#[uniffi::export]
+pub fn core_panic_forensics() -> Vec<String> {
+    runtime::recent_panics()
+        .iter()
+        .map(runtime::PanicRecord::describe)
+        .collect()
 }
 
 impl CoreRuntime {
@@ -728,6 +767,30 @@ mod tests {
         assert_eq!(core.panic_for_test(), Err(CoreError::InternalPanic));
         assert!(core.panic_guard.is_poisoned());
         assert_eq!(core.initialize(), Err(CoreError::RuntimePoisoned));
+    }
+
+    #[test]
+    fn panic_forensics_survives_poisoning_and_names_the_panic_site() {
+        let core = CoreRuntime::new(config()).expect("runtime creation");
+        core.initialize().expect("initialize");
+        assert_eq!(core.panic_for_test(), Err(CoreError::InternalPanic));
+        assert!(core.panic_guard.is_poisoned());
+
+        // The poisoned runtime rejects every other guarded export...
+        assert_eq!(core.initialize(), Err(CoreError::RuntimePoisoned));
+        // ...but forensics, deliberately unguarded, still answers: this is
+        // the whole point of not routing panic_forensics through `guard()`.
+        // `.last()` is safe here specifically because every panic-injecting
+        // test in this crate calls the same `panic_for_test` (identical
+        // message/location) -- the ring is process-wide and `cargo test`
+        // runs tests concurrently, so a *different* message here would be
+        // racy against other threads' panics landing in between.
+        let forensics = core.panic_forensics();
+        let last = forensics
+            .last()
+            .expect("panic hook should have recorded an entry");
+        assert!(last.contains("test-only panic injection"));
+        assert!(last.contains("api.rs"));
     }
 
     #[test]

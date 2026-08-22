@@ -9,6 +9,7 @@ mod identity;
 pub mod inventory;
 mod lifecycle;
 mod operation;
+mod panic_forensics;
 pub mod pathmatch;
 pub mod pathsearch;
 mod registry;
@@ -24,6 +25,7 @@ pub use operation::{
     AdmissionOutcome, AdmissionRequest, CancelOutcome, IdentifierError, OperationDiagnostics,
     OperationId, OperationSnapshot, OperationState, RequestFingerprint, ScopeId, TerminalOutcome,
 };
+pub use panic_forensics::{PanicRecord, install_panic_hook, recent_panics};
 pub use registry::{OperationRegistry, RegistryError};
 pub use search::{
     ByteRange, CompactRegexBatchResult, CompactRegexSubjectSummary, EngineKind,

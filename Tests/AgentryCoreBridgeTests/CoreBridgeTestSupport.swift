@@ -25,6 +25,7 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         var duplicatedWakeFD: Int32?
         var closeCount = 0
         var shutdownCount = 0
+        var panicForensicsResult: [String] = []
     }
 
     private let state: OSAllocatedUnfairLock<State>
@@ -323,6 +324,17 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
             value.actions.append("shutdown")
         }
         return CoreShutdownReceipt(alreadyStarted: false, cancelledOperations: 0)
+    }
+
+    func panicForensics() -> [String] {
+        state.withLock { value in
+            value.actions.append("panic-forensics")
+            return value.panicForensicsResult
+        }
+    }
+
+    func returnPanicForensics(_ forensics: [String]) {
+        state.withLock { $0.panicForensicsResult = forensics }
     }
 
     func overrideHandshake(_ handshake: CoreTransportHandshake) {

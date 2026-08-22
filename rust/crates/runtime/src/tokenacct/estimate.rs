@@ -60,7 +60,11 @@ pub fn count_lines(text: &str) -> u64 {
         }
     }
 
-    if last_was_line_ending { count } else { count + 1 }
+    if last_was_line_ending {
+        count
+    } else {
+        count + 1
+    }
 }
 
 /// Mirrors `TokenCalculationService.extractFolderPath(from:)`:
@@ -74,7 +78,10 @@ pub fn count_lines(text: &str) -> u64 {
 /// restores parity.
 #[must_use]
 pub fn extract_folder_path(relative_path: &str) -> String {
-    let components: Vec<&str> = relative_path.split('/').filter(|part| !part.is_empty()).collect();
+    let components: Vec<&str> = relative_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
     if components.len() > 1 {
         components[..components.len() - 1].join("/")
     } else {

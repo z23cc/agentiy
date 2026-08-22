@@ -263,22 +263,30 @@ fn decode_flag(value: u64, field: &str) -> Result<bool, TokenAccountingError> {
     }
 }
 
-fn decode_text(request: &TokenAccountingRequestV1, index: u64) -> Result<&str, TokenAccountingError> {
+fn decode_text(
+    request: &TokenAccountingRequestV1,
+    index: u64,
+) -> Result<&str, TokenAccountingError> {
     let row = usize_word(index)?;
-    let base = row.checked_mul(STRING_RANGE_STRIDE).ok_or_else(|| {
-        TokenAccountingError::InvalidRequest("string pool index overflow".into())
-    })?;
+    let base = row
+        .checked_mul(STRING_RANGE_STRIDE)
+        .ok_or_else(|| TokenAccountingError::InvalidRequest("string pool index overflow".into()))?;
     let range = request
         .string_range_words
         .get(base..base + STRING_RANGE_STRIDE)
-        .ok_or_else(|| TokenAccountingError::InvalidRequest("string pool index out of range".into()))?;
+        .ok_or_else(|| {
+            TokenAccountingError::InvalidRequest("string pool index out of range".into())
+        })?;
     let start = usize_word(range[0])?;
     let end = usize_word(range[1])?;
     if end < start || end > request.utf8_blob.len() {
-        return Err(TokenAccountingError::InvalidRequest("string range out of bounds".into()));
+        return Err(TokenAccountingError::InvalidRequest(
+            "string range out of bounds".into(),
+        ));
     }
-    let text = std::str::from_utf8(&request.utf8_blob[start..end])
-        .map_err(|_| TokenAccountingError::InvalidRequest("string range is not valid UTF-8".into()))?;
+    let text = std::str::from_utf8(&request.utf8_blob[start..end]).map_err(|_| {
+        TokenAccountingError::InvalidRequest("string range is not valid UTF-8".into())
+    })?;
     if text.as_bytes().contains(&0) {
         return Err(TokenAccountingError::InvalidRequest(
             "string contains an embedded NUL byte".into(),
@@ -344,7 +352,8 @@ pub(crate) fn decode(
         let loaded_content_present = decode_flag(row[7], "loaded_content_present")?;
         let loaded_content = decode_text(request, row[8])?;
         let loaded_content_char_count = row[9];
-        let cached_full_token_count_present = decode_flag(row[10], "cached_full_token_count_present")?;
+        let cached_full_token_count_present =
+            decode_flag(row[10], "cached_full_token_count_present")?;
         let cached_full_token_count = row[11];
         let relative_path = decode_text(request, row[12])?;
 
@@ -368,7 +377,8 @@ pub(crate) fn decode(
         )?;
         if !cached_full_token_count_present && cached_full_token_count != 0 {
             return Err(TokenAccountingError::InvalidRequest(
-                "cached_full_token_count must be 0 when cached_full_token_count_present is 0".into(),
+                "cached_full_token_count must be 0 when cached_full_token_count_present is 0"
+                    .into(),
             ));
         }
 
@@ -396,7 +406,8 @@ pub(crate) fn decode(
         let file_tree_text = decode_text(request, row[2])?;
         let git_diff_text = decode_text(request, row[3])?;
         let metadata_text = decode_text(request, row[4])?;
-        let duplicate_user_instructions_at_top = decode_flag(row[5], "duplicate_user_instructions_at_top")?;
+        let duplicate_user_instructions_at_top =
+            decode_flag(row[5], "duplicate_user_instructions_at_top")?;
         components.push(ComponentInput {
             prompt_text,
             selected_instructions_text,
@@ -407,7 +418,10 @@ pub(crate) fn decode(
         });
     }
 
-    Ok(DecodedRequest { entries, components })
+    Ok(DecodedRequest {
+        entries,
+        components,
+    })
 }
 
 // ---- service --------------------------------------------------------------------------------
@@ -474,7 +488,9 @@ impl TokenAccountingService {
             ..Default::default()
         };
 
-        response.entry_result_words.reserve(entry_results.len() * ENTRY_RESULT_STRIDE);
+        response
+            .entry_result_words
+            .reserve(entry_results.len() * ENTRY_RESULT_STRIDE);
         response.entry_formatted.reserve(entry_results.len());
         response.entry_percentage.reserve(entry_results.len());
         for (entry_index, result) in entry_results.iter().enumerate() {
@@ -554,7 +570,10 @@ mod tests {
         let response = TokenAccountingService.compute(&request).expect("compute");
         assert_eq!(response.entry_result_words.len(), ENTRY_RESULT_STRIDE);
         assert_eq!(response.entry_result_words[0], 0, "render_mode full");
-        assert_eq!(response.component_result_words.len(), COMPONENT_RESULT_STRIDE);
+        assert_eq!(
+            response.component_result_words.len(),
+            COMPONENT_RESULT_STRIDE
+        );
         assert!(response.component_result_words[0] > 0, "prompt tokens");
         assert_eq!(response.folder_names, vec!["src".to_owned()]);
     }
@@ -568,16 +587,24 @@ mod tests {
         let response = TokenAccountingService.compute(&request).expect("compute");
         assert_eq!(
             response,
-            TokenAccountingResponseV1 { aggregate_words: vec![0; 8], ..Default::default() }
+            TokenAccountingResponseV1 {
+                aggregate_words: vec![0; 8],
+                ..Default::default()
+            }
         );
     }
 
     #[test]
     fn unknown_contract_version_is_rejected() {
-        let request = TokenAccountingRequestV1 { contract_version: 2, ..Default::default() };
+        let request = TokenAccountingRequestV1 {
+            contract_version: 2,
+            ..Default::default()
+        };
         assert_eq!(
             TokenAccountingService.compute(&request),
-            Err(TokenAccountingError::InvalidRequest("unknown contract version 2".into()))
+            Err(TokenAccountingError::InvalidRequest(
+                "unknown contract version 2".into()
+            ))
         );
     }
 
@@ -588,7 +615,9 @@ mod tests {
             ..Default::default()
         };
         let empty = request.push_string("");
-        request.entry_words.extend([2u64, 0, empty, 0, 0, empty, 0, 0, empty, 0, 0, 0, empty]);
+        request
+            .entry_words
+            .extend([2u64, 0, empty, 0, 0, empty, 0, 0, empty, 0, 0, 0, empty]);
         assert_eq!(
             TokenAccountingService.compute(&request),
             Err(TokenAccountingError::InvalidRequest(
@@ -605,7 +634,9 @@ mod tests {
         };
         let empty = request.push_string("");
         let dirty = request.push_string("not empty");
-        request.entry_words.extend([0u64, 0, empty, 0, 0, dirty, 0, 0, empty, 0, 0, 0, empty]);
+        request
+            .entry_words
+            .extend([0u64, 0, empty, 0, 0, dirty, 0, 0, empty, 0, 0, 0, empty]);
         assert_eq!(
             TokenAccountingService.compute(&request),
             Err(TokenAccountingError::InvalidRequest(

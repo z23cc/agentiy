@@ -45,4 +45,20 @@ final class CoreBridgeInitializationTests: XCTestCase {
         XCTAssertEqual(identity.buildFingerprint, CoreRuntimeIdentity.fixture.buildFingerprint)
         _ = try await bridge.close()
     }
+
+    /// Smoke coverage for the real UniFFI binding: there is no FFI-exposed
+    /// way to deliberately panic the real Rust runtime from Swift (the
+    /// equivalent of `panic_for_test` is `#[cfg(test)]`-only inside the ffi
+    /// crate itself -- a real-runtime panic test lives Rust-side, see
+    /// `agentry_ffi::api::tests::panic_forensics_survives_poisoning_and_names_the_panic_site`).
+    /// This just confirms `AgentryCoreBridge.corePanicForensics()` -- callable
+    /// with no live bridge instance -- resolves and executes through the real
+    /// generated binding without trapping.
+    func testCorePanicForensicsIsCallableAgainstRealBindingWithNoLiveBridge() {
+        let forensics = AgentryCoreBridge.corePanicForensics()
+        // No real Rust panic has occurred in this process, so this is
+        // typically empty; the assertion that matters is that the call
+        // above resolved and returned through the real binding at all.
+        XCTAssertTrue(forensics.allSatisfy { !$0.isEmpty })
+    }
 }

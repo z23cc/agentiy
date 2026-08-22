@@ -255,7 +255,12 @@ pub fn compute_entries(
         let api_tokens = entry.available_codemap_token_count;
         aggregates.codemap_count += 1;
         aggregates.codemap_tokens += api_tokens;
-        accumulate_folder(entry.relative_path, api_tokens, &mut folder_index, &mut folder_totals);
+        accumulate_folder(
+            entry.relative_path,
+            api_tokens,
+            &mut folder_index,
+            &mut folder_totals,
+        );
         results[index] = Some(EntryResult {
             render_mode: RenderMode::Codemap,
             display_tokens: api_tokens,
@@ -352,7 +357,10 @@ mod tests {
 
     #[test]
     fn full_mode_entry_without_loaded_content_falls_back_to_byte_multiplied_char_count() {
-        let mut entry = EntryInput { relative_path: "a.swift", ..Default::default() };
+        let mut entry = EntryInput {
+            relative_path: "a.swift",
+            ..Default::default()
+        };
         entry.cached_full_token_count_present = true;
         entry.cached_full_token_count = 10;
         let (results, _, _, _) = compute_entries(&[entry]);
@@ -363,7 +371,10 @@ mod tests {
 
     #[test]
     fn full_mode_entry_without_loaded_content_or_cache_or_tokens_has_zero_char_contribution() {
-        let entry = EntryInput { relative_path: "a.swift", ..Default::default() };
+        let entry = EntryInput {
+            relative_path: "a.swift",
+            ..Default::default()
+        };
         let (results, _, _, _) = compute_entries(&[entry]);
         assert_eq!(results[0].display_tokens, 0);
         assert_eq!(results[0].char_count_contribution, 0);
@@ -382,7 +393,10 @@ mod tests {
         assert_eq!(results[0].render_mode, RenderMode::Slice);
         let expected = estimate_tokens("line one\nline two\n");
         assert_eq!(results[0].display_tokens, expected);
-        assert_eq!(results[0].full_tokens, expected, "no cache/loaded content: full falls back to display");
+        assert_eq!(
+            results[0].full_tokens, expected,
+            "no cache/loaded content: full falls back to display"
+        );
         assert_eq!(results[0].char_count_contribution, 19);
         assert_eq!(results[0].display_line_count, Some(2));
         assert_eq!(aggregates.slice_count, 1);
@@ -403,7 +417,10 @@ mod tests {
         };
         let (results, _, _, _) = compute_entries(&[entry]);
         assert_eq!(results[0].display_tokens, estimate_tokens("a"));
-        assert_eq!(results[0].full_tokens, estimate_tokens("a much longer full file body here"));
+        assert_eq!(
+            results[0].full_tokens,
+            estimate_tokens("a much longer full file body here")
+        );
     }
 
     #[test]
@@ -421,11 +438,21 @@ mod tests {
         assert_eq!(results[0].display_tokens, 42);
         assert_eq!(results[0].display_line_count, Some(0));
         assert_eq!(aggregates.codemap_count, 1);
-        assert_eq!(aggregates.codemap_tokens, 42, "aggregate counts empty-content entries");
-        assert_eq!(composed.file_count, 0, "composed excludes empty-content entries");
+        assert_eq!(
+            aggregates.codemap_tokens, 42,
+            "aggregate counts empty-content entries"
+        );
+        assert_eq!(
+            composed.file_count, 0,
+            "composed excludes empty-content entries"
+        );
         assert_eq!(composed.token_count, 0);
         assert_eq!(composed.content, "");
-        assert_eq!(folders.tokens, vec![42], "folder rollup counts empty-content entries too");
+        assert_eq!(
+            folders.tokens,
+            vec![42],
+            "folder rollup counts empty-content entries too"
+        );
     }
 
     #[test]
@@ -456,7 +483,11 @@ mod tests {
 
     #[test]
     fn unresolved_codemap_entry_has_zero_display_tokens_and_nil_line_count() {
-        let mut entry = EntryInput { is_codemap_requested: true, relative_path: "a.swift", ..Default::default() };
+        let mut entry = EntryInput {
+            is_codemap_requested: true,
+            relative_path: "a.swift",
+            ..Default::default()
+        };
         entry.loaded_content_present = true;
         entry.loaded_content = "cached body";
         entry.loaded_content_char_count = 11;
@@ -468,7 +499,10 @@ mod tests {
         assert_eq!(results[0].display_line_count, None);
         assert_eq!(aggregates.codemap_count, 1);
         assert_eq!(composed.file_count, 0);
-        assert!(folders.names.is_empty(), "unresolved entries never touch folder rollups");
+        assert!(
+            folders.names.is_empty(),
+            "unresolved entries never touch folder rollups"
+        );
     }
 
     #[test]
@@ -505,7 +539,11 @@ mod tests {
                 relative_path: "b.swift",
                 ..Default::default()
             },
-            EntryInput { is_codemap_requested: true, relative_path: "c.swift", ..Default::default() },
+            EntryInput {
+                is_codemap_requested: true,
+                relative_path: "c.swift",
+                ..Default::default()
+            },
         ];
         let (results, _, _, _) = compute_entries(&entries);
         assert_eq!(results[0].render_mode, RenderMode::Full);

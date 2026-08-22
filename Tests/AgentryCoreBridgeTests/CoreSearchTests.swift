@@ -212,6 +212,37 @@ final class CoreSearchTests: XCTestCase {
         _ = try await ranged.close()
     }
 
+    func testPanicForensicsAreFetchedAndAttachedOnPoisonInvalidation() async throws {
+        let transport = FakeCoreTransport()
+        transport.failSearch(with: .internalPanic)
+        transport.returnPanicForensics([
+            "thread=\"agentry-runtime\" at rust/crates/ffi/src/api.rs:42:9: test-only panic injection"
+        ])
+        let bridge = AgentryCoreBridge(transport: transport)
+        try await bridge.initialize()
+        let client = try await bridge.searchClient()
+        await XCTAssertThrowsErrorAsync(try await client.searchRegex(.init(pattern: "x", subject: "x"))) {
+            XCTAssertEqual($0 as? CoreSearchError, .runtimeInvalidated)
+        }
+        // Unguarded forensics fetch: the bridge must be able to read it back
+        // even though the bridge itself is now invalidated.
+        XCTAssertTrue(transport.actions.contains("panic-forensics"))
+        let trigger = await bridge.invalidationTriggerForTesting
+        XCTAssertTrue(trigger?.contains("test-only panic injection") ?? false, "trigger was: \(trigger ?? "nil")")
+    }
+
+    func testNonPanicInvalidationDoesNotFetchPanicForensics() async throws {
+        let transport = FakeCoreTransport()
+        transport.failSearch(with: .staleRuntimeIdentity)
+        let bridge = AgentryCoreBridge(transport: transport)
+        try await bridge.initialize()
+        let client = try await bridge.searchClient()
+        await XCTAssertThrowsErrorAsync(try await client.searchRegex(.init(pattern: "x", subject: "x"))) {
+            XCTAssertEqual($0 as? CoreSearchError, .runtimeInvalidated)
+        }
+        XCTAssertFalse(transport.actions.contains("panic-forensics"))
+    }
+
     func testCompactBatchPreservesSubjectAlignmentAndContextArithmetic() async throws {
         let bridge = try await AgentryCoreBridge.start()
         let client = try await bridge.searchClient()

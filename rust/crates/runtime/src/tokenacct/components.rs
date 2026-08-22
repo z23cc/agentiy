@@ -31,7 +31,11 @@ pub struct ComponentBreakdown {
 #[must_use]
 pub fn compute_component_breakdown(input: &ComponentInput<'_>) -> ComponentBreakdown {
     let prompt = estimate_tokens(input.prompt_text);
-    let duplicate_prompt = if input.duplicate_user_instructions_at_top { prompt } else { 0 };
+    let duplicate_prompt = if input.duplicate_user_instructions_at_top {
+        prompt
+    } else {
+        0
+    };
     let instructions = estimate_tokens(input.selected_instructions_text);
     let file_tree = if input.file_tree_text.is_empty() {
         0

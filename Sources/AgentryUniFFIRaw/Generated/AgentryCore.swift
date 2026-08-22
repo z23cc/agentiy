@@ -678,6 +678,15 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
 
     /**
+     * Instance-scoped sibling of the module-level `core_panic_forensics`,
+     * kept for callers that already hold a `CoreRuntime` and would rather
+     * not thread a second top-level import through. Same data, same "not
+     * routed through `self.guard()`" reasoning -- see `core_panic_forensics`
+     * for the full explanation.
+     */
+    func panicForensics()  -> [String]
+
+    /**
      * P3-3 slice-2a: batch entry for the full `PathMatcher.locate` resolution ladder
      * (`PathMatchWorker.locateMany`'s serial loop over one shared, immutable snapshot).
      */
@@ -903,6 +912,22 @@ open func openSubscription(scope: SubscriptionScope)throws  -> SubscriptionBoots
     uniffi_agentry_ffi_fn_method_coreruntime_open_subscription(
             self.uniffiCloneHandle(),
         FfiConverterTypeSubscriptionScope_lower(scope),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Instance-scoped sibling of the module-level `core_panic_forensics`,
+     * kept for callers that already hold a `CoreRuntime` and would rather
+     * not thread a second top-level import through. Same data, same "not
+     * routed through `self.guard()`" reasoning -- see `core_panic_forensics`
+     * for the full explanation.
+     */
+open func panicForensics() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_panic_forensics(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -7078,6 +7103,29 @@ fileprivate struct FfiConverterSequenceOptionTypeCorePathMatchResolveLocationV1:
         return seq
     }
 }
+/**
+ * Module-level (not tied to any `CoreRuntime` instance) panic forensics for
+ * the last (up to a few) panics recorded anywhere in this process, most-
+ * recent last. This is the primary forensics entry point: `CoreRuntime::new`
+ * (the `#[uniffi::constructor]` above) can itself panic during
+ * `Self::create` -- before any `CoreRuntime` object exists for a caller to
+ * call an instance method on -- so a free function is what makes *that*
+ * failure recoverable too, not just a poisoned-after-construction instance.
+ * Deliberately NOT routed through any `PanicGuard`: once poisoned,
+ * `PanicGuard::call` short-circuits every other export with
+ * `RuntimePoisoned` before running the operation, so a guarded forensics
+ * accessor could never be read after the exact failure it exists to
+ * explain. The backing ring buffer (`agentry_runtime::recent_panics`) is
+ * process-wide, filled by the panic hook installed once per process (see
+ * both call sites of `install_panic_hook`).
+ */
+public func corePanicForensics() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_func_core_panic_forensics(uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -7093,6 +7141,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_agentry_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_func_core_panic_forensics() != 20183) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_apply_edits_batch_compact_v1() != 64411) {
         return InitializationResult.apiChecksumMismatch
@@ -7131,6 +7182,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_open_subscription() != 16674) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_panic_forensics() != 7590) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_path_match_locate_many_v1() != 60346) {

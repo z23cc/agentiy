@@ -144,6 +144,13 @@ protocol CoreRuntimeTransport: Sendable {
         request: CoreFolderSuffixRequest
     ) throws -> [UInt32]
     func beginShutdown(identity: CoreRuntimeIdentity) throws -> CoreShutdownReceipt
+    /// Forensic strings for the most recent panic(s) recorded by the Rust
+    /// process-wide panic hook, most-recent last -- not scoped to this
+    /// transport's runtime instance, and not limited to panics that a
+    /// `PanicGuard` happened to contain. Deliberately infallible and callable
+    /// after the runtime is poisoned/invalidated -- see
+    /// `AgentryUniFFIRaw.CoreRuntime.panicForensics()`.
+    func panicForensics() -> [String]
 }
 
 final class UniFFILeafCancellationHandle: CoreLeafCancellationHandle, @unchecked Sendable {
@@ -907,6 +914,12 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    /// Infallible on the Rust side (see `CoreRuntime::panic_forensics`), so
+    /// there is nothing to catch/map here.
+    func panicForensics() -> [String] {
+        runtime.panicForensics()
+    }
+
     private static func identity(_ value: AgentryUniFFIRaw.RuntimeIdentity) -> CoreRuntimeIdentity {
         CoreRuntimeIdentity(
             abiEpoch: value.abiEpoch,
@@ -1161,6 +1174,17 @@ public actor AgentryCoreBridge {
         return bridge
     }
 
+    /// Process-wide Rust panic forensics, callable with no live bridge/
+    /// transport instance at all. `AgentryCoreBridge.start()` itself can
+    /// throw before any `AgentryCoreBridge` exists to read
+    /// `panicForensicsSuffix` from -- e.g. `UniFFICoreRuntimeTransport.init`
+    /// panics inside the Rust `CoreRuntime` constructor, before that
+    /// constructor has returned an object. This is the recovery path for
+    /// exactly that case: call it after a failed `start()` to learn why.
+    public static func corePanicForensics() -> [String] {
+        AgentryUniFFIRaw.corePanicForensics()
+    }
+
     init(
         transport: any CoreRuntimeTransport,
         expectedIdentity: CoreExpectedIdentity = .generated,
@@ -1388,7 +1412,9 @@ public actor AgentryCoreBridge {
         }
         switch mapped {
         case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
-            noteInvalidationTrigger("compute transport error: \(String(describing: error))")
+            noteInvalidationTrigger(
+                "compute transport error: \(String(describing: error))\(panicForensicsSuffix(for: error))"
+            )
             invalidate()
         default:
             break
@@ -1468,7 +1494,9 @@ public actor AgentryCoreBridge {
         }
         switch mapped {
         case .runtimeInvalidated, .runtimeStopped, .runtimePoisoned:
-            noteInvalidationTrigger("search transport error: \(String(describing: error))")
+            noteInvalidationTrigger(
+                "search transport error: \(String(describing: error))\(panicForensicsSuffix(for: error))"
+            )
             invalidate()
         default:
             break
@@ -1680,7 +1708,9 @@ public actor AgentryCoreBridge {
         }
         switch error {
         case .internalPanic, .runtimePoisoned:
-            noteInvalidationTrigger("bridge transport error: \(String(describing: error))")
+            noteInvalidationTrigger(
+                "bridge transport error: \(String(describing: error))\(panicForensicsSuffix(for: error))"
+            )
             invalidate()
         default:
             break
@@ -1718,11 +1748,31 @@ public actor AgentryCoreBridge {
 
     private var firstInvalidationTrigger: String?
 
+    #if DEBUG
+    /// Test-only window onto the recorded trigger; `firstInvalidationTrigger`
+    /// itself stays `private` for everyone else.
+    var invalidationTriggerForTesting: String? { firstInvalidationTrigger }
+    #endif
+
     /// Debug forensics for the full-suite mid-run invalidation investigation:
     /// records the first raw trigger so the suite log names the poisoner.
     private func noteInvalidationTrigger(_ description: String) {
         guard firstInvalidationTrigger == nil else { return }
         firstInvalidationTrigger = description
+    }
+
+    /// Appends the Rust-side panic ring buffer to a trigger description when
+    /// `error` is exactly the panic-driven poisoning case -- `internalPanic`
+    /// (first call after the unwind) or `runtimePoisoned` (every call after
+    /// that). Any other transport error is unrelated to a panic, so forensics
+    /// would be noise there. Fetches through `transport.panicForensics()`
+    /// directly, not through any guarded path, since it must keep working
+    /// exactly when the runtime it is explaining has just been poisoned.
+    private func panicForensicsSuffix(for error: CoreTransportError) -> String {
+        guard error == .internalPanic || error == .runtimePoisoned else { return "" }
+        let forensics = transport.panicForensics()
+        guard !forensics.isEmpty else { return "" }
+        return " panicForensics=\(forensics)"
     }
 
     private func invalidate() {

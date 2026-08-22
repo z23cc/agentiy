@@ -59,10 +59,12 @@ pub use contract::{
     STRING_RANGE_STRIDE, TOKEN_ACCOUNTING_CONTRACT_VERSION_V1,
 };
 pub use entries::{
-    Aggregates, CodeMapComposed, EntryInput, EntryResult, FolderTotals, RenderMode,
-    compute_entries,
+    Aggregates, CodeMapComposed, EntryInput, EntryResult, FolderTotals, RenderMode, compute_entries,
 };
-pub use estimate::{count_lines, estimate_tokens, estimate_tokens_from_byte_count, format_token_count, extract_folder_path, percentage};
+pub use estimate::{
+    count_lines, estimate_tokens, estimate_tokens_from_byte_count, extract_folder_path,
+    format_token_count, percentage,
+};
 pub use wire::{
     TokenAccountingError, TokenAccountingRequestV1, TokenAccountingResponseV1,
     TokenAccountingService,

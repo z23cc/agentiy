@@ -100,6 +100,13 @@ pub struct CoreRuntime {
 
 impl CoreRuntime {
     pub fn new(config: RuntimeConfig, identity: RuntimeIdentity) -> Result<Self, RuntimeError> {
+        // Must run before any `PanicGuard`-wrapped export can execute (see
+        // `agentry_ffi::api::CoreRuntime::create`, which builds this runtime
+        // before constructing its own `PanicGuard`): installing the hook
+        // here, first, guarantees a panic on any later exported call is
+        // captured into the forensics ring buffer, not just silently
+        // stringified into `InternalPanic`/`RuntimePoisoned`.
+        crate::panic_forensics::install_panic_hook();
         config.validate().map_err(RuntimeError::InvalidConfig)?;
         let registry = Arc::new(OperationRegistry::new(
             identity.clone(),
