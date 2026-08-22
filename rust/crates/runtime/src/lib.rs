@@ -7,6 +7,7 @@ pub mod codemap;
 mod config;
 mod identity;
 pub mod inventory;
+pub mod inventory_scope;
 mod lifecycle;
 mod operation;
 mod panic_forensics;

@@ -1,0 +1,248 @@
+//! Explicit typed identifiers for the P4-3a stateful inventory scope.
+//!
+//! Per `docs/architecture/rust-inventory-scope-v1.md` §1: handles are explicit IDs, not proxy
+//! objects. `RootId` reuses the raw 16-byte UUID representation `inventory::builders::InventoryUuid`
+//! already used by `InventoryFileRecord`/`InventoryFolderRecord`/`InventoryRootRecord` so a caller's
+//! root identity round-trips byte-for-byte through this scope with no re-encoding.
+//!
+//! `InventoryScopeId` and `RootLifetimeId` are minted by the scope itself (never supplied by a
+//! caller) via `UuidMinter`, which supports both process-entropy minting (`fresh`, mirroring
+//! `RuntimeIdentity::fresh`'s nonce shape) and a deterministic seeded mode (`seeded` +
+//! `next_bytes`, a splitmix64 stream) for reproducible tests -- the "UUID minting with test seed"
+//! requirement named in the P4-3a scope.
+//!
+//! **Deviation from a literal UUID shape, flagged:** `SnapshotHandleId` and `BulkLoadId` are
+//! monotonic per-scope counters rather than minted UUIDs. The contract requires these to be
+//! explicit typed IDs (not proxy objects); it does not require them to be UUID-shaped, and
+//! `InventoryScopeConfig`/`InventoryRootOpenV1` naming elsewhere in the contract is silent on
+//! their representation. A counter scoped to one `Mutex`-guarded scope is simpler, cheaper to
+//! hash, and structurally cannot collide within that scope's lifetime. This is the minimal choice
+//! the task's process asks for where the contract underspecifies a shape.
+
+use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Reuses the byte-exact UUID representation the P3-2 inventory builders already use, so a
+/// `RootId` passed into `InventoryScope::open_root` is the exact same 16 bytes that appear as
+/// `InventoryFileRecord.root_id` / `InventoryRootRecord.id` with no re-encoding step.
+pub type RootId = crate::inventory::InventoryUuid;
+
+macro_rules! uuid_id {
+    ($name:ident) => {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+        pub struct $name([u8; 16]);
+
+        impl $name {
+            #[must_use]
+            pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+                Self(bytes)
+            }
+
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; 16] {
+                &self.0
+            }
+
+            #[must_use]
+            pub fn mint(minter: &UuidMinter) -> Self {
+                Self(minter.next_bytes())
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                for byte in &self.0 {
+                    write!(formatter, "{byte:02x}")?;
+                }
+                Ok(())
+            }
+        }
+    };
+}
+
+uuid_id!(InventoryScopeId);
+uuid_id!(RootLifetimeId);
+
+/// Monotonic per-scope counter identifiers (see module doc comment for the shape rationale).
+macro_rules! counter_id {
+    ($name:ident) => {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+        pub struct $name(u64);
+
+        impl $name {
+            #[must_use]
+            pub const fn from_raw(value: u64) -> Self {
+                Self(value)
+            }
+
+            #[must_use]
+            pub const fn raw(&self) -> u64 {
+                self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(formatter, "{}", self.0)
+            }
+        }
+    };
+}
+
+counter_id!(SnapshotHandleId);
+counter_id!(BulkLoadId);
+
+/// A process-unique-enough monotonic counter used to mint `SnapshotHandleId`/`BulkLoadId` values
+/// scoped to one `InventoryScope`. Not `pub`: callers never construct handle/bulk-load ids
+/// themselves.
+#[derive(Debug, Default)]
+pub(crate) struct CounterMinter(u64);
+
+impl CounterMinter {
+    pub(crate) fn next(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+}
+
+/// Opaque per-generation identity token. Two `GenerationToken`s compare equal iff they were
+/// minted for the same published generation of the same root -- the mechanical-port anchor for
+/// `WorkspaceCatalogShardTests`'s `===` reference-identity assertions
+/// (`rust-inventory-scope-v1.md` §4 "Instance-identity contract"): "same generation ⇒ same
+/// `generationToken`".
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct GenerationToken {
+    root_lifetime: RootLifetimeId,
+    generation: u64,
+}
+
+impl GenerationToken {
+    pub(crate) const fn new(root_lifetime: RootLifetimeId, generation: u64) -> Self {
+        Self {
+            root_lifetime,
+            generation,
+        }
+    }
+
+    #[must_use]
+    pub const fn root_lifetime(&self) -> RootLifetimeId {
+        self.root_lifetime
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+/// Mints `InventoryScopeId`/`RootLifetimeId` values.
+///
+/// Two modes:
+/// - `fresh()`: process-entropy minting (mirrors `RuntimeIdentity::fresh`'s nonce shape), for
+///   production use.
+/// - `seeded(seed)`: deterministic splitmix64-derived minting, for reproducible property/unit
+///   tests -- the "UUID minting with test seed" requirement.
+pub struct UuidMinter {
+    seeded_state: Option<AtomicU64>,
+}
+
+impl UuidMinter {
+    #[must_use]
+    pub const fn fresh() -> Self {
+        Self { seeded_state: None }
+    }
+
+    #[must_use]
+    pub const fn seeded(seed: u64) -> Self {
+        Self {
+            seeded_state: Some(AtomicU64::new(seed)),
+        }
+    }
+
+    #[must_use]
+    pub fn next_bytes(&self) -> [u8; 16] {
+        match &self.seeded_state {
+            Some(state) => {
+                let hi = splitmix64(state);
+                let lo = splitmix64(state);
+                let mut bytes = [0u8; 16];
+                bytes[..8].copy_from_slice(&hi.to_be_bytes());
+                bytes[8..].copy_from_slice(&lo.to_be_bytes());
+                bytes
+            }
+            None => fresh_entropy_bytes(),
+        }
+    }
+}
+
+impl Default for UuidMinter {
+    fn default() -> Self {
+        Self::fresh()
+    }
+}
+
+fn splitmix64(state: &AtomicU64) -> u64 {
+    let mut z = state
+        .fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+static NEXT_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn fresh_entropy_bytes() -> [u8; 16] {
+    let counter = u128::from(NEXT_NONCE.fetch_add(1, Ordering::Relaxed));
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let process = u128::from(std::process::id());
+    let nonce = elapsed ^ counter.rotate_left(37) ^ (process << 64);
+    nonce.to_be_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seeded_minter_is_deterministic_across_instances() {
+        let a = UuidMinter::seeded(42);
+        let b = UuidMinter::seeded(42);
+        assert_eq!(a.next_bytes(), b.next_bytes());
+        assert_eq!(a.next_bytes(), b.next_bytes());
+    }
+
+    #[test]
+    fn seeded_minter_advances_between_calls() {
+        let minter = UuidMinter::seeded(7);
+        let first = minter.next_bytes();
+        let second = minter.next_bytes();
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn fresh_minter_never_repeats_within_a_short_burst() {
+        let minter = UuidMinter::fresh();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..256 {
+            assert!(seen.insert(minter.next_bytes()));
+        }
+    }
+
+    #[test]
+    fn generation_token_equality_is_root_lifetime_and_generation_scoped() {
+        let lifetime_a = RootLifetimeId::from_bytes([1; 16]);
+        let lifetime_b = RootLifetimeId::from_bytes([2; 16]);
+        let token_a1 = GenerationToken::new(lifetime_a, 1);
+        let token_a1_again = GenerationToken::new(lifetime_a, 1);
+        let token_a2 = GenerationToken::new(lifetime_a, 2);
+        let token_b1 = GenerationToken::new(lifetime_b, 1);
+        assert_eq!(token_a1, token_a1_again);
+        assert_ne!(token_a1, token_a2);
+        assert_ne!(token_a1, token_b1);
+    }
+}
