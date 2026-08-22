@@ -248,6 +248,8 @@ final class AgentContextFileBrowseModelTests: XCTestCase {
         for _ in 0 ..< 20 {
             await Task.yield()
         }
+        // P4-6a: these counters now aggregate every fact-returning call site, not
+        // only `appliedIndexRecordLookup` -- verified empirically unchanged here.
         let collapsedDiagnostics = await harness.store.appliedIndexRecordLookupDiagnosticsForTesting()
         let collapsedReadCount = await harness.metadataReads.count
         XCTAssertNil(harness.model.membership(for: rootNode))

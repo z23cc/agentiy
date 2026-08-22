@@ -98,7 +98,7 @@ pub use registry::{ScopeRegistry, ScopeRegistryError};
 pub use resolve::{LookupPathsOutcome, build_projected_shard};
 pub use scope::{
     InventoryGenerationReceipt, InventoryPublishMode, InventoryScope, InventoryScopeConfig,
-    RootUnloadReceipt, ScopeError,
+    RootUnloadReceipt, ScopeError, SnapshotPage,
 };
 pub use state_machine::{RootCounters, RootState};
 pub use wire::{

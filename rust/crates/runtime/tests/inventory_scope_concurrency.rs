@@ -134,5 +134,5 @@ fn reader_is_never_blocked_by_an_in_flight_authoritative_rebuild() {
         .open_snapshot(&identity, root, "final")
         .expect("final open_snapshot");
     let page = scope.snapshot_page(handle, 0, 100).expect("final page");
-    assert_eq!(page.len(), 2); // seed.swift + b.swift
+    assert_eq!(page.files.len(), 2); // seed.swift + b.swift
 }

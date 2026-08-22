@@ -54,6 +54,8 @@ final class AgentContextFileBrowseServiceTests: XCTestCase {
         )
         let initial = try XCTUnwrap(availableResult(maybeInitial))
         _ = try await service.hierarchy(rootID: root.id, folderID: nil, lookupContext: .visibleWorkspace)
+        // P4-6a: these counters now aggregate every fact-returning call site, not
+        // only `appliedIndexRecordLookup` -- verified empirically unchanged here.
         let reused = await store.appliedIndexRecordLookupDiagnosticsForTesting()
 
         _ = try await store.createFile(rootID: root.id, relativePath: "Two.swift", content: "two")

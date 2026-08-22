@@ -97,6 +97,15 @@ extension CoreRuntimeTransport {
     func inventoryCloseSnapshot(scopeID: String, handleID: UInt64) throws {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
+
+    func inventoryQuery(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactQueryResultV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
 }
 
 extension AgentryCoreBridge {
@@ -275,6 +284,15 @@ extension AgentryCoreBridge {
             throw mapTransportError(error)
         }
     }
+
+    func inventoryQuery(scopeID: String, handleID: UInt64, bytes: Data) throws -> AgentryUniFFIRaw.CompactQueryResultV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryQuery(identity: identity, scopeID: scopeID, handleID: handleID, bytes: bytes)
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
 }
 
 private func coreInventoryUUIDData(_ id: UUID) -> Data {
@@ -367,6 +385,36 @@ public struct CoreInventoryDeltaCommand: Sendable {
         self.source = source
         self.event = event
     }
+}
+
+/// Mirrors Rust's `QueryHaystackVariant` (`rust/crates/runtime/src/inventory_scope/query.rs`) --
+/// `from_wire`'s two cases, in wire-value order. P4-5's index comparison arm always uses
+/// `.indexKey` (the ordered candidate list from `WorkspaceSearchRootPathIndex`'s C-engine-backed
+/// counterpart); `.suggestion` is reserved for P4-7's `AgentFileTagSuggestionService` cutover.
+public enum CoreInventoryQueryHaystackVariant: UInt64, Sendable, Equatable, CaseIterable {
+    case indexKey = 0
+    case suggestion = 1
+}
+
+/// One row of `QueryCandidateRow` (`wire.rs`): the fields needed to compare ordered identity/path
+/// sequence against the Swift index (design doc §8.2's index comparison arm compares the
+/// **sequence**, not `score` -- Rust's own comment on `InventoryQueryCandidate.score` notes scores
+/// are always `1` in this crate today, so score equality would be vacuous).
+public struct CoreInventoryQueryCandidateV1: Sendable, Equatable {
+    public let id: UUID
+    public let rootID: UUID
+    public let name: String
+    public let relativePath: String
+    public let standardizedRelativePath: String
+    public let fullPath: String
+    public let standardizedFullPath: String
+    public let displayPath: String
+    public let score: Int64
+}
+
+public struct CoreInventoryQueryResult: Sendable, Equatable {
+    public let generation: UInt64?
+    public let candidates: [CoreInventoryQueryCandidateV1]
 }
 
 public struct CoreInventoryDeltaReceipt: Sendable, Equatable {
@@ -547,10 +595,36 @@ public final class CoreInventorySnapshot: @unchecked Sendable {
         self.rootLifetimeID = rootLifetimeID
     }
 
-    public func page(offset: UInt64, limit: UInt64) async throws -> (files: [CoreInventoryFileRecordV1], returnedCount: UInt64, hasMore: Bool) {
+    public func page(
+        offset: UInt64,
+        limit: UInt64
+    ) async throws -> (files: [CoreInventoryFileRecordV1], folders: [CoreInventoryFolderRecordV1], returnedCount: UInt64, hasMore: Bool) {
         let page = try await bridge.inventorySnapshotPage(scopeID: scopeID, handleID: handleID, offset: offset, limit: limit)
-        let (files, _) = try CoreInventoryScopeWire.decodeBulkChunk(page.bytes)
-        return (files, page.returnedCount, page.hasMore)
+        let (files, folders) = try CoreInventoryScopeWire.decodeBulkChunk(page.bytes)
+        return (files, folders, page.returnedCount, page.hasMore)
+    }
+
+    /// P4-5: the handle-based read-plane query (design doc §8.2's index comparison arm; contract
+    /// doc §6). `prefix` mirrors `QueryPrefix` (`rust/crates/runtime/src/inventory_scope/query.rs`)
+    /// -- the per-root display-prefix contract already frozen for `CompactQueryV1` (`WorkspacePathPolicyTests`
+    /// pins it across all three `ClientPathFormatter` branches).
+    public func query(
+        pattern: String,
+        limit: UInt64,
+        haystackVariant: CoreInventoryQueryHaystackVariant,
+        nonEmptyRelativePrefix: String,
+        emptyRelativePathValue: String
+    ) async throws -> CoreInventoryQueryResult {
+        let bytes = CoreInventoryScopeWire.encodeQueryRequest(
+            pattern: pattern,
+            limit: limit,
+            haystackVariant: haystackVariant,
+            nonEmptyRelativePrefix: nonEmptyRelativePrefix,
+            emptyRelativePathValue: emptyRelativePathValue
+        )
+        let response = try await bridge.inventoryQuery(scopeID: scopeID, handleID: handleID, bytes: bytes)
+        let (generation, candidates) = try CoreInventoryScopeWire.decodeQueryResponse(response.bytes)
+        return CoreInventoryQueryResult(generation: generation, candidates: candidates)
     }
 
     /// Idempotent, product-facing close. `deinit` is a backstop only -- see this type's doc
@@ -761,7 +835,9 @@ private let coreInventoryScopeContractVersionV1: UInt16 = 1
 private let coreInventoryScopeStringRangeStride = 2
 private let coreInventoryScopeOptionalWord = UInt64.max
 private let coreInventoryScopeRecordStride = 14
+private let coreInventoryScopeCandidateRowStride = 11
 private let coreInventoryScopeMaxWordsPerSection = 8 * 1024 * 1024
+private let coreInventoryScopeMaxRowsPerCall = 200_000
 private let coreInventoryScopeMaxBlobBytes = 64 * 1024 * 1024
 
 private struct CoreInventoryScopeWriter {
@@ -1038,6 +1114,97 @@ enum CoreInventoryScopeWire {
             modifiedFileIDs: try decodeUUIDWordList(modifiedFileIDWords),
             modifiedFolderIDs: try decodeUUIDWordList(modifiedFolderIDWords)
         )
+    }
+
+    /// P4-5: mirrors `agentry_runtime::inventory_scope::wire::encode_query_request` byte-for-byte
+    /// (`sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx),
+    /// stringRangeWords,blob` in `fingerprint()` below -- already frozen by the contract, not
+    /// re-derived here).
+    static func encodeQueryRequest(
+        pattern: String,
+        limit: UInt64,
+        haystackVariant: CoreInventoryQueryHaystackVariant,
+        nonEmptyRelativePrefix: String,
+        emptyRelativePathValue: String
+    ) -> Data {
+        var pool = CoreInventoryScopeInternPool()
+        let patternIdx = pool.intern(pattern)
+        let prefixIdx = pool.intern(nonEmptyRelativePrefix)
+        let emptyOverrideIdx = pool.intern(emptyRelativePathValue)
+
+        var writer = CoreInventoryScopeWriter()
+        writer.writeHeader(kind: .queryRequest)
+        writer.writeWords([patternIdx, limit, haystackVariant.rawValue, prefixIdx, emptyOverrideIdx])
+        writer.writeWords(pool.rangeWords)
+        writer.writeBlob(pool.blob)
+        return writer.buffer
+    }
+
+    /// The receive-side counterpart, for completeness / future Rust-side host-shaped tooling; not
+    /// on the shadow-arm hot path (Swift only ever encodes requests and decodes responses) but
+    /// kept symmetric with `decodeDeltaEvent` above.
+    static func decodeQueryRequest(_ data: Data) throws -> (
+        pattern: String, limit: UInt64, haystackVariant: UInt64, nonEmptyRelativePrefix: String, emptyRelativePathValue: String
+    ) {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .queryRequest)
+        let header = try reader.readWords(maxWords: 5)
+        guard header.count == 5 else { throw CoreInventoryScopeWireError.malformed }
+        let rangeWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let blob = try reader.readBlob()
+        try reader.finish()
+        let pool = CoreInventoryScopePoolReader(blob: blob, rangeWords: rangeWords)
+        return (
+            pattern: try pool.resolve(header[0]),
+            limit: header[1],
+            haystackVariant: header[2],
+            nonEmptyRelativePrefix: try pool.resolve(header[3]),
+            emptyRelativePathValue: try pool.resolve(header[4])
+        )
+    }
+
+    /// Mirrors `agentry_runtime::inventory_scope::wire::decode_query_response` byte-for-byte.
+    /// `score` unpacks with the same sign-preserving two's-complement convention the Rust encoder
+    /// documents (`candidate.score as u64` / here, `UInt64(bitPattern: Int64(...))` reversed).
+    static func decodeQueryResponse(_ data: Data) throws -> (generation: UInt64?, candidates: [CoreInventoryQueryCandidateV1]) {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .queryResponse)
+        let header = try reader.readWords(maxWords: 2)
+        guard header.count == 2 else { throw CoreInventoryScopeWireError.malformed }
+        let generation: UInt64? = switch header[0] {
+        case 0: nil
+        case 1: header[1]
+        default: throw CoreInventoryScopeWireError.malformed
+        }
+        let rowsWords = try reader.readWords(maxWords: coreInventoryScopeMaxRowsPerCall * coreInventoryScopeCandidateRowStride)
+        let rangeWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let blob = try reader.readBlob()
+        try reader.finish()
+        guard rowsWords.count % coreInventoryScopeCandidateRowStride == 0 else { throw CoreInventoryScopeWireError.malformed }
+        guard rowsWords.count / coreInventoryScopeCandidateRowStride <= coreInventoryScopeMaxRowsPerCall else {
+            throw CoreInventoryScopeWireError.oversize
+        }
+        let pool = CoreInventoryScopePoolReader(blob: blob, rangeWords: rangeWords)
+        var candidates: [CoreInventoryQueryCandidateV1] = []
+        candidates.reserveCapacity(rowsWords.count / coreInventoryScopeCandidateRowStride)
+        var index = 0
+        while index < rowsWords.count {
+            let row = rowsWords[index ..< index + coreInventoryScopeCandidateRowStride]
+            let base = row.startIndex
+            candidates.append(CoreInventoryQueryCandidateV1(
+                id: coreInventoryUUID(fromHi: row[base], lo: row[base + 1]),
+                rootID: coreInventoryUUID(fromHi: row[base + 2], lo: row[base + 3]),
+                name: try pool.resolve(row[base + 4]),
+                relativePath: try pool.resolve(row[base + 5]),
+                standardizedRelativePath: try pool.resolve(row[base + 6]),
+                fullPath: try pool.resolve(row[base + 7]),
+                standardizedFullPath: try pool.resolve(row[base + 8]),
+                displayPath: try pool.resolve(row[base + 9]),
+                score: Int64(bitPattern: row[base + 10])
+            ))
+            index += coreInventoryScopeCandidateRowStride
+        }
+        return (generation, candidates)
     }
 
     private static func decodeUUIDWordList(_ words: [UInt64]) throws -> [UUID] {

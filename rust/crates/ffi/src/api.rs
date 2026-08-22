@@ -898,11 +898,17 @@ impl CoreRuntime {
             // threaded through the handle itself (matches the read plane's existing shape).
             let _ = &identity;
             match scope.snapshot_page(handle_id, offset, limit) {
-                Ok(files) => {
-                    let returned_count = files.len() as u64;
-                    let has_more = files.len() == limit && limit > 0;
+                Ok(page) => {
+                    // `returned_count`/`has_more` are computed from `files` alone, unchanged from
+                    // before this fix -- `SnapshotPage` pages files and folders through the same
+                    // offset/limit window independently (see `snapshot_page`'s doc comment), and
+                    // callers that want every folder page the folder list to exhaustion the same
+                    // way they already do for files (`WorkspaceInventoryScopeShadowForwarder.
+                    // snapshotAllRecords`).
+                    let returned_count = page.files.len() as u64;
+                    let has_more = page.files.len() == limit && limit > 0;
                     Ok(CompactInventoryPageV1 {
-                        bytes: runtime::inventory_scope::encode_bulk_chunk(&files, &[]),
+                        bytes: runtime::inventory_scope::encode_bulk_chunk(&page.files, &page.folders),
                         returned_count,
                         has_more,
                     })

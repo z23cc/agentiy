@@ -407,7 +407,7 @@ fn patch_threshold_exceeded_falls_back_to_rebuild() {
         .open_snapshot(&identity, root, "test")
         .expect("open_snapshot");
     let page = scope.snapshot_page(handle, 0, 100).expect("page");
-    assert_eq!(page.len(), 3);
+    assert_eq!(page.files.len(), 3);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -838,7 +838,48 @@ fn staged_bulk_load_content_is_invisible_until_commit_then_atomically_published(
         .open_snapshot(&identity, root, "test")
         .expect("open_snapshot after commit");
     let page = scope.snapshot_page(handle, 0, 100).expect("page");
-    assert_eq!(page.len(), 2);
+    assert_eq!(page.files.len(), 2);
+}
+
+/// P4-5's shadow-arm regression: `inventory_snapshot_page`'s FFI wire encoder previously hardcoded
+/// an empty folders list on every page response (`rust/crates/ffi/src/api.rs`), so a bulk-loaded
+/// folder was staged and committed correctly but never observable through the read plane. No
+/// existing bulk-load test above pushed a non-empty folder list, so nothing caught it. This test
+/// pins the fix at the `InventoryScope::snapshot_page` layer directly; the FFI-level round trip
+/// (`inventoryOpenScope`/`beginBulkLoad`/`pushBulkChunk`/`commitBulkLoad`/`openSnapshot`/`page`)
+/// is covered end-to-end by the Swift bridge's `CoreInventoryScopeShadowDifferentialTests` and the
+/// store-level `WorkspaceInventoryScopeShadowTests` differential.
+#[test]
+fn snapshot_page_returns_bulk_loaded_folders_not_just_files() {
+    let (scope, identity) = seeded_scope(19, InventoryScopeConfig::default());
+    let root = root_id(1);
+    let lifetime = scope
+        .open_root(&identity, root, "Root".into(), "/root".into())
+        .expect("open_root");
+
+    let bulk_load = scope
+        .begin_bulk_load(&identity, root, lifetime)
+        .expect("begin_bulk_load");
+    scope
+        .push_bulk_chunk(
+            &identity,
+            bulk_load,
+            root,
+            vec![file(1, root, "Sub/a.swift")],
+            vec![folder(2, root, "Sub")],
+        )
+        .expect("push chunk");
+    scope
+        .commit_bulk_load(&identity, bulk_load, InventoryPublishMode::AtomicPublish)
+        .expect("commit_bulk_load");
+
+    let handle = scope
+        .open_snapshot(&identity, root, "test")
+        .expect("open_snapshot after commit");
+    let page = scope.snapshot_page(handle, 0, 100).expect("page");
+    assert_eq!(page.files.len(), 1);
+    assert_eq!(page.folders.len(), 1);
+    assert_eq!(page.folders[0].relative_path, "Sub");
 }
 
 #[test]

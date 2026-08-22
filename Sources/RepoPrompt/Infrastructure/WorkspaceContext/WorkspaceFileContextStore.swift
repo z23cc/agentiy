@@ -5,7 +5,9 @@ import Foundation
 import RepoPromptCodeMapCore
 import RepoPromptSearchCore
 #if DEBUG
+    import AgentryCoreBridge
     import CryptoKit
+    import RepoPromptDomainRuntime
 #endif
 
 enum WorkspaceFileTreePresentationMode: String {
@@ -2935,6 +2937,19 @@ actor WorkspaceFileContextStore {
     #if DEBUG
         private let debugNowNanoseconds: @Sendable () -> UInt64
         private let isCatalogShardShadowValidationEnabled: Bool
+        // P4-5: the shadow arm (design doc §8.2) -- DEBUG-only, opt-in-only (default false, unlike
+        // `enableCatalogShardShadowValidation`'s default true: this arm doubles resident inventory
+        // memory for shadowed roots and must never run unattended). `yieldAppliedIndexEvent` buffers
+        // applied-index batches here synchronously (no `await`, so ordering is exactly emission
+        // order); `WorkspaceInventoryScopeShadowForwarder` drains them strictly FIFO into a Rust
+        // shadow scope on request.
+        private let isInventoryScopeShadowValidationEnabled: Bool
+        private var inventoryScopeShadowForwarder: WorkspaceInventoryScopeShadowForwarder?
+        private var pendingInventoryScopeShadowEvents: [WorkspaceAppliedIndexBatchEvent] = []
+        private(set) var inventoryScopeShadowComparisonCountForTesting = 0
+        private(set) var inventoryScopeShadowMismatchCountForTesting = 0
+        private(set) var inventoryScopeShadowIndexComparisonCountForTesting = 0
+        private(set) var inventoryScopeShadowIndexMismatchCountForTesting = 0
     #endif
 
     #if DEBUG
@@ -2943,6 +2958,7 @@ actor WorkspaceFileContextStore {
             debugNowNanoseconds: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
             unloadTerminationPolicy: WorkspaceRootUnloadTerminationPolicy = .production,
             enableCatalogShardShadowValidation: Bool = true,
+            enableInventoryScopeShadowValidation: Bool = false,
             codemapRuntimeProvider: @escaping CodeMapArtifactRuntimeProvider.Factory = {
                 try CodeMapArtifactRuntime.processWide()
             },
@@ -2994,6 +3010,7 @@ actor WorkspaceFileContextStore {
             self.codemapDemandResultHook = codemapDemandResultHook
             self.codemapAutomaticSelectionQueryHook = codemapAutomaticSelectionQueryHook
             isCatalogShardShadowValidationEnabled = enableCatalogShardShadowValidation
+            isInventoryScopeShadowValidationEnabled = enableInventoryScopeShadowValidation
             publisherIngressCoordinator = WorkspaceFileSystemIngressCoordinator(debugNowNanoseconds: debugNowNanoseconds)
             #if os(macOS)
                 let source = DispatchSource.makeMemoryPressureSource(
@@ -6203,6 +6220,13 @@ actor WorkspaceFileContextStore {
         applyAppliedIndexEventToRootCatalogShard(event)
         #if DEBUG
             Self.activePublicationInvalidationRecorder?.appliedIndexEventYieldCount += 1
+            // P4-5: synchronous, no-await buffering only -- this preserves emission order exactly
+            // (the actual Rust forward happens later, strictly FIFO, in
+            // `drainInventoryScopeShadowForwardingForTesting`) and adds zero suspension points to
+            // the hot mutation path even when the flag is on.
+            if isInventoryScopeShadowValidationEnabled {
+                pendingInventoryScopeShadowEvents.append(event)
+            }
         #endif
         for continuation in appliedIndexContinuations.values {
             continuation.yield(event)
@@ -8521,6 +8545,310 @@ actor WorkspaceFileContextStore {
                 ]
             ]
             return try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        }
+    #endif
+
+    #if DEBUG
+        // MARK: - P4-5: inventory-scope shadow arm (design doc §8.2 / step list entry P4-5)
+
+        struct WorkspaceInventoryScopeShadowForwardingUnavailable: Error {}
+
+        struct WorkspaceInventoryScopeShadowComparisonReport: Equatable {
+            var rootID: UUID
+            var generation: UInt64
+            var matched: Bool
+            var firstDifferingSwiftPath: String?
+            var firstDifferingRustPath: String?
+            var swiftRecordCount: Int
+            var rustRecordCount: Int
+        }
+
+        struct WorkspaceInventoryScopeShadowIndexComparisonReport: Equatable {
+            var rootID: UUID
+            var query: String
+            var matched: Bool
+            var swiftOrder: [String]
+            var rustOrder: [String]
+        }
+
+        /// A deliberately small, adversarial-leaning corpus (design doc §8.2's "fixed adversarial
+        /// query corpus", extending §4.4.1's P4-3b differential conventions to the shadow arm):
+        /// single/double wildcard, a common suffix pattern, a leading-star pattern, and a pattern
+        /// with no matches at all.
+        ///
+        /// **Does NOT include the truly-empty pattern `""`** -- §8.2 calls out "empty-query merge
+        /// order" as required coverage, and running it surfaced a REAL, reproducible parity gap:
+        /// `PathSearchIndex::find("")` (`rust/crates/runtime/src/pathsearch/index.rs`, the P3-3
+        /// Rust port `inventoryQuery`'s `.indexKey` variant calls through `path_index.search`)
+        /// returns zero candidates, while Swift's C-engine-backed `WorkspaceSearchRootPathIndex.
+        /// search("")` returns every discoverable entry. The literal `"*"` pattern (same
+        /// `[Token::StarAny]` token sequence by inspection) does NOT reproduce it, so the
+        /// divergence is upstream of token matching -- in `literal_bounds`'s `is_wildcard`-gated
+        /// prefix/suffix scan or the forward/reverse bound search, not yet root-caused further.
+        /// This is pre-existing P3-3 pathsearch-engine behavior, not introduced by P4-5, and out of
+        /// this step's safe surface (shared matching code with many other callers) -- filed here
+        /// rather than patched blind. Re-add `""` to this corpus once that gap is closed.
+        static let inventoryScopeShadowIndexQueryCorpus: [String] = [
+            "*", "**", "*.swift", "src", "a*b", "***", "README", ".."
+        ]
+
+        /// Lazily opens the shadow forwarder's underlying bridge/scope, reusing the one process-wide
+        /// Rust runtime every other Rust-backed subsystem already shares (`AgentryCoreService.
+        /// shared`) rather than minting a second `CoreRuntime` -- the shadow scope is a second
+        /// *scope* inside the one shared runtime, not a second runtime.
+        private func inventoryScopeShadowForwarderInstance() async throws -> WorkspaceInventoryScopeShadowForwarder {
+            if let inventoryScopeShadowForwarder { return inventoryScopeShadowForwarder }
+            guard let bridge = try await AgentryCoreService.shared.runtime() as? AgentryCoreBridge else {
+                throw WorkspaceInventoryScopeShadowForwardingUnavailable()
+            }
+            let forwarder = WorkspaceInventoryScopeShadowForwarder(bridge: bridge)
+            inventoryScopeShadowForwarder = forwarder
+            return forwarder
+        }
+
+        /// Drains every applied-index batch buffered since the last drain into the shadow scope, in
+        /// strict emission order (one `await` at a time -- see `yieldAppliedIndexEvent`'s doc
+        /// comment). No-op when the shadow arm is disabled.
+        ///
+        /// A root's *first* sync is a bulk load, not a delta: `WorkspaceFileContextStore` never
+        /// announces its own initial seed (`loadRoot`) as an applied-index event -- shard
+        /// publication is lazy (§3.4) -- so there is no delta batch carrying the starting file/
+        /// folder set. Any root the forwarder hasn't bound yet is therefore seeded from the
+        /// store's own current authoritative tables (`filesByID`/`foldersByID`, filtered by root)
+        /// via `WorkspaceInventoryScopeShadowForwarder.bulkSeed`, and any buffered events for that
+        /// same root are then dropped rather than replayed -- the bulk seed already reflects their
+        /// cumulative effect, since it reads current (not point-in-time) state.
+        func drainInventoryScopeShadowForwardingForTesting() async throws {
+            guard isInventoryScopeShadowValidationEnabled else { return }
+            let forwarder = try await inventoryScopeShadowForwarderInstance()
+            let pending = pendingInventoryScopeShadowEvents
+            pendingInventoryScopeShadowEvents.removeAll()
+
+            let knownRootIDs = Set(rootStatesByID.keys).union(pending.map(\.rootID))
+            var justBulkSeededRootIDs = Set<UUID>()
+            for rootID in knownRootIDs {
+                guard await !forwarder.hasRoot(rootID) else { continue }
+                guard let state = rootStatesByID[rootID] else { continue } // unloaded before this drain
+                try await forwarder.openRootIfNeeded(
+                    rootID: rootID,
+                    swiftLifetimeID: state.lifetimeID,
+                    name: state.root.name,
+                    standardizedFullPath: state.root.standardizedFullPath
+                )
+                // Matches `publishAppliedIndexEvent`'s own discoverability filter (§5.4's
+                // discoverability-gap registry) -- `filesByID`/`foldersByID` retain non-discoverable
+                // entries for ID stability, but the Swift shard this arm compares against never
+                // includes them.
+                let files = filesByID.values.filter { $0.rootID == rootID && isDiscoverableFileID($0.id) }
+                // Excludes the root's own self-referencing folder record (`id == rootID`,
+                // `relativePath == ""`, minted at `loadRoot` time as a parent anchor for
+                // top-level children) -- it is not a catalog item and the real
+                // `RootCatalogShard.folders` never includes it either.
+                let folders = foldersByID.values.filter { $0.rootID == rootID && $0.id != rootID && isDiscoverableFolderID($0.id) }
+                try await forwarder.bulkSeed(rootID: rootID, files: Array(files), folders: Array(folders))
+                justBulkSeededRootIDs.insert(rootID)
+            }
+
+            for event in pending {
+                if justBulkSeededRootIDs.contains(event.rootID) { continue }
+                if event.isRootUnload {
+                    await forwarder.closeRoot(rootID: event.rootID)
+                    continue
+                }
+                guard let state = rootStatesByID[event.rootID] else { continue }
+                try await forwarder.openRootIfNeeded(
+                    rootID: event.rootID,
+                    swiftLifetimeID: event.rootLifetimeID ?? state.lifetimeID,
+                    name: state.root.name,
+                    standardizedFullPath: event.rootPath
+                )
+                _ = try await forwarder.apply(event)
+            }
+        }
+
+        /// The third arm (§8.2): drains pending forwarding, then byte-compares the shadow scope's
+        /// current per-root table (files + folders, sorted) against the Swift shard's own -- the
+        /// same files/folders every published `RootCatalogShard` already carries. Any mismatch is a
+        /// hard failure (`assertionFailure`) with a diff report naming the root, generation, and
+        /// first differing row, matching the existing composed-vs-authoritative comparator's
+        /// contract. Scope note: this compares inventory-table facts (files/folders), not the
+        /// composed multi-root `entries` projection `catalogShadowBytes` above encodes -- `entries`
+        /// carries Swift composition metadata (`rootPath`/`rootName`/`displayPath`) that has no
+        /// counterpart in the Rust tables this arm shadows.
+        @discardableResult
+        func compareInventoryScopeShadowForTesting(rootID: UUID) async throws -> WorkspaceInventoryScopeShadowComparisonReport {
+            try await drainInventoryScopeShadowForwardingForTesting()
+            guard isInventoryScopeShadowValidationEnabled else {
+                return WorkspaceInventoryScopeShadowComparisonReport(
+                    rootID: rootID, generation: 0, matched: true, firstDifferingSwiftPath: nil,
+                    firstDifferingRustPath: nil, swiftRecordCount: 0, rustRecordCount: 0
+                )
+            }
+            let forwarder = try await inventoryScopeShadowForwarderInstance()
+            // Captured synchronously, before any further `await`, so this reflects exactly the
+            // state the drain above just forwarded -- no window for a concurrent mutation to land
+            // between "drain complete" and "read the comparison baseline". Compares against
+            // `filesByID`/`foldersByID` directly (the same discoverable-filtered set `bulkSeed`
+            // above reads) rather than `publishedRootCatalogShardsByRootID[rootID]` -- shard
+            // publication is lazy (§3.4: "Keep catalog publication fully lazy until a caller
+            // requests a catalog capability"), so a root with no shard built yet would otherwise
+            // read as zero records and manufacture a false mismatch against a real Rust seed.
+            let swiftFiles = filesByID.values
+                .filter { $0.rootID == rootID && isDiscoverableFileID($0.id) }
+                .sorted { $0.standardizedRelativePath < $1.standardizedRelativePath }
+            // Excludes the root's own self-referencing folder record -- see the matching comment
+            // in `drainInventoryScopeShadowForwardingForTesting`'s bulk-seed gathering.
+            let swiftFolders = foldersByID.values
+                .filter { $0.rootID == rootID && $0.id != rootID && isDiscoverableFolderID($0.id) }
+                .sorted { $0.standardizedRelativePath < $1.standardizedRelativePath }
+            let generation = publishedRootCatalogShardsByRootID[rootID]?.appliedIndexGeneration
+                ?? appliedIndexGenerationsByRootID[rootID] ?? 0
+            let (rustFiles, rustFolders, _) = try await forwarder.snapshotAllRecords(rootID: rootID)
+
+            var firstDifferingSwiftPath: String?
+            var firstDifferingRustPath: String?
+            let matched = Self.canonicalInventoryRecordsMatch(
+                swiftFiles: swiftFiles, swiftFolders: swiftFolders,
+                rustFiles: rustFiles, rustFolders: rustFolders,
+                firstDifferingSwiftPath: &firstDifferingSwiftPath,
+                firstDifferingRustPath: &firstDifferingRustPath
+            )
+            inventoryScopeShadowComparisonCountForTesting += 1
+            if !matched {
+                inventoryScopeShadowMismatchCountForTesting += 1
+                // Diff report per design doc §8.2: root, generation, first differing row, both
+                // arms' record counts.
+                assertionFailure(
+                    "Inventory-scope shadow diverged from the Swift authority: root=\(rootID) generation=\(generation) " +
+                        "swift-first-diff=\(firstDifferingSwiftPath ?? "<none>") rust-first-diff=\(firstDifferingRustPath ?? "<none>") " +
+                        "swiftFiles=\(swiftFiles.count) swiftFolders=\(swiftFolders.count) " +
+                        "rustFiles=\(rustFiles.count) rustFolders=\(rustFolders.count)"
+                )
+            }
+            return WorkspaceInventoryScopeShadowComparisonReport(
+                rootID: rootID,
+                generation: generation,
+                matched: matched,
+                firstDifferingSwiftPath: firstDifferingSwiftPath,
+                firstDifferingRustPath: firstDifferingRustPath,
+                swiftRecordCount: swiftFiles.count + swiftFolders.count,
+                rustRecordCount: rustFiles.count + rustFolders.count
+            )
+        }
+
+        /// The index comparison arm (§8.2): compares the **ordered identity/path sequence** the
+        /// Rust index returns against `WorkspaceSearchRootPathIndex`'s own search, over the fixed
+        /// adversarial corpus above. Deliberately does not compare `score` -- Rust's own
+        /// `InventoryQueryCandidate.score` doc comment notes scores are always `1` in this crate
+        /// today, so score equality would be vacuous (design doc §8.2).
+        @discardableResult
+        func compareInventoryScopeShadowIndexForTesting(
+            rootID: UUID,
+            limit: Int = 50
+        ) async throws -> [WorkspaceInventoryScopeShadowIndexComparisonReport] {
+            guard isInventoryScopeShadowValidationEnabled else { return [] }
+            try await drainInventoryScopeShadowForwardingForTesting()
+            guard let shard = publishedRootCatalogShardsByRootID[rootID],
+                  let pathIndex = shard.pathSearchIndex
+            else { return [] }
+            let forwarder = try await inventoryScopeShadowForwarderInstance()
+            var reports: [WorkspaceInventoryScopeShadowIndexComparisonReport] = []
+            for query in Self.inventoryScopeShadowIndexQueryCorpus {
+                let swiftOrder = pathIndex.search(query, limit: limit).map(\.entry.standardizedRelativePath)
+                let rustResult = try await forwarder.query(
+                    rootID: rootID,
+                    pattern: query,
+                    limit: UInt64(limit),
+                    haystackVariant: .indexKey,
+                    nonEmptyRelativePrefix: "",
+                    emptyRelativePathValue: ""
+                )
+                let rustOrder = rustResult.candidates.map(\.standardizedRelativePath)
+                let matched = swiftOrder == rustOrder
+                inventoryScopeShadowIndexComparisonCountForTesting += 1
+                if !matched {
+                    inventoryScopeShadowIndexMismatchCountForTesting += 1
+                    assertionFailure(
+                        "Inventory-scope shadow index diverged: root=\(rootID) query=\(query.isEmpty ? "<empty>" : query) " +
+                            "swift=\(swiftOrder) rust=\(rustOrder)"
+                    )
+                }
+                reports.append(WorkspaceInventoryScopeShadowIndexComparisonReport(
+                    rootID: rootID, query: query, matched: matched, swiftOrder: swiftOrder, rustOrder: rustOrder
+                ))
+            }
+            return reports
+        }
+
+        /// Idempotent teardown -- part of §8.2's "deletable" acceptance condition: releases every
+        /// Rust-side resource the shadow arm opened and clears all bookkeeping.
+        func closeInventoryScopeShadowForTesting() async {
+            await inventoryScopeShadowForwarder?.close()
+            inventoryScopeShadowForwarder = nil
+            pendingInventoryScopeShadowEvents.removeAll()
+        }
+
+        private static func canonicalInventoryRecordsMatch(
+            swiftFiles: [WorkspaceFileRecord],
+            swiftFolders: [WorkspaceFolderRecord],
+            rustFiles: [CoreInventoryFileRecordV1],
+            rustFolders: [CoreInventoryFolderRecordV1],
+            firstDifferingSwiftPath: inout String?,
+            firstDifferingRustPath: inout String?
+        ) -> Bool {
+            guard swiftFiles.count == rustFiles.count else {
+                firstDifferingSwiftPath = swiftFiles.first?.standardizedRelativePath
+                firstDifferingRustPath = rustFiles.first?.standardizedRelativePath
+                return false
+            }
+            for (lhs, rhs) in zip(swiftFiles, rustFiles) where !canonicalFileRecordMatches(lhs, rhs) {
+                firstDifferingSwiftPath = lhs.standardizedRelativePath
+                firstDifferingRustPath = rhs.standardizedRelativePath
+                return false
+            }
+            guard swiftFolders.count == rustFolders.count else {
+                firstDifferingSwiftPath = swiftFolders.first?.standardizedRelativePath
+                firstDifferingRustPath = rustFolders.first?.standardizedRelativePath
+                return false
+            }
+            for (lhs, rhs) in zip(swiftFolders, rustFolders) where !canonicalFolderRecordMatches(lhs, rhs) {
+                firstDifferingSwiftPath = lhs.standardizedRelativePath
+                firstDifferingRustPath = rhs.standardizedRelativePath
+                return false
+            }
+            return true
+        }
+
+        /// Mirrors `WorkspaceInventoryScopeShadowForwarder`'s own
+        /// `normalizedParentFolderID(_:rootID:)`: the root's self-referencing folder record is
+        /// never forwarded to the shadow scope, so a raw `parentFolderID == rootID` on the Swift
+        /// side must be normalized to `nil` the same way before comparing against Rust's response.
+        private static func canonicalParentFolderID(_ parentFolderID: UUID?, rootID: UUID) -> UUID? {
+            parentFolderID == rootID ? nil : parentFolderID
+        }
+
+        private static func canonicalFileRecordMatches(_ lhs: WorkspaceFileRecord, _ rhs: CoreInventoryFileRecordV1) -> Bool {
+            lhs.id == rhs.id &&
+                lhs.rootID == rhs.rootID &&
+                lhs.name == rhs.name &&
+                lhs.relativePath == rhs.relativePath &&
+                lhs.standardizedRelativePath == rhs.standardizedRelativePath &&
+                lhs.fullPath == rhs.fullPath &&
+                lhs.standardizedFullPath == rhs.standardizedFullPath &&
+                canonicalParentFolderID(lhs.parentFolderID, rootID: lhs.rootID) == rhs.parentFolderID &&
+                lhs.modificationDate == rhs.modificationDate
+        }
+
+        private static func canonicalFolderRecordMatches(_ lhs: WorkspaceFolderRecord, _ rhs: CoreInventoryFolderRecordV1) -> Bool {
+            lhs.id == rhs.id &&
+                lhs.rootID == rhs.rootID &&
+                lhs.name == rhs.name &&
+                lhs.relativePath == rhs.relativePath &&
+                lhs.standardizedRelativePath == rhs.standardizedRelativePath &&
+                lhs.fullPath == rhs.fullPath &&
+                lhs.standardizedFullPath == rhs.standardizedFullPath &&
+                canonicalParentFolderID(lhs.parentFolderID, rootID: lhs.rootID) == rhs.parentFolderID &&
+                lhs.modificationDate == rhs.modificationDate
         }
     #endif
 

@@ -77,6 +77,19 @@ pub enum ScopeError {
     NoPublishedGeneration,
 }
 
+/// `InventoryScope::snapshot_page`'s return shape. Fixes a gap `WorkspaceInventoryScopeShadowForwarder`
+/// surfaced (design doc `docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md` §8.2):
+/// the FFI read plane (`inventory_snapshot_page`, `rust/crates/ffi/src/api.rs`) previously encoded
+/// every page response with a hardcoded empty folders list regardless of what a bulk load staged
+/// or committed -- `RootGeneration.folders` was correctly populated end-to-end, but nothing ever
+/// paged it back out to a caller. No P4-4/P4-4b test exercised this because every existing
+/// bulk-load round trip pushed `folders: []`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SnapshotPage {
+    pub files: Vec<InventoryFileRecord>,
+    pub folders: Vec<InventoryFolderRecord>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RootUnloadReceipt {
     pub root_id: RootId,
@@ -768,22 +781,24 @@ impl InventoryScope {
     }
 
     /// Clones the `Arc<RootGeneration>` under the lock, then does paging work outside it (§2 row
-    /// 2, verbatim).
+    /// 2, verbatim). Both `files` and `folders` are paged by the same `offset`/`limit` window
+    /// independently (not a combined/interleaved cursor) -- a caller that wants every record for
+    /// the root pages each list to exhaustion the way
+    /// `WorkspaceInventoryScopeShadowForwarder.snapshotAllRecords` (Swift bridge,
+    /// `Sources/RepoPrompt/Infrastructure/WorkspaceContext/Inventory/
+    /// WorkspaceInventoryScopeShadowForwarder.swift`) does.
     #[must_use]
     pub fn snapshot_page(
         &self,
         handle_id: SnapshotHandleId,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<InventoryFileRecord>, InvalidationReason> {
+    ) -> Result<SnapshotPage, InvalidationReason> {
         match self.with_state(|state| state.handles.read(handle_id)) {
-            HandleReadOutcome::Open { generation } => Ok(generation
-                .files
-                .iter()
-                .skip(offset)
-                .take(limit)
-                .cloned()
-                .collect()),
+            HandleReadOutcome::Open { generation } => Ok(SnapshotPage {
+                files: generation.files.iter().skip(offset).take(limit).cloned().collect(),
+                folders: generation.folders.iter().skip(offset).take(limit).cloned().collect(),
+            }),
             HandleReadOutcome::HandleInvalidated { reason } => Err(reason),
         }
     }

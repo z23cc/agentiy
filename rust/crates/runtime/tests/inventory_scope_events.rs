@@ -256,8 +256,8 @@ fn bounded_overflow_produces_a_gap_marker_and_a_fresh_snapshot_still_recovers() 
         .open_snapshot(&identity, last_root, "post-gap-resnapshot")
         .expect("fresh snapshot handle must still open after a gap");
     let page = scope.snapshot_page(handle, 0, 10).expect("fresh page must still read");
-    assert_eq!(page.len(), 1);
-    assert_eq!(page[0].name, "f.swift");
+    assert_eq!(page.files.len(), 1);
+    assert_eq!(page.files[0].name, "f.swift");
     scope.close_snapshot(handle);
     let _ = lifetime; // kept for readability of the setup above; not needed post-recovery
 }
