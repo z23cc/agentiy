@@ -292,6 +292,36 @@ private func coreInventoryUUID(fromData data: Data) throws -> UUID {
     return UUID(uuid: tuple)
 }
 
+/// A `RootLifetimeId` is NOT a dashed UUID string on the Rust side: `ids.rs`'s `uuid_id!` macro
+/// gives it a plain 32-character lowercase-hex `Display` (matching `InventoryRootLifetimeV1.
+/// rootLifetimeId` and every other `rootLifetimeId` string this bridge already threads through
+/// opaquely). P4-4b's event payloads carry the same 16 bytes as two big-endian `u64` words
+/// (`uuid_to_words`'s convention); this reconstructs the identical hex string from those words so
+/// a decoded event's `rootLifetimeID` round-trips byte-for-byte against every other
+/// `rootLifetimeId` this bridge already vends.
+private func coreInventoryHexLifetimeID(hi: UInt64, lo: UInt64) -> String {
+    var bytes = [UInt8]()
+    bytes.reserveCapacity(16)
+    for shift in stride(from: 56, through: 0, by: -8) { bytes.append(UInt8((hi >> shift) & 0xFF)) }
+    for shift in stride(from: 56, through: 0, by: -8) { bytes.append(UInt8((lo >> shift) & 0xFF)) }
+    return bytes.map { String(format: "%02x", $0) }.joined()
+}
+
+/// Which `RootLifecycleEvent` message kind (`rootPublished` vs `rootUnloaded`) a
+/// `decodeRootLifecycle` call expects -- both share the identical 4-word payload shape and
+/// differ only by header tag (see `wire.rs`'s `decode_root_lifecycle`, this decoder's Rust twin).
+enum CoreInventoryScopeRootLifecycleKind {
+    case rootPublished
+    case rootUnloaded
+
+    fileprivate var messageKind: CoreInventoryScopeMessageKind {
+        switch self {
+        case .rootPublished: .rootPublished
+        case .rootUnloaded: .rootUnloaded
+        }
+    }
+}
+
 // ---- CoreInventoryScope: ARC-driven facade over one InventoryScope ---------------------------
 
 public struct CoreInventoryScopeConfig: Sendable {
@@ -356,11 +386,17 @@ public struct CoreInventoryDeltaReceipt: Sendable, Equatable {
 public final class CoreInventoryScope: @unchecked Sendable {
     private let bridge: AgentryCoreBridge
     public let scopeID: String
+    /// P4-4b: the `ScopeId` this scope's event-plane notifications publish into --
+    /// `InventoryScopeHandleV1.subscriptionScopeId`, computed once Rust-side
+    /// (`InventoryScopeId::to_subscription_scope_id`) and carried here verbatim. Never
+    /// re-derived on the Swift side -- see `events()`'s doc comment.
+    public let subscriptionScopeID: String
     private let closedFlag = OSAllocatedUnfairLock(initialState: false)
 
-    private init(bridge: AgentryCoreBridge, scopeID: String) {
+    private init(bridge: AgentryCoreBridge, scopeID: String, subscriptionScopeID: String) {
         self.bridge = bridge
         self.scopeID = scopeID
+        self.subscriptionScopeID = subscriptionScopeID
     }
 
     public static func open(bridge: AgentryCoreBridge, config: CoreInventoryScopeConfig = .init()) async throws -> CoreInventoryScope {
@@ -369,7 +405,24 @@ public final class CoreInventoryScope: @unchecked Sendable {
             maxPatchLogicalMutationCount: config.maxPatchLogicalMutationCount,
             codemapCapableExtensions: config.codemapCapableExtensions
         ))
-        return CoreInventoryScope(bridge: bridge, scopeID: handle.scopeId)
+        return CoreInventoryScope(bridge: bridge, scopeID: handle.scopeId, subscriptionScopeID: handle.subscriptionScopeId)
+    }
+
+    /// P4-4b: the inventory-scope event stream (contract doc §5b), reusing `AgentryCoreBridge`'s
+    /// fixed `openSubscription` path verbatim -- the 83f848b2 lesson this step was told to honor:
+    /// register-before-suspend is already correct there (`CoreBridge.swift`'s doc comment on that
+    /// method), so this facade does not re-derive a second register/await sequence. This scope's
+    /// events publish under `subscriptionScopeID`, computed Rust-side and carried on this
+    /// instance since `open()` -- never re-derived here.
+    public func events(
+        maxQueuedEvents: UInt64 = 256,
+        maxQueuedBytes: UInt64 = 1_048_576
+    ) async throws -> CoreInventoryScopeEventStream {
+        let scopeID = try CoreScopeID(rawValue: subscriptionScopeID)
+        let subscription = try await bridge.openSubscription(
+            scopeID: scopeID, maxQueuedEvents: maxQueuedEvents, maxQueuedBytes: maxQueuedBytes
+        )
+        return CoreInventoryScopeEventStream(bridge: bridge, subscription: subscription)
     }
 
     public func openRoot(rootID: UUID, name: String, standardizedFullPath: String) async throws -> String {
@@ -526,6 +579,147 @@ public final class CoreInventorySnapshot: @unchecked Sendable {
     }
 }
 
+// ---- CoreInventoryScopeEventStream: ARC-driven facade over one inventory-scope subscription ---
+
+/// One decoded inventory-scope notification (contract doc §5b's event catalog). `gap` is not a
+/// catalogued inventory event -- it is the generic P0 subscription hub's own synthetic marker
+/// (`RuntimeEventKind.gap`, `CoreDecodedPayload.gap`), surfaced here so a consumer can react to it
+/// (contract doc §5b: "discard their projection and re-bootstrap from a fresh snapshot handle")
+/// without reaching into `CoreEvent` itself.
+public enum CoreInventoryScopeEvent: Sendable, Equatable {
+    case generationAdvanced(CoreInventoryGenerationAdvancedEventV1)
+    case appliedIndexBatch(CoreInventoryAppliedIndexBatchEventV1)
+    case rootPublished(CoreInventoryRootLifecycleEventV1)
+    case rootUnloaded(CoreInventoryRootLifecycleEventV1)
+    case shardFallback(CoreInventoryShardFallbackEventV1)
+    case resnapshotRequired(CoreInventoryResnapshotRequiredEventV1)
+    /// The hub's own gap marker (a dropped-event count, not a scope-authored payload).
+    case gap(droppedCount: UInt64)
+    /// Fail-open, not fail-closed: an event kind this Swift mirror does not (yet) recognize
+    /// decodes to `.unknown` rather than throwing and killing the whole stream -- the same
+    /// forward-compatibility posture `DefaultCoreEventDecoder` already takes for the generic
+    /// subscription surface.
+    case unknown
+}
+
+public struct CoreInventoryGenerationAdvancedEventV1: Sendable, Equatable {
+    public let rootID: UUID
+    public let rootLifetimeID: String
+    public let appliedIndexGeneration: UInt64
+    public let catalogGeneration: UInt64?
+    public let rebuiltAuthoritative: Bool
+    public let upsertedCount: UInt64
+    public let removedCount: UInt64
+    public let modifiedCount: UInt64
+}
+
+public struct CoreInventoryRootLifecycleEventV1: Sendable, Equatable {
+    public let rootID: UUID
+    public let rootLifetimeID: String
+}
+
+/// Fixed order matching Rust's `RootCatalogShardFallbackReason::ALL` (contract doc §5c's 8-case
+/// table) -- the same "fixed order, never reordered" convention `InventoryDiagnosticsV1.
+/// fallbackReasonCounts` already uses on the Swift side for this same enum.
+public enum CoreInventoryShardFallbackReasonV1: UInt64, Sendable, Equatable, CaseIterable {
+    case missingReusableShard = 0
+    case generationGap = 1
+    case fullResync = 2
+    case unsafeOrAmbiguousBatch = 3
+    case retentionBoundary = 4
+    case patchThresholdExceeded = 5
+    case patchApplicationBackstop = 6
+    case shadowValidationMismatch = 7
+}
+
+public struct CoreInventoryShardFallbackEventV1: Sendable, Equatable {
+    public let rootID: UUID
+    public let reason: CoreInventoryShardFallbackReasonV1
+}
+
+/// Fixed order matching Rust's `ResnapshotReason::ALL`.
+public enum CoreInventoryResnapshotReasonV1: UInt64, Sendable, Equatable, CaseIterable {
+    case gap = 0
+    case overflow = 1
+    case backstop = 2
+    case identityChanged = 3
+}
+
+public struct CoreInventoryResnapshotRequiredEventV1: Sendable, Equatable {
+    public let rootID: UUID?
+    public let reason: CoreInventoryResnapshotReasonV1
+}
+
+public struct CoreInventoryScopeEventStream: AsyncSequence, Sendable {
+    public typealias Element = CoreInventoryScopeEvent
+
+    private let events: CoreEventStream
+
+    init(bridge: AgentryCoreBridge, subscription: CoreSubscription) {
+        events = subscription.events
+        self.subscription = subscription
+        self.bridge = bridge
+    }
+
+    private let bridge: AgentryCoreBridge
+    let subscription: CoreSubscription
+
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(inner: events.makeAsyncIterator())
+    }
+
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var inner: AsyncThrowingStream<CoreEvent, Error>.Iterator
+
+        public mutating func next() async throws -> CoreInventoryScopeEvent? {
+            guard let event = try await inner.next() else { return nil }
+            return CoreInventoryScopeEventDecoder.decode(event)
+        }
+    }
+
+    /// Idempotent, product-facing close over the underlying generic subscription -- mirrors
+    /// `CoreInventoryScope.close()`/`CoreInventorySnapshot.close()`'s convention. Unlike those two
+    /// ARC wrappers this type has no `deinit` backstop (an `AsyncSequence` value type cannot run
+    /// cleanup on last-reference-drop the way a `final class` can); callers are expected to close
+    /// explicitly once done draining, the same discipline `AgentryCoreBridge`'s other
+    /// `openSubscription` consumers already follow.
+    public func close() async throws {
+        try await bridge.closeSubscription(subscription)
+    }
+}
+
+enum CoreInventoryScopeEventDecoder {
+    static func decode(_ event: CoreEvent) -> CoreInventoryScopeEvent {
+        if case let .gap(droppedCount) = event.payload {
+            return .gap(droppedCount: droppedCount)
+        }
+        guard case let .bytes(payload) = event.payload, payload.count >= 4 else {
+            return .unknown
+        }
+        let kind = UInt16(payload[payload.startIndex + 2]) | (UInt16(payload[payload.startIndex + 3]) << 8)
+        do {
+            switch kind {
+            case CoreInventoryScopeMessageKind.generationAdvanced.rawValue:
+                return .generationAdvanced(try CoreInventoryScopeWire.decodeGenerationAdvanced(payload))
+            case CoreInventoryScopeMessageKind.deltaEvent.rawValue:
+                return .appliedIndexBatch(try CoreInventoryScopeWire.decodeDeltaEvent(payload))
+            case CoreInventoryScopeMessageKind.rootPublished.rawValue:
+                return .rootPublished(try CoreInventoryScopeWire.decodeRootLifecycle(payload, expected: .rootPublished))
+            case CoreInventoryScopeMessageKind.rootUnloaded.rawValue:
+                return .rootUnloaded(try CoreInventoryScopeWire.decodeRootLifecycle(payload, expected: .rootUnloaded))
+            case CoreInventoryScopeMessageKind.shardFallback.rawValue:
+                return .shardFallback(try CoreInventoryScopeWire.decodeShardFallback(payload))
+            case CoreInventoryScopeMessageKind.resnapshotRequired.rawValue:
+                return .resnapshotRequired(try CoreInventoryScopeWire.decodeResnapshotRequired(payload))
+            default:
+                return .unknown
+            }
+        } catch {
+            return .unknown
+        }
+    }
+}
+
 // ================================================================================================
 // Swift mirror of `agentry_runtime::inventory_scope::wire` (`rust/crates/runtime/src/
 // inventory_scope/wire.rs`). Charter §15.3 item 6: Rust is the canonical schema source; this
@@ -553,6 +747,14 @@ private enum CoreInventoryScopeMessageKind: UInt16 {
     case factBlock = 5
     case queryRequest = 6
     case queryResponse = 7
+    // ---- P4-4b: event-plane payloads (contract doc §5b), mirroring `wire.rs`'s `MessageKind`
+    // additions verbatim. `deltaEvent` above doubles as `inventoryAppliedIndexBatch`'s payload --
+    // no new kind for it.
+    case generationAdvanced = 8
+    case rootPublished = 9
+    case rootUnloaded = 10
+    case shardFallback = 11
+    case resnapshotRequired = 12
 }
 
 private let coreInventoryScopeContractVersionV1: UInt16 = 1
@@ -788,6 +990,145 @@ enum CoreInventoryScopeWire {
         return writer.buffer
     }
 
+    /// P4-4b: the receive-side counterpart to `encodeDeltaEvent`, needed now that
+    /// `inventoryAppliedIndexBatch` (contract doc §5b) delivers this exact payload shape
+    /// Rust -> Swift over the event stream (previously this codec only ever sent Swift -> Rust).
+    static func decodeDeltaEvent(_ data: Data) throws -> CoreInventoryAppliedIndexBatchEventV1 {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .deltaEvent)
+        let rootIDWords = try reader.readWords(maxWords: 2)
+        guard rootIDWords.count == 2 else { throw CoreInventoryScopeWireError.malformed }
+        let upsertedFileWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let upsertedFolderWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFileIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFolderIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFilePathWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let removedFolderPathWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let modifiedFileIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let modifiedFolderIDWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let rangeWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let blob = try reader.readBlob()
+        try reader.finish()
+        let pool = CoreInventoryScopePoolReader(blob: blob, rangeWords: rangeWords)
+
+        let upsertedFiles = try decodeRecordRows(upsertedFileWords, pool: pool).map { row in
+            CoreInventoryFileRecordV1(
+                id: row.id, rootID: row.rootID, name: row.name, relativePath: row.relativePath,
+                standardizedRelativePath: row.standardizedRelativePath, fullPath: row.fullPath,
+                standardizedFullPath: row.standardizedFullPath, parentFolderID: row.parentFolderID,
+                modificationDate: row.modificationDate
+            )
+        }
+        let upsertedFolders = try decodeRecordRows(upsertedFolderWords, pool: pool).map { row in
+            CoreInventoryFolderRecordV1(
+                id: row.id, rootID: row.rootID, name: row.name, relativePath: row.relativePath,
+                standardizedRelativePath: row.standardizedRelativePath, fullPath: row.fullPath,
+                standardizedFullPath: row.standardizedFullPath, parentFolderID: row.parentFolderID,
+                modificationDate: row.modificationDate
+            )
+        }
+        return CoreInventoryAppliedIndexBatchEventV1(
+            rootID: coreInventoryUUID(fromHi: rootIDWords[0], lo: rootIDWords[1]),
+            upsertedFiles: upsertedFiles,
+            upsertedFolders: upsertedFolders,
+            removedFileIDs: try decodeUUIDWordList(removedFileIDWords),
+            removedFolderIDs: try decodeUUIDWordList(removedFolderIDWords),
+            removedFilePaths: try removedFilePathWords.map { try pool.resolve($0) },
+            removedFolderPaths: try removedFolderPathWords.map { try pool.resolve($0) },
+            modifiedFileIDs: try decodeUUIDWordList(modifiedFileIDWords),
+            modifiedFolderIDs: try decodeUUIDWordList(modifiedFolderIDWords)
+        )
+    }
+
+    private static func decodeUUIDWordList(_ words: [UInt64]) throws -> [UUID] {
+        guard words.count % 2 == 0 else { throw CoreInventoryScopeWireError.malformed }
+        var ids: [UUID] = []
+        ids.reserveCapacity(words.count / 2)
+        var index = 0
+        while index < words.count {
+            ids.append(coreInventoryUUID(fromHi: words[index], lo: words[index + 1]))
+            index += 2
+        }
+        return ids
+    }
+
+    // ---- P4-4b: event-plane decode (contract doc §5b). Fixed-width word sections only -- no
+    // interned strings ("events are notifications, never tables") -- mirroring `wire.rs`'s
+    // `decode_generation_advanced`/`decode_root_published`/`decode_root_unloaded`/
+    // `decode_shard_fallback`/`decode_resnapshot_required` verbatim, byte-for-byte.
+
+    static func decodeGenerationAdvanced(_ data: Data) throws -> CoreInventoryGenerationAdvancedEventV1 {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .generationAdvanced)
+        let words = try reader.readWords(maxWords: 11)
+        try reader.finish()
+        guard words.count == 11 else { throw CoreInventoryScopeWireError.malformed }
+        let (rootHi, rootLo, lifetimeHi, lifetimeLo, appliedIndexGeneration, generationPresent, generationValue, rebuiltFlag, upsertedCount, removedCount, modifiedCount) =
+            (words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7], words[8], words[9], words[10])
+        let catalogGeneration: UInt64? = switch generationPresent {
+        case 0: nil
+        case 1: generationValue
+        default: throw CoreInventoryScopeWireError.malformed
+        }
+        let rebuiltAuthoritative: Bool = switch rebuiltFlag {
+        case 0: false
+        case 1: true
+        default: throw CoreInventoryScopeWireError.malformed
+        }
+        return CoreInventoryGenerationAdvancedEventV1(
+            rootID: coreInventoryUUID(fromHi: rootHi, lo: rootLo),
+            rootLifetimeID: coreInventoryHexLifetimeID(hi: lifetimeHi, lo: lifetimeLo),
+            appliedIndexGeneration: appliedIndexGeneration,
+            catalogGeneration: catalogGeneration,
+            rebuiltAuthoritative: rebuiltAuthoritative,
+            upsertedCount: upsertedCount,
+            removedCount: removedCount,
+            modifiedCount: modifiedCount
+        )
+    }
+
+    static func decodeRootLifecycle(_ data: Data, expected: CoreInventoryScopeRootLifecycleKind) throws -> CoreInventoryRootLifecycleEventV1 {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: expected.messageKind)
+        let words = try reader.readWords(maxWords: 4)
+        try reader.finish()
+        guard words.count == 4 else { throw CoreInventoryScopeWireError.malformed }
+        return CoreInventoryRootLifecycleEventV1(
+            rootID: coreInventoryUUID(fromHi: words[0], lo: words[1]),
+            rootLifetimeID: coreInventoryHexLifetimeID(hi: words[2], lo: words[3])
+        )
+    }
+
+    static func decodeShardFallback(_ data: Data) throws -> CoreInventoryShardFallbackEventV1 {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .shardFallback)
+        let words = try reader.readWords(maxWords: 3)
+        try reader.finish()
+        guard words.count == 3 else { throw CoreInventoryScopeWireError.malformed }
+        guard let reason = CoreInventoryShardFallbackReasonV1(rawValue: words[2]) else {
+            throw CoreInventoryScopeWireError.outOfRange
+        }
+        return CoreInventoryShardFallbackEventV1(rootID: coreInventoryUUID(fromHi: words[0], lo: words[1]), reason: reason)
+    }
+
+    static func decodeResnapshotRequired(_ data: Data) throws -> CoreInventoryResnapshotRequiredEventV1 {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .resnapshotRequired)
+        let words = try reader.readWords(maxWords: 4)
+        try reader.finish()
+        guard words.count == 4 else { throw CoreInventoryScopeWireError.malformed }
+        let (rootPresent, rootHi, rootLo, reasonTag) = (words[0], words[1], words[2], words[3])
+        let rootID: UUID? = switch rootPresent {
+        case 0: nil
+        case 1: coreInventoryUUID(fromHi: rootHi, lo: rootLo)
+        default: throw CoreInventoryScopeWireError.malformed
+        }
+        guard let reason = CoreInventoryResnapshotReasonV1(rawValue: reasonTag) else {
+            throw CoreInventoryScopeWireError.outOfRange
+        }
+        return CoreInventoryResnapshotRequiredEventV1(rootID: rootID, reason: reason)
+    }
+
     private struct DecodedRecordRow {
         let id: UUID
         let rootID: UUID
@@ -899,7 +1240,7 @@ enum CoreInventoryScopeWire {
         let descriptor = """
         inventory-scope-v1
         version=1
-        kinds=bulkChunk:1,deltaEvent:2,resolveRequest:3,lookupRequest:4,factBlock:5,queryRequest:6,queryResponse:7
+        kinds=bulkChunk:1,deltaEvent:2,resolveRequest:3,lookupRequest:4,factBlock:5,queryRequest:6,queryResponse:7,generationAdvanced:8,rootPublished:9,rootUnloaded:10,shardFallback:11,resnapshotRequired:12
         strides=stringRange:2,record:14,factRow:18,candidate:11
         optionalWord=18446744073709551615
         limits=blob:67108864,string:65536,words:8388608,rows:200000,ids:50000,paths:50000
@@ -911,6 +1252,13 @@ enum CoreInventoryScopeWire {
         sections.factBlock=header(present,generation,rootLifetimeHi,rootLifetimeLo),factRowWords,stringRangeWords,blob
         sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx),stringRangeWords,blob
         sections.queryResponse=header(present,generation),candidateRowWords,stringRangeWords,blob
+        sections.generationAdvanced=rootId,rootLifetimeId,appliedIndexGeneration,catalogGenerationPresent,catalogGeneration,rebuiltAuthoritative,upsertedCount,removedCount,modifiedCount
+        sections.rootPublished=rootId,rootLifetimeId
+        sections.rootUnloaded=rootId,rootLifetimeId
+        sections.shardFallback=rootId,reasonTag
+        sections.resnapshotRequired=rootPresent,rootId,reasonTag
+        fallbackReasonOrder=missingReusableShard:0,generationGap:1,fullResync:2,unsafeOrAmbiguousBatch:3,retentionBoundary:4,patchThresholdExceeded:5,patchApplicationBackstop:6,shadowValidationMismatch:7
+        resnapshotReasonOrder=gap:0,overflow:1,backstop:2,identityChanged:3
 
         """
         let digest = SHA256.hash(data: Data(descriptor.utf8))

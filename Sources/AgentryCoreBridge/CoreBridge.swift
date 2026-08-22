@@ -90,7 +90,9 @@ protocol CoreRuntimeTransport: Sendable {
     func initialize() throws -> CoreTransportHandshake
     func execute(identity: CoreRuntimeIdentity, operationID: OperationID, command: CoreCommand) throws -> CoreAdmission
     func cancel(identity: CoreRuntimeIdentity, operationID: OperationID) throws -> CoreCancellation
-    func openSubscription(identity: CoreRuntimeIdentity, scopeID: CoreScopeID) throws -> CoreTransportBootstrap
+    func openSubscription(
+        identity: CoreRuntimeIdentity, scopeID: CoreScopeID, maxQueuedEvents: UInt64, maxQueuedBytes: UInt64
+    ) throws -> CoreTransportBootstrap
     func tryDrain(subscriptionID: UInt64, identity: CoreRuntimeIdentity) throws -> CoreTransportDrainBatch
     func duplicateWakeReadFD(identity: CoreRuntimeIdentity) throws -> Int32
     func rearmWake(identity: CoreRuntimeIdentity) throws -> Bool
@@ -329,13 +331,15 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    func openSubscription(identity: CoreRuntimeIdentity, scopeID: CoreScopeID) throws -> CoreTransportBootstrap {
+    func openSubscription(
+        identity: CoreRuntimeIdentity, scopeID: CoreScopeID, maxQueuedEvents: UInt64, maxQueuedBytes: UInt64
+    ) throws -> CoreTransportBootstrap {
         do {
             let value = try runtime.openSubscription(scope: .init(
                 runtimeIdentity: Self.rawIdentity(identity),
                 scopeId: .init(value: scopeID.rawValue),
-                maxQueuedEvents: 256,
-                maxQueuedBytes: 1_048_576
+                maxQueuedEvents: maxQueuedEvents,
+                maxQueuedBytes: maxQueuedBytes
             ))
             return CoreTransportBootstrap(
                 subscriptionID: value.subscriptionId.value,
@@ -1570,10 +1574,20 @@ public actor AgentryCoreBridge {
         }
     }
 
-    public func openSubscription(scopeID: CoreScopeID) async throws -> CoreSubscription {
+    /// `maxQueuedEvents`/`maxQueuedBytes` default to this bridge's long-standing hardcoded queue
+    /// shape (256 events / 1 MiB) so every existing call site is unaffected; a caller that needs a
+    /// deliberately tighter queue (e.g. deterministically forcing overflow in a test, or a
+    /// consumer that wants aggressive backpressure) can override either.
+    public func openSubscription(
+        scopeID: CoreScopeID,
+        maxQueuedEvents: UInt64 = 256,
+        maxQueuedBytes: UInt64 = 1_048_576
+    ) async throws -> CoreSubscription {
         let identity = try requireIdentity()
         do {
-            let bootstrap = try transport.openSubscription(identity: identity, scopeID: scopeID)
+            let bootstrap = try transport.openSubscription(
+                identity: identity, scopeID: scopeID, maxQueuedEvents: maxQueuedEvents, maxQueuedBytes: maxQueuedBytes
+            )
             try validate(bootstrap.runtimeIdentity)
             let pair = AsyncThrowingStream<CoreEvent, Error>.makeStream(
                 bufferingPolicy: .bufferingNewest(256)

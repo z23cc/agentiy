@@ -83,7 +83,9 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         return CoreCancellation(operationID: operationID, disposition: .tombstoned)
     }
 
-    func openSubscription(identity: CoreRuntimeIdentity, scopeID: CoreScopeID) throws -> CoreTransportBootstrap {
+    func openSubscription(
+        identity: CoreRuntimeIdentity, scopeID: CoreScopeID, maxQueuedEvents: UInt64, maxQueuedBytes: UInt64
+    ) throws -> CoreTransportBootstrap {
         state.withLock { $0.actions.append("subscribe") }
         return CoreTransportBootstrap(
             subscriptionID: 7,

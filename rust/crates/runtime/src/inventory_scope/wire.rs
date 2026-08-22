@@ -50,6 +50,7 @@ use std::fmt;
 use crate::inventory::{
     InventoryAppliedIndexBatchEvent, InventoryFileRecord, InventoryFolderRecord, InventoryUuid,
 };
+use super::fallback::RootCatalogShardFallbackReason;
 
 pub const INVENTORY_SCOPE_CONTRACT_VERSION_V1: u16 = 1;
 
@@ -98,10 +99,19 @@ pub enum MessageKind {
     FactBlock = 5,
     QueryRequest = 6,
     QueryResponse = 7,
+    // ---- P4-4b: event-plane payloads (contract doc §5b). `inventoryAppliedIndexBatch`'s payload
+    // is the existing `DeltaEvent` message verbatim -- no new kind for it. These four cover the
+    // remaining catalogued event kinds; each is a fixed-width word section, no interned strings
+    // ("events are notifications, never tables", contract doc §5b).
+    GenerationAdvanced = 8,
+    RootPublished = 9,
+    RootUnloaded = 10,
+    ShardFallback = 11,
+    ResnapshotRequired = 12,
 }
 
 impl MessageKind {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 12] = [
         Self::BulkChunk,
         Self::DeltaEvent,
         Self::ResolveRequest,
@@ -109,6 +119,11 @@ impl MessageKind {
         Self::FactBlock,
         Self::QueryRequest,
         Self::QueryResponse,
+        Self::GenerationAdvanced,
+        Self::RootPublished,
+        Self::RootUnloaded,
+        Self::ShardFallback,
+        Self::ResnapshotRequired,
     ];
 
     fn from_id(id: u16) -> Option<Self> {
@@ -1095,6 +1110,248 @@ pub fn decode_query_response(bytes: &[u8]) -> Result<(Option<u64>, Vec<QueryCand
     Ok((generation, candidates))
 }
 
+// ================================================================================================
+// Event plane (contract doc §5b, P4-4b). Every payload below is a fixed-width word section --
+// notifications carry counts/ids/reasons, never tables, so no string interning is needed. Root
+// identity is carried as `InventoryUuid` for both `root_id` and `root_lifetime_id` (the caller
+// converts `RootLifetimeId::as_bytes()` at the call site); this module stays agnostic of the
+// typed-id wrapper the same way it already is for `RootId` (a `pub type` alias of `InventoryUuid`).
+// ================================================================================================
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenerationAdvancedEvent {
+    pub root_id: InventoryUuid,
+    pub root_lifetime_id: InventoryUuid,
+    pub applied_index_generation: u64,
+    pub catalog_generation: Option<u64>,
+    pub rebuilt_authoritative: bool,
+    pub upserted_count: u64,
+    pub removed_count: u64,
+    pub modified_count: u64,
+}
+
+#[must_use]
+pub fn encode_generation_advanced(event: &GenerationAdvancedEvent) -> Vec<u8> {
+    let (root_hi, root_lo) = uuid_to_words(&event.root_id);
+    let (lifetime_hi, lifetime_lo) = uuid_to_words(&event.root_lifetime_id);
+    let (generation_present, generation_value) = match event.catalog_generation {
+        Some(value) => (1u64, value),
+        None => (0u64, 0u64),
+    };
+    let mut writer = Writer::header(MessageKind::GenerationAdvanced);
+    writer
+        .write_words(&[
+            root_hi,
+            root_lo,
+            lifetime_hi,
+            lifetime_lo,
+            event.applied_index_generation,
+            generation_present,
+            generation_value,
+            u64::from(event.rebuilt_authoritative),
+            event.upserted_count,
+            event.removed_count,
+            event.modified_count,
+        ])
+        .expect("bounded");
+    writer.finish()
+}
+
+pub fn decode_generation_advanced(bytes: &[u8]) -> Result<GenerationAdvancedEvent, WireError> {
+    let mut reader = Reader::open(bytes, MessageKind::GenerationAdvanced)?;
+    let words = reader.read_words(11, "generation advanced event")?;
+    reader.finish()?;
+    let &[root_hi, root_lo, lifetime_hi, lifetime_lo, applied_index_generation, generation_present, generation_value, rebuilt_authoritative, upserted_count, removed_count, modified_count] =
+        words.as_slice()
+    else {
+        return Err(WireError::Malformed("generation advanced event"));
+    };
+    let catalog_generation = match generation_present {
+        0 => None,
+        1 => Some(generation_value),
+        _ => return Err(WireError::Malformed("generation advanced event presence flag")),
+    };
+    let rebuilt_authoritative = match rebuilt_authoritative {
+        0 => false,
+        1 => true,
+        _ => return Err(WireError::Malformed("generation advanced event outcome flag")),
+    };
+    Ok(GenerationAdvancedEvent {
+        root_id: uuid_from_words(root_hi, root_lo),
+        root_lifetime_id: uuid_from_words(lifetime_hi, lifetime_lo),
+        applied_index_generation,
+        catalog_generation,
+        rebuilt_authoritative,
+        upserted_count,
+        removed_count,
+        modified_count,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootLifecycleEvent {
+    pub root_id: InventoryUuid,
+    pub root_lifetime_id: InventoryUuid,
+}
+
+fn encode_root_lifecycle(kind: MessageKind, event: &RootLifecycleEvent) -> Vec<u8> {
+    let (root_hi, root_lo) = uuid_to_words(&event.root_id);
+    let (lifetime_hi, lifetime_lo) = uuid_to_words(&event.root_lifetime_id);
+    let mut writer = Writer::header(kind);
+    writer
+        .write_words(&[root_hi, root_lo, lifetime_hi, lifetime_lo])
+        .expect("bounded");
+    writer.finish()
+}
+
+fn decode_root_lifecycle(bytes: &[u8], kind: MessageKind) -> Result<RootLifecycleEvent, WireError> {
+    let mut reader = Reader::open(bytes, kind)?;
+    let words = reader.read_words(4, "root lifecycle event")?;
+    reader.finish()?;
+    let &[root_hi, root_lo, lifetime_hi, lifetime_lo] = words.as_slice() else {
+        return Err(WireError::Malformed("root lifecycle event"));
+    };
+    Ok(RootLifecycleEvent {
+        root_id: uuid_from_words(root_hi, root_lo),
+        root_lifetime_id: uuid_from_words(lifetime_hi, lifetime_lo),
+    })
+}
+
+#[must_use]
+pub fn encode_root_published(event: &RootLifecycleEvent) -> Vec<u8> {
+    encode_root_lifecycle(MessageKind::RootPublished, event)
+}
+
+pub fn decode_root_published(bytes: &[u8]) -> Result<RootLifecycleEvent, WireError> {
+    decode_root_lifecycle(bytes, MessageKind::RootPublished)
+}
+
+#[must_use]
+pub fn encode_root_unloaded(event: &RootLifecycleEvent) -> Vec<u8> {
+    encode_root_lifecycle(MessageKind::RootUnloaded, event)
+}
+
+pub fn decode_root_unloaded(bytes: &[u8]) -> Result<RootLifecycleEvent, WireError> {
+    decode_root_lifecycle(bytes, MessageKind::RootUnloaded)
+}
+
+/// Stable wire ordinal for a fallback reason: `RootCatalogShardFallbackReason::ALL`'s index.
+/// Reordering, adding, or removing `ALL`'s cases changes this mapping -- see that array's own
+/// "do not reorder" doc comment, which already governs this constraint for an unrelated reason
+/// (Swift diagnostics parity); this wire code adds a second reason the order is now load-bearing.
+fn fallback_reason_tag(reason: RootCatalogShardFallbackReason) -> u64 {
+    RootCatalogShardFallbackReason::ALL
+        .iter()
+        .position(|candidate| *candidate == reason)
+        .expect("reason is one of RootCatalogShardFallbackReason::ALL") as u64
+}
+
+fn fallback_reason_from_tag(tag: u64) -> Result<RootCatalogShardFallbackReason, WireError> {
+    usize::try_from(tag)
+        .ok()
+        .and_then(|index| RootCatalogShardFallbackReason::ALL.get(index).copied())
+        .ok_or(WireError::OutOfRange("shard fallback reason tag"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShardFallbackEvent {
+    pub root_id: InventoryUuid,
+    pub reason: RootCatalogShardFallbackReason,
+}
+
+#[must_use]
+pub fn encode_shard_fallback(event: &ShardFallbackEvent) -> Vec<u8> {
+    let (root_hi, root_lo) = uuid_to_words(&event.root_id);
+    let mut writer = Writer::header(MessageKind::ShardFallback);
+    writer
+        .write_words(&[root_hi, root_lo, fallback_reason_tag(event.reason)])
+        .expect("bounded");
+    writer.finish()
+}
+
+pub fn decode_shard_fallback(bytes: &[u8]) -> Result<ShardFallbackEvent, WireError> {
+    let mut reader = Reader::open(bytes, MessageKind::ShardFallback)?;
+    let words = reader.read_words(3, "shard fallback event")?;
+    reader.finish()?;
+    let &[root_hi, root_lo, reason_tag] = words.as_slice() else {
+        return Err(WireError::Malformed("shard fallback event"));
+    };
+    Ok(ShardFallbackEvent {
+        root_id: uuid_from_words(root_hi, root_lo),
+        reason: fallback_reason_from_tag(reason_tag)?,
+    })
+}
+
+/// §5b's "reason (gap, overflow, backstop, identity change)". `Gap`/`Overflow` are reserved for
+/// symmetry with the contract's own wording; P4-4b's `InventoryScope` only ever constructs
+/// `IdentityChanged` (gap/overflow are the hub's own synthetic `RuntimeEventKind::Gap` marker,
+/// already delivered without this scope publishing anything -- see contract doc §5b's "come from
+/// the existing P0 implementation unchanged"). `Backstop` is reserved for a future direct call
+/// site; today the live-generation-cap backstop is diagnosable via `inventoryShardFallback`'s
+/// `RetentionBoundary` reason instead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResnapshotReason {
+    Gap,
+    Overflow,
+    Backstop,
+    IdentityChanged,
+}
+
+impl ResnapshotReason {
+    const ALL: [Self; 4] = [Self::Gap, Self::Overflow, Self::Backstop, Self::IdentityChanged];
+
+    fn tag(self) -> u64 {
+        Self::ALL.iter().position(|candidate| *candidate == self).expect("in ALL") as u64
+    }
+
+    fn from_tag(tag: u64) -> Result<Self, WireError> {
+        usize::try_from(tag)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
+            .ok_or(WireError::OutOfRange("resnapshot reason tag"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResnapshotRequiredEvent {
+    pub root_id: Option<InventoryUuid>,
+    pub reason: ResnapshotReason,
+}
+
+#[must_use]
+pub fn encode_resnapshot_required(event: &ResnapshotRequiredEvent) -> Vec<u8> {
+    let (root_present, root_hi, root_lo) = match event.root_id {
+        Some(id) => {
+            let (hi, lo) = uuid_to_words(&id);
+            (1u64, hi, lo)
+        }
+        None => (0u64, 0u64, 0u64),
+    };
+    let mut writer = Writer::header(MessageKind::ResnapshotRequired);
+    writer
+        .write_words(&[root_present, root_hi, root_lo, event.reason.tag()])
+        .expect("bounded");
+    writer.finish()
+}
+
+pub fn decode_resnapshot_required(bytes: &[u8]) -> Result<ResnapshotRequiredEvent, WireError> {
+    let mut reader = Reader::open(bytes, MessageKind::ResnapshotRequired)?;
+    let words = reader.read_words(4, "resnapshot required event")?;
+    reader.finish()?;
+    let &[root_present, root_hi, root_lo, reason_tag] = words.as_slice() else {
+        return Err(WireError::Malformed("resnapshot required event"));
+    };
+    let root_id = match root_present {
+        0 => None,
+        1 => Some(uuid_from_words(root_hi, root_lo)),
+        _ => return Err(WireError::Malformed("resnapshot required event presence flag")),
+    };
+    Ok(ResnapshotRequiredEvent {
+        root_id,
+        reason: ResnapshotReason::from_tag(reason_tag)?,
+    })
+}
+
 /// The canonical ASCII descriptor this schema's fingerprint locks. **Deliberately NOT
 /// `std::hash::Hash`/`DefaultHasher`:** `DefaultHasher` is SipHash with an algorithm Rust
 /// explicitly does not guarantee stable across releases, so a Swift mirror could never
@@ -1112,7 +1369,8 @@ fn descriptor() -> String {
          version={version}\n\
          kinds=bulkChunk:{bulk_chunk},deltaEvent:{delta_event},resolveRequest:{resolve_request},\
 lookupRequest:{lookup_request},factBlock:{fact_block},queryRequest:{query_request},\
-queryResponse:{query_response}\n\
+queryResponse:{query_response},generationAdvanced:{generation_advanced},rootPublished:{root_published},\
+rootUnloaded:{root_unloaded},shardFallback:{shard_fallback},resnapshotRequired:{resnapshot_required}\n\
          strides=stringRange:{string_range},record:{record},factRow:{fact_row},candidate:{candidate}\n\
          optionalWord={optional_word}\n\
          limits=blob:{max_blob},string:{max_string},words:{max_words},rows:{max_rows},ids:{max_ids},\
@@ -1128,7 +1386,18 @@ stringRangeWords,blob\n\
 stringRangeWords,blob\n\
          sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx),\
 stringRangeWords,blob\n\
-         sections.queryResponse=header(present,generation),candidateRowWords,stringRangeWords,blob\n",
+         sections.queryResponse=header(present,generation),candidateRowWords,stringRangeWords,blob\n\
+         sections.generationAdvanced=rootId,rootLifetimeId,appliedIndexGeneration,\
+catalogGenerationPresent,catalogGeneration,rebuiltAuthoritative,upsertedCount,removedCount,\
+modifiedCount\n\
+         sections.rootPublished=rootId,rootLifetimeId\n\
+         sections.rootUnloaded=rootId,rootLifetimeId\n\
+         sections.shardFallback=rootId,reasonTag\n\
+         sections.resnapshotRequired=rootPresent,rootId,reasonTag\n\
+         fallbackReasonOrder=missingReusableShard:0,generationGap:1,fullResync:2,\
+unsafeOrAmbiguousBatch:3,retentionBoundary:4,patchThresholdExceeded:5,patchApplicationBackstop:6,\
+shadowValidationMismatch:7\n\
+         resnapshotReasonOrder=gap:0,overflow:1,backstop:2,identityChanged:3\n",
         version = INVENTORY_SCOPE_CONTRACT_VERSION_V1,
         bulk_chunk = MessageKind::BulkChunk as u16,
         delta_event = MessageKind::DeltaEvent as u16,
@@ -1137,6 +1406,11 @@ stringRangeWords,blob\n\
         fact_block = MessageKind::FactBlock as u16,
         query_request = MessageKind::QueryRequest as u16,
         query_response = MessageKind::QueryResponse as u16,
+        generation_advanced = MessageKind::GenerationAdvanced as u16,
+        root_published = MessageKind::RootPublished as u16,
+        root_unloaded = MessageKind::RootUnloaded as u16,
+        shard_fallback = MessageKind::ShardFallback as u16,
+        resnapshot_required = MessageKind::ResnapshotRequired as u16,
         string_range = STRING_RANGE_STRIDE,
         record = RECORD_STRIDE,
         fact_row = FACT_ROW_STRIDE,
@@ -1283,6 +1557,95 @@ mod tests {
     }
 
     #[test]
+    fn generation_advanced_event_round_trips_present_and_absent_generation() {
+        let with_generation = GenerationAdvancedEvent {
+            root_id: [1; 16],
+            root_lifetime_id: [2; 16],
+            applied_index_generation: 5,
+            catalog_generation: Some(9),
+            rebuilt_authoritative: false,
+            upserted_count: 3,
+            removed_count: 1,
+            modified_count: 2,
+        };
+        let bytes = encode_generation_advanced(&with_generation);
+        assert_eq!(decode_generation_advanced(&bytes).expect("decode"), with_generation);
+
+        let rebuilt = GenerationAdvancedEvent {
+            catalog_generation: None,
+            rebuilt_authoritative: true,
+            ..with_generation
+        };
+        let bytes = encode_generation_advanced(&rebuilt);
+        assert_eq!(decode_generation_advanced(&bytes).expect("decode"), rebuilt);
+    }
+
+    #[test]
+    fn root_published_and_unloaded_events_round_trip_and_reject_cross_kind_decode() {
+        let event = RootLifecycleEvent {
+            root_id: [3; 16],
+            root_lifetime_id: [4; 16],
+        };
+        let published_bytes = encode_root_published(&event);
+        assert_eq!(decode_root_published(&published_bytes).expect("decode"), event);
+        assert_eq!(
+            decode_root_unloaded(&published_bytes),
+            Err(WireError::MessageKindMismatch)
+        );
+
+        let unloaded_bytes = encode_root_unloaded(&event);
+        assert_eq!(decode_root_unloaded(&unloaded_bytes).expect("decode"), event);
+        assert_eq!(
+            decode_root_published(&unloaded_bytes),
+            Err(WireError::MessageKindMismatch)
+        );
+    }
+
+    #[test]
+    fn shard_fallback_event_round_trips_every_reason() {
+        for reason in RootCatalogShardFallbackReason::ALL {
+            let event = ShardFallbackEvent {
+                root_id: [5; 16],
+                reason,
+            };
+            let bytes = encode_shard_fallback(&event);
+            assert_eq!(decode_shard_fallback(&bytes).expect("decode"), event);
+        }
+    }
+
+    #[test]
+    fn resnapshot_required_event_round_trips_every_reason_with_and_without_root() {
+        for reason in ResnapshotReason::ALL {
+            let scoped = ResnapshotRequiredEvent {
+                root_id: Some([6; 16]),
+                reason,
+            };
+            let bytes = encode_resnapshot_required(&scoped);
+            assert_eq!(decode_resnapshot_required(&bytes).expect("decode"), scoped);
+
+            let scope_wide = ResnapshotRequiredEvent { root_id: None, reason };
+            let bytes = encode_resnapshot_required(&scope_wide);
+            assert_eq!(decode_resnapshot_required(&bytes).expect("decode"), scope_wide);
+        }
+    }
+
+    #[test]
+    fn event_payloads_reject_truncated_input() {
+        let bytes = encode_generation_advanced(&GenerationAdvancedEvent {
+            root_id: [1; 16],
+            root_lifetime_id: [2; 16],
+            applied_index_generation: 1,
+            catalog_generation: Some(1),
+            rebuilt_authoritative: false,
+            upserted_count: 0,
+            removed_count: 0,
+            modified_count: 0,
+        });
+        let truncated = &bytes[..bytes.len() - 1];
+        assert!(matches!(decode_generation_advanced(truncated), Err(WireError::Truncated(_))));
+    }
+
+    #[test]
     fn resolve_and_lookup_requests_round_trip() {
         let file_ids = vec![[1; 16], [2; 16]];
         let folder_ids = vec![[3; 16]];
@@ -1402,9 +1765,10 @@ mod tests {
         // until its hardcoded constant is updated to match -- the drift can never pass silently.
         assert_eq!(
             fingerprint(),
-            "5e46502ad5cf53fce1292675fa460400b35a4e655f1ae81e22ef2319aa2393ef"
+            "55c1365669c255965599349d27b470523428a85db4bf8709647b082fff0a63a9"
         );
     }
+
 }
 
 

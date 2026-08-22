@@ -5268,11 +5268,29 @@ public func FfiConverterTypeInventoryRootUnloadReceiptV1_lower(_ value: Inventor
 
 public struct InventoryScopeHandleV1: Equatable, Hashable {
     public let scopeId: String
+    /**
+     * P4-4b: the `ScopeId` (canonical dashed-hex UUID) this scope's event-plane notifications
+     * (contract doc §5b) publish into -- `InventoryScopeId::to_subscription_scope_id`'s output,
+     * computed once by `inventory_open_scope` and handed to Swift here so it never re-derives
+     * the conversion. Pass this string as `SubscriptionScope.scope_id` to the existing, unchanged
+     * generic `CoreRuntime.openSubscription`/`tryDrain` surface -- there is no separate
+     * inventory-scope-specific subscribe/drain export; P0's machinery is reused verbatim.
+     */
+    public let subscriptionScopeId: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(scopeId: String) {
+    public init(scopeId: String,
+        /**
+         * P4-4b: the `ScopeId` (canonical dashed-hex UUID) this scope's event-plane notifications
+         * (contract doc §5b) publish into -- `InventoryScopeId::to_subscription_scope_id`'s output,
+         * computed once by `inventory_open_scope` and handed to Swift here so it never re-derives
+         * the conversion. Pass this string as `SubscriptionScope.scope_id` to the existing, unchanged
+         * generic `CoreRuntime.openSubscription`/`tryDrain` surface -- there is no separate
+         * inventory-scope-specific subscribe/drain export; P0's machinery is reused verbatim.
+         */subscriptionScopeId: String) {
         self.scopeId = scopeId
+        self.subscriptionScopeId = subscriptionScopeId
     }
 
 
@@ -5291,12 +5309,14 @@ public struct FfiConverterTypeInventoryScopeHandleV1: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryScopeHandleV1 {
         return
             try InventoryScopeHandleV1(
-                scopeId: FfiConverterString.read(from: &buf)
+                scopeId: FfiConverterString.read(from: &buf),
+                subscriptionScopeId: FfiConverterString.read(from: &buf)
         )
     }
 
     public static func write(_ value: InventoryScopeHandleV1, into buf: inout [UInt8]) {
         FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterString.write(value.subscriptionScopeId, into: &buf)
     }
 }
 

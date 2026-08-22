@@ -1648,6 +1648,13 @@ impl CoreInventoryScopeConfigV1 {
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct InventoryScopeHandleV1 {
     pub scope_id: String,
+    /// P4-4b: the `ScopeId` (canonical dashed-hex UUID) this scope's event-plane notifications
+    /// (contract doc §5b) publish into -- `InventoryScopeId::to_subscription_scope_id`'s output,
+    /// computed once by `inventory_open_scope` and handed to Swift here so it never re-derives
+    /// the conversion. Pass this string as `SubscriptionScope.scope_id` to the existing, unchanged
+    /// generic `CoreRuntime.openSubscription`/`tryDrain` surface -- there is no separate
+    /// inventory-scope-specific subscribe/drain export; P0's machinery is reused verbatim.
+    pub subscription_scope_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]

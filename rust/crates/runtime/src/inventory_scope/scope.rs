@@ -8,9 +8,12 @@
 //! **Scope discipline, per P4-3a's exit criteria:** this module implements the plain Rust surface
 //! P4-3a's done-when names -- open/close scope+root, apply delta, bulk load
 //! begin/push/commit/abort, snapshot open/page/close, diagnostics. It does not implement
-//! `inventoryQuery`, `inventoryOpenProjectedShard`, `inventoryResolveRecords`, the wire codec, or
-//! event-plane publication into `SubscriptionHub` -- those remain P4-4's (FFI + bridge) exit
-//! criteria. **P4-3b lands in this module too:** `apply_delta`/`rebuild_and_install` publish a
+//! `inventoryQuery`, `inventoryOpenProjectedShard`, or `inventoryResolveRecords` -- those remain
+//! P4-4's (FFI) exit criteria. **P4-4b lands event-plane publication into `SubscriptionHub` in
+//! this module** (see the "event plane (P4-4b)" section below and its lock-ordering rule);
+//! `attach_event_sink` still leaves the FFI layer owning the `SubscriptionHub` instance itself
+//! and the `InventoryScopeId -> ScopeId` derivation (`InventoryScopeId::to_subscription_scope_id`
+//! in `ids.rs`). **P4-3b lands in this module too:** `apply_delta`/`rebuild_and_install` publish a
 //! `RootGeneration` whose `path_index` field (see `generation.rs`/`path_index`'s module doc
 //! comments) is built by `state_machine::attempt_patch`/`rebuild_generation`, not by this file --
 //! this file only orchestrates *when* those functions run, unchanged from P4-3a.
@@ -20,8 +23,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::RuntimeIdentity;
 use crate::inventory::{InventoryFileRecord, InventoryFolderRecord};
+use crate::{EventClass, EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, SubscriptionHub};
 
 use super::bulk_load::{BulkLoadError, BulkLoadTable};
 use super::delta::{InventoryDeltaCommand, InventoryDeltaReceipt};
@@ -103,6 +106,18 @@ struct ScopeState {
     bulk_loads: BulkLoadTable,
 }
 
+/// P4-4b: where this scope publishes event-plane notifications (contract doc §5b). `Option`
+/// (not required at construction) so every existing cargo-only construction path
+/// (`new`/`new_seeded_for_testing`, this crate's own concurrency/property tests) keeps compiling
+/// unchanged; a scope with no sink attached simply drops its event batches (`publish_events`
+/// no-ops). The FFI layer (`rust/crates/ffi/src/api.rs`) attaches the real sink immediately
+/// after minting a scope via `attach_event_sink`.
+#[derive(Clone)]
+struct InventoryEventSink {
+    hub: Arc<SubscriptionHub>,
+    scope_id: ScopeId,
+}
+
 pub struct InventoryScope {
     identity: RuntimeIdentity,
     scope_id: InventoryScopeId,
@@ -117,6 +132,20 @@ pub struct InventoryScope {
     /// the lock and is now parked in the expensive compute phase" without a wall-clock sleep or
     /// a race where the test's read loop finishes before the writer even starts.
     parked_on_rebuild_barrier: AtomicBool,
+    event_sink: Mutex<Option<InventoryEventSink>>,
+    /// Mirrors `rebuild_test_barrier`/`parked_on_rebuild_barrier` exactly, for the same reason:
+    /// `inventory_scope_event_lock_ordering.rs` needs a way to park a publish call
+    /// deterministically (post-`with_state`) and prove a concurrent `with_state`-guarded reader
+    /// makes progress while it is parked -- see `publish_events`'s doc comment for what that
+    /// proves.
+    publish_test_barrier: Mutex<Option<Arc<Barrier>>>,
+    parked_on_publish_barrier: AtomicBool,
+    /// Best-effort publish failures (wake-pipe I/O error, a lossless event that cannot fit even
+    /// after eviction) -- see `publish_events`'s doc comment for why these never surface as a
+    /// mutation error. DEBUG/diagnostic counter only; not part of `InventoryDiagnosticsV1` (no
+    /// Swift-side precedent field to port it into, unlike every other diagnostics counter -- see
+    /// contract doc §5c).
+    publish_failure_count: AtomicU64,
 }
 
 impl InventoryScope {
@@ -161,7 +190,30 @@ impl InventoryScope {
             rebuild_test_barrier: Mutex::new(None),
             force_stale_base_once: AtomicBool::new(false),
             parked_on_rebuild_barrier: AtomicBool::new(false),
+            event_sink: Mutex::new(None),
+            publish_test_barrier: Mutex::new(None),
+            parked_on_publish_barrier: AtomicBool::new(false),
+            publish_failure_count: AtomicU64::new(0),
         }
+    }
+
+    /// Wires this scope's event-plane publication (contract doc §5b) into the shared
+    /// `SubscriptionHub`. Called once by the FFI layer immediately after minting the scope
+    /// (`ScopeRegistry::open_scope`) -- see `InventoryScopeId::to_subscription_scope_id` for the
+    /// `ScopeId` derivation the caller must use so the generic `openSubscription`/`tryDrain` FFI
+    /// surface (already scope-generic, unchanged by this step) addresses the same hub queue this
+    /// scope publishes into. Idempotent: a later call simply replaces the sink; no production
+    /// call site does this more than once.
+    pub fn attach_event_sink(&self, hub: Arc<SubscriptionHub>, scope_id: ScopeId) {
+        *self
+            .event_sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(InventoryEventSink { hub, scope_id });
+    }
+
+    #[must_use]
+    pub fn publish_failure_count(&self) -> u64 {
+        self.publish_failure_count.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -204,7 +256,7 @@ impl InventoryScope {
             return Err(ScopeError::IdentityMismatch);
         }
         let lifetime = RootLifetimeId::mint(&self.lifetime_minter);
-        self.with_state(|state| {
+        let result = self.with_state(|state| {
             if state.closed {
                 return Err(ScopeError::ScopeClosed);
             }
@@ -228,7 +280,15 @@ impl InventoryScope {
                 ),
             );
             Ok(lifetime)
-        })
+        });
+        if result.is_ok() {
+            let payload = super::wire::encode_root_published(&super::wire::RootLifecycleEvent {
+                root_id,
+                root_lifetime_id: *lifetime.as_bytes(),
+            });
+            self.publish_events(vec![(EventClass::Lossless, None, payload)]);
+        }
+        result
     }
 
     pub fn close_root(
@@ -240,7 +300,7 @@ impl InventoryScope {
         if identity != &self.identity {
             return Err(ScopeError::IdentityMismatch);
         }
-        self.with_state(|state| {
+        let result = self.with_state(|state| {
             if state.closed {
                 return Err(ScopeError::ScopeClosed);
             }
@@ -262,7 +322,15 @@ impl InventoryScope {
                     })
                 }
             }
-        })
+        });
+        if result.is_ok() {
+            let payload = super::wire::encode_root_unloaded(&super::wire::RootLifecycleEvent {
+                root_id,
+                root_lifetime_id: *root_lifetime_id.as_bytes(),
+            });
+            self.publish_events(vec![(EventClass::Lossless, None, payload)]);
+        }
+        result
     }
 
     pub fn close(&self, identity: &RuntimeIdentity) -> Result<(), ScopeError> {
@@ -288,6 +356,18 @@ impl InventoryScope {
                 .handles
                 .invalidate_all(InvalidationReason::IdentityChanged)
         });
+        // Best-effort per `publish_events`'s doc comment, and in this specific case usually a
+        // guaranteed no-op through the hub: the real call sequence for a process-wide identity
+        // swap is `SubscriptionHub::replace_identity` (which clears every queue and rejects
+        // publishes against the old identity) alongside this method, so by the time this fires
+        // the hub has typically already moved on -- `SubscriptionHub::publish(&self.identity, ..)`
+        // returns `StaleRuntimeIdentity` and the failure counter absorbs it. Still emitted,
+        // scope-wide (`root_id: None`), for the window before that swap lands.
+        let payload = super::wire::encode_resnapshot_required(&super::wire::ResnapshotRequiredEvent {
+            root_id: None,
+            reason: super::wire::ResnapshotReason::IdentityChanged,
+        });
+        self.publish_events(vec![(EventClass::Lossless, None, payload)]);
     }
 
     // ---------------------------------------------------------------------------- ingest: apply_delta
@@ -303,7 +383,10 @@ impl InventoryScope {
 
         enum Phase1 {
             Done(InventoryDeltaReceipt),
-            NeedsRebuild { base_generation: Option<u64> },
+            NeedsRebuild {
+                base_generation: Option<u64>,
+                reason: RootCatalogShardFallbackReason,
+            },
         }
 
         let phase1 = self.with_state(|state| -> Phase1 {
@@ -358,6 +441,7 @@ impl InventoryScope {
                 root.counters.record_fallback(reason);
                 return Phase1::NeedsRebuild {
                     base_generation: root.published.as_ref().map(|g| g.generation),
+                    reason,
                 };
             }
 
@@ -391,15 +475,38 @@ impl InventoryScope {
                     root.counters.record_fallback(reason);
                     Phase1::NeedsRebuild {
                         base_generation: root.published.as_ref().map(|g| g.generation),
+                        reason,
                     }
                 }
             }
         });
 
         match phase1 {
-            Phase1::Done(receipt) => receipt,
-            Phase1::NeedsRebuild { base_generation } => {
-                self.rebuild_and_install(command.root_id, base_generation)
+            Phase1::Done(receipt) => {
+                if matches!(receipt.outcome, InventoryApplyOutcome::Patched) {
+                    let events = self.delta_success_events(
+                        command.root_id,
+                        command.root_lifetime_id,
+                        &receipt,
+                        &command.event,
+                    );
+                    self.publish_events(events);
+                }
+                receipt
+            }
+            Phase1::NeedsRebuild { base_generation, reason } => {
+                self.publish_events(vec![Self::shard_fallback_event(command.root_id, reason)]);
+                let receipt = self.rebuild_and_install(command.root_id, base_generation);
+                if matches!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative) {
+                    let events = self.delta_success_events(
+                        command.root_id,
+                        command.root_lifetime_id,
+                        &receipt,
+                        &command.event,
+                    );
+                    self.publish_events(events);
+                }
+                receipt
             }
         }
     }
@@ -563,7 +670,7 @@ impl InventoryScope {
         if identity != &self.identity {
             return Err(BulkLoadError::Unknown);
         }
-        self.with_state(|state| {
+        let result = self.with_state(|state| {
             let (root_id, root_lifetime, staging) =
                 state.bulk_loads.take_for_commit(bulk_load_id)?;
             let Some(root) = state.roots.get_mut(&root_id) else {
@@ -572,6 +679,7 @@ impl InventoryScope {
             if root.root_lifetime != root_lifetime {
                 return Err(BulkLoadError::RootMismatch);
             }
+            let upserted_count = (staging.files.len() + staging.folders.len()) as u64;
             root.maps = IdentityMaps::default();
             for file in staging.files {
                 root.maps.upsert_file(file);
@@ -592,12 +700,41 @@ impl InventoryScope {
             let published = root.publish(generation, outgoing_refcount);
             root.last_applied_index_generation += 1;
             root.counters.authoritative_rebuild_count += 1;
-            Ok(InventoryGenerationReceipt {
-                root_id,
-                generation: published.generation,
-                token: published.token,
-            })
-        })
+            Ok((
+                InventoryGenerationReceipt {
+                    root_id,
+                    generation: published.generation,
+                    token: published.token,
+                },
+                upserted_count,
+            ))
+        });
+        match result {
+            Ok((receipt, upserted_count)) => {
+                // A bulk-load commit is a full replacement, not a delta: no `InventoryDeltaCommand`
+                // exists to carry `inventoryAppliedIndexBatch` payload content, so only
+                // `inventoryGenerationAdvanced` is emitted here (contract doc §5b's "generations +
+                // change summary counts" -- removed/modified are meaningless for a wholesale
+                // replacement, so both are 0; `upserted_count` covers every staged record).
+                let payload = super::wire::encode_generation_advanced(&super::wire::GenerationAdvancedEvent {
+                    root_id: receipt.root_id,
+                    root_lifetime_id: *receipt.token.root_lifetime().as_bytes(),
+                    applied_index_generation: receipt.generation,
+                    catalog_generation: Some(receipt.generation),
+                    rebuilt_authoritative: true,
+                    upserted_count,
+                    removed_count: 0,
+                    modified_count: 0,
+                });
+                self.publish_events(vec![(
+                    EventClass::Coalescible,
+                    Some(root_coalesce_key("genAdvanced", receipt.root_id)),
+                    payload,
+                )]);
+                Ok(receipt)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     // ----------------------------------------------------------------------------- read plane
@@ -662,6 +799,150 @@ impl InventoryScope {
             }
             state.handles.close_handle(handle_id);
         });
+    }
+
+    // --------------------------------------------------------------------- event plane (P4-4b)
+    //
+    // **Lock-ordering rule (binding, not a style note): `SubscriptionHub`'s lock is always
+    // innermost. `InventoryScope` never calls into `SubscriptionHub` while holding
+    // `self.state`'s guard.** The two locks have a fixed total order because
+    // `SubscriptionHub::open_subscription` runs its snapshot-provider closure *while holding
+    // the hub's own lock* (see that method's doc comment) -- if this scope's snapshot were ever
+    // read from inside that provider, or if a mutation method here called `hub.publish()` from
+    // inside `with_state`, a concurrent thread doing the other order would deadlock (hub-lock ->
+    // scope-lock on one thread, scope-lock -> hub-lock on the other: classic ABBA). Two
+    // consequences, both load-bearing:
+    //   1. Every mutation method below runs entirely inside `with_state`, computing whatever
+    //      event payload data it needs from values already produced under the lock (the
+    //      mutation's own return value, or a local the closure already had in hand); lets
+    //      `with_state` return, dropping the guard; and only then calls `publish_events`, the
+    //      sole call site that reaches `SubscriptionHub`.
+    //   2. `InventoryScope` never opens a subscription itself and never supplies a
+    //      scope-state-reading snapshot provider to `SubscriptionHub::open_subscription` -- the
+    //      FFI layer opens inventory subscriptions with an empty initial snapshot (`Vec::new`),
+    //      matching how every other P0 consumer of the generic subscription surface already
+    //      does it (`rust/crates/ffi/src/api.rs`'s `open_subscription`). Resnapshot recovery
+    //      (contract doc §5b) is a separate, ordinary `inventoryOpenSnapshot` call, never a read
+    //      folded into subscription bootstrap.
+    // `inventory_scope_event_lock_ordering.rs` proves rule 1 empirically: it parks a publish call
+    // on a test barrier (mirroring `rebuild_test_barrier`/`parked_on_rebuild_barrier` below) and
+    // asserts a concurrent `with_state`-guarded reader completes within a bounded timeout while
+    // the publisher is parked -- a violation that moved the publish call inside `with_state`
+    // would make that reader block for the barrier's full duration instead, failing the test.
+
+    /// Publishes a batch of already-encoded events, each tagged with its `EventClass` and
+    /// optional coalesce key. Called only after the mutation that produced them has already
+    /// released `self.state`'s guard -- see this section's lock-ordering rule. Best-effort:
+    /// `SubscriptionHub::publish` can fail (wake-pipe I/O error, a lossless event too large even
+    /// after evicting every droppable/coalescible entry), and the mutation that triggered this
+    /// batch has already committed under its own lock by the time this runs, so a publish
+    /// failure is recorded (`publish_failure_count`) and swallowed, never surfaced as a mutation
+    /// error to the caller who already received a successful receipt.
+    fn publish_events(&self, events: Vec<(EventClass, Option<String>, Vec<u8>)>) {
+        if events.is_empty() {
+            return;
+        }
+        // Self-enforcing complement to the barrier-based proof (`testing_try_lock_state`'s doc
+        // comment): a debug-only, always-on tripwire for a future refactor that moves a
+        // `publish_events` call inside `with_state` by mistake.
+        debug_assert!(
+            self.testing_try_lock_state(),
+            "publish_events called while `self.state` is still locked -- see the event-plane \
+             section's lock-ordering rule"
+        );
+        let sink = self
+            .event_sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(sink) = sink else {
+            return; // no sink attached (cargo-only construction, or FFI never called attach_event_sink)
+        };
+
+        if let Some(barrier) = self
+            .publish_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            self.parked_on_publish_barrier.store(true, Ordering::SeqCst);
+            barrier.wait();
+            self.parked_on_publish_barrier.store(false, Ordering::SeqCst);
+        }
+
+        for (class, coalesce_key, payload) in events {
+            let input = EventInput {
+                kind: RuntimeEventKind::Data,
+                class,
+                payload,
+                coalesce_key,
+            };
+            if sink.hub.publish(&self.identity, &sink.scope_id, input).is_err() {
+                self.publish_failure_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// `inventoryGenerationAdvanced` + `inventoryAppliedIndexBatch` (contract doc §5b), emitted
+    /// together for every non-rejected `apply_delta`/`commit_bulk_load` outcome. **Flagged
+    /// interpretation:** the contract table gives both events the same coalesce-key shape
+    /// ("scope:root"); read literally as byte-identical keys, publishing both for the same root
+    /// back-to-back would coalesce the first into the second inside the hub's queue, silently
+    /// dropping the generation-advanced notification. This scope instead namespaces the key per
+    /// event kind (`genAdvanced:<root>` / `appliedIndexBatch:<root>`) so each kind coalesces
+    /// independently against its own prior entry for the same root -- "scope:root" read as the
+    /// key's *shape* (bounded per scope+root), not a literal cross-kind collision.
+    fn delta_success_events(
+        &self,
+        root_id: RootId,
+        root_lifetime_id: RootLifetimeId,
+        receipt: &InventoryDeltaReceipt,
+        event: &crate::inventory::InventoryAppliedIndexBatchEvent,
+    ) -> Vec<(EventClass, Option<String>, Vec<u8>)> {
+        let rebuilt_authoritative = matches!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative);
+        let generation_advanced = super::wire::encode_generation_advanced(&super::wire::GenerationAdvancedEvent {
+            root_id,
+            root_lifetime_id: *root_lifetime_id.as_bytes(),
+            applied_index_generation: receipt.applied_index_generation,
+            catalog_generation: receipt.catalog_generation,
+            rebuilt_authoritative,
+            upserted_count: (event.upserted_files.len() + event.upserted_folders.len()) as u64,
+            removed_count: (event.removed_file_ids.len()
+                + event.removed_folder_ids.len()
+                + event.removed_file_paths.len()
+                + event.removed_folder_paths.len()) as u64,
+            modified_count: (event.modified_file_ids.len() + event.modified_folder_ids.len()) as u64,
+        });
+        let applied_index_batch = super::wire::encode_delta_event(event);
+        vec![
+            (
+                EventClass::Coalescible,
+                Some(root_coalesce_key("genAdvanced", root_id)),
+                generation_advanced,
+            ),
+            (
+                EventClass::Coalescible,
+                Some(root_coalesce_key("appliedIndexBatch", root_id)),
+                applied_index_batch,
+            ),
+        ]
+    }
+
+    /// `inventoryShardFallback` (Droppable, diagnostic-only per contract doc §5b).
+    fn shard_fallback_event(
+        root_id: RootId,
+        reason: RootCatalogShardFallbackReason,
+    ) -> (EventClass, Option<String>, Vec<u8>) {
+        let payload = super::wire::encode_shard_fallback(&super::wire::ShardFallbackEvent { root_id, reason });
+        let reason_tag = RootCatalogShardFallbackReason::ALL
+            .iter()
+            .position(|candidate| *candidate == reason)
+            .unwrap_or(usize::MAX);
+        (
+            EventClass::Droppable,
+            Some(format!("fallback:{}:{reason_tag}", hex16(&root_id))),
+            payload,
+        )
     }
 
     // ------------------------------------------------------------------- P4-4 read/query surface
@@ -893,6 +1174,35 @@ impl InventoryScope {
         self.parked_on_rebuild_barrier.load(Ordering::SeqCst)
     }
 
+    /// Installs a one-shot barrier the next `publish_events` call waits on, mirroring
+    /// `testing_install_rebuild_barrier` exactly -- see the event-plane section's lock-ordering
+    /// rule doc comment and `inventory_scope_event_lock_ordering.rs` for what this proves.
+    pub fn testing_install_publish_barrier(&self, barrier: Arc<Barrier>) {
+        *self
+            .publish_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(barrier);
+    }
+
+    /// True while a mutation is parked inside `publish_events` on a
+    /// `testing_install_publish_barrier`-installed barrier, with `self.state`'s guard already
+    /// released (by construction: `publish_events` is only ever called after `with_state`
+    /// returns). Mirrors `testing_is_parked_on_rebuild_barrier` exactly.
+    #[must_use]
+    pub fn testing_is_parked_on_publish_barrier(&self) -> bool {
+        self.parked_on_publish_barrier.load(Ordering::SeqCst)
+    }
+
+    /// Non-blocking attempt to acquire `self.state`'s lock, immediately releasing it on success.
+    /// A cheap, always-available complement to the barrier-based proof above: if a future
+    /// refactor ever moved a `publish_events` call inside `with_state`, this would return
+    /// `false` at the moment the (misplaced) publish ran, rather than only failing when a test
+    /// happens to race a concurrent reader against it.
+    #[must_use]
+    pub fn testing_try_lock_state(&self) -> bool {
+        self.state.try_lock().is_ok()
+    }
+
     /// P4-3b testing accessor: the currently published generation's path search index, for
     /// build-kind and ordered-candidate coverage. Not part of the read plane proper --
     /// `inventoryQuery`'s real FFI-facing shape is P4-4's job (§5.3); this is a direct `Arc` clone
@@ -966,4 +1276,12 @@ fn reject(
         catalog_generation,
         outcome: InventoryApplyOutcome::Rejected(reason),
     }
+}
+
+fn hex16(bytes: &crate::inventory::InventoryUuid) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn root_coalesce_key(prefix: &str, root_id: RootId) -> String {
+    format!("{prefix}:{}", hex16(&root_id))
 }

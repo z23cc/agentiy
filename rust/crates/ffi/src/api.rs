@@ -653,8 +653,19 @@ impl CoreRuntime {
             let scope = self
                 .inventory_scope_registry
                 .open_scope(identity, config.runtime_config()?);
+            // P4-4b: wire this scope's event-plane publication (contract doc §5b) into the same
+            // `SubscriptionHub` every other P0 consumer already publishes into/subscribes from --
+            // reused verbatim, not re-derived (see `InventoryScope`'s "event plane" section doc
+            // comment for the lock-ordering rule this depends on, and `InventoryScopeHandleV1`'s
+            // doc comment for why Swift receives the derived `ScopeId` here rather than computing
+            // it itself).
+            scope.attach_event_sink(
+                std::sync::Arc::clone(self.inner.subscriptions()),
+                scope.scope_id().to_subscription_scope_id(),
+            );
             Ok(InventoryScopeHandleV1 {
                 scope_id: scope.scope_id().to_string(),
+                subscription_scope_id: scope.scope_id().to_subscription_scope_id().to_string(),
             })
         })
     }
@@ -1816,6 +1827,196 @@ mod tests {
             .expect("close scope");
         core.inventory_close_scope(identity, scope.scope_id)
             .expect("closing twice is idempotent");
+    }
+
+    #[test]
+    fn inventory_scope_events_flow_through_the_generic_subscription_surface() {
+        // P4-4b done-when: "ffi round-trip (subscribe -> mutate -> drain -> events match
+        // mutations)". Deliberately reuses the exact same `open_subscription`/`try_drain`
+        // exports every other P0 consumer uses (`close_and_shutdown_are_idempotent` above) --
+        // the whole point of P4-4b's FFI surface is that no new subscribe/drain export exists;
+        // only `InventoryScopeHandleV1.subscription_scope_id` is new.
+        let (core, identity, _cancellation) = initialized_core();
+        let scope = core
+            .inventory_open_scope(
+                identity.clone(),
+                CoreInventoryScopeConfigV1 {
+                    live_generation_cap: 8,
+                    max_patch_logical_mutation_count: 1,
+                    codemap_capable_extensions: Vec::new(),
+                },
+            )
+            .expect("open scope");
+
+        // Subscribe before any mutation so nothing publishes before the queue exists.
+        let subscription = core
+            .open_subscription(SubscriptionScope {
+                runtime_identity: identity.clone(),
+                scope_id: crate::types::ScopeId {
+                    value: scope.subscription_scope_id.clone(),
+                },
+                max_queued_events: 0,
+                max_queued_bytes: 0,
+            })
+            .expect("open subscription against the derived subscription_scope_id")
+            .subscription_id;
+
+        let root_id = vec![4u8; 16];
+        let lifetime = core
+            .inventory_open_root(InventoryRootOpenV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                name: "root".to_owned(),
+                standardized_full_path: "/repo".to_owned(),
+            })
+            .expect("open root");
+
+        let event = runtime::inventory::InventoryAppliedIndexBatchEvent {
+            root_id: [4; 16],
+            upserted_files: vec![sample_file(1, [4; 16], "A.swift", "A.swift")],
+            upserted_folders: Vec::new(),
+            removed_file_ids: Vec::new(),
+            removed_folder_ids: Vec::new(),
+            removed_file_paths: Vec::new(),
+            removed_folder_paths: Vec::new(),
+            modified_file_ids: Vec::new(),
+            modified_folder_ids: Vec::new(),
+        };
+        let delta_receipt = core
+            .inventory_apply_delta_v1(InventoryDeltaCommandV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                root_lifetime_id: lifetime.root_lifetime_id.clone(),
+                watcher_accepted_watermark: None,
+                requires_full_resync: true,
+                expected_applied_index_generation: None,
+                source: "test".to_owned(),
+                event_bytes: runtime::inventory_scope::encode_delta_event(&event),
+            })
+            .expect("apply delta");
+        assert_eq!(delta_receipt.outcome, InventoryApplyOutcomeV1::RebuiltAuthoritative);
+
+        let DrainBatch { events, .. } = core
+            .try_drain(subscription.clone(), 16, 65_536)
+            .expect("drain");
+        // open_root -> RootPublished; apply_delta (fresh root, full resync) -> ShardFallback,
+        // generationAdvanced, appliedIndexBatch.
+        assert_eq!(events.len(), 4);
+        let generation_advanced = runtime::inventory_scope::decode_generation_advanced(&events[2].payload)
+            .expect("decode generationAdvanced");
+        assert_eq!(generation_advanced.root_id, [4; 16]);
+        assert_eq!(generation_advanced.applied_index_generation, delta_receipt.applied_index_generation);
+        assert_eq!(generation_advanced.catalog_generation, delta_receipt.catalog_generation);
+        assert!(generation_advanced.rebuilt_authoritative);
+
+        let applied_index_batch = runtime::inventory_scope::decode_delta_event(&events[3].payload)
+            .expect("decode appliedIndexBatch");
+        assert_eq!(applied_index_batch.upserted_files.len(), 1);
+        assert_eq!(applied_index_batch.upserted_files[0].name, "A.swift");
+
+        core.close_subscription(subscription).expect("close subscription");
+    }
+
+    #[test]
+    fn inventory_scope_overflow_produces_a_gap_then_a_fresh_snapshot_still_recovers() {
+        // P4-4b done-when: end-to-end "drive a real overflow -> gap marker -> resnapshot
+        // recovery through the FFI" proof (the Swift-layer half of this same proof lives in
+        // `Tests/AgentryCoreBridgeTests`).
+        let (core, identity, _cancellation) = initialized_core();
+        let scope = core
+            .inventory_open_scope(
+                identity.clone(),
+                CoreInventoryScopeConfigV1 {
+                    live_generation_cap: 8,
+                    max_patch_logical_mutation_count: 1,
+                    codemap_capable_extensions: Vec::new(),
+                },
+            )
+            .expect("open scope");
+        let subscription = core
+            .open_subscription(SubscriptionScope {
+                runtime_identity: identity.clone(),
+                scope_id: crate::types::ScopeId {
+                    value: scope.subscription_scope_id.clone(),
+                },
+                max_queued_events: 4, // tiny: 3 usable data-plane slots after the reserved terminal slot
+                max_queued_bytes: 0,
+            })
+            .expect("open subscription")
+            .subscription_id;
+
+        let mut last_root_id = Vec::new();
+        for byte in 1..=8u8 {
+            let root_id = vec![byte; 16];
+            let lifetime = core
+                .inventory_open_root(InventoryRootOpenV1 {
+                    runtime_identity: identity.clone(),
+                    scope_id: scope.scope_id.clone(),
+                    root_id: root_id.clone(),
+                    name: format!("root{byte}"),
+                    standardized_full_path: format!("/root{byte}"),
+                })
+                .expect("open root");
+            let event = runtime::inventory::InventoryAppliedIndexBatchEvent {
+                root_id: id_from_vec(&root_id),
+                upserted_files: vec![sample_file(byte, id_from_vec(&root_id), "f.swift", "f.swift")],
+                upserted_folders: Vec::new(),
+                removed_file_ids: Vec::new(),
+                removed_folder_ids: Vec::new(),
+                removed_file_paths: Vec::new(),
+                removed_folder_paths: Vec::new(),
+                modified_file_ids: Vec::new(),
+                modified_folder_ids: Vec::new(),
+            };
+            core.inventory_apply_delta_v1(InventoryDeltaCommandV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                root_lifetime_id: lifetime.root_lifetime_id.clone(),
+                watcher_accepted_watermark: None,
+                requires_full_resync: true,
+                expected_applied_index_generation: None,
+                source: "test".to_owned(),
+                event_bytes: runtime::inventory_scope::encode_delta_event(&event),
+            })
+            .expect("apply delta");
+            last_root_id = root_id;
+        }
+
+        let DrainBatch { events, dropped_count, oversize, .. } = core
+            .try_drain(subscription, 64, 1_048_576)
+            .expect("drain");
+        assert!(oversize.is_none());
+        assert!(dropped_count > 0, "eight distinct roots through a 3-slot data-plane queue must drop something");
+        assert!(
+            events.iter().any(|event| event.kind == crate::types::RuntimeEventKind::Gap),
+            "a Gap-kind event with the dropped_count marker must be present"
+        );
+
+        // Resnapshot recovery: a fresh `inventoryOpenSnapshot` against the last root touched must
+        // still serve current, correct data through the ordinary FFI read plane -- the event gap
+        // does not poison the scope, only the stale event-stream projection.
+        let snapshot = core
+            .inventory_open_snapshot(InventorySnapshotRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: last_root_id.clone(),
+            })
+            .expect("fresh snapshot handle must still open after a gap");
+        let page = core
+            .inventory_snapshot_page(identity, scope.scope_id, snapshot.handle_id, 0, 10)
+            .expect("fresh page must still read");
+        let (files, _) = runtime::inventory_scope::decode_bulk_chunk(&page.bytes).expect("decode");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "f.swift");
+    }
+
+    fn id_from_vec(bytes: &[u8]) -> [u8; 16] {
+        let mut id = [0u8; 16];
+        id.copy_from_slice(bytes);
+        id
     }
 
     #[test]

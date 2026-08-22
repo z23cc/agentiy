@@ -64,6 +64,24 @@ macro_rules! uuid_id {
 uuid_id!(InventoryScopeId);
 uuid_id!(RootLifetimeId);
 
+impl InventoryScopeId {
+    /// P4-4b: the generic P0 `SubscriptionHub`/FFI subscription surface addresses queues by
+    /// `crate::ScopeId` (a canonical dashed-hex UUID string, `operation.rs`'s `uuid_identifier!`),
+    /// not by this module's own hyphen-less `uuid_id!` string shape -- the two macros produce
+    /// incompatible `Display` formats. This is the one, single-sourced conversion between them:
+    /// reinterpret this id's 16 bytes as a `u128` and format it through `ScopeId::from_u128`,
+    /// which reuses the exact canonical-hex-with-dashes formatting `ScopeId::parse`'s
+    /// `is_canonical_uuid` check accepts (format-only: no UUID version/variant nibble
+    /// requirement -- verified by `to_subscription_scope_id_round_trips_through_scope_id_parse`
+    /// below), so the derived string is always a valid `ScopeId`. The FFI layer
+    /// (`rust/crates/ffi/src/api.rs`) calls this once, at `inventoryOpenScope` time, and returns
+    /// it to Swift as `InventoryScopeHandleV1.subscriptionScopeId` -- Swift never re-derives it.
+    #[must_use]
+    pub fn to_subscription_scope_id(&self) -> crate::ScopeId {
+        crate::ScopeId::from_u128(u128::from_be_bytes(self.0))
+    }
+}
+
 /// Monotonic per-scope counter identifiers (see module doc comment for the shape rationale).
 macro_rules! counter_id {
     ($name:ident) => {
@@ -231,6 +249,22 @@ mod tests {
         for _ in 0..256 {
             assert!(seen.insert(minter.next_bytes()));
         }
+    }
+
+    #[test]
+    fn to_subscription_scope_id_round_trips_through_scope_id_parse() {
+        let minter = UuidMinter::seeded(11);
+        let scope_id = InventoryScopeId::mint(&minter);
+        let derived = scope_id.to_subscription_scope_id();
+        let parsed = crate::ScopeId::parse(derived.as_str()).expect("derived scope id must parse");
+        assert_eq!(parsed, derived);
+        // Distinct `InventoryScopeId`s must never collide onto the same `ScopeId` (the
+        // conversion is a byte reinterpretation, so this is really asserting `UuidMinter`
+        // doesn't repeat within this small sample -- already covered by
+        // `fresh_minter_never_repeats_within_a_short_burst`, re-asserted here through the actual
+        // conversion this hub-addressing depends on).
+        let other = InventoryScopeId::mint(&minter);
+        assert_ne!(other.to_subscription_scope_id(), derived);
     }
 
     #[test]

@@ -11,10 +11,15 @@
 //! §5.2.1 locking model with longest-critical-section instrumentation.
 //!
 //! **Explicitly out of scope for P4-3a/P4-3b** (owned by P4-4, not those steps -- see the
-//! design's migration-order DAG, §11): the FFI/bridge surface and event-plane publication into
-//! `SubscriptionHub` remain outside this module (that lives in `rust/crates/ffi` and
-//! `Sources/AgentryCoreBridge`). Zero FFI dependency here still holds: this module imports
-//! nothing from `uniffi` or the `ffi` crate.
+//! design's migration-order DAG, §11): the FFI/bridge surface remains outside this module (that
+//! lives in `rust/crates/ffi` and `Sources/AgentryCoreBridge`). Zero FFI dependency here still
+//! holds: this module imports nothing from `uniffi` or the `ffi` crate.
+//!
+//! **P4-4b landed in this module** (the piece P4-4 deliberately deferred, design §11): event-plane
+//! publication into `SubscriptionHub` (still same-crate, `subscription.rs` -- no new external
+//! dependency). `InventoryScope::attach_event_sink`/`publish_events` (`scope.rs`'s "event plane
+//! (P4-4b)" section) own the binding lock-ordering rule: this scope's mutation methods never call
+//! into `SubscriptionHub` while holding `Mutex<ScopeState>`.
 //!
 //! **P4-3b landed in this module** (index orchestration into the scope, cargo-only): the
 //! `path_index` submodule, welded onto `RootGeneration` and wired through
@@ -97,9 +102,14 @@ pub use scope::{
 };
 pub use state_machine::{RootCounters, RootState};
 pub use wire::{
-    FactBlock, FactRow, INVENTORY_SCOPE_CONTRACT_VERSION_V1, QueryCandidateRow, WireError,
-    decode_bulk_chunk, decode_delta_event, decode_fact_block, decode_lookup_request,
-    decode_query_request, decode_query_response, decode_resolve_request, encode_bulk_chunk,
-    encode_delta_event, encode_fact_block, encode_lookup_request, encode_query_request,
-    encode_query_response, encode_resolve_request, uuid_to_words,
+    FactBlock, FactRow, GenerationAdvancedEvent, INVENTORY_SCOPE_CONTRACT_VERSION_V1,
+    QueryCandidateRow, ResnapshotReason, ResnapshotRequiredEvent, RootLifecycleEvent,
+    ShardFallbackEvent, WireError, decode_bulk_chunk, decode_delta_event, decode_fact_block,
+    decode_generation_advanced, decode_lookup_request, decode_query_request,
+    decode_query_response, decode_resnapshot_required, decode_resolve_request,
+    decode_root_published, decode_root_unloaded, decode_shard_fallback, encode_bulk_chunk,
+    encode_delta_event, encode_fact_block, encode_generation_advanced, encode_lookup_request,
+    encode_query_request, encode_query_response, encode_resnapshot_required,
+    encode_resolve_request, encode_root_published, encode_root_unloaded, encode_shard_fallback,
+    uuid_to_words,
 };
