@@ -8801,6 +8801,40 @@ actor WorkspaceFileContextStore {
             return reports
         }
 
+        /// P4-6b prep slice 2 (checkpointed item 3): drains pending forwarding, then returns the
+        /// shadow scope's own diagnostics snapshot for the diagnostics-only parity suite. See
+        /// `WorkspaceCatalogShardShadowDiagnosticsParityTests`'s header for exactly which fields
+        /// this is compared against and why the rest are documented-not-asserted.
+        func inventoryScopeShadowDiagnosticsForTesting() async throws -> CoreInventoryDiagnosticsV1? {
+            guard isInventoryScopeShadowValidationEnabled else { return nil }
+            try await drainInventoryScopeShadowForwardingForTesting()
+            let forwarder = try await inventoryScopeShadowForwarderInstance()
+            return try await forwarder.diagnostics()
+        }
+
+        /// P4-6b prep slice 2: exposes the shadow scope's event stream (design doc §4.3's
+        /// republication adapter, DEBUG-verified now) -- must be called before the mutation(s)
+        /// the caller wants to observe, matching `CoreInventoryScope.events()`'s
+        /// register-before-suspend contract.
+        func inventoryScopeShadowEventsForTesting(
+            maxQueuedEvents: UInt64 = 256,
+            maxQueuedBytes: UInt64 = 1_048_576
+        ) async throws -> CoreInventoryScopeEventStream {
+            let forwarder = try await inventoryScopeShadowForwarderInstance()
+            return try await forwarder.events(maxQueuedEvents: maxQueuedEvents, maxQueuedBytes: maxQueuedBytes)
+        }
+
+        /// P4-6b prep slice 2: the root-info lookup the republication adapter needs (design doc
+        /// §4.3: `rootPath` and Swift's own UUID-shaped lifetime id are both still Swift-owned
+        /// root binding/topology facts per §4.2, not something Rust's event stream carries).
+        func inventoryScopeRepublicationRootInfoForTesting(rootID: UUID) -> WorkspaceInventoryScopeRepublicationRootInfo? {
+            guard let state = rootStatesByID[rootID] else { return nil }
+            return WorkspaceInventoryScopeRepublicationRootInfo(
+                standardizedFullPath: state.root.standardizedFullPath,
+                lifetimeID: state.lifetimeID
+            )
+        }
+
         /// P4-6b prep slice 1's dual-read comparator: drives the new `inventoryResolveRecords` /
         /// `inventoryLookupPaths` Swift facade (built over the shadow scope, live-mirrored from
         /// this store's own applied-index events) against the same primitives' Swift-authoritative
@@ -20519,6 +20553,25 @@ actor WorkspaceFileContextStore {
         return fileID
     }
 
+    /// Single-folder table-removal choke point, symmetric with `removeFile(relativePath:state:)`
+    /// above (P4-6b prep slice 2, item 1: consolidate the removal call sites onto shared
+    /// choke-point helpers rather than each keeping its own inline dictionary-removal logic).
+    @discardableResult
+    private func removeFolder(relativePath: String, state: inout RootState) -> UUID? {
+        let key = StandardizedPath.relative(relativePath)
+        guard let folderID = state.folderIDsByRelativePath.removeValue(forKey: key),
+              let folder = foldersByID.removeValue(forKey: folderID)
+        else { return nil }
+        managedOnlyFolderIDs.remove(folderID)
+        folderIDsByStandardizedFullPath.removeValue(forKey: folder.standardizedFullPath)
+        if let parentID = folder.parentFolderID {
+            state.childFolderIDsByFolderID[parentID]?.removeAll { $0 == folderID }
+        }
+        state.childFolderIDsByFolderID.removeValue(forKey: folderID)
+        state.childFileIDsByFolderID.removeValue(forKey: folderID)
+        return folderID
+    }
+
     private func removeFolderTree(relativePath: String, rootID: UUID) -> (fileIDs: [UUID], folderIDs: [UUID], filePaths: [String], folderPaths: [String]) {
         guard var state = rootStatesByID[rootID] else { return ([], [], [], []) }
         let key = StandardizedPath.relative(relativePath)
@@ -20545,21 +20598,15 @@ actor WorkspaceFileContextStore {
         var removedFolderIDs: [UUID] = []
         var removedFolderPaths: [String] = []
         for path in folderPaths {
-            guard let id = state.folderIDsByRelativePath.removeValue(forKey: path),
-                  let removed = foldersByID.removeValue(forKey: id)
-            else { continue }
-            let wasDiscoverable = isDiscoverableFolderID(id)
-            if wasDiscoverable {
-                removedFolderIDs.append(id)
+            // Read discoverability before removal (`removeFolder` clears the folder's
+            // `managedOnlyFolderIDs` membership as part of removal) -- mirrors the file-removal
+            // loop above, which reads `isDiscoverableFileID` before calling `removeFile` for the
+            // same reason.
+            let wasDiscoverable = state.folderIDsByRelativePath[path].map(isDiscoverableFolderID) ?? false
+            if let removedFolderID = removeFolder(relativePath: path, state: &state), wasDiscoverable {
+                removedFolderIDs.append(removedFolderID)
                 removedFolderPaths.append(path)
             }
-            managedOnlyFolderIDs.remove(id)
-            folderIDsByStandardizedFullPath.removeValue(forKey: removed.standardizedFullPath)
-            if let parentID = removed.parentFolderID {
-                state.childFolderIDsByFolderID[parentID]?.removeAll { $0 == id }
-            }
-            state.childFolderIDsByFolderID.removeValue(forKey: id)
-            state.childFileIDsByFolderID.removeValue(forKey: id)
         }
 
         if let parentID = folder.parentFolderID {

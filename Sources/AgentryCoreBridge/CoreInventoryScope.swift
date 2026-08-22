@@ -682,6 +682,16 @@ public struct CoreInventoryDeltaReceipt: Sendable, Equatable {
 
 /// Bridge-owned ARC wrapper over one Rust `InventoryScope` (contract doc §1/§4). The raw
 /// `InventoryScopeId` is never exposed above this type.
+/// Transparent re-export of the raw UniFFI diagnostics record: `Sources/RepoPrompt` app-layer
+/// sources must not import `AgentryUniFFIRaw`/`CAgentryRustCore` directly
+/// (`Scripts/source_layout_guardrails.sh`'s layering guardrail) -- `AgentryCoreBridge` is the one
+/// crossing point permitted to see the raw type, so callers like
+/// `WorkspaceFileContextStore`/`WorkspaceInventoryScopeShadowForwarder` (P4-6b prep slice 2's
+/// diagnostics-only parity suite) name this alias instead. A plain `typealias` is sufficient here
+/// (no wrapper needed) -- `InventoryDiagnosticsV1` is a value-only data record with no
+/// bridge/transport internals to hide.
+public typealias CoreInventoryDiagnosticsV1 = AgentryUniFFIRaw.InventoryDiagnosticsV1
+
 public final class CoreInventoryScope: @unchecked Sendable {
     private let bridge: AgentryCoreBridge
     public let scopeID: String
@@ -902,7 +912,7 @@ public final class CoreInventoryScope: @unchecked Sendable {
         )
     }
 
-    public func diagnostics() async throws -> AgentryUniFFIRaw.InventoryDiagnosticsV1 {
+    public func diagnostics() async throws -> CoreInventoryDiagnosticsV1 {
         try await bridge.inventoryScopeDiagnostics(scopeID: scopeID)
     }
 

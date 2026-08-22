@@ -215,6 +215,20 @@
             )
         }
 
+        /// P4-6b prep slice 2: exposes the shadow scope's own event stream for the republication
+        /// adapter's DEBUG verification (design doc §4.3) -- the shadow scope publishes real
+        /// `CoreInventoryScopeEvent`s for every mutation this forwarder mirrors into it, exactly
+        /// as a swapped-in authoritative scope would. Must be called once, before any mutation
+        /// this test run wants to observe (register-before-suspend, matching `CoreInventoryScope
+        /// .events()`'s own contract).
+        func events(
+            maxQueuedEvents: UInt64 = 256,
+            maxQueuedBytes: UInt64 = 1_048_576
+        ) async throws -> CoreInventoryScopeEventStream {
+            let scope = try await requireScope()
+            return try await scope.events(maxQueuedEvents: maxQueuedEvents, maxQueuedBytes: maxQueuedBytes)
+        }
+
         /// P4-6b prep slice 1's dual-read comparator: resolves the shadow scope's own
         /// id-keyed facts via the new `inventoryResolveRecords` facade, root-based like the
         /// FFI export itself (contract doc §5.3) -- no handle needed, no `expectedCatalogGeneration`
@@ -241,6 +255,17 @@
             let snapshot = try await scope.openSnapshot(rootID: rootID)
             defer { Task { await snapshot.close() } }
             return try await snapshot.lookupPaths(relativePaths: relativePaths)
+        }
+
+        /// P4-6b prep slice 2 (checkpointed item 3): the shadow scope's own diagnostics snapshot,
+        /// for the diagnostics-only parity suite. Field-for-field this mirrors Swift's
+        /// `RootCatalogShardDebugSnapshot`/`RootCatalogShardGenerationDebugSnapshot` (contract doc
+        /// §5c), but only the config-level fields (`liveGenerationCapPerRoot`,
+        /// `maxPatchLogicalMutationCount`) and root-membership are cross-arm-guaranteed today --
+        /// see that suite's header for the full parity/non-parity breakdown.
+        func diagnostics() async throws -> CoreInventoryDiagnosticsV1 {
+            let scope = try await requireScope()
+            return try await scope.diagnostics()
         }
 
         /// Idempotent teardown -- part of §8.2's "deletable" acceptance condition: closing this

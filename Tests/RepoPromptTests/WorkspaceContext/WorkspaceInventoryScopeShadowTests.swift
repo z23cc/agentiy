@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Foundation
 @testable import RepoPromptApp
 import XCTest
@@ -235,6 +236,177 @@ import XCTest
             XCTAssertEqual(mismatchCount, 0)
         }
 
+        // MARK: - Republication adapter (P4-6b prep slice 2, design doc §4.3)
+
+        /// Drains a `WorkspaceAppliedIndexBatchEvent` `AsyncStream` (the real, Swift-published
+        /// stream) in the background, polled with a bounded wait -- mirrors
+        /// `CoreInventoryScopeEventCollector` (`AgentryCoreBridgeTests/CoreInventoryScopeEventsTests.swift`),
+        /// the established pattern for this class of test.
+        private actor SwiftAppliedIndexEventCollector {
+            private(set) var events: [WorkspaceAppliedIndexBatchEvent] = []
+
+            func run(_ stream: AsyncStream<WorkspaceAppliedIndexBatchEvent>) async {
+                for await event in stream {
+                    events.append(event)
+                }
+            }
+
+            func waitForAtLeast(_ count: Int, timeoutSeconds: Double) async -> [WorkspaceAppliedIndexBatchEvent] {
+                let deadline = Date().addingTimeInterval(timeoutSeconds)
+                while events.count < count, Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 25_000_000)
+                }
+                return events
+            }
+        }
+
+        private actor RustInventoryScopeEventCollector {
+            private(set) var events: [CoreInventoryScopeEvent] = []
+
+            func run(_ stream: CoreInventoryScopeEventStream) async {
+                do {
+                    for try await event in stream {
+                        events.append(event)
+                    }
+                } catch {
+                    // Stream closed/errored -- `waitForAtLeast`'s deadline covers this case;
+                    // nothing further to collect.
+                }
+            }
+
+            func waitForAtLeast(_ count: Int, timeoutSeconds: Double) async -> [CoreInventoryScopeEvent] {
+                let deadline = Date().addingTimeInterval(timeoutSeconds)
+                while events.count < count, Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 25_000_000)
+                }
+                return events
+            }
+        }
+
+        /// Drives a real incremental mutation through the store, capturing (a) the real
+        /// Swift-published event from `store.appliedIndexEvents()` and (b) the shadow scope's own
+        /// Rust event stream, fed through `WorkspaceInventoryScopeRepublicationAdapter`. Asserts
+        /// the adapter's republished event matches the real one on every field the two catalogued
+        /// consumers actually read (design doc §4.3's consumer table) -- proving the adapter
+        /// correct against live mutation traffic while Swift remains authoritative.
+        func testRepublicationAdapterMatchesRealSwiftPublishedEventForIncrementalAdd() async throws {
+            let root = try makeTemporaryRoot(name: "ShadowRepublication")
+            try write("a", to: root.appendingPathComponent("App.swift"))
+            let store = makeShadowStore()
+            let record = try await store.loadRoot(path: root.path)
+            // Watching stays active (`publishSyntheticFileSystemDeltasForTesting` routes through
+            // the same live ingress pipeline every other shadow test in this file relies on --
+            // stopping the watcher was tried and broke synthetic-delta injection entirely, 0
+            // events on either side). A live watcher can race the synthetic publish with its own
+            // real-disk detection of the same write and legitimately double-publish; this test is
+            // written to tolerate that (select each arm's *last* event naming "Added.swift"
+            // rather than assume exactly one event fires), not to prevent it.
+            try await store.startWatchingRoot(id: record.id)
+
+            // Seed the shadow root via a first drain (bulk-load path -- not what this test
+            // correlates against) before subscribing to either event stream.
+            let seedReport = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(seedReport.matched, "seed mismatch: \(seedReport)")
+
+            // Register both streams before the mutation, matching both streams' own
+            // register-before-suspend contracts.
+            let realStream = await store.appliedIndexEvents()
+            let realCollector = SwiftAppliedIndexEventCollector()
+            let realTask = Task { await realCollector.run(realStream) }
+
+            let shadowStream = try await store.inventoryScopeShadowEventsForTesting()
+            let shadowCollector = RustInventoryScopeEventCollector()
+            let shadowTask = Task { await shadowCollector.run(shadowStream) }
+
+            let addedURL = root.appendingPathComponent("Added.swift")
+            try write("added", to: addedURL)
+            try await store.publishSyntheticFileSystemDeltasForTesting(rootID: record.id, deltas: [.fileAdded("Added.swift")])
+            _ = await store.flushPendingServiceEventsForAllRoots()
+            try await store.drainInventoryScopeShadowForwardingForTesting()
+
+            let realEvents = await realCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            let realEvent = try XCTUnwrap(
+                realEvents.last { $0.upsertedFiles.contains { $0.name == "Added.swift" } },
+                "no real Swift-published event named Added.swift among \(realEvents)"
+            )
+
+            let shadowEvents = await shadowCollector.waitForAtLeast(2, timeoutSeconds: 10)
+            realTask.cancel()
+            shadowTask.cancel()
+            try await shadowStream.close()
+
+            let adapter = WorkspaceInventoryScopeRepublicationAdapter { rootID in
+                await store.inventoryScopeRepublicationRootInfoForTesting(rootID: rootID)
+            }
+            var lastAddedEvent: WorkspaceAppliedIndexBatchEvent?
+            for event in shadowEvents {
+                guard let result = await adapter.ingest(event) else { continue }
+                if result.upsertedFiles.contains(where: { $0.name == "Added.swift" }) {
+                    lastAddedEvent = result
+                }
+            }
+            let adapterEvent = try XCTUnwrap(
+                lastAddedEvent, "adapter never produced a republished event naming Added.swift from the shadow stream: \(shadowEvents)"
+            )
+
+            // §4.3's actual contract: "republish preserves per-root generation MONOTONICITY" and
+            // the requiresFullResync/isRootUnload *semantics* the consumer's resync guard depends
+            // on -- not byte-identical generation numbers or requiresFullResync values against
+            // Swift's own counter. Rust's shadow scope and Swift's real store are two independent
+            // state machines with independent histories (the shadow was seeded moments ago; the
+            // real store has been live since root load), so their own patch-vs-rebuild decisions
+            // -- and therefore their own generation numbering and `requiresFullResync` outcome --
+            // are not required to agree, and post-cutover Swift's own counter is deleted entirely
+            // (Rust's is the only one that exists). What both arms *must* agree on is the actual
+            // mutation content: rootID, root info, and the upserted/removed/modified payload,
+            // which both received identically (the shadow forwarder mirrors verbatim).
+            XCTAssertEqual(adapterEvent.rootID, realEvent.rootID)
+            XCTAssertEqual(adapterEvent.rootPath, realEvent.rootPath)
+            XCTAssertGreaterThan(adapterEvent.generation, 0, "a real delta's republished generation must be a genuine, non-degenerate value")
+            XCTAssertEqual(adapterEvent.rootLifetimeID, realEvent.rootLifetimeID)
+            XCTAssertEqual(adapterEvent.isRootUnload, realEvent.isRootUnload)
+            XCTAssertEqual(Set(adapterEvent.upsertedFiles), Set(realEvent.upsertedFiles))
+            XCTAssertEqual(Set(adapterEvent.upsertedFolders), Set(realEvent.upsertedFolders))
+            XCTAssertEqual(Set(adapterEvent.modifiedFileIDs), Set(realEvent.modifiedFileIDs))
+            XCTAssertEqual(Set(adapterEvent.removedFileIDs), Set(realEvent.removedFileIDs))
+        }
+
+        /// The `.rootUnloaded` lifecycle path (design doc §4.3): consumers only need `rootID` /
+        /// `isRootUnload` republished for an unload, matching what the real Swift unload
+        /// publication's own consumer-relevant surface already is.
+        func testRepublicationAdapterProducesRootUnloadEventOnRootUnloadedLifecycleEvent() async throws {
+            let root = try makeTemporaryRoot(name: "ShadowRepublicationUnload")
+            try write("a", to: root.appendingPathComponent("App.swift"))
+            let store = makeShadowStore()
+            let record = try await store.loadRoot(path: root.path)
+            _ = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+
+            let shadowStream = try await store.inventoryScopeShadowEventsForTesting()
+            let shadowCollector = RustInventoryScopeEventCollector()
+            let shadowTask = Task { await shadowCollector.run(shadowStream) }
+
+            await store.unloadRoot(id: record.id)
+            try await store.drainInventoryScopeShadowForwardingForTesting()
+
+            let shadowEvents = await shadowCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            shadowTask.cancel()
+            try await shadowStream.close()
+
+            let adapter = WorkspaceInventoryScopeRepublicationAdapter { rootID in
+                await store.inventoryScopeRepublicationRootInfoForTesting(rootID: rootID)
+            }
+            var republished: WorkspaceAppliedIndexBatchEvent?
+            for event in shadowEvents {
+                if let result = await adapter.ingest(event) {
+                    republished = result
+                }
+            }
+            let unloadEvent = try XCTUnwrap(republished, "adapter never produced a republished event for the root-unload lifecycle event")
+            XCTAssertEqual(unloadEvent.rootID, record.id)
+            XCTAssertTrue(unloadEvent.isRootUnload)
+            XCTAssertTrue(unloadEvent.requiresFullResync)
+        }
+
         // MARK: - Read-facade dual-read comparator (P4-6b prep slice 1)
 
         /// Drives the new `inventoryResolveRecords` / `inventoryLookupPaths` Swift facade (built
@@ -270,8 +442,8 @@ import XCTest
             var ids = await currentIDs()
             var report = try await store.compareInventoryScopeReadFacadeForTesting(
                 rootID: record.id,
-                fileIDs: [try XCTUnwrap(ids.appFileID), try XCTUnwrap(ids.bFileID), absentFileID],
-                folderIDs: [try XCTUnwrap(ids.subFolderID), absentFolderID],
+                fileIDs: [XCTUnwrap(ids.appFileID), XCTUnwrap(ids.bFileID), absentFileID],
+                folderIDs: [XCTUnwrap(ids.subFolderID), absentFolderID],
                 relativePaths: ["App.swift", "Sub", "Sub/B.swift", "Missing.swift"]
             )
             XCTAssertTrue(report.matched, "bulk-load mismatch: \(report)")
@@ -295,7 +467,7 @@ import XCTest
             _ = await store.flushPendingServiceEventsForAllRoots()
             report = try await store.compareInventoryScopeReadFacadeForTesting(
                 rootID: record.id,
-                fileIDs: [try XCTUnwrap(ids.appFileID)],
+                fileIDs: [XCTUnwrap(ids.appFileID)],
                 folderIDs: [],
                 relativePaths: ["App.swift"]
             )
