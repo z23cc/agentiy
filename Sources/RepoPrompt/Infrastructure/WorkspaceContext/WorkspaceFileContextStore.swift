@@ -6719,25 +6719,26 @@ actor WorkspaceFileContextStore {
     }
 
     // MARK: - P4-6a fact-returning inventory read surface
-    //
-    // `inventoryRecordFacts` is the Swift-authority precursor to Rust's
-    // `inventoryResolveRecords` (docs/architecture/rust-inventory-scope-v1.md §5.3,
-    // docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md §4.3.1.1). It
-    // returns per-id INDEPENDENT FACTS about exactly the ten inventory tables named in
-    // Appendix A of that design -- never a verdict. Every codemap call site (B1/B3) and
-    // `appliedIndexRecordLookup` itself compose their own predicate from these facts;
-    // this function filters nothing and must never gain a table it doesn't already
-    // read here. Absent ids resolve to `record == nil`; the other fields are then
-    // meaningless and must not be consulted (mirrors R1 gating R2..R5 in the reference
-    // predicate).
-    //
-    // Deliberately excluded from the fact block, and left as call-site reads exactly
-    // where they sit today: `rootStatesByID` existence/`publishedSeededAuthorityIsQueryable`
-    // (function-level gates, not per-id facts -- folding them in here would silently add
-    // a clause at every B1 site, none of which gates on them today), and any
-    // codemap-owned state (`catalogGenerationsByRootID`, `codemapSessionsByRootEpoch`,
-    // `allowedRootIDs`, path-shape validation) which is not one of the ten inventory
-    // tables and is out of P4's scope entirely.
+
+    ///
+    /// `inventoryRecordFacts` is the Swift-authority precursor to Rust's
+    /// `inventoryResolveRecords` (docs/architecture/rust-inventory-scope-v1.md §5.3,
+    /// docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md §4.3.1.1). It
+    /// returns per-id INDEPENDENT FACTS about exactly the ten inventory tables named in
+    /// Appendix A of that design -- never a verdict. Every codemap call site (B1/B3) and
+    /// `appliedIndexRecordLookup` itself compose their own predicate from these facts;
+    /// this function filters nothing and must never gain a table it doesn't already
+    /// read here. Absent ids resolve to `record == nil`; the other fields are then
+    /// meaningless and must not be consulted (mirrors R1 gating R2..R5 in the reference
+    /// predicate).
+    ///
+    /// Deliberately excluded from the fact block, and left as call-site reads exactly
+    /// where they sit today: `rootStatesByID` existence/`publishedSeededAuthorityIsQueryable`
+    /// (function-level gates, not per-id facts -- folding them in here would silently add
+    /// a clause at every B1 site, none of which gates on them today), and any
+    /// codemap-owned state (`catalogGenerationsByRootID`, `codemapSessionsByRootEpoch`,
+    /// `allowedRootIDs`, path-shape validation) which is not one of the ten inventory
+    /// tables and is out of P4's scope entirely.
     struct WorkspaceInventoryFileRecordFact {
         /// R1: `filesByID[fileID]`. `nil` means the id does not exist; every other
         /// field is then meaningless.
@@ -7000,20 +7001,21 @@ actor WorkspaceFileContextStore {
     }
 
     // MARK: - P4-6a bucket-C aggregates (§4.3.1.2)
-    //
-    // Swift-authority precursor to Rust's O(1) `discoverableFileCount` /
-    // `discoverableFolderCount` per-root counters. The Rust side maintains these
-    // incrementally at every one of the 16 A2 mutation scopes (Appendix A) and pins
-    // them with a counter-equals-traversal differential (P4-3a done-when); that
-    // incremental-maintenance machinery and its differential are NOT built here --
-    // undertaking it now, without that differential harness, across 16 mutation sites
-    // in a step whose gate is behavior preservation would trade a correctness risk
-    // (a missed decrement silently diverging the counter from ground truth) for an
-    // optimization this step does not require, since Swift already computes the count
-    // cheaply today. What P4-6a rewires is the *call shape*: `prepareSessionWorktreeOwnership`
-    // now calls one named, documented function instead of inlining the traversal, so
-    // the P4-6b cutover replaces this function's body with a field read and touches no
-    // call site. Flagged explicitly, not silently deferred -- see the P4-6a report.
+
+    ///
+    /// Swift-authority precursor to Rust's O(1) `discoverableFileCount` /
+    /// `discoverableFolderCount` per-root counters. The Rust side maintains these
+    /// incrementally at every one of the 16 A2 mutation scopes (Appendix A) and pins
+    /// them with a counter-equals-traversal differential (P4-3a done-when); that
+    /// incremental-maintenance machinery and its differential are NOT built here --
+    /// undertaking it now, without that differential harness, across 16 mutation sites
+    /// in a step whose gate is behavior preservation would trade a correctness risk
+    /// (a missed decrement silently diverging the counter from ground truth) for an
+    /// optimization this step does not require, since Swift already computes the count
+    /// cheaply today. What P4-6a rewires is the *call shape*: `prepareSessionWorktreeOwnership`
+    /// now calls one named, documented function instead of inlining the traversal, so
+    /// the P4-6b cutover replaces this function's body with a field read and touches no
+    /// call site. Flagged explicitly, not silently deferred -- see the P4-6a report.
     private func discoverableFileCount(in state: RootState) -> Int {
         state.fileIDsByRelativePath.values.count(where: isDiscoverableFileID)
     }
@@ -8549,6 +8551,7 @@ actor WorkspaceFileContextStore {
     #endif
 
     #if DEBUG
+
         // MARK: - P4-5: inventory-scope shadow arm (design doc §8.2 / step list entry P4-5)
 
         struct WorkspaceInventoryScopeShadowForwardingUnavailable: Error {}
@@ -8576,20 +8579,17 @@ actor WorkspaceFileContextStore {
         /// single/double wildcard, a common suffix pattern, a leading-star pattern, and a pattern
         /// with no matches at all.
         ///
-        /// **Does NOT include the truly-empty pattern `""`** -- §8.2 calls out "empty-query merge
-        /// order" as required coverage, and running it surfaced a REAL, reproducible parity gap:
-        /// `PathSearchIndex::find("")` (`rust/crates/runtime/src/pathsearch/index.rs`, the P3-3
-        /// Rust port `inventoryQuery`'s `.indexKey` variant calls through `path_index.search`)
-        /// returns zero candidates, while Swift's C-engine-backed `WorkspaceSearchRootPathIndex.
-        /// search("")` returns every discoverable entry. The literal `"*"` pattern (same
-        /// `[Token::StarAny]` token sequence by inspection) does NOT reproduce it, so the
-        /// divergence is upstream of token matching -- in `literal_bounds`'s `is_wildcard`-gated
-        /// prefix/suffix scan or the forward/reverse bound search, not yet root-caused further.
-        /// This is pre-existing P3-3 pathsearch-engine behavior, not introduced by P4-5, and out of
-        /// this step's safe surface (shared matching code with many other callers) -- filed here
-        /// rather than patched blind. Re-add `""` to this corpus once that gap is closed.
+        /// Includes the truly-empty pattern `""` (§8.2's required "empty-query merge order"
+        /// coverage). A P4-5-era exclusion claimed a Rust-returns-zero divergence here; a
+        /// dedicated root-cause investigation proved that observation was an artifact of a
+        /// mid-WIP archive state and NO divergence exists at HEAD -- both engines return the
+        /// full lexically-ordered index for empty/non-wildcard patterns. The behavior is now
+        /// pinned with exact-order fixtures on both sides: `pathsearch/tests.rs` (empty-pattern
+        /// membership + order + workspace-key limits + duplicate ties + projected variants) and
+        /// `PathSearchRustSwiftDifferentialTests` (exact P4-5 plain-index and projected-index
+        /// shapes driving the live C engine vs the Rust port).
         static let inventoryScopeShadowIndexQueryCorpus: [String] = [
-            "*", "**", "*.swift", "src", "a*b", "***", "README", ".."
+            "", "*", "**", "*.swift", "src", "a*b", "***", "README", ".."
         ]
 
         /// Lazily opens the shadow forwarder's underlying bridge/scope, reusing the one process-wide
@@ -11782,10 +11782,10 @@ actor WorkspaceFileContextStore {
         return await state.service.fullPath(forRelativePath: StandardizedPath.relative(relativePath))
     }
 
-    // P4-6a / B1 site 1 (id-keyed, sync). One batched `inventoryRecordFacts` call
-    // before the scan, replacing per-item `filesByID` / discoverability / path
-    // round-trip reads. Named test:
-    // `testCodemapAutomaticSelectionSourceIdentitiesSkipsManagedOnlyFiles`.
+    /// P4-6a / B1 site 1 (id-keyed, sync). One batched `inventoryRecordFacts` call
+    /// before the scan, replacing per-item `filesByID` / discoverability / path
+    /// round-trip reads. Named test:
+    /// `testCodemapAutomaticSelectionSourceIdentitiesSkipsManagedOnlyFiles`.
     func codemapAutomaticSelectionSourceIdentities(
         forFileIDs sourceFileIDs: [UUID],
         rootScope: WorkspaceLookupRootScope
@@ -15115,21 +15115,21 @@ actor WorkspaceFileContextStore {
         return codemapGraphIndexCatalogShardAndToken(authority: authority) != nil
     }
 
-    // P4-6a / B2 (the projected-shard call shape, design §4.3.1's "other two codemap
-    // shapes"). `codemapGraphIndexCatalogShardBuildSnapshot` (actor-isolated capture)
-    // and `buildCodemapGraphIndexCatalogShard` (nonisolated static, run inside
-    // `Task.detached` by `ensureCodemapGraphIndexCatalogShard` above) together are the
-    // "single projected-shard function" this step's remit describes; they are
-    // deliberately NOT merged into one Swift function, because doing so would
-    // collapse the actor-isolated/off-actor split the design calls out as essential
-    // ("the sort/filter/projection work happens off the actor" -- §4.3.1; "this site
-    // ... must not be serialized behind an in-flight authoritative rebuild" -- §5.2).
-    // This snapshot capture already reads each root's full table in one synchronous
-    // pass (no per-item guard chain to route through a fact primitive -- there is no
-    // predicate here, only a whole-root materialization), so it is left as-is; the
-    // pair is documented together as this step's B2 read-shape boundary. Swift stays
-    // authoritative; the future `inventoryOpenProjectedShard` delegation point is
-    // exactly this pair's call site (`ensureCodemapGraphIndexCatalogShard`).
+    /// P4-6a / B2 (the projected-shard call shape, design §4.3.1's "other two codemap
+    /// shapes"). `codemapGraphIndexCatalogShardBuildSnapshot` (actor-isolated capture)
+    /// and `buildCodemapGraphIndexCatalogShard` (nonisolated static, run inside
+    /// `Task.detached` by `ensureCodemapGraphIndexCatalogShard` above) together are the
+    /// "single projected-shard function" this step's remit describes; they are
+    /// deliberately NOT merged into one Swift function, because doing so would
+    /// collapse the actor-isolated/off-actor split the design calls out as essential
+    /// ("the sort/filter/projection work happens off the actor" -- §4.3.1; "this site
+    /// ... must not be serialized behind an in-flight authoritative rebuild" -- §5.2).
+    /// This snapshot capture already reads each root's full table in one synchronous
+    /// pass (no per-item guard chain to route through a fact primitive -- there is no
+    /// predicate here, only a whole-root materialization), so it is left as-is; the
+    /// pair is documented together as this step's B2 read-shape boundary. Swift stays
+    /// authoritative; the future `inventoryOpenProjectedShard` delegation point is
+    /// exactly this pair's call site (`ensureCodemapGraphIndexCatalogShard`).
     private func codemapGraphIndexCatalogShardBuildSnapshot(
         authority: CodemapRootAuthority
     ) -> CodemapGraphIndexCatalogShardBuildSnapshot? {
@@ -15505,9 +15505,9 @@ actor WorkspaceFileContextStore {
             return await acceptCodemapMarkerReadinessUpdate(update, authority: authority)
         }
 
-        // P4-6a test shim (site 11, PC-6 gap): `codemapDemandIsCurrent` is `private`;
-        // it takes no authority parameter (it re-derives everything from the ticket),
-        // so this shim is a direct pass-through with no setup of its own.
+        /// P4-6a test shim (site 11, PC-6 gap): `codemapDemandIsCurrent` is `private`;
+        /// it takes no authority parameter (it re-derives everything from the ticket),
+        /// so this shim is a direct pass-through with no setup of its own.
         func codemapDemandIsCurrentForTesting(
             _ ticket: WorkspaceCodemapArtifactDemandTicket
         ) -> Bool {
@@ -15556,14 +15556,14 @@ actor WorkspaceFileContextStore {
         }
     #endif
 
-    // P4-6a / B1 site 8 (path-keyed, sync). `rootStatesByID[rootEpoch.rootID]`
-    // existence is no longer bound as a standalone gate: `inventoryPathLookups`
-    // returns an absent fact for a missing root, which fails the second guard exactly
-    // as the original's combined guard failed on a missing `state` -- provably
-    // equivalent because this function's only observable effect is its return value
-    // (no side effects, no per-clause diagnostics). R4 (discoverability) stays absent
-    // per §4.3.1.1's six-site gap registry (PC-3) -- must not be added. Named test:
-    // `testCodemapManifestCandidateReturnsCandidateForManagedOnlyFile`.
+    /// P4-6a / B1 site 8 (path-keyed, sync). `rootStatesByID[rootEpoch.rootID]`
+    /// existence is no longer bound as a standalone gate: `inventoryPathLookups`
+    /// returns an absent fact for a missing root, which fails the second guard exactly
+    /// as the original's combined guard failed on a missing `state` -- provably
+    /// equivalent because this function's only observable effect is its return value
+    /// (no side effects, no per-clause diagnostics). R4 (discoverability) stays absent
+    /// per §4.3.1.1's six-site gap registry (PC-3) -- must not be added. Named test:
+    /// `testCodemapManifestCandidateReturnsCandidateForManagedOnlyFile`.
     private func codemapManifestCandidate(
         rootEpoch: WorkspaceCodemapRootEpoch,
         relativePath: String,
@@ -15706,9 +15706,9 @@ actor WorkspaceFileContextStore {
             codemapAuthorityMatchesLoadedRoot(authority)
     }
 
-    // P4-6a / B1 site 11 (path-keyed, sync). R4 (discoverability) stays absent per
-    // §4.3.1.1's six-site gap registry (PC-6) -- must not be added. Named test:
-    // `testCodemapDemandIsCurrentTrueForManagedOnlyFile`.
+    /// P4-6a / B1 site 11 (path-keyed, sync). R4 (discoverability) stays absent per
+    /// §4.3.1.1's six-site gap registry (PC-6) -- must not be added. Named test:
+    /// `testCodemapDemandIsCurrentTrueForManagedOnlyFile`.
     private func codemapDemandIsCurrent(
         _ ticket: WorkspaceCodemapArtifactDemandTicket
     ) -> Bool {
@@ -16077,11 +16077,11 @@ actor WorkspaceFileContextStore {
         return (token, task)
     }
 
-    // P4-6a / B3: `state.fileIDsByRelativePath[path]` rewired onto `inventoryPathLookups`,
-    // hoisted once for the whole batch (this function is fully synchronous -- no D-8
-    // window). `state` itself is still read directly for the unrelated `lifetimeID`
-    // gate, which is not one of the ten inventory tables. Named test:
-    // `testRetainCodemapRootStatusCoverageSkipsPathsAbsentFromProjectionOrAlreadyInvalidated`.
+    /// P4-6a / B3: `state.fileIDsByRelativePath[path]` rewired onto `inventoryPathLookups`,
+    /// hoisted once for the whole batch (this function is fully synchronous -- no D-8
+    /// window). `state` itself is still read directly for the unrelated `lifetimeID`
+    /// gate, which is not one of the ten inventory tables. Named test:
+    /// `testRetainCodemapRootStatusCoverageSkipsPathsAbsentFromProjectionOrAlreadyInvalidated`.
     private func retainCodemapRootStatusCoverageAcrossPathInvalidation(
         rootEpoch: WorkspaceCodemapRootEpoch,
         standardizedRelativePaths: Set<String>
@@ -16161,12 +16161,12 @@ actor WorkspaceFileContextStore {
         )
     }
 
-    // P4-6a / B3: rewired onto `inventoryPathLookups`. `rootStatesByID[rootID]` missing
-    // is no longer an early-return guard -- `inventoryPathLookups` returns empty fact
-    // maps for a missing root, every path then resolves to `fileID == nil`, `fileIDs`
-    // stays empty, and the function returns `nil` exactly as it did before, just via
-    // the shared empty-facts path rather than a dedicated guard. Named test:
-    // `testDestructiveCodemapGraphFenceReturnsNilWhenRootStateMissingOrNoCommandsMatch`.
+    /// P4-6a / B3: rewired onto `inventoryPathLookups`. `rootStatesByID[rootID]` missing
+    /// is no longer an early-return guard -- `inventoryPathLookups` returns empty fact
+    /// maps for a missing root, every path then resolves to `fileID == nil`, `fileIDs`
+    /// stays empty, and the function returns `nil` exactly as it did before, just via
+    /// the shared empty-facts path rather than a dedicated guard. Named test:
+    /// `testDestructiveCodemapGraphFenceReturnsNilWhenRootStateMissingOrNoCommandsMatch`.
     private func destructiveCodemapGraphFence(
         rootID: UUID,
         commands: [CodemapInvalidationCommand]

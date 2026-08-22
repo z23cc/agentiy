@@ -207,6 +207,44 @@ final class PathSearchRustSwiftDifferentialTests: XCTestCase {
         ])
     }
 
+    func testEmptyPatternWorkspaceIndexKeyOrderingAndLimit() async throws {
+        // Exact P4-5 shadow-index arm shape: one root-local, plain PathSearchIndex over
+        // displayPath + "\n" + standardizedFullPath keys, queried with limit 50. Smaller and zero
+        // limits pin the suspected truncation/tie-break confounders; the duplicate pins ordinal ties.
+        let corpus = [
+            "ShadowIndex/src/Zeta.swift\n/tmp/ShadowIndex/src/Zeta.swift",
+            "ShadowIndex/README.md\n/tmp/ShadowIndex/README.md",
+            "ShadowIndex/src/Alpha.swift\n/tmp/ShadowIndex/src/Alpha.swift",
+            "ShadowIndex/src/Alpha.swift\n/tmp/ShadowIndex/src/Alpha.swift"
+        ]
+        let results = try await assertParity(corpus: corpus, queries: [
+            find("", limit: 0),
+            find("", limit: 1),
+            find("", limit: 3),
+            find("", limit: 50)
+        ])
+        XCTAssertEqual(results[0].ordinals, [])
+        XCTAssertEqual(results[1].ordinals, [1])
+        XCTAssertEqual(results[2].ordinals, [1, 2, 3])
+        XCTAssertEqual(results[3].ordinals, [1, 2, 3, 0])
+    }
+
+    func testEmptyPatternProjectedWorkspaceOrderingAndLimit() async throws {
+        // Projected storage is not the P4-5 shadow arm's failing invocation, but it is the other
+        // workspace path-search shape and shares the same eventual merged tie-break key.
+        let corpus = ["src/Zeta.swift", "README.md", "src/Alpha.swift", "src/Alpha.swift"]
+        let results = try await assertParity(corpus: corpus, queries: [
+            projected("", display: "ShadowIndex/", absolute: "/tmp/ShadowIndex/", limit: 0),
+            projected("", display: "ShadowIndex/", absolute: "/tmp/ShadowIndex/", limit: 1),
+            projected("", display: "ShadowIndex/", absolute: "/tmp/ShadowIndex/", limit: 3),
+            projected("", display: "ShadowIndex/", absolute: "/tmp/ShadowIndex/", limit: 50)
+        ])
+        XCTAssertEqual(results[0].ordinals, [])
+        XCTAssertEqual(results[1].ordinals, [1])
+        XCTAssertEqual(results[2].ordinals, [1, 2, 3])
+        XCTAssertEqual(results[3].ordinals, [1, 2, 3, 0])
+    }
+
     func testZeroLimitAndEmptyCorpus() async throws {
         try await assertParity(corpus: ["a.txt", "b.txt"], queries: [find("a.txt", limit: 0)])
         try await assertParity(corpus: [], queries: [find("anything"), projected("anything", display: "d/", absolute: "/a/")])

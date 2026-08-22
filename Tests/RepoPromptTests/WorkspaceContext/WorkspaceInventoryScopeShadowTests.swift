@@ -1,5 +1,5 @@
-@testable import RepoPromptApp
 import Foundation
+@testable import RepoPromptApp
 import XCTest
 
 // P4-5: the shadow arm + differential (design doc
@@ -8,12 +8,18 @@ import XCTest
 // Coverage here is the first of §8.2's three tiers: the WorkspaceContext suite (this file)
 // exercising the shadow arm end-to-end with `enableInventoryScopeShadowValidation: true` --
 // bulk load (`loadRoot`), canonical deltas (add/remove/modify via
-// `publishSyntheticFileSystemDeltasForTesting`), and root unload -- asserting zero mismatches on
-// both the table-content arm (`compareInventoryScopeShadowForTesting`) and the index arm
-// (`compareInventoryScopeShadowIndexForTesting`). Adversarial delta-sequence differentials against
-// `CoreInventoryScope.applyDelta` directly (generation gaps, stale watermarks, rejection reasons)
-// live in `Tests/AgentryCoreBridgeTests` alongside the rest of the facade's contract tests -- this
-// file is the store-integration half of the gate.
+// `publishSyntheticFileSystemDeltasForTesting`), root unload, and the named §8.2 item 3
+// adversarial sequences that are exercisable through the store's own forwarding pipeline
+// (remove+re-add of the same path within one batch, a `requiresFullResync`-flagged batch
+// interleaved with ordinary incremental deltas, and a root unload racing ahead of an undrained
+// delta) -- asserting zero mismatches on both the table-content arm
+// (`compareInventoryScopeShadowForTesting`) and the index arm
+// (`compareInventoryScopeShadowIndexForTesting`). The remaining named adversarial delta-sequence
+// scenarios (`generationGap`/`lifetimeMismatch` typed rejections, and out-of-order watermarks --
+// which the store's shadow forwarder cannot exercise at all since it always forwards
+// `watcherAcceptedWatermark: nil`) are differentials against `CoreInventoryScope.applyDelta`
+// directly, living in `Tests/AgentryCoreBridgeTests` alongside the rest of the facade's contract
+// tests -- this file is the store-integration half of the gate.
 #if DEBUG
     final class WorkspaceInventoryScopeShadowTests: XCTestCase {
         private var stores: [WorkspaceFileContextStore] = []
@@ -227,6 +233,135 @@ import XCTest
             }
             let mismatchCount = await store.inventoryScopeShadowIndexMismatchCountForTesting
             XCTAssertEqual(mismatchCount, 0)
+        }
+
+        // MARK: - Adversarial delta-sequence differentials (design doc §8.2 item 3, closing the
+
+        // P4-6b cutover gate's non-negotiable coverage set). "Out-of-order watermarks" is *not*
+        // covered here: `WorkspaceInventoryScopeShadowForwarder.apply` always forwards
+        // `watcherAcceptedWatermark: nil` (Swift's FSEvents watermark gating stays entirely in
+        // Swift per design doc §4.2 and never crosses the FFI), so there is no store-integration
+        // shadow scenario to build against it -- that sequence is a bridge-level round-trip test
+        // in `CoreInventoryScopeShadowDifferentialTests.swift`.
+
+        /// §8.2's "remove+re-add on the same path in one batch". §4.1.1 pins the identity contract
+        /// this exercises: a `fileRemoved` immediately followed by a `fileAdded` for the same path
+        /// within one canonical batch mints a *new* file ID, unlike a bare `fileModified` (which
+        /// reuses the existing one). The ordering hazard the shadow arm must catch: if the Rust
+        /// scope applied the upsert before the removal, or matched the removal by path instead of
+        /// by ID, the re-added record would either duplicate or vanish.
+        func testShadowTableMatchesWhenTheSamePathIsRemovedAndReAddedWithinOneBatch() async throws {
+            let root = try makeTemporaryRoot(name: "ShadowRemoveReAdd")
+            let targetURL = root.appendingPathComponent("Flip.swift")
+            try write("original", to: targetURL)
+            let store = makeShadowStore()
+            let record = try await store.loadRoot(path: root.path)
+            try await store.startWatchingRoot(id: record.id)
+
+            var report = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(report.matched, "bulk load mismatch: \(report)")
+            XCTAssertEqual(report.swiftRecordCount, 1)
+
+            try FileManager.default.removeItem(at: targetURL)
+            try write("replaced", to: targetURL)
+            try await store.publishSyntheticFileSystemDeltasForTesting(
+                rootID: record.id,
+                deltas: [.fileRemoved("Flip.swift"), .fileAdded("Flip.swift")]
+            )
+            _ = await store.flushPendingServiceEventsForAllRoots()
+
+            report = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(report.matched, "remove+re-add-in-one-batch mismatch: \(report)")
+            XCTAssertEqual(report.swiftRecordCount, 1, "the path must resolve to exactly one surviving record, not zero or two")
+
+            let mismatchCount = await store.inventoryScopeShadowMismatchCountForTesting
+            XCTAssertEqual(mismatchCount, 0)
+        }
+
+        /// §8.2's "requiresFullResync interleavings". The overflow/full-resync recovery path
+        /// (`FileSystemDeltaPublication.source == .overflowRootRescan` / `.recoveryFullResync`)
+        /// sets `requiresFullResync` on the resulting applied-index batch; the shadow forwarder's
+        /// `apply` translates that flag straight through to `CoreInventoryDeltaCommand
+        /// .requiresFullResync`. This interleaves an ordinary incremental delta, a resync-flagged
+        /// batch, and another ordinary incremental delta, asserting the shadow table tracks
+        /// correctly across the whole sequence -- proving the resync-flagged batch does not leave
+        /// the forwarder's root binding in a state where subsequent normal deltas silently stop
+        /// applying.
+        func testShadowTableMatchesAcrossARequiresFullResyncBatchInterleavedWithIncrementalDeltas() async throws {
+            let root = try makeTemporaryRoot(name: "ShadowFullResyncInterleave")
+            try write("a", to: root.appendingPathComponent("A.swift"))
+            try write("b", to: root.appendingPathComponent("B.swift"))
+            let store = makeShadowStore()
+            let record = try await store.loadRoot(path: root.path)
+            try await store.startWatchingRoot(id: record.id)
+
+            var report = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(report.matched, "bulk load mismatch: \(report)")
+
+            let addedURL = root.appendingPathComponent("Added.swift")
+            try write("added", to: addedURL)
+            try await store.publishSyntheticFileSystemDeltasForTesting(rootID: record.id, deltas: [.fileAdded("Added.swift")])
+            _ = await store.flushPendingServiceEventsForAllRoots()
+            report = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(report.matched, "post-add mismatch: \(report)")
+
+            let resyncURL = root.appendingPathComponent("ResyncAdded.swift")
+            try write("resync-added", to: resyncURL)
+            let lifetimeID = try await store.rootLifetimeIDForTesting(rootID: record.id)
+            await store.replayPublisherFileSystemPublicationForTesting(
+                rootID: record.id,
+                expectedLifetimeID: lifetimeID,
+                deltas: [.fileAdded("ResyncAdded.swift"), .fileModified("A.swift", nil)],
+                requiresFullResync: true
+            )
+            _ = await store.flushPendingServiceEventsForAllRoots()
+            report = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(report.matched, "post-resync mismatch: \(report)")
+
+            try await store.publishSyntheticFileSystemDeltasForTesting(rootID: record.id, deltas: [.fileRemoved("B.swift")])
+            _ = await store.flushPendingServiceEventsForAllRoots()
+            report = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(report.matched, "post-resync incremental mismatch: \(report)")
+
+            let mismatchCount = await store.inventoryScopeShadowMismatchCountForTesting
+            XCTAssertEqual(mismatchCount, 0)
+        }
+
+        /// §8.2's "unload during in-flight deltas". Publishes an incremental delta but
+        /// deliberately does not drain/compare before unloading the root, so the delta and the
+        /// unload's own `isRootUnload` event both sit in the forwarder's pending buffer at the
+        /// same time -- the race the drain loop must reconcile without throwing, crashing, or
+        /// recording a false mismatch. Also proves no stale Rust-side root/lifetime binding leaks
+        /// past the unload: a freshly loaded root at the same path must still round-trip cleanly.
+        func testShadowForwardingSurvivesARootUnloadArrivingWhileEarlierDeltasAreStillUndrained() async throws {
+            let root = try makeTemporaryRoot(name: "ShadowUnloadInFlight")
+            try write("a", to: root.appendingPathComponent("A.swift"))
+            let store = makeShadowStore()
+            let record = try await store.loadRoot(path: root.path)
+            try await store.startWatchingRoot(id: record.id)
+
+            // Seed the shadow root first, matching how a live product session would already have
+            // an open shadow binding for a root before new deltas start arriving.
+            let seedReport = try await store.compareInventoryScopeShadowForTesting(rootID: record.id)
+            XCTAssertTrue(seedReport.matched, "seed mismatch: \(seedReport)")
+
+            let addedURL = root.appendingPathComponent("Added.swift")
+            try write("added", to: addedURL)
+            try await store.publishSyntheticFileSystemDeltasForTesting(rootID: record.id, deltas: [.fileAdded("Added.swift")])
+            _ = await store.flushPendingServiceEventsForAllRoots()
+
+            await store.unloadRoot(id: record.id)
+
+            // The drain must not throw or crash even though it now has to reconcile an undrained
+            // incremental batch immediately followed by that same root's unload event.
+            try await store.drainInventoryScopeShadowForwardingForTesting()
+
+            let mismatchCount = await store.inventoryScopeShadowMismatchCountForTesting
+            XCTAssertEqual(mismatchCount, 0, "the drain must not have recorded a false mismatch while reconciling the race")
+
+            let reloaded = try await loadStoppedRoot(in: store, path: root.path)
+            let reReport = try await store.compareInventoryScopeShadowForTesting(rootID: reloaded.id)
+            XCTAssertTrue(reReport.matched, "post-unload reload mismatch: \(reReport)")
         }
 
         // MARK: - Helpers

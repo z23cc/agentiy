@@ -84,9 +84,23 @@ fn empty_pattern_matches_every_path() {
         "".to_string(),
     ];
     let index = PathSearchIndex::new(&paths);
-    let mut got = indices(&index, "", 100);
-    got.sort_unstable();
-    assert_eq!(got, vec![0, 1, 2]);
+    assert_eq!(indices(&index, "", 100), vec![2, 0, 1]);
+}
+
+#[test]
+fn empty_pattern_workspace_index_keys_follow_c_lexical_order_and_limit() {
+    let paths = vec![
+        "ShadowIndex/src/Zeta.swift\n/tmp/ShadowIndex/src/Zeta.swift".to_string(),
+        "ShadowIndex/README.md\n/tmp/ShadowIndex/README.md".to_string(),
+        "ShadowIndex/src/Alpha.swift\n/tmp/ShadowIndex/src/Alpha.swift".to_string(),
+        "ShadowIndex/src/Alpha.swift\n/tmp/ShadowIndex/src/Alpha.swift".to_string(),
+    ];
+    let index = PathSearchIndex::new(&paths);
+
+    assert_eq!(indices(&index, "", 0), Vec::<usize>::new());
+    assert_eq!(indices(&index, "", 1), vec![1]);
+    assert_eq!(indices(&index, "", 3), vec![1, 2, 3]);
+    assert_eq!(indices(&index, "", 50), vec![1, 2, 3, 0]);
 }
 
 #[test]
@@ -298,6 +312,37 @@ fn projected_find_matches_equivalent_full_index_search_across_queries_and_limits
             assert!(!stats.cancelled);
             assert_eq!(stats.examined_count, relative_paths.len());
         }
+    }
+}
+
+#[test]
+fn projected_empty_pattern_matches_full_workspace_key_ordering() {
+    let relative_paths = vec![
+        "src/Zeta.swift".to_string(),
+        "README.md".to_string(),
+        "src/Alpha.swift".to_string(),
+        "src/Alpha.swift".to_string(),
+    ];
+    let index = PathSearchIndex::new(&relative_paths);
+
+    for (limit, expected) in [
+        (0, vec![]),
+        (1, vec![1]),
+        (3, vec![1, 2, 3]),
+        (50, vec![1, 2, 3, 0]),
+    ] {
+        let ProjectedSearchOutcome::Completed(matches, _) =
+            index.projected_find("", "ShadowIndex/", "/tmp/ShadowIndex/", limit, None)
+        else {
+            panic!("expected completed outcome");
+        };
+        assert_eq!(
+            matches
+                .into_iter()
+                .map(|matched| matched.index)
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 }
 
