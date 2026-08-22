@@ -93,7 +93,9 @@
 //! flag" beyond `threshold` (weights, the depth penalty, and the match-count bonus are fixed
 //! constants in the Swift source, so they're fixed constants here too).
 
-use super::contract::{CANDIDATE_STRIDE, PATH_MATCH_CONTRACT_VERSION_V1, SCORE_SCALE, STRING_RANGE_STRIDE};
+use super::contract::{
+    CANDIDATE_STRIDE, PATH_MATCH_CONTRACT_VERSION_V1, SCORE_SCALE, STRING_RANGE_STRIDE,
+};
 use super::policy;
 use std::collections::HashSet;
 use std::fmt;
@@ -155,7 +157,9 @@ pub enum PathMatchScoreError {
 impl fmt::Display for PathMatchScoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidRequest(value) => write!(formatter, "invalid path-match score request: {value}"),
+            Self::InvalidRequest(value) => {
+                write!(formatter, "invalid path-match score request: {value}")
+            }
             Self::Cancelled => formatter.write_str("path-match score compute cancelled"),
         }
     }
@@ -187,8 +191,10 @@ impl PathMatchScoreRequestV1 {
 
     /// `components` are `(text, char_count, cleaned_byte_len)` triples -- see `push_string`'s doc.
     pub fn push_query(&mut self, components: &[(&str, u64, u64)]) {
-        self.query_indices =
-            components.iter().map(|&(text, count, byte_len)| self.push_string(text, count, byte_len)).collect();
+        self.query_indices = components
+            .iter()
+            .map(|&(text, count, byte_len)| self.push_string(text, count, byte_len))
+            .collect();
     }
 
     /// `tail` are `(text, char_count, cleaned_byte_len)` triples -- see `push_string`'s doc.
@@ -218,8 +224,9 @@ impl PathMatchScoreRequestV1 {
 // ---- decode + fail-closed validation -----------------------------------------------------------
 
 fn usize_word(value: u64) -> Result<usize, PathMatchScoreError> {
-    usize::try_from(value)
-        .map_err(|_| PathMatchScoreError::InvalidRequest("compact word exceeds platform index".into()))
+    usize::try_from(value).map_err(|_| {
+        PathMatchScoreError::InvalidRequest("compact word exceeds platform index".into())
+    })
 }
 
 fn validate_shape(request: &PathMatchScoreRequestV1) -> Result<(), PathMatchScoreError> {
@@ -251,13 +258,32 @@ fn validate_shape(request: &PathMatchScoreRequestV1) -> Result<(), PathMatchScor
 /// length (see `push_string`'s doc and the module doc's points 3 and 4). The text is used for both
 /// the `firstAlnumLowercasedByte` guard and the Levenshtein similarity; `char_count` is used only
 /// for the length guard; `cleaned_byte_len` is used only for the 256-byte gate.
-struct PooledComponent<'a> {
-    text: &'a str,
-    char_count: i64,
-    cleaned_byte_len: usize,
+///
+/// Visibility note (P3-3 slice 2a): relaxed to `pub(crate)` so `resolve.rs`'s ladder port can
+/// build `PooledComponent`s from its own resolve-snapshot wire (which has its own decode/validate
+/// path -- a distinct wire shape from `PathMatchScoreRequestV1`) and feed them into
+/// `weighted_component_score` below, reusing this exact scoring kernel rather than re-implementing
+/// it. No behavior change to this module's own decode path.
+pub(crate) struct PooledComponent<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) char_count: i64,
+    pub(crate) cleaned_byte_len: usize,
 }
 
-fn decode_string(request: &PathMatchScoreRequestV1, index: u64) -> Result<PooledComponent<'_>, PathMatchScoreError> {
+impl<'a> PooledComponent<'a> {
+    pub(crate) fn new(text: &'a str, char_count: i64, cleaned_byte_len: usize) -> Self {
+        Self {
+            text,
+            char_count,
+            cleaned_byte_len,
+        }
+    }
+}
+
+fn decode_string(
+    request: &PathMatchScoreRequestV1,
+    index: u64,
+) -> Result<PooledComponent<'_>, PathMatchScoreError> {
     let row = usize_word(index)?;
     let base = row
         .checked_mul(STRING_RANGE_STRIDE)
@@ -265,32 +291,46 @@ fn decode_string(request: &PathMatchScoreRequestV1, index: u64) -> Result<Pooled
     let range = request
         .string_range_words
         .get(base..base + STRING_RANGE_STRIDE)
-        .ok_or_else(|| PathMatchScoreError::InvalidRequest("string pool index out of range".into()))?;
+        .ok_or_else(|| {
+            PathMatchScoreError::InvalidRequest("string pool index out of range".into())
+        })?;
     let start = usize_word(range[0])?;
     let end = usize_word(range[1])?;
     if end < start || end > request.utf8_blob.len() {
-        return Err(PathMatchScoreError::InvalidRequest("string range out of bounds".into()));
+        return Err(PathMatchScoreError::InvalidRequest(
+            "string range out of bounds".into(),
+        ));
     }
     // Non-stripping UTF-8 decode: `str::from_utf8` validates without ever discarding bytes (e.g. a
     // legitimate leading U+FEFF stays byte-aligned), and rejects malformed input fail-closed.
-    let text = std::str::from_utf8(&request.utf8_blob[start..end])
-        .map_err(|_| PathMatchScoreError::InvalidRequest("string range is not valid UTF-8".into()))?;
-    let char_count = *request
-        .char_count_words
-        .get(row)
-        .ok_or_else(|| PathMatchScoreError::InvalidRequest("char count pool index out of range".into()))?;
-    let char_count = i64::try_from(char_count)
-        .map_err(|_| PathMatchScoreError::InvalidRequest("char count exceeds platform index".into()))?;
-    let cleaned_byte_len = *request
-        .cleaned_byte_len_words
-        .get(row)
-        .ok_or_else(|| PathMatchScoreError::InvalidRequest("cleaned byte len pool index out of range".into()))?;
+    let text = std::str::from_utf8(&request.utf8_blob[start..end]).map_err(|_| {
+        PathMatchScoreError::InvalidRequest("string range is not valid UTF-8".into())
+    })?;
+    let char_count = *request.char_count_words.get(row).ok_or_else(|| {
+        PathMatchScoreError::InvalidRequest("char count pool index out of range".into())
+    })?;
+    let char_count = i64::try_from(char_count).map_err(|_| {
+        PathMatchScoreError::InvalidRequest("char count exceeds platform index".into())
+    })?;
+    let cleaned_byte_len = *request.cleaned_byte_len_words.get(row).ok_or_else(|| {
+        PathMatchScoreError::InvalidRequest("cleaned byte len pool index out of range".into())
+    })?;
     let cleaned_byte_len = usize_word(cleaned_byte_len)?;
-    Ok(PooledComponent { text, char_count, cleaned_byte_len })
+    Ok(PooledComponent {
+        text,
+        char_count,
+        cleaned_byte_len,
+    })
 }
 
-fn decode_query(request: &PathMatchScoreRequestV1) -> Result<Vec<PooledComponent<'_>>, PathMatchScoreError> {
-    request.query_indices.iter().map(|&index| decode_string(request, index)).collect()
+fn decode_query(
+    request: &PathMatchScoreRequestV1,
+) -> Result<Vec<PooledComponent<'_>>, PathMatchScoreError> {
+    request
+        .query_indices
+        .iter()
+        .map(|&index| decode_string(request, index))
+        .collect()
 }
 
 fn decode_tail<'a>(
@@ -306,21 +346,29 @@ fn decode_tail<'a>(
             "candidate tail length does not match query length".into(),
         ));
     }
-    let end = start
-        .checked_add(count)
-        .ok_or_else(|| PathMatchScoreError::InvalidRequest("candidate tail range overflow".into()))?;
+    let end = start.checked_add(count).ok_or_else(|| {
+        PathMatchScoreError::InvalidRequest("candidate tail range overflow".into())
+    })?;
     let indices = request
         .candidate_tail_indices
         .get(start..end)
-        .ok_or_else(|| PathMatchScoreError::InvalidRequest("candidate tail range out of bounds".into()))?;
-    indices.iter().map(|&index| decode_string(request, index)).collect()
+        .ok_or_else(|| {
+            PathMatchScoreError::InvalidRequest("candidate tail range out of bounds".into())
+        })?;
+    indices
+        .iter()
+        .map(|&index| decode_string(request, index))
+        .collect()
 }
 
 // ---- scoring kernel -----------------------------------------------------------------------------
 
 /// Mirrors `PathMatcher.firstAlnumLowercasedByte`: pure byte-value scan, no Foundation dependency,
 /// so it's ported verbatim regardless of the cleaning/casing scope boundary above.
-fn first_alnum_lowered_byte(s: &str) -> Option<u8> {
+///
+/// Visibility note (P3-3 slice 2a): `pub(crate)` so `resolve.rs` can reuse the identical guard for
+/// the ladder's single-component and suffix-match stages.
+pub(crate) fn first_alnum_lowered_byte(s: &str) -> Option<u8> {
     for b in s.bytes() {
         if b.is_ascii_digit() {
             return Some(b);
@@ -405,11 +453,25 @@ fn levenshtein_distance_capped(a_in: &[char], b_in: &[char], max_dist: i64) -> i
     if dist > max_dist { big } else { dist }
 }
 
-/// Mirrors `PathMatcher.similarityScore`. `a`/`b` are already compare-ready (cleaned, lowercased)
-/// per the module doc's scope boundary, so there is no `caseSensitive` parameter here.
+/// Mirrors `PathMatcher.similarityScore`. `a`/`b` are compare-ready (cleaned) text; `case_sensitive`
+/// controls whether the ASCII-lowering pass below runs, mirroring Swift's own `caseSensitive`
+/// branch in the byte-fast-path copy loop (`caseSensitive ? byte : PathCharPolicy.toLowerASCII(byte)`).
 /// `gate_byte_len` is `max(a's, b's) PRE-lowering cleaned UTF-8 byte length` -- see the module
 /// doc's point 4 for why this can't be recomputed from `a.len()`/`b.len()` (the LOWERED text).
-fn similarity_score(a: &str, b: &str, threshold: f64, strip_separators: bool, gate_byte_len: usize) -> f64 {
+///
+/// Visibility/parameter note (P3-3 slice 2a): this module's own callers (`weighted_component_score`)
+/// always pass `case_sensitive: false` -- identical to the hardcoded `caseSensitive: false` at
+/// every real `computeWeightedMatchScorePrecleaned` call site (see the module doc), so this change
+/// is behavior-preserving for the slice-1 wire. `resolve.rs`'s `findSingleComponentMatch` port is
+/// the first caller that needs `case_sensitive: true` (`PathMatchSnapshot.caseSensitive`).
+pub(crate) fn similarity_score(
+    a: &str,
+    b: &str,
+    threshold: f64,
+    strip_separators: bool,
+    gate_byte_len: usize,
+    case_sensitive: bool,
+) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 1.0;
     }
@@ -419,23 +481,33 @@ fn similarity_score(a: &str, b: &str, threshold: f64, strip_separators: bool, ga
     let t = threshold.clamp(0.0, 1.0);
 
     if gate_byte_len > MAX_SIMILARITY_BYTE_LEN {
-        // See module doc point 2: inputs are already Swift-lowered, so plain equality here is the
-        // Rust-side realization of Swift's `caseInsensitiveCompare` fallback.
+        // See module doc point 2: inputs are already Swift-lowered (when case_sensitive is false),
+        // so plain equality here is the Rust-side realization of Swift's `caseInsensitiveCompare`
+        // fallback; when case_sensitive is true this is a plain, case-preserving equality check,
+        // matching Swift's `a == b` fallback branch.
         return if a == b { 1.0 } else { 0.0 };
     }
 
     // Uniform Unicode-scalar comparison: for ASCII input this is byte-for-byte identical to
     // Swift's byte fast path; for non-ASCII it matches Swift's `unicodeSimilarityScore` scalar
-    // path. The ASCII-lowering pass below is harmless/idempotent on the already-lowered input
-    // (see module doc point 2) -- ported for parity with Swift's own redundant re-lowering.
+    // path. The ASCII-lowering pass below is harmless/idempotent on already-lowered input (see
+    // module doc point 2) when `case_sensitive` is false; it is skipped entirely when true,
+    // mirroring Swift's own case-sensitive byte-copy branch.
+    let lower = |c: char| {
+        if case_sensitive {
+            c
+        } else {
+            policy::to_lower_ascii_char(c)
+        }
+    };
     let a_chars: Vec<char> = a
         .chars()
-        .map(policy::to_lower_ascii_char)
+        .map(lower)
         .filter(|&c| !(strip_separators && (c == '-' || c == '_')))
         .collect();
     let b_chars: Vec<char> = b
         .chars()
-        .map(policy::to_lower_ascii_char)
+        .map(lower)
         .filter(|&c| !(strip_separators && (c == '-' || c == '_')))
         .collect();
 
@@ -455,10 +527,16 @@ fn similarity_score(a: &str, b: &str, threshold: f64, strip_separators: bool, ga
     }
 }
 
-/// Mirrors `PathMatcher.similarityScoreMax`.
-fn similarity_score_max(a: &str, b: &str, threshold: f64, gate_byte_len: usize) -> f64 {
-    let base = similarity_score(a, b, threshold, false, gate_byte_len);
-    let folded = similarity_score(a, b, threshold, true, gate_byte_len);
+/// Mirrors `PathMatcher.similarityScoreMax`. See `similarity_score`'s doc for `case_sensitive`.
+pub(crate) fn similarity_score_max(
+    a: &str,
+    b: &str,
+    threshold: f64,
+    gate_byte_len: usize,
+    case_sensitive: bool,
+) -> f64 {
+    let base = similarity_score(a, b, threshold, false, gate_byte_len, case_sensitive);
+    let folded = similarity_score(a, b, threshold, true, gate_byte_len, case_sensitive);
     base.max(folded)
 }
 
@@ -466,7 +544,10 @@ fn similarity_score_max(a: &str, b: &str, threshold: f64, gate_byte_len: usize) 
 /// both already cleaned+lowercased and in forward order (filename last); `candidate_tail.len()`
 /// MUST equal `query.len()` (the caller/decoder is responsible for that -- see `decode_tail`).
 /// Returns `None` for every early-exit `nil` outcome in the Swift source.
-fn weighted_component_score(
+///
+/// Visibility note (P3-3 slice 2a): `pub(crate)` so `resolve.rs`'s fuzzy-suffix-match and
+/// one-missing-component ladder stages reuse this exact kernel instead of re-implementing it.
+pub(crate) fn weighted_component_score(
     query: &[PooledComponent<'_>],
     candidate_total_component_count: usize,
     candidate_tail: &[PooledComponent<'_>],
@@ -487,9 +568,10 @@ fn weighted_component_score(
         let user_comp = &query[user_index];
         let path_comp = &candidate_tail[path_index];
 
-        if let (Some(u), Some(p)) =
-            (first_alnum_lowered_byte(user_comp.text), first_alnum_lowered_byte(path_comp.text))
-        {
+        if let (Some(u), Some(p)) = (
+            first_alnum_lowered_byte(user_comp.text),
+            first_alnum_lowered_byte(path_comp.text),
+        ) {
             if u != p {
                 return None;
             }
@@ -504,7 +586,16 @@ fn weighted_component_score(
         let component_threshold = if i == 0 { threshold + 0.05 } else { threshold };
         // Precomputed pre-lowering cleaned byte lengths -- see the module doc's point 4.
         let gate_byte_len = user_comp.cleaned_byte_len.max(path_comp.cleaned_byte_len);
-        let sim = similarity_score_max(user_comp.text, path_comp.text, component_threshold, gate_byte_len);
+        // `case_sensitive: false` here is NOT a simplification -- it mirrors the hardcoded
+        // `caseSensitive: false` at every real `computeWeightedMatchScorePrecleaned` call site
+        // (see the module doc); this kernel's wire input is always already-lowered text.
+        let sim = similarity_score_max(
+            user_comp.text,
+            path_comp.text,
+            component_threshold,
+            gate_byte_len,
+            false,
+        );
         if sim < component_threshold {
             return None;
         }
@@ -529,7 +620,10 @@ const ROOT_SELECTION_BONUS: f64 = 0.5;
 pub struct PathMatchScoreService;
 
 impl PathMatchScoreService {
-    pub fn compute(&self, request: &PathMatchScoreRequestV1) -> Result<PathMatchScoreResultV1, PathMatchScoreError> {
+    pub fn compute(
+        &self,
+        request: &PathMatchScoreRequestV1,
+    ) -> Result<PathMatchScoreResultV1, PathMatchScoreError> {
         self.compute_with_cancellation(request, None)
     }
 
@@ -548,7 +642,9 @@ impl PathMatchScoreService {
             )));
         }
         if !(0.0..=1.0).contains(&request.threshold) {
-            return Err(PathMatchScoreError::InvalidRequest("threshold must be within [0, 1]".into()));
+            return Err(PathMatchScoreError::InvalidRequest(
+                "threshold must be within [0, 1]".into(),
+            ));
         }
         validate_shape(request)?;
         let query = decode_query(request)?;
@@ -572,10 +668,19 @@ impl PathMatchScoreService {
                 continue;
             }
             let tail = decode_tail(request, tail_start, tail_count, query.len())?;
-            if let Some(score) = weighted_component_score(&query, total_component_count, &tail, request.threshold) {
-                let adjusted = score + if selected.contains(&root_ordinal) { ROOT_SELECTION_BONUS } else { 0.0 };
+            if let Some(score) =
+                weighted_component_score(&query, total_component_count, &tail, request.threshold)
+            {
+                let adjusted = score
+                    + if selected.contains(&root_ordinal) {
+                        ROOT_SELECTION_BONUS
+                    } else {
+                        0.0
+                    };
                 result.matched_ordinals.push(ordinal);
-                result.matched_scores_scaled.push((adjusted * SCORE_SCALE).round() as i64);
+                result
+                    .matched_scores_scaled
+                    .push((adjusted * SCORE_SCALE).round() as i64);
                 result.matched_scores_bits.push(adjusted.to_bits());
             }
         }
@@ -606,7 +711,12 @@ mod tests {
             .matched_ordinals
             .iter()
             .position(|&o| o == ordinal)
-            .map(|i| (response.matched_scores_scaled[i], f64::from_bits(response.matched_scores_bits[i])))
+            .map(|i| {
+                (
+                    response.matched_scores_scaled[i],
+                    f64::from_bits(response.matched_scores_bits[i]),
+                )
+            })
     }
 
     /// Test-only convenience: plain-ASCII fixtures where byte/scalar/grapheme counts all coincide,
@@ -616,19 +726,39 @@ mod tests {
     /// `gate_uses_precomputed_cleaned_byte_len_not_lowered_text_len` for why these substitutions
     /// are UNSAFE for real non-ASCII input (that's exactly the bugs these wire fields prevent).
     fn ascii_pairs<'a>(components: &[&'a str]) -> Vec<(&'a str, u64, u64)> {
-        components.iter().map(|&c| (c, c.chars().count() as u64, c.len() as u64)).collect()
+        components
+            .iter()
+            .map(|&c| (c, c.chars().count() as u64, c.len() as u64))
+            .collect()
     }
 
     trait AsciiPush {
         fn push_ascii_query(&mut self, components: &[&str]);
-        fn push_ascii_candidate(&mut self, root_ordinal: u64, total_component_count: u64, tail: &[&str], ordinal: u64);
+        fn push_ascii_candidate(
+            &mut self,
+            root_ordinal: u64,
+            total_component_count: u64,
+            tail: &[&str],
+            ordinal: u64,
+        );
     }
     impl AsciiPush for PathMatchScoreRequestV1 {
         fn push_ascii_query(&mut self, components: &[&str]) {
             self.push_query(&ascii_pairs(components));
         }
-        fn push_ascii_candidate(&mut self, root_ordinal: u64, total_component_count: u64, tail: &[&str], ordinal: u64) {
-            self.push_candidate(root_ordinal, total_component_count, &ascii_pairs(tail), ordinal);
+        fn push_ascii_candidate(
+            &mut self,
+            root_ordinal: u64,
+            total_component_count: u64,
+            tail: &[&str],
+            ordinal: u64,
+        ) {
+            self.push_candidate(
+                root_ordinal,
+                total_component_count,
+                &ascii_pairs(tail),
+                ordinal,
+            );
         }
     }
 
@@ -705,7 +835,10 @@ mod tests {
         req.push_ascii_candidate(0, 1, &["apt.swift"], 1);
         req.push_ascii_candidate(0, 1, &["app.swift"], 2); // byte-identical candidate
         assert!(score_at(&req, 1).is_none());
-        assert!(score_at(&req, 2).is_none(), "even a byte-identical filename is rejected at this threshold");
+        assert!(
+            score_at(&req, 2).is_none(),
+            "even a byte-identical filename is rejected at this threshold"
+        );
     }
 
     #[test]
@@ -713,7 +846,10 @@ mod tests {
         let mut req = request(0.9);
         req.push_ascii_query(&["foo-bar.swift"]);
         req.push_ascii_candidate(0, 1, &["foobar.swift"], 1);
-        assert!(score_at(&req, 1).is_some(), "expected stripSeparators branch to win via max()");
+        assert!(
+            score_at(&req, 1).is_some(),
+            "expected stripSeparators branch to win via max()"
+        );
     }
 
     #[test]
@@ -752,8 +888,14 @@ mod tests {
         req.push_ascii_query(&[long_a.as_str()]);
         req.push_ascii_candidate(0, 1, &[long_a.as_str()], 1);
         req.push_ascii_candidate(0, 1, &[long_b_diff_one.as_str()], 2);
-        assert!(score_at(&req, 1).is_some(), "identical >256-byte strings must match");
-        assert!(score_at(&req, 2).is_none(), "one-byte-different >256-byte strings must not match");
+        assert!(
+            score_at(&req, 1).is_some(),
+            "identical >256-byte strings must match"
+        );
+        assert!(
+            score_at(&req, 2).is_none(),
+            "one-byte-different >256-byte strings must not match"
+        );
     }
 
     #[test]
@@ -763,7 +905,10 @@ mod tests {
         let mut req = request(0.5);
         req.push_ascii_query(&["a"]);
         req.push_ascii_candidate(0, 1, &[long.as_str()], 1);
-        assert!(score_at(&req, 1).is_none(), "short vs long-different must fail via the 256 gate, not Levenshtein");
+        assert!(
+            score_at(&req, 1).is_none(),
+            "short vs long-different must fail via the 256 gate, not Levenshtein"
+        );
     }
 
     #[test]
@@ -771,7 +916,8 @@ mod tests {
         let mut req = request(0.5);
         req.push_ascii_query(&[]);
         req.push_ascii_candidate(0, 3, &[], 1);
-        let (_, score) = score_at(&req, 1).expect("expected a match (empty query always satisfies the loop)");
+        let (_, score) =
+            score_at(&req, 1).expect("expected a match (empty query always satisfies the loop)");
         assert!((score - (-3.0)).abs() < 1e-9, "score was {score}");
     }
 
@@ -823,8 +969,8 @@ mod tests {
 
     #[test]
     fn similarity_score_max_matches_bare_and_folded_branches() {
-        assert!((similarity_score_max("foobar", "foobar", 0.9, 6) - 1.0).abs() < 1e-9);
-        assert!(similarity_score_max("foo-bar", "foo_bar", 0.99, 7) >= 0.99);
+        assert!((similarity_score_max("foobar", "foobar", 0.9, 6, false) - 1.0).abs() < 1e-9);
+        assert!(similarity_score_max("foo-bar", "foo_bar", 0.99, 7, false) >= 0.99);
     }
 
     #[test]
@@ -858,14 +1004,25 @@ mod tests {
         // "test" (4) + 8 clusters (8 graphemes) + ".swift" (6) = 18 for the candidate: diff = 3.
         let query_grapheme_count = 4 + 5 + 6;
         let candidate_grapheme_count = 4 + 8 + 6;
-        assert_eq!((query_grapheme_count - candidate_grapheme_count as i64).unsigned_abs(), 3);
+        assert_eq!(
+            (query_grapheme_count - candidate_grapheme_count as i64).unsigned_abs(),
+            3
+        );
 
         let mut req_with_true_counts = request(0.5);
-        req_with_true_counts.push_query(&[(query_text.as_str(), query_grapheme_count as u64, query_text.len() as u64)]);
+        req_with_true_counts.push_query(&[(
+            query_text.as_str(),
+            query_grapheme_count as u64,
+            query_text.len() as u64,
+        )]);
         req_with_true_counts.push_candidate(
             0,
             1,
-            &[(candidate_text.as_str(), candidate_grapheme_count as u64, candidate_text.len() as u64)],
+            &[(
+                candidate_text.as_str(),
+                candidate_grapheme_count as u64,
+                candidate_text.len() as u64,
+            )],
             1,
         );
         assert!(
@@ -876,12 +1033,23 @@ mod tests {
         let mut req_with_scalar_counts = request(0.5);
         let query_scalar_count = query_text.chars().count() as u64;
         let candidate_scalar_count = candidate_text.chars().count() as u64;
-        assert!(candidate_scalar_count - query_scalar_count > 6, "fixture must exceed the guard via scalar counting");
-        req_with_scalar_counts.push_query(&[(query_text.as_str(), query_scalar_count, query_text.len() as u64)]);
+        assert!(
+            candidate_scalar_count - query_scalar_count > 6,
+            "fixture must exceed the guard via scalar counting"
+        );
+        req_with_scalar_counts.push_query(&[(
+            query_text.as_str(),
+            query_scalar_count,
+            query_text.len() as u64,
+        )]);
         req_with_scalar_counts.push_candidate(
             0,
             1,
-            &[(candidate_text.as_str(), candidate_scalar_count, candidate_text.len() as u64)],
+            &[(
+                candidate_text.as_str(),
+                candidate_scalar_count,
+                candidate_text.len() as u64,
+            )],
             1,
         );
         assert!(
@@ -908,20 +1076,45 @@ mod tests {
         // Pretend the TRUE pre-lowering cleaned length is small (well under 256) even though the
         // pooled text itself is exactly 200 bytes (already under 256 here too, but the point is
         // this value -- NOT `text.len()` -- decides the gate).
-        req_with_true_len.push_query(&[(query_text.as_str(), query_text.chars().count() as u64, 10)]);
-        req_with_true_len.push_candidate(0, 1, &[(candidate_text.as_str(), candidate_text.chars().count() as u64, 10)], 1);
-        let (_, true_len_score) = score_at(&req_with_true_len, 1).expect("small precomputed gate length must take the DP path and match");
-        assert!(true_len_score > 0.9, "expected a high-similarity DP match, got {true_len_score}");
+        req_with_true_len.push_query(&[(
+            query_text.as_str(),
+            query_text.chars().count() as u64,
+            10,
+        )]);
+        req_with_true_len.push_candidate(
+            0,
+            1,
+            &[(
+                candidate_text.as_str(),
+                candidate_text.chars().count() as u64,
+                10,
+            )],
+            1,
+        );
+        let (_, true_len_score) = score_at(&req_with_true_len, 1)
+            .expect("small precomputed gate length must take the DP path and match");
+        assert!(
+            true_len_score > 0.9,
+            "expected a high-similarity DP match, got {true_len_score}"
+        );
 
         let mut req_with_lowered_len = request(0.5);
         // Now pretend the precomputed length is the pooled text's own (>256) length -- the old,
         // buggy stand-in this field exists to replace.
         let over_gate = 300_u64;
-        req_with_lowered_len.push_query(&[(query_text.as_str(), query_text.chars().count() as u64, over_gate)]);
+        req_with_lowered_len.push_query(&[(
+            query_text.as_str(),
+            query_text.chars().count() as u64,
+            over_gate,
+        )]);
         req_with_lowered_len.push_candidate(
             0,
             1,
-            &[(candidate_text.as_str(), candidate_text.chars().count() as u64, over_gate)],
+            &[(
+                candidate_text.as_str(),
+                candidate_text.chars().count() as u64,
+                over_gate,
+            )],
             1,
         );
         assert!(

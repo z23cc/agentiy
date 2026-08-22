@@ -61,6 +61,8 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case inventoryInvariant
     case pathMatchInvalidRequest(String)
     case pathMatchCancelled
+    case pathResolveInvalidRequest(String)
+    case pathResolveCancelled
     case unexpected(String)
 }
 
@@ -112,6 +114,11 @@ protocol CoreRuntimeTransport: Sendable {
         cancellation: any CoreLeafCancellationHandle,
         request: CoreCompactPathMatchRequestV1
     ) throws -> CoreCompactPathMatchResultV1
+    func pathMatchLocateManyBatchV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCompactPathMatchResolveRequestV1
+    ) throws -> CoreCompactPathMatchResolveResultV1
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -704,6 +711,48 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    func pathMatchLocateManyBatchV1(
+        identity: CoreRuntimeIdentity,
+        cancellation: any CoreLeafCancellationHandle,
+        request: CoreCompactPathMatchResolveRequestV1
+    ) throws -> CoreCompactPathMatchResolveResultV1 {
+        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
+            throw CoreTransportError.invalidArgument
+        }
+        let value: AgentryUniFFIRaw.CorePathMatchResolveResultV1
+        do {
+            value = try runtime.pathMatchLocateManyV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                cancellation: cancellation.raw,
+                contractVersion: request.contractVersion,
+                caseSensitive: request.caseSensitive,
+                exactMatchOnly: request.exactMatchOnly,
+                allowLeadingRootAliasTrim: request.allowLeadingRootAliasTrim,
+                allowHeadTrimAliases: request.allowHeadTrimAliases,
+                allowAbsoluteSuffixFallback: request.allowAbsoluteSuffixFallback,
+                utf8Blob: request.utf8Blob,
+                stringRangeWords: request.stringRangeWords,
+                charCountWords: request.charCountWords,
+                cleanedByteLenWords: request.cleanedByteLenWords,
+                rootWords: request.rootWords,
+                fileWords: request.fileWords,
+                folderWords: request.folderWords,
+                componentIndices: request.componentIndices,
+                selectedFileFullPathIndices: request.selectedFileFullPathIndices,
+                queryWords: request.queryWords,
+                queryCanonicalComponentIndices: request.queryCanonicalComponentIndices,
+                queryCleanedLowerComponentIndices: request.queryCleanedLowerComponentIndices
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+        return CoreCompactPathMatchResolveResultV1(
+            locations: value.locations.map { location in
+                location.map { CorePathMatchResolveLocationV1(rootOrdinal: $0.rootOrdinal, correctedPath: $0.correctedPath) }
+            }
+        )
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -967,6 +1016,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .InventoryInvariant: .inventoryInvariant
         case let .PathMatchInvalidRequest(message): .pathMatchInvalidRequest(message)
         case .PathMatchCancelled: .pathMatchCancelled
+        case let .PathResolveInvalidRequest(message): .pathResolveInvalidRequest(message)
+        case .PathResolveCancelled: .pathResolveCancelled
         case .UnmatchedBrackets: .unmatchedBrackets
         case .UnmatchedParentheses: .unmatchedParentheses
         case .InvalidQuantifier: .invalidQuantifier
@@ -1218,7 +1269,7 @@ public actor AgentryCoreBridge {
             return CoreComputeError.transportFailure(String(describing: error))
         }
         if error == .codeMapCancelled || error == .applyEditsCancelled || error == .inventoryCancelled
-            || error == .pathMatchCancelled
+            || error == .pathMatchCancelled || error == .pathResolveCancelled
         {
             return CancellationError()
         }
@@ -1230,6 +1281,8 @@ public actor AgentryCoreBridge {
         case let .inventoryInvalidRequest(message):
             .invalidRequest(message)
         case let .pathMatchInvalidRequest(message):
+            .invalidRequest(message)
+        case let .pathResolveInvalidRequest(message):
             .invalidRequest(message)
         case .runtimePoisoned: .runtimePoisoned
         case .runtimeStopped: .runtimeStopped
@@ -1562,7 +1615,8 @@ public actor AgentryCoreBridge {
              .searchInvariant, .codeMapInvalidRequest, .codeMapServiceUnavailable, .codeMapCancelled,
              .codeMapInvariant, .applyEditsInvalidParams, .applyEditsCancelled, .applyEditsInvariant,
              .inventoryInvalidRequest, .inventoryCancelled, .inventoryInvariant,
-             .pathMatchInvalidRequest, .pathMatchCancelled:
+             .pathMatchInvalidRequest, .pathMatchCancelled,
+             .pathResolveInvalidRequest, .pathResolveCancelled:
             return .invalidArgument
         case let .unexpected(message): return .transportFailure(message)
         }

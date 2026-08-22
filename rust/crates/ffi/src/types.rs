@@ -1330,6 +1330,100 @@ impl From<runtime::pathmatch::PathMatchScoreResultV1> for CorePathMatchScoreResu
     }
 }
 
+// ---- Path resolve (P3-3 slice 2a) ---------------------------------------------------------
+
+/// Compact-v1 batch request driving `PathMatchResolveService` (`agentry_runtime::pathmatch`) --
+/// the full `PathMatcher.locate` resolution ladder over one immutable snapshot, batched exactly
+/// like `PathMatchWorker.locateMany`. See `rust/crates/runtime/src/pathmatch/indexes.rs` for the
+/// pool-plus-tables wire shape and the Foundation/ICU/filesystem scope-boundary documentation.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CorePathMatchResolveRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
+    pub contract_version: u16,
+
+    pub case_sensitive: bool,
+    pub exact_match_only: bool,
+    pub allow_leading_root_alias_trim: bool,
+    pub allow_head_trim_aliases: bool,
+    pub allow_absolute_suffix_fallback: bool,
+
+    pub utf8_blob: Vec<u8>,
+    pub string_range_words: Vec<u64>,
+    pub char_count_words: Vec<u64>,
+    pub cleaned_byte_len_words: Vec<u64>,
+
+    pub root_words: Vec<u64>,
+    pub file_words: Vec<u64>,
+    pub folder_words: Vec<u64>,
+    pub component_indices: Vec<u64>,
+
+    pub selected_file_full_path_indices: Vec<u64>,
+
+    pub query_words: Vec<u64>,
+    pub query_canonical_component_indices: Vec<u64>,
+    pub query_cleaned_lower_component_indices: Vec<u64>,
+}
+
+impl CorePathMatchResolveRequestV1 {
+    pub(crate) fn into_runtime_request(self) -> runtime::pathmatch::PathMatchResolveRequestV1 {
+        runtime::pathmatch::PathMatchResolveRequestV1 {
+            contract_version: self.contract_version,
+            case_sensitive: self.case_sensitive,
+            exact_match_only: self.exact_match_only,
+            allow_leading_root_alias_trim: self.allow_leading_root_alias_trim,
+            allow_head_trim_aliases: self.allow_head_trim_aliases,
+            allow_absolute_suffix_fallback: self.allow_absolute_suffix_fallback,
+            utf8_blob: self.utf8_blob,
+            string_range_words: self.string_range_words,
+            char_count_words: self.char_count_words,
+            cleaned_byte_len_words: self.cleaned_byte_len_words,
+            root_words: self.root_words,
+            file_words: self.file_words,
+            folder_words: self.folder_words,
+            component_indices: self.component_indices,
+            selected_file_full_path_indices: self.selected_file_full_path_indices,
+            query_words: self.query_words,
+            query_canonical_component_indices: self.query_canonical_component_indices,
+            query_cleaned_lower_component_indices: self.query_cleaned_lower_component_indices,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CorePathMatchResolveLocationV1 {
+    pub root_ordinal: u64,
+    pub corrected_path: String,
+}
+
+impl From<runtime::pathmatch::PathMatchResolveLocation> for CorePathMatchResolveLocationV1 {
+    fn from(value: runtime::pathmatch::PathMatchResolveLocation) -> Self {
+        Self {
+            root_ordinal: value.root_ordinal,
+            corrected_path: value.corrected_path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CorePathMatchResolveResultV1 {
+    /// Index-aligned with the request's queries (`query_words`, stride `QUERY_STRIDE`). `None`
+    /// for a query that found no match -- mirrors `PathMatchLocation?`.
+    pub locations: Vec<Option<CorePathMatchResolveLocationV1>>,
+}
+
+impl From<runtime::pathmatch::PathMatchResolveResultV1> for CorePathMatchResolveResultV1 {
+    fn from(value: runtime::pathmatch::PathMatchResolveResultV1) -> Self {
+        Self {
+            locations: value
+                .locations
+                .into_iter()
+                .map(|loc| loc.map(Into::into))
+                .collect(),
+        }
+    }
+}
+
 impl From<runtime::inventory::InventoryComputeResultV1> for CoreInventoryComputeResultV1 {
     fn from(value: runtime::inventory::InventoryComputeResultV1) -> Self {
         Self {

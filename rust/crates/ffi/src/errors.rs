@@ -80,6 +80,10 @@ pub enum CoreError {
     PathMatchInvalidRequest { message: String },
     #[error("path-match score computation was cancelled")]
     PathMatchCancelled,
+    #[error("{message}")]
+    PathResolveInvalidRequest { message: String },
+    #[error("path-resolve computation was cancelled")]
+    PathResolveCancelled,
 }
 
 impl From<IdentifierError> for CoreError {
@@ -209,6 +213,19 @@ impl From<agentry_runtime::pathmatch::PathMatchScoreError> for CoreError {
                 Self::PathMatchInvalidRequest { message }
             }
             agentry_runtime::pathmatch::PathMatchScoreError::Cancelled => Self::PathMatchCancelled,
+        }
+    }
+}
+
+impl From<agentry_runtime::pathmatch::PathMatchResolveError> for CoreError {
+    fn from(value: agentry_runtime::pathmatch::PathMatchResolveError) -> Self {
+        match value {
+            agentry_runtime::pathmatch::PathMatchResolveError::InvalidRequest(message) => {
+                Self::PathResolveInvalidRequest { message }
+            }
+            agentry_runtime::pathmatch::PathMatchResolveError::Cancelled => {
+                Self::PathResolveCancelled
+            }
         }
     }
 }

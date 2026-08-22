@@ -18,3 +18,22 @@ pub const CANDIDATE_STRIDE: usize = 5;
 /// (`matched_scores_bits`) alongside the scaled value so callers/tests can assert bit-identical
 /// equality directly; the integer scale is drift insurance, not a replacement for that check.
 pub const SCORE_SCALE: f64 = 1_000_000.0;
+
+// ---- P3-3 slice-2a: resolution-pipeline (`resolve.rs` + `indexes.rs`) wire constants ----------
+
+pub const PATH_RESOLVE_CONTRACT_VERSION_V1: u16 = 1;
+
+/// Words per root row: `full_path_idx, name_idx`. See `indexes.rs` module doc.
+pub const ROOT_STRIDE: usize = 2;
+
+/// Words per file row: `full_path_idx, relative_path_idx, root_ordinal, name_canonical_idx,
+/// ext_idx, last_two_canonical_idx, component_start, component_count`. See `indexes.rs` module doc.
+pub const FILE_STRIDE: usize = 8;
+
+/// Words per folder row: `full_path_idx, relative_path_idx, root_ordinal, name_canonical_idx,
+/// component_start, component_count`. See `indexes.rs` module doc.
+pub const FOLDER_STRIDE: usize = 6;
+
+/// Words per query row: `standardized_path_idx, canonical_component_start, component_count,
+/// cleaned_lower_component_start`. See `indexes.rs` module doc.
+pub const QUERY_STRIDE: usize = 4;

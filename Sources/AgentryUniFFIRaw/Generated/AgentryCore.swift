@@ -677,6 +677,12 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
 
+    /**
+     * P3-3 slice-2a: batch entry for the full `PathMatcher.locate` resolution ladder
+     * (`PathMatchWorker.locateMany`'s serial loop over one shared, immutable snapshot).
+     */
+    func pathMatchLocateManyV1(request: CorePathMatchResolveRequestV1) throws  -> CorePathMatchResolveResultV1
+
     func pathMatchScoreV1(request: CorePathMatchScoreRequestV1) throws  -> CorePathMatchScoreResultV1
 
     func rearmWake(identity: RuntimeIdentity) throws  -> Bool
@@ -879,6 +885,20 @@ open func openSubscription(scope: SubscriptionScope)throws  -> SubscriptionBoots
     uniffi_agentry_ffi_fn_method_coreruntime_open_subscription(
             self.uniffiCloneHandle(),
         FfiConverterTypeSubscriptionScope_lower(scope),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * P3-3 slice-2a: batch entry for the full `PathMatcher.locate` resolution ladder
+     * (`PathMatchWorker.locateMany`'s serial loop over one shared, immutable snapshot).
+     */
+open func pathMatchLocateManyV1(request: CorePathMatchResolveRequestV1)throws  -> CorePathMatchResolveResultV1  {
+    return try  FfiConverterTypeCorePathMatchResolveResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_path_match_locate_many_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCorePathMatchResolveRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -2858,6 +2878,250 @@ public func FfiConverterTypeCoreInventoryTableRangeV1_lower(_ value: CoreInvento
 }
 
 
+public struct CorePathMatchResolveLocationV1: Equatable, Hashable {
+    public let rootOrdinal: UInt64
+    public let correctedPath: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rootOrdinal: UInt64, correctedPath: String) {
+        self.rootOrdinal = rootOrdinal
+        self.correctedPath = correctedPath
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CorePathMatchResolveLocationV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePathMatchResolveLocationV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePathMatchResolveLocationV1 {
+        return
+            try CorePathMatchResolveLocationV1(
+                rootOrdinal: FfiConverterUInt64.read(from: &buf),
+                correctedPath: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CorePathMatchResolveLocationV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.rootOrdinal, into: &buf)
+        FfiConverterString.write(value.correctedPath, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchResolveLocationV1_lift(_ buf: RustBuffer) throws -> CorePathMatchResolveLocationV1 {
+    return try FfiConverterTypeCorePathMatchResolveLocationV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchResolveLocationV1_lower(_ value: CorePathMatchResolveLocationV1) -> RustBuffer {
+    return FfiConverterTypeCorePathMatchResolveLocationV1.lower(value)
+}
+
+
+/**
+ * Compact-v1 batch request driving `PathMatchResolveService` (`agentry_runtime::pathmatch`) --
+ * the full `PathMatcher.locate` resolution ladder over one immutable snapshot, batched exactly
+ * like `PathMatchWorker.locateMany`. See `rust/crates/runtime/src/pathmatch/indexes.rs` for the
+ * pool-plus-tables wire shape and the Foundation/ICU/filesystem scope-boundary documentation.
+ */
+public struct CorePathMatchResolveRequestV1 {
+    public let runtimeIdentity: RuntimeIdentity
+    public let cancellation: LeafCancellation
+    public let contractVersion: UInt16
+    public let caseSensitive: Bool
+    public let exactMatchOnly: Bool
+    public let allowLeadingRootAliasTrim: Bool
+    public let allowHeadTrimAliases: Bool
+    public let allowAbsoluteSuffixFallback: Bool
+    public let utf8Blob: Data
+    public let stringRangeWords: [UInt64]
+    public let charCountWords: [UInt64]
+    public let cleanedByteLenWords: [UInt64]
+    public let rootWords: [UInt64]
+    public let fileWords: [UInt64]
+    public let folderWords: [UInt64]
+    public let componentIndices: [UInt64]
+    public let selectedFileFullPathIndices: [UInt64]
+    public let queryWords: [UInt64]
+    public let queryCanonicalComponentIndices: [UInt64]
+    public let queryCleanedLowerComponentIndices: [UInt64]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, cancellation: LeafCancellation, contractVersion: UInt16, caseSensitive: Bool, exactMatchOnly: Bool, allowLeadingRootAliasTrim: Bool, allowHeadTrimAliases: Bool, allowAbsoluteSuffixFallback: Bool, utf8Blob: Data, stringRangeWords: [UInt64], charCountWords: [UInt64], cleanedByteLenWords: [UInt64], rootWords: [UInt64], fileWords: [UInt64], folderWords: [UInt64], componentIndices: [UInt64], selectedFileFullPathIndices: [UInt64], queryWords: [UInt64], queryCanonicalComponentIndices: [UInt64], queryCleanedLowerComponentIndices: [UInt64]) {
+        self.runtimeIdentity = runtimeIdentity
+        self.cancellation = cancellation
+        self.contractVersion = contractVersion
+        self.caseSensitive = caseSensitive
+        self.exactMatchOnly = exactMatchOnly
+        self.allowLeadingRootAliasTrim = allowLeadingRootAliasTrim
+        self.allowHeadTrimAliases = allowHeadTrimAliases
+        self.allowAbsoluteSuffixFallback = allowAbsoluteSuffixFallback
+        self.utf8Blob = utf8Blob
+        self.stringRangeWords = stringRangeWords
+        self.charCountWords = charCountWords
+        self.cleanedByteLenWords = cleanedByteLenWords
+        self.rootWords = rootWords
+        self.fileWords = fileWords
+        self.folderWords = folderWords
+        self.componentIndices = componentIndices
+        self.selectedFileFullPathIndices = selectedFileFullPathIndices
+        self.queryWords = queryWords
+        self.queryCanonicalComponentIndices = queryCanonicalComponentIndices
+        self.queryCleanedLowerComponentIndices = queryCleanedLowerComponentIndices
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CorePathMatchResolveRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePathMatchResolveRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePathMatchResolveRequestV1 {
+        return
+            try CorePathMatchResolveRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                cancellation: FfiConverterTypeLeafCancellation.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                caseSensitive: FfiConverterBool.read(from: &buf),
+                exactMatchOnly: FfiConverterBool.read(from: &buf),
+                allowLeadingRootAliasTrim: FfiConverterBool.read(from: &buf),
+                allowHeadTrimAliases: FfiConverterBool.read(from: &buf),
+                allowAbsoluteSuffixFallback: FfiConverterBool.read(from: &buf),
+                utf8Blob: FfiConverterData.read(from: &buf),
+                stringRangeWords: FfiConverterSequenceUInt64.read(from: &buf),
+                charCountWords: FfiConverterSequenceUInt64.read(from: &buf),
+                cleanedByteLenWords: FfiConverterSequenceUInt64.read(from: &buf),
+                rootWords: FfiConverterSequenceUInt64.read(from: &buf),
+                fileWords: FfiConverterSequenceUInt64.read(from: &buf),
+                folderWords: FfiConverterSequenceUInt64.read(from: &buf),
+                componentIndices: FfiConverterSequenceUInt64.read(from: &buf),
+                selectedFileFullPathIndices: FfiConverterSequenceUInt64.read(from: &buf),
+                queryWords: FfiConverterSequenceUInt64.read(from: &buf),
+                queryCanonicalComponentIndices: FfiConverterSequenceUInt64.read(from: &buf),
+                queryCleanedLowerComponentIndices: FfiConverterSequenceUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CorePathMatchResolveRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterTypeLeafCancellation.write(value.cancellation, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterBool.write(value.caseSensitive, into: &buf)
+        FfiConverterBool.write(value.exactMatchOnly, into: &buf)
+        FfiConverterBool.write(value.allowLeadingRootAliasTrim, into: &buf)
+        FfiConverterBool.write(value.allowHeadTrimAliases, into: &buf)
+        FfiConverterBool.write(value.allowAbsoluteSuffixFallback, into: &buf)
+        FfiConverterData.write(value.utf8Blob, into: &buf)
+        FfiConverterSequenceUInt64.write(value.stringRangeWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.charCountWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.cleanedByteLenWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.rootWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.fileWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.folderWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.componentIndices, into: &buf)
+        FfiConverterSequenceUInt64.write(value.selectedFileFullPathIndices, into: &buf)
+        FfiConverterSequenceUInt64.write(value.queryWords, into: &buf)
+        FfiConverterSequenceUInt64.write(value.queryCanonicalComponentIndices, into: &buf)
+        FfiConverterSequenceUInt64.write(value.queryCleanedLowerComponentIndices, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchResolveRequestV1_lift(_ buf: RustBuffer) throws -> CorePathMatchResolveRequestV1 {
+    return try FfiConverterTypeCorePathMatchResolveRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchResolveRequestV1_lower(_ value: CorePathMatchResolveRequestV1) -> RustBuffer {
+    return FfiConverterTypeCorePathMatchResolveRequestV1.lower(value)
+}
+
+
+public struct CorePathMatchResolveResultV1: Equatable, Hashable {
+    /**
+     * Index-aligned with the request's queries (`query_words`, stride `QUERY_STRIDE`). `None`
+     * for a query that found no match -- mirrors `PathMatchLocation?`.
+     */
+    public let locations: [CorePathMatchResolveLocationV1?]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Index-aligned with the request's queries (`query_words`, stride `QUERY_STRIDE`). `None`
+         * for a query that found no match -- mirrors `PathMatchLocation?`.
+         */locations: [CorePathMatchResolveLocationV1?]) {
+        self.locations = locations
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CorePathMatchResolveResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePathMatchResolveResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePathMatchResolveResultV1 {
+        return
+            try CorePathMatchResolveResultV1(
+                locations: FfiConverterSequenceOptionTypeCorePathMatchResolveLocationV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CorePathMatchResolveResultV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceOptionTypeCorePathMatchResolveLocationV1.write(value.locations, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchResolveResultV1_lift(_ buf: RustBuffer) throws -> CorePathMatchResolveResultV1 {
+    return try FfiConverterTypeCorePathMatchResolveResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePathMatchResolveResultV1_lower(_ value: CorePathMatchResolveResultV1) -> RustBuffer {
+    return FfiConverterTypeCorePathMatchResolveResultV1.lower(value)
+}
+
+
 /**
  * Compact-v1 batch request driving `PathMatchScoreService` (`agentry_runtime::pathmatch`). See
  * `rust/crates/runtime/src/pathmatch/score.rs` for the pool-plus-ranges wire shape and the
@@ -4691,6 +4955,9 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case PathMatchInvalidRequest(message: String
     )
     case PathMatchCancelled
+    case PathResolveInvalidRequest(message: String
+    )
+    case PathResolveCancelled
 
 
 
@@ -4763,6 +5030,10 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
             )
         case 37: return .PathMatchCancelled
+        case 38: return .PathResolveInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 39: return .PathResolveCancelled
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4924,6 +5195,15 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case .PathMatchCancelled:
             writeInt(&buf, Int32(37))
+
+
+        case let .PathResolveInvalidRequest(message):
+            writeInt(&buf, Int32(38))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case .PathResolveCancelled:
+            writeInt(&buf, Int32(39))
 
         }
     }
@@ -5850,6 +6130,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCorePathMatchResolveLocationV1: FfiConverterRustBuffer {
+    typealias SwiftType = CorePathMatchResolveLocationV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCorePathMatchResolveLocationV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCorePathMatchResolveLocationV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeOversizeEvent: FfiConverterRustBuffer {
     typealias SwiftType = OversizeEvent?
 
@@ -6320,6 +6624,31 @@ fileprivate struct FfiConverterSequenceTypePathClause: FfiConverterRustBuffer {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceOptionTypeCorePathMatchResolveLocationV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CorePathMatchResolveLocationV1?]
+
+    public static func write(_ value: [CorePathMatchResolveLocationV1?], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterOptionTypeCorePathMatchResolveLocationV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CorePathMatchResolveLocationV1?] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CorePathMatchResolveLocationV1?]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterOptionTypeCorePathMatchResolveLocationV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -6372,6 +6701,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_open_subscription() != 16674) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_path_match_locate_many_v1() != 60346) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_path_match_score_v1() != 427) {

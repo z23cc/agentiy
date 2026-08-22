@@ -43,7 +43,11 @@ pub fn is_allowed_ascii_byte(b: u8) -> bool {
 #[inline]
 #[must_use]
 pub fn to_lower_ascii(b: u8) -> u8 {
-    if (0x41..=0x5A).contains(&b) { b + 0x20 } else { b }
+    if (0x41..=0x5A).contains(&b) {
+        b + 0x20
+    } else {
+        b
+    }
 }
 
 /// Mirrors `PathCharPolicy.toLowerASCII` applied to a `char` (used by `score.rs`'s harmless,
@@ -165,7 +169,10 @@ mod tests {
             assert!(is_allowed_ascii_byte(b), "byte {b:#x} should be allowed");
         }
         for &b in b" ,;:'\"\\^~*=<>?|&" {
-            assert!(!is_allowed_ascii_byte(b), "byte {b:#x} should not be allowed");
+            assert!(
+                !is_allowed_ascii_byte(b),
+                "byte {b:#x} should not be allowed"
+            );
         }
     }
 
