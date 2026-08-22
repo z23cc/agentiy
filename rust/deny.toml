@@ -10,7 +10,7 @@ yanked = "deny"
 ignore = []
 
 [licenses]
-unlicensed = "deny"
+# Modern cargo-deny denies unlicensed crates and licenses absent from this allow-list by default.
 allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
@@ -27,6 +27,9 @@ confidence-threshold = 0.93
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# ADR-0007 requires exact dependency pins. These private-workspace Git dependencies are
+# locked to immutable revs in Cargo.toml/Cargo.lock; cargo otherwise reports them as wildcards.
+allow-wildcard-paths = true
 highlight = "all"
 deny = []
 skip = []
@@ -36,4 +39,19 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# ADR-0007: allow only the exact grammar remotes whose immutable revs are pinned in
+# Cargo.toml and Cargo.lock; keep unknown Git sources fail-closed.
+allow-git = [
+  "https://github.com/alex-pinkus/tree-sitter-swift",
+  "https://github.com/tree-sitter/tree-sitter-c",
+  "https://github.com/tree-sitter/tree-sitter-c-sharp",
+  "https://github.com/tree-sitter/tree-sitter-cpp",
+  "https://github.com/tree-sitter/tree-sitter-go",
+  "https://github.com/tree-sitter/tree-sitter-java",
+  "https://github.com/tree-sitter/tree-sitter-javascript",
+  "https://github.com/tree-sitter/tree-sitter-php",
+  "https://github.com/tree-sitter/tree-sitter-python",
+  "https://github.com/tree-sitter/tree-sitter-ruby",
+  "https://github.com/tree-sitter/tree-sitter-rust",
+  "https://github.com/tree-sitter/tree-sitter-typescript",
+]

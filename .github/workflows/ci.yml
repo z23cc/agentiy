@@ -167,8 +167,8 @@ jobs:
 
       - name: Install pinned Rust validation tools
         run: |
-          cargo install cargo-deny --version 0.18.3 --locked
-          cargo install cargo-audit --version 0.21.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
           cargo install cargo-fuzz --version 0.12.0 --locked
           cargo deny --version
           cargo audit --version
