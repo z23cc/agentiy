@@ -11,6 +11,9 @@ path = "src/lib.rs"
 
 [dependencies]
 agentry-proto.workspace = true
+# TD-2 (textdecode): docs/designs/textdecode-policy-v2-2026-08-22.md §4.2/§4.4.
+chardetng.workspace = true
+encoding_rs.workspace = true
 nix = { workspace = true, features = ["fs"] }
 pcre2.workspace = true
 # P4-4: `inventory_scope::wire::fingerprint()` hashes the `inventory-scope-v1` schema descriptor

@@ -17,6 +17,7 @@ mod registry;
 mod search;
 pub mod searchscore;
 mod subscription;
+pub mod textdecode;
 pub mod tokenacct;
 mod wake_pipe;
 

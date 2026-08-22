@@ -22,6 +22,12 @@ publish = false
 [workspace.dependencies]
 agentry-proto = { path = "crates/proto", version = "=0.1.0" }
 agentry-runtime = { path = "crates/runtime", version = "=0.1.0" }
+# TD-2 (textdecode-policy-v2): hybrid strict-UTF-8 fast path + chardetng fallback, decoded via
+# encoding_rs (docs/designs/textdecode-policy-v2-2026-08-22.md §4.2). Both Mozilla-maintained,
+# both already covered by rust/deny.toml's license allow-list (Apache-2.0/MIT) -- no policy-file
+# edit required, §4.4.
+chardetng = "=1.0.0"
+encoding_rs = "=0.8.35"
 nix = "=0.30.1"
 pcre2 = "=0.2.11"
 proptest = "=1.7.0"
