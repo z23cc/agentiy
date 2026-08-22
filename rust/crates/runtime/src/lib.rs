@@ -10,6 +10,7 @@ pub mod inventory;
 mod lifecycle;
 mod operation;
 pub mod pathmatch;
+pub mod pathsearch;
 mod registry;
 mod search;
 mod subscription;
