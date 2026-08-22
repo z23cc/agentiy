@@ -14,6 +14,7 @@ pub mod pathmatch;
 pub mod pathsearch;
 mod registry;
 mod search;
+pub mod searchscore;
 mod subscription;
 pub mod tokenacct;
 mod wake_pipe;
