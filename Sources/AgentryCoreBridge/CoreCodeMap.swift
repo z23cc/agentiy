@@ -25,6 +25,10 @@ extension CoreComputeError: LocalizedError {
 public enum CoreCodeMapSourceKind: UInt8, Sendable, Equatable, Hashable {
     case decoded = 0
     case decodeFailedUndecodable = 1
+    /// TD-3 (`docs/designs/textdecode-policy-v2-2026-08-22.md` §6.1): `sourceUTF8` carries
+    /// genuinely raw, possibly-non-UTF-8 bytes; Rust's `textdecode` (never fails) runs as
+    /// codemap's first step instead of a strict UTF-8 validity check.
+    case raw = 2
 }
 
 public struct CoreCodeMapSubjectRequestV1: Sendable, Equatable {
@@ -279,6 +283,9 @@ public struct CoreComputeClient: Sendable {
                 guard subject.sourceUTF8.isEmpty else {
                     throw CoreComputeError.invalidRequest("decode-failed codemap source must be empty")
                 }
+            case .raw:
+                // Any byte sequence is acceptable: Rust's textdecode() never fails (design §5.1).
+                break
             }
         }
     }

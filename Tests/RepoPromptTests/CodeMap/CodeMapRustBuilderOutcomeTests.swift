@@ -168,7 +168,8 @@ final class CodeMapRustBuilderOutcomeTests: XCTestCase {
                     text: text,
                     detectedEncodingRawValue: String.Encoding.utf8.rawValue
                 )
-            )
+            ),
+            rawBytes: data
         )
     }
 
@@ -178,7 +179,8 @@ final class CodeMapRustBuilderOutcomeTests: XCTestCase {
             rawByteCount: bytes.count,
             rawSHA256: CodeMapRawSourceDigest(bytes: Data(SHA256.hash(data: bytes))),
             decoderPolicy: .workspaceAutomaticV1,
-            decodeResult: .failed(.undecodable)
+            decodeResult: .failed(.undecodable),
+            rawBytes: bytes
         )
     }
 }

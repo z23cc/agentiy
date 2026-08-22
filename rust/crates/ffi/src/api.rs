@@ -1324,6 +1324,7 @@ mod tests {
                 subjects: vec![CoreApplyEditsSubjectRequestV1 {
                     path_label: "Example.swift".to_owned(),
                     original_utf8: b"old\n".to_vec(),
+                    source_kind: crate::types::CoreApplyEditsSourceKindV1::DecodedUtf8,
                     mode_tag: 0,
                     rewrite_replacement: Some("new\n".to_owned()),
                     operations: Vec::new(),
@@ -1362,6 +1363,7 @@ mod tests {
             subjects: vec![CoreApplyEditsSubjectRequestV1 {
                 path_label: "Example.swift".to_owned(),
                 original_utf8: b"old\n".to_vec(),
+                source_kind: crate::types::CoreApplyEditsSourceKindV1::DecodedUtf8,
                 mode_tag: 0,
                 rewrite_replacement: Some("new\n".to_owned()),
                 operations: Vec::new(),
@@ -1390,6 +1392,7 @@ mod tests {
             subjects: vec![CoreApplyEditsSubjectRequestV1 {
                 path_label: "Example.swift".to_owned(),
                 original_utf8: b"old\n".to_vec(),
+                source_kind: crate::types::CoreApplyEditsSourceKindV1::DecodedUtf8,
                 mode_tag: 2,
                 rewrite_replacement: None,
                 operations: Vec::new(),
@@ -1415,6 +1418,7 @@ mod tests {
             subjects: vec![CoreApplyEditsSubjectRequestV1 {
                 path_label: "Example.swift".to_owned(),
                 original_utf8: b"present\n".to_vec(),
+                source_kind: crate::types::CoreApplyEditsSourceKindV1::DecodedUtf8,
                 mode_tag: 1,
                 rewrite_replacement: None,
                 operations: vec![crate::types::CoreApplyEditsOperationV1 {

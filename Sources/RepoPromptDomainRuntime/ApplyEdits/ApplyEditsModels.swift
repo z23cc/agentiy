@@ -57,4 +57,9 @@ package struct ApplyEditsExecutionOptions: Equatable {
 package enum ApplyEditsError: Swift.Error, Equatable {
     case invalidParams(String)
     case internalError(String)
+    /// TD-3 §5.3.1 mechanism 2 (design `docs/designs/textdecode-policy-v2-2026-08-22.md`): a
+    /// raw-bytes apply-edits subject (ladder 6, `DirectHeadlessFileEditHost`) decoded lossily
+    /// (`had_replacements`); write-back is refused, mirroring today's pre-cutover fail-closed
+    /// behavior for content that cannot be faithfully round-tripped.
+    case lossyDecodeBlocksWriteBack(String)
 }

@@ -22,10 +22,26 @@ pub struct ApplyOperation {
     pub replace_all: bool,
 }
 
+/// TD-3 (`docs/designs/textdecode-policy-v2-2026-08-22.md` §6.1/§5.3.1 mechanism 2).
+///
+/// `DecodedUtf8` preserves today's behavior exactly: `original` is already-decoded,
+/// caller-trusted UTF-8 text bytes, strictly re-validated here (unchanged).
+///
+/// `Raw` is the ladder-6 (headless apply-edits, D-6) additive path: `original` is genuinely raw,
+/// possibly-non-UTF-8 disk bytes. `textdecode` runs as the first step (mirroring codemap's
+/// pattern -- one FFI crossing, decode-then-compute) and a lossy decode (`had_replacements`)
+/// blocks write-back per §5.3.1 mechanism 2, surfaced as `ApplyError::LossyDecodeBlocksWriteBack`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplySourceKind {
+    DecodedUtf8,
+    Raw,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplySubjectRequest {
     pub path_label: String,
     pub original: Vec<u8>,
+    pub source_kind: ApplySourceKind,
     pub mode: ApplyMode,
     pub verbose: bool,
     pub include_tool_card_unified_diff: bool,
@@ -74,6 +90,10 @@ pub enum ApplyError {
     InvalidParams(String),
     Internal(String),
     Cancelled,
+    /// TD-3 §5.3.1 mechanism 2: the `Raw` source decoded lossily (`had_replacements`); write-back
+    /// is refused for this apply-edits call, mirroring today's pre-cutover fail-closed behavior
+    /// for content that cannot be faithfully round-tripped.
+    LossyDecodeBlocksWriteBack(String),
 }
 
 fn decode_c_style(input: &str) -> String {
@@ -920,9 +940,34 @@ fn apply_batch(
     )
 }
 
+/// The effective decoded-text bytes `apply_subject` diffs against for this request, per its
+/// `source_kind` (TD-3 §6.1). `DecodedUtf8` requests decode to exactly `request.original`
+/// (identity, by construction of the strict UTF-8 check). `Raw` requests decode via
+/// `textdecode`, which may differ in byte length from `request.original` -- callers that encode
+/// byte-offset-relative results (`compact::encode_compact_batch`) MUST use this, not
+/// `request.original` directly, or offsets will be relative to the wrong buffer for `Raw`
+/// subjects.
+pub fn effective_original_text(request: &ApplySubjectRequest) -> Result<String, ApplyError> {
+    match request.source_kind {
+        ApplySourceKind::DecodedUtf8 => std::str::from_utf8(&request.original)
+            .map(str::to_owned)
+            .map_err(|_| ApplyError::InvalidParams("originalUTF8 is not valid UTF-8".into())),
+        ApplySourceKind::Raw => {
+            let outcome = crate::textdecode::textdecode(&request.original);
+            if outcome.had_replacements {
+                return Err(ApplyError::LossyDecodeBlocksWriteBack(
+                    "raw source contains byte sequences that cannot be decoded losslessly under any detected encoding"
+                        .into(),
+                ));
+            }
+            Ok(outcome.text)
+        }
+    }
+}
+
 pub fn apply_subject(request: &ApplySubjectRequest) -> Result<ApplyResult, ApplyError> {
-    let original = std::str::from_utf8(&request.original)
-        .map_err(|_| ApplyError::InvalidParams("originalUTF8 is not valid UTF-8".into()))?;
+    let original = effective_original_text(request)?;
+    let original: &str = &original;
     match &request.mode {
         ApplyMode::Rewrite { replacement } => {
             ensure_result_size(replacement.len())?;

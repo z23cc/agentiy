@@ -424,10 +424,11 @@ package struct MCPDomainCanonicalWorkspaceService: Sendable {
         let snapshot = CodeMapCoreSourceSnapshot(
             rawByteCount: data.count,
             rawSHA256: CodeMapRawSourceDigest(bytes: Data(SHA256.hash(data: data))),
-            decoderPolicy: .workspaceAutomaticV1,
+            decoderPolicy: .workspaceAutomaticV2,
             decodeResult: .decoded(
                 CodeMapDecodedSource(text: content, detectedEncodingRawValue: String.Encoding.utf8.rawValue)
-            )
+            ),
+            rawBytes: data
         )
         let outcome = try await RustCodeMapArtifactBuilder().build(source: snapshot, language: language)
         switch outcome {

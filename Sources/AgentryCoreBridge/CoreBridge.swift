@@ -56,6 +56,7 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case applyEditsInvalidParams(String)
     case applyEditsCancelled
     case applyEditsInvariant
+    case applyEditsLossyDecodeBlocksWriteBack(String)
     case inventoryInvalidRequest(String)
     case inventoryCancelled
     case inventoryInvariant
@@ -238,6 +239,15 @@ protocol CoreRuntimeTransport: Sendable {
         limit: UInt64
     ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1
     func inventoryCloseSnapshot(scopeID: String, handleID: UInt64) throws
+    /// P4-5: the handle-based read-plane query used by the shadow arm's index comparison arm
+    /// (design doc §8.2) -- Swift-only facade completion over the already-landed FFI export
+    /// (`rust/crates/ffi/src/api.rs::inventory_query`), matching `inventoryOpenScope`'s pattern.
+    func inventoryQuery(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactQueryResultV1
 
     /// Forensic strings for the most recent panic(s) recorded by the Rust
     /// process-wide panic hook, most-recent last -- not scoped to this
@@ -579,13 +589,18 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 runtimeIdentity: Self.rawIdentity(identity),
                 cancellation: cancellation.raw,
                 contractVersion: request.contractVersion,
-                subjects: request.subjects.map {
-                    .init(
-                        languageId: $0.languageID,
-                        sourceKind: $0.sourceKind == .decoded ? .decoded : .decodeFailedUndecodable,
-                        sourceUtf8: $0.sourceUTF8
-                    )
-                }
+                    subjects: request.subjects.map { subject in
+                        let sourceKind: AgentryUniFFIRaw.CoreCodeMapSourceKindV1 = switch subject.sourceKind {
+                        case .decoded: .decoded
+                        case .decodeFailedUndecodable: .decodeFailedUndecodable
+                        case .raw: .raw
+                        }
+                        return .init(
+                            languageId: subject.languageID,
+                            sourceKind: sourceKind,
+                            sourceUtf8: subject.sourceUTF8
+                        )
+                    }
             ))
         } catch {
             throw Self.map(error)
@@ -669,6 +684,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             return .init(
                 pathLabel: subject.pathLabel,
                 originalUtf8: subject.originalUTF8,
+                sourceKind: subject.sourceKind == .raw ? .raw : .decodedUtf8,
                 modeTag: modeTag,
                 rewriteReplacement: rewriteReplacement,
                 operations: operations.map {
@@ -715,7 +731,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     statsChunkCount: $0.statsChunkCount,
                     noteStringIndex: $0.noteStringIndex,
                     unifiedDiffStringIndex: $0.unifiedDiffStringIndex,
-                    toolCardDiffStringIndex: $0.toolCardDiffStringIndex
+                    toolCardDiffStringIndex: $0.toolCardDiffStringIndex,
+                    originalTextStringIndex: $0.originalTextStringIndex
                 )
             },
             utf8Blob: value.utf8Blob,
@@ -1390,6 +1407,24 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func inventoryQuery(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactQueryResultV1 {
+        do {
+            return try runtime.inventoryQuery(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                handleId: handleID,
+                bytes: bytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private static func map(_ error: Error) -> CoreTransportError {
         guard let error = error as? AgentryUniFFIRaw.CoreError else {
             return .unexpected(String(describing: error))
@@ -1438,6 +1473,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .ApplyEditsInvalidParams(message): .applyEditsInvalidParams(message)
         case .ApplyEditsCancelled: .applyEditsCancelled
         case .ApplyEditsInvariant: .applyEditsInvariant
+        case let .ApplyEditsLossyDecodeBlocksWriteBack(message): .applyEditsLossyDecodeBlocksWriteBack(message)
         case .InventoryScopeUnknownScope: .inventoryScopeUnknownScope
         case .InventoryScopeUnknownRoot: .inventoryScopeUnknownRoot
         case .InventoryScopeLifetimeMismatch: .inventoryScopeLifetimeMismatch
@@ -2067,6 +2103,7 @@ public actor AgentryCoreBridge {
              .depthLimitExceeded, .heapLimitExceeded, .jitUnavailable, .searchCancelled,
              .searchInvariant, .codeMapInvalidRequest, .codeMapServiceUnavailable, .codeMapCancelled,
              .codeMapInvariant, .applyEditsInvalidParams, .applyEditsCancelled, .applyEditsInvariant,
+             .applyEditsLossyDecodeBlocksWriteBack,
              .inventoryInvalidRequest, .inventoryCancelled, .inventoryInvariant,
              .pathMatchInvalidRequest, .pathMatchCancelled,
              .pathResolveInvalidRequest, .pathResolveCancelled,

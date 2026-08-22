@@ -123,6 +123,19 @@ package struct RustCodeMapArtifactBuilder: @unchecked Sendable {
 
 private extension CoreCodeMapSubjectRequestV1 {
     init(source: CodeMapCoreSourceSnapshot, language: LanguageType) {
+        // TD-3 §6.1: `.workspaceAutomaticV2` ships the raw, pre-decode bytes and lets Rust's
+        // `textdecode()` (never fails, design §5.1) run as codemap's first step -- the
+        // decode-then-re-encode step this migration exists to remove. `.workspaceAutomaticV1`
+        // (and the DEBUG-only `.testOnlyMismatch` cache-identity fixture policy) keep the
+        // pre-cutover shape unchanged for any caller still pinned to it.
+        if source.decoderPolicy == .workspaceAutomaticV2 {
+            self.init(
+                languageID: language.coreCodeMapLanguageID,
+                sourceKind: .raw,
+                sourceUTF8: source.rawBytes
+            )
+            return
+        }
         switch source.decodeResult {
         case let .decoded(decoded):
             self.init(

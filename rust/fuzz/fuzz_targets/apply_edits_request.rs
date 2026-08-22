@@ -2,7 +2,7 @@
 
 use agentry_runtime::apply_edits::{
     APPLY_EDITS_CONTRACT_VERSION_V1, ApplyEditsBatchRequestV1, ApplyEditsService, ApplyMode,
-    ApplyOperation, ApplySubjectRequest,
+    ApplyOperation, ApplySourceKind, ApplySubjectRequest,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -64,6 +64,7 @@ fuzz_target!(|input: &[u8]| {
         subjects: vec![ApplySubjectRequest {
             path_label: "fuzz.txt".to_owned(),
             original,
+            source_kind: ApplySourceKind::DecodedUtf8,
             mode,
             verbose: options & 16 != 0,
             include_tool_card_unified_diff: options & 32 != 0,

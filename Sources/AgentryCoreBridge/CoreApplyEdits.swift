@@ -18,9 +18,20 @@ public enum CoreApplyEditsModeV1: Sendable, Equatable {
     case batch([CoreApplyEditsOperationV1])
 }
 
+/// TD-3 §6.1/round-2 Finding F2: `decodedUTF8` is the existing, GUI-apply-edits-depended-upon
+/// path -- `originalUTF8` is already-decoded UTF-8 text bytes, strictly re-validated Rust-side
+/// (unchanged). `raw` is the additive ladder-6 (headless `agentry-mcp`, D-6) construction path --
+/// `originalUTF8` carries genuinely raw disk bytes; Rust's apply-edits handler calls
+/// `textdecode()` internally as its first step, preserving the single-FFI-crossing shape.
+public enum CoreApplyEditsSourceKind: Sendable, Equatable, Hashable {
+    case decodedUTF8
+    case raw
+}
+
 public struct CoreApplyEditsSubjectRequestV1: Sendable, Equatable {
     public let pathLabel: String
     public let originalUTF8: Data
+    public let sourceKind: CoreApplyEditsSourceKind
     public let mode: CoreApplyEditsModeV1
     public let verbose: Bool
     public let includeToolCardUnifiedDiff: Bool
@@ -28,12 +39,14 @@ public struct CoreApplyEditsSubjectRequestV1: Sendable, Equatable {
     public init(
         pathLabel: String,
         originalUTF8: Data,
+        sourceKind: CoreApplyEditsSourceKind = .decodedUTF8,
         mode: CoreApplyEditsModeV1,
         verbose: Bool = false,
         includeToolCardUnifiedDiff: Bool = false
     ) {
         self.pathLabel = pathLabel
         self.originalUTF8 = originalUTF8
+        self.sourceKind = sourceKind
         self.mode = mode
         self.verbose = verbose
         self.includeToolCardUnifiedDiff = includeToolCardUnifiedDiff
@@ -49,6 +62,26 @@ public struct CoreApplyEditsSubjectRequestV1: Sendable, Equatable {
         self.init(
             pathLabel: pathLabel,
             originalUTF8: Data(original.utf8),
+            sourceKind: .decodedUTF8,
+            mode: mode,
+            verbose: verbose,
+            includeToolCardUnifiedDiff: includeToolCardUnifiedDiff
+        )
+    }
+
+    /// Additive raw-bytes construction path used only by `DirectHeadlessFileEditHost` (ladder 6,
+    /// design D-6). `rawBytes` is genuinely raw, possibly-non-UTF-8 disk bytes.
+    public init(
+        pathLabel: String,
+        rawBytes: Data,
+        mode: CoreApplyEditsModeV1,
+        verbose: Bool = false,
+        includeToolCardUnifiedDiff: Bool = false
+    ) {
+        self.init(
+            pathLabel: pathLabel,
+            originalUTF8: rawBytes,
+            sourceKind: .raw,
             mode: mode,
             verbose: verbose,
             includeToolCardUnifiedDiff: includeToolCardUnifiedDiff
@@ -194,6 +227,22 @@ public struct CoreApplyEditsBatchResultV1: Sendable, Equatable {
     }
 }
 
+/// TD-3 §5.3.1 mechanism 2 (design `docs/designs/textdecode-policy-v2-2026-08-22.md`): a
+/// `Raw`-sourced apply-edits subject decoded lossily; write-back is refused. Deliberately its
+/// own dedicated error type rather than a new `CoreComputeError` case: `CoreComputeError` is
+/// shared, `default`-free-switched-over machinery reaching well beyond apply-edits (codemap,
+/// inventory, path-match, ...), including consumer code this task's surface does not own --
+/// adding a case there would force every one of those switches to grow an arm. Caught
+/// specifically by `applyEditsBatchV1`'s own catch block below (apply-edits-specific, not the
+/// shared `mapComputeFailure` path) and by `RustApplyEditsComputer`'s raw-bytes error mapping.
+public struct CoreApplyEditsLossyDecodeBlocksWriteBackError: Error, Sendable, Equatable {
+    public let message: String
+
+    public init(message: String) {
+        self.message = message
+    }
+}
+
 extension CoreComputeClient {
     public func applyEditsBatchV1(_ request: CoreApplyEditsBatchRequestV1) async throws -> CoreApplyEditsBatchResultV1 {
         try Self.validate(request)
@@ -224,6 +273,14 @@ extension CoreComputeClient {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            // Intercepted here, ahead of the shared `mapComputeFailure` path, specifically to
+            // avoid adding a case to `CoreComputeError` (see
+            // `CoreApplyEditsLossyDecodeBlocksWriteBackError`'s doc comment).
+            if let transportError = error as? CoreTransportError,
+               case let .applyEditsLossyDecodeBlocksWriteBack(message) = transportError
+            {
+                throw CoreApplyEditsLossyDecodeBlocksWriteBackError(message: message)
+            }
             throw await bridge.mapComputeFailure(error)
         }
     }
@@ -233,9 +290,12 @@ extension CoreComputeClient {
             throw CoreComputeError.invalidRequest("unsupported apply-edits contract version")
         }
         for subject in request.subjects {
-            guard String(data: subject.originalUTF8, encoding: .utf8) != nil else {
-                throw CoreComputeError.invalidRequest("apply-edits original is not UTF-8")
+            if subject.sourceKind == .decodedUTF8 {
+                guard String(data: subject.originalUTF8, encoding: .utf8) != nil else {
+                    throw CoreComputeError.invalidRequest("apply-edits original is not UTF-8")
+                }
             }
+            // `.raw` accepts any byte sequence: Rust's textdecode() never fails (design §5.1).
             switch subject.mode {
             case .rewrite:
                 break
@@ -285,6 +345,7 @@ struct CoreCompactApplyEditsSubjectSummaryV1: Equatable {
     let noteStringIndex: UInt64
     let unifiedDiffStringIndex: UInt64
     let toolCardDiffStringIndex: UInt64
+    let originalTextStringIndex: UInt64
 }
 
 struct CoreCompactApplyEditsBatchResultV1: Equatable {
@@ -327,16 +388,9 @@ private enum CoreApplyEditsCompactValidator {
         validated.reserveCapacity(request.subjects.count)
         for (summary, input) in zip(value.subjectSummaries, request.subjects) {
             let ranges = try Ranges(summary)
-            guard cursors.starts(ranges), ranges.inBounds(totals),
-                  summary.inputByteCount == UInt64(input.originalUTF8.count),
-                  String(data: input.originalUTF8, encoding: .utf8) != nil
-            else { throw CoreComputeError.malformedResponse }
-            // Non-stripping decode: Foundation's String(data:encoding:) removes a
-            // leading U+FEFF BOM, desynchronizing Swift-side validation from the
-            // Rust engine's byte offsets (which operate on the exact request
-            // bytes). Validity is enforced by the strict guard above; the working
-            // copy must round-trip the bytes exactly.
-            let original = String(decoding: input.originalUTF8, as: UTF8.self)
+            guard cursors.starts(ranges), ranges.inBounds(totals) else {
+                throw CoreComputeError.malformedResponse
+            }
 
             let strings = try validateStrings(value, ranges: ranges)
             func string(_ index: UInt64) throws -> String {
@@ -347,6 +401,30 @@ private enum CoreApplyEditsCompactValidator {
             }
             func optionalString(_ index: UInt64) throws -> String? {
                 index == optional ? nil : try string(index)
+            }
+
+            // TD-3 §6.1: `byteEdits`/`chunks` offsets below are relative to whatever buffer
+            // `apply_subject` actually diffed against Rust-side. For `.decodedUTF8` (the
+            // untouched, GUI-apply-edits-depended-upon path) that's always exactly
+            // `input.originalUTF8` -- re-derived locally, byte-for-byte identical to before.
+            // For `.raw` (ladder 6, D-6) it's `textdecode`'s output, which Swift cannot
+            // re-derive from the raw request bytes alone, so Rust echoes it back via
+            // `originalTextStringIndex`; its UTF-8 validity is already enforced by
+            // `validateStrings`' blob-wide check above.
+            let original: String
+            switch input.sourceKind {
+            case .decodedUTF8:
+                // Non-stripping decode: Foundation's String(data:encoding:) removes a
+                // leading U+FEFF BOM, desynchronizing Swift-side validation from the
+                // Rust engine's byte offsets (which operate on the exact request
+                // bytes). Validity is enforced by the strict guard below; the working
+                // copy must round-trip the bytes exactly.
+                guard summary.inputByteCount == UInt64(input.originalUTF8.count),
+                      String(data: input.originalUTF8, encoding: .utf8) != nil
+                else { throw CoreComputeError.malformedResponse }
+                original = String(decoding: input.originalUTF8, as: UTF8.self)
+            case .raw:
+                original = try string(summary.originalTextStringIndex)
             }
 
             let updated = try string(summary.updatedTextStringIndex)

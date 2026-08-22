@@ -67,6 +67,24 @@ package struct ApplyEditsService {
             }
         }
 
+        // TD-3 §6.1/round-2 Finding F2: when the host can hand over genuinely raw bytes (today,
+        // only `DirectHeadlessFileEditHost`/ladder 6), prefer that over `readText`'s String
+        // contract so Rust's apply-edits handler decodes via `textdecode()` as its own first
+        // step -- one FFI crossing, not a separate decode-only call ahead of it. `FileEditHost`
+        // itself is untouched; GUI's `WorkspaceFileEditHost` does not conform to
+        // `RawBytesFileEditHost`, so this branch is inert for that path (TD-5 scope).
+        if let rawHost = host as? RawBytesFileEditHost {
+            let rawBytes = try await EditFlowPerf.measure(EditFlowPerf.Stage.ApplyEdits.hostRead) {
+                try await rawHost.readRawBytes(path: request.path)
+            }
+            EditFlowPerf.event(
+                EditFlowPerf.Stage.ApplyEdits.hostRead,
+                EditFlowPerf.Dimensions(fileBytes: rawBytes.count)
+            )
+            let result = try await computer.apply(request: request, toRawBytes: rawBytes, options: options)
+            return (exists: true, originalText: nil, result: result)
+        }
+
         let originalText = try await EditFlowPerf.measure(EditFlowPerf.Stage.ApplyEdits.hostRead) {
             try await host.readText(path: request.path)
         }

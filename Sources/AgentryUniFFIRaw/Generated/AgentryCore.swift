@@ -2361,6 +2361,7 @@ public func FfiConverterTypeCoreApplyEditsOperationV1_lower(_ value: CoreApplyEd
 public struct CoreApplyEditsSubjectRequestV1: Equatable, Hashable {
     public let pathLabel: String
     public let originalUtf8: Data
+    public let sourceKind: CoreApplyEditsSourceKindV1
     public let modeTag: UInt64
     public let rewriteReplacement: String?
     public let operations: [CoreApplyEditsOperationV1]
@@ -2369,9 +2370,10 @@ public struct CoreApplyEditsSubjectRequestV1: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(pathLabel: String, originalUtf8: Data, modeTag: UInt64, rewriteReplacement: String?, operations: [CoreApplyEditsOperationV1], verbose: Bool, includeToolCardUnifiedDiff: Bool) {
+    public init(pathLabel: String, originalUtf8: Data, sourceKind: CoreApplyEditsSourceKindV1, modeTag: UInt64, rewriteReplacement: String?, operations: [CoreApplyEditsOperationV1], verbose: Bool, includeToolCardUnifiedDiff: Bool) {
         self.pathLabel = pathLabel
         self.originalUtf8 = originalUtf8
+        self.sourceKind = sourceKind
         self.modeTag = modeTag
         self.rewriteReplacement = rewriteReplacement
         self.operations = operations
@@ -2397,6 +2399,7 @@ public struct FfiConverterTypeCoreApplyEditsSubjectRequestV1: FfiConverterRustBu
             try CoreApplyEditsSubjectRequestV1(
                 pathLabel: FfiConverterString.read(from: &buf),
                 originalUtf8: FfiConverterData.read(from: &buf),
+                sourceKind: FfiConverterTypeCoreApplyEditsSourceKindV1.read(from: &buf),
                 modeTag: FfiConverterUInt64.read(from: &buf),
                 rewriteReplacement: FfiConverterOptionString.read(from: &buf),
                 operations: FfiConverterSequenceTypeCoreApplyEditsOperationV1.read(from: &buf),
@@ -2408,6 +2411,7 @@ public struct FfiConverterTypeCoreApplyEditsSubjectRequestV1: FfiConverterRustBu
     public static func write(_ value: CoreApplyEditsSubjectRequestV1, into buf: inout [UInt8]) {
         FfiConverterString.write(value.pathLabel, into: &buf)
         FfiConverterData.write(value.originalUtf8, into: &buf)
+        FfiConverterTypeCoreApplyEditsSourceKindV1.write(value.sourceKind, into: &buf)
         FfiConverterUInt64.write(value.modeTag, into: &buf)
         FfiConverterOptionString.write(value.rewriteReplacement, into: &buf)
         FfiConverterSequenceTypeCoreApplyEditsOperationV1.write(value.operations, into: &buf)
@@ -2651,10 +2655,11 @@ public struct CoreCompactApplyEditsSubjectSummaryV1: Equatable, Hashable {
     public let noteStringIndex: UInt64
     public let unifiedDiffStringIndex: UInt64
     public let toolCardDiffStringIndex: UInt64
+    public let originalTextStringIndex: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(inputByteCount: UInt64, blobStart: UInt64, blobCount: UInt64, stringStart: UInt64, stringCount: UInt64, updatedTextStringIndex: UInt64, byteEditStart: UInt64, byteEditCount: UInt64, chunkStart: UInt64, chunkCount: UInt64, diffLineStart: UInt64, diffLineCount: UInt64, outcomeStart: UInt64, outcomeCount: UInt64, editsRequested: UInt64, editsApplied: UInt64, resultStatusTag: UInt64, outcomesPresent: Bool, statsPresent: Bool, linesChanged: UInt64, statsChunkCount: UInt64, noteStringIndex: UInt64, unifiedDiffStringIndex: UInt64, toolCardDiffStringIndex: UInt64) {
+    public init(inputByteCount: UInt64, blobStart: UInt64, blobCount: UInt64, stringStart: UInt64, stringCount: UInt64, updatedTextStringIndex: UInt64, byteEditStart: UInt64, byteEditCount: UInt64, chunkStart: UInt64, chunkCount: UInt64, diffLineStart: UInt64, diffLineCount: UInt64, outcomeStart: UInt64, outcomeCount: UInt64, editsRequested: UInt64, editsApplied: UInt64, resultStatusTag: UInt64, outcomesPresent: Bool, statsPresent: Bool, linesChanged: UInt64, statsChunkCount: UInt64, noteStringIndex: UInt64, unifiedDiffStringIndex: UInt64, toolCardDiffStringIndex: UInt64, originalTextStringIndex: UInt64) {
         self.inputByteCount = inputByteCount
         self.blobStart = blobStart
         self.blobCount = blobCount
@@ -2679,6 +2684,7 @@ public struct CoreCompactApplyEditsSubjectSummaryV1: Equatable, Hashable {
         self.noteStringIndex = noteStringIndex
         self.unifiedDiffStringIndex = unifiedDiffStringIndex
         self.toolCardDiffStringIndex = toolCardDiffStringIndex
+        self.originalTextStringIndex = originalTextStringIndex
     }
 
 
@@ -2720,7 +2726,8 @@ public struct FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1: FfiConverte
                 statsChunkCount: FfiConverterUInt64.read(from: &buf),
                 noteStringIndex: FfiConverterUInt64.read(from: &buf),
                 unifiedDiffStringIndex: FfiConverterUInt64.read(from: &buf),
-                toolCardDiffStringIndex: FfiConverterUInt64.read(from: &buf)
+                toolCardDiffStringIndex: FfiConverterUInt64.read(from: &buf),
+                originalTextStringIndex: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -2749,6 +2756,7 @@ public struct FfiConverterTypeCoreCompactApplyEditsSubjectSummaryV1: FfiConverte
         FfiConverterUInt64.write(value.noteStringIndex, into: &buf)
         FfiConverterUInt64.write(value.unifiedDiffStringIndex, into: &buf)
         FfiConverterUInt64.write(value.toolCardDiffStringIndex, into: &buf)
+        FfiConverterUInt64.write(value.originalTextStringIndex, into: &buf)
     }
 }
 
@@ -6824,11 +6832,89 @@ public func FfiConverterTypeCancelDisposition_lower(_ value: CancelDisposition) 
 
 
 
+/**
+ * TD-3 §6.1/F2: `DecodedUtf8` is the existing, GUI-apply-edits-depended-upon path --
+ * `original_utf8` is already-decoded UTF-8 text bytes, strictly re-validated Rust-side
+ * (unchanged). `Raw` is the additive ladder-6 (headless `agentry-mcp`, D-6) construction path --
+ * `original_utf8` carries genuinely raw disk bytes; `textdecode` runs as apply-edits' first
+ * step, preserving the single-FFI-crossing shape (design §6.1, round-2 Finding F2).
+ */
+
+public enum CoreApplyEditsSourceKindV1: Equatable, Hashable {
+
+    case decodedUtf8
+    case raw
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreApplyEditsSourceKindV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreApplyEditsSourceKindV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreApplyEditsSourceKindV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreApplyEditsSourceKindV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .decodedUtf8
+
+        case 2: return .raw
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreApplyEditsSourceKindV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .decodedUtf8:
+            writeInt(&buf, Int32(1))
+
+
+        case .raw:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsSourceKindV1_lift(_ buf: RustBuffer) throws -> CoreApplyEditsSourceKindV1 {
+    return try FfiConverterTypeCoreApplyEditsSourceKindV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreApplyEditsSourceKindV1_lower(_ value: CoreApplyEditsSourceKindV1) -> RustBuffer {
+    return FfiConverterTypeCoreApplyEditsSourceKindV1.lower(value)
+}
+
+
+
 
 public enum CoreCodeMapSourceKindV1: Equatable, Hashable {
 
     case decoded
     case decodeFailedUndecodable
+    /**
+     * TD-3 (design §6.1): `source_utf8` carries genuinely raw, possibly-non-UTF-8 bytes;
+     * `textdecode` (never fails) runs as codemap's first step instead of a strict UTF-8 check.
+     */
+    case raw
 
 
 
@@ -6854,6 +6940,8 @@ public struct FfiConverterTypeCoreCodeMapSourceKindV1: FfiConverterRustBuffer {
 
         case 2: return .decodeFailedUndecodable
 
+        case 3: return .raw
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -6868,6 +6956,10 @@ public struct FfiConverterTypeCoreCodeMapSourceKindV1: FfiConverterRustBuffer {
 
         case .decodeFailedUndecodable:
             writeInt(&buf, Int32(2))
+
+
+        case .raw:
+            writeInt(&buf, Int32(3))
 
         }
     }
@@ -6931,6 +7023,13 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case ApplyEditsCancelled
     case ApplyEditsInvariant
+    /**
+     * TD-3 §5.3.1 mechanism 2 (design `docs/designs/textdecode-policy-v2-2026-08-22.md`):
+     * a `Raw`-sourced apply-edits subject decoded lossily (`had_replacements`); write-back is
+     * refused rather than silently overwriting bytes that cannot be faithfully round-tripped.
+     */
+    case ApplyEditsLossyDecodeBlocksWriteBack(message: String
+    )
     case InventoryInvalidRequest(message: String
     )
     case InventoryCancelled
@@ -7021,38 +7120,41 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             )
         case 31: return .ApplyEditsCancelled
         case 32: return .ApplyEditsInvariant
-        case 33: return .InventoryInvalidRequest(
+        case 33: return .ApplyEditsLossyDecodeBlocksWriteBack(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 34: return .InventoryCancelled
-        case 35: return .InventoryInvariant
-        case 36: return .PathMatchInvalidRequest(
+        case 34: return .InventoryInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 37: return .PathMatchCancelled
-        case 38: return .PathResolveInvalidRequest(
+        case 35: return .InventoryCancelled
+        case 36: return .InventoryInvariant
+        case 37: return .PathMatchInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 39: return .PathResolveCancelled
-        case 40: return .PathSearchInvalidRequest(
+        case 38: return .PathMatchCancelled
+        case 39: return .PathResolveInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 41: return .PathSearchCancelled
-        case 42: return .TokenAccountingInvalidRequest(
+        case 40: return .PathResolveCancelled
+        case 41: return .PathSearchInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 43: return .TokenAccountingCancelled
-        case 44: return .InventoryScopeUnknownScope
-        case 45: return .InventoryScopeUnknownRoot
-        case 46: return .InventoryScopeLifetimeMismatch
-        case 47: return .InventoryScopeNoPublishedGeneration
-        case 48: return .InventoryScopeBulkLoadUnknown
-        case 49: return .InventoryScopeBulkLoadAlreadyTerminal
-        case 50: return .InventoryScopeBulkLoadRootMismatch
-        case 51: return .InventoryHandleInvalidated(
+        case 42: return .PathSearchCancelled
+        case 43: return .TokenAccountingInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 44: return .TokenAccountingCancelled
+        case 45: return .InventoryScopeUnknownScope
+        case 46: return .InventoryScopeUnknownRoot
+        case 47: return .InventoryScopeLifetimeMismatch
+        case 48: return .InventoryScopeNoPublishedGeneration
+        case 49: return .InventoryScopeBulkLoadUnknown
+        case 50: return .InventoryScopeBulkLoadAlreadyTerminal
+        case 51: return .InventoryScopeBulkLoadRootMismatch
+        case 52: return .InventoryHandleInvalidated(
             reason: try FfiConverterTypeInventoryHandleInvalidationReasonV1.read(from: &buf)
             )
-        case 52: return .InventoryScopeInvalidRequest(
+        case 53: return .InventoryScopeInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -7196,90 +7298,95 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(32))
 
 
-        case let .InventoryInvalidRequest(message):
+        case let .ApplyEditsLossyDecodeBlocksWriteBack(message):
             writeInt(&buf, Int32(33))
             FfiConverterString.write(message, into: &buf)
 
 
-        case .InventoryCancelled:
+        case let .InventoryInvalidRequest(message):
             writeInt(&buf, Int32(34))
+            FfiConverterString.write(message, into: &buf)
 
 
-        case .InventoryInvariant:
+        case .InventoryCancelled:
             writeInt(&buf, Int32(35))
 
 
-        case let .PathMatchInvalidRequest(message):
+        case .InventoryInvariant:
             writeInt(&buf, Int32(36))
+
+
+        case let .PathMatchInvalidRequest(message):
+            writeInt(&buf, Int32(37))
             FfiConverterString.write(message, into: &buf)
 
 
         case .PathMatchCancelled:
-            writeInt(&buf, Int32(37))
+            writeInt(&buf, Int32(38))
 
 
         case let .PathResolveInvalidRequest(message):
-            writeInt(&buf, Int32(38))
+            writeInt(&buf, Int32(39))
             FfiConverterString.write(message, into: &buf)
 
 
         case .PathResolveCancelled:
-            writeInt(&buf, Int32(39))
+            writeInt(&buf, Int32(40))
 
 
         case let .PathSearchInvalidRequest(message):
-            writeInt(&buf, Int32(40))
+            writeInt(&buf, Int32(41))
             FfiConverterString.write(message, into: &buf)
 
 
         case .PathSearchCancelled:
-            writeInt(&buf, Int32(41))
+            writeInt(&buf, Int32(42))
 
 
         case let .TokenAccountingInvalidRequest(message):
-            writeInt(&buf, Int32(42))
+            writeInt(&buf, Int32(43))
             FfiConverterString.write(message, into: &buf)
 
 
         case .TokenAccountingCancelled:
-            writeInt(&buf, Int32(43))
-
-
-        case .InventoryScopeUnknownScope:
             writeInt(&buf, Int32(44))
 
 
-        case .InventoryScopeUnknownRoot:
+        case .InventoryScopeUnknownScope:
             writeInt(&buf, Int32(45))
 
 
-        case .InventoryScopeLifetimeMismatch:
+        case .InventoryScopeUnknownRoot:
             writeInt(&buf, Int32(46))
 
 
-        case .InventoryScopeNoPublishedGeneration:
+        case .InventoryScopeLifetimeMismatch:
             writeInt(&buf, Int32(47))
 
 
-        case .InventoryScopeBulkLoadUnknown:
+        case .InventoryScopeNoPublishedGeneration:
             writeInt(&buf, Int32(48))
 
 
-        case .InventoryScopeBulkLoadAlreadyTerminal:
+        case .InventoryScopeBulkLoadUnknown:
             writeInt(&buf, Int32(49))
 
 
-        case .InventoryScopeBulkLoadRootMismatch:
+        case .InventoryScopeBulkLoadAlreadyTerminal:
             writeInt(&buf, Int32(50))
 
 
-        case let .InventoryHandleInvalidated(reason):
+        case .InventoryScopeBulkLoadRootMismatch:
             writeInt(&buf, Int32(51))
+
+
+        case let .InventoryHandleInvalidated(reason):
+            writeInt(&buf, Int32(52))
             FfiConverterTypeInventoryHandleInvalidationReasonV1.write(reason, into: &buf)
 
 
         case let .InventoryScopeInvalidRequest(message):
-            writeInt(&buf, Int32(52))
+            writeInt(&buf, Int32(53))
             FfiConverterString.write(message, into: &buf)
 
         }

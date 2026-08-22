@@ -73,6 +73,11 @@ pub enum CoreError {
     ApplyEditsCancelled,
     #[error("apply-edits result violated an internal invariant")]
     ApplyEditsInvariant,
+    /// TD-3 §5.3.1 mechanism 2 (design `docs/designs/textdecode-policy-v2-2026-08-22.md`):
+    /// a `Raw`-sourced apply-edits subject decoded lossily (`had_replacements`); write-back is
+    /// refused rather than silently overwriting bytes that cannot be faithfully round-tripped.
+    #[error("{message}")]
+    ApplyEditsLossyDecodeBlocksWriteBack { message: String },
     #[error("{message}")]
     InventoryInvalidRequest { message: String },
     #[error("inventory computation was cancelled")]
@@ -217,6 +222,9 @@ impl From<agentry_runtime::apply_edits::ApplyError> for CoreError {
             }
             agentry_runtime::apply_edits::ApplyError::Internal(_) => Self::ApplyEditsInvariant,
             agentry_runtime::apply_edits::ApplyError::Cancelled => Self::ApplyEditsCancelled,
+            agentry_runtime::apply_edits::ApplyError::LossyDecodeBlocksWriteBack(message) => {
+                Self::ApplyEditsLossyDecodeBlocksWriteBack { message }
+            }
         }
     }
 }

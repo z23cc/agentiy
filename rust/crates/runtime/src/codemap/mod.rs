@@ -23,6 +23,10 @@ pub use engine::{Capture, LanguageDescriptor, descriptor, parse_captures};
 pub enum CodeMapSourceKind {
     Decoded,
     DecodeFailedUndecodable,
+    /// TD-3 (`docs/designs/textdecode-policy-v2-2026-08-22.md` §6.1): `source_utf8` carries
+    /// genuinely raw, possibly-non-UTF-8 bytes. `textdecode` (never fails, §5.1) runs as the
+    /// first step here instead of a strict UTF-8 validity check.
+    Raw,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,12 +127,23 @@ fn build_subject_with_cancellation(
         }
         return Ok(SubjectOutcome::DecodeFailed);
     }
-    let source = std::str::from_utf8(&request.source_utf8).map_err(|_| {
-        CodeMapError::InvalidRequest("decoded source is not valid UTF-8".to_owned())
-    })?;
-    if request.source_utf8.len() > MAX_UTF8_BYTES {
+    // Raw-bytes path decodes here (first step, before any size/parse work) rather than in a
+    // separate FFI crossing -- design §6.1's "one crossing" constraint. For the pre-existing
+    // `Decoded` kind this is a no-op refactor: `source.len()` equals `request.source_utf8.len()`
+    // exactly, since `source` is that same byte slice reinterpreted, not transformed.
+    let decoded_owned;
+    let source: &str = if request.source_kind == CodeMapSourceKind::Raw {
+        decoded_owned = crate::textdecode::textdecode(&request.source_utf8).text;
+        &decoded_owned
+    } else {
+        std::str::from_utf8(&request.source_utf8).map_err(|_| {
+            CodeMapError::InvalidRequest("decoded source is not valid UTF-8".to_owned())
+        })?
+    };
+    let source_byte_len = source.len();
+    if source_byte_len > MAX_UTF8_BYTES {
         return Ok(SubjectOutcome::OversizeUtf8 {
-            actual: request.source_utf8.len(),
+            actual: source_byte_len,
             limit: MAX_UTF8_BYTES,
         });
     }

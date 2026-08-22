@@ -129,7 +129,8 @@ final class CoreApplyEditsTests: XCTestCase {
                 statsChunkCount: 0,
                 noteStringIndex: UInt64.max,
                 unifiedDiffStringIndex: UInt64.max,
-                toolCardDiffStringIndex: UInt64.max
+                toolCardDiffStringIndex: UInt64.max,
+                originalTextStringIndex: UInt64.max
             )],
             utf8Blob: Data(updated.utf8),
             stringRangeWords: [0, UInt64(updated.utf8.count)],

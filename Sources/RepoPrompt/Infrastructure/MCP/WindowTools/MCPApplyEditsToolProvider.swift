@@ -476,6 +476,12 @@ final class MCPApplyEditsToolProvider: MCPAppToolProviding {
             MCPError.invalidParams(message)
         case let .internalError(message):
             MCPError.internalError(message)
+        case let .lossyDecodeBlocksWriteBack(message):
+            // TD-3 §5.3.1 mechanism 2: currently only reachable via `DirectHeadlessFileEditHost`
+            // (ladder 6, headless `agentry-mcp`); GUI apply-edits doesn't cut over to the
+            // raw-bytes path until TD-5. Mapped here too so this switch stays exhaustive and
+            // GUI apply-edits fails closed with a clear message if that ever changes.
+            MCPError.invalidParams(message)
         }
     }
 }

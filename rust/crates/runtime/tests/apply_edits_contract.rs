@@ -12,6 +12,7 @@ fn request(original: &str, mode: ApplyMode) -> ApplySubjectRequest {
     ApplySubjectRequest {
         path_label: "file.swift".into(),
         original: original.as_bytes().to_vec(),
+        source_kind: ApplySourceKind::DecodedUtf8,
         mode,
         verbose: true,
         include_tool_card_unified_diff: true,
@@ -534,8 +535,8 @@ fn compact_tables_reconstruct_bytes_and_chunks() {
     ))
     .unwrap();
     let compact = encode_compact_batch(&[
-        (original_a.as_bytes(), &result_a),
-        (original_b.as_bytes(), &result_b),
+        (original_a.as_bytes(), None, &result_a),
+        (original_b.as_bytes(), None, &result_b),
     ])
     .unwrap();
     let rebuilt =
@@ -553,7 +554,7 @@ fn compact_validator_rejects_malformed_ranges_and_flags() {
         },
     ))
     .unwrap();
-    let mut compact = encode_compact_batch(&[(original.as_bytes(), &result)]).unwrap();
+    let mut compact = encode_compact_batch(&[(original.as_bytes(), None, &result)]).unwrap();
     compact.chunk_words[7] = 1;
     assert_eq!(
         validate_compact_batch(&compact, &[original.as_bytes()]).unwrap_err(),
@@ -620,7 +621,7 @@ fn compact_validator_rejects_cross_subject_string_reference() {
         },
     ))
     .unwrap();
-    let mut compact = encode_compact_batch(&[(b"a\n", &a), (b"b\n", &b)]).unwrap();
+    let mut compact = encode_compact_batch(&[(b"a\n", None, &a), (b"b\n", None, &b)]).unwrap();
     compact.subject_summaries[0].updated_text_string_index =
         compact.subject_summaries[1].string_start;
     assert_eq!(
@@ -640,9 +641,152 @@ fn compact_outcomes_present_distinguishes_nil() {
     ))
     .unwrap();
     assert!(single.outcomes.is_none());
-    let compact = encode_compact_batch(&[(original.as_bytes(), &single)]).unwrap();
+    let compact = encode_compact_batch(&[(original.as_bytes(), None, &single)]).unwrap();
     assert!(!compact.subject_summaries[0].outcomes_present);
     assert!(validate_compact_batch(&compact, &[original.as_bytes()]).is_ok());
     single.outcomes = Some(Vec::new());
-    assert!(encode_compact_batch(&[(original.as_bytes(), &single)]).is_ok());
+    assert!(encode_compact_batch(&[(original.as_bytes(), None, &single)]).is_ok());
+}
+
+// -------------------------------------------------------------------------------------------
+// TD-3 (design `docs/designs/textdecode-policy-v2-2026-08-22.md` §6.1/§5.3.1 mechanism 2/D-6):
+// `ApplySourceKind::Raw` -- the ladder-6 (headless `agentry-mcp` apply-edits) additive path.
+// -------------------------------------------------------------------------------------------
+
+fn raw_request(original: Vec<u8>, mode: ApplyMode) -> ApplySubjectRequest {
+    ApplySubjectRequest {
+        path_label: "file.txt".into(),
+        original,
+        source_kind: ApplySourceKind::Raw,
+        mode,
+        verbose: true,
+        include_tool_card_unified_diff: true,
+    }
+}
+
+#[test]
+fn raw_legacy_shift_jis_bytes_that_todays_headless_host_hard_rejects_decode_and_edit_cleanly_d6() {
+    // Mirrors the byte-level TD-2 characterization
+    // (`ladder6_legacy_charset_bytes_decode_cleanly_though_todays_host_hard_rejects_them`) one
+    // layer up: this proves the *host-facing* `apply_subject` entry point, not just `textdecode`
+    // in isolation, accepts genuinely non-UTF-8 raw bytes and edits them successfully -- content
+    // `DirectHeadlessFileEditHost.readText` hard-rejects today (`String(data:encoding:.utf8)`
+    // returns nil for these exact bytes).
+    let sample = "これはラダー6のShift-JISテキストです。";
+    assert!(std::str::from_utf8(sample.as_bytes()).is_ok());
+    let (raw, _, unmappable) = encoding_rs::SHIFT_JIS.encode(sample);
+    assert!(!unmappable);
+    let raw = raw.into_owned();
+    assert!(
+        std::str::from_utf8(&raw).is_err(),
+        "fixture must be genuinely non-UTF-8 for this to prove anything"
+    );
+    let result = apply_subject(&raw_request(
+        raw,
+        ApplyMode::Single {
+            operation: operation("テキスト", "テスト", false),
+        },
+    ))
+    .expect("raw legacy-charset apply_edits must succeed, not hard-reject");
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(result.updated_text.contains("テスト"));
+    assert!(!result.updated_text.contains("テキスト"));
+}
+
+#[test]
+fn raw_lossy_utf16_lone_surrogate_blocks_write_back_not_silently_overwrites_r8() {
+    // §5.3.1 mechanism 2 / R8: a genuinely-unmappable raw source must refuse write-back rather
+    // than silently substituting U+FFFD and letting a save overwrite unrecoverable bytes.
+    let mut raw = vec![0xFFu8, 0xFE]; // UTF-16 LE BOM
+    raw.extend_from_slice(&0xD800u16.to_le_bytes()); // lone high surrogate, no low surrogate pair
+    let outcome = apply_subject(&raw_request(
+        raw,
+        ApplyMode::Rewrite {
+            replacement: "anything".into(),
+        },
+    ));
+    match outcome {
+        Err(ApplyError::LossyDecodeBlocksWriteBack(_)) => {}
+        other => panic!("expected LossyDecodeBlocksWriteBack, got {other:?}"),
+    }
+}
+
+#[test]
+fn raw_decoded_utf8_source_kind_is_byte_identical_to_the_pre_td3_strict_path() {
+    // The default `DecodedUtf8` kind must remain provably untouched: decoding the *same* valid
+    // UTF-8 bytes through either kind produces an identical result (GUI apply-edits' path is
+    // not supposed to change until TD-5).
+    let original = "line one\nline two\n";
+    let strict = apply_subject(&request(
+        original,
+        ApplyMode::Single {
+            operation: operation("one", "ONE", false),
+        },
+    ))
+    .unwrap();
+    let raw = apply_subject(&raw_request(
+        original.as_bytes().to_vec(),
+        ApplyMode::Single {
+            operation: operation("one", "ONE", false),
+        },
+    ))
+    .unwrap();
+    assert_eq!(strict.updated_text, raw.updated_text);
+    assert_eq!(strict.byte_edits, raw.byte_edits);
+}
+
+#[test]
+fn raw_utf8_bom_source_round_trips_through_apply_subject_preserving_the_bom() {
+    // The d1f84aa5 regression class (design §2): a leading UTF-8 BOM must survive apply-edits
+    // end to end for a `Raw` source, not be silently stripped on decode.
+    let mut raw = vec![0xEF, 0xBB, 0xBF];
+    raw.extend_from_slice("hello\nworld\n".as_bytes());
+    let result = apply_subject(&raw_request(
+        raw,
+        ApplyMode::Single {
+            operation: operation("world", "WORLD", false),
+        },
+    ))
+    .unwrap();
+    assert!(result.updated_text.starts_with('\u{FEFF}'));
+    assert_eq!(result.updated_text, "\u{FEFF}hello\nWORLD\n");
+}
+
+#[test]
+fn raw_compact_batch_echoes_the_decoded_original_text_not_the_raw_request_bytes() {
+    // TD-3 §6.1: the wire-protocol correctness gap this revision closes -- Swift's compact-
+    // result validator cannot re-derive "original" from raw request bytes for `Raw` subjects
+    // (the buffer `byte_edits`/`chunks` offsets are relative to is `textdecode`'s *output*,
+    // which can differ in byte length from the raw input for legacy charsets). Prove the
+    // service-level pipeline (`ApplyEditsService::apply_batch`, the same one the FFI handler
+    // calls) actually encodes a distinct, valid `original_text_string_index` referencing the
+    // decoded text -- not `OPTIONAL_SENTINEL`, and not the raw bytes reinterpreted as UTF-8.
+    let sample = "こんにちは世界";
+    let (raw, _, unmappable) = encoding_rs::SHIFT_JIS.encode(sample);
+    assert!(!unmappable);
+    let raw = raw.into_owned();
+    let raw_len = raw.len();
+    let request = ApplyEditsBatchRequestV1 {
+        contract_version: APPLY_EDITS_CONTRACT_VERSION_V1,
+        subjects: vec![raw_request(
+            raw,
+            ApplyMode::Rewrite {
+                replacement: sample.to_owned(),
+            },
+        )],
+    };
+    let compact = ApplyEditsService.apply_batch(request).unwrap();
+    let summary = &compact.subject_summaries[0];
+    // Decoded Shift-JIS text is longer in UTF-8 bytes than the raw Shift-JIS input for this
+    // sample -- proves the echoed index cannot be reinterpreting `input_byte_count`/raw bytes.
+    assert_ne!(summary.original_text_string_index, OPTIONAL_SENTINEL);
+    assert_eq!(summary.input_byte_count, raw_len as u64);
+    let string_start = usize::try_from(summary.string_start).unwrap();
+    let index = usize::try_from(summary.original_text_string_index).unwrap();
+    assert!(index >= string_start);
+    let row = &compact.string_range_words[(index - string_start) * STRING_RANGE_STRIDE
+        ..(index - string_start) * STRING_RANGE_STRIDE + STRING_RANGE_STRIDE];
+    let (start, end) = (row[0] as usize, row[1] as usize);
+    let echoed = std::str::from_utf8(&compact.utf8_blob[start..end]).unwrap();
+    assert_eq!(echoed, sample);
 }

@@ -29,7 +29,33 @@ package struct RustApplyEditsComputer: ApplyEditsComputing {
             verbose: request.verbose,
             includeToolCardUnifiedDiff: options.includeToolCardUnifiedDiff
         )
+        return try await Self.run(subject, applyOperation: applyOperation)
+    }
 
+    /// TD-3 §6.1/round-2 Finding F2: additive raw-bytes path used only by hosts conforming to
+    /// `RawBytesFileEditHost` (ladder 6, `DirectHeadlessFileEditHost`). `rawBytes` is genuinely
+    /// raw, possibly-non-UTF-8 disk bytes; Rust's apply-edits handler calls `textdecode()`
+    /// internally as its first step -- the existing `original: String`-based path above (which
+    /// GUI apply-edits depends on) is untouched.
+    package func apply(
+        request: ApplyEditsRequest,
+        toRawBytes rawBytes: Data,
+        options: ApplyEditsExecutionOptions
+    ) async throws -> ApplyEditsResult {
+        let subject = CoreApplyEditsSubjectRequestV1(
+            pathLabel: request.path,
+            rawBytes: rawBytes,
+            mode: Self.coreMode(request.mode),
+            verbose: request.verbose,
+            includeToolCardUnifiedDiff: options.includeToolCardUnifiedDiff
+        )
+        return try await Self.run(subject, applyOperation: applyOperation)
+    }
+
+    private static func run(
+        _ subject: CoreApplyEditsSubjectRequestV1,
+        applyOperation: ApplyOperation
+    ) async throws -> ApplyEditsResult {
         do {
             let result = try await applyOperation(.init(subjects: [subject]))
             guard result.subjects.count == 1, let subject = result.subjects.first else {
@@ -38,6 +64,8 @@ package struct RustApplyEditsComputer: ApplyEditsComputing {
             return Self.materialize(subject)
         } catch let error as ApplyEditsError {
             throw error
+        } catch let error as CoreApplyEditsLossyDecodeBlocksWriteBackError {
+            throw ApplyEditsError.lossyDecodeBlocksWriteBack(error.message)
         } catch let error as CoreComputeError {
             switch error {
             case let .invalidRequest(message):

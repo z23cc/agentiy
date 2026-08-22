@@ -395,6 +395,8 @@ private extension CodeMapSourceDecoderPolicy {
         switch self {
         case .workspaceAutomaticV1:
             "workspace-automatic-v1"
+        case .workspaceAutomaticV2:
+            "workspace-automatic-v2"
         #if DEBUG
             case .testOnlyMismatch:
                 "test-only-mismatch"
@@ -406,6 +408,8 @@ private extension CodeMapSourceDecoderPolicy {
         switch canonicalID {
         case "workspace-automatic-v1":
             self = .workspaceAutomaticV1
+        case "workspace-automatic-v2":
+            self = .workspaceAutomaticV2
         #if DEBUG
             case "test-only-mismatch":
                 self = .testOnlyMismatch

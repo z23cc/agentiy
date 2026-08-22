@@ -36,6 +36,12 @@ pub struct CompactSubjectSummary {
     pub note_string_index: u64,
     pub unified_diff_string_index: u64,
     pub tool_card_diff_string_index: u64,
+    /// TD-3 §6.1: populated (a real blob string index) only for `Raw`-source subjects, where the
+    /// buffer `byte_edit_words`/`chunk_words` offsets are relative to (`textdecode`'s output) is
+    /// not independently reconstructible Swift-side from the request bytes alone. `OPTIONAL_SENTINEL`
+    /// for `DecodedUtf8` subjects, which keep deriving "original" from the request exactly as before
+    /// -- zero wire-size change for the untouched GUI apply-edits path.
+    pub original_text_string_index: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -77,20 +83,21 @@ impl<'a> SubjectEncoder<'a> {
 }
 
 pub fn encode_compact_batch(
-    subjects: &[(&[u8], &ApplyResult)],
+    subjects: &[(&[u8], Option<&str>, &ApplyResult)],
 ) -> Result<CompactBatchResult, String> {
     let mut batch = CompactBatchResult::default();
-    for (original, result) in subjects {
+    for (original, original_text_echo, result) in subjects {
         let byte_edit_start = batch.byte_edit_words.len() / BYTE_EDIT_STRIDE;
         let chunk_start = batch.chunk_words.len() / CHUNK_STRIDE;
         let diff_line_start = batch.diff_line_words.len() / DIFF_LINE_STRIDE;
         let outcome_start = batch.outcome_words.len() / OUTCOME_STRIDE;
         let blob_start = batch.utf8_blob.len();
         let string_start = batch.string_range_words.len() / STRING_RANGE_STRIDE;
-        let (updated_text_index, note_index, unified_index, tool_card_index);
+        let (updated_text_index, note_index, unified_index, tool_card_index, original_text_index);
         {
             let mut encoder = SubjectEncoder { batch: &mut batch };
             updated_text_index = encoder.string(&result.updated_text)?;
+            original_text_index = encoder.optional_string(*original_text_echo)?;
             for edit in &result.byte_edits {
                 encoder.batch.byte_edit_words.extend([
                     word(edit.old_start)?,
@@ -166,6 +173,7 @@ pub fn encode_compact_batch(
             note_string_index: note_index,
             unified_diff_string_index: unified_index,
             tool_card_diff_string_index: tool_card_index,
+            original_text_string_index: original_text_index,
         });
     }
     Ok(batch)

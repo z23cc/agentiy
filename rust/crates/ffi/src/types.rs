@@ -792,6 +792,9 @@ impl FolderSuffixRequest {
 pub enum CoreCodeMapSourceKindV1 {
     Decoded,
     DecodeFailedUndecodable,
+    /// TD-3 (design §6.1): `source_utf8` carries genuinely raw, possibly-non-UTF-8 bytes;
+    /// `textdecode` (never fails) runs as codemap's first step instead of a strict UTF-8 check.
+    Raw,
 }
 
 impl From<CoreCodeMapSourceKindV1> for runtime::codemap::CodeMapSourceKind {
@@ -799,6 +802,7 @@ impl From<CoreCodeMapSourceKindV1> for runtime::codemap::CodeMapSourceKind {
         match value {
             CoreCodeMapSourceKindV1::Decoded => Self::Decoded,
             CoreCodeMapSourceKindV1::DecodeFailedUndecodable => Self::DecodeFailedUndecodable,
+            CoreCodeMapSourceKindV1::Raw => Self::Raw,
         }
     }
 }
@@ -973,10 +977,31 @@ impl From<CoreApplyEditsOperationV1> for runtime::apply_edits::ApplyOperation {
     }
 }
 
+/// TD-3 §6.1/F2: `DecodedUtf8` is the existing, GUI-apply-edits-depended-upon path --
+/// `original_utf8` is already-decoded UTF-8 text bytes, strictly re-validated Rust-side
+/// (unchanged). `Raw` is the additive ladder-6 (headless `agentry-mcp`, D-6) construction path --
+/// `original_utf8` carries genuinely raw disk bytes; `textdecode` runs as apply-edits' first
+/// step, preserving the single-FFI-crossing shape (design §6.1, round-2 Finding F2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreApplyEditsSourceKindV1 {
+    DecodedUtf8,
+    Raw,
+}
+
+impl From<CoreApplyEditsSourceKindV1> for runtime::apply_edits::ApplySourceKind {
+    fn from(value: CoreApplyEditsSourceKindV1) -> Self {
+        match value {
+            CoreApplyEditsSourceKindV1::DecodedUtf8 => Self::DecodedUtf8,
+            CoreApplyEditsSourceKindV1::Raw => Self::Raw,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreApplyEditsSubjectRequestV1 {
     pub path_label: String,
     pub original_utf8: Vec<u8>,
+    pub source_kind: CoreApplyEditsSourceKindV1,
     pub mode_tag: u64,
     pub rewrite_replacement: Option<String>,
     pub operations: Vec<CoreApplyEditsOperationV1>,
@@ -1020,6 +1045,7 @@ impl CoreApplyEditsSubjectRequestV1 {
         Ok(runtime::apply_edits::ApplySubjectRequest {
             path_label: self.path_label,
             original: self.original_utf8,
+            source_kind: self.source_kind.into(),
             mode,
             verbose: self.verbose,
             include_tool_card_unified_diff: self.include_tool_card_unified_diff,
@@ -1076,6 +1102,7 @@ pub struct CoreCompactApplyEditsSubjectSummaryV1 {
     pub note_string_index: u64,
     pub unified_diff_string_index: u64,
     pub tool_card_diff_string_index: u64,
+    pub original_text_string_index: u64,
 }
 
 impl From<runtime::apply_edits::CompactSubjectSummary> for CoreCompactApplyEditsSubjectSummaryV1 {
@@ -1105,6 +1132,7 @@ impl From<runtime::apply_edits::CompactSubjectSummary> for CoreCompactApplyEdits
             note_string_index: value.note_string_index,
             unified_diff_string_index: value.unified_diff_string_index,
             tool_card_diff_string_index: value.tool_card_diff_string_index,
+            original_text_string_index: value.original_text_string_index,
         }
     }
 }

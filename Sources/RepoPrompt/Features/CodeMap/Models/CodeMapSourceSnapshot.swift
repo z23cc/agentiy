@@ -29,7 +29,8 @@ struct CodeMapSourceSnapshot {
             rawByteCount: rawByteCount,
             rawSHA256: rawSHA256,
             decoderPolicy: decoderPolicy,
-            decodeResult: decodeResult
+            decodeResult: decodeResult,
+            rawBytes: rawBytes
         )
     }
 
@@ -76,8 +77,13 @@ struct CodeMapSourceSnapshot {
         rawByteCount = data.count
         rawSHA256 = CodeMapRawSourceDigest(bytes: Data(SHA256.hash(data: data)))
         self.decoderPolicy = decoderPolicy
+        // TD-3 §6.1: `RustCodeMapArtifactBuilder` ignores `decodeResult` entirely for
+        // `.workspaceAutomaticV2` in favor of `rawBytes` -- Rust decodes via `textdecode()`
+        // instead. `decodeResult` is still populated identically to `.workspaceAutomaticV1`
+        // here (Cuchardet stays live until TD-6) so non-codemap-wire consumers of this type
+        // (e.g. any future encoding-label read) keep a real value rather than a placeholder.
         decodeResult = switch decoderPolicy {
-        case .workspaceAutomaticV1:
+        case .workspaceAutomaticV1, .workspaceAutomaticV2:
             Self.decodeWorkspaceAutomatic(data)
         #if DEBUG
             case .testOnlyMismatch:

@@ -148,7 +148,7 @@ actor DirectHeadlessFilesystemBackend: DomainFilesystemMutationBackend {
     }
 }
 
-private actor DirectHeadlessFileEditHost: FileEditHost {
+private actor DirectHeadlessFileEditHost: FileEditHost, RawBytesFileEditHost {
     private let target: URL
     private let rootMappings: [DomainMutationPhysicalRootMapping]
     private var expectedDigest: String?
@@ -168,6 +168,30 @@ private actor DirectHeadlessFileEditHost: FileEditHost {
         return exists
     }
 
+    /// TD-3 §6.1/D-6 (design `docs/designs/textdecode-policy-v2-2026-08-22.md`): the
+    /// `RawBytesFileEditHost` conformance `ApplyEditsService` prefers over `readText` below.
+    /// Hands genuinely raw, undecoded disk bytes to `RustApplyEditsComputer`'s raw-bytes
+    /// construction path so Rust's apply-edits handler runs `textdecode()` as its own first
+    /// step -- a legacy-charset file that decodes cleanly now opens/edits successfully instead
+    /// of hard-rejecting (D-6); a genuinely-unmappable one is refused via
+    /// `ApplyEditsError.lossyDecodeBlocksWriteBack` (§5.3.1 mechanism 2), surfaced once Rust's
+    /// response comes back -- there is no local Swift decode step left to gate at read time.
+    func readRawBytes(path: String) async throws -> Data {
+        guard path == target.path else {
+            throw MCPError.invalidParams("apply_edits host rejected a non-target path")
+        }
+        let data = try Data(contentsOf: target)
+        expectedDigest = DomainContentDigest.sha256(data)
+        expectedMissing = false
+        return data
+    }
+
+    /// Retained to satisfy `FileEditHost` conformance (`ApplyEditsService.host` is typed
+    /// `FileEditHost`); dead in production once `readRawBytes` above is preferred for every
+    /// apply-edits call through this host (TD-3 §6.1). Kept UTF-8-strict rather than removed,
+    /// since a future non-apply-edits caller of this host through the `FileEditHost` contract
+    /// should not silently inherit `.raw`'s lossy-decode semantics without going through the
+    /// `ApplyEditsComputing` raw-bytes path explicitly.
     func readText(path: String) async throws -> String {
         guard path == target.path else {
             throw MCPError.invalidParams("apply_edits host rejected a non-target path")

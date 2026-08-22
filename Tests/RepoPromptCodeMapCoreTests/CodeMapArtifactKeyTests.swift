@@ -189,7 +189,12 @@ final class CodeMapArtifactKeyTests: XCTestCase {
             XCTAssertNotEqual(key.storageDigest, baselineKey.storageDigest, name)
         }
 
-        let alternateDecoderBytes = referencePipelineBytes(baseline, decoderPolicyID: "workspace-automatic-v2")
+        // TD-3 (design §5.4/§10 R4) lands the real `.workspaceAutomaticV2` policy case, so this
+        // sentinel can no longer be "workspace-automatic-v2" -- that string is now a genuine,
+        // valid canonical ID, not a foreign one. R4's own mitigation ("TD-1 renames the sentinel
+        // before TD-3 lands the real policy case") did not land at TD-1; done here instead,
+        // immediately before the collision would otherwise occur.
+        let alternateDecoderBytes = referencePipelineBytes(baseline, decoderPolicyID: "workspace-automatic-zzz-nonexistent")
         XCTAssertNotEqual(alternateDecoderBytes, baseline.canonicalBytes)
         let alternateDecoderKeyBytes = referenceKeyBytes(
             rawDigest: source.rawSHA256.bytes,
@@ -425,6 +430,7 @@ final class CodeMapArtifactKeyTests: XCTestCase {
     private func referenceDecoderPolicyID(_ policy: CodeMapSourceDecoderPolicy) -> String {
         switch policy {
         case .workspaceAutomaticV1: "workspace-automatic-v1"
+        case .workspaceAutomaticV2: "workspace-automatic-v2"
         #if DEBUG
             case .testOnlyMismatch: "test-only-mismatch"
         #endif
@@ -521,7 +527,8 @@ final class CodeMapArtifactKeyTests: XCTestCase {
                     text: text,
                     detectedEncodingRawValue: String.Encoding.utf8.rawValue
                 )
-            )
+            ),
+            rawBytes: data
         )
     }
 

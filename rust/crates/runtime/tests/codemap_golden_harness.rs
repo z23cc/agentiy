@@ -126,6 +126,72 @@ fn codemap_golden_all_thirteen_languages() {
     }
 }
 
+// -------------------------------------------------------------------------------------------
+// TD-3 R7 (design `docs/designs/textdecode-policy-v2-2026-08-22.md` §6.2/§10): a UTF-8-BOM
+// source file run through the full codemap artifact pipeline, not just decode. Before this
+// migration, no BOM byte ever reached `rust/crates/runtime/src/codemap/` -- ladder 1's strict-
+// UTF-8 fast path silently stripped it before codemap ever saw the string. `CodeMapSourceKind::
+// Raw` (TD-3 §6.1) is the first time a leading U+FEFF scalar reaches tree-sitter here. This
+// proves symbol extraction is unaffected -- same functions/classes/line numbers as the non-BOM
+// artifact -- not merely that decode is byte-correct (which `textdecode`'s own TD-2 fixtures
+// already cover).
+// -------------------------------------------------------------------------------------------
+
+#[test]
+fn codemap_utf8_bom_prefixed_source_produces_the_same_symbols_as_the_non_bom_source_r7() {
+    let fixture = &FIXTURES[3]; // Swift smoke fixture -- real-language source, not synthetic.
+    let plain_source = fs::read(
+        repo_root()
+            .join("Tests/RepoPromptCodeMapCoreTests/Fixtures")
+            .join(fixture.relative),
+    )
+    .unwrap();
+    let plain = match build_subject(&CodeMapSubjectRequestV1 {
+        language_id: fixture.language.id(),
+        source_kind: CodeMapSourceKind::Decoded,
+        source_utf8: plain_source.clone(),
+    })
+    .unwrap()
+    {
+        SubjectOutcome::Ready(value) => value,
+        outcome => panic!("unexpected non-BOM outcome: {outcome:?}"),
+    };
+
+    let mut bom_prefixed = vec![0xEFu8, 0xBB, 0xBF];
+    bom_prefixed.extend_from_slice(&plain_source);
+    let bom = match build_subject(&CodeMapSubjectRequestV1 {
+        language_id: fixture.language.id(),
+        source_kind: CodeMapSourceKind::Raw,
+        source_utf8: bom_prefixed,
+    })
+    .unwrap()
+    {
+        SubjectOutcome::Ready(value) => value,
+        outcome => panic!("unexpected BOM outcome: {outcome:?}"),
+    };
+
+    assert!(!plain.functions.is_empty(), "fixture must exercise at least one function");
+    // Characterized, not assumed: D-5 (design §9) mandates BOM preservation, so the raw text of
+    // whatever token captures line 1 keeps its leading U+FEFF -- here, the first `import`. This
+    // is the *only* place the BOM surfaces in the artifact; it is not a position shift or a
+    // corrupted/missing symbol (every other assertion below is byte-for-byte identical), so it
+    // is not the R7 failure mode this fixture exists to catch, but it is a real, deterministic
+    // divergence that must be asserted explicitly rather than assumed away.
+    assert_eq!(plain.imports.len(), bom.imports.len());
+    assert_eq!(bom.imports[0], format!("\u{FEFF}{}", plain.imports[0]));
+    assert_eq!(&plain.imports[1..], &bom.imports[1..]);
+    assert_eq!(plain.exports, bom.exports);
+    assert_eq!(plain.classes, bom.classes);
+    assert_eq!(plain.interfaces, bom.interfaces);
+    assert_eq!(plain.functions, bom.functions, "BOM must not shift function line numbers/signatures");
+    assert_eq!(plain.enums, bom.enums);
+    assert_eq!(plain.global_vars, bom.global_vars);
+    assert_eq!(plain.aliases, bom.aliases);
+    assert_eq!(plain.literal_unions, bom.literal_unions);
+    assert_eq!(plain.macros, bom.macros);
+    assert_eq!(plain.referenced_types, bom.referenced_types);
+}
+
 #[test]
 fn codemap_capture_all_thirteen_languages() {
     for fixture in &FIXTURES {

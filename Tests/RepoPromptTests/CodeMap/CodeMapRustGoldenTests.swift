@@ -175,7 +175,8 @@ final class CodeMapRustGoldenTests: XCTestCase {
             decoderPolicy: .workspaceAutomaticV1,
             decodeResult: .decoded(
                 CodeMapDecodedSource(text: content, detectedEncodingRawValue: String.Encoding.utf8.rawValue)
-            )
+            ),
+            rawBytes: data
         )
     }
 }
