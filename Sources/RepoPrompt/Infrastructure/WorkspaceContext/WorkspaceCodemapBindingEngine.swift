@@ -4096,7 +4096,7 @@ actor WorkspaceCodemapBindingEngine {
             else { return .transient }
             incrementCounter(\.validatedWorktreeReads)
             addToCounter(\.validatedWorktreeBytes, UInt64(validated.data.count))
-            let source = CodeMapSourceSnapshot(validatedContent: validated)
+            let source = CodeMapSourceSnapshot(validatedContent: validated, decoderPolicy: .workspaceAutomaticV2)
             guard let input = try? CodeMapArtifactBuildInput(source: source, language: candidate.language) else {
                 return .transient
             }
@@ -7239,7 +7239,7 @@ actor WorkspaceCodemapBindingEngine {
         guard let current = currentRequest(requestID) else { throw CancellationError() }
         incrementCounter(\.validatedWorktreeReads)
         addToCounter(\.validatedWorktreeBytes, UInt64(validated.data.count))
-        let source = CodeMapSourceSnapshot(validatedContent: validated)
+        let source = CodeMapSourceSnapshot(validatedContent: validated, decoderPolicy: .workspaceAutomaticV2)
         let input: CodeMapArtifactBuildInput
         do {
             input = try CodeMapArtifactBuildInput(source: source, language: current.demand.language)
@@ -7643,7 +7643,7 @@ actor WorkspaceCodemapBindingEngine {
             blobOID: locator.blobOID
         )
         let byteCount = UInt64(validated.rawBytes.count)
-        let source = CodeMapSourceSnapshot(validatedGitBlob: validated)
+        let source = CodeMapSourceSnapshot(validatedGitBlob: validated, decoderPolicy: .workspaceAutomaticV2)
         let input = try CodeMapArtifactBuildInput(
             source: source,
             language: language,
