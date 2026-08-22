@@ -28,6 +28,7 @@ use super::generation::RootGeneration;
 use super::identity_maps::IdentityMaps;
 use super::ids::{GenerationToken, RootId, RootLifetimeId};
 use super::ingress_gate::IngressGateState;
+use super::path_index::{BuildKind, RootPathIndex};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RootCounters {
@@ -43,6 +44,13 @@ pub struct RootCounters {
     /// see `diagnostics.rs`'s module doc comment for why it is carried despite §5c's prose table
     /// omitting it. The observed maximum of (published ? 1 : 0) + retained-generation count.
     pub max_live_generation_count: u64,
+    /// P4-3b: incremented on every `.full`-build-kind publish, mirroring
+    /// `rootCatalogShardFullPathIndexBuildCountsByRootID` (`WorkspaceFileContextStore.swift:7608-7610`).
+    pub path_index_build_count: u64,
+    /// P4-3b: incremented on every `.overlay`- or `.projectedReuse`-build-kind publish, mirroring
+    /// `rootCatalogShardOverlayPathIndexBuildCountsByRootID` (`:7611-7614`; both kinds share one
+    /// counter in the Swift source -- `.reused` increments neither, per `:7615-7616`).
+    pub overlay_path_index_build_count: u64,
 }
 
 impl RootCounters {
@@ -152,6 +160,14 @@ impl RootState {
         } else {
             self.counters.delta_state_dirty = false;
             self.counters.published_topology_generation = Some(generation_number);
+        }
+
+        match generation.path_index.build_kind() {
+            BuildKind::Full => self.counters.path_index_build_count += 1,
+            BuildKind::Overlay | BuildKind::ProjectedReuse => {
+                self.counters.overlay_path_index_build_count += 1;
+            }
+            BuildKind::Reused => {}
         }
 
         let published = Arc::new(generation);
@@ -327,6 +343,17 @@ pub fn attempt_patch(
         .map(|file| InventorySearchCatalogEntry::new(file, &root_record))
         .collect();
 
+    // P4-3b: the index is built from `published.path_index` (the *previous* generation's own
+    // published index -- scope-internal state) plus `entries` (this generation's own, freshly
+    // computed, already-in-hand output) and `patch.path_index_changed_file_ids` (the same patch
+    // attempt's own output) -- never from `root.maps`/`files_by_id` or any other table. See
+    // `path_index`'s module doc comment for the build-kind -> trigger table this implements.
+    let path_index = Arc::new(
+        published
+            .path_index
+            .applying_patch(&entries, &patch.path_index_changed_file_ids),
+    );
+
     PatchAttempt::Patched(RootGeneration {
         root_id: root.root_id,
         root_lifetime: root.root_lifetime,
@@ -335,6 +362,7 @@ pub fn attempt_patch(
         files: patch.files,
         folders: patch.folders,
         entries,
+        path_index,
     })
 }
 
@@ -377,6 +405,9 @@ pub fn rebuild_generation(input: &RebuildInput) -> Result<RootGeneration, Invent
         &input.managed_only_file_ids,
         &input.managed_only_folder_ids,
     )?;
+    // P4-3b: `.full` build kind -- a fresh index over exactly this rebuild's own `entries`
+    // output, no table-shaped input (see `path_index`'s module doc comment).
+    let path_index = Arc::new(RootPathIndex::full(&components.entries));
     Ok(RootGeneration {
         root_id: input.root_record.id,
         root_lifetime: input.root_lifetime,
@@ -385,5 +416,6 @@ pub fn rebuild_generation(input: &RebuildInput) -> Result<RootGeneration, Invent
         files: components.files,
         folders: components.folders,
         entries: components.entries,
+        path_index,
     })
 }

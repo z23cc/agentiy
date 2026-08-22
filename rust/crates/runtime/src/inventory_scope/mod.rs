@@ -12,10 +12,13 @@
 //!
 //! **Explicitly out of scope for this step** (owned by later steps, not this one -- see the
 //! design's migration-order DAG, §11): the `inventory-scope-v1` wire codec, the FFI/bridge
-//! surface, `inventoryQuery`/`inventoryOpenProjectedShard`/`inventoryResolveRecords`, event-plane
-//! publication into `SubscriptionHub`, and the index/path-search orchestration (P4-3b). Zero FFI
-//! dependency: this module imports nothing from `uniffi` or the `ffi` crate, and `lib.rs` adds
-//! only its module line.
+//! surface, `inventoryQuery`/`inventoryOpenProjectedShard`/`inventoryResolveRecords`, and
+//! event-plane publication into `SubscriptionHub`. Zero FFI dependency: this module imports
+//! nothing from `uniffi` or the `ffi` crate, and `lib.rs` adds only its module line.
+//!
+//! **P4-3b landed in this module** (index orchestration into the scope, cargo-only): the
+//! `path_index` submodule, welded onto `RootGeneration` and wired through
+//! `state_machine::attempt_patch`/`rebuild_generation` per §4.1.0's co-location invariant.
 //!
 //! Module map:
 //! - `ids`: explicit typed identifiers + the UUID minter (production + seeded-for-test modes).
@@ -29,6 +32,7 @@
 //! - `state_machine`: `RootState` (generation/publish bookkeeping, diagnostics counters) and the
 //!   pure patch-attempt / rebuild functions the scope orchestrates around its lock boundaries.
 //! - `delta`: `InventoryDeltaCommand` / `InventoryDeltaReceipt`.
+//! - `path_index`: P4-3b's per-root path search index orchestration, welded onto `RootGeneration`.
 //! - `diagnostics`: `InventoryDiagnosticsV1` and its field-for-field Swift parity mapping.
 //! - `scope`: `InventoryScope`, the `Mutex<ScopeState>`-owning orchestrator and its public API.
 //! - `registry`: `ScopeRegistry`, the ID-addressed holder of `InventoryScope` instances.
@@ -50,6 +54,7 @@ pub mod handles;
 pub mod identity_maps;
 pub mod ids;
 pub mod ingress_gate;
+pub mod path_index;
 pub mod registry;
 pub mod scope;
 pub mod state_machine;
@@ -66,6 +71,10 @@ pub use identity_maps::IdentityMaps;
 pub use ids::{
     BulkLoadId, GenerationToken, InventoryScopeId, RootId, RootLifetimeId, SnapshotHandleId,
     UuidMinter,
+};
+pub use path_index::{
+    BuildKind, OverlayHistoryMetrics, PathIndexCandidate, ProjectedPathIndex, RelativePathBase,
+    RootPathIndex,
 };
 pub use registry::{ScopeRegistry, ScopeRegistryError};
 pub use scope::{

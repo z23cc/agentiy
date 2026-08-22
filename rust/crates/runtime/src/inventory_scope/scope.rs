@@ -5,12 +5,15 @@
 //! `state_machine`'s module doc comment for the flagged reading of "expensive work" for the
 //! rebuild path specifically).
 //!
-//! **Scope discipline, per this step's exit criteria:** this module implements exactly the plain
-//! Rust surface P4-3a's done-when names -- open/close scope+root, apply delta, bulk load
+//! **Scope discipline, per P4-3a's exit criteria:** this module implements the plain Rust surface
+//! P4-3a's done-when names -- open/close scope+root, apply delta, bulk load
 //! begin/push/commit/abort, snapshot open/page/close, diagnostics. It does not implement
 //! `inventoryQuery`, `inventoryOpenProjectedShard`, `inventoryResolveRecords`, the wire codec, or
-//! event-plane publication into `SubscriptionHub` -- those are P4-3b's (index orchestration) and
-//! P4-4's (FFI + bridge) exit criteria, not this one's.
+//! event-plane publication into `SubscriptionHub` -- those remain P4-4's (FFI + bridge) exit
+//! criteria. **P4-3b lands in this module too:** `apply_delta`/`rebuild_and_install` publish a
+//! `RootGeneration` whose `path_index` field (see `generation.rs`/`path_index`'s module doc
+//! comments) is built by `state_machine::attempt_patch`/`rebuild_generation`, not by this file --
+//! this file only orchestrates *when* those functions run, unchanged from P4-3a.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -673,8 +676,8 @@ impl InventoryScope {
                     live_topology_generations: root.live_topology_generations(),
                     retained_topology_generations: root.retained_topology_generations(),
                     build_count: root.counters.build_count,
-                    path_index_build_count: 0, // P4-3b's scope (index orchestration), flagged
-                    overlay_path_index_build_count: 0, // P4-3b's scope, flagged
+                    path_index_build_count: root.counters.path_index_build_count,
+                    overlay_path_index_build_count: root.counters.overlay_path_index_build_count,
                     patch_count: root.counters.patch_count,
                     authoritative_rebuild_count: root.counters.authoritative_rebuild_count,
                     fallback_count: root.counters.fallback_count,
@@ -703,7 +706,10 @@ impl InventoryScope {
                     .values()
                     .map(|root| root.counters.backstop_count)
                     .sum(),
-                // P4-3b's scope (index/merge orchestration is not built in this step); flagged.
+                // Multi-root snapshot composition (design §4.1 item 7 -- k-way merge across
+                // roots, distinct from this step's per-root index orchestration): not built by
+                // any landed step yet; flagged for whichever later step adds multi-root snapshot
+                // composition (P4-4's read surface or beyond).
                 single_shard_composition_reuse_count: 0,
                 generic_merge_element_visit_count: 0,
                 // No shadow arm exists at P4-3a (P4-5's job); the self-check testing hook below
@@ -751,6 +757,24 @@ impl InventoryScope {
     #[must_use]
     pub fn testing_is_parked_on_rebuild_barrier(&self) -> bool {
         self.parked_on_rebuild_barrier.load(Ordering::SeqCst)
+    }
+
+    /// P4-3b testing accessor: the currently published generation's path search index, for
+    /// build-kind and ordered-candidate coverage. Not part of the read plane proper --
+    /// `inventoryQuery`'s real FFI-facing shape is P4-4's job (§5.3); this is a direct `Arc` clone
+    /// used only by this crate's own tests.
+    #[must_use]
+    pub fn testing_published_path_index(
+        &self,
+        root_id: RootId,
+    ) -> Option<Arc<super::path_index::RootPathIndex>> {
+        self.with_state(|state| {
+            state
+                .roots
+                .get(&root_id)
+                .and_then(|root| root.published.as_ref())
+                .map(|generation| Arc::clone(&generation.path_index))
+        })
     }
 
     /// Marks a file managed-only (or clears that mark) directly against a root's identity maps,
