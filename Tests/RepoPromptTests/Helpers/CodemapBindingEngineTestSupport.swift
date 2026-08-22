@@ -43,7 +43,7 @@ class CodemapBindingEngineTestCase: XCTestCase {
         }
         let pipeline = try SyntaxManager.shared.pipelineIdentity(
             for: .swift,
-            decoderPolicy: .workspaceAutomaticV1
+            decoderPolicy: .workspaceAutomaticV2
         )
         let namespace = try CodeMapRootManifestNamespace(
             capability: capability,
@@ -113,7 +113,7 @@ class CodemapBindingEngineTestCase: XCTestCase {
         let capability = try await eligible(fixture.capabilityService.state(for: fixture.rootEpoch))
         let pipeline = try SyntaxManager.shared.pipelineIdentity(
             for: .swift,
-            decoderPolicy: .workspaceAutomaticV1
+            decoderPolicy: .workspaceAutomaticV2
         )
         let namespace = try CodeMapRootManifestNamespace(
             capability: capability,

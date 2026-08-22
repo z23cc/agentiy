@@ -437,7 +437,7 @@ final class CodemapBindingEngineInvalidationTests: CodemapBindingEngineTestCase 
         let capability = try eligible(state)
         let pipeline = try SyntaxManager.shared.pipelineIdentity(
             for: .swift,
-            decoderPolicy: .workspaceAutomaticV1
+            decoderPolicy: .workspaceAutomaticV2
         )
         let namespace = try CodeMapRootManifestNamespace(
             capability: capability,

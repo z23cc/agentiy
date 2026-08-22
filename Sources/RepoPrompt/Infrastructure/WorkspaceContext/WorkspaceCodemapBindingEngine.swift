@@ -6585,7 +6585,7 @@ actor WorkspaceCodemapBindingEngine {
         guard SyntaxManager.shared.language(forFileExtension: fileExtension) == request.language,
               let pipelineIdentity = try? SyntaxManager.shared.pipelineIdentity(
                   for: request.language,
-                  decoderPolicy: .workspaceAutomaticV1
+                  decoderPolicy: .workspaceAutomaticV2
               ),
               let pipeline = session.pipelines[pipelineIdentity]
         else {
@@ -6682,7 +6682,7 @@ actor WorkspaceCodemapBindingEngine {
         }
         let pipelineIdentity = try SyntaxManager.shared.pipelineIdentity(
             for: language,
-            decoderPolicy: .workspaceAutomaticV1
+            decoderPolicy: .workspaceAutomaticV2
         )
         if let existing = session.pipelines[pipelineIdentity] {
             guard existing.language == language else {

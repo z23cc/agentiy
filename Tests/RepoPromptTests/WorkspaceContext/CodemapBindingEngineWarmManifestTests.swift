@@ -89,7 +89,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
         ))
         let seedPipeline = try SyntaxManager.shared.pipelineIdentity(
             for: .swift,
-            decoderPolicy: .workspaceAutomaticV1
+            decoderPolicy: .workspaceAutomaticV2
         )
         let seedNamespace = try CodeMapRootManifestNamespace(
             capability: seedCapability,
@@ -1251,7 +1251,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
         let secondCapability = try await eligible(second.capabilityService.state(for: second.rootEpoch))
         let pipeline = try SyntaxManager.shared.pipelineIdentity(
             for: .swift,
-            decoderPolicy: .workspaceAutomaticV1
+            decoderPolicy: .workspaceAutomaticV2
         )
         let firstNamespace = try CodeMapRootManifestNamespace(
             capability: firstCapability,

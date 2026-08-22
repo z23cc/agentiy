@@ -634,7 +634,7 @@
             ))
             let pipelineIdentity = try SyntaxManager.shared.pipelineIdentity(
                 for: .swift,
-                decoderPolicy: .workspaceAutomaticV1
+                decoderPolicy: .workspaceAutomaticV2
             )
             let namespace = try CodeMapRootManifestNamespace(
                 capability: capability,
@@ -731,7 +731,7 @@
             ))
             let pipelineIdentity = try SyntaxManager.shared.pipelineIdentity(
                 for: .swift,
-                decoderPolicy: .workspaceAutomaticV1
+                decoderPolicy: .workspaceAutomaticV2
             )
             let namespace = try CodeMapRootManifestNamespace(
                 capability: capability,
@@ -801,7 +801,7 @@
             ))
             let pipelineIdentity = try SyntaxManager.shared.pipelineIdentity(
                 for: .swift,
-                decoderPolicy: .workspaceAutomaticV1
+                decoderPolicy: .workspaceAutomaticV2
             )
             let namespace = try CodeMapRootManifestNamespace(
                 capability: capability,
@@ -1182,7 +1182,7 @@
             ))
             let pipelineIdentity = try SyntaxManager.shared.pipelineIdentity(
                 for: .swift,
-                decoderPolicy: .workspaceAutomaticV1
+                decoderPolicy: .workspaceAutomaticV2
             )
             let namespace = try CodeMapRootManifestNamespace(
                 capability: capability,

@@ -66,14 +66,14 @@ final class CodemapBindingEnginePipelineTests: CodemapBindingEngineTestCase {
             capability: capability,
             pipelineIdentity: SyntaxManager.shared.pipelineIdentity(
                 for: .swift,
-                decoderPolicy: .workspaceAutomaticV1
+                decoderPolicy: .workspaceAutomaticV2
             )
         )
         let typeScriptNamespace = try CodeMapRootManifestNamespace(
             capability: capability,
             pipelineIdentity: SyntaxManager.shared.pipelineIdentity(
                 for: .ts,
-                decoderPolicy: .workspaceAutomaticV1
+                decoderPolicy: .workspaceAutomaticV2
             )
         )
         XCTAssertNotEqual(swiftNamespace.storageDigestHex, typeScriptNamespace.storageDigestHex)
