@@ -836,6 +836,7 @@ allowed_tracked_docs=(
   "docs/architecture/rust-apply-edits-compact-v1.md"
   "docs/architecture/rust-codemap-compact-v1.md"
   "docs/architecture/rust-ffi.md"
+  "docs/architecture/rust-inventory-scope-v1.md"
   "docs/architecture/rust-search-leaf-v1.md"
   "docs/architecture/rust-search-parity-v1.md"
   "docs/architecture/rust-search-utf16-inventory-v1.md"
@@ -878,6 +879,35 @@ unexpected_tracked_docs="$(comm -23 \
 if [[ -n "$unexpected_tracked_docs" ]]; then
   fail "unexpected tracked docs found; keep agent-authored working documents local or add durable docs to the explicit allowlist"
   printf '%s\n' "$unexpected_tracked_docs" >&2
+fi
+
+# 9. P4-1 inventory-authority binding constraints (rust-inventory-scope-v1.md §1.1/§1.2
+# of docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md): the inventory
+# tables are purely in-memory (no durable artifact, charter gate 4 does not bind P4)
+# and the authority lives in exactly one GUI-process scope (charter gate 5 is GUI-only,
+# headless never reads it). Both are asserted here so neither exemption can silently
+# expire as the cutover proceeds.
+print_matches \
+  "inventory authority must not introduce a durable-artifact writer (DurableArtifact/persistCatalog/writeCatalog)" \
+  grep -R -n -E 'DurableArtifact|persistCatalog|writeCatalog' \
+    Sources/RepoPrompt/Infrastructure/WorkspaceContext/WorkspaceFileContextStore.swift \
+    Sources/RepoPrompt/Infrastructure/WorkspaceContext/Inventory
+
+print_matches \
+  "headless RepoPromptMCP must not reference the GUI-only inventory authority (WorkspaceFileContextStore/InventoryScope)" \
+  grep -R -n -E 'WorkspaceFileContextStore|InventoryScope' \
+    Sources/RepoPromptMCP
+
+# RepoPromptDomainRuntime's P3-2 Rust seam carries one known doc-comment reference
+# naming the store it is not yet wired into (RustInventoryComputer.swift:11); anything
+# beyond that single line is a real regression of the headless-isolation guardrail.
+domain_runtime_inventory_refs="$(grep -R -n -E 'WorkspaceFileContextStore|InventoryScope' \
+  Sources/RepoPromptDomainRuntime 2>/dev/null || true)"
+unexpected_domain_runtime_inventory_refs="$(printf '%s\n' "$domain_runtime_inventory_refs" \
+  | grep -v -F 'RustInventoryComputer.swift:11:' || true)"
+if [[ -n "$unexpected_domain_runtime_inventory_refs" ]]; then
+  fail "RepoPromptDomainRuntime must not reference the GUI-only inventory authority beyond the known RustInventoryComputer.swift:11 doc comment"
+  printf '%s\n' "$unexpected_domain_runtime_inventory_refs" >&2
 fi
 
 if [[ "$failures" -ne 0 ]]; then

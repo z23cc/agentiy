@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "sourceImplementation": "swift-inventory-pre-p4",
+  "capturedFor": "P4-1 contract freeze -- E-1 (single-delta apply) reference arm only, ahead of any Rust InventoryScope candidate",
+  "contractDoc": "docs/architecture/rust-inventory-scope-v1.md",
+  "harness": "Tests/RepoPromptTests/WorkspaceContext/InventoryScopeSwiftBaselineTests.swift",
+  "reproduction": "RP_RUN_INVENTORY_SCOPE_SWIFT_BASELINE=1 make dev-test FILTER=InventoryScopeSwiftBaselineTests",
+  "runner": {
+    "architecture": "aarch64",
+    "target": "arm64-apple-macosx",
+    "compiler": "Apple Swift version 6.4 (swiftlang-6.4.0.20.104 clang-2100.3.20.102)",
+    "profile": "debug",
+    "note": "SPM `swift test` debug build via the coordinated dev-test lane; not the release-profile confirmation run reserved for the final SLO gate (see slo-v1.json performanceIterationPolicy). Numbers here are the P4-1 recon-stage reference, subject to re-capture under release profile before the P4-6b cutover gate."
+  },
+  "warmupIterations": 1,
+  "sampleIterations": 5,
+  "measurements": {
+    "authoritativeBuild": {
+      "description": "WorkspaceInventoryCatalogBuilders.buildAuthoritativeCatalogComponents over N files across 4 roots",
+      "100": {"p50Milliseconds": 2.6764, "p99Milliseconds": 2.7067},
+      "1000": {"p50Milliseconds": 37.2850, "p99Milliseconds": 38.1242},
+      "10000": {"p50Milliseconds": 367.7576, "p99Milliseconds": 385.0088},
+      "100000": {"p50Milliseconds": 4566.3229, "p99Milliseconds": 4570.4891}
+    },
+    "singleDeltaApply": {
+      "description": "WorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch, one file added to N previous files, maxLogicalMutationCount=1 (E-1's kill-criterion reference)",
+      "100": {"p50Milliseconds": 0.0730, "p99Milliseconds": 0.0737},
+      "1000": {"p50Milliseconds": 0.6653, "p99Milliseconds": 0.6715},
+      "10000": {"p50Milliseconds": 6.8503, "p99Milliseconds": 6.9388},
+      "100000": {"p50Milliseconds": 87.8627, "p99Milliseconds": 90.2902}
+    }
+  }
+}

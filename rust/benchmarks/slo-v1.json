@@ -109,5 +109,80 @@
         "transcript"
       ]
     }
+  },
+  "inventoryScopeV1": {
+    "status": "P4-1 contract freeze: absolute SLO caps registered before any Rust InventoryScope candidate exists; relative-gate Swift reference captured for E-1 only, E-1d/E-2/E-4 baselines pending",
+    "contractDoc": "docs/architecture/rust-inventory-scope-v1.md",
+    "designDoc": "docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md",
+    "registeredBeforeCandidateExists": true,
+    "experiments": {
+      "e1DeltaPathViability": {
+        "description": "single-delta apply latency; kill criterion for the whole P4 design (design section 10)",
+        "sizes": [100, 1000, 10000, 100000],
+        "absoluteCapsSmallRoots": {
+          "sizes": [100, 1000],
+          "appliesTo": "rust-candidate-only",
+          "maximumMicroseconds": 50,
+          "p99MaximumMicroseconds": 200
+        },
+        "relativeCapLargeRoots": {
+          "sizes": [10000, 100000],
+          "appliesTo": "rust-candidate-vs-swift-reference",
+          "maximumReferenceRatio": 1.1,
+          "minimumImprovementOverWholeTablePatch": 50,
+          "referenceStatus": "captured"
+        }
+      },
+      "e1dBatchPointLookupCostCurve": {
+        "description": "inventoryResolveRecords (id-keyed) and inventoryLookupPaths (path-keyed) batch cost; evidence-only per design section 10, not gated at P4-1",
+        "idKeyed": {
+          "sizes": [1, 10, 100, 1000],
+          "maximumReferenceRatioAtNGreaterOrEqual100": 1.1,
+          "referenceStatus": "pending"
+        },
+        "pathKeyed": {
+          "sizes": [1, 100, 1000, 10000],
+          "maximumReferenceRatioAtNGreaterOrEqual100": 1.1,
+          "tenThousandPathSessionStartupBudgetMilliseconds": null,
+          "referenceStatus": "pending",
+          "note": "budget corresponds to prepareSessionWorktreeOwnership's manifest walk (design section 4.3.1.2); numeric budget TBD at P4-2"
+        }
+      },
+      "e2ReadEconomicsAndPayloadTruth": {
+        "description": "read-tier wall/CPU/allocation/RSS economics vs today's in-Swift array access, incl. the mention-path suggestion query and the B2 codemap projected-shard page",
+        "relativeCaps": {
+          "rootBootstrapTimeToFirstPaintMaximumReferenceRatio": 1.1,
+          "peakRSSMaximumReferenceRatio": 1.0,
+          "mentionSuggestionQueryAt100kMaximumReferenceRatio": 1.0,
+          "b2ProjectedShardPageWithinMainActorFrameBudget": true
+        },
+        "referenceStatus": "pending"
+      },
+      "e4ApplyReadContentionUnderRebuild": {
+        "description": "reader latency attributable to contention with an in-flight authoritative rebuild on the same root",
+        "absoluteCaps": {
+          "p99AddedReadLatencyMaximumMilliseconds": 1
+        },
+        "referenceStatus": "not-applicable",
+        "note": "no Swift-side equivalent contention model exists to baseline against; this is an absolute cap on the Rust candidate only"
+      }
+    },
+    "swiftBaseline": {
+      "status": "captured",
+      "scope": "E-1 (single-delta apply, all four sizes) only -- see experiments.e1DeltaPathViability",
+      "requiredBefore": ["p4-2-de-risking-experiments-go-no-go-gate"],
+      "requiredMetrics": ["wall-time-p50", "wall-time-p99"],
+      "mayRelaxAbsoluteCaps": false,
+      "harness": "Tests/RepoPromptTests/WorkspaceContext/InventoryScopeSwiftBaselineTests.swift",
+      "environmentGate": "RP_RUN_INVENTORY_SCOPE_SWIFT_BASELINE=1",
+      "reproduction": "RP_RUN_INVENTORY_SCOPE_SWIFT_BASELINE=1 make dev-test FILTER=InventoryScopeSwiftBaselineTests",
+      "referenceReport": {
+        "path": "rust/benchmarks/results/v1/swift-inventory-scope-reference.json",
+        "sha256": "104f4554cd7075847d2f7752b2d4f441dd6a5b0ea892ec568b2afc59406e2d51",
+        "sourceImplementation": "swift-inventory-pre-p4",
+        "profile": "debug",
+        "note": "debug-profile recon-stage capture via the coordinated dev-test lane; re-capture under release profile is expected before the P4-6b cutover gate, consistent with performanceIterationPolicy.swiftGateEntryCriterion. A release-profile discriminating run was attempted during P4-1 (2803d3d9) and could not complete: the shared checkout had an unrelated concurrent in-flight change (Tests/AgentryCoreBridgeTests/CoreSearchTests.swift referencing an AgentryCoreBridge member not yet compiling) that fails the whole-package release build this XCTest harness requires. This is not caused by the inventory changes; re-attempt once that unrelated breakage clears."
+      }
+    }
   }
 }
