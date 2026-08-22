@@ -1477,48 +1477,6 @@ extension WorkspaceSearchCatalogEntry {
     }
 }
 
-// MARK: - LRU Cache Actor
-
-/// Thread-safe LRU cache implementation using actors
-actor LRUCacheActor<Key: Hashable, Value> {
-    private struct Entry {
-        let value: Value
-        var timestamp: Date
-    }
-
-    private var cache: [Key: Entry] = [:]
-    private let capacity: Int
-
-    init(capacity: Int) {
-        self.capacity = capacity
-    }
-
-    func value(for key: Key) -> Value? {
-        if var entry = cache[key] {
-            entry.timestamp = Date()
-            cache[key] = entry
-            return entry.value
-        }
-        return nil
-    }
-
-    func set(_ value: Value, for key: Key) {
-        cache[key] = Entry(value: value, timestamp: Date())
-
-        // Evict oldest if over capacity
-        if cache.count > capacity {
-            let oldest = cache.min { $0.value.timestamp < $1.value.timestamp }
-            if let oldestKey = oldest?.key {
-                cache.removeValue(forKey: oldestKey)
-            }
-        }
-    }
-
-    func clear() {
-        cache.removeAll()
-    }
-}
-
 // MARK: - C Bridge Functions
 
 @_silgen_name("path_search_create")

@@ -63,20 +63,18 @@ final class DirectHeadlessStdioTransportTests: XCTestCase {
         input.closeAll()
         output.closeAll()
 
-        var failingInput = try PipeDescriptors.make()
         output = try PipeDescriptors.make()
+        // A closed live descriptor can be reused process-wide before the detached reader observes it.
         let readFailureTransport = MCPStdioServerTransport(
-            stdinFD: failingInput.read,
+            stdinFD: Int32.max,
             stdoutFD: output.write,
             pollIntervalMilliseconds: 5,
             writeStallTimeout: .milliseconds(100)
         )
         try await readFailureTransport.connect()
-        failingInput.closeRead()
         let readFailureTerminal = await readFailureTransport.waitUntilTerminal()
         XCTAssertEqual(readFailureTerminal, .stdinRead(errno: EBADF))
         await readFailureTransport.disconnect()
-        failingInput.closeWrite()
         output.closeAll()
     }
 
