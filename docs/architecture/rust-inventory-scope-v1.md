@@ -453,6 +453,45 @@ kill-criterion reference numbers ahead of any Rust candidate.
   a surprise, and so P4-7's done-when is understood to cover at least three sites, not one. No fix
   lands in this step; this is a recon correction, not a behavior change.
 
+## 9b. P4-2 results (de-risking experiments GO/NO-GO gate)
+
+**Status: GO-with-E2-deferred.** P4-2 ran all six experiments from the design's §10 (E-1, E-1c,
+E-1d id-keyed, E-1d path-keyed, E-2, E-3, E-4) against a throwaway `InventoryScope` spike in
+`rust/spikes/inventory-scope-spike` (explicitly permitted by §10's "Prototype `InventoryScope` in
+Rust with in-place sorted tables"; not the P4-3a production scope). Full results, raw numbers, and
+methodology notes (including two corrections made after an adversarial self-review of the first
+draft): `rust/benchmarks/results/v1/p4-2-inventory-scope-derisking-v1.md` (narrative) and the
+paired `.json` (raw data). SLO registrations updated in `rust/benchmarks/slo-v1.json`'s
+`inventoryScopeV1` key and its new `p4TwoResults` key.
+
+Verdict summary: E-1 (kill criterion) passes by 3-4 orders of magnitude under both cargo release
+and debug profiles, after correcting a tail-append measurement bias in the first-draft harness
+(the corrected margin is smaller but the verdict is unchanged -- see results doc §2). E-1c passes
+with zero unexplained rejections across six replayed scenarios, each independently re-verified
+against the live watermark/collapse source rather than trusted from this document's own summary,
+**explicitly scoped to the `staleWatermark` rejection reason only** -- the other five typed
+rejection reasons (§5.1) are deferred to P4-3a's cargo property tests. E-1d id-keyed passes under
+both profiles with large margin; E-1d path-keyed passes under the release profile Rust code
+actually ships at, **with a thin margin at N=1000/10000** that a genuine (failed, blocked by an
+unrelated pre-existing compile break) release-profile Swift capture attempt could not close out --
+flagged explicitly rather than assumed safe -- plus a named, non-blocking debug-profile regression
+(~5x) tracked forward. E-3 (10k-iteration handle soak, ASan-clean) and E-4 (contention soak,
+TSan-clean, p99 208.79us against a 1ms cap) both pass and E-4 additionally answers open question 6
+with measured evidence (per-root locking gives ~3.35x lower p99 at 8 roots but is not required to
+clear the cap; the §5.2.1 per-scope default is kept for P4-3a). E-2 is correctly reported
+**BLOCKED** rather than passed or failed: its registered criteria (time-to-first-paint,
+`@MainActor` apply cost, wire bytes, the mention-query, the B2 shard page) all require
+infrastructure (the bridge, `@MainActor` wiring, the suggestion-service rewiring) that does not
+exist before P4-4/P4-6b/P4-7; partial allocation-economics evidence is recorded but does not
+discharge those criteria, and R8's memory-regression risk carries effectively no comparative
+evidence out of this step (recorded as a gap, not papered over) -- both must be revisited at those
+later steps.
+
+D-1's N is set to **1** (unchanged from today's `maxLogicalMutationCount`), provisionally, pending
+a real FFI-dispatch-tax measurement once P4-4's bridge exists to measure it against (this
+cargo-only spike found no in-process batching benefit because it crosses no real FFI boundary).
+The 10k-path session-startup budget (§8's `slo-v1.json` registration) is set to **50ms**.
+
 ## 10. Registration
 
 This document is registered in `Scripts/source_layout_guardrails.sh`'s `allowed_tracked_docs`

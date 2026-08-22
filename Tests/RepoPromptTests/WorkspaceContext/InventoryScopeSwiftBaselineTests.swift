@@ -108,6 +108,106 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
         }
     }
 
+    /// P4-2 addition: E-1d's Swift reference arm ("Batch point-lookup cost curve",
+    /// `docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md` §10). Measures the same
+    /// two operations E-1d's Rust candidate is measured against:
+    /// - id-keyed: the per-id dictionary-lookup-plus-checks shape `appliedIndexRecordLookup`
+    ///   performs (`WorkspaceFileContextStore.swift:6684-6725`) at N = 1/10/100/1000 ids, reproduced
+    ///   directly over local dictionaries (not the full actor) for the same reason the existing E-1
+    ///   fixtures above call `WorkspaceInventoryCatalogBuilders` directly rather than driving
+    ///   `WorkspaceFileContextStore`: it isolates the lookup cost curve from actor/async dispatch
+    ///   overhead, which is a real but separate tax from what E-1d is measuring.
+    /// - path-keyed: a loop of `[String: UUID]` dictionary lookups at N = 1/100/1000/10000 paths,
+    ///   the same underlying structure `RootCatalogShardState.fileIDsByRelativePath` uses and that
+    ///   `prepareSessionWorktreeOwnership`'s manifest walk (`WorkspaceFileContextStore.swift:4593`,
+    ///   contract doc §4.3.1.2) would resolve against per record today.
+    func testSwiftInventoryScopeE1dBatchLookupBaseline() throws {
+        guard ProcessInfo.processInfo.environment[Self.baselineEnvironmentKey] == "1" else {
+            throw XCTSkip("Set \(Self.baselineEnvironmentKey)=1 to run the P4-2 Swift E-1d baseline capture.")
+        }
+
+        let fileCount = 100_000
+        let fixture = Self.makeLookupFixture(fileCount: fileCount)
+
+        var idRows: [ResultRow] = []
+        for n in [1, 10, 100, 1000] {
+            let queryIDs = Self.sampledIndices(count: n, of: fileCount).map { fixture.orderedIDs[$0] }
+            let distribution = measure {
+                var matchCount = 0
+                for fileID in queryIDs {
+                    guard let record = fixture.filesByID[fileID],
+                          fixture.fileIDsByRelativePath[record.standardizedRelativePath] == fileID
+                    else { continue }
+                    matchCount += 1
+                }
+                return matchCount
+            }
+            idRows.append(ResultRow(operation: "e1d-id-keyed-batch-lookup", size: "\(n)", swift: distribution))
+        }
+
+        var pathRows: [ResultRow] = []
+        for n in [1, 100, 1000, 10000] {
+            let queryPaths = Self.sampledIndices(count: n, of: fileCount).map { fixture.orderedPaths[$0] }
+            let distribution = measure {
+                var matchCount = 0
+                for path in queryPaths {
+                    guard fixture.fileIDsByRelativePath[path] != nil else { continue }
+                    matchCount += 1
+                }
+                return matchCount
+            }
+            pathRows.append(ResultRow(operation: "e1d-path-keyed-batch-lookup", size: "\(n)", swift: distribution))
+        }
+
+        let report = Self.report(rows: idRows + pathRows)
+        print(report)
+
+        for row in idRows + pathRows {
+            XCTAssertGreaterThanOrEqual(row.swift.p50Milliseconds, 0, "\(row.operation) @ \(row.size) produced a negative sample")
+        }
+    }
+
+    private struct LookupFixture {
+        let filesByID: [UUID: WorkspaceFileRecord]
+        let fileIDsByRelativePath: [String: UUID]
+        let orderedIDs: [UUID]
+        let orderedPaths: [String]
+    }
+
+    private static func makeLookupFixture(fileCount: Int) -> LookupFixture {
+        let root = WorkspaceRootRecord(
+            id: deterministicUUID(namespace: 0x96, index: fileCount),
+            name: "BaselineLookupRoot",
+            fullPath: "/workspace/baseline/lookup-root"
+        )
+        let files = (0 ..< fileCount).map { fileIndex in
+            makeFile(
+                id: deterministicUUID(namespace: 0x97, index: fileIndex),
+                root: root,
+                relativePath: String(
+                    format: "Modules/Feature-%03d/Sources/Layer-%02d/LookupComponent-%06d.swift",
+                    fileIndex / 100,
+                    fileIndex % 8,
+                    fileIndex
+                )
+            )
+        }
+        return LookupFixture(
+            filesByID: Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) }),
+            fileIDsByRelativePath: Dictionary(uniqueKeysWithValues: files.map { ($0.standardizedRelativePath, $0.id) }),
+            orderedIDs: files.map(\.id),
+            orderedPaths: files.map(\.standardizedRelativePath)
+        )
+    }
+
+    /// Evenly-strided sample of `count` indices across `[0, total)` -- avoids biasing the lookup
+    /// benchmark toward low-index cache locality when `count < total`.
+    private static func sampledIndices(count: Int, of total: Int) -> [Int] {
+        guard count < total else { return Array(0 ..< total) }
+        let stride = max(1, total / count)
+        return (0 ..< count).map { ($0 * stride) % total }
+    }
+
     private func measure(_ operation: () -> Int) -> Distribution {
         let warmup = operation()
         var samples: [Double] = []

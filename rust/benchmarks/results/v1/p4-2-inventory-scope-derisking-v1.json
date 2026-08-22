@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "step": "P4-2 -- De-risking experiments (GO/NO-GO gate)",
+  "designDoc": "docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md",
+  "designSection": "10 (experiment definitions), 11 (P4-2 step entry)",
+  "contractDoc": "docs/architecture/rust-inventory-scope-v1.md",
+  "sloRegistrations": "rust/benchmarks/slo-v1.json (inventoryScopeV1 key)",
+  "swiftReferenceReport": "rust/benchmarks/results/v1/swift-inventory-scope-reference.json",
+  "rustSpike": "rust/spikes/inventory-scope-spike (throwaway; not P4-3a production scope; delete at or before P4-3a)",
+  "environment": {
+    "architecture": "aarch64",
+    "target": "aarch64-apple-darwin",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "swiftReferenceProfile": "debug (SPM swift test, coordinated dev-test lane -- same profile as the already-registered P4-1 E-1 reference; release-profile Swift recapture remains a documented follow-up per slo-v1.json's own note, not attempted here -- see methodology note below)",
+    "rustCandidateProfiles": "measured at both cargo release (production-realistic) and cargo dev/debug (matches the debug app's actual Rust archive profile, cargo run -p xtask -- archive --profile debug, confirmed against rust/Cargo.toml's [profile.dev] which sets no opt-level override) -- both reported for every timed experiment so a verdict never rests on an unstated profile pairing"
+  },
+  "methodologyNotes": [
+    "E-1's Rust win margin (multiple orders of magnitude) is not a profile-mismatch artifact: it is largely architectural. WorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch rebuilds four full Dictionary indexes from the previousFiles/previousFolders arrays on every single-delta call (WorkspaceInventoryCatalogBuilders.swift:158-166) -- an O(n) index rebuild per delta that the Rust spike's persistent live indexes (updated incrementally, never rebuilt from an array) avoid by construction. This is exactly the architectural change P4-3a's stateful InventoryScope is for, so the asymmetry is the intended comparison, not a measurement bug. Confirmed by re-running the comparison profile-matched (Rust dev/debug vs Swift debug): the win holds even without any Rust compiler-optimization advantage.",
+    "CORRECTION (post first-draft review): the first draft of E-1's harness generated every new delta's path from a monotonically increasing id, which under lexicographic path ordering always sorted to the END of the table -- every insert was a zero-cost Vec append (O(1), no memmove), never a realistic mid-vector insert. That measured 'appending is cheap', not 'single-delta apply is cheap' in general, and it also made the N-delta batch sweep's 'flat per-delta cost' finding potentially just the same bias restated. Corrected via scrambled_record (rust/spikes/inventory-scope-spike/src/bin/e1_delta_apply.rs), which derives each new path from a multiplicative-hash scramble of its id so inserts land at pseudo-random positions across the table's existing range, forcing a real mid-vector Vec::insert/memmove on every timed op. All numbers below are the corrected, position-neutral measurement. E-1's pass/fail verdict is unaffected (100k single-delta apply rose from 0.542us to 12.416us release -- still ~7,000x faster than the 87.86ms Swift reference, comfortably inside the 1.10x cap). The N-delta batch sweep DID change materially: see nDeltaBatchSweep below.",
+    "E-1d's id-keyed lookup passes under both profile pairings with large (~10x) margin. E-1d's path-keyed lookup passes decisively under release-Rust-vs-Swift-debug but FAILS the 1.10x bound under profile-matched dev/debug-Rust-vs-Swift-debug (BTreeMap string comparisons are not optimized in Rust's unoptimized dev profile, whereas Swift's Dictionary/String implementation ships pre-optimized in the Swift standard library regardless of the app's own build configuration -- an asymmetry with no Swift-side analog). Verdict basis: production Rust code only ever ships at cargo release profile; the release-vs-Swift-debug comparison is decision-relevant, consistent with this repo's established performanceIterationPolicy precedent. IMPORTANT CAVEAT: the release-profile margin at path-keyed N=1000/10000 is THIN (ratios 0.846/0.785), meaning a plausible Swift debug-to-release speedup of only 1.30x-1.40x on this tight dictionary-lookup loop would breach the 1.10x cap. A genuine release-profile Swift capture was attempted this session (`RP_RUN_INVENTORY_SCOPE_SWIFT_BASELINE=1 make dev-test FILTER=InventoryScopeSwiftBaselineTests CONFIGURATION=release`) and failed on the SAME unrelated pre-existing breakage P4-1 already documented: Tests/AgentryCoreBridgeTests/CoreSearchTests.swift:230 references AgentryCoreBridge.invalidationTriggerForTesting, a member that does not exist, still broken at ed9a4bbc. This is not caused by, or fixable within scope of, this P4-2 step. The path-keyed release verdict stands on the debug-Swift comparison with this margin explicitly flagged, not on an assumed release number."
+  ],
+  "e1DeltaPathViability": {
+    "verdict": "GO",
+    "methodologyCorrection": "position-scrambled inserts (see methodologyNotes) -- these are the corrected numbers, superseding an earlier tail-append-biased draft",
+    "swiftReferenceSingleDeltaApplyP50Ms": { "100": 0.0730, "1000": 0.6653, "10000": 6.8503, "100000": 87.8627 },
+    "rustReleaseTableOnlyP50Us": { "100": 0.5410, "1000": 0.5830, "10000": 1.3330, "100000": 12.4160 },
+    "rustReleaseWithWireRoundTripP50Us": { "100": 0.4170, "1000": 0.5830, "10000": 1.5000, "100000": 12.3750 },
+    "rustDebugTableOnlyP50Us": { "100": 3.2500, "1000": 4.0830, "10000": 8.5830, "100000": 16.0830 },
+    "relativeRatioReleaseVsSwiftDebugAt10kAnd100k": { "10000": 0.0001946, "100000": 0.0001413 },
+    "relativeRatioDebugVsSwiftDebugAt10kAnd100k": { "10000": 0.001253, "100000": 0.000183 },
+    "smallRootAbsoluteCapsMicroseconds": { "cap": 50, "p99Cap": 200, "release100": 0.541, "release1000": 0.583, "releaseP99_100": 0.583, "releaseP99_1000": 0.625 },
+    "vsWholeTablePatchRatioAt100k": "authoritativeBuild Swift 4566.32ms divided by rustRelease 12.416us is roughly 368,000x (criterion: >=50x)",
+    "nDeltaBatchSweep": {
+      "batchSizesTested": [1, 2, 5, 10, 25, 50, 100],
+      "observationRelease100k": { "1": 12.291, "2": 8.7085, "5": 7.4332, "10": 6.4583, "25": 7.4950, "50": 7.3700, "100": 7.0983 },
+      "observation": "per-delta amortized cost at 100k drops from 12.29us (N=1) to roughly 6.5-7.5us for N>=5 and then plateaus (no further improvement from N=10 to N=100). This plateau is NOT attributed to a real in-process batching benefit: apply_batch is implemented as N sequential apply_single_upsert calls with no shared/batched work, so there is no algorithmic reason batching would help. The most likely explanation is amortized measurement-harness timer overhead (one Instant::now() pair per sample at N=1 vs one pair per N-op batch at higher N), not amortized FFI dispatch tax (no FFI boundary exists in this harness to amortize). Recorded honestly as an unresolved ambiguity rather than claimed as evidence either way.",
+      "dOneNRecommendation": 1,
+      "dOneNRationale": "The only real justification for N>1 is amortizing UniFFI cross-language call-dispatch overhead, which this cargo-only spike cannot measure (no bridge exists) and which this plateau does not provide clean evidence for either way (see observation above -- it is at least partly, possibly entirely, a timer-overhead artifact). No pre-existing measured figure for real dispatch tax exists anywhere else in this repo. Recommend N=1 as D-1's initial value (unchanged from today's Swift maxLogicalMutationCount=1), with re-derivation explicitly deferred to P4-4 once the real FFI round trip exists to measure cleanly -- inventing a synthetic dispatch-tax number, or over-reading this plateau, to justify a larger N now would be exactly the kind of unearned pass this gate exists to prevent."
+    }
+  },
+  "e1cIngressSequenceReplay": {
+    "verdict": "GO -- watermark axis only (see scopeCaveat)",
+    "scopeCaveat": "the gate implemented here checks only the staleWatermark rejection reason (contract doc section 5.1), which is what R11 specifically names and what this experiment exists to de-risk. Contract section 5.1 names five other typed rejection reasons (lifetimeMismatch, generationGap, unknownRoot, scopeClosed, identityMismatch); scenarios 3 (seeded-root-replay-cut) and 4 (root-unload-in-flight-deltas) are, in the real system, actually fenced by generationGap/lifetimeMismatch rather than by watermark comparison -- this replay only demonstrates the watermark axis does not additionally, incorrectly reject those scenarios' legitimate publications. The other five rejection reasons are deferred to P4-3a's cargo property tests, which the contract doc's own P4-3a done-when line already requires (watermark/lifetime/generation rejection coverage). Additionally: all six scenarios use synthesized sequences; no recorded-production sequences were available/replayed in this spike (design section 10 permits 'recorded and synthesized' -- only the synthesized half is discharged here).",
+    "scenariosRun": [
+      "ordinary-watcher-bursts (20 publications)",
+      "forced-overflow-pressure-collapse (4 publications, incl. one requiresFullResync=true collapse)",
+      "seeded-root-replay-cut (4 publications, incl. a repeated watermark on resume)",
+      "root-unload-in-flight-deltas-new-lifetime (2 publications)",
+      "edit-path-interleaved-with-watcher (4 publications, 2 nil-watermark)",
+      "remove-and-readd-same-path-in-one-batch (1 publication plus a separate direct RootTable batch-apply check)"
+    ],
+    "totalPublications": 35,
+    "unexplainedRejections": 0,
+    "sanityControl": "a genuinely stale watermark (50 after last-applied=100) IS correctly rejected -- confirms the gate has teeth and zero rejections is not a no-op result",
+    "tableApplyCheck": "remove(id=0)+upsert(id=1,same path) within one batch resolves the path to id=1 with table.len()==1 -- OK",
+    "sourceVerification": [
+      "non-strict >= : WorkspaceFileContextStore.swift:3459 guard watermark >= pending.lastAppliedWatcherWatermark else",
+      "nil bypass, never coerced to zero: WorkspaceFileContextStore.swift:3459-3464 optional-binding shape; nil publications at :6222, :6241",
+      "collapse preserves min(lowest)/max(high): FileSystemWatcherIngressMailbox.swift:198-225 collapseQueuedPayloads",
+      "watermark check scoped to seeded-root replay transition only (contract doc's claim confirmed, not merely trusted): the only lastAppliedWatcherWatermark comparison site in WorkspaceFileContextStore.swift is inside the pendingSeededRootsByID state machine (guarded by case .replaying = pending.phase)"
+    ]
+  },
+  "e1dBatchPointLookupCostCurve": {
+    "idKeyed": {
+      "verdict": "GO",
+      "swiftReferenceP50Ms": { "1": 0.0003, "10": 0.0017, "100": 0.0176, "1000": 0.2019 },
+      "rustReleaseP50Us": { "1": 0.0830, "10": 0.2910, "100": 1.7500, "1000": 21.1250 },
+      "rustDebugP50Us": { "1": 0.2500, "10": 2.0000, "100": 17.8750, "1000": 183.0000 },
+      "ratioReleaseAtNge100": { "100": 0.0994, "1000": 0.1046 },
+      "ratioDebugAtNge100": { "100": 1.0156, "1000": 0.9064 },
+      "degenerateLoopPerItemUs": { "1": 0.0420, "10": 0.0334, "100": 0.0325, "1000": 0.0337 },
+      "crossoverNote": "batched vs degenerate-per-item-loop cost is statistically indistinguishable at all tested N for id-keyed lookups in this cargo-only harness (no FFI boundary to amortize) -- recorded per the design's crossover-N-is-recorded-not-gated instruction; no crossover is observed in-process, consistent with the same finding for E-1's batch sweep."
+    },
+    "pathKeyed": {
+      "verdict": "GO under release/production profile (THIN margin at N=1000/10000, see breachThreshold); FAIL under debug/dev profile (non-gating, see methodology note)",
+      "swiftReferenceP50Ms": { "1": 0.0002, "100": 0.0125, "1000": 0.1275, "10000": 1.3416 },
+      "rustReleaseP50Us": { "1": 0.0830, "100": 7.1250, "1000": 107.8750, "10000": 1052.7500 },
+      "rustDebugP50Us": { "1": 0.5000, "100": 67.6250, "1000": 733.8340, "10000": 7079.1670 },
+      "ratioReleaseAtNge100": { "100": 0.5700, "1000": 0.8461, "10000": 0.7847 },
+      "ratioDebugAtNge100": { "100": 5.4100, "1000": 5.7554, "10000": 5.2769 },
+      "breachThreshold": {
+        "note": "the release-profile margin at N=1000/10000 is thin: a Swift debug-to-release speedup of only 1.30x (at N=1000) or 1.40x (at N=10000) on this tight dictionary-lookup loop would push the ratio over the 1.10x cap. This is plausible for Swift (loop overhead, bounds checks, retain/release all optimizable) even though the underlying Dictionary/String implementation is already optimized in debug.",
+        "releaseCaptureAttempted": true,
+        "releaseCaptureResult": "FAILED -- blocked by a pre-existing, unrelated compile break: Tests/AgentryCoreBridgeTests/CoreSearchTests.swift:230 references AgentryCoreBridge.invalidationTriggerForTesting, a member that does not exist, confirmed still broken at ed9a4bbc (same issue P4-1 documented at 2803d3d9). Command run: RP_RUN_INVENTORY_SCOPE_SWIFT_BASELINE=1 make dev-test FILTER=InventoryScopeSwiftBaselineTests CONFIGURATION=release. Not fixable within this step's scope (unrelated target).",
+        "verdictStandsOn": "the debug-Swift comparison, with this margin explicitly flagged rather than assumed safe"
+      },
+      "degenerateLoopPerItemUsRelease": { "1": 0.0830, "100": 0.0992, "1000": 0.1237, "10000": 0.1192 },
+      "crossoverNote": "modest (roughly 12-15 percent) batching benefit observed for path-keyed lookups at N>=1000 in release profile (batched cheaper than the degenerate per-item loop), unlike id-keyed -- attributable to per-call Vec/String allocation overhead in the per-item loop, not FFI amortization.",
+      "tenThousandPathSessionStartupBudgetMilliseconds": 50,
+      "tenThousandPathSessionStartupBudgetRationale": "No pre-existing budget was registered (slo-v1.json shipped this field as null, TBD at P4-2). Set to 50ms: roughly 37x headroom over the measured Swift reference (1.34ms) and roughly 48x over the measured Rust release candidate (1.05ms), while remaining tight enough to catch a real regression; session startup already performs filesystem/worktree-materialization I/O an order of magnitude slower than this, so 50ms is negligible against the overall startup budget while still being a meaningful cap.",
+      "tenThousandPathBudgetMet": true
+    }
+  },
+  "e2ReadEconomicsAndPayloadTruth": {
+    "verdict": "BLOCKED (partial evidence only) -- not a pass, not a fail; see per-criterion breakdown",
+    "blockedCriteria": [
+      { "criterion": "rootBootstrapTimeToFirstPaintMaximumReferenceRatio <= 1.10", "reason": "requires actual UI/bootstrap integration; no bridge (P4-4) or MainActor wiring (P4-6b) exists in this spike" },
+      { "criterion": "b2ProjectedShardPageWithinMainActorFrameBudget", "reason": "inventoryOpenProjectedShard is a P4-4/P4-6 read surface; no codemap projection or MainActor apply path exists pre-cutover" },
+      { "criterion": "mentionSuggestionQueryAt100kMaximumReferenceRatio <= 1.0", "reason": "requires the haystack-variant plus per-root display-prefix inventoryQuery contract (design section 6) and the real AgentFileTagSuggestionService caller; not implemented in this throwaway spike, and not owed until P4-7's rewiring" },
+      { "criterion": "peakRSSMaximumReferenceRatio <= 1.0 (process-level)", "reason": "no comparable whole-process Swift-vs-Rust deployment exists pre-P4-6b; only a structure-level allocation proxy is reportable now (see partialEvidence)" }
+    ],
+    "partialEvidence": {
+      "note": "Not a substitute for the blocked criteria above -- reported as informational-only supplementary data, using a counting global allocator over the Rust Tier-1 operations already exercised by E-1/E-1d. Wall/CPU time for these same operations is already reported by E-1/E-1d and is not duplicated here.",
+      "buildAuthoritative100kFiles": { "allocations": 116669, "mallocBytes": 21484104, "mallocMiB": 20.49 },
+      "resolveByIdsN1000": { "allocations": 1001, "mallocBytes": 95000 },
+      "lookupByPathsN1000": { "allocations": 1001, "mallocBytes": 95000 },
+      "approxTableResidentBytesAt100kFilesMiB": 17.03,
+      "approxTableResidentBytesCaveat": "rough lower-bound estimate from field sizes and assumed average path length (48 bytes), ignores allocator/heap fragmentation overhead and HashMap/BTreeMap real per-entry bookkeeping -- not a measured RSS number"
+    },
+    "r8MemoryRegressionEvidence": {
+      "note": "R8 (design section 10 risk table: 'Rust tables + Swift projections could exceed today's single Swift copy') names E-2's peak-RSS report as its only mitigation; that whole-process comparison is genuinely unmeasurable pre-P4-6b (no comparable deployment exists). This is the closest evidence available at P4-2: the structure-level footprint comparison, not a process-RSS substitute.",
+      "rustSpikeTableAt100kFilesMiB": 17.03,
+      "swiftSideNote": "No equivalent Swift-side structure-footprint measurement was captured this session (would require a memory probe added to InventoryScopeSwiftBaselineTests, not done here). Recorded as a genuine gap, not papered over: R8 carries zero direct measured evidence out of P4-2 beyond the Rust-side structure estimate above. Add a Swift-side probe alongside the eventual full E-2 re-run at P4-4/P4-6b."
+    },
+    "recommendation": "Re-run E-2 in full once the bridge exists (P4-4, for wire-byte and cross-language wall/CPU truth) and once the suggestion-service rewiring lands (P4-7, for the mention-query and B2 shard-page criteria). Do not treat this partial evidence as having discharged E-2's registered pass criteria."
+  },
+  "e3HandleLifetimeAndBackstopSoak": {
+    "verdict": "GO",
+    "iterations": 10000,
+    "seed": "0x5350494b45342026",
+    "opDistribution": { "open": 3519, "leak": 963, "scope_close": 1040, "root_unload": 1022, "identity_swap": 533, "mutation": 1458, "read_random": 1465 },
+    "allEverIssued": 4482,
+    "leakedNeverClosed": 963,
+    "finalTrackedEntryCount": 1027,
+    "churnTrackedEntryCount": 64,
+    "churnBound": 128,
+    "leakAccountingExact1to1": true,
+    "invalidatedReadHits": 1456,
+    "panicsOnInvalidatedRead": 0,
+    "writerLivenessHeldAtEveryCheckpoint": true,
+    "structuralNoUseAfterFreeArgument": "crate is forbid(unsafe_code); every handle read returns a typed ReadOutcome rather than dereferencing anything, so double-free/use-after-free in the C/unsafe sense is unreachable by construction, not merely untriggered in this run.",
+    "asanRun": "clean (RUSTFLAGS=-Zsanitizer=address, cargo +nightly, target aarch64-apple-darwin) -- no diagnostics emitted, same PASS output as the unsanitized run",
+    "methodologyCorrectionNote": "An earlier draft of this soak asserted churn-handle count strictly never exceeds opened-minus-closed with uniformly-random close targeting over all history; that produced a false failure because uniformly-random closing dilutes over a growing history and does not model realistic short-lived handle usage. Corrected to a recency-biased bounded churn pool (max 64 in-flight churn handles) plus a separately-accounted, intentionally-never-closed leak set -- this is the version whose results are reported here."
+  },
+  "e4ApplyReadContentionUnderRebuild": {
+    "verdict": "GO",
+    "topology": "8 roots; 1 writer thread (root 0); 1 out-of-lock-rebuild thread (root 1, 100k files rebuilt each cycle, lock held only for the install swap); 4 reader threads round-robin across all 8 roots issuing resolve_by_ids(16 ids); 3s run",
+    "nativeRun": {
+      "perScopeLock": { "reads": 808483, "p50Us": 1.9170, "p99Us": 208.7920, "maxUs": 5247.8750, "writerOps": 638594, "rebuildInstalls": 181 },
+      "perRootLock": { "reads": 3089686, "p50Us": 0.3330, "p99Us": 62.4170, "maxUs": 10492.9160, "writerOps": 1492604, "rebuildInstalls": 179 }
+    },
+    "p99AddedReadLatencyCapMs": 1,
+    "perScopeLockP99PassesCap": true,
+    "maxLatencyObservationNote": "the criterion is p99, which passes comfortably, but max reader latency was 5.25ms (per-scope) / 10.49ms (per-root) -- an occasional visible hitch under sustained contention that a p99-only summary hides. Worth carrying into the topology decision as qualitative information even though it does not affect the pass/fail verdict.",
+    "writerLivenessHeld": "both topologies: hundreds of thousands of writer ops completed during the run window, never stalled",
+    "tsanRun": "clean (RUSTFLAGS=-Zsanitizer=thread, cargo +nightly -Z build-std, target aarch64-apple-darwin) -- no race diagnostics emitted; absolute latency numbers under TSan are NOT used for the perf verdict (sanitizer instrumentation overhead of roughly 10-100x distorts relative timing under heavy contention -- observed inversion of the per-root-vs-per-scope ordering under TSan is a sanitizer artifact, not a real-world result)",
+    "openQuestion6Evidence": {
+      "answer": "At 8 roots, per-root locking measurably reduces p99 contention latency by roughly 3.35x in the native (non-sanitized) run (per-scope 208.79us vs per-root 62.42us). Both topologies comfortably clear the sub-1ms p99 cap under the shipping (today's per-scope) default, so this is evidence for a future headroom decision, not a blocking requirement to switch topology now.",
+      "recommendation": "Keep the per-scope section-5.2.1 default for P4-3a (simpler deadlock surface, already comfortably passes the cap); revisit per-root locking if a later real-world measurement (post P4-6b, under actual UI window-count contention) shows p99 approaching the 1ms cap."
+    }
+  },
+  "overallVerdict": {
+    "decision": "GO-with-E2-deferred",
+    "decisionQualifier": "E-1/E-1c/E-1d/E-3/E-4 all clear their gated criteria (E-1d path-keyed release margin is thin at N=1000/10000 -- see e1dBatchPointLookupCostCurve.pathKeyed.breachThreshold -- but the criterion is met on the only comparison this step could produce). E-2 is BLOCKED, not passed: do not read 'GO' as 'all six experiments measured and passed'. A future automated gate reading this field should require E-2's blockedCriteria to be individually resolved (P4-4/P4-7) before treating P4-2 as fully closed.",
+    "basis": "E-1 (kill criterion) passes decisively under both profile pairings by multiple orders of magnitude. E-1c passes with zero unexplained rejections and a working sanity control. E-1d id-keyed passes under both profiles; E-1d path-keyed passes under the production-realistic release profile (the only profile Rust code ships in) with a named, non-blocking debug-profile developer-experience risk recorded as a follow-up. E-3 and E-4 pass their pre-registered criteria, with E-4 additionally answering open question 6 with measured evidence. E-2's criteria that require infrastructure not yet built (bridge, MainActor wiring, suggestion-service rewiring) are correctly reported BLOCKED rather than rationalized as passing or failing, with partial allocation-economics evidence provided and a concrete re-measurement plan (P4-4, P4-7).",
+    "conditions": [
+      "Track the E-1d path-keyed debug-profile regression (roughly 5x slower than Swift-debug reference, informational-tier per this repo's existing performanceIterationPolicy precedent) as a named watch item through P4-3a/P4-4; do not let it silently disappear.",
+      "Re-run E-2's blocked criteria in full once P4-4's bridge exists (wire bytes, cross-language wall/CPU) and once P4-7's suggestion-service rewiring lands (mention-query, B2 shard page, real time-to-first-paint) -- this is required, not optional, before those specific criteria can be called passed.",
+      "D-1's N is set to 1 pending a real FFI-dispatch-tax measurement at P4-4; re-derive then, do not treat 1 as permanently final.",
+      "Keep the per-scope (section 5.2.1 default) locking model for P4-3a; the per-root evidence is headroom information for open question 6, not a mandate to switch."
+    ]
+  }
+}

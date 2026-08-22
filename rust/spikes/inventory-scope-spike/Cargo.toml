@@ -1,0 +1,20 @@
+[package]
+name = "agentry-inventory-scope-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "P4-2 de-risking spike: throwaway in-place sorted-table InventoryScope prototype used only to produce E-1/E-1c/E-1d/E-3/E-4 measurements. NOT P4-3a production scope."
+
+# Keep this spike isolated from the parent rust workspace, matching the treesitter-spike precedent.
+[workspace]
+
+[lib]
+name = "inventory_scope_spike"
+path = "src/lib.rs"
+
+[dependencies]
+rand = "0.8"
+
+[profile.release]
+debug = true

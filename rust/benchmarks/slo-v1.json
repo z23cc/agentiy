@@ -111,7 +111,7 @@
     }
   },
   "inventoryScopeV1": {
-    "status": "P4-1 contract freeze: absolute SLO caps registered before any Rust InventoryScope candidate exists; relative-gate Swift reference captured for E-1 only, E-1d/E-2/E-4 baselines pending",
+    "status": "P4-2 GO/NO-GO gate complete: overall verdict GO (E-1 kill criterion, E-1c, E-1d, E-3, E-4 pass their registered criteria; E-2 correctly BLOCKED pending P4-4/P4-7 infrastructure, not scored pass/fail). See p4TwoResults below and rust/benchmarks/results/v1/p4-2-inventory-scope-derisking-v1.md.",
     "contractDoc": "docs/architecture/rust-inventory-scope-v1.md",
     "designDoc": "docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md",
     "registeredBeforeCandidateExists": true,
@@ -138,14 +138,16 @@
         "idKeyed": {
           "sizes": [1, 10, 100, 1000],
           "maximumReferenceRatioAtNGreaterOrEqual100": 1.1,
-          "referenceStatus": "pending"
+          "referenceStatus": "captured",
+          "verdict": "GO (both release and debug Rust profiles pass vs Swift debug reference)"
         },
         "pathKeyed": {
           "sizes": [1, 100, 1000, 10000],
           "maximumReferenceRatioAtNGreaterOrEqual100": 1.1,
-          "tenThousandPathSessionStartupBudgetMilliseconds": null,
-          "referenceStatus": "pending",
-          "note": "budget corresponds to prepareSessionWorktreeOwnership's manifest walk (design section 4.3.1.2); numeric budget TBD at P4-2"
+          "tenThousandPathSessionStartupBudgetMilliseconds": 50,
+          "referenceStatus": "captured",
+          "verdict": "GO under release/production profile (0.57-0.85x, THIN margin at N=1000/10000 -- see results doc breachThreshold, a genuine release-Swift capture attempt failed on an unrelated pre-existing compile break); FAILS under debug/dev cargo profile (5.3-5.8x) -- non-gating, see p4-2-inventory-scope-derisking-v1.md section 4 for the profile-asymmetry rationale and the tracked follow-up condition",
+          "note": "budget corresponds to prepareSessionWorktreeOwnership's manifest walk (design section 4.3.1.2); set at P4-2 to 50ms (~37x headroom over the 1.34ms Swift reference) -- see results doc section 4 for full rationale"
         }
       },
       "e2ReadEconomicsAndPayloadTruth": {
@@ -156,7 +158,9 @@
           "mentionSuggestionQueryAt100kMaximumReferenceRatio": 1.0,
           "b2ProjectedShardPageWithinMainActorFrameBudget": true
         },
-        "referenceStatus": "pending"
+        "referenceStatus": "blocked-at-p4-2",
+        "verdict": "BLOCKED, not pass/fail -- all four criteria require infrastructure (bridge/MainActor/suggestion-service) that does not exist before P4-4/P4-6b/P4-7; partial allocation-economics evidence only, see p4-2-inventory-scope-derisking-v1.md section 5",
+        "requiredBefore": ["p4-4-ffi-and-bridge-surface", "p4-7-suggestion-service-cutover"]
       },
       "e4ApplyReadContentionUnderRebuild": {
         "description": "reader latency attributable to contention with an in-flight authoritative rebuild on the same root",
@@ -164,7 +168,8 @@
           "p99AddedReadLatencyMaximumMilliseconds": 1
         },
         "referenceStatus": "not-applicable",
-        "note": "no Swift-side equivalent contention model exists to baseline against; this is an absolute cap on the Rust candidate only"
+        "note": "no Swift-side equivalent contention model exists to baseline against; this is an absolute cap on the Rust candidate only",
+        "verdict": "GO -- p99 208.79us under today's per-scope-lock default (8-root topology), ~4.8x headroom under the 1ms cap; also answers open question 6 (per-root locking measures ~3.35x lower p99 at 8 roots but is not required to clear the cap) -- see p4-2-inventory-scope-derisking-v1.md section 7"
       }
     },
     "swiftBaseline": {
@@ -184,5 +189,19 @@
         "note": "debug-profile recon-stage capture via the coordinated dev-test lane; re-capture under release profile is expected before the P4-6b cutover gate, consistent with performanceIterationPolicy.swiftGateEntryCriterion. A release-profile discriminating run was attempted during P4-1 (2803d3d9) and could not complete: the shared checkout had an unrelated concurrent in-flight change (Tests/AgentryCoreBridgeTests/CoreSearchTests.swift referencing an AgentryCoreBridge member not yet compiling) that fails the whole-package release build this XCTest harness requires. This is not caused by the inventory changes; re-attempt once that unrelated breakage clears."
       }
     }
+  },
+  "p4TwoResults": {
+    "step": "P4-2 -- De-risking experiments (GO/NO-GO gate)",
+    "decision": "GO-with-E2-deferred",
+    "decisionNote": "E-1/E-1c/E-1d/E-3/E-4 pass their gated criteria; E-2 is BLOCKED (not scored pass/fail) pending P4-4/P4-7 infrastructure -- do not read this as 'all six experiments measured and passed'.",
+    "resultsJson": "rust/benchmarks/results/v1/p4-2-inventory-scope-derisking-v1.json",
+    "resultsMarkdown": "rust/benchmarks/results/v1/p4-2-inventory-scope-derisking-v1.md",
+    "spikeSource": "rust/spikes/inventory-scope-spike",
+    "followUpConditions": [
+      "track E-1d path-keyed debug-profile regression (~5x) through P4-3a/P4-4",
+      "re-run E-2's blocked criteria in full at P4-4 and P4-7",
+      "D-1 N=1 is provisional pending a real FFI-dispatch-tax measurement at P4-4",
+      "keep the per-scope locking default for P4-3a"
+    ]
   }
 }
