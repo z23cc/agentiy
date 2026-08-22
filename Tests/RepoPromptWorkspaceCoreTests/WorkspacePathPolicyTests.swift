@@ -1,4 +1,4 @@
-@testable import RepoPromptWorkspaceCore
+import RepoPromptWorkspaceCore
 import XCTest
 
 final class WorkspacePathPolicyTests: XCTestCase {
