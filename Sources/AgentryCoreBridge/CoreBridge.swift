@@ -271,6 +271,28 @@ protocol CoreRuntimeTransport: Sendable {
         handleID: UInt64,
         bytes: Data
     ) throws -> AgentryUniFFIRaw.CompactQueryResultV1
+    /// P4-6b prep slice 1: `inventoryResolveRecords`'s facade completion (contract doc §5.3) --
+    /// same "already-landed FFI export, missing Swift facade" pattern as `inventoryQuery` above.
+    func inventoryResolveRecords(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        expectedCatalogGeneration: UInt64?,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1
+    /// P4-6b prep slice 1: `inventoryLookupPaths`'s facade completion.
+    func inventoryLookupPaths(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactLookupResultV1
+    /// P4-6b prep slice 1: `inventoryOpenProjectedShard`'s facade completion (contract doc §6, B2).
+    func inventoryOpenProjectedShard(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
 
     /// Forensic strings for the most recent panic(s) recorded by the Rust
     /// process-wide panic hook, most-recent last -- not scoped to this
@@ -1490,6 +1512,60 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 scopeId: scopeID,
                 handleId: handleID,
                 bytes: bytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryResolveRecords(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        expectedCatalogGeneration: UInt64?,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1 {
+        do {
+            return try runtime.inventoryResolveRecords(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID,
+                expectedCatalogGeneration: expectedCatalogGeneration,
+                bytes: bytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryLookupPaths(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactLookupResultV1 {
+        do {
+            return try runtime.inventoryLookupPaths(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                handleId: handleID,
+                bytes: bytes
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryOpenProjectedShard(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
+        do {
+            return try runtime.inventoryOpenProjectedShard(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID
             ))
         } catch {
             throw Self.map(error)

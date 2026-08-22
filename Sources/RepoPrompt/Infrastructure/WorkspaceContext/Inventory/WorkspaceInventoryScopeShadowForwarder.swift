@@ -215,6 +215,34 @@
             )
         }
 
+        /// P4-6b prep slice 1's dual-read comparator: resolves the shadow scope's own
+        /// id-keyed facts via the new `inventoryResolveRecords` facade, root-based like the
+        /// FFI export itself (contract doc §5.3) -- no handle needed, no `expectedCatalogGeneration`
+        /// pin (the comparator always wants the shadow's live generation, matching how the
+        /// authoritative-side read it compares against is also always live).
+        func resolveRecords(
+            rootID: UUID,
+            fileIDs: [UUID],
+            folderIDs: [UUID]
+        ) async throws -> CoreInventoryRecordBlock {
+            let scope = try await requireScope()
+            return try await scope.resolveRecords(rootID: rootID, fileIDs: fileIDs, folderIDs: folderIDs)
+        }
+
+        /// P4-6b prep slice 1's dual-read comparator: resolves the shadow scope's own
+        /// path-keyed facts via the new `inventoryLookupPaths` facade. Handle-based like the
+        /// index comparison arm's `query` above -- `openSnapshot` first, `lookupPaths` against
+        /// the resulting handle.
+        func lookupPaths(
+            rootID: UUID,
+            relativePaths: [String]
+        ) async throws -> CoreInventoryPathLookupResult {
+            let scope = try await requireScope()
+            let snapshot = try await scope.openSnapshot(rootID: rootID)
+            defer { Task { await snapshot.close() } }
+            return try await snapshot.lookupPaths(relativePaths: relativePaths)
+        }
+
         /// Idempotent teardown -- part of §8.2's "deletable" acceptance condition: closing this
         /// forwarder releases every Rust-side resource the shadow arm opened, leaving nothing
         /// behind for the product to observe.

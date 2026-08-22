@@ -2950,6 +2950,8 @@ actor WorkspaceFileContextStore {
         private(set) var inventoryScopeShadowMismatchCountForTesting = 0
         private(set) var inventoryScopeShadowIndexComparisonCountForTesting = 0
         private(set) var inventoryScopeShadowIndexMismatchCountForTesting = 0
+        private(set) var inventoryScopeReadFacadeComparisonCountForTesting = 0
+        private(set) var inventoryScopeReadFacadeMismatchCountForTesting = 0
     #endif
 
     #if DEBUG
@@ -6765,10 +6767,13 @@ actor WorkspaceFileContextStore {
     /// (P4-6a done-when: the four `appliedIndexRecordLookupDiagnosticsForTesting`
     /// consumers observe the per-scan call shape). No `await` occurs anywhere in this
     /// function, so all facts are mutually consistent against one generation.
+    // P4-6b prep slice 1: `async` so this primitive is delegation-capable (Rust's
+    // `resolveRecords` is an FFI call, inherently async), while its body still reads
+    // Swift's authoritative tables directly -- authority is unchanged in this slice.
     func inventoryRecordFacts(
         fileIDs: [UUID],
         folderIDs: [UUID]
-    ) -> (
+    ) async -> (
         filesByID: [UUID: WorkspaceInventoryFileRecordFact],
         foldersByID: [UUID: WorkspaceInventoryFolderRecordFact]
     ) {
@@ -6829,11 +6834,13 @@ actor WorkspaceFileContextStore {
     /// unfalsifiable tautology (design §4.3.1.1 result 2, D-11). The DEBUG counters
     /// increment exactly once per call, on every path, matching the pre-refactor
     /// function which incremented before its early-return guard.
+    // P4-6b prep slice 1: `async` for the same reason as `inventoryRecordFacts`, which
+    // this delegates to.
     func appliedIndexRecordLookup(
         rootID: UUID,
         fileIDs: [UUID],
         folderIDs: [UUID]
-    ) -> WorkspaceAppliedIndexRecordLookup? {
+    ) async -> WorkspaceAppliedIndexRecordLookup? {
         guard publishedSeededAuthorityIsQueryable(rootID: rootID),
               let state = rootStatesByID[rootID]
         else {
@@ -6844,7 +6851,7 @@ actor WorkspaceFileContextStore {
             return nil
         }
 
-        let facts = inventoryRecordFacts(fileIDs: fileIDs, folderIDs: folderIDs)
+        let facts = await inventoryRecordFacts(fileIDs: fileIDs, folderIDs: folderIDs)
 
         var matchingFilesByID: [UUID: WorkspaceFileRecord] = [:]
         matchingFilesByID.reserveCapacity(fileIDs.count)
@@ -6905,10 +6912,11 @@ actor WorkspaceFileContextStore {
     /// loop. One call per scan resolves every requested relative path against one root's
     /// `fileIDsByRelativePath` / `folderIDsByRelativePath`, atomically with the id-keyed
     /// records they resolve to — facts, not a verdict; absent paths resolve to `nil` ids.
+    // P4-6b prep slice 1: `async` for the same reason as `inventoryRecordFacts`.
     func inventoryPathLookups(
         rootID: UUID,
         relativePaths: some Sequence<String>
-    ) -> (
+    ) async -> (
         files: [String: WorkspaceInventoryPathFileFact],
         folders: [String: WorkspaceInventoryPathFolderFact]
     ) {
@@ -8574,6 +8582,19 @@ actor WorkspaceFileContextStore {
             var rustOrder: [String]
         }
 
+        /// P4-6b prep slice 1's dual-read comparator report (contract doc §5.3's read facade:
+        /// `inventoryResolveRecords` / `inventoryLookupPaths`).
+        struct WorkspaceInventoryScopeReadFacadeComparisonReport: Equatable {
+            var rootID: UUID
+            var matched: Bool
+            var firstDifferingFileID: UUID?
+            var firstDifferingFolderID: UUID?
+            var firstDifferingPath: String?
+            var fileIDCount: Int
+            var folderIDCount: Int
+            var pathCount: Int
+        }
+
         /// A deliberately small, adversarial-leaning corpus (design doc §8.2's "fixed adversarial
         /// query corpus", extending §4.4.1's P4-3b differential conventions to the shadow arm):
         /// single/double wildcard, a common suffix pattern, a leading-star pattern, and a pattern
@@ -8778,6 +8799,149 @@ actor WorkspaceFileContextStore {
                 ))
             }
             return reports
+        }
+
+        /// P4-6b prep slice 1's dual-read comparator: drives the new `inventoryResolveRecords` /
+        /// `inventoryLookupPaths` Swift facade (built over the shadow scope, live-mirrored from
+        /// this store's own applied-index events) against the same primitives' Swift-authoritative
+        /// implementation (`inventoryRecordFacts` / `inventoryPathLookups`, currently still
+        /// reading `filesByID`/`foldersByID` directly) -- proving the new facade is correct
+        /// against live store state before anything is ever asked to depend on it. Caller supplies
+        /// the exact ids/paths to probe (present, absent, or a mix), matching how the primitives'
+        /// own signatures work; this comparator does not derive a corpus itself.
+        @discardableResult
+        func compareInventoryScopeReadFacadeForTesting(
+            rootID: UUID,
+            fileIDs: [UUID],
+            folderIDs: [UUID],
+            relativePaths: [String]
+        ) async throws -> WorkspaceInventoryScopeReadFacadeComparisonReport {
+            guard isInventoryScopeShadowValidationEnabled else {
+                return WorkspaceInventoryScopeReadFacadeComparisonReport(
+                    rootID: rootID, matched: true, firstDifferingFileID: nil, firstDifferingFolderID: nil,
+                    firstDifferingPath: nil, fileIDCount: 0, folderIDCount: 0, pathCount: 0
+                )
+            }
+            try await drainInventoryScopeShadowForwardingForTesting()
+            let forwarder = try await inventoryScopeShadowForwarderInstance()
+
+            let swiftRecordFacts = await inventoryRecordFacts(fileIDs: fileIDs, folderIDs: folderIDs)
+            let rustRecordBlock = try await forwarder.resolveRecords(rootID: rootID, fileIDs: fileIDs, folderIDs: folderIDs)
+
+            var firstDifferingFileID: UUID?
+            for fileID in fileIDs where !Self.fileFactMatches(swiftRecordFacts.filesByID[fileID], rustRecordBlock.filesByID[fileID]) {
+                firstDifferingFileID = fileID
+                break
+            }
+            var firstDifferingFolderID: UUID?
+            if firstDifferingFileID == nil {
+                for folderID in folderIDs
+                    where !Self.folderFactMatches(swiftRecordFacts.foldersByID[folderID], rustRecordBlock.foldersByID[folderID])
+                {
+                    firstDifferingFolderID = folderID
+                    break
+                }
+            }
+
+            let swiftPathLookups = await inventoryPathLookups(rootID: rootID, relativePaths: relativePaths)
+            let rustPathLookups = try await forwarder.lookupPaths(rootID: rootID, relativePaths: relativePaths)
+            var firstDifferingPath: String?
+            if firstDifferingFileID == nil, firstDifferingFolderID == nil {
+                for path in relativePaths
+                    where !Self.pathFactMatches(
+                        swiftFile: swiftPathLookups.files[path],
+                        swiftFolder: swiftPathLookups.folders[path],
+                        rust: rustPathLookups.factsByPath[path]
+                    )
+                {
+                    firstDifferingPath = path
+                    break
+                }
+            }
+
+            let matched = firstDifferingFileID == nil && firstDifferingFolderID == nil && firstDifferingPath == nil
+            inventoryScopeReadFacadeComparisonCountForTesting += 1
+            if !matched {
+                inventoryScopeReadFacadeMismatchCountForTesting += 1
+                assertionFailure(
+                    "Inventory-scope read-facade diverged: root=\(rootID) " +
+                        "firstDifferingFileID=\(firstDifferingFileID?.uuidString ?? "<none>") " +
+                        "firstDifferingFolderID=\(firstDifferingFolderID?.uuidString ?? "<none>") " +
+                        "firstDifferingPath=\(firstDifferingPath ?? "<none>")"
+                )
+            }
+            return WorkspaceInventoryScopeReadFacadeComparisonReport(
+                rootID: rootID,
+                matched: matched,
+                firstDifferingFileID: firstDifferingFileID,
+                firstDifferingFolderID: firstDifferingFolderID,
+                firstDifferingPath: firstDifferingPath,
+                fileIDCount: fileIDs.count,
+                folderIDCount: folderIDs.count,
+                pathCount: relativePaths.count
+            )
+        }
+
+        private static func fileFactMatches(_ swift: WorkspaceInventoryFileRecordFact?, _ rust: CoreInventoryRecordFact?) -> Bool {
+            let swiftExists = swift?.record != nil
+            let rustExists = rust?.exists ?? false
+            guard swiftExists == rustExists else { return false }
+            guard swiftExists, let record = swift?.record, let rust else { return true }
+            return rust.fileID == record.id
+                && rust.folderID == nil
+                && rust.rootID == record.rootID
+                && rust.isDiscoverable == swift?.isDiscoverable
+                && rust.pathRoundTripsToSelf == swift?.pathRoundTripsToSelf
+                && rust.standardizedRelativePath == record.standardizedRelativePath
+                && rust.standardizedFullPath == record.standardizedFullPath
+                && rust.name == record.name
+        }
+
+        private static func folderFactMatches(_ swift: WorkspaceInventoryFolderRecordFact?, _ rust: CoreInventoryRecordFact?) -> Bool {
+            let swiftExists = swift?.record != nil
+            let rustExists = rust?.exists ?? false
+            guard swiftExists == rustExists else { return false }
+            guard swiftExists, let record = swift?.record, let rust else { return true }
+            return rust.folderID == record.id
+                && rust.fileID == nil
+                && rust.rootID == record.rootID
+                && rust.isDiscoverable == swift?.isDiscoverable
+                && rust.pathRoundTripsToSelf == swift?.pathRoundTripsToSelf
+                && rust.standardizedRelativePath == record.standardizedRelativePath
+                && rust.standardizedFullPath == record.standardizedFullPath
+                && rust.name == record.name
+        }
+
+        /// `lookupPaths`' path-keyed fact: unlike `resolveRecords`, a single path can resolve to
+        /// at most one of file-or-folder on both arms (never both) -- compare whichever side
+        /// (Swift) reports as present against the single Rust fact for that path.
+        private static func pathFactMatches(
+            swiftFile: WorkspaceInventoryPathFileFact?,
+            swiftFolder: WorkspaceInventoryPathFolderFact?,
+            rust: CoreInventoryRecordFact?
+        ) -> Bool {
+            if let swiftFile, let record = swiftFile.record {
+                guard let rust, rust.exists else { return false }
+                return rust.fileID == record.id
+                    && rust.folderID == nil
+                    && rust.rootID == record.rootID
+                    && rust.isDiscoverable == swiftFile.isDiscoverable
+                    && rust.standardizedRelativePath == record.standardizedRelativePath
+                    && rust.standardizedFullPath == record.standardizedFullPath
+                    && rust.name == record.name
+            }
+            if let swiftFolder, let record = swiftFolder.record {
+                guard let rust, rust.exists else { return false }
+                return rust.folderID == record.id
+                    && rust.fileID == nil
+                    && rust.rootID == record.rootID
+                    && rust.isDiscoverable == swiftFolder.isDiscoverable
+                    && rust.standardizedRelativePath == record.standardizedRelativePath
+                    && rust.standardizedFullPath == record.standardizedFullPath
+                    && rust.name == record.name
+            }
+            // Neither side resolved -- both must agree the path is absent.
+            return !(rust?.exists ?? false)
         }
 
         /// Idempotent teardown -- part of §8.2's "deletable" acceptance condition: releases every
@@ -11789,9 +11953,9 @@ actor WorkspaceFileContextStore {
     func codemapAutomaticSelectionSourceIdentities(
         forFileIDs sourceFileIDs: [UUID],
         rootScope: WorkspaceLookupRootScope
-    ) -> [WorkspaceCodemapAutomaticSelectionSourceIdentity] {
+    ) async -> [WorkspaceCodemapAutomaticSelectionSourceIdentity] {
         let allowedRootIDs = Set(rootsForPathLookup(scope: rootScope).map(\.id))
-        let facts = inventoryRecordFacts(fileIDs: sourceFileIDs, folderIDs: []).filesByID
+        let facts = await inventoryRecordFacts(fileIDs: sourceFileIDs, folderIDs: []).filesByID
         var seenFileIDs = Set<UUID>()
         return sourceFileIDs.compactMap { fileID in
             guard seenFileIDs.insert(fileID).inserted,
@@ -11826,7 +11990,7 @@ actor WorkspaceFileContextStore {
         rootScope: WorkspaceLookupRootScope,
         logicalRootDisplayNamesByRootID: [UUID: String] = [:],
         includeCompleteRootCatalogs: Bool = false
-    ) -> WorkspaceCodemapOperationCandidateCollection {
+    ) async -> WorkspaceCodemapOperationCandidateCollection {
         #if DEBUG
             codemapPresentationCandidateRequestCountForTesting += 1
         #endif
@@ -11849,7 +12013,7 @@ actor WorkspaceFileContextStore {
         // P4-6a / B1 site 2 (id-keyed, sync, per-clause failure attribution). One
         // batched `inventoryRecordFacts` call before the scan. Named test:
         // `testCodemapOperationPresentationCandidatesServesManagedOnlyFile`.
-        let facts = inventoryRecordFacts(fileIDs: fileIDs, folderIDs: []).filesByID
+        let facts = await inventoryRecordFacts(fileIDs: fileIDs, folderIDs: []).filesByID
         var seenFileIDs = Set<UUID>()
         var candidates: [WorkspaceCodemapOperationPresentationCandidate] = []
         var issues: [WorkspaceCodemapOperationCandidateIssue] = []
@@ -11896,39 +12060,41 @@ actor WorkspaceFileContextStore {
             }
             return $0.fileID.uuidString < $1.fileID.uuidString
         }
-        let completeRootCatalogs: [WorkspaceCodemapOperationCompleteRootCatalogReceipt]
+        var completeRootCatalogs: [WorkspaceCodemapOperationCompleteRootCatalogReceipt] = []
         if includeCompleteRootCatalogs {
             // Same site (4th occurrence): one batched `inventoryRecordFacts` call per
             // root scan, replacing the per-file `isDiscoverableFileID` / `filesByID`
-            // read inside `.filter`.
-            completeRootCatalogs = rootsForPathLookup(scope: rootScope).compactMap { root in
+            // read inside `.filter`. Manual loop, not `.compactMap`, because the
+            // per-root call is now `async` -- `Array.compactMap`'s closure does not
+            // support `await`; the loop is otherwise behavior-identical (same per-root
+            // call, same guard, same filter/sort).
+            for root in rootsForPathLookup(scope: rootScope) {
                 guard let state = rootStatesByID[root.id],
                       let catalogGeneration = catalogGenerationsByRootID[root.id]
-                else { return nil }
+                else { continue }
                 let rootFileIDs = Array(state.fileIDsByRelativePath.values)
-                let rootFacts = inventoryRecordFacts(fileIDs: rootFileIDs, folderIDs: []).filesByID
+                let rootFacts = await inventoryRecordFacts(fileIDs: rootFileIDs, folderIDs: []).filesByID
                 let supportedFileIDs = rootFileIDs.filter { fileID in
                     guard let fact = rootFacts[fileID], fact.isDiscoverable, let file = fact.record else { return false }
                     let fileExtension = (file.name as NSString).pathExtension
                     return SyntaxManager.supportsCodeMap(fileExtension: fileExtension)
                 }.sorted { $0.uuidString < $1.uuidString }
-                return WorkspaceCodemapOperationCompleteRootCatalogReceipt(
+                completeRootCatalogs.append(WorkspaceCodemapOperationCompleteRootCatalogReceipt(
                     rootEpoch: WorkspaceCodemapRootEpoch(
                         rootID: root.id,
                         rootLifetimeID: state.lifetimeID
                     ),
                     catalogGeneration: catalogGeneration,
                     supportedFileIDs: supportedFileIDs
-                )
-            }.sorted { codemapRootEpochPrecedes($0.rootEpoch, $1.rootEpoch) }
+                ))
+            }
+            completeRootCatalogs.sort { codemapRootEpochPrecedes($0.rootEpoch, $1.rootEpoch) }
             let requestedCandidateIDs = Set(candidates.map(\.fileID))
             let missingFileIDs = completeRootCatalogs.flatMap(\.supportedFileIDs)
                 .filter { !requestedCandidateIDs.contains($0) }
             if !missingFileIDs.isEmpty {
                 issues.append(.incompleteRootSet(missingFileIDs: missingFileIDs))
             }
-        } else {
-            completeRootCatalogs = []
         }
         issues.sort { candidateIssueSortKey($0) < candidateIssueSortKey($1) }
         return WorkspaceCodemapOperationCandidateCollection(
@@ -12060,7 +12226,7 @@ actor WorkspaceFileContextStore {
             // (`currentSession.engine === engine`, `currentSession.authority == session.authority`,
             // root lifetime) is this site's existing D-8 anchor and is untouched.
             // Named test: `testResolveAutomaticCodemapSelectionServesManagedOnlyFile`.
-            let facts = inventoryRecordFacts(fileIDs: rootSources.map(\.fileID), folderIDs: []).filesByID
+            let facts = await inventoryRecordFacts(fileIDs: rootSources.map(\.fileID), folderIDs: []).filesByID
             var validSources: [WorkspaceCodemapAutomaticSelectionSourceIdentity] = []
             var sourceIssues: [WorkspaceCodemapAutomaticSelectionIssue] = []
             for source in rootSources {
@@ -12416,7 +12582,7 @@ actor WorkspaceFileContextStore {
                       ) == seed.requestGeneration
                 else {
                     rootWideFailure = true
-                    if let source = codemapAutomaticSelectionSourceIdentities(
+                    if let source = await codemapAutomaticSelectionSourceIdentities(
                         forFileIDs: [seed.fileID],
                         rootScope: rootScope
                     ).first {
@@ -13195,7 +13361,7 @@ actor WorkspaceFileContextStore {
         // shape exactly rather than hoisting across the `await` below. R5
         // (`filesByID[file.id] == file`) is dropped here: both operands are the same
         // live synchronous read with no intervening `await` (§4.3.1.1 result 2).
-        let firstPassFact = inventoryRecordFacts(fileIDs: [fileID], folderIDs: []).filesByID[fileID]
+        let firstPassFact = await inventoryRecordFacts(fileIDs: [fileID], folderIDs: []).filesByID[fileID]
         guard let file = firstPassFact?.record else {
             return .init(result: .unavailable(.fileNotCataloged), ownership: .notAcquired)
         }
@@ -13293,7 +13459,7 @@ actor WorkspaceFileContextStore {
             // D-8 (batch-of-one, fresh post-await read): `currentFile == file` is the
             // captured-operand form (D-11) -- `file` was bound before this `await`, so
             // this comparison is genuinely falsifiable and must not be dropped.
-            let postEligibilityFact = inventoryRecordFacts(fileIDs: [file.id], folderIDs: []).filesByID[file.id]
+            let postEligibilityFact = await inventoryRecordFacts(fileIDs: [file.id], folderIDs: []).filesByID[file.id]
             guard codemapPreflightAuthorityIsCurrent(authority),
                   let currentFile = postEligibilityFact?.record,
                   currentFile == file,
@@ -13398,8 +13564,8 @@ actor WorkspaceFileContextStore {
 
     func codemapArtifactDemandStatus(
         _ ticket: WorkspaceCodemapArtifactDemandTicket
-    ) -> WorkspaceCodemapArtifactDemandResult {
-        guard codemapDemandIsCurrent(ticket),
+    ) async -> WorkspaceCodemapArtifactDemandResult {
+        guard await codemapDemandIsCurrent(ticket),
               let record = codemapSessionsByRootEpoch[ticket.rootEpoch]?
               .demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket)
@@ -13419,7 +13585,7 @@ actor WorkspaceFileContextStore {
         _ ticket: WorkspaceCodemapArtifactDemandTicket,
         deadline: ContinuousClock.Instant
     ) async -> WorkspaceCodemapArtifactDemandResult {
-        guard codemapDemandIsCurrent(ticket),
+        guard await codemapDemandIsCurrent(ticket),
               let record = codemapSessionsByRootEpoch[ticket.rootEpoch]?
               .demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket),
@@ -13433,21 +13599,21 @@ actor WorkspaceFileContextStore {
             return current
         }
         await record.completion.wait(until: deadline)
-        return codemapArtifactDemandStatus(ticket)
+        return await codemapArtifactDemandStatus(ticket)
     }
 
     func retryBusyCodemapArtifactDemand(
         _ ticket: WorkspaceCodemapArtifactDemandTicket,
         priority: CodeMapArtifactBuildPriority
     ) async -> WorkspaceCodemapArtifactDemandResult {
-        guard codemapDemandIsCurrent(ticket),
+        guard await codemapDemandIsCurrent(ticket),
               var session = codemapSessionsByRootEpoch[ticket.rootEpoch],
               let record = session.demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket),
               record.retainIDs.contains(ticket.retainID),
               case .unavailable(.busy) = record.result
         else {
-            return codemapArtifactDemandStatus(ticket)
+            return await codemapArtifactDemandStatus(ticket)
         }
         guard record.retainIDs.count == 1 else {
             return codemapDemandResult(record.result, for: ticket)
@@ -13495,7 +13661,7 @@ actor WorkspaceFileContextStore {
         // call before the loop is safe here since nothing in this loop awaits).
         // Named test: `testQueryCodemapStructureGraphsServesManagedOnlyFile`.
         var seenFileIDs = Set<UUID>()
-        let seedFacts = inventoryRecordFacts(fileIDs: seedFileIDs, folderIDs: []).filesByID
+        let seedFacts = await inventoryRecordFacts(fileIDs: seedFileIDs, folderIDs: []).filesByID
         for fileID in seedFileIDs where seenFileIDs.insert(fileID).inserted {
             guard let fact = seedFacts[fileID], let file = fact.record, fact.isDiscoverable,
                   allowedRootIDs.contains(file.rootID),
@@ -13553,8 +13719,8 @@ actor WorkspaceFileContextStore {
                     // Deliberately unguarded, matching pre-refactor: no discoverability
                     // filter, no path round-trip check -- a fresh per-iteration batch
                     // fetch over `rootSeedIDs`, not a per-item table subscript.
-                    seeds: {
-                        let sizeLimitFacts = inventoryRecordFacts(fileIDs: rootSeedIDs, folderIDs: []).filesByID
+                    seeds: await {
+                        let sizeLimitFacts = await inventoryRecordFacts(fileIDs: rootSeedIDs, folderIDs: []).filesByID
                         return rootSeedIDs.map {
                             WorkspaceCodemapGraphStructureSeed(
                                 fileID: $0,
@@ -13920,7 +14086,7 @@ actor WorkspaceFileContextStore {
 
     func freezeCodemapPresentation(
         _ requests: [WorkspaceCodemapPresentationRequest]
-    ) -> WorkspaceCodemapPresentationFreezeDisposition {
+    ) async -> WorkspaceCodemapPresentationFreezeDisposition {
         #if DEBUG
             codemapPresentationFreezeRequestCountForTesting += 1
         #endif
@@ -13958,7 +14124,7 @@ actor WorkspaceFileContextStore {
 
         for request in requests {
             let ticket = request.ticket
-            guard codemapDemandIsCurrent(ticket),
+            guard await codemapDemandIsCurrent(ticket),
                   let demandRecord = codemapSessionsByRootEpoch[rootEpoch]?
                   .demandsByFileID[ticket.fileID],
                   codemapTicketsShareDemand(demandRecord.ticket, ticket)
@@ -14034,7 +14200,7 @@ actor WorkspaceFileContextStore {
 
         for pair in pairs {
             let entry = pair.entry
-            guard codemapDemandIsCurrent(entry.ticket),
+            guard await codemapDemandIsCurrent(entry.ticket),
                   let demandRecord = codemapSessionsByRootEpoch[rootEpoch]?
                   .demandsByFileID[entry.ticket.fileID],
                   case let .ready(ready) = demandRecord.result,
@@ -14096,7 +14262,7 @@ actor WorkspaceFileContextStore {
 
     func renderCodemapPresentation(
         _ bundle: WorkspaceCodemapFrozenPresentationBundle
-    ) -> WorkspaceCodemapPresentationRenderDisposition {
+    ) async -> WorkspaceCodemapPresentationRenderDisposition {
         guard let session = codemapSessionsByRootEpoch[bundle.rootEpoch],
               let record = session.presentationRecordsByID[bundle.id]
         else {
@@ -14114,7 +14280,7 @@ actor WorkspaceFileContextStore {
         renderedEntries.reserveCapacity(record.entries.count)
 
         for (entry, handle) in zip(record.entries, record.handles) {
-            guard codemapDemandIsCurrent(entry.ticket),
+            guard await codemapDemandIsCurrent(entry.ticket),
                   let demandRecord = codemapSessionsByRootEpoch[record.rootEpoch]?
                   .demandsByFileID[entry.ticket.fileID],
                   case let .ready(ready) = demandRecord.result,
@@ -14152,7 +14318,7 @@ actor WorkspaceFileContextStore {
         }
 
         for (entry, handle) in zip(record.entries, record.handles) {
-            guard codemapDemandIsCurrent(entry.ticket) else {
+            guard await codemapDemandIsCurrent(entry.ticket) else {
                 return .unavailable(.staleCurrentness(entry.ticket))
             }
             do {
@@ -14190,7 +14356,7 @@ actor WorkspaceFileContextStore {
                     return .stale(.rootEpoch(catalog.rootEpoch))
                 }
                 let rootFileIDs = Array(state.fileIDsByRelativePath.values)
-                let rootFacts = inventoryRecordFacts(fileIDs: rootFileIDs, folderIDs: []).filesByID
+                let rootFacts = await inventoryRecordFacts(fileIDs: rootFileIDs, folderIDs: []).filesByID
                 let currentSupportedFileIDs = rootFileIDs.filter { fileID in
                     guard let fact = rootFacts[fileID], fact.isDiscoverable, let file = fact.record else { return false }
                     return SyntaxManager.supportsCodeMap(
@@ -14207,7 +14373,7 @@ actor WorkspaceFileContextStore {
         // only `await` (the trailing `revalidateAutomaticCodemapSelection` call) is
         // strictly after every table read in this function, so no new staleness
         // window opens by hoisting here.
-        let candidateFacts = inventoryRecordFacts(fileIDs: receipt.candidates.map(\.fileID), folderIDs: []).filesByID
+        let candidateFacts = await inventoryRecordFacts(fileIDs: receipt.candidates.map(\.fileID), folderIDs: []).filesByID
         for candidate in receipt.candidates {
             let rootEpoch = candidate.rootEpoch
             guard allowedRootIDs.contains(rootEpoch.rootID),
@@ -14229,7 +14395,7 @@ actor WorkspaceFileContextStore {
 
         for ticket in receipt.demandTickets {
             guard allowedRootIDs.contains(ticket.rootEpoch.rootID),
-                  codemapDemandIsCurrent(ticket),
+                  await codemapDemandIsCurrent(ticket),
                   let record = codemapSessionsByRootEpoch[ticket.rootEpoch]?
                   .demandsByFileID[ticket.fileID],
                   codemapTicketsShareDemand(record.ticket, ticket),
@@ -14329,7 +14495,7 @@ actor WorkspaceFileContextStore {
         _ ticket: WorkspaceCodemapArtifactDemandTicket,
         deadline: ContinuousClock.Instant? = nil
     ) async -> Bool {
-        guard codemapDemandIsCurrent(ticket),
+        guard await codemapDemandIsCurrent(ticket),
               let record = codemapSessionsByRootEpoch[ticket.rootEpoch]?
               .demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket),
@@ -14369,7 +14535,7 @@ actor WorkspaceFileContextStore {
         _ ticket: WorkspaceCodemapArtifactDemandTicket,
         deadline: ContinuousClock.Instant? = nil
     ) async -> Bool {
-        guard codemapDemandIsCurrent(ticket),
+        guard await codemapDemandIsCurrent(ticket),
               var session = codemapSessionsByRootEpoch[ticket.rootEpoch],
               var record = session.demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket),
@@ -14487,7 +14653,7 @@ actor WorkspaceFileContextStore {
         func revokeReadyCodemapArtifactContributionForTesting(
             _ ticket: WorkspaceCodemapArtifactDemandTicket
         ) async -> Bool {
-            guard codemapDemandIsCurrent(ticket),
+            guard await codemapDemandIsCurrent(ticket),
                   let engine = codemapSessionsByRootEpoch[ticket.rootEpoch]?.engine
             else { return false }
             return await engine.revokeReadyArtifact(
@@ -14559,7 +14725,7 @@ actor WorkspaceFileContextStore {
         func waitForCodemapArtifactDemandCompletionForTesting(
             _ ticket: WorkspaceCodemapArtifactDemandTicket
         ) async -> WorkspaceCodemapArtifactDemandResult {
-            guard codemapDemandIsCurrent(ticket),
+            guard await codemapDemandIsCurrent(ticket),
                   let record = codemapSessionsByRootEpoch[ticket.rootEpoch]?
                   .demandsByFileID[ticket.fileID],
                   codemapTicketsShareDemand(record.ticket, ticket),
@@ -14572,7 +14738,7 @@ actor WorkspaceFileContextStore {
                 return current
             }
             await record.completion.wait()
-            return codemapArtifactDemandStatus(ticket)
+            return await codemapArtifactDemandStatus(ticket)
         }
 
         func codemapArtifactDemandRetainCountForTesting(
@@ -14853,7 +15019,7 @@ actor WorkspaceFileContextStore {
         ticket: WorkspaceCodemapArtifactDemandTicket,
         priority: CodeMapArtifactBuildPriority
     ) async {
-        guard codemapDemandIsCurrent(ticket),
+        guard await codemapDemandIsCurrent(ticket),
               let session = codemapSessionsByRootEpoch[ticket.rootEpoch],
               let record = session.demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket)
@@ -14867,7 +15033,7 @@ actor WorkspaceFileContextStore {
             .unavailable(.runtimeFailure)
         }
 
-        guard codemapDemandIsCurrent(ticket), !Task.isCancelled,
+        guard await codemapDemandIsCurrent(ticket), !Task.isCancelled,
               let refreshedSession = codemapSessionsByRootEpoch[ticket.rootEpoch],
               let refreshedRecord = refreshedSession.demandsByFileID[ticket.fileID],
               refreshedRecord.ticket == ticket
@@ -14875,13 +15041,13 @@ actor WorkspaceFileContextStore {
 
         switch setupDisposition {
         case let .unavailable(reason):
-            publishCodemapDemandResult(.unavailable(reason), ticket: ticket)
+            await publishCodemapDemandResult(.unavailable(reason), ticket: ticket)
             return
         case .ready:
             break
         }
         guard let engine = refreshedSession.engine else {
-            publishCodemapDemandResult(.unavailable(.runtimeFailure), ticket: ticket)
+            await publishCodemapDemandResult(.unavailable(.runtimeFailure), ticket: ticket)
             return
         }
 
@@ -14896,7 +15062,7 @@ actor WorkspaceFileContextStore {
             language: refreshedRecord.language
         ))
         let result = await codemapDemandResultHook(ticket, engineResult)
-        guard codemapDemandIsCurrent(ticket), !Task.isCancelled else { return }
+        guard await codemapDemandIsCurrent(ticket), !Task.isCancelled else { return }
 
         switch result {
         case let .ready(snapshot), let .alreadyReady(snapshot):
@@ -14906,24 +15072,24 @@ actor WorkspaceFileContextStore {
                 ticket: ticket
             )
         case let .unavailable(reason):
-            publishCodemapDemandResult(
+            await publishCodemapDemandResult(
                 .unavailable(.demandUnavailable(reason)),
                 ticket: ticket
             )
         case let .busy(retryAfterMilliseconds):
-            publishCodemapDemandResult(
+            await publishCodemapDemandResult(
                 .unavailable(.busy(retryAfterMilliseconds: retryAfterMilliseconds)),
                 ticket: ticket
             )
         case .rejected(.staleCompletion):
-            publishCodemapDemandResult(.unavailable(.staleCurrentness), ticket: ticket)
+            await publishCodemapDemandResult(.unavailable(.staleCurrentness), ticket: ticket)
         case let .rejected(rejection):
-            publishCodemapDemandResult(
+            await publishCodemapDemandResult(
                 .unavailable(.rejected(rejection)),
                 ticket: ticket
             )
         case .cancelled:
-            publishCodemapDemandResult(.unavailable(.cancelled), ticket: ticket)
+            await publishCodemapDemandResult(.unavailable(.cancelled), ticket: ticket)
         }
     }
 
@@ -14932,7 +15098,7 @@ actor WorkspaceFileContextStore {
         engine: WorkspaceCodemapBindingEngine,
         ticket: WorkspaceCodemapArtifactDemandTicket
     ) async {
-        guard codemapDemandIsCurrent(ticket),
+        guard await codemapDemandIsCurrent(ticket),
               let record = codemapSessionsByRootEpoch[ticket.rootEpoch]?
               .demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket)
@@ -14947,10 +15113,10 @@ actor WorkspaceFileContextStore {
             fileID: ticket.fileID,
             requestGeneration: ticket.requestGeneration
         ) else {
-            publishCodemapDemandResult(.unavailable(.staleCurrentness), ticket: ticket)
+            await publishCodemapDemandResult(.unavailable(.staleCurrentness), ticket: ticket)
             return
         }
-        guard codemapDemandIsCurrent(ticket),
+        guard await codemapDemandIsCurrent(ticket),
               bundle.rootEpoch == ticket.rootEpoch,
               bundle.catalogGeneration == ticket.catalogGeneration,
               snapshot.rootEpoch == ticket.rootEpoch,
@@ -14968,8 +15134,8 @@ actor WorkspaceFileContextStore {
               (try? handle.artifactKey()) == snapshot.artifactKey
         else {
             bundle.close()
-            if codemapDemandIsCurrent(ticket) {
-                publishCodemapDemandResult(.unavailable(.staleCurrentness), ticket: ticket)
+            if await codemapDemandIsCurrent(ticket) {
+                await publishCodemapDemandResult(.unavailable(.staleCurrentness), ticket: ticket)
             }
             return
         }
@@ -14989,7 +15155,7 @@ actor WorkspaceFileContextStore {
             snapshot: snapshot,
             handle: handle
         )
-        guard publishCodemapDemandResult(.ready(ready), ticket: ticket) else {
+        guard await publishCodemapDemandResult(.ready(ready), ticket: ticket) else {
             codemapSessionsByRootEpoch[ticket.rootEpoch]?
                 .bundlesByRequestID.removeValue(forKey: ticket.requestID)
             bundle.close()
@@ -15021,8 +15187,8 @@ actor WorkspaceFileContextStore {
     private func publishCodemapDemandResult(
         _ result: WorkspaceCodemapArtifactDemandResult,
         ticket: WorkspaceCodemapArtifactDemandTicket
-    ) -> Bool {
-        guard codemapDemandIsCurrent(ticket),
+    ) async -> Bool {
+        guard await codemapDemandIsCurrent(ticket),
               var session = codemapSessionsByRootEpoch[ticket.rootEpoch],
               var record = session.demandsByFileID[ticket.fileID],
               codemapTicketsShareDemand(record.ticket, ticket)
@@ -15271,7 +15437,7 @@ actor WorkspaceFileContextStore {
         // falsifiable -- it is preserved, not dropped. `state.fileIDsByRelativePath[...]`
         // stays a direct read: it checks the *captured* file's own path, which the
         // fact primitive (keyed by live-record path) cannot substitute for.
-        let pageFacts = inventoryRecordFacts(
+        let pageFacts = await inventoryRecordFacts(
             fileIDs: current.shard.projectionFiles[startIndex...].map(\.file.id),
             folderIDs: []
         ).filesByID
@@ -15377,7 +15543,7 @@ actor WorkspaceFileContextStore {
         // `inventoryPathLookups` call over this synchronous scan of `update.changes`
         // (no `await` before this point in the function). R4 (discoverability) stays
         // absent, per §4.3.1.1's six-site gap registry (PC-4) -- must not be added.
-        let firstPassLookups = inventoryPathLookups(
+        let firstPassLookups = await inventoryPathLookups(
             rootID: authority.rootEpoch.rootID,
             relativePaths: update.changes.map(\.standardizedRelativePath)
         )
@@ -15399,7 +15565,7 @@ actor WorkspaceFileContextStore {
             return change.standardizedRelativePath
         })
         if !securityExcludedPaths.isEmpty {
-            guard let fence = destructiveCodemapGraphFence(
+            guard let fence = await destructiveCodemapGraphFence(
                 rootID: authority.rootEpoch.rootID,
                 commands: [.securityExcluded(securityExcludedPaths)]
             ), let engine = initialSession.engine,
@@ -15428,7 +15594,7 @@ actor WorkspaceFileContextStore {
         // graph.fenceFiles) are exactly the staleness window D-8 exists to detect;
         // re-deriving `session` and re-checking `codemapAuthorityIsCurrent` just above
         // is the site's existing generation re-check this hoist piggybacks on.
-        let secondPassLookups = inventoryPathLookups(
+        let secondPassLookups = await inventoryPathLookups(
             rootID: authority.rootEpoch.rootID,
             relativePaths: update.changes.map(\.standardizedRelativePath)
         )
@@ -15510,8 +15676,8 @@ actor WorkspaceFileContextStore {
         /// so this shim is a direct pass-through with no setup of its own.
         func codemapDemandIsCurrentForTesting(
             _ ticket: WorkspaceCodemapArtifactDemandTicket
-        ) -> Bool {
-            codemapDemandIsCurrent(ticket)
+        ) async -> Bool {
+            await codemapDemandIsCurrent(ticket)
         }
 
         func codemapMarkerReadinessSnapshotForTesting(
@@ -15568,7 +15734,7 @@ actor WorkspaceFileContextStore {
         rootEpoch: WorkspaceCodemapRootEpoch,
         relativePath: String,
         authority: CodemapRootAuthority
-    ) -> WorkspaceCodemapManifestBindingCandidate? {
+    ) async -> WorkspaceCodemapManifestBindingCandidate? {
         guard rootEpoch == authority.rootEpoch,
               codemapAuthorityIsCurrent(authority),
               let session = codemapSessionsByRootEpoch[rootEpoch],
@@ -15582,7 +15748,7 @@ actor WorkspaceFileContextStore {
               standardizedRelativePath != "..",
               !standardizedRelativePath.hasPrefix("../")
         else { return nil }
-        let fact = inventoryPathLookups(
+        let fact = await inventoryPathLookups(
             rootID: rootEpoch.rootID,
             relativePaths: [standardizedRelativePath]
         ).files[standardizedRelativePath]
@@ -15709,9 +15875,21 @@ actor WorkspaceFileContextStore {
     /// P4-6a / B1 site 11 (path-keyed, sync). R4 (discoverability) stays absent per
     /// §4.3.1.1's six-site gap registry (PC-6) -- must not be added. Named test:
     /// `testCodemapDemandIsCurrentTrueForManagedOnlyFile`.
+    /// P4-6b prep slice 1: `async` so this gatekeeping primitive is delegation-capable,
+    /// matching `inventoryRecordFacts`/`inventoryPathLookups`. A live-testing pass
+    /// initially suspected this conversion of causing `CodemapAutomaticSelectionGraphNativeTests`
+    /// to time out (a reentrancy-window hypothesis: this function gates 20+ call sites
+    /// in the timing-sensitive demand/ticket state machine); that suspicion was
+    /// disproven by comparison against the unmodified baseline (`git stash` of this
+    /// file) -- the same suite fails identically, with or without this conversion.
+    /// The actual cause is a pre-existing, already-tracked bug in
+    /// `WorkspaceCodemapBindingEngine.swift`'s `resolveGraphIndexCandidate`, which
+    /// folds bridge/runtime errors into `.transient`/`.retry` with no terminal case
+    /// (`docs/investigations/full-suite-test-hang-2026-08-21.md`), unrelated to
+    /// inventory authority or this read-facade work.
     private func codemapDemandIsCurrent(
         _ ticket: WorkspaceCodemapArtifactDemandTicket
-    ) -> Bool {
+    ) async -> Bool {
         guard ticket.requestGeneration > 0,
               ticket.catalogGeneration > 0,
               ticket.pathGeneration > 0,
@@ -15728,7 +15906,7 @@ actor WorkspaceFileContextStore {
                       ?? session.authority.ingressGeneration
               ) == ticket.pathGeneration
         else { return false }
-        let fact = inventoryPathLookups(
+        let fact = await inventoryPathLookups(
             rootID: ticket.rootEpoch.rootID,
             relativePaths: [record.identity.standardizedRelativePath]
         ).files[record.identity.standardizedRelativePath]
@@ -16082,6 +16260,17 @@ actor WorkspaceFileContextStore {
     /// window). `state` itself is still read directly for the unrelated `lifetimeID`
     /// gate, which is not one of the ten inventory tables. Named test:
     /// `testRetainCodemapRootStatusCoverageSkipsPathsAbsentFromProjectionOrAlreadyInvalidated`.
+    ///
+    /// P4-6b prep slice 1: deliberately kept synchronous and routed through the
+    /// state-scoped `inventoryPathLookups(in:relativePaths:)` overload rather than the
+    /// now-`async` public one. This function's sole caller, `beginCodemapPathInvalidation`,
+    /// is itself deliberately synchronous ("invalidates codemap graph-index authority
+    /// synchronously... without awaiting derived engine/graph convergence" -- its own doc
+    /// comment) and has 7+ call sites on ingress-adjacent paths; making it `async` to
+    /// accommodate this one primitive would ripple a real synchronization-contract change
+    /// through code this slice's remit does not cover. The state-scoped overload is exactly
+    /// the id-map read this call needs and stays out of the async-delegation surface for
+    /// the same reason discussed on that overload's own doc comment.
     private func retainCodemapRootStatusCoverageAcrossPathInvalidation(
         rootEpoch: WorkspaceCodemapRootEpoch,
         standardizedRelativePaths: Set<String>
@@ -16093,7 +16282,7 @@ actor WorkspaceFileContextStore {
               let shard = codemapGraphIndexCatalogShardAndToken(authority: authority)?.shard
         else { return }
 
-        let lookups = inventoryPathLookups(rootID: rootEpoch.rootID, relativePaths: standardizedRelativePaths).files
+        let lookups = inventoryPathLookups(in: state, relativePaths: standardizedRelativePaths).files
         for path in standardizedRelativePaths {
             guard let fileID = lookups[path]?.fileID,
                   shard.projectionFileIndexByID[fileID] != nil,
@@ -16128,7 +16317,7 @@ actor WorkspaceFileContextStore {
             )
         }
 
-        let destructiveFence = destructiveCodemapGraphFence(
+        let destructiveFence = await destructiveCodemapGraphFence(
             rootID: authority.rootEpoch.rootID,
             commands: commands
         )
@@ -16170,7 +16359,7 @@ actor WorkspaceFileContextStore {
     private func destructiveCodemapGraphFence(
         rootID: UUID,
         commands: [CodemapInvalidationCommand]
-    ) -> (fileIDs: Set<UUID>, reason: WorkspaceCodemapGraphFenceReason)? {
+    ) async -> (fileIDs: Set<UUID>, reason: WorkspaceCodemapGraphFenceReason)? {
         let queriedPaths: Set<String> = commands.reduce(into: []) { paths, command in
             switch command {
             case let .deleted(commandPaths), let .securityExcluded(commandPaths):
@@ -16182,7 +16371,7 @@ actor WorkspaceFileContextStore {
                 break
             }
         }
-        let lookups = inventoryPathLookups(rootID: rootID, relativePaths: queriedPaths).files
+        let lookups = await inventoryPathLookups(rootID: rootID, relativePaths: queriedPaths).files
         var fileIDs = Set<UUID>()
         var reason: WorkspaceCodemapGraphFenceReason = .deleted
         for command in commands {

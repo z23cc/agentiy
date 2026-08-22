@@ -235,6 +235,99 @@ import XCTest
             XCTAssertEqual(mismatchCount, 0)
         }
 
+        // MARK: - Read-facade dual-read comparator (P4-6b prep slice 1)
+
+        /// Drives the new `inventoryResolveRecords` / `inventoryLookupPaths` Swift facade (built
+        /// over the shadow scope) against the Swift-authoritative `inventoryRecordFacts` /
+        /// `inventoryPathLookups` primitives across a bulk load, an incremental add, a modify, and
+        /// a remove -- present ids/paths, absent ids/paths, and a path whose id churns across the
+        /// remove -- asserting zero fact mismatches at every step.
+        func testReadFacadeMatchesSwiftAuthorityAcrossBulkLoadAndDeltaMutation() async throws {
+            let root = try makeTemporaryRoot(name: "ShadowReadFacade")
+            try write("a", to: root.appendingPathComponent("App.swift"))
+            try write("b", to: root.appendingPathComponent("Sub/B.swift"))
+            let store = makeShadowStore()
+            let record = try await store.loadRoot(path: root.path)
+            try await store.startWatchingRoot(id: record.id)
+
+            let absentFileID = UUID()
+            let absentFolderID = UUID()
+
+            func currentIDs() async -> (appFileID: UUID?, subFolderID: UUID?, bFileID: UUID?) {
+                let lookups = await store.inventoryPathLookups(
+                    rootID: record.id,
+                    relativePaths: ["App.swift", "Sub", "Sub/B.swift"]
+                )
+                return (
+                    lookups.files["App.swift"]?.fileID,
+                    lookups.folders["Sub"]?.folderID,
+                    lookups.files["Sub/B.swift"]?.fileID
+                )
+            }
+
+            // Bulk-loaded state: present file/folder ids plus fabricated absent ones, present and
+            // absent paths.
+            var ids = await currentIDs()
+            var report = try await store.compareInventoryScopeReadFacadeForTesting(
+                rootID: record.id,
+                fileIDs: [try XCTUnwrap(ids.appFileID), try XCTUnwrap(ids.bFileID), absentFileID],
+                folderIDs: [try XCTUnwrap(ids.subFolderID), absentFolderID],
+                relativePaths: ["App.swift", "Sub", "Sub/B.swift", "Missing.swift"]
+            )
+            XCTAssertTrue(report.matched, "bulk-load mismatch: \(report)")
+
+            // Incremental add.
+            try write("added", to: root.appendingPathComponent("Added.swift"))
+            try await store.publishSyntheticFileSystemDeltasForTesting(rootID: record.id, deltas: [.fileAdded("Added.swift")])
+            _ = await store.flushPendingServiceEventsForAllRoots()
+            let addedLookup = await store.inventoryPathLookups(rootID: record.id, relativePaths: ["Added.swift"])
+            let addedFileID = try XCTUnwrap(addedLookup.files["Added.swift"]?.fileID)
+            report = try await store.compareInventoryScopeReadFacadeForTesting(
+                rootID: record.id,
+                fileIDs: [addedFileID, absentFileID],
+                folderIDs: [],
+                relativePaths: ["Added.swift"]
+            )
+            XCTAssertTrue(report.matched, "post-add mismatch: \(report)")
+
+            // Modify (id-stable).
+            try await store.publishSyntheticFileSystemDeltasForTesting(rootID: record.id, deltas: [.fileModified("App.swift", nil)])
+            _ = await store.flushPendingServiceEventsForAllRoots()
+            report = try await store.compareInventoryScopeReadFacadeForTesting(
+                rootID: record.id,
+                fileIDs: [try XCTUnwrap(ids.appFileID)],
+                folderIDs: [],
+                relativePaths: ["App.swift"]
+            )
+            XCTAssertTrue(report.matched, "post-modify mismatch: \(report)")
+
+            // Remove then re-add the same path in one batch. Whatever id the Swift authority
+            // ends up with for the surviving record (reused or freshly minted -- that specific
+            // contract is pinned by other tests, not this one), the read facade must agree with
+            // it exactly, plus still agree that a genuinely-fabricated absent id stays absent.
+            try FileManager.default.removeItem(at: root.appendingPathComponent("App.swift"))
+            try write("replaced", to: root.appendingPathComponent("App.swift"))
+            try await store.publishSyntheticFileSystemDeltasForTesting(
+                rootID: record.id,
+                deltas: [.fileRemoved("App.swift"), .fileAdded("App.swift")]
+            )
+            _ = await store.flushPendingServiceEventsForAllRoots()
+            ids = await currentIDs()
+            let survivingAppFileID = try XCTUnwrap(ids.appFileID)
+            report = try await store.compareInventoryScopeReadFacadeForTesting(
+                rootID: record.id,
+                fileIDs: [survivingAppFileID, absentFileID],
+                folderIDs: [],
+                relativePaths: ["App.swift"]
+            )
+            XCTAssertTrue(report.matched, "post-remove-readd mismatch: \(report)")
+
+            let comparisonCount = await store.inventoryScopeReadFacadeComparisonCountForTesting
+            let mismatchCount = await store.inventoryScopeReadFacadeMismatchCountForTesting
+            XCTAssertEqual(comparisonCount, 4)
+            XCTAssertEqual(mismatchCount, 0)
+        }
+
         // MARK: - Adversarial delta-sequence differentials (design doc §8.2 item 3, closing the
 
         // P4-6b cutover gate's non-negotiable coverage set). "Out-of-order watermarks" is *not*

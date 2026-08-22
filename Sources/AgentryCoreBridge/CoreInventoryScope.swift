@@ -126,6 +126,33 @@ extension CoreRuntimeTransport {
     ) throws -> AgentryUniFFIRaw.CompactQueryResultV1 {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
+
+    func inventoryResolveRecords(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        expectedCatalogGeneration: UInt64?,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
+    func inventoryLookupPaths(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactLookupResultV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
+    func inventoryOpenProjectedShard(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
 }
 
 extension AgentryCoreBridge {
@@ -361,6 +388,44 @@ extension AgentryCoreBridge {
             throw mapTransportError(error)
         }
     }
+
+    func inventoryResolveRecords(
+        scopeID: String,
+        rootID: UUID,
+        expectedCatalogGeneration: UInt64?,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryResolveRecords(
+                identity: identity,
+                scopeID: scopeID,
+                rootID: coreInventoryUUIDData(rootID),
+                expectedCatalogGeneration: expectedCatalogGeneration,
+                bytes: bytes
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryLookupPaths(scopeID: String, handleID: UInt64, bytes: Data) throws -> AgentryUniFFIRaw.CompactLookupResultV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryLookupPaths(identity: identity, scopeID: scopeID, handleID: handleID, bytes: bytes)
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryOpenProjectedShard(scopeID: String, rootID: UUID) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryOpenProjectedShard(identity: identity, scopeID: scopeID, rootID: coreInventoryUUIDData(rootID))
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
 }
 
 private func coreInventoryUUIDData(_ id: UUID) -> Data {
@@ -525,6 +590,82 @@ public struct CoreInventoryQueryCandidateV1: Sendable, Equatable {
 public struct CoreInventoryQueryResult: Sendable, Equatable {
     public let generation: UInt64?
     public let candidates: [CoreInventoryQueryCandidateV1]
+}
+
+/// One row of `FactBlock`'s `rows` (`wire.rs`'s `FactRow`, 18-word `FACT_ROW_STRIDE`; contract doc
+/// §5.3: "the API returns facts; each call site composes its own predicate"). `keyHi`/`keyLo` are
+/// deliberately not decoded into a typed key here -- for `resolveRecords` they are the requested
+/// id's own words (redundant with request-order positional correlation); for `lookupPaths`
+/// `keyHi` is always `0` and `keyLo` is a positional ordinal, not a lookup key any decoder needs
+/// (`resolve.rs`'s `lookup_by_paths` doc comment: "result order already matches request order
+/// 1:1"). Both facade methods below correlate rows to their request by position, not by decoding
+/// this field, so it is omitted entirely rather than exposed as a value nothing should read.
+public struct CoreInventoryFactRowV1: Sendable, Equatable {
+    public let exists: Bool
+    public let fileID: UUID?
+    public let folderID: UUID?
+    public let rootID: UUID?
+    public let isDiscoverable: Bool
+    public let pathRoundTripsToSelf: Bool
+    public let standardizedRelativePath: String?
+    public let standardizedFullPath: String?
+    public let name: String?
+    public let recordFingerprint: UInt64
+}
+
+/// `wire.rs`'s `FactBlock`: `generation == nil` is the whole-block-stale case (contract doc §5.3),
+/// carried as data rather than thrown.
+public struct CoreInventoryFactBlockV1: Sendable, Equatable {
+    public let generation: UInt64?
+    public let rootLifetimeID: String
+    public let rows: [CoreInventoryFactRowV1]
+}
+
+/// One id's (or path's) resolved fact -- the friendly, per-key-dictionary shape `resolveRecords`/
+/// `lookupPaths` return, built by zipping `CoreInventoryFactBlockV1.rows` against the request
+/// array's own order (see `CoreInventoryFactRowV1`'s doc comment on why the raw key words are
+/// never decoded).
+public struct CoreInventoryRecordFact: Sendable, Equatable {
+    public let exists: Bool
+    public let fileID: UUID?
+    public let folderID: UUID?
+    public let rootID: UUID?
+    public let isDiscoverable: Bool
+    public let pathRoundTripsToSelf: Bool
+    public let standardizedRelativePath: String?
+    public let standardizedFullPath: String?
+    public let name: String?
+    public let recordFingerprint: UInt64
+
+    fileprivate init(_ row: CoreInventoryFactRowV1) {
+        exists = row.exists
+        fileID = row.fileID
+        folderID = row.folderID
+        rootID = row.rootID
+        isDiscoverable = row.isDiscoverable
+        pathRoundTripsToSelf = row.pathRoundTripsToSelf
+        standardizedRelativePath = row.standardizedRelativePath
+        standardizedFullPath = row.standardizedFullPath
+        name = row.name
+        recordFingerprint = row.recordFingerprint
+    }
+}
+
+/// `inventoryResolveRecords`'s typed result (contract doc §5.3's `CompactRecordBlockV1`).
+/// `generation == nil` means the whole block is stale against `expectedCatalogGeneration` --
+/// `filesByID`/`foldersByID` are empty in that case, matching `resolve_records`'s early return.
+public struct CoreInventoryRecordBlock: Sendable, Equatable {
+    public let generation: UInt64?
+    public let rootLifetimeID: String
+    public let filesByID: [UUID: CoreInventoryRecordFact]
+    public let foldersByID: [UUID: CoreInventoryRecordFact]
+}
+
+/// `inventoryLookupPaths`'s typed result: the identical fact shape, keyed by the requested path.
+public struct CoreInventoryPathLookupResult: Sendable, Equatable {
+    public let generation: UInt64?
+    public let rootLifetimeID: String
+    public let factsByPath: [String: CoreInventoryRecordFact]
 }
 
 public struct CoreInventoryDeltaReceipt: Sendable, Equatable {
@@ -702,6 +843,65 @@ public final class CoreInventoryScope: @unchecked Sendable {
         )
     }
 
+    /// `inventoryOpenProjectedShard` (contract doc §6, B2: the codemap graph-index catalog shard,
+    /// built authority-side under a caller-supplied codemap-capable extension set -- configured at
+    /// `open(bridge:config:)` time, not per-call). Returns a normal `CoreInventorySnapshot`: the
+    /// projected shard is consumed the same way any other snapshot is, via `page`/`query`.
+    public func openProjectedShard(rootID: UUID) async throws -> CoreInventorySnapshot {
+        let handle = try await bridge.inventoryOpenProjectedShard(scopeID: scopeID, rootID: rootID)
+        return CoreInventorySnapshot(
+            bridge: bridge,
+            scopeID: scopeID,
+            handleID: handle.handleId,
+            generation: handle.generation,
+            rootLifetimeID: handle.rootLifetimeId
+        )
+    }
+
+    /// `inventoryResolveRecords` (contract doc §5.3): facts, not a verdict, atomically against one
+    /// generation. `expectedCatalogGeneration`, when supplied, pins the read to that generation --
+    /// a mismatch returns a whole-block-stale result (`generation == nil`, both dictionaries
+    /// empty) rather than silently reading a different generation than the caller expected (the
+    /// per-site D-8 staleness check §4.3.1's async B1 sites need). Root-based, not handle-based --
+    /// no snapshot needs to be open first, matching `applyDelta`/`pushBulkChunk`'s shape.
+    public func resolveRecords(
+        rootID: UUID,
+        expectedCatalogGeneration: UInt64? = nil,
+        fileIDs: [UUID],
+        folderIDs: [UUID]
+    ) async throws -> CoreInventoryRecordBlock {
+        let bytes = CoreInventoryScopeWire.encodeResolveRequest(fileIDs: fileIDs, folderIDs: folderIDs)
+        let response = try await bridge.inventoryResolveRecords(
+            scopeID: scopeID, rootID: rootID, expectedCatalogGeneration: expectedCatalogGeneration, bytes: bytes
+        )
+        let block = try CoreInventoryScopeWire.decodeFactBlock(response.bytes)
+        guard block.generation != nil else {
+            return CoreInventoryRecordBlock(
+                generation: nil, rootLifetimeID: block.rootLifetimeID, filesByID: [:], foldersByID: [:]
+            )
+        }
+        // Rows are in request order: every fileIDs row first, then every folderIDs row -- see
+        // `resolve_by_ids`'s doc comment (`rust/crates/runtime/src/inventory_scope/resolve.rs`).
+        // Correlated by position, not by decoding the row's own key words -- see
+        // `CoreInventoryFactRowV1`'s doc comment.
+        var filesByID: [UUID: CoreInventoryRecordFact] = [:]
+        filesByID.reserveCapacity(fileIDs.count)
+        for (index, id) in fileIDs.enumerated() where index < block.rows.count {
+            filesByID[id] = CoreInventoryRecordFact(block.rows[index])
+        }
+        var foldersByID: [UUID: CoreInventoryRecordFact] = [:]
+        foldersByID.reserveCapacity(folderIDs.count)
+        for (index, id) in folderIDs.enumerated() {
+            let rowIndex = fileIDs.count + index
+            guard rowIndex < block.rows.count else { continue }
+            foldersByID[id] = CoreInventoryRecordFact(block.rows[rowIndex])
+        }
+        return CoreInventoryRecordBlock(
+            generation: block.generation, rootLifetimeID: block.rootLifetimeID,
+            filesByID: filesByID, foldersByID: foldersByID
+        )
+    }
+
     public func diagnostics() async throws -> AgentryUniFFIRaw.InventoryDiagnosticsV1 {
         try await bridge.inventoryScopeDiagnostics(scopeID: scopeID)
     }
@@ -782,6 +982,28 @@ public final class CoreInventorySnapshot: @unchecked Sendable {
         let response = try await bridge.inventoryQuery(scopeID: scopeID, handleID: handleID, bytes: bytes)
         let (generation, candidates) = try CoreInventoryScopeWire.decodeQueryResponse(response.bytes)
         return CoreInventoryQueryResult(generation: generation, candidates: candidates)
+    }
+
+    /// `inventoryLookupPaths` (contract doc §5.3): the identical fact shape `resolveRecords`
+    /// returns, keyed by path instead of id. Handle-based: the `SnapshotHandleId` selects which
+    /// root's live maps to read but does not pin the read to that handle's captured generation
+    /// (`scope.rs`'s `lookup_paths` doc comment) -- `factsByPath`'s `generation` is the *live*
+    /// generation at read time, which a caller comparing against its own captured generation must
+    /// account for.
+    public func lookupPaths(relativePaths: [String]) async throws -> CoreInventoryPathLookupResult {
+        let bytes = CoreInventoryScopeWire.encodeLookupRequest(paths: relativePaths)
+        let response = try await bridge.inventoryLookupPaths(scopeID: scopeID, handleID: handleID, bytes: bytes)
+        let block = try CoreInventoryScopeWire.decodeFactBlock(response.bytes)
+        // Rows are in request order, 1:1 with `relativePaths` -- see `lookup_by_paths`'s doc
+        // comment (`rust/crates/runtime/src/inventory_scope/resolve.rs`).
+        var factsByPath: [String: CoreInventoryRecordFact] = [:]
+        factsByPath.reserveCapacity(relativePaths.count)
+        for (index, path) in relativePaths.enumerated() where index < block.rows.count {
+            factsByPath[path] = CoreInventoryRecordFact(block.rows[index])
+        }
+        return CoreInventoryPathLookupResult(
+            generation: block.generation, rootLifetimeID: block.rootLifetimeID, factsByPath: factsByPath
+        )
     }
 
     /// Idempotent, product-facing close. `deinit` is a backstop only -- see this type's doc
@@ -997,6 +1219,7 @@ private let coreInventoryScopeOptionalWord = UInt64.max
 private let coreInventoryScopeRecordStride = 14
 private let coreInventoryScopeDiscoveryRecordStride = 12
 private let coreInventoryScopeCandidateRowStride = 11
+private let coreInventoryScopeFactRowStride = 18
 private let coreInventoryScopeMaxWordsPerSection = 8 * 1024 * 1024
 private let coreInventoryScopeMaxRowsPerCall = 200_000
 private let coreInventoryScopeMaxBlobBytes = 64 * 1024 * 1024
@@ -1275,6 +1498,102 @@ enum CoreInventoryScopeWire {
             modifiedFileIDs: try decodeUUIDWordList(modifiedFileIDWords),
             modifiedFolderIDs: try decodeUUIDWordList(modifiedFolderIDWords)
         )
+    }
+
+    // ---- read facade (contract doc §5.3): resolve-by-id / lookup-by-path request encoders and
+    // the shared fact-block decoder both responses use.
+
+    /// Mirrors `agentry_runtime::inventory_scope::wire::encode_resolve_request` byte-for-byte.
+    static func encodeResolveRequest(fileIDs: [UUID], folderIDs: [UUID]) -> Data {
+        var fileWords: [UInt64] = []
+        fileWords.reserveCapacity(fileIDs.count * 2)
+        for id in fileIDs { let (hi, lo) = coreInventoryUUIDWords(id); fileWords.append(hi); fileWords.append(lo) }
+        var folderWords: [UInt64] = []
+        folderWords.reserveCapacity(folderIDs.count * 2)
+        for id in folderIDs { let (hi, lo) = coreInventoryUUIDWords(id); folderWords.append(hi); folderWords.append(lo) }
+
+        var writer = CoreInventoryScopeWriter()
+        writer.writeHeader(kind: .resolveRequest)
+        writer.writeWords(fileWords)
+        writer.writeWords(folderWords)
+        return writer.buffer
+    }
+
+    /// Mirrors `agentry_runtime::inventory_scope::wire::encode_lookup_request` byte-for-byte.
+    static func encodeLookupRequest(paths: [String]) -> Data {
+        var pool = CoreInventoryScopeInternPool()
+        var pathWords: [UInt64] = []
+        pathWords.reserveCapacity(paths.count)
+        for path in paths { pathWords.append(pool.intern(path)) }
+        let (blob, rangeWords) = (pool.blob, pool.rangeWords)
+
+        var writer = CoreInventoryScopeWriter()
+        writer.writeHeader(kind: .lookupRequest)
+        writer.writeWords(pathWords)
+        writer.writeWords(rangeWords)
+        writer.writeBlob(blob)
+        return writer.buffer
+    }
+
+    /// Mirrors `agentry_runtime::inventory_scope::wire::decode_fact_block` byte-for-byte -- the
+    /// shared response shape both `inventoryResolveRecords` and `inventoryLookupPaths` return.
+    static func decodeFactBlock(_ data: Data) throws -> CoreInventoryFactBlockV1 {
+        var reader = CoreInventoryScopeReader(data)
+        try reader.readHeader(expected: .factBlock)
+        let header = try reader.readWords(maxWords: 4)
+        guard header.count == 4 else { throw CoreInventoryScopeWireError.malformed }
+        let generation: UInt64? = switch header[0] {
+        case 0: nil
+        case 1: header[1]
+        default: throw CoreInventoryScopeWireError.malformed
+        }
+        let rootLifetimeID = coreInventoryHexLifetimeID(hi: header[2], lo: header[3])
+        let rowsWords = try reader.readWords(maxWords: coreInventoryScopeMaxRowsPerCall * coreInventoryScopeFactRowStride)
+        let rangeWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
+        let blob = try reader.readBlob()
+        try reader.finish()
+        guard rowsWords.count % coreInventoryScopeFactRowStride == 0 else { throw CoreInventoryScopeWireError.malformed }
+        guard rowsWords.count / coreInventoryScopeFactRowStride <= coreInventoryScopeMaxRowsPerCall else {
+            throw CoreInventoryScopeWireError.oversize
+        }
+        let pool = CoreInventoryScopePoolReader(blob: blob, rangeWords: rangeWords)
+        var rows: [CoreInventoryFactRowV1] = []
+        rows.reserveCapacity(rowsWords.count / coreInventoryScopeFactRowStride)
+        var index = 0
+        while index < rowsWords.count {
+            let row = rowsWords[index ..< index + coreInventoryScopeFactRowStride]
+            var cursor = row.startIndex
+            func nextWord() -> UInt64 { defer { cursor += 1 }; return row[cursor] }
+            _ = nextWord() // key_hi -- never decoded, see CoreInventoryFactRowV1's doc comment
+            _ = nextWord() // key_lo
+            let exists = nextWord() != 0
+            let filePresent = nextWord(); let fileHi = nextWord(); let fileLo = nextWord()
+            let folderPresent = nextWord(); let folderHi = nextWord(); let folderLo = nextWord()
+            let rootPresent = nextWord(); let rootHi = nextWord(); let rootLo = nextWord()
+            let isDiscoverable = nextWord() != 0
+            let pathRoundTripsToSelf = nextWord() != 0
+            let stdRelIdx = nextWord()
+            let stdFullIdx = nextWord()
+            let nameIdx = nextWord()
+            let recordFingerprint = nextWord()
+            let fileID: UUID? = filePresent == 1 ? coreInventoryUUID(fromHi: fileHi, lo: fileLo) : nil
+            let folderID: UUID? = folderPresent == 1 ? coreInventoryUUID(fromHi: folderHi, lo: folderLo) : nil
+            let rootID: UUID? = rootPresent == 1 ? coreInventoryUUID(fromHi: rootHi, lo: rootLo) : nil
+            rows.append(CoreInventoryFactRowV1(
+                exists: exists,
+                fileID: fileID,
+                folderID: folderID,
+                rootID: rootID,
+                isDiscoverable: isDiscoverable,
+                pathRoundTripsToSelf: pathRoundTripsToSelf,
+                standardizedRelativePath: try pool.resolveOptional(stdRelIdx),
+                standardizedFullPath: try pool.resolveOptional(stdFullIdx),
+                name: try pool.resolveOptional(nameIdx),
+                recordFingerprint: recordFingerprint
+            ))
+            index += coreInventoryScopeFactRowStride
+        }
+        return CoreInventoryFactBlockV1(generation: generation, rootLifetimeID: rootLifetimeID, rows: rows)
     }
 
     // ---- discovery mint site (§4.1.1): additive parallel to encodeBulkChunk/decodeBulkChunk and
