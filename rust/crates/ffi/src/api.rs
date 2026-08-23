@@ -8,8 +8,8 @@ use crate::types::{
     CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1, CompactQueryV1,
     CompactRecordBlockV1, CompactRegexBatchResult, CoreApplyEditsBatchRequestV1,
     CoreCodeMapBatchRequestV1, CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1,
-    CoreConfig, CoreHandshake, CoreInventoryComputeRequestV1, CoreInventoryComputeResultV1,
-    CoreInventoryScopeConfigV1, CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1,
+    CoreConfig, CoreHandshake, CoreInventoryScopeConfigV1, CorePathMatchResolveRequestV1,
+    CorePathMatchResolveResultV1,
     CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
     CorePathSearchFindResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
     DrainBatch, FolderSuffixRequest, HostResponse,
@@ -99,7 +99,6 @@ pub struct CoreRuntime {
     search_leaf: runtime::SearchLeaf,
     code_map_service: runtime::codemap::CodeMapService,
     apply_edits_service: runtime::apply_edits::ApplyEditsService,
-    inventory_service: runtime::inventory::InventoryComputeService,
     path_match_service: runtime::pathmatch::PathMatchScoreService,
     path_resolve_service: runtime::pathmatch::PathMatchResolveService,
     path_search_service: runtime::pathsearch::PathSearchFindService,
@@ -466,29 +465,6 @@ impl CoreRuntime {
                     request.into_runtime_request()?,
                     Some(&cancellation),
                 )?
-                .into())
-        })
-    }
-
-    pub fn inventory_compute_v1(
-        &self,
-        request: CoreInventoryComputeRequestV1,
-    ) -> Result<CoreInventoryComputeResultV1, CoreError> {
-        self.guard(|| {
-            self.require_running()?;
-            let identity = self.validate_identity(&request.runtime_identity)?;
-            request
-                .cancellation
-                .validate_identity(&request.runtime_identity)?;
-            if request.cancellation.runtime_handle().identity() != &identity
-                || request.cancellation.runtime_handle().is_closed()
-            {
-                return Err(CoreError::StaleRuntimeIdentity);
-            }
-            let cancellation = request.cancellation.runtime_handle().clone();
-            Ok(self
-                .inventory_service
-                .compute_with_cancellation(&request.into_runtime_request(), Some(&cancellation))?
                 .into())
         })
     }
@@ -1314,7 +1290,6 @@ impl CoreRuntime {
             search_leaf,
             code_map_service: runtime::codemap::CodeMapService,
             apply_edits_service: runtime::apply_edits::ApplyEditsService,
-            inventory_service: runtime::inventory::InventoryComputeService,
             path_match_service: runtime::pathmatch::PathMatchScoreService,
             path_resolve_service: runtime::pathmatch::PathMatchResolveService,
             path_search_service: runtime::pathsearch::PathSearchFindService,

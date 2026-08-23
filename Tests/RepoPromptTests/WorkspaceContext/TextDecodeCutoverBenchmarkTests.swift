@@ -5,9 +5,9 @@ import RepoPromptDomainRuntime
 import XCTest
 
 /// TD-4 (design `docs/designs/textdecode-policy-v2-2026-08-22.md` §10 X-3 / §11 TD-4): the
-/// pre-registered slice-2 economics GO/NO-GO benchmark (ADR-0008), following
-/// `InventoryCutoverBenchmarkTests`'/`InventoryScopeSwiftBaselineTests`' env-gated conventions
-/// (same `DispatchTime`-based measurement, same warmup/sample shape).
+/// pre-registered slice-2 economics GO/NO-GO benchmark (ADR-0008), following the now-retired
+/// `InventoryCutoverBenchmarkTests`'/the still-live `InventoryScopeSwiftBaselineTests`' env-gated
+/// conventions (same `DispatchTime`-based measurement, same warmup/sample shape).
 ///
 /// **Seam note (honest labeling, task-authorized "differential-shaped, not production-shape"
 /// fallback).** No standalone Rust decode FFI export exists yet -- `textdecode()` is reachable
@@ -28,7 +28,7 @@ import XCTest
 /// would need re-checking against an apples-to-apples decode-only number before being trusted.
 final class TextDecodeCutoverBenchmarkTests: XCTestCase {
     private static let benchmarkEnvironmentKey = "RP_RUN_TEXTDECODE_CUTOVER_BENCHMARK"
-    /// Reduced from other benchmarks' usual 5 (InventoryCutoverBenchmarkTests/
+    /// Reduced from other benchmarks' usual 5 (the now-retired InventoryCutoverBenchmarkTests/
     /// InventoryScopeSwiftBaselineTests) to 3: the 100k-file scale point repeats a real FFI batch
     /// round trip with ~100k-subject payload construction on both sides per sample, and a first
     /// attempt at 5 iterations coincided with the coordinated daemon's socket becoming briefly

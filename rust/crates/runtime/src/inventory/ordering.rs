@@ -84,10 +84,10 @@ pub fn search_catalog_entry_precedes(
 /// only when two *different* folder records spell the same logical name with two different
 /// Unicode encodings (precomposed vs. decomposed), or when a name contains multiple combining
 /// marks in non-canonical order. Porting actual NFC canonical ordering to Rust is a real
-/// Unicode-normalization dependency and is out of scope for this byte-exact extraction; the
-/// differential test constrains its Unicode fixture pool accordingly (single encoding form per
-/// logical name, no multi-combining-mark permutations) rather than silently reimplementing NFC
-/// here. See `docs/investigations` P3-2 report for the verification probe.
+/// Unicode-normalization dependency and is out of scope for this byte-exact extraction; pinned
+/// as a demonstrated fact (not a hand-simulated byte comparison) by
+/// `tests::folder_order_diverges_from_swift_unicode_canonical_equivalence`. See
+/// `docs/investigations` P3-2 report for the verification probe.
 pub fn folder_order(lhs: &InventoryFolderRecord, rhs: &InventoryFolderRecord) -> Ordering {
     path_id_order(
         &lhs.standardized_full_path,
@@ -121,6 +121,20 @@ mod tests {
             name: full.to_owned(),
             relative_path: rel.to_owned(),
             standardized_relative_path: rel.to_owned(),
+            full_path: full.to_owned(),
+            standardized_full_path: full.to_owned(),
+            parent_folder_id: None,
+            modification_date: None,
+        }
+    }
+
+    fn folder(id: [u8; 16], full: &str) -> InventoryFolderRecord {
+        InventoryFolderRecord {
+            id,
+            root_id: [0; 16],
+            name: full.to_owned(),
+            relative_path: full.to_owned(),
+            standardized_relative_path: full.to_owned(),
             full_path: full.to_owned(),
             standardized_full_path: full.to_owned(),
             parent_folder_id: None,
@@ -200,5 +214,49 @@ mod tests {
         // order must put `a` first instead (`a.swift` < `z.swift`).
         assert_eq!(file_relative_path_order(&a, &b), Ordering::Less);
         assert_eq!(file_full_path_order(&a, &b), Ordering::Greater);
+    }
+
+    /// Pins `folder_order`'s documented scope boundary as a demonstrated fact through the real
+    /// comparator, not a hand-simulated byte comparison: "cafe\u{0301}" (NFD: e + combining acute
+    /// accent) and "caf\u{00e9}" (NFC: precomposed e-acute) are Unicode-canonically equal --
+    /// Swift's native `String` `==`/`<` treats them as equal -- but byte-different, so raw UTF-8
+    /// byte comparison orders them by their differing bytes. Chosen so the UUID tiebreak a
+    /// canonical-equivalence comparator would fall through to (`low_id` < `high_id`) picks the
+    /// OPPOSITE order from raw-byte comparison (NFD's bytes sort first), making the divergence
+    /// visible rather than accidental. Formerly pinned only by the now-retired
+    /// `InventoryRustSwiftDifferentialTests.testFolderComparatorByteOrderVersusCanonicalDivergenceIsDocumented`
+    /// (P4-8: `inventory-compute-v1` retirement) -- this is its Rust-side replacement, covering
+    /// the same `folder_order` this crate's inventory-scope-v1 path still calls verbatim.
+    #[test]
+    fn folder_order_diverges_from_swift_unicode_canonical_equivalence() {
+        let precomposed = "caf\u{00e9}";
+        let decomposed = "cafe\u{0301}";
+        assert_ne!(
+            precomposed.as_bytes(),
+            decomposed.as_bytes(),
+            "fixture must be byte-different"
+        );
+
+        let low_id = uuid(0x01);
+        let high_id = uuid(0xfe);
+        let folder_precomposed = folder(low_id, precomposed);
+        let folder_decomposed = folder(high_id, decomposed);
+
+        // Raw UTF-8 byte order: the NFD encoding's bytes ('e' = 0x65) sort before the NFC
+        // encoding's bytes (precomposed e-acute = 0xC3 0xA9), so the decomposed folder sorts
+        // first -- the opposite of what a canonical-equivalence comparator's id tiebreak
+        // (low_id < high_id) would produce.
+        assert_eq!(
+            folder_order(&folder_decomposed, &folder_precomposed),
+            Ordering::Less
+        );
+        assert_eq!(
+            folder_order(&folder_precomposed, &folder_decomposed),
+            Ordering::Greater
+        );
+        assert!(search_catalog_folder_precedes(
+            &folder_decomposed,
+            &folder_precomposed
+        ));
     }
 }

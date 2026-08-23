@@ -3,9 +3,9 @@ import Foundation
 
 /// Rust compute seam for the P3-3 slice-1 workspace path-matching scoring kernel port
 /// (`PathMatcher.computeWeightedMatchScorePrecleaned` + `similarityScoreMax` + the
-/// `fuzzyMatchWithSuffixLimit` selected-root `+0.5` bonus). Shaped like
-/// `RustApplyEditsComputer`/`RustInventoryComputer`: an injectable operation closure defaulting to
-/// the real `AgentryCoreService` bridge.
+/// `fuzzyMatchWithSuffixLimit` selected-root `+0.5` bonus). Shaped like `RustApplyEditsComputer`
+/// (the retired `RustInventoryComputer`'s sibling before P4-8): an injectable operation closure
+/// defaulting to the real `AgentryCoreService` bridge.
 ///
 /// NO PRODUCTION CALLER YET for this slice -- `PathMatcher.swift` still resolves paths entirely in
 /// Swift. This type exists so `PathMatchRustSwiftDifferentialTests` can drive the real Rust seam

@@ -3,8 +3,8 @@
 //! Retires `inventory-compute-v1`'s non-interning encoder for these payloads (§2.1/§5.4 of
 //! `docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md`) and fixes its one genuine
 //! defect: **this wire interns strings by value.** [`InternPoolBuilder::intern`] dedupes identical
-//! strings into one pooled range, unlike `inventory::compact::push_string`, which appends every
-//! occurrence unconditionally.
+//! strings into one pooled range, unlike the retired `inventory::compact::push_string` (deleted at
+//! P4-8), which appended every occurrence unconditionally.
 //!
 //! # Framing
 //!
@@ -55,14 +55,14 @@ use super::fallback::RootCatalogShardFallbackReason;
 pub const INVENTORY_SCOPE_CONTRACT_VERSION_V1: u16 = 1;
 
 /// Words per pooled string range entry (`start`, `end` byte offsets into `utf8_blob`), identical
-/// convention to `inventory::contract::STRING_RANGE_STRIDE`.
+/// convention to the retired `inventory::contract::STRING_RANGE_STRIDE` (deleted at P4-8).
 pub const STRING_RANGE_STRIDE: usize = 2;
-/// Sentinel for an absent optional pooled string, matching `inventory::contract::OPTIONAL_WORD`.
+/// Sentinel for an absent optional pooled string, matching the retired `inventory::contract::OPTIONAL_WORD`.
 pub const OPTIONAL_WORD: u64 = u64::MAX;
 /// Words per file/folder record row: id(2) + root_id(2) + name(1) + relative_path(1) +
 /// standardized_relative_path(1) + full_path(1) + standardized_full_path(1) +
 /// parent_folder_id_present(1) + parent_folder_id(2) + modification_date_present(1) +
-/// modification_date_bits(1) = 14. Identical layout to `inventory::contract::RECORD_STRIDE`
+/// modification_date_bits(1) = 14. Identical layout to the retired `inventory::contract::RECORD_STRIDE`
 /// (deliberately: this is the same nine-field Swift shape, just interned).
 pub const RECORD_STRIDE: usize = 14;
 /// Words per **discovery** record row: root_id(2) + name(1) + relative_path(1) +
@@ -328,8 +328,8 @@ impl<'a> Reader<'a> {
 
 // ---- string interning ---------------------------------------------------------------------------
 
-/// Encode-side string pool. Unlike `inventory::compact::push_string`, [`Self::intern`] dedupes
-/// identical strings by value into one pooled range (§2.1's fix).
+/// Encode-side string pool. Unlike the retired `inventory::compact::push_string`, [`Self::intern`]
+/// dedupes identical strings by value into one pooled range (§2.1's fix).
 #[derive(Default)]
 pub struct InternPoolBuilder {
     blob: Vec<u8>,

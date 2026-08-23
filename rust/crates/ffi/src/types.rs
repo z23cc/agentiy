@@ -1166,138 +1166,16 @@ impl From<runtime::apply_edits::CompactBatchResult> for CoreCompactApplyEditsBat
     }
 }
 
-// ---- Inventory (P3-2) --------------------------------------------------------------------
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, uniffi::Record)]
-pub struct CoreInventoryTableRangeV1 {
-    pub start: u64,
-    pub count: u64,
-}
-
-impl From<CoreInventoryTableRangeV1> for runtime::inventory::InventoryTableRange {
-    fn from(value: CoreInventoryTableRangeV1) -> Self {
-        Self {
-            start: value.start,
-            count: value.count,
-        }
-    }
-}
-
-impl From<runtime::inventory::InventoryTableRange> for CoreInventoryTableRangeV1 {
-    fn from(value: runtime::inventory::InventoryTableRange) -> Self {
-        Self {
-            start: value.start,
-            count: value.count,
-        }
-    }
-}
-
-/// Compact-v1 request driving all four `WorkspaceInventoryCatalogBuilders` ports
-/// (`agentry_runtime::inventory`), tagged by `operation`. See
-/// `rust/crates/runtime/src/inventory/compact.rs` for the pool-plus-ranges wire shape and which
-/// fields each operation reads.
-#[derive(Clone, Debug, uniffi::Record)]
-pub struct CoreInventoryComputeRequestV1 {
-    pub runtime_identity: RuntimeIdentity,
-    pub cancellation: std::sync::Arc<crate::api::LeafCancellation>,
-    pub contract_version: u16,
-    pub operation: u16,
-
-    pub utf8_blob: Vec<u8>,
-    pub string_range_words: Vec<u64>,
-    pub string_index_words: Vec<u64>,
-    pub uuid_words: Vec<u64>,
-
-    pub root_words: Vec<u64>,
-    pub file_words: Vec<u64>,
-    pub folder_words: Vec<u64>,
-    pub entry_words: Vec<u64>,
-    pub shard_words: Vec<u64>,
-
-    pub roots: CoreInventoryTableRangeV1,
-    pub files_by_id: CoreInventoryTableRangeV1,
-    pub folders_by_id: CoreInventoryTableRangeV1,
-    pub managed_only_file_ids: CoreInventoryTableRangeV1,
-    pub managed_only_folder_ids: CoreInventoryTableRangeV1,
-
-    pub previous_files: CoreInventoryTableRangeV1,
-    pub previous_folders: CoreInventoryTableRangeV1,
-    pub event_root_id_hi: u64,
-    pub event_root_id_lo: u64,
-    pub event_upserted_files: CoreInventoryTableRangeV1,
-    pub event_upserted_folders: CoreInventoryTableRangeV1,
-    pub event_removed_file_ids: CoreInventoryTableRangeV1,
-    pub event_removed_folder_ids: CoreInventoryTableRangeV1,
-    pub event_removed_file_paths: CoreInventoryTableRangeV1,
-    pub event_removed_folder_paths: CoreInventoryTableRangeV1,
-    pub event_modified_file_ids: CoreInventoryTableRangeV1,
-    pub event_modified_folder_ids: CoreInventoryTableRangeV1,
-    pub max_logical_mutation_count: u64,
-
-    pub shards: CoreInventoryTableRangeV1,
-}
-
-impl CoreInventoryComputeRequestV1 {
-    pub(crate) fn into_runtime_request(self) -> runtime::inventory::InventoryComputeRequestV1 {
-        runtime::inventory::InventoryComputeRequestV1 {
-            contract_version: self.contract_version,
-            operation: self.operation,
-            utf8_blob: self.utf8_blob,
-            string_range_words: self.string_range_words,
-            string_index_words: self.string_index_words,
-            uuid_words: self.uuid_words,
-            root_words: self.root_words,
-            file_words: self.file_words,
-            folder_words: self.folder_words,
-            entry_words: self.entry_words,
-            shard_words: self.shard_words,
-            roots: self.roots.into(),
-            files_by_id: self.files_by_id.into(),
-            folders_by_id: self.folders_by_id.into(),
-            managed_only_file_ids: self.managed_only_file_ids.into(),
-            managed_only_folder_ids: self.managed_only_folder_ids.into(),
-            previous_files: self.previous_files.into(),
-            previous_folders: self.previous_folders.into(),
-            event_root_id_hi: self.event_root_id_hi,
-            event_root_id_lo: self.event_root_id_lo,
-            event_upserted_files: self.event_upserted_files.into(),
-            event_upserted_folders: self.event_upserted_folders.into(),
-            event_removed_file_ids: self.event_removed_file_ids.into(),
-            event_removed_folder_ids: self.event_removed_folder_ids.into(),
-            event_removed_file_paths: self.event_removed_file_paths.into(),
-            event_removed_folder_paths: self.event_removed_folder_paths.into(),
-            event_modified_file_ids: self.event_modified_file_ids.into(),
-            event_modified_folder_ids: self.event_modified_folder_ids.into(),
-            max_logical_mutation_count: self.max_logical_mutation_count,
-            shards: self.shards.into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreInventoryComputeResultV1 {
-    pub operation: u16,
-
-    pub utf8_blob: Vec<u8>,
-    pub string_range_words: Vec<u64>,
-    pub uuid_words: Vec<u64>,
-    pub file_words: Vec<u64>,
-    pub folder_words: Vec<u64>,
-    pub entry_words: Vec<u64>,
-
-    pub components_files: CoreInventoryTableRangeV1,
-    pub components_folders: CoreInventoryTableRangeV1,
-    pub components_entries: CoreInventoryTableRangeV1,
-
-    pub shard_patch_outcome: u16,
-    pub shard_patch_files: CoreInventoryTableRangeV1,
-    pub shard_patch_folders: CoreInventoryTableRangeV1,
-    pub shard_patch_logical_mutation_count: u64,
-    pub shard_patch_changed_file_ids: CoreInventoryTableRangeV1,
-
-    pub merged_files: CoreInventoryTableRangeV1,
-    pub merged_entries: CoreInventoryTableRangeV1,
-}
+// ---- Inventory (P3-2) -- retired at P4-8, superseded by inventory-scope-v1 below ---------
+//
+// The whole-table `inventory-compute-v1` wire (`CoreInventoryTableRangeV1`,
+// `CoreInventoryComputeRequestV1`/`ResultV1`, and their `From` impls into
+// `agentry_runtime::inventory::{InventoryTableRange, InventoryComputeRequestV1,
+// InventoryComputeResultV1}`) was deleted here along with its Rust-side codec
+// (`agentry_runtime::inventory::compact`/`contract`) and Swift-side FFI seam
+// (`RustInventoryComputer`, `CoreComputeClient.inventoryBuild*`, `CoreRuntime.inventory_compute_v1`
+// / `inventoryComputeV1`). Superseded by the stateful `inventory-scope-v1` surface immediately
+// below.
 
 // ---- Path match (P3-3 slice 1) -------------------------------------------------------------
 
@@ -1569,29 +1447,6 @@ impl From<runtime::tokenacct::TokenAccountingResponseV1> for CoreTokenAccounting
     }
 }
 
-impl From<runtime::inventory::InventoryComputeResultV1> for CoreInventoryComputeResultV1 {
-    fn from(value: runtime::inventory::InventoryComputeResultV1) -> Self {
-        Self {
-            operation: value.operation,
-            utf8_blob: value.utf8_blob,
-            string_range_words: value.string_range_words,
-            uuid_words: value.uuid_words,
-            file_words: value.file_words,
-            folder_words: value.folder_words,
-            entry_words: value.entry_words,
-            components_files: value.components_files.into(),
-            components_folders: value.components_folders.into(),
-            components_entries: value.components_entries.into(),
-            shard_patch_outcome: value.shard_patch_outcome,
-            shard_patch_files: value.shard_patch_files.into(),
-            shard_patch_folders: value.shard_patch_folders.into(),
-            shard_patch_logical_mutation_count: value.shard_patch_logical_mutation_count,
-            shard_patch_changed_file_ids: value.shard_patch_changed_file_ids.into(),
-            merged_files: value.merged_files.into(),
-            merged_entries: value.merged_entries.into(),
-        }
-    }
-}
 
 // ================================================================================================
 // P4-4: `inventory-scope-v1` FFI surface (contract doc §5.3; design §11 P4-4). `RootId` is

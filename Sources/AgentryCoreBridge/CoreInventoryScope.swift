@@ -19,8 +19,8 @@ import os
 // silent gap (see the P4-4 report for the reasoning).
 // ============================================================================================
 
-/// Default implementations mirroring the existing `inventoryComputeV1` pattern
-/// (`CoreInventory.swift`): a `CoreRuntimeTransport` conformer (e.g. `FakeCoreTransport` in
+/// Default implementations mirroring the pattern the now-retired `inventoryComputeV1` used
+/// (`CoreInventory.swift`, P4-8): a `CoreRuntimeTransport` conformer (e.g. `FakeCoreTransport` in
 /// tests) that doesn't override these gets a clear "unavailable" transport error instead of a
 /// compile-time obligation to implement all twelve.
 extension CoreRuntimeTransport {

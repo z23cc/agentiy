@@ -114,6 +114,7 @@
     "status": "P4-2 GO/NO-GO gate complete: overall verdict GO (E-1 kill criterion, E-1c, E-1d, E-3, E-4 pass their registered criteria; E-2 correctly BLOCKED pending P4-4/P4-7 infrastructure, not scored pass/fail). See p4TwoResults below and rust/benchmarks/results/v1/p4-2-inventory-scope-derisking-v1.md.",
     "contractDoc": "docs/architecture/rust-inventory-scope-v1.md",
     "designDoc": "docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md",
+    "predecessorRetirement": "P4-8: the ADR-0008-gated `inventory-compute-v1` predecessor and its P3-2c benchmark harness (`RP_RUN_INVENTORY_CUTOVER_BENCHMARK`, InventoryCutoverBenchmarkTests) are retired -- this inventoryScopeV1 block is now the standing SLO lane for workspace-inventory economics, superseding the deferred P3-2c gate entirely rather than sitting alongside it. See docs/architecture/adr-0008-migration-economics-benchmark-gate.md.",
     "registeredBeforeCandidateExists": true,
     "experiments": {
       "e1DeltaPathViability": {

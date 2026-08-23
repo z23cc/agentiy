@@ -94,8 +94,21 @@ mirror in `AgentryCoreBridge`, fingerprint-locked the way P2's
 canonical schema source, drift is a red cargo test, never a runtime decode failure. This is a
 P4-4 done-when line, frozen here so P4-4 has no design discretion left over the mechanism.
 
-`inventory-compute-v1` and its 17-test differential remain as-is through P4-5 as the standing
-parity contract for builder semantics, then retire with the Swift builders at P4-8.
+`inventory-compute-v1` and its 17-test differential remained as-is through P4-5 as the standing
+parity contract for builder semantics. **Update (P4-8):** the wire, its Rust codec
+(`agentry_runtime::inventory::compact`/`contract`), its Swift FFI seam (`RustInventoryComputer`,
+`CoreComputeClient.inventoryBuild*`, `CoreRuntime.inventory_compute_v1` / `inventoryComputeV1`),
+and the 17-assertion Swift differential (`InventoryRustSwiftDifferentialTests`) plus its paired
+`InventoryCutoverBenchmarkTests` (ADR-0008's `RP_RUN_INVENTORY_CUTOVER_BENCHMARK` harness) are
+retired. One documented boundary from that differential (`folder_order`'s raw-byte-vs-Unicode-
+canonical divergence on precomposed/decomposed folder names) is re-pinned Rust-side as
+`inventory::ordering::tests::folder_order_diverges_from_swift_unicode_canonical_equivalence`,
+since `build_authoritative_catalog_components` / `build_root_catalog_shard_patch` (and all of
+`ordering`) remain live, reused verbatim by `InventoryScope`'s state machine. The Swift builders
+themselves (`WorkspaceInventoryCatalogBuilders`) are **not** retired by this step -- they remain
+production-authoritative and out of this step's scope; their retirement, `WorkspaceInventoryCatalogBuilders`
+deletion, and the Tier-3 (`inventoryExportCompactV1`) zero-call-site assertion remain open P4-8
+done-when items, gated on P4-7 landing first.
 
 ## 4. Generation-lease / handle-lifecycle contract (§7.5's naming requirement)
 
@@ -711,6 +724,46 @@ a worse trade than shipping a named, reproducible open item.
   were synchronous dictionary reads) exposed pre-existing latent races/assumptions in this
   model's session-fenced mutation and tree-loading state machine rather than introduced new ones,
   but this is not confirmed by a diagnosed root cause.
+
+### 12.3a Amendment — both §12.3 open items resolved in a follow-on commit
+
+Both open items above are now fixed, root-caused, and verified. Full detail (instrumentation used,
+reproduction, per-site fixes) lives in
+`Tests/RepoPromptTests/WorkspaceContext/P4-6b-table-deletion-conversion-ledger.md`'s per-item
+resolution notes and this class's own doc comment
+(`Tests/RepoPromptTests/AgentMode/AgentContextFileBrowseModelTests.swift`); this is the
+architecture-facing summary.
+
+- **Catalog-shard patch decline.** The `modificationDate` precision-loss hypothesis was wrong.
+  Direct field-level instrumentation showed the mismatch was always in `parentFolderID`:
+  `WorkspaceFileContextStore.file(rootID:relativePath:)`/`.folder(rootID:relativePath:)` returned
+  Rust's raw `fact.parentFolderID` (root-marker-excluded convention: `nil` for a top-level record)
+  instead of denormalizing it back through
+  `WorkspaceInventoryScopeRepublicationAdapter.denormalizedParentFolderID` to Swift's
+  self-referencing-marker convention (`parentFolderID == rootID`) the way every other
+  reconstruction path already does. Fixing that then exposed a second, previously-masked bug in
+  `buildRootCatalogShardPatch`'s ancestor-folder walk, which required a `foldersByID` lookup for
+  the root marker itself — never populated, since the root folder is never sent to Rust — fixed by
+  treating `parentFolderID == event.rootID` as the walk's implicit terminal case. All four
+  quarantined `WorkspaceCatalogShardTests` are un-skipped and green.
+- **`AgentContextFileBrowseModelTests`.** The "async-timing race" hypothesis was also wrong for the
+  dominant failure — the real cause was a deterministic correctness bug, not a race.
+  `AgentContextFileBrowseService.currentTreeIndex` searched
+  `WorkspaceFileContextStore.appliedIndexRootSnapshot`'s `folders` array for the synthetic
+  root-folder marker to seed `RootTreeIndex.rootFolderID`; post-cutover that array is sourced from
+  `folders(inRoot:)`'s Rust-paged read, which — like the rest of the Rust boundary — never carries
+  the root marker, so the search always failed, every root-level `hierarchy(...)` call reported
+  `.missing`, and the model's `.missing` handler immediately collapsed the very node the caller had
+  just expanded. Fixed by using `rootID` (`snapshot.root.id`) directly instead of searching for a
+  marker record that no longer exists post-cutover. This single fix resolved all three
+  crash/hang symptoms — the two crashes were downstream consequences of tests driving state built
+  on a hierarchy load that never resolved, not independent races. Two narrower, real-but-unproven
+  defects found by code audit while isolating the fix were hardened defensively in
+  `AgentContextFileBrowseModel.swift` alongside it: `drainMutationQueue`'s `removeFirst()` was one
+  statement removed from its emptiness guard (restructured so removal is tied to the element just
+  observed), and `normalizedPath`'s `standardizedPaths([path])[0]` could crash on a path that
+  normalizes to empty (changed to `.first ?? path`). The whole-class quarantine is removed; the
+  full 23-test class is green, run twice.
 
 ### 12.4 Not shipped — drift-register items claimed resolved that were not
 

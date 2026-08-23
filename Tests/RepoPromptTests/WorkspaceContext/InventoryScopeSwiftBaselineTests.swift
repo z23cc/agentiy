@@ -8,14 +8,15 @@ import XCTest
 /// any Rust `InventoryScope` candidate exists, per that design's binding requirement to register
 /// absolute/relative SLOs ahead of seeing candidate numbers (charter §15.3 item 3).
 ///
-/// This intentionally follows `InventoryCutoverBenchmarkTests`' env-gated conventions (same
-/// `DispatchTime`-based measurement, same warmup/sample shape, same size points) but measures only
-/// the Swift side: there is no P4 Rust candidate yet, so there is nothing to pair it against. The
-/// reference arm reuses the exact same production entry points
+/// This intentionally follows the now-retired `InventoryCutoverBenchmarkTests`' env-gated
+/// conventions (same `DispatchTime`-based measurement, same warmup/sample shape, same size points;
+/// that harness benchmarked the same production entry points against the P3-2
+/// `RustInventoryComputer` seam, retired at P4-8) but measures only the Swift side: there is no
+/// P4 Rust candidate yet, so there is nothing to pair it against. The reference arm reuses the
+/// exact same production entry points
 /// (`WorkspaceInventoryCatalogBuilders.buildAuthoritativeCatalogComponents` /
-/// `.buildRootCatalogShardPatch`) that `InventoryCutoverBenchmarkTests` already benchmarks against
-/// the retiring P3-2 `RustInventoryComputer` seam, so this harness adds a size point (100 files,
-/// per E-1's requirement that small roots are measured, not skipped) rather than a new code path.
+/// `.buildRootCatalogShardPatch`), so this harness adds a size point (100 files, per E-1's
+/// requirement that small roots are measured, not skipped) rather than a new code path.
 ///
 /// Scope note (reported alongside the P4-1 deliverable): this harness captures E-1's reference
 /// numbers only. E-1d (batch point-lookup cost curve), E-2 (read economics incl. the mention-path

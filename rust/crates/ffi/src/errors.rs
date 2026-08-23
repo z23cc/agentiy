@@ -78,6 +78,11 @@ pub enum CoreError {
     /// refused rather than silently overwriting bytes that cannot be faithfully round-tripped.
     #[error("{message}")]
     ApplyEditsLossyDecodeBlocksWriteBack { message: String },
+    /// P4-8: no longer constructed -- `inventory-compute-v1` (the only producer of these three
+    /// variants) was retired in favor of the stateful `inventory-scope-v1` surface, which has its
+    /// own `InventoryScope*`-prefixed error variants below. Left in place rather than removed:
+    /// these are wire-exposed `uniffi::Error` cases and pruning them is an ABI-epoch decision, not
+    /// a byproduct of an unrelated cleanup.
     #[error("{message}")]
     InventoryInvalidRequest { message: String },
     #[error("inventory computation was cancelled")]
@@ -224,22 +229,6 @@ impl From<agentry_runtime::apply_edits::ApplyError> for CoreError {
             agentry_runtime::apply_edits::ApplyError::Cancelled => Self::ApplyEditsCancelled,
             agentry_runtime::apply_edits::ApplyError::LossyDecodeBlocksWriteBack(message) => {
                 Self::ApplyEditsLossyDecodeBlocksWriteBack { message }
-            }
-        }
-    }
-}
-
-impl From<agentry_runtime::inventory::InventoryComputeError> for CoreError {
-    fn from(value: agentry_runtime::inventory::InventoryComputeError) -> Self {
-        match value {
-            agentry_runtime::inventory::InventoryComputeError::InvalidRequest(message) => {
-                Self::InventoryInvalidRequest { message }
-            }
-            agentry_runtime::inventory::InventoryComputeError::Builder(_) => {
-                Self::InventoryInvariant
-            }
-            agentry_runtime::inventory::InventoryComputeError::Cancelled => {
-                Self::InventoryCancelled
             }
         }
     }

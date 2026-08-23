@@ -2,11 +2,11 @@
 import Foundation
 import XCTest
 
-/// Focused unit coverage for the P3-2 inventory wire's UUID <-> word conversion, independent of
-/// the cross-language round trip in `InventoryRustSwiftDifferentialTests`: pins the exact
-/// hi/lo byte split so a hypothetical bug that is self-consistent on the Swift side (encode and
-/// decode agreeing with each other but not with Rust's `uuid_to_words`/`uuid_from_words`) cannot
-/// hide behind a full round trip.
+/// Focused unit coverage for `inventory-scope-v1`'s shared UUID <-> word conversion
+/// (`coreInventoryUUIDWords`/`coreInventoryUUID`, `CoreInventory.swift`): pins the exact hi/lo
+/// byte split so a hypothetical bug that is self-consistent on the Swift side (encode and decode
+/// agreeing with each other but not with Rust's `uuid_to_words`/`uuid_from_words`) cannot hide
+/// behind a full round trip.
 final class CoreInventoryTests: XCTestCase {
     func testUUIDWordsMatchDocumentedBigEndianByteSplit() throws {
         let id = try XCTUnwrap(UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF"))

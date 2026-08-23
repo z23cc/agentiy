@@ -28,16 +28,23 @@ import XCTest
 // | D-10  | NOT IMPLEMENTED                                        | No Rust-side codemap graph-index catalog shard builder exists yet (`rg GraphIndexCatalogShard rust/crates/runtime` -- zero hits as of this checkpoint); depends on P4-6a's codemap read-path work landing first. |
 // | D-12  | OUT OF SCOPE for P4-6b                                 | Design doc registers this as "a P4-3a done-when" (`:939`) -- an earlier phase's item, not re-verified here. |
 //
-// **Open item found during this cutover, not in the design doc's D-list:** the patch path
-// (`WorkspaceFileContextStore.buildRootCatalogShardPatch` /
-// `WorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch`) now falls back to
-// `.patchApplicationBackstop` (a full authoritative rebuild) where it used to patch cleanly --
-// see `WorkspaceCatalogShardTests.quarantinedForPatchApplicationBackstopRegression()`'s doc
-// comment for the full hypothesis (a record-equality guard now compares against a Rust round
-// trip instead of the same in-memory dictionary read, and `modificationDate` precision is a
-// plausible mismatch site). Four `WorkspaceCatalogShardTests` (every test whose delta sequence
-// exercises the patch path) are quarantined (`XCTSkip`) rather than ported, pending
-// investigation as a follow-on -- not fixed in this commit.
+// **Open item found during the P4-6b cutover, resolved in a follow-on commit (contract doc
+// §12.3's amendment):** the patch path (`WorkspaceFileContextStore.buildRootCatalogShardPatch` /
+// `WorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch`) was falling back to
+// `.patchApplicationBackstop` (a full authoritative rebuild) on every top-level-file/-folder
+// upsert. Root cause (confirmed by direct field-level instrumentation, not the
+// `modificationDate`-precision hypothesis originally recorded here): `WorkspaceFileContextStore
+// .file(rootID:relativePath:)`/`.folder(rootID:relativePath:)` passed Rust's raw
+// `fact.parentFolderID` straight through instead of denormalizing it back through
+// `WorkspaceInventoryScopeRepublicationAdapter.denormalizedParentFolderID` -- Rust's convention
+// (root marker excluded, top-level parent is `nil`) leaked into records that Swift's other
+// reconstruction paths correctly represent with the root-self-referencing-marker convention
+// (`parentFolderID == rootID`), so `buildRootCatalogShardPatch`'s upserted-record equality guard
+// against a Rust-round-tripped re-fetch failed on every top-level record. A second, previously
+// latent bug in the same function's ancestor-folder walk (requiring a `foldersByID` lookup for
+// the root marker itself, which is never populated -- the root folder is never sent to Rust) was
+// uncovered once the first fix let the walk actually run, and fixed alongside it. All four
+// quarantined `WorkspaceCatalogShardTests` are un-skipped and green.
 #if DEBUG
     final class WorkspaceInventoryScopeDriftRegisterTests: XCTestCase {
         private var stores: [WorkspaceFileContextStore] = []

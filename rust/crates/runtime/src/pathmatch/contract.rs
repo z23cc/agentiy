@@ -1,7 +1,8 @@
 //! Wire/contract constants for the P3-3 slice-1 workspace path-matching scoring-kernel port.
 //!
-//! Mirrors the shape of `inventory::contract`: a version tag plus the word-table strides used by
-//! `score.rs` to encode/decode the batch scoring request and response.
+//! Mirrors the shape of the retired `inventory::contract` (deleted at P4-8 with
+//! `inventory-compute-v1`): a version tag plus the word-table strides used by `score.rs` to
+//! encode/decode the batch scoring request and response.
 
 pub const PATH_MATCH_CONTRACT_VERSION_V1: u16 = 1;
 

@@ -127,11 +127,6 @@ protocol CoreRuntimeTransport: Sendable {
         cancellation: any CoreLeafCancellationHandle,
         request: CoreApplyEditsBatchRequestV1
     ) throws -> CoreCompactApplyEditsBatchResultV1
-    func inventoryComputeV1(
-        identity: CoreRuntimeIdentity,
-        cancellation: any CoreLeafCancellationHandle,
-        request: CoreCompactInventoryRequestV1
-    ) throws -> CoreCompactInventoryResultV1
     func pathMatchScoreBatchV1(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -812,74 +807,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    func inventoryComputeV1(
-        identity: CoreRuntimeIdentity,
-        cancellation: any CoreLeafCancellationHandle,
-        request: CoreCompactInventoryRequestV1
-    ) throws -> CoreCompactInventoryResultV1 {
-        guard let cancellation = cancellation as? UniFFILeafCancellationHandle else {
-            throw CoreTransportError.invalidArgument
-        }
-        let value: AgentryUniFFIRaw.CoreInventoryComputeResultV1
-        do {
-            value = try runtime.inventoryComputeV1(request: .init(
-                runtimeIdentity: Self.rawIdentity(identity),
-                cancellation: cancellation.raw,
-                contractVersion: request.contractVersion,
-                operation: request.operation,
-                utf8Blob: request.utf8Blob,
-                stringRangeWords: request.stringRangeWords,
-                stringIndexWords: request.stringIndexWords,
-                uuidWords: request.uuidWords,
-                rootWords: request.rootWords,
-                fileWords: request.fileWords,
-                folderWords: request.folderWords,
-                entryWords: request.entryWords,
-                shardWords: request.shardWords,
-                roots: Self.rawInventoryRange(request.roots),
-                filesById: Self.rawInventoryRange(request.filesByID),
-                foldersById: Self.rawInventoryRange(request.foldersByID),
-                managedOnlyFileIds: Self.rawInventoryRange(request.managedOnlyFileIDs),
-                managedOnlyFolderIds: Self.rawInventoryRange(request.managedOnlyFolderIDs),
-                previousFiles: Self.rawInventoryRange(request.previousFiles),
-                previousFolders: Self.rawInventoryRange(request.previousFolders),
-                eventRootIdHi: request.eventRootIDHi,
-                eventRootIdLo: request.eventRootIDLo,
-                eventUpsertedFiles: Self.rawInventoryRange(request.eventUpsertedFiles),
-                eventUpsertedFolders: Self.rawInventoryRange(request.eventUpsertedFolders),
-                eventRemovedFileIds: Self.rawInventoryRange(request.eventRemovedFileIDs),
-                eventRemovedFolderIds: Self.rawInventoryRange(request.eventRemovedFolderIDs),
-                eventRemovedFilePaths: Self.rawInventoryRange(request.eventRemovedFilePaths),
-                eventRemovedFolderPaths: Self.rawInventoryRange(request.eventRemovedFolderPaths),
-                eventModifiedFileIds: Self.rawInventoryRange(request.eventModifiedFileIDs),
-                eventModifiedFolderIds: Self.rawInventoryRange(request.eventModifiedFolderIDs),
-                maxLogicalMutationCount: request.maxLogicalMutationCount,
-                shards: Self.rawInventoryRange(request.shards)
-            ))
-        } catch {
-            throw Self.map(error)
-        }
-        return CoreCompactInventoryResultV1(
-            operation: value.operation,
-            utf8Blob: value.utf8Blob,
-            stringRangeWords: value.stringRangeWords,
-            uuidWords: value.uuidWords,
-            fileWords: value.fileWords,
-            folderWords: value.folderWords,
-            entryWords: value.entryWords,
-            componentsFiles: Self.inventoryRange(value.componentsFiles),
-            componentsFolders: Self.inventoryRange(value.componentsFolders),
-            componentsEntries: Self.inventoryRange(value.componentsEntries),
-            shardPatchOutcome: value.shardPatchOutcome,
-            shardPatchFiles: Self.inventoryRange(value.shardPatchFiles),
-            shardPatchFolders: Self.inventoryRange(value.shardPatchFolders),
-            shardPatchLogicalMutationCount: value.shardPatchLogicalMutationCount,
-            shardPatchChangedFileIDs: Self.inventoryRange(value.shardPatchChangedFileIds),
-            mergedFiles: Self.inventoryRange(value.mergedFiles),
-            mergedEntries: Self.inventoryRange(value.mergedEntries)
-        )
-    }
-
     func pathMatchScoreBatchV1(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -1172,18 +1099,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     private static func compactRange(
         _ value: AgentryUniFFIRaw.CoreCompactTableRangeV1
     ) -> CoreCompactTableRange {
-        .init(start: value.start, count: value.count)
-    }
-
-    private static func inventoryRange(
-        _ value: AgentryUniFFIRaw.CoreInventoryTableRangeV1
-    ) -> CoreCompactTableRange {
-        .init(start: value.start, count: value.count)
-    }
-
-    private static func rawInventoryRange(
-        _ value: CoreCompactTableRange
-    ) -> AgentryUniFFIRaw.CoreInventoryTableRangeV1 {
         .init(start: value.start, count: value.count)
     }
 
