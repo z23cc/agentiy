@@ -2568,6 +2568,21 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
             try await store.startWatchingRoot(id: record.id)
+            // `Synthetic.swift` is written to disk before the watcher starts (the crawl, not the
+            // watcher, is what catalogs it) so this scenario's synthetic-vs-watcher assertion can
+            // publish a `.fileModified` delta against a file that genuinely exists. Real FSEvents
+            // can still deliver a coalesced historical catch-up notification for that just-written
+            // file shortly after `startWatchingRoot` returns -- a real, OS-timed watcher payload,
+            // not a bug -- and under heavy system load its delivery can land after a baseline
+            // captured immediately post-`startWatchingRoot`, advancing the accepted watermark by
+            // one before this test ever publishes its own synthetic delta (observed exactly once
+            // in a full-suite run: expected watermark 1, got 2). Drain twice with a short pause
+            // between so any already-in-flight or briefly-delayed catch-up settles before the
+            // baseline is captured, rather than tightening every assertion below against a moving
+            // target.
+            _ = await store.awaitAppliedIngressForAllRoots()
+            try await Task.sleep(nanoseconds: 150_000_000)
+            _ = await store.awaitAppliedIngressForAllRoots()
             let baselineIngress = await store.appliedIngressSnapshotForTesting(rootID: record.id)
             let baselineWatcherWatermark = try await store.acceptedWatcherWatermarkForTesting(rootID: record.id)
 

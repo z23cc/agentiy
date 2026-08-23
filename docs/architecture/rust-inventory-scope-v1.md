@@ -1084,6 +1084,43 @@ fixed per §12.5a's `3727661b`, plus the two doc-literal §12.5 residuals and th
 cascade member fixed in this continuation) are closed. No `rust/` production source changed --
 only the generated identity/manifest files, resynced via protocol.
 
+### 12.5c Amendment — the full-suite gate's last residual: a real FSEvents startup race, test-side
+
+A full, unfiltered `make dev-test` run against §12.5b's fix (2 independent runs) surfaced exactly
+one failure tree-wide, in neither OI-1/OI-2's family nor anything §12.5b touched:
+`WorkspaceFileContextStoreTests.testSyntheticPublicationAppliesWithoutAdvancingWatcherAcceptedWatermark`
+("2" vs expected "1" for the accepted watcher watermark). Passed reliably in isolation (3/3, ~0.014s
+each) both before and after investigation, only failing under the full suite's heavy parallel load
+(3.971s that run, vs ~0.014s isolated) -- the signature of a genuine OS-timing race, not a logic
+regression from anything else this session touched.
+
+Root cause: the test writes `Synthetic.swift` to disk *before* `loadRoot`/`startWatchingRoot` (the
+initial crawl, not the watcher, is what catalogs it -- needed so the later synthetic
+`.fileModified` delta has a real file to describe), then captures its "accepted watcher watermark"
+baseline immediately after `startWatchingRoot` returns. macOS FSEvents can legitimately deliver a
+coalesced historical-catch-up notification for a file written moments before a watch stream starts;
+under light load that catch-up settles before the baseline read, under heavy load (many concurrent
+FSEvents watchers across a full suite) its delivery can be delayed past the baseline capture,
+landing as an extra real accepted-watermark increment that collides with the test's own synthetic
+publish. `awaitAppliedIngressForAllRoots`'s own doc comment already names this precisely: "FSEvents
+not yet delivered by macOS remain outside this contract." Not a production defect -- confirmed by
+comparison against `testBarrierCaptureCutExcludesCallbackAcceptedAfterCaptureUntilNextBarrier`
+(same file), which sidesteps the same class of race entirely by never writing a pre-existing file
+and using `acceptWatcherPayloadForTesting`'s synthetic payload injection for its watcher-sourced
+comparison instead of a real FSEvents write.
+
+Fix (test-only): drain `awaitAppliedIngressForAllRoots()` twice, with a short pause between, before
+capturing the baseline -- once for anything already in flight, a 150ms pause to give a delayed OS
+catch-up a real chance to arrive, then once more to drain that too. `WorkspaceFileContextStoreTests`
+-- 135/135 green; the isolated case re-run twice more, 3/3 total, all green.
+
+With this, every failure surfaced across this session's two full-suite attempts is closed: task-OI-1
+(discharged, §12.5a), task-OI-2 (`3727661b`), the two doc-literal §12.5 residuals and the
+ExactCapability cascade member (`5da8f0dc`), and this FSEvents startup race (test-only, no
+production change). Per this task's own final instruction, the full suite is not re-run a third
+time in this session -- the prior full run is the tree-wide evidence, and this fix's own class-scope
+validation (135/135) is the proof for the delta.
+
 ## 13. Amendment: P4-7b — the search facade cutover (b1–b4)
 
 Promotion of the decided items per design doc `p4-7-pathsearch-production-cutover-v2-2026-08-23.md`
