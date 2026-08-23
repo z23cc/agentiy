@@ -180,8 +180,9 @@ impl Translator {
         if subtype == Some("task_notification") {
             let task_id = first_string(json, &["task_id"]);
             let status = first_string(json, &["status"]);
+            let summary = first_string(json, &["summary"]);
             let fragments = joined_non_empty_fragments(
-                &[Some("Task update".to_string()), task_id, status],
+                &[Some("Task update".to_string()), task_id, status, summary],
                 " — ",
             );
             return match fragments {
@@ -572,18 +573,21 @@ impl Translator {
 
     fn parse_auth_status_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
         if let Some(is_authenticating) = json.get("isAuthenticating").and_then(Value::as_bool) {
-            let output = json
-                .get("output")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                });
+            // Mirrors Swift's `(json["output"] as? [String])?` -- an all-or-nothing cast: `None`
+            // for the whole thing if any element isn't a string, not "skip the non-string ones".
+            let output = json.get("output").and_then(Value::as_array).and_then(|values| {
+                values
+                    .iter()
+                    .map(Value::as_str)
+                    .collect::<Option<Vec<&str>>>()
+            }).map(|values| {
+                values
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
             let error = first_string(json, &["error"]);
             let mut fragments = vec![if is_authenticating { "Authenticating".to_string() } else { "Authenticated".to_string() }];
             if let Some(output) = output {
@@ -978,65 +982,108 @@ fn serialize_json_object_string(value: &Map<String, Value>) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    serde_json::to_string_pretty(&sort_object_keys(value)).ok()
+    Some(foundation_pretty_printed_json(&Value::Object(value.clone())))
 }
 
-/// `serde_json`'s `Map` (default feature set) preserves insertion order, not sorted order; Swift's
-/// `.sortedKeys` option requires lexicographic key order. Recursively sorts so pretty-printed
-/// output is stable and comparable across runs, matching the Swift serialization's determinism
-/// (contract §2.6/§2.3's `tool_call` `input`/`args` serialization).
-fn sort_object_keys(value: &Map<String, Value>) -> Value {
-    fn sort_value(value: &Value) -> Value {
+/// Byte-exact port of `JSONSerialization.data(withJSONObject:options: [.prettyPrinted, .sortedKeys])`'s
+/// output shape (contract §2.6/§2.3's `tool_call` `input`/`args` and tool-result-content
+/// serialization). `serde_json::to_string_pretty` is NOT a byte-exact stand-in for
+/// `.prettyPrinted`: verified against a real macOS Foundation run, the two agree on string
+/// escaping and number formatting but diverge on (a) the colon separator -- Foundation emits
+/// `"key" : value` (space both sides), serde_json emits `"key": value` (space after only) -- and
+/// (b) empty containers -- Foundation emits `{\n\n}` / `[\n\n<indent>]` (a blank second line, no
+/// trailing whitespace on it), serde_json emits the compact `{}` / `[]` even in pretty mode. Both
+/// differences are reproduced explicitly below rather than left to whichever formatter happened to
+/// be convenient, because P6-7's turn-level differential asserts identical `AIStreamResult` values
+/// field-for-field, and these strings (`toolArgsJSON`/`toolResultJSON`/`toolOutput`) are fields.
+fn foundation_pretty_printed_json(value: &Value) -> String {
+    fn write(value: &Value, indent: usize, out: &mut String) {
         match value {
             Value::Object(map) => {
-                let mut sorted = serde_json::Map::new();
+                if map.is_empty() {
+                    out.push_str("{\n\n");
+                    out.push_str(&" ".repeat(indent));
+                    out.push('}');
+                    return;
+                }
                 let mut keys: Vec<&String> = map.keys().collect();
                 keys.sort();
-                for key in keys {
-                    sorted.insert(key.clone(), sort_value(&map[key]));
+                let inner_indent = indent + 2;
+                out.push_str("{\n");
+                for (i, key) in keys.iter().enumerate() {
+                    out.push_str(&" ".repeat(inner_indent));
+                    out.push_str(&serde_json::to_string(key.as_str()).unwrap_or_else(|_| format!("{key:?}")));
+                    out.push_str(" : ");
+                    write(&map[*key], inner_indent, out);
+                    if i + 1 < keys.len() {
+                        out.push(',');
+                    }
+                    out.push('\n');
                 }
-                Value::Object(sorted)
+                out.push_str(&" ".repeat(indent));
+                out.push('}');
             }
-            Value::Array(array) => Value::Array(array.iter().map(sort_value).collect()),
-            other => other.clone(),
+            Value::Array(array) => {
+                if array.is_empty() {
+                    out.push_str("[\n\n");
+                    out.push_str(&" ".repeat(indent));
+                    out.push(']');
+                    return;
+                }
+                let inner_indent = indent + 2;
+                out.push_str("[\n");
+                for (i, element) in array.iter().enumerate() {
+                    out.push_str(&" ".repeat(inner_indent));
+                    write(element, inner_indent, out);
+                    if i + 1 < array.len() {
+                        out.push(',');
+                    }
+                    out.push('\n');
+                }
+                out.push_str(&" ".repeat(indent));
+                out.push(']');
+            }
+            scalar => out.push_str(&serde_json::to_string(scalar).unwrap_or_default()),
         }
     }
-    sort_value(&Value::Object(value.clone()))
+    let mut out = String::new();
+    write(value, 0, &mut out);
+    out
 }
 
-/// Port of `serializeToolResultContent(_:)` (contract §2.6).
+/// Port of `serializeToolResultContent(_:)` (contract §2.6). The blocks-array branch mirrors
+/// Swift's `value as? [[String: Any]]` cast semantics precisely: that cast is all-or-nothing --
+/// it fails for the WHOLE array if even one element isn't a dictionary, falling through to the
+/// generic path rather than silently skipping the non-dictionary element. A `filter_map` here
+/// would silently keep the dictionary elements and change behavior for a mixed array.
 fn serialize_tool_result_content(value: Option<&Value>) -> String {
     let Some(value) = value else { return String::new() };
     if let Some(text) = value.as_str() {
         return text.to_string();
     }
     if let Some(blocks) = value.as_array() {
-        let text_blocks: Vec<String> = blocks
-            .iter()
-            .filter_map(|block| {
-                let block = block.as_object()?;
-                let block_type = block.get("type").and_then(Value::as_str).map(str::to_lowercase);
-                if block_type.as_deref() == Some("text") || block_type.as_deref() == Some("output_text") {
-                    block.get("text").and_then(Value::as_str).map(str::to_string)
-                } else {
-                    None
-                }
-            })
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !text_blocks.is_empty() {
-            return text_blocks.join("\n");
+        if blocks.iter().all(Value::is_object) {
+            let text_blocks: Vec<String> = blocks
+                .iter()
+                .filter_map(|block| {
+                    let block = block.as_object()?;
+                    let block_type = block.get("type").and_then(Value::as_str).map(str::to_lowercase);
+                    if block_type.as_deref() == Some("text") || block_type.as_deref() == Some("output_text") {
+                        block.get("text").and_then(Value::as_str).map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !text_blocks.is_empty() {
+                return text_blocks.join("\n");
+            }
         }
     }
     if matches!(value, Value::Object(_) | Value::Array(_)) {
-        if let Value::Object(object) = value {
-            if let Ok(text) = serde_json::to_string_pretty(&sort_object_keys(object)) {
-                return text;
-            }
-        } else if let Value::Array(_) = value {
-            return serde_json::to_string_pretty(value).unwrap_or_default();
-        }
+        return foundation_pretty_printed_json(value);
     }
     swift_description(value)
 }
@@ -1372,6 +1419,65 @@ mod tests {
         let genuine_error =
             StreamResult { text: Some("Maximum turns exceeded".to_string()), ..StreamResult::new("error") };
         assert!(!should_suppress_user_facing_stream_result(&genuine_error));
+    }
+
+    #[test]
+    fn auth_status_with_a_mixed_output_array_drops_the_whole_output_not_just_the_bad_element() {
+        // Mirrors Swift's `(json["output"] as? [String])?` cast: one non-string element fails the
+        // WHOLE cast (output stays nil), not "join the string elements and skip the rest".
+        let mut translator = Translator::default();
+        let results = translator.parse_ndjson_line(&line(json!({
+            "type": "auth_status",
+            "isAuthenticating": true,
+            "output": ["fine", 42],
+            "error": "boom"
+        })));
+        assert_eq!(results[0].text.as_deref(), Some("Authenticating — boom"), "the mixed-type output array must be dropped entirely, not partially joined");
+    }
+
+    #[test]
+    fn task_notification_joins_task_id_status_and_summary() {
+        let mut translator = Translator::default();
+        let results = translator.parse_ndjson_line(&line(json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t-1",
+            "status": "running",
+            "summary": "halfway there"
+        })));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text.as_deref(), Some("Task update — t-1 — running — halfway there"));
+    }
+
+    /// Byte-exact against a real macOS Foundation run: `JSONSerialization.data(withJSONObject:
+    /// ["b": 2, "a": ["x": 1, "y": [1,2,3]], "c": "hello"], options: [.prettyPrinted, .sortedKeys])`.
+    #[test]
+    fn foundation_pretty_printed_json_matches_a_captured_foundation_sample_byte_for_byte() {
+        let value = json!({"b": 2, "a": {"x": 1, "y": [1, 2, 3]}, "c": "hello"});
+        let expected = "{\n  \"a\" : {\n    \"x\" : 1,\n    \"y\" : [\n      1,\n      2,\n      3\n    ]\n  },\n  \"b\" : 2,\n  \"c\" : \"hello\"\n}";
+        assert_eq!(foundation_pretty_printed_json(&value), expected);
+    }
+
+    /// Byte-exact against a real macOS Foundation run for the empty-container special case:
+    /// `JSONSerialization.data(withJSONObject: ["a": []], options: [.prettyPrinted, .sortedKeys])`
+    /// emits a blank second line before the closing bracket, not the compact `[]` a naive port
+    /// (e.g. `serde_json::to_string_pretty`) would produce.
+    #[test]
+    fn foundation_pretty_printed_json_matches_foundations_empty_container_quirk() {
+        let value = json!({"a": []});
+        assert_eq!(foundation_pretty_printed_json(&value), "{\n  \"a\" : [\n\n  ]\n}");
+        assert_eq!(foundation_pretty_printed_json(&json!({})), "{\n\n}");
+    }
+
+    #[test]
+    fn tool_result_content_with_a_mixed_array_falls_through_to_the_generic_path() {
+        // Mirrors Swift's `value as? [[String: Any]]` cast: one non-dictionary element fails the
+        // WHOLE cast, so this must NOT extract "a" from the text block and ignore the string --
+        // it must fall through to pretty-printing the entire array.
+        let value = json!([{"type": "text", "text": "a"}, "raw-string-not-a-block"]);
+        let output = serialize_tool_result_content(Some(&value));
+        assert_eq!(output, foundation_pretty_printed_json(&value));
+        assert_ne!(output, "a", "must not silently drop the non-dictionary element");
     }
 
     #[test]

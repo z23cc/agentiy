@@ -181,6 +181,12 @@ fn try_control_char_repair(
 /// D-1 heuristic 4: plaintext-assistant salvage (`recoverablePlaintextAssistantFragment`,
 /// `:1176-1215`). Only attempted while a turn is in flight -- the caller passes `turn_in_flight`
 /// rather than this module owning turn-lifecycle state (that state machine is P6-5).
+///
+/// Length/letter-count thresholds below use `char::count()` (Unicode scalar count), not Swift's
+/// `String.count` (extended-grapheme-cluster count) -- the two diverge only for combining marks
+/// or ZWJ sequences (e.g. a flag emoji or a family emoji counts as multiple scalars but one Swift
+/// `Character`), a shape no fixture in this corpus exercises. Noted rather than silently assumed
+/// equivalent.
 pub fn recoverable_plaintext_assistant_fragment(line_data: &[u8]) -> Option<String> {
     let raw_text = std::str::from_utf8(line_data).ok()?;
     let text = raw_text.trim();
@@ -273,6 +279,48 @@ fn split_concatenated_json_object_payloads(data: &[u8]) -> Vec<Vec<u8>> {
         }
     }
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Heuristic 3's success branch (`RecoveryOutcome::Recovered` via `try_control_char_repair`)
+    /// is, per this module's own closed-open-question analysis, **unreachable through the real
+    /// dispatch**: whenever `repair_json_string_control_characters` would produce something that
+    /// decodes successfully, the codec's own inline sanitize (`codec::decode_line`'s first
+    /// attempt) already succeeds on the *original* line for the same reason -- so
+    /// `recover_invalid_json_line` is never actually called for such a line (its precondition is
+    /// that the original line already failed to decode). P6-3's done-when ("every recovery
+    /// heuristic covered positively and negatively") is satisfied honestly, not silently: this
+    /// test calls the private `try_control_char_repair` helper directly, bypassing
+    /// `recover_invalid_json_line`'s real precondition on purpose, to prove the *function itself*
+    /// is correct in isolation (the defense-in-depth backstop this heuristic actually is).
+    /// `framer::tests::repair_json_string_control_characters_*` cover the byte-repair function
+    /// itself; this test additionally proves the codec-decode-and-route half of this module's
+    /// wrapper around it.
+    #[test]
+    fn try_control_char_repair_succeeds_in_isolation_when_called_directly() {
+        let line_data = b"{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"line one\nline two\"}";
+
+        // Confirms the precondition that makes this heuristic unreachable via the real dispatch:
+        // the codec's own inline sanitize already decodes this line successfully.
+        assert!(codec::decode_line(line_data).unwrap().is_some(), "codec's own sanitize must already succeed on this line");
+
+        let mut diagnostics = Vec::new();
+        let outcome = try_control_char_repair(line_data, &mut |d| diagnostics.push(d));
+        match outcome {
+            Some(RecoveryOutcome::Recovered(messages)) => assert_eq!(messages.len(), 1),
+            other => panic!("expected Recovered(1 message) when called directly, got {other:?}"),
+        }
+        assert_eq!(diagnostics, vec![RecoveryDiagnostic::RecoveredJsonStringControlChars]);
+    }
+
+    #[test]
+    fn try_control_char_repair_declines_when_repair_yields_no_change() {
+        let line_data = b"{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"clean\"}";
+        assert_eq!(try_control_char_repair(line_data, &mut |_| {}), None);
+    }
 }
 
 /// Port of `jsonObjectStartOffsetsInData(_:)` (`:1112-1133`): byte-exact occurrences of the marker
