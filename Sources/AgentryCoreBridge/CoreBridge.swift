@@ -77,6 +77,16 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case inventoryScopeBulkLoadRootMismatch
     case inventoryHandleInvalidated(CoreInventoryHandleInvalidationReason)
     case inventoryScopeInvalidRequest(String)
+    // P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md, design §11 P6-6).
+    case agentClaudeUnknownScope
+    case agentClaudeScopeClosed
+    case agentClaudeAlreadyRunning
+    case agentClaudeNotRunning
+    case agentClaudeUnknownPermissionRequest
+    case agentClaudeSpawnFailed(String)
+    case agentClaudeReaperFailed(String)
+    case agentClaudeTransportWriteFailed(String)
+    case agentClaudeInvalidRequest(String)
     case unexpected(String)
 }
 
@@ -311,6 +321,41 @@ protocol CoreRuntimeTransport: Sendable {
         scopeID: String,
         rootID: Data
     ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
+
+    // ---- P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md) -------------------
+    //
+    // Same deliberate, flagged deviation as inventory-scope-v1 above: raw `AgentryUniFFIRaw`
+    // request/response records pass straight through beyond identity translation and error
+    // mapping. Every field is already a plain Sendable value type.
+    func agentOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreAgentClaudeScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.AgentClaudeScopeHandleV1
+    func agentStartOrResume(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        resumeSessionID: String?
+    ) throws -> AgentryUniFFIRaw.AgentClaudeStartReceiptV1
+    func agentSendUserMessage(identity: CoreRuntimeIdentity, scopeID: String, text: String) throws -> UInt64
+    func agentInterruptTurn(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        turnGeneration: UInt64,
+        reason: String
+    ) throws -> AgentryUniFFIRaw.AgentClaudeInterruptReceiptV1
+    func agentRespondPermission(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        requestID: String,
+        decision: AgentryUniFFIRaw.AgentClaudePermissionDecisionV1
+    ) throws
+    func agentApplyModelAndEffort(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        model: String?,
+        effort: String?
+    ) throws
+    func agentShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
     /// Forensic strings for the most recent panic(s) recorded by the Rust
     /// process-wide panic hook, most-recent last -- not scoped to this
@@ -1558,6 +1603,88 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    // ---- P6-6: agent-claude-v1 ------------------------------------------------------------------
+
+    func agentOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreAgentClaudeScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.AgentClaudeScopeHandleV1 {
+        do {
+            return try runtime.agentOpenScope(identity: Self.rawIdentity(identity), config: config)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentStartOrResume(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        resumeSessionID: String?
+    ) throws -> AgentryUniFFIRaw.AgentClaudeStartReceiptV1 {
+        do {
+            return try runtime.agentStartOrResume(identity: Self.rawIdentity(identity), scopeId: scopeID, resumeSessionId: resumeSessionID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentSendUserMessage(identity: CoreRuntimeIdentity, scopeID: String, text: String) throws -> UInt64 {
+        do {
+            return try runtime.agentSendUserMessage(identity: Self.rawIdentity(identity), scopeId: scopeID, text: text)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentInterruptTurn(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        turnGeneration: UInt64,
+        reason: String
+    ) throws -> AgentryUniFFIRaw.AgentClaudeInterruptReceiptV1 {
+        do {
+            return try runtime.agentInterruptTurn(
+                identity: Self.rawIdentity(identity), scopeId: scopeID, turnGeneration: turnGeneration, reason: reason
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentRespondPermission(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        requestID: String,
+        decision: AgentryUniFFIRaw.AgentClaudePermissionDecisionV1
+    ) throws {
+        do {
+            try runtime.agentRespondPermission(identity: Self.rawIdentity(identity), scopeId: scopeID, requestId: requestID, decision: decision)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentApplyModelAndEffort(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        model: String?,
+        effort: String?
+    ) throws {
+        do {
+            try runtime.agentApplyModelAndEffort(identity: Self.rawIdentity(identity), scopeId: scopeID, model: model, effort: effort)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws {
+        do {
+            try runtime.agentShutdown(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private static func map(_ error: Error) -> CoreTransportError {
         guard let error = error as? AgentryUniFFIRaw.CoreError else {
             return .unexpected(String(describing: error))
@@ -1616,6 +1743,15 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .InventoryScopeBulkLoadRootMismatch: .inventoryScopeBulkLoadRootMismatch
         case let .InventoryHandleInvalidated(reason): .inventoryHandleInvalidated(Self.handleInvalidationReason(reason))
         case let .InventoryScopeInvalidRequest(message): .inventoryScopeInvalidRequest(message)
+        case .AgentClaudeUnknownScope: .agentClaudeUnknownScope
+        case .AgentClaudeScopeClosed: .agentClaudeScopeClosed
+        case .AgentClaudeAlreadyRunning: .agentClaudeAlreadyRunning
+        case .AgentClaudeNotRunning: .agentClaudeNotRunning
+        case .AgentClaudeUnknownPermissionRequest: .agentClaudeUnknownPermissionRequest
+        case let .AgentClaudeSpawnFailed(message): .agentClaudeSpawnFailed(message)
+        case let .AgentClaudeReaperFailed(message): .agentClaudeReaperFailed(message)
+        case let .AgentClaudeTransportWriteFailed(message): .agentClaudeTransportWriteFailed(message)
+        case let .AgentClaudeInvalidRequest(message): .agentClaudeInvalidRequest(message)
         }
     }
 
@@ -2266,6 +2402,15 @@ public actor AgentryCoreBridge {
         case .inventoryScopeBulkLoadRootMismatch: return .inventoryScopeBulkLoadRootMismatch
         case let .inventoryHandleInvalidated(reason): return .inventoryHandleInvalidated(reason)
         case let .inventoryScopeInvalidRequest(message): return .inventoryScopeInvalidRequest(message)
+        case .agentClaudeUnknownScope: return .agentClaudeUnknownScope
+        case .agentClaudeScopeClosed: return .agentClaudeScopeClosed
+        case .agentClaudeAlreadyRunning: return .agentClaudeAlreadyRunning
+        case .agentClaudeNotRunning: return .agentClaudeNotRunning
+        case .agentClaudeUnknownPermissionRequest: return .agentClaudeUnknownPermissionRequest
+        case let .agentClaudeSpawnFailed(message): return .agentClaudeSpawnFailed(message)
+        case let .agentClaudeReaperFailed(message): return .agentClaudeReaperFailed(message)
+        case let .agentClaudeTransportWriteFailed(message): return .agentClaudeTransportWriteFailed(message)
+        case let .agentClaudeInvalidRequest(message): return .agentClaudeInvalidRequest(message)
         case let .unexpected(message): return .transportFailure(message)
         }
     }

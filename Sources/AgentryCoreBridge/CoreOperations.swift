@@ -155,6 +155,16 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case inventoryScopeBulkLoadRootMismatch
     case inventoryHandleInvalidated(CoreInventoryHandleInvalidationReason)
     case inventoryScopeInvalidRequest(String)
+    // P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md, design §11 P6-6).
+    case agentClaudeUnknownScope
+    case agentClaudeScopeClosed
+    case agentClaudeAlreadyRunning
+    case agentClaudeNotRunning
+    case agentClaudeUnknownPermissionRequest
+    case agentClaudeSpawnFailed(String)
+    case agentClaudeReaperFailed(String)
+    case agentClaudeTransportWriteFailed(String)
+    case agentClaudeInvalidRequest(String)
     case transportFailure(String)
 }
 
@@ -185,6 +195,15 @@ extension CoreBridgeError: LocalizedError {
         case .inventoryScopeBulkLoadRootMismatch: "The inventory bulk load does not match the given root."
         case let .inventoryHandleInvalidated(reason): "The inventory snapshot handle was invalidated: \(reason)."
         case let .inventoryScopeInvalidRequest(message): "Invalid inventory-scope-v1 request: \(message)"
+        case .agentClaudeUnknownScope: "The agent-claude scope is unknown or already closed."
+        case .agentClaudeScopeClosed: "The agent-claude scope is closed."
+        case .agentClaudeAlreadyRunning: "The agent-claude scope already has a running process."
+        case .agentClaudeNotRunning: "The agent-claude scope has no running process."
+        case .agentClaudeUnknownPermissionRequest: "The agent-claude permission request id is unknown."
+        case let .agentClaudeSpawnFailed(message): "Agent-claude spawn failed: \(message)"
+        case let .agentClaudeReaperFailed(message): "Agent-claude reaper registration failed: \(message)"
+        case let .agentClaudeTransportWriteFailed(message): "Agent-claude transport write failed: \(message)"
+        case let .agentClaudeInvalidRequest(message): "Invalid agent-claude request: \(message)"
         case let .transportFailure(message): "Rust FFI transport failure: \(message)"
         }
     }

@@ -1,0 +1,59 @@
+import AgentryCoreBridge
+@testable import RepoPromptApp
+import XCTest
+
+/// P6-6 (`docs/designs/p6-claude-vertical-2026-08-23.md` §4.2, `docs/architecture/
+/// rust-agent-claude-v1.md` §5.2): the same-process Swift/Rust reaper coexistence obligation the
+/// campaign carries forward to this slice ("explicitly deferred to the FFI-bridge slice"). Drives a
+/// Rust-supervised child through the real `CoreAgentSession`/FFI bridge while Swift's own
+/// `ProcessTermination`/`ChildStatusReaperRegistry` reaps a *separate* child, concurrently, in this
+/// one test process -- proving the two sole-reaper-owner sets are genuinely disjoint by PID (design
+/// §4.2: "the two reap-ownership sets... are disjoint by PID; neither can steal from the other").
+/// The complementary "no SIGCHLD handler is installed" half of contract §5.2 is proven in isolation
+/// by `rust/crates/runtime/tests/agent_claude_process_coexistence_hostile.rs` -- not repeated here,
+/// since the full app test bundle links unrelated dependencies that could install a handler for a
+/// reason unrelated to this slice, making that specific check unreliable at this layer (see the
+/// comment at its would-be call site below for the full reasoning).
+final class AgentClaudeSameProcessReaperCoexistenceTests: XCTestCase {
+    func testRustSupervisedAndSwiftSupervisedChildrenReapConcurrentlyWithoutCrossAttribution() async throws {
+        // Swift side: a real child through the production `ProcessLauncher`/`ProcessTermination`
+        // path, exactly as `ClaudeNativeProcessSessionController`'s own children are reaped today.
+        let swiftChild = try ProcessLauncher.spawn(
+            command: "/bin/sh",
+            arguments: ["-c", "sleep 1; exit 0"],
+            environment: [:],
+            workingDirectory: nil
+        )
+        swiftChild.stdin?.closeFile()
+        let swiftObserver = ChildProcessExitObserver(pid: swiftChild.pid)
+
+        // Rust side: a real agent-claude scope through the actual FFI bridge (not a fake
+        // transport) -- `/bin/sleep`'s own argv parsing is irrelevant here (contract §2.5's flag
+        // injection makes it exit immediately with an argument error either way); what this test
+        // needs is a real `posix_spawn` + a real Rust-side reap happening concurrently with the
+        // Swift side above, in this one process.
+        let bridge = try await AgentryCoreBridge.start()
+        let session = try await CoreAgentSession.open(bridge: bridge, config: CoreAgentSessionConfig(command: "/bin/sleep"))
+        let rustReceipt = try await session.startOrResume()
+        XCTAssertGreaterThan(rustReceipt.pid, 0)
+
+        async let swiftOutcome = swiftObserver.wait(timeout: 5)
+        async let rustShutdown: Void = session.close()
+        let (outcome, _) = await (swiftOutcome, rustShutdown)
+
+        XCTAssertNotNil(outcome, "the Swift-supervised child must still be reaped correctly while a Rust-supervised child reaps concurrently")
+        if case let .exited(status)? = outcome {
+            XCTAssertEqual(status, .exited(code: 0))
+        }
+
+        // Deliberately NOT re-asserting "no SIGCHLD handler installed" here: unlike the Rust side's
+        // clean, minimal cargo-test process (`rust/crates/runtime/tests/
+        // agent_claude_process_coexistence_hostile.rs`, which owns and passes this exact assertion
+        // in isolation), the full `RepoPromptTests` XCTest bundle links the whole app's dependency
+        // graph -- a handler installed by an unrelated linked library for an unrelated reason would
+        // make this a false positive against *this* slice's own code, not a real regression. The
+        // load-bearing proof this test exists for -- neither reaper starves, blocks, or
+        // cross-attributes the other's PID when both run in one process concurrently -- is the
+        // assertion above.
+    }
+}

@@ -4179,6 +4179,14 @@ actor WorkspaceCodemapBindingEngine {
                 // a malformed request). None of these indicate the runtime itself is broken --
                 // same classification as `.invalidArgument`/`.transportFailure` above.
                 return false
+            case .agentClaudeUnknownScope, .agentClaudeScopeClosed, .agentClaudeAlreadyRunning,
+                 .agentClaudeNotRunning, .agentClaudeUnknownPermissionRequest, .agentClaudeSpawnFailed,
+                 .agentClaudeReaperFailed, .agentClaudeTransportWriteFailed, .agentClaudeInvalidRequest:
+                // P6-6: per-call agent-claude-v1 business-outcome/request errors (unknown/closed
+                // scope, already-running, spawn/reaper/transport failure scoped to one command, a
+                // malformed request). Same reasoning as the inventory-scope-v1 group directly
+                // above: none of these indicate the Rust runtime itself is broken.
+                return false
             }
         }
         if case CodeMapArtifactBuildCoordinatorError.flightWatchdogTimedOut = error {
