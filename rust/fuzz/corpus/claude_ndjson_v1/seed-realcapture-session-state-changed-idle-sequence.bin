@@ -1,0 +1,3 @@
+{"type":"system","subtype":"session_state_changed","session_state":"running"}
+{"type":"system","subtype":"session_state_changed","current_state":"Compacting"}
+{"type":"system","subtype":"session_state_changed","state":"IDLE"}

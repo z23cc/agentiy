@@ -45,6 +45,7 @@ dependencies = [
  "nix",
  "pcre2",
  "proptest",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",

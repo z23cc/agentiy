@@ -5,3 +5,8 @@ Vendor/Sparkle/** -whitespace
 # intentional CRLF line terminator (the byte sequence under test, not accidental trailing
 # whitespace) -- see MANIFEST.json in the same directory.
 rust/crates/runtime/tests/fixtures/claude-ndjson/v1/synthetic/crlf-line-ending.ndjson -whitespace
+
+# P6-3: the claude_ndjson_v1 fuzz corpus is arbitrary binary seed data (a flag byte prefix plus a
+# copy of the NDJSON corpus fixtures above, including the intentional-CRLF one) -- a git whitespace
+# check is meaningless over it, the same reasoning as the entry directly above.
+rust/fuzz/corpus/claude_ndjson_v1/** -whitespace -diff

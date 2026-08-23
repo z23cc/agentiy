@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"pondering the answer"},{"type":"text","text":"Here is the answer."}]}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"more pondering"}}}

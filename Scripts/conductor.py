@@ -81,6 +81,9 @@ CARGO_FUZZ_TARGETS = {
     # P4-4: inventory-scope-v1 decode fuzz targets (rust/fuzz/fuzz_targets/inventory_scope_*.rs).
     "inventory_scope_bulk_chunk",
     "inventory_scope_delta_event",
+    # P6-3 (docs/architecture/rust-agent-claude-v1.md §9): the claude-ndjson-v1 fuzz target joining
+    # the existing corpus set (rust/fuzz/fuzz_targets/claude_ndjson_v1.rs).
+    "claude_ndjson_v1",
 }
 CARGO_FUZZ_TOOLCHAIN = "nightly-2026-08-15"
 CARGO_TARGET = "aarch64-apple-darwin"
@@ -248,7 +251,7 @@ Operation commands:
   ./conductor cargo-archive [--profile debug|release]
   ./conductor cargo-deny
   ./conductor cargo-audit
-  ./conductor cargo-fuzz [--target envelope_decode|inventory_scope_bulk_chunk|inventory_scope_delta_event] [--seconds 1..300]
+  ./conductor cargo-fuzz [--target envelope_decode|inventory_scope_bulk_chunk|inventory_scope_delta_event|claude_ndjson_v1] [--seconds 1..300]
   ./conductor xcode-rust-link-validate
   ./conductor rust-ffi-swift-baseline-export    # release test binary; never launches the app
   ./conductor rust-ffi-swift-baseline-check     # two deterministic release test-binary exports

@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","session_id":"claude-session-realcapture-1","result":"All done.","total_cost_usd":0.0421,"usage":{"input_tokens":120,"output_tokens":45},"stop_reason":"end_turn"}

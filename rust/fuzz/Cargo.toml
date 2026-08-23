@@ -61,4 +61,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "claude_ndjson_v1"
+path = "fuzz_targets/claude_ndjson_v1.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

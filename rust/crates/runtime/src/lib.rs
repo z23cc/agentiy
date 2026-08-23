@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent_claude;
 pub mod apply_edits;
 pub mod codemap;
 mod config;
