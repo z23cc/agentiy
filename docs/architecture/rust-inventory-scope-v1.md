@@ -876,6 +876,102 @@ timing/ordering-sensitive under full-suite parallelism, not that its scope chang
 unconfirmed root cause, still out of P4-7c's scope to fix, still reproducible independent of every
 P4-7c change.
 
+### 12.5a Amendment — OI-1/OI-2 root-cause session (2026-08-23, post-P4-7c)
+
+Tasked to root-cause and fix OI-1/OI-2 as "the only remaining red on the tree" at HEAD `5de36ca3`.
+The task's own restatement of OI-1/OI-2 names different symptoms than this document's §12.5 literal
+definitions above -- recorded here rather than silently reconciled, since a future reader will hit
+the same mismatch:
+
+- Task's "OI-1": `StoreBackedWorkspaceSearchTests
+  .testExactAbsoluteScopeHelperReturnsDeepestDiscoverableFileFolderAndRootFolder` plus three
+  `testDebugColdScopedPathSearchPhaseAccounting` assertions (nested-root folder-record synthesis).
+  This document's own §12.5 OI-1 is a different test entirely
+  (`testEnsureIndexedFilesUsesOneSelectiveInvalidationCycle`, a topology-invalidation-cycle-count
+  defect) -- see below.
+- Task's "OI-2": `WorkspaceRootReusableSnapshotCoordinator` catalog-currentness classification
+  producing `catalogMismatch`-family failures, cascade including `AgentRunWorktreeStartTests` (3) and
+  `GitWorktreeCreationReceiptTests` (5). This matches this document's OI-2 and its P4-7c cascade
+  characterization above.
+
+**Task's OI-1 -- did not reproduce, already discharged.** Both named tests, and the full
+`StoreBackedWorkspaceSearchTests` suite (48 tests), ran green in isolation
+(`FILTER=StoreBackedWorkspaceSearch`, 22:35:06-22:36:06, HEAD `5de36ca3`, before any concurrent
+change landed on `dev` this session). `testDebugColdScopedPathSearchPhaseAccounting`'s
+`sortFolderInputCount == 2` assertion is exactly the count Item 0's root-marker-exclusion fix
+(§12.5 above) restored. No fix was needed or made; task's OI-1 is discharged by work that had
+already landed before this session began.
+
+**Task's OI-2 -- root-caused and fixed.** `WorkspaceFileContextStore.loadedRootCatalogBatchEvidence`
+classified every committed regular file's discoverability by reading
+`RootState.fileIDsByRelativePath[path]`. That Swift dict is dead for any live root state: both
+`RootState` initializers construct it `[:]`, its only writer is the `(state:indexes:)` `inout`
+staging overload used solely by the seeded-root replay's local (pre-Rust-commit) candidate-set
+build, and the ordinary `loadRoot` bulk crawl (`indexFolders(chunk.folders,root:)`/
+`indexFiles(chunk.files,root:)`, the async overload) as well as every incremental discovery choke
+point (watcher events, worktree creation, `materializeCatalogRegularFile`) route through
+`indexFile`/`indexFolder` (singular) straight into the Rust authority without ever touching it.
+Every file discovered any way other than the (nonexistent-for-live-roots) seed-replay staging path
+therefore read back `discoverable == false` against real git evidence's `.searchableRegularFile`
+disposition, tripping `loadedRootCatalogBatchEvidence`'s `(true, _)`/`(false, _)` mismatch branch
+unconditionally and surfacing as `WorkspaceRootReusableSnapshotCoordinator
+.CatalogBatchEvidenceResult.catalogMismatch` for essentially any committed file on any
+loaded-root-reuse admission path -- exactly the P4-7c cascade characterized above.
+
+Fix (commit `3727661b`): `loadedRootCatalogBatchEvidence` now resolves discoverability via
+`inventoryPathLookups(in:relativePaths:)`, the same batched Rust-authoritative path-fact lookup
+already used by the codemap/B1/bucket-C read sites, instead of the dead table. Verified green in
+isolation before any concurrent change landed on `dev` this session (all runs against HEAD
+`5de36ca3` + this one-file fix, 22:40-22:45):
+`GitWorktreeCreationReceiptTests` 34/34, `AgentRunWorktreeStartTests` 53/53,
+`WorktreeAPISmokeHarnessTests` 6/6, `WorktreeStartupInstrumentationTests` 22/22 -- the exact
+cascade cluster the task named plus the doc's own broader P4-7c enumeration.
+
+**Two doc-literal residuals confirmed still open, root cause not established.** This document's own
+literal OI-1 (`WorkspaceFileContextStoreTests
+.testBatchedTopologyInvalidationUsesOneSelectiveCycleAndPreservesCatalog`'s
+`testEnsureIndexedFilesUsesOneSelectiveInvalidationCycle` case) and literal OI-2 first half
+(`testWriteAdaptersAndApplyEditsMaterializeCreateOverwriteAndFailurePostconditions`'s
+`testWorkspaceFileMutationServiceCreatesReadsAndOverwritesThroughStore` case, `resolveCreationPath`
+returning nil) both reproduced in a clean `FILTER=WorkspaceFileContextStoreTests` run at 22:54
+(HEAD `5de36ca3` + the OI-2 fix above; 135 tests, 3 failures -- these two plus one unrelated to
+either open item). Investigation into `resolveCreationPath`'s nil result was in progress
+(`buildStaticSnapshot`/`fetchFileTreePageIndex`'s `openSnapshot`-backed page read appeared to
+disagree with `inventoryPathLookups`' fact read for the same just-crawled root) when the
+discovery below invalidated every probe run after 22:54. Not fixed this session; root cause
+unconfirmed. `WorkspaceFileContextStoreExactCapabilityTests
+.testContextBuilderExactCandidateResolvesOnlyAuthorizedWorktreeContent` was also observed flaky
+(passed some runs, failed others at three different assertion points including one this document's
+OI-2 cascade enumeration already names) -- also inside the invalidated window; treat as
+observed-but-unconfirmed, not a finding.
+
+**Session-ending discovery: `dev` moved out from under this session.** This task's HEAD was
+`5de36ca3`; by 23:13 four more commits had landed on `dev` from a concurrent session
+(`16dc1164`, `409dd903`, `d33bf7cd`, `a18c07ac` -- "P6-1" phases a1-a4, Agent-Mode/Claude-provider
+work per that session's own commit messages), including a `rust/crates/runtime/Cargo.toml`
+dependency-feature change (`409dd903`, "pin nix process/event/signal features") and a regenerated
+FFI binding-identity file. This repo checkout is a single shared working tree, not per-agent
+worktrees, so both sessions' builds share one `rust/` source state at any instant regardless of
+each session's own path-scoped staging discipline. A basic-crawl canary
+(`WorkspaceFileContextStoreTests.testRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths` --
+load one root with three files, assert `files(inRoot:)` finds them) was green in the 22:54 run
+above and red (all discoverability assertions empty) in every run after 23:00, including a rerun
+at quiet-tree HEAD `3727661b` (this fix, no concurrent build in flight) confirming it is not this
+session's regression. An isolated `git worktree` re-verification at `5de36ca3` + this fix was
+attempted for a clean bisection but blocked on an untracked, non-git-tracked
+`Vendor/Sparkle/Sparkle.xcframework/.../dSYMs` local build artifact the fresh worktree checkout
+cannot reproduce from git alone -- not pursued further given the timestamped 22:40-22:45 evidence
+above already predates the regression window and needs no further defense. The crawl regression's
+root cause is unconfirmed but correlates in time with the concurrent session's `rust/` change; fixing
+it -- and the two doc-literal residuals above, whose own investigation was already trending toward
+the same `openSnapshot`-backed read surface -- is out of this session's stated domain
+(`Sources/RepoPrompt/Infrastructure/WorkspaceContext/**`) if it does turn out to require a `rust/`
+change, and is not attempted here. The mandated full-suite gate (`make dev-test` expecting zero
+failures tree-wide) was not run: it cannot produce a trustworthy zero-failure result while a
+concurrent session is landing commits into the same tree and the basic-crawl canary is red for
+reasons this session did not introduce and has not root-caused. Reported to the user rather than
+run to a false green.
+
 ## 13. Amendment: P4-7b — the search facade cutover (b1–b4)
 
 Promotion of the decided items per design doc `p4-7-pathsearch-production-cutover-v2-2026-08-23.md`
