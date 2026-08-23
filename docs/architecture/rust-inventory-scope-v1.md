@@ -852,3 +852,101 @@ fix and re-running each filtered test), so neither is a regression introduced by
 P4-7b. Filed as named open items (OI-1, OI-2 — deliberately not `D-`-numbered: they are bugs, not
 an accepted, justified deviation the drift register exists to track) per this document's own
 convention (§12.3/§12.4) rather than left undiscovered; no P4-7b done-when depends on either.
+
+## 13. Amendment: P4-7b — the search facade cutover (b1–b4)
+
+Promotion of the decided items per design doc `p4-7-pathsearch-production-cutover-v2-2026-08-23.md`
+§12, landed across five commits on `dev`: b1 (`744379b6`, tie_break_key wire), Item 0 (`c2c4d240`,
+the root-marker-exclusion fix, §12.5 above), b2 (`24304bb3`, read facade + differential), and b3/b4
+(this commit). P4-7a (suggestion-service cutover) and P4-7c (the deletion gate) are explicitly out
+of this amendment's scope -- neither landed here.
+
+### 13.1 The flip (b3)
+
+`WorkspaceSearchService` no longer builds or holds a Swift C `PathSearchIndex`. It consumes
+`WorkspaceFileContextStore.searchRootQueryHandles(rootScope:)` (b2's read facade) instead of
+`searchCatalogSnapshot(...).rootPathIndexes`:
+
+- Non-empty queries issue `inventoryQuery(.indexKey)` per root against the retained handle;
+  results are reconstructed into `WorkspaceSearchCatalogEntry` values from each candidate's
+  already-standardized fields (`standardizedRelativePath`/`standardizedFullPath`, not re-derived)
+  plus the handle's `rootName`/`rootPath`, then merged with the **unchanged**
+  `WorkspaceInventoryOrdering.compareUTF8Binary(tieBreakKey)` → `searchCatalogEntryPrecedes`
+  comparator.
+- Empty queries page each root's handle (`inventorySnapshotPage`/`CoreInventorySnapshot.page`) at
+  `offset: 0, limit: boundedLimit` -- bounded per root, not a whole-root walk, using the same
+  per-root-top-N-then-merge argument the non-empty path already relies on (a true global top-N
+  member must be a member of its own root's local top-N) -- then merged with the **unchanged**
+  `searchCatalogEntryPrecedes` comparator (§4.2.1's catalog-order requirement).
+- `makeRootPathSearchIndex` (`WorkspaceFileContextStore.swift`) is deleted; its two call sites
+  (the authoritative shard build and the shard-cache promotion path) now construct
+  `pathSearchIndex: nil` unconditionally. `WorkspaceSearchCatalogAccessRequirement.recordsAndPathIndexes`
+  is **not** deleted (§4.4 explicitly allows leaving the enum standing) -- ground-truth/differential
+  tests that need a populated `rootPathIndexes` for direct comparison still request it explicitly
+  against the store -- but `searchCatalogSnapshot`/`searchCatalogAccess`'s *default* requirement is
+  now `.recordsOnly`, and nothing in production ever requests `.recordsAndPathIndexes` again.
+  `prepareAndPublishRootCatalogShardBatch`'s existing precondition
+  (`!requirement.requiresPathIndexes || rootPathIndexes.count == roots.count`) is the fail-closed
+  backstop if that ever stops being true.
+- `rebuildIndex`/`prepareIndex` gained a `(store:rootScope:)` overload alongside
+  `(handles:diagnostics:)`, fetching both from the store in one call -- callers
+  (`WorkspaceCheckoutRefreshService`, `WorkspaceManagerViewModel`'s hydration flow, every test) pass
+  the store directly rather than pre-fetching a snapshot, which is both simpler at each call site
+  and removes the last reason those callers touched `WorkspaceSearchCatalogSnapshot` at all.
+- Fallback policy (§4.6) is implemented as designed: `.rootClosed` drops that root's handle from
+  the ready set and schedules a rebuild; `.scopeClosed`/`.identityChanged` marks
+  `isReadyIndexUsable = false` and schedules a rebuild; any other query error (transport/decode
+  failure) does the same -- never silently degrading to an empty result. Because
+  `WorkspaceSearchService` is event-driven (`store.appliedIndexEvents()`), not polling, a
+  query-time failure with no further catalog mutation would otherwise never self-heal; the actor
+  now retains `store`/`rootScope` (set by `startKeepingFresh`/`rebuildIndex(from:rootScope:)`,
+  mirroring the strong retention `appliedIndexListenerTask`'s own closure already performs) so its
+  error handlers can proactively `scheduleRebuild` against the store's current generation.
+- Hold-per-generation retention (§4.5) falls out of `commit(_:)` reassigning `readyHandles` --
+  ARC-driven close via `CoreInventorySnapshot`'s own `deinit`, open-then-swap-then-close because
+  the replacement `PreparedIndex` is fully built (handles opened, diagnostics fetched) before
+  `commit(_:)` ever runs, so there is no window with zero ready handles.
+
+### 13.2 Index accounting and the co-location gate (b4)
+
+`WorkspaceSearchService.debugPathIndexConstructionCount` (DEBUG-only, instance-level) never
+increments on any production path -- there is no code left in that actor's instance-level surface
+that could construct a `WorkspaceSearchRootPathIndex`/`PathSearchIndex`. The DEBUG-only
+ground-truth reference arm (`authoritativeGlobalResultsForTesting`, kept for P4-7c's deletion gate)
+is `static` and cannot touch it; `Scripts/source_layout_guardrails.sh`'s new P4-7b §4.1.0 section is
+what pins that helper as the *sole* remaining construction site in the file, structurally --
+asserting `makeRootPathSearchIndex` never returns anywhere in `Sources/RepoPrompt`, and that
+`WorkspaceSearchService.swift` never constructs a Swift path index outside that one named
+exception. `WorkspaceSearchColocationGateTests` is the behavioral half: a search-driven catalog
+generation (cold rebuild, non-empty query, empty query, live event-driven rebuild) asserts the
+counter stays 0 throughout. Together these discharge §4.7's "index accounting" and "co-location
+gate test" done-when items -- the mandated gate that never landed at P4-6b now exists.
+
+### 13.3 Drift register D-13–D-15
+
+| ID | Drift | Status |
+|---|---|---|
+| D-13 | `retentionBoundary` rate becomes sensitive to search handle retention (§4.5's hold-per-generation policy: ≤2 handles/root attributable to search). | Registered, not yet re-measured post-flip. b2's baseline (`WorkspaceSearchHandleRetentionBaselineTests`): `retentionBoundary=0` over a 39-patch edit storm on unmodified pre-flip code. §4.5's own done-when ("a behavior test asserting `retentionBoundary` occurrences... are not greater than the... baseline") is **not separately re-run against the post-flip system in this pass** -- named follow-up, tracked in `slo-v1.json`'s `p4SevenBResults.followUpConditions`. |
+| D-14 | `WorkspaceSearchCatalogAccessRequirement` keeps `.recordsAndPathIndexes` (not deleted, per §4.4's explicit option) but the capability is unreachable from any production caller; `WorkspaceSearchCatalogSnapshot.rootPathIndexes` is likewise kept, not deleted. | Implemented as the lighter of §4.4's two options -- deletion costs more (touches `WorkspaceSwitchSearchIndexDiagnostics.swift`'s switch and internal shard-capability bookkeeping that assume two cases) than it buys, since the invariant (§4.1.0) is already enforced by `makeRootPathSearchIndex`'s deletion regardless of whether the enum case exists to be requested. "Unreachable" is not merely aspirational: `composeSearchCatalogSnapshot` now `preconditionFailure`s (`shard.pathSearchIndex` is always nil post-deletion) if any caller actually requests `.recordsAndPathIndexes` -- fail loud, not silently under-deliver, mirroring §4.6's read-side fallback discipline. This crashed two of b2's own committed test files that pinned the pre-flip Swift arm by requesting `.recordsAndPathIndexes` directly (`WorkspaceSearchHandleRetentionBaselineTests`, `WorkspaceSearchRustIndexKeyDifferentialTests`) -- both updated in the b3 commit to route through `.recordsOnly` (the shard patch/retention counters these baselines measure are unaffected by the path-index requirement) and, for the ordered-candidate arm specifically, through the sanctioned DEBUG ground-truth helper `WorkspaceSearchService.authoritativeGlobalResultsForTesting` that `WorkspacePerRootPathSearchIndexTests` already used post-flip. No coverage was dropped; both suites remained green with equivalent assertions. |
+| D-15 | The seeded-root diff-replay self-check (`WorkspacePendingSeededRootTests`) and the search-time projected shadow (`installRootSeedSearchShadow`) both read `snapshot.rootPathIndexes`, now always empty by default -- the projected-reuse-identity assertions those tests made are removed (documented in-place; §4.2.2's accepted gap). | Implemented as designed. The underlying claims (files discoverable/searchable after seeding) remain covered by the surrounding record-level assertions in the same tests, not lost -- only the *index-object*-level redundant re-check is gone. |
+
+### 13.4 Known deferred items (named, not silent)
+
+- **SLO measurement at 100k paths, and at release profile.** §4.7's "Interactive-search latency
+  SLO" is registered in `rust/benchmarks/slo-v1.json`'s `p4SevenBResults` with a real 10k-path,
+  debug-profile p50/p99 measurement (`WorkspaceSearchInteractiveLatencySLOTests`, gated behind
+  `RPCE_RUN_SEARCH_LATENCY_SLO=1`). The 100k tier and a release-profile re-capture are named
+  follow-ups, not silently dropped -- see that JSON entry's `followUpConditions`.
+- **D-13's post-flip re-measurement.** See §13.3 above.
+- **`WorkspaceFileSearchIndexTimeToReadyBenchmarkTests`' `pathIndexBuild`/`overlayPathIndexBuildCount`
+  counter assertions are now stale** (they expect nonzero values from Swift index construction,
+  which can never happen post-flip). Not fixed in this pass -- the whole suite is gated behind the
+  `RPCE_BENCHMARK_TESTS` compile flag and does not run in default builds, so it is not a live gate
+  failure, but it is a real regression if that flag is ever enabled. Named follow-up for whichever
+  phase next touches that benchmark harness (likely P4-7c, when the harness's whole premise --
+  measuring Swift index construction latency -- needs redesigning around what "time to ready" means
+  once the index no longer exists to build).
+- **E-2's mention-query criterion** stays with P4-7a (contract doc §9b), not this document's scope.
+- **§7's full-suite validation row** is deferred to P4-7c per this task's own instruction; the
+  broad, non-exhaustive sweeps run during b3/b4 (§13.1/§13.2 above and the commit message) are
+  evidence toward it, not a discharge of it.

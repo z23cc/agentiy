@@ -239,6 +239,38 @@
       "keep the per-scope locking default for P4-3a"
     ]
   },
+  "p4SevenBResults": {
+    "step": "P4-7b b4 -- Interactive-search latency SLO (design doc p4-7-pathsearch-production-cutover-v2-2026-08-23.md §4.7)",
+    "description": "p50/p99 for WorkspaceSearchService.search(_:limit:) after the b3 flip (Rust-backed inventoryQuery(.indexKey)/inventorySnapshotPage, no Swift path index).",
+    "decision": "PARTIAL -- 10k-path tier measured (debug profile); 100k tier and release-profile re-capture deferred as named follow-ups, not silently dropped.",
+    "measurementSymmetryNote": "Parent §8.4's measurement-symmetry rule ('both arms doing the same product-visible work') applied naturally during b2 while both the Swift and Rust arms existed side by side (WorkspaceSearchRustIndexKeyDifferentialTests). Post-b3 there is no live Swift arm left in production to compare against -- mirrors inventoryScopeV1.experiments.e4ApplyReadContentionUnderRebuild's 'no Swift-side equivalent contention model exists to baseline against... absolute cap on the Rust candidate only'. This entry is therefore an absolute measurement of the shipped system, not a Swift-vs-Rust ratio.",
+    "tenKPaths": {
+      "status": "measured",
+      "profile": "debug",
+      "pathCount": 10000,
+      "pattern": "File-5",
+      "patternNote": "a substring pattern matching a large fraction of the corpus (any index containing digit '5'), chosen to be representative of an interactive as-you-type query rather than a best-case exact/prefix match",
+      "limit": 300,
+      "warmupIterations": 20,
+      "sampleIterations": 200,
+      "p50Milliseconds": 325.53,
+      "p99Milliseconds": 332.79,
+      "harness": "Tests/RepoPromptTests/WorkspaceContext/Search/WorkspaceSearchInteractiveLatencySLOTests.swift",
+      "environmentGate": "RPCE_RUN_SEARCH_LATENCY_SLO=1",
+      "reproduction": "RPCE_RUN_SEARCH_LATENCY_SLO=1 swift test --filter WorkspaceSearchInteractiveLatencySLOTests",
+      "note": "Debug-profile numbers are expected to be substantially higher than release (unoptimized Swift decode/merge and Rust FFI dispatch on both sides of the boundary) -- consistent with performanceIterationPolicy's caution that routine iteration should not pay a release rebuild, and with inventoryScopeV1.swiftBaseline's identical debug-profile caveat ('re-capture under release profile is expected before the... gate'). Not scored against a pre-registered floor in this pass -- recorded as evidence per ADR-0008's registration discipline, to be graded once a release-profile number and the 100k tier exist."
+    },
+    "hundredKPaths": {
+      "status": "not measured",
+      "reason": "Generating and loading 100k real on-disk files through the full store/Rust pipeline in a debug-profile XCTest run risks destabilizing this suite's own runtime (the 10k tier alone took ~157s wall-clock including fixture construction); deferred rather than attempted under this pass's time budget."
+    },
+    "followUpConditions": [
+      "measure the 100k-path tier",
+      "re-capture both tiers under release profile",
+      "re-measure D-13's retentionBoundary rate against the post-flip (handle-vending) system over the same edit-storm fixture WorkspaceSearchHandleRetentionBaselineTests captured pre-flip, per §4.5's own done-when",
+      "investigate whether the measured debug-profile latency is dominated by FFI/IPC dispatch tax or by the 'File-5' pattern's large match-set size, and choose a tighter representative pattern if the latter"
+    ]
+  },
   "p4FourResults": {
     "step": "P4-4 -- FFI + bridge surface (E-2 partial re-run, this step's exit gate per the design's own instruction)",
     "decision": "E-2 partially discharged: wire-byte truth now measured through the real bridge; time-to-first-paint, B2 MainActor frame budget, mention-query, and process-level peak RSS remain BLOCKED pending P4-6b/P4-7 UI and consumer-rewiring infrastructure that does not exist yet.",

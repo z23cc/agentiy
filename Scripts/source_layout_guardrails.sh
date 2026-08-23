@@ -910,6 +910,41 @@ if [[ -n "$unexpected_domain_runtime_inventory_refs" ]]; then
   printf '%s\n' "$unexpected_domain_runtime_inventory_refs" >&2
 fi
 
+# 10. P4-7b §4.1.0 co-location invariant (docs/architecture/rust-inventory-scope-v1.md, amended
+# by docs/designs/p4-7-pathsearch-production-cutover-v2-2026-08-23.md §4.7): no build may ship
+# where the inventory tables are served from Rust while the search facade builds a Swift path
+# index over them. `makeRootPathSearchIndex` was that constructor and is deleted at the P4-7b b3
+# flip; `WorkspaceSearchService` (the sole production caller that ever requested
+# `.recordsAndPathIndexes`) now consumes `WorkspaceFileContextStore.searchRootQueryHandles`
+# instead and must never itself construct a `WorkspaceSearchRootPathIndex`/`PathSearchIndex` in a
+# live (non-DEBUG-ground-truth) code path. The structural/mechanical form the design doc asks for
+# (mirroring the cargo `path_index_builders_take_no_table_shaped_parameter` precedent) is these two
+# greps: the deleted constructor must never return, and the search facade must never construct the
+# type it used to own.
+print_matches \
+  "removed makeRootPathSearchIndex (P4-7b §4.1.0 co-location invariant) must not return" \
+  grep -R -n -F 'makeRootPathSearchIndex(' \
+    Sources/RepoPrompt
+
+workspace_search_service_source="Sources/RepoPrompt/Infrastructure/WorkspaceContext/Search/WorkspaceSearchService.swift"
+if [[ ! -f "$workspace_search_service_source" ]]; then
+  fail "required search facade source missing: $workspace_search_service_source"
+else
+  # One known, deliberate exception: `authoritativeGlobalResultsForTesting`, the DEBUG-only
+  # ground-truth reference arm (design doc §6.1's P4-7c deletion target, not a P4-7b one --
+  # independent of this actor's own state) builds a fresh `PathSearchIndex` over a caller-supplied
+  # snapshot's entries to compute an oracle result. Anything beyond that one construction is a real
+  # regression of the co-location invariant.
+  search_service_index_construction_refs="$(grep -n -E 'WorkspaceSearchRootPathIndex\(|[^.]PathSearchIndex\(' \
+    "$workspace_search_service_source" 2>/dev/null || true)"
+  unexpected_search_service_index_construction_refs="$(printf '%s\n' "$search_service_index_construction_refs" \
+    | grep -v -F 'let index = PathSearchIndex(paths: orderedEntries.map(\.pathSearchIndexKey))' || true)"
+  if [[ -n "$unexpected_search_service_index_construction_refs" ]]; then
+    fail "WorkspaceSearchService must not construct a Swift path index outside the DEBUG-only ground-truth helper (P4-7b §4.1.0 co-location invariant)"
+    printf '%s\n' "$unexpected_search_service_index_construction_refs" >&2
+  fi
+fi
+
 if [[ "$failures" -ne 0 ]]; then
   printf 'Source layout guardrails failed (%s issue%s).\n' "$failures" "$([[ "$failures" == 1 ]] && printf '' || printf 's')" >&2
   exit 1
