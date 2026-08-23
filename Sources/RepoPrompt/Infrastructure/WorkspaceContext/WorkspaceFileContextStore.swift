@@ -7554,9 +7554,14 @@ actor WorkspaceFileContextStore {
         }
     #endif
 
+    /// P4-7b b3: the default drops to `.recordsOnly` -- `WorkspaceSearchService` (the last caller
+    /// that ever requested `.recordsAndPathIndexes`) now consumes `searchRootQueryHandles`
+    /// instead. A caller that still explicitly asks for `.recordsAndPathIndexes` gets an empty
+    /// `rootPathIndexes` and trips `prepareAndPublishRootCatalogShardBatch`'s own precondition
+    /// rather than silently under-delivering.
     func searchCatalogAccess(
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace,
-        requirement: WorkspaceSearchCatalogAccessRequirement = .recordsAndPathIndexes
+        requirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
     ) async -> WorkspaceSearchCatalogAccess {
         let availability = rootScopeAvailability(rootScope)
         guard availability == .available else {
@@ -7565,9 +7570,10 @@ actor WorkspaceFileContextStore {
         return await .available(searchCatalogSnapshot(rootScope: rootScope, requirement: requirement))
     }
 
+    /// P4-7b b3: same default change as `searchCatalogAccess`, same reason.
     func searchCatalogSnapshot(
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace,
-        requirement: WorkspaceSearchCatalogAccessRequirement = .recordsAndPathIndexes
+        requirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
     ) async -> WorkspaceSearchCatalogSnapshot {
         let catalogSnapshotState = EditFlowPerf.begin(EditFlowPerf.Stage.Search.catalogSnapshot)
         if rootsForPathLookupIgnoringPublishedAuthority(scope: rootScope).contains(where: {
@@ -7806,6 +7812,7 @@ actor WorkspaceFileContextStore {
                     topologyGeneration: catalogGenerationsByRootID[root.id] ?? 0
                 ),
                 rootPath: root.standardizedFullPath,
+                rootName: root.name,
                 snapshot: snapshot
             ))
         }
@@ -7904,11 +7911,15 @@ actor WorkspaceFileContextStore {
                 files: candidate.shard.files,
                 folders: candidate.shard.folders,
                 entries: candidate.shard.entries,
-                pathSearchIndex: makeRootPathSearchIndex(
-                    key: candidate.shard.key,
-                    root: candidate.shard.root,
-                    entries: candidate.shard.entries
-                ),
+                // P4-7b b3: the promotion path existed to upgrade a `.recordsOnly` shard to
+                // `.recordsAndPathIndexes` on demand. Nothing requests path indexes anymore
+                // (`makeRootPathSearchIndex` is deleted -- §4.1.0's invariant), so
+                // `rootsNeedingPromotion` above is now always empty and this branch is dead code
+                // kept only because deleting the whole promotion path is a larger, separable change
+                // than this slice's scope. `nil` here would fire the `!requirement.requiresPathIndexes
+                // || rootPathIndexes.count == roots.count` precondition below if that ever stopped
+                // being true -- fail closed rather than silently construct an index again.
+                pathSearchIndex: nil,
                 appliedIndexGeneration: candidate.shard.appliedIndexGeneration
             )
             newlyBuiltShardsByRootID[candidate.root.id] = (promoted, .promotion)
@@ -7969,57 +7980,20 @@ actor WorkspaceFileContextStore {
         requirement: WorkspaceSearchCatalogAccessRequirement
     ) async -> RootCatalogShard {
         let components = await buildAuthoritativeCatalogComponents(roots: [root])
+        // P4-7b b3: `makeRootPathSearchIndex` is deleted (§4.1.0's invariant -- no Swift path
+        // index is ever built over Rust-owned tables). `requirement.requiresPathIndexes` becoming
+        // true here would now silently produce a shard with `pathSearchIndex == nil`, which the
+        // caller's `precondition(!requirement.requiresPathIndexes || rootPathIndexes.count ==
+        // roots.count)` catches -- fail closed, not fail silent, if some caller still asks.
         return RootCatalogShard(
             key: key,
             root: root,
             files: components.files,
             folders: components.folders,
             entries: components.entries,
-            pathSearchIndex: requirement.requiresPathIndexes
-                ? makeRootPathSearchIndex(key: key, root: root, entries: components.entries)
-                : nil,
+            pathSearchIndex: nil,
             appliedIndexGeneration: appliedIndexGeneration
         )
-    }
-
-    private func makeRootPathSearchIndex(
-        key: RootCatalogShardKey,
-        root: WorkspaceRootRecord,
-        entries: [WorkspaceSearchCatalogEntry]
-    ) -> WorkspaceSearchRootPathIndex {
-        #if DEBUG
-            let keyStart = WorkspaceFileSearchDebugTiming.now()
-        #endif
-        let identity = WorkspaceSearchRootPathIndexIdentity(
-            rootID: key.rootID,
-            lifetimeID: key.lifetimeID,
-            topologyGeneration: key.topologyGeneration
-        )
-        #if DEBUG
-            WorkspaceFileSearchDebugContext.catalogBuildObserver?.recordPathIndexKey(
-                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
-                    since: keyStart,
-                    through: WorkspaceFileSearchDebugTiming.now()
-                )
-            )
-            let constructionStart = WorkspaceFileSearchDebugTiming.now()
-        #endif
-        let shadowControl = rootSeedSearchShadowControl(key: key, root: root)
-        let index = WorkspaceSearchRootPathIndex(
-            identity: identity,
-            rootPath: root.standardizedFullPath,
-            entries: entries,
-            shadowControl: shadowControl
-        )
-        #if DEBUG
-            WorkspaceFileSearchDebugContext.catalogBuildObserver?.recordPathIndexConstruction(
-                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
-                    since: constructionStart,
-                    through: WorkspaceFileSearchDebugTiming.now()
-                )
-            )
-        #endif
-        return index
     }
 
     private func installRootSeedSearchShadow(_ preparation: WorkspaceRootSeedShadowPreparation) async {
@@ -8409,11 +8383,14 @@ actor WorkspaceFileContextStore {
         registerPublishedRootCatalogShard(patchedShard, kind: .patch)
     }
 
+    /// Every call site passes `requirement:` explicitly (derived from a saved capability or
+    /// fallback requirement); this default is unreachable in practice and changed to `.recordsOnly`
+    /// only for consistency with `searchCatalogSnapshot`/`searchCatalogAccess`'s P4-7b b3 defaults.
     private func rebuildRootCatalogShardAuthoritatively(
         root: WorkspaceRootRecord,
         key: RootCatalogShardKey,
         appliedIndexGeneration: UInt64,
-        requirement: WorkspaceSearchCatalogAccessRequirement = .recordsAndPathIndexes
+        requirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
     ) async {
         guard canPublishAnotherRootCatalogShard(rootID: root.id) else {
             #if DEBUG

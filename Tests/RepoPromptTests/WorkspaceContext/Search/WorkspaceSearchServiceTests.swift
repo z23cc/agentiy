@@ -48,19 +48,19 @@ final class WorkspaceSearchServiceTests: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+        let expectedGeneration = await store.catalogGeneration(rootScope: .visibleWorkspace)
 
         let service = WorkspaceSearchService()
-        let indexedGeneration = await service.rebuildIndex(from: snapshot)
+        let indexedGeneration = await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         let serviceIndexedGeneration = await service.indexedGeneration
         let indexedPathCount = await service.indexedPathCount
-        XCTAssertEqual(indexedGeneration, snapshot.generation)
-        XCTAssertEqual(serviceIndexedGeneration, snapshot.generation)
+        XCTAssertEqual(indexedGeneration, expectedGeneration)
+        XCTAssertEqual(serviceIndexedGeneration, expectedGeneration)
         XCTAssertEqual(indexedPathCount, 3)
 
         let filenameResult = await service.search("SearchViewModel", limit: 10)
         XCTAssertTrue(filenameResult.isIndexReady)
-        XCTAssertEqual(filenameResult.indexedGeneration, snapshot.generation)
+        XCTAssertEqual(filenameResult.indexedGeneration, expectedGeneration)
         XCTAssertEqual(Set(filenameResult.results.map(\.standardizedRelativePath)), [
             "Sources/App/Search/SearchViewModel.swift",
             "Tests/SearchViewModelTests.swift"
@@ -86,7 +86,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.diagnostics.fileCount, 4)
 
         let service = WorkspaceSearchService()
-        await service.prepareIndex(from: snapshot)
+        await service.prepareIndex(from: store, rootScope: .visibleWorkspace)
 
         let sharedResult = await service.search("SharedTarget", limit: 10)
         XCTAssertEqual(Set(sharedResult.results.map(\.rootID)), [recordA.id, recordB.id])
@@ -104,8 +104,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
         let service = WorkspaceSearchService()
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await service.rebuildIndex(from: snapshot)
+        await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
         try write("beta", to: root.appendingPathComponent("Sources/BetaAdded.swift"))
@@ -127,8 +126,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
         let service = WorkspaceSearchService()
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await service.rebuildIndex(from: snapshot)
+        await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
         try FileManager.default.removeItem(at: root.appendingPathComponent("RemoveMe.swift"))
@@ -150,8 +148,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
         let service = WorkspaceSearchService()
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await service.rebuildIndex(from: snapshot)
+        await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
         try FileManager.default.removeItem(at: root.appendingPathComponent("Gone"))
@@ -175,8 +172,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         let recordA = try await store.loadRoot(path: rootA.path)
         let recordB = try await store.loadRoot(path: rootB.path)
         let service = WorkspaceSearchService()
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await service.rebuildIndex(from: snapshot)
+        await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
         await store.unloadRoot(id: recordA.id)
@@ -197,8 +193,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
         let service = WorkspaceSearchService()
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await service.rebuildIndex(from: snapshot)
+        await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
         try write("duplicate", to: root.appendingPathComponent("DuplicateTarget.swift"))
@@ -220,14 +215,17 @@ final class WorkspaceSearchServiceTests: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
-        let staleSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+
+        let service = WorkspaceSearchService()
+        // Rebuild against the pre-mutation generation before the file is added, so the
+        // subsequent `startKeepingFresh` subscription must catch up via the applied-index event
+        // stream rather than already being current -- the scenario this test's name describes.
+        await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
 
         try write("missed", to: root.appendingPathComponent("MissedBeforeSubscribe.swift"))
         await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileAdded("MissedBeforeSubscribe.swift")])
         let expectedGeneration = await store.catalogGeneration(rootScope: .visibleWorkspace)
 
-        let service = WorkspaceSearchService()
-        await service.rebuildIndex(from: staleSnapshot)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
         try await waitForIndexedGeneration(expectedGeneration, service: service)
 
@@ -243,8 +241,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
         let service = WorkspaceSearchService(automaticIndexBuildDelayNanoseconds: 200_000_000)
-        let initialSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await service.rebuildIndex(from: initialSnapshot)
+        await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
         try write("beta", to: root.appendingPathComponent("BetaAdded.swift"))
@@ -270,8 +267,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
         let service = WorkspaceSearchService(automaticIndexBuildDelayNanoseconds: 200_000_000)
-        let initialSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await service.rebuildIndex(from: initialSnapshot)
+        let initialGeneration = await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
         try write("beta", to: root.appendingPathComponent("BetaFirst.swift"))
@@ -281,7 +277,7 @@ final class WorkspaceSearchServiceTests: XCTestCase {
 
         let staleResult = await service.search("Alpha", limit: 10)
         XCTAssertTrue(staleResult.isStale)
-        XCTAssertEqual(staleResult.indexedGeneration, initialSnapshot.generation)
+        XCTAssertEqual(staleResult.indexedGeneration, initialGeneration)
         XCTAssertEqual(staleResult.pendingGeneration, firstGeneration)
         XCTAssertEqual(staleResult.results.map(\.standardizedRelativePath), ["Alpha.swift"])
 

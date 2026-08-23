@@ -27,8 +27,7 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
         let searchService = WorkspaceSearchService()
-        let initialSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await searchService.rebuildIndex(from: initialSnapshot)
+        await searchService.rebuildIndex(from: store, rootScope: .visibleWorkspace)
 
         try write("let branchOnly = true\n", to: root.appendingPathComponent("Sources/BranchOnly.swift"))
         await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileAdded("Sources/BranchOnly.swift")])
@@ -55,8 +54,7 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
         let searchService = WorkspaceSearchService()
-        let initialSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        await searchService.rebuildIndex(from: initialSnapshot)
+        await searchService.rebuildIndex(from: store, rootScope: .visibleWorkspace)
 
         try FileManager.default.removeItem(at: seed)
         try write("let branchOnly = true\n", to: branchOnly)
@@ -88,8 +86,7 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         _ = try await store.loadRoot(path: visibleRoot.path)
         _ = try await store.loadRoot(path: worktreeRoot.path, kind: .sessionWorktree)
         let searchService = WorkspaceSearchService()
-        let initialVisibleSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        let initialVisibleGeneration = await searchService.rebuildIndex(from: initialVisibleSnapshot)
+        let initialVisibleGeneration = await searchService.rebuildIndex(from: store, rootScope: .visibleWorkspace)
 
         let service = WorkspaceCheckoutRefreshService(store: store, searchService: searchService)
         let result = await service.refreshAfterCheckoutMutation(rootPath: worktreeRoot.path)

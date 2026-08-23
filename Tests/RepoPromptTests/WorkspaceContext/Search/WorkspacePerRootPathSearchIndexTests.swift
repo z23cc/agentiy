@@ -53,8 +53,7 @@ import XCTest
 
             for scope in scopes {
                 let snapshot = await store.searchCatalogSnapshot(rootScope: scope)
-                XCTAssertEqual(snapshot.rootPathIndexes.count, snapshot.roots.count)
-                await service.prepareIndex(from: snapshot)
+                await service.prepareIndex(from: store, rootScope: scope)
                 for query in queries {
                     for limit in [1, 3, 20] {
                         let expected = WorkspaceSearchService.authoritativeGlobalResultsForTesting(
@@ -86,7 +85,7 @@ import XCTest
             XCTAssertEqual(snapshot.roots.map(\.id), [loadedFirst.id, loadedLater.id])
 
             let service = WorkspaceSearchService()
-            await service.prepareIndex(from: snapshot)
+            await service.prepareIndex(from: store, rootScope: .visibleWorkspace)
             let result = await service.search("Target", limit: 1)
             let authoritative = WorkspaceSearchService.authoritativeGlobalResultsForTesting(
                 from: snapshot,
@@ -96,140 +95,30 @@ import XCTest
             XCTAssertEqual(result.results, authoritative)
             XCTAssertEqual(result.results.map(\.rootID), [loadedLater.id])
 
-            let precomposedRoot = try WorkspaceRootRecord(
-                id: XCTUnwrap(UUID(uuidString: "30000000-0000-0000-0000-000000000001")),
-                name: "Precomposed",
-                fullPath: "/virtual/precomposed"
-            )
-            let decomposedRoot = try WorkspaceRootRecord(
-                id: XCTUnwrap(UUID(uuidString: "30000000-0000-0000-0000-000000000002")),
-                name: "Decomposed",
-                fullPath: "/virtual/decomposed"
-            )
-            let precomposedID = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
-            let decomposedID = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
-            let sharedFullPath = "/virtual/shared/Target.swift"
-            let precomposedFile = WorkspaceFileRecord(
-                id: precomposedID,
-                rootID: precomposedRoot.id,
-                name: "Target.swift",
-                relativePath: "Target.swift",
-                fullPath: sharedFullPath,
-                parentFolderID: nil
-            )
-            let decomposedFile = WorkspaceFileRecord(
-                id: decomposedID,
-                rootID: decomposedRoot.id,
-                name: "Target.swift",
-                relativePath: "Target.swift",
-                fullPath: sharedFullPath,
-                parentFolderID: nil
-            )
-            let precomposedEntry = WorkspaceSearchCatalogEntry(
-                file: precomposedFile,
-                root: precomposedRoot,
-                displayPath: "ÉTarget.swift"
-            )
-            let decomposedEntry = WorkspaceSearchCatalogEntry(
-                file: decomposedFile,
-                root: decomposedRoot,
-                displayPath: "E\u{301}Target.swift"
-            )
-            XCTAssertEqual(precomposedEntry.pathSearchIndexKey, decomposedEntry.pathSearchIndexKey)
-            XCTAssertNotEqual(
-                Array(precomposedEntry.pathSearchIndexKey.utf8),
-                Array(decomposedEntry.pathSearchIndexKey.utf8)
-            )
-
-            let precomposedIndex = try WorkspaceSearchRootPathIndex(
-                identity: WorkspaceSearchRootPathIndexIdentity(
-                    rootID: precomposedRoot.id,
-                    lifetimeID: XCTUnwrap(UUID(uuidString: "40000000-0000-0000-0000-000000000001")),
-                    topologyGeneration: 1
-                ),
-                rootPath: precomposedRoot.standardizedFullPath,
-                entries: [precomposedEntry]
-            )
-            let decomposedIndex = try WorkspaceSearchRootPathIndex(
-                identity: WorkspaceSearchRootPathIndexIdentity(
-                    rootID: decomposedRoot.id,
-                    lifetimeID: XCTUnwrap(UUID(uuidString: "40000000-0000-0000-0000-000000000002")),
-                    topologyGeneration: 1
-                ),
-                rootPath: decomposedRoot.standardizedFullPath,
-                entries: [decomposedEntry]
-            )
-            let unicodeSnapshot = WorkspaceSearchCatalogSnapshot(
-                generation: 1,
-                rootScope: .visibleWorkspace,
-                roots: [precomposedRoot, decomposedRoot],
-                files: [precomposedFile, decomposedFile],
-                entries: [precomposedEntry, decomposedEntry],
-                rootPathIndexes: [precomposedIndex, decomposedIndex],
-                diagnostics: WorkspaceCatalogDiagnostics(
-                    generation: 1,
-                    rootScope: .visibleWorkspace,
-                    rootCount: 2,
-                    folderCount: 0,
-                    fileCount: 2
-                )
-            )
-            let unicodeAuthoritative = WorkspaceSearchService.authoritativeGlobalResultsForTesting(
-                from: unicodeSnapshot,
-                query: "Target",
-                limit: 1
-            )
-            XCTAssertEqual(unicodeAuthoritative.map(\.id), [decomposedID])
-            await service.prepareIndex(from: unicodeSnapshot)
-            let unicodeResult = await service.search("Target", limit: 1)
-            XCTAssertEqual(unicodeResult.results, unicodeAuthoritative)
+            // P4-7b b3 removal (design doc §4.4): this scenario continued by hand-fabricating two
+            // *virtual* roots/entries/`WorkspaceSearchRootPathIndex` objects sharing a colliding
+            // `pathSearchIndexKey` (precomposed vs. decomposed é), wrapped them in a synthetic
+            // `WorkspaceSearchCatalogSnapshot`, and fed that snapshot straight to
+            // `service.prepareIndex(from:)`. `WorkspaceSearchService` no longer accepts a snapshot
+            // at all -- it consumes `WorkspaceFileContextStore.searchRootQueryHandles`, which opens
+            // real Rust snapshot handles against real loaded roots; there is no way to fabricate a
+            // handle for a root that was never actually loaded. The pure, store-independent claim
+            // this scenario existed to pin -- that precomposed/decomposed Unicode names collide on
+            // `pathSearchIndexKey` while remaining byte-distinct, and that `FileSearchActor
+            // .pathSearchInputPrecedes` orders them deterministically -- is still pinned directly
+            // (no live search service involved) in
+            // `testOverlayTransitionsPreserveSearchAndPerRootMergeParity`, which keeps exactly those
+            // assertions without the now-impossible synthetic-snapshot wrapper.
         }
 
-        func testChangedRootOnlyRebuildsItsPathIndexAndUnloadReloadResetsLifetime() async throws {
-            let rootAURL = try makeTemporaryRoot(name: "IndexReuseA")
-            let rootBURL = try makeTemporaryRoot(name: "IndexReuseB")
-            try write("a", to: rootAURL.appendingPathComponent("A.swift"))
-            try write("b", to: rootBURL.appendingPathComponent("B.swift"))
-
-            let store = makeStore()
-            let rootA = try await loadStoppedRoot(in: store, path: rootAURL.path)
-            let rootB = try await loadStoppedRoot(in: store, path: rootBURL.path)
-            let firstSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            let firstAIndex = try rootPathIndex(rootID: rootA.id, snapshot: firstSnapshot)
-            let firstBIndex = try rootPathIndex(rootID: rootB.id, snapshot: firstSnapshot)
-
-            try write("new", to: rootAURL.appendingPathComponent("New.swift"))
-            await store.replayObservedFileSystemDeltas(rootID: rootA.id, deltas: [.fileAdded("New.swift")])
-            let secondSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            let secondAIndex = try rootPathIndex(rootID: rootA.id, snapshot: secondSnapshot)
-            let secondBIndex = try rootPathIndex(rootID: rootB.id, snapshot: secondSnapshot)
-            XCTAssertFalse(firstAIndex === secondAIndex)
-            XCTAssertTrue(firstBIndex === secondBIndex)
-
-            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            let rootADiagnostics = try shardDiagnostics(rootID: rootA.id, diagnostics: diagnostics)
-            XCTAssertEqual(rootADiagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(rootADiagnostics.overlayPathIndexBuildCount, 1)
-            XCTAssertEqual(try shardDiagnostics(rootID: rootB.id, diagnostics: diagnostics).pathIndexBuildCount, 1)
-
-            await store.unloadRoot(id: rootA.id)
-            let unloadedSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            XCTAssertEqual(unloadedSnapshot.rootPathIndexes.map(\.identity.rootID), [rootB.id])
-            XCTAssertTrue(try rootPathIndex(rootID: rootB.id, snapshot: unloadedSnapshot) === firstBIndex)
-            XCTAssertEqual(secondAIndex.search("New", limit: 10).map(\.entry.standardizedRelativePath), ["New.swift"])
-
-            let replacementA = try await loadStoppedRoot(in: store, path: rootAURL.path)
-            let reloadedSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            let replacementAIndex = try rootPathIndex(rootID: replacementA.id, snapshot: reloadedSnapshot)
-            XCTAssertNotEqual(replacementA.id, rootA.id)
-            XCTAssertNotEqual(replacementAIndex.identity.lifetimeID, firstAIndex.identity.lifetimeID)
-            XCTAssertFalse(replacementAIndex === firstAIndex)
-            XCTAssertTrue(try rootPathIndex(rootID: rootB.id, snapshot: reloadedSnapshot) === firstBIndex)
-
-            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            XCTAssertEqual(try shardDiagnostics(rootID: replacementA.id, diagnostics: diagnostics).pathIndexBuildCount, 1)
-            XCTAssertEqual(try shardDiagnostics(rootID: rootB.id, diagnostics: diagnostics).pathIndexBuildCount, 1)
-        }
+        // P4-7b b3 removal (design doc §4.4): `testChangedRootOnlyRebuildsItsPathIndexAndUnloadReloadResetsLifetime`
+        // removed. It pinned shard-cache `WorkspaceSearchRootPathIndex` *object identity* reuse
+        // across patches (`firstBIndex === secondBIndex`) and rebuild-on-change
+        // (`firstAIndex !== secondAIndex`), read via `snapshot.rootPathIndexes` from an explicit
+        // `.recordsAndPathIndexes` request. `makeRootPathSearchIndex` -- the sole constructor of
+        // that per-shard index object -- is deleted (§4.1.0's invariant), so no caller can produce
+        // the state this test needed anymore; the shard-cache's own object-identity contract is now
+        // permanently unreachable from any live code path, not merely untested.
 
         func testOverlayTransitionsPreserveSearchAndPerRootMergeParity() async throws {
             let rootAURL = try makeTemporaryRoot(name: "OverlayParityA")
@@ -347,80 +236,24 @@ import XCTest
                 overlayIndex.search("Target", limit: 1).map(\.entry.id),
                 [decomposedID]
             )
-
-            let unicodeSnapshot = WorkspaceSearchCatalogSnapshot(
-                generation: 2,
-                rootScope: .visibleWorkspace,
-                roots: [virtualRoot],
-                files: [precomposedFile, decomposedFile],
-                entries: [precomposedEntry, decomposedEntry],
-                rootPathIndexes: [overlayIndex],
-                diagnostics: WorkspaceCatalogDiagnostics(
-                    generation: 2,
-                    rootScope: .visibleWorkspace,
-                    rootCount: 1,
-                    folderCount: 0,
-                    fileCount: 2
-                )
-            )
-            let authoritative = WorkspaceSearchService.authoritativeGlobalResultsForTesting(
-                from: unicodeSnapshot,
-                query: "Target",
-                limit: 1
-            )
-            XCTAssertEqual(authoritative.map(\.id), [decomposedID])
-            await service.prepareIndex(from: unicodeSnapshot)
-            let indexed = await service.search("Target", limit: 1)
-            XCTAssertEqual(indexed.results, authoritative)
+            // P4-7b b3 removal (design doc §4.4): this scenario continued by wrapping `overlayIndex`
+            // in a synthetic `WorkspaceSearchCatalogSnapshot` (a virtual, never-loaded root) and
+            // feeding it to `service.prepareIndex(from:)` to prove the live search service agreed
+            // with the hand-built overlay index. `WorkspaceSearchService` no longer accepts a
+            // snapshot -- it consumes `WorkspaceFileContextStore.searchRootQueryHandles`, which
+            // requires a really-loaded root, so a virtual root can no longer be fed to it. The
+            // `overlayIndex.search(...)` assertion just above already pins the
+            // `WorkspaceSearchRootPathIndex` type's own overlay/tie-break behavior directly (that
+            // type is unaffected by the b3 flip -- holders #2-#6 in the design doc's ledger still
+            // use it until P4-7c); only the "and the live search service agrees" half is retired.
         }
 
-        func testOverlaySegmentBlocksCrossFormerBoundWhileRetainedReadersStayImmutable() async throws {
-            let rootURL = try makeTemporaryRoot(name: "OverlayCompaction")
-            try write("seed", to: rootURL.appendingPathComponent("Seed.swift"))
-
-            let store = makeStore()
-            let root = try await loadStoppedRoot(in: store, path: rootURL.path)
-            let oldSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            let oldIndex = try rootPathIndex(rootID: root.id, snapshot: oldSnapshot)
-            let patchCount = 40
-
-            var retainedSnapshot: WorkspaceSearchCatalogSnapshot?
-            for index in 0 ..< patchCount {
-                let relativePath = String(format: "Added-%02d-Target.swift", index)
-                try write("added", to: rootURL.appendingPathComponent(relativePath))
-                await store.replayObservedFileSystemDeltas(rootID: root.id, deltas: [.fileAdded(relativePath)])
-                if index == 15 {
-                    retainedSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-                }
-            }
-
-            let currentSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            let currentIndex = try rootPathIndex(rootID: root.id, snapshot: currentSnapshot)
-            let retainedIndex = try rootPathIndex(
-                rootID: root.id,
-                snapshot: XCTUnwrap(retainedSnapshot)
-            )
-            XCTAssertTrue(oldIndex.search("Added", limit: 100).isEmpty)
-            XCTAssertEqual(oldIndex.overlayHistoryMetricsForTesting.totalPayloadCount, 0)
-            XCTAssertEqual(retainedIndex.search("Added", limit: 100).count, 16)
-            XCTAssertEqual(retainedIndex.overlayHistoryMetricsForTesting.recentPayloadCount, 16)
-            XCTAssertEqual(retainedIndex.overlayHistoryMetricsForTesting.compactedPageCount, 0)
-            XCTAssertTrue(retainedIndex.overlayHistoryMetricsForTesting.isWithinStructuralBounds)
-            XCTAssertEqual(currentIndex.search("Added", limit: 100).count, patchCount)
-            XCTAssertEqual(currentIndex.overlayHistoryMetricsForTesting.recentPayloadCount, 6)
-            XCTAssertEqual(currentIndex.overlayHistoryMetricsForTesting.compactedPageCount, 2)
-            XCTAssertEqual(currentIndex.overlayHistoryMetricsForTesting.totalPayloadCount, patchCount)
-            XCTAssertTrue(currentIndex.overlayHistoryMetricsForTesting.isWithinStructuralBounds)
-
-            let diagnostics = try await shardDiagnostics(
-                rootID: root.id,
-                diagnostics: store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            )
-            XCTAssertEqual(diagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(diagnostics.overlayPathIndexBuildCount, patchCount)
-            XCTAssertEqual(diagnostics.patchCount, patchCount)
-            XCTAssertEqual(diagnostics.authoritativeRebuildCount, 1)
-        }
+        // P4-7b b3 removal (design doc §4.4): `testOverlaySegmentBlocksCrossFormerBoundWhileRetainedReadersStayImmutable`
+        // removed, for the same reason as `testChangedRootOnlyRebuildsItsPathIndexAndUnloadReloadResetsLifetime`
+        // above: it read `WorkspaceSearchRootPathIndex` instances out of `snapshot.rootPathIndexes`
+        // (an explicit `.recordsAndPathIndexes` shard-cache request) to pin the overlay history's
+        // own compaction bounds (`overlayHistoryMetricsForTesting`) across 40 store-driven patches.
+        // No caller can produce a populated `rootPathIndexes` anymore.
 
         func testRootUnloadDropsOnlyItsReadyIndexWhileReplacementGenerationIsPending() async throws {
             let rootAURL = try makeTemporaryRoot(name: "DropIndexA")
@@ -436,7 +269,7 @@ import XCTest
             await service.setAutomaticRebuildDidStartHandler { generation in
                 await rebuildGate.enter(generation: generation)
             }
-            await service.prepareIndex(from: store.searchCatalogSnapshot(rootScope: .visibleWorkspace))
+            await service.prepareIndex(from: store, rootScope: .visibleWorkspace)
             await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
 
             await store.unloadRoot(id: rootA.id)
@@ -467,9 +300,8 @@ import XCTest
 
             let store = makeStore()
             let root = try await loadStoppedRoot(in: store, path: rootURL.path)
-            let oldSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
             let service = WorkspaceSearchService()
-            await service.prepareIndex(from: oldSnapshot)
+            let oldGeneration = await service.prepareIndex(from: store, rootScope: .visibleWorkspace)
 
             let gate = AsyncGate()
             await service.setSearchDidCaptureGenerationHandler { generation in
@@ -477,28 +309,20 @@ import XCTest
             }
             let oldSearch = Task { await service.search("OldTarget", limit: 10) }
             let capturedGeneration = await gate.waitUntilEntered()
-            XCTAssertEqual(capturedGeneration, oldSnapshot.generation)
+            XCTAssertEqual(capturedGeneration, oldGeneration)
 
             try FileManager.default.removeItem(at: oldURL)
             await store.replayObservedFileSystemDeltas(rootID: root.id, deltas: [.fileRemoved("OldTarget.swift")])
-            let newSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            await service.rebuildIndex(from: newSnapshot)
+            let newGeneration = await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
             await service.setSearchDidCaptureGenerationHandler(nil)
             await gate.open()
 
             let oldResult = await oldSearch.value
-            XCTAssertEqual(oldResult.indexedGeneration, oldSnapshot.generation)
+            XCTAssertEqual(oldResult.indexedGeneration, oldGeneration)
             XCTAssertEqual(oldResult.results.map(\.standardizedRelativePath), ["OldTarget.swift"])
             let newResult = await service.search("OldTarget", limit: 10)
-            XCTAssertEqual(newResult.indexedGeneration, newSnapshot.generation)
+            XCTAssertEqual(newResult.indexedGeneration, newGeneration)
             XCTAssertTrue(newResult.results.isEmpty)
-
-            let diagnostics = try await shardDiagnostics(
-                rootID: root.id,
-                diagnostics: store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            )
-            XCTAssertEqual(diagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(diagnostics.overlayPathIndexBuildCount, 1)
         }
 
         private func makeStore() -> WorkspaceFileContextStore {
@@ -525,7 +349,7 @@ import XCTest
             line: UInt = #line
         ) async throws {
             let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            await service.prepareIndex(from: snapshot)
+            await service.prepareIndex(from: store, rootScope: .visibleWorkspace)
             for query in queries {
                 for limit in [1, 3, 20] {
                     let expected = WorkspaceSearchService.authoritativeGlobalResultsForTesting(
@@ -537,13 +361,6 @@ import XCTest
                     XCTAssertEqual(actual.results, expected, "query=\(query) limit=\(limit)", file: file, line: line)
                 }
             }
-        }
-
-        private func rootPathIndex(
-            rootID: UUID,
-            snapshot: WorkspaceSearchCatalogSnapshot
-        ) throws -> WorkspaceSearchRootPathIndex {
-            try XCTUnwrap(snapshot.rootPathIndexes.first { $0.identity.rootID == rootID })
         }
 
         private func shardDiagnostics(

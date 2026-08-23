@@ -75,8 +75,7 @@ struct WorkspaceCheckoutRefreshService {
         guard affectedRoots.contains(where: { $0.kind == .primaryWorkspace }) else {
             return (nil, .skippedSharedVisibleWorkspaceForSessionWorktree)
         }
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-        let generation = await searchService.rebuildIndex(from: snapshot)
+        let generation = await searchService.rebuildIndex(from: store, rootScope: .visibleWorkspace)
         return (generation, .rebuiltSharedVisibleWorkspace)
     }
 

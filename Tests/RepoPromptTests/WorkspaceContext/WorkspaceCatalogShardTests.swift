@@ -67,79 +67,20 @@ import XCTest
             XCTAssertEqual(rootBRecordsOnlyDiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(diagnostics.singleShardCompositionReuseCount, 1)
             XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 2)
-            let retainedRecordsOnlyFileIDs = multiRootSnapshot.files.map(\.id)
 
-            let rootAOnlyScope = WorkspaceLookupRootScope.sessionBoundWorkspace(
-                canonicalRootPaths: [rootAURL.standardizedFileURL.path],
-                physicalRootPaths: []
-            )
-            let indexedRootA = await store.searchCatalogSnapshot(rootScope: rootAOnlyScope)
-            XCTAssertEqual(indexedRootA.roots.map(\.id), [rootA.id])
-            XCTAssertEqual(indexedRootA.rootPathIndexes.count, 1)
-            let rootAOnlyDiagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            let promotedRootADiagnostics = try diagnosticsForRoot(rootID: rootA.id, in: rootAOnlyDiagnostics)
-            let unpromotedRootBDiagnostics = try diagnosticsForRoot(rootID: rootB.id, in: rootAOnlyDiagnostics)
-            XCTAssertEqual(promotedRootADiagnostics.buildCount, 2)
-            XCTAssertEqual(promotedRootADiagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(unpromotedRootBDiagnostics.buildCount, 1)
-            XCTAssertEqual(unpromotedRootBDiagnostics.pathIndexBuildCount, 0)
-            let projectedRootA = await store.searchCatalogSnapshot(
-                rootScope: rootAOnlyScope,
-                requirement: .recordsOnly
-            )
-            XCTAssertTrue(projectedRootA.rootPathIndexes.isEmpty)
-            XCTAssertEqual(projectedRootA.generation, indexedRootA.generation)
-
-            let indexed = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            XCTAssertEqual(indexed.rootPathIndexes.count, 2)
-            // D-6 (design doc §9): snapshot instance identity (`===`) becomes generation-token
-            // identity -- `WorkspaceSearchRootPathIndexIdentity` (rootID/lifetimeID/topologyGeneration)
-            // is the same cache-reuse contract, expressible across the FFI.
-            XCTAssertEqual(indexed.rootPathIndexes[0].identity, indexedRootA.rootPathIndexes[0].identity)
-            XCTAssertTrue(multiRootSnapshot.rootPathIndexes.isEmpty)
-            XCTAssertEqual(multiRootSnapshot.files.map(\.id), retainedRecordsOnlyFileIDs)
-            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            rootADiagnostics = try diagnosticsForRoot(rootID: rootA.id, in: diagnostics)
-            let rootBIndexedDiagnostics = try diagnosticsForRoot(rootID: rootB.id, in: diagnostics)
-            XCTAssertEqual(rootADiagnostics.authoritativeRebuildCount, 1)
-            XCTAssertEqual(rootADiagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(rootADiagnostics.buildCount, 2)
-            XCTAssertEqual(rootBIndexedDiagnostics.authoritativeRebuildCount, 1)
-            XCTAssertEqual(rootBIndexedDiagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(rootBIndexedDiagnostics.buildCount, 2)
-            XCTAssertEqual(rootADiagnostics.patchCount, 0)
-            XCTAssertEqual(rootBIndexedDiagnostics.patchCount, 0)
-
-            let repeatedIndexed = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            // D-6: generation-token identity, not instance identity -- see the comment above.
-            XCTAssertEqual(indexed.rootPathIndexes[0].identity, repeatedIndexed.rootPathIndexes[0].identity)
-            XCTAssertEqual(indexed.rootPathIndexes[1].identity, repeatedIndexed.rootPathIndexes[1].identity)
-            let repeatedDiagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            XCTAssertEqual(repeatedDiagnostics.roots, diagnostics.roots)
-
-            let projectedRecordsOnly = await store.searchCatalogSnapshot(
-                rootScope: .visibleWorkspace,
-                requirement: .recordsOnly
-            )
-            XCTAssertTrue(projectedRecordsOnly.rootPathIndexes.isEmpty)
-            XCTAssertEqual(projectedRecordsOnly.generation, indexed.generation)
-            XCTAssertEqual(projectedRecordsOnly.files.map(\.id), indexed.files.map(\.id))
-            let projectedDiagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            XCTAssertEqual(projectedDiagnostics.roots, diagnostics.roots)
-
-            let indexedAllLoaded = await store.searchCatalogSnapshot(rootScope: .allLoaded)
-            let projectedAllLoaded = await store.searchCatalogSnapshot(
-                rootScope: .allLoaded,
-                requirement: .recordsOnly
-            )
-            XCTAssertEqual(indexedAllLoaded.rootPathIndexes.count, 2)
-            XCTAssertTrue(projectedAllLoaded.rootPathIndexes.isEmpty)
-            XCTAssertEqual(projectedAllLoaded.generation, indexedAllLoaded.generation)
-            let finalDiagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            XCTAssertEqual(finalDiagnostics.roots, diagnostics.roots)
-            XCTAssertEqual(recordsOnlyDiagnostics.shadowComparisonCount, 0)
-            XCTAssertEqual(finalDiagnostics.shadowComparisonCount, 0)
-            XCTAssertEqual(finalDiagnostics.shadowMismatchCount, 0)
+            // P4-7b b3 removal (design doc §4.4): this test continued by fetching a root-scoped
+            // snapshot *without* an explicit `requirement:` -- relying on the pre-b3 default
+            // (`.recordsAndPathIndexes`) to exercise shard-cache "promotion" (a `.recordsOnly` shard
+            // upgraded in place to carry a path index) and the subsequent generation-token identity
+            // reuse across repeated `.visibleWorkspace`/`.allLoaded` fetches
+            // (`indexed.rootPathIndexes[0].identity == repeatedIndexed.rootPathIndexes[0].identity`,
+            // D-6). `searchCatalogSnapshot`'s default is now `.recordsOnly` (nothing in production
+            // ever requests indexes again -- `WorkspaceSearchService` consumes
+            // `searchRootQueryHandles` instead), and `makeRootPathSearchIndex` -- the promotion
+            // path's sole index constructor -- is deleted (§4.1.0's invariant), so no caller can
+            // produce a populated `rootPathIndexes` to reuse or compare identities across. The
+            // records-only composition-reuse and shadow-validation-skip claims this test's name
+            // describes are fully pinned above, unaffected by this removal.
         }
 
         func testTopologyChurnRebuildsOnlyAffectedRootShardsAndShadowMatchesAuthoritativeBytes() async throws {
@@ -290,13 +231,14 @@ import XCTest
             // and therefore an extra path-index build -- per declined patch. Restored to the
             // original pre-cutover value now that the patch path is fixed; not a legitimate
             // paging-driven rebuild-count increase after all.
-            XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 2)
+            // P4-7b b3: 0, not 2 -- path-index construction is retired.
+            XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(rootDiagnostics.backstopCount, 1)
             XCTAssertEqual(diagnostics.shadowComparisonCount, cap + 1)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
 
             let indexedRecovery = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            XCTAssertEqual(indexedRecovery.rootPathIndexes.count, 1)
+            XCTAssertTrue(indexedRecovery.rootPathIndexes.isEmpty)
             let indexedDiagnostics = try await diagnosticsForRoot(
                 rootID: root.id,
                 in: store.storeWorkDiagnosticsSnapshot().rootCatalogShards
@@ -363,7 +305,7 @@ import XCTest
             XCTAssertEqual(initialSnapshot.roots.map(\.id), [parentRoot.id, root.id])
 
             let initialPrefixService = WorkspaceSearchService()
-            await initialPrefixService.prepareIndex(from: initialSnapshot)
+            await initialPrefixService.prepareIndex(from: store, rootScope: .visibleWorkspace)
             let initialBlankPrefix = await initialPrefixService.search("", limit: 5)
             let expectedBlankPrefixPaths = Array(expectedInitialFullPaths.prefix(5))
             XCTAssertEqual(
@@ -378,9 +320,11 @@ import XCTest
             let lifetimeID = try await store.rootLifetimeIDForTesting(rootID: root.id)
             XCTAssertEqual(initialRootDiagnostics.lifetimeID, lifetimeID)
             XCTAssertEqual(initialRootDiagnostics.authoritativeRebuildCount, 1)
-            XCTAssertEqual(initialRootDiagnostics.pathIndexBuildCount, 1)
+            // P4-7b b3: 0, not 1 -- `makeRootPathSearchIndex` is deleted (§4.1.0's invariant); no
+            // shard build constructs a Swift path index anymore.
+            XCTAssertEqual(initialRootDiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(initialParentDiagnostics.authoritativeRebuildCount, 1)
-            XCTAssertEqual(initialParentDiagnostics.pathIndexBuildCount, 1)
+            XCTAssertEqual(initialParentDiagnostics.pathIndexBuildCount, 0)
             assertFallbackInvariant(initialRootDiagnostics, expected: [:])
 
             let insertionPaths = [
@@ -456,9 +400,11 @@ import XCTest
                         in: store.storeWorkDiagnosticsSnapshot().rootCatalogShards
                     )
                     XCTAssertEqual(afterFirstPatch.patchCount, initialRootDiagnostics.patchCount + 1)
+                    // P4-7b b3: unchanged (both 0), not `+1` -- overlay path-index construction is
+                    // retired along with `makeRootPathSearchIndex`.
                     XCTAssertEqual(
                         afterFirstPatch.overlayPathIndexBuildCount,
-                        initialRootDiagnostics.overlayPathIndexBuildCount + 1
+                        initialRootDiagnostics.overlayPathIndexBuildCount
                     )
                     XCTAssertEqual(
                         afterFirstPatch.authoritativeRebuildCount,
@@ -478,7 +424,7 @@ import XCTest
             assertCatalogFileOrderAndAlignment(snapshot, expectedFullPaths: expectedPatchedFullPaths)
 
             let patchedPrefixService = WorkspaceSearchService()
-            await patchedPrefixService.prepareIndex(from: snapshot)
+            await patchedPrefixService.prepareIndex(from: store, rootScope: .visibleWorkspace)
             let patchedBlankPrefix = await patchedPrefixService.search("", limit: 5)
             XCTAssertEqual(
                 patchedBlankPrefix.results.map(\.standardizedFullPath),
@@ -529,8 +475,9 @@ import XCTest
             XCTAssertEqual(rootDiagnostics.patchCount, 8)
             XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 1)
             XCTAssertEqual(rootDiagnostics.buildCount, 9)
-            XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(rootDiagnostics.overlayPathIndexBuildCount, 5)
+            // P4-7b b3: both 0 -- path-index construction (initial and overlay) is retired.
+            XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 0)
+            XCTAssertEqual(rootDiagnostics.overlayPathIndexBuildCount, 0)
             XCTAssertEqual(rootDiagnostics.lastAppliedIndexGeneration, 8)
             XCTAssertFalse(rootDiagnostics.deltaStateDirty)
             assertFallbackInvariant(rootDiagnostics, expected: [:])
@@ -538,70 +485,21 @@ import XCTest
             XCTAssertGreaterThan(diagnostics.shadowComparisonCount, initialShadowComparisonCount)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
 
-            let recordsOnlyRootURL = try makeTemporaryRoot(name: "RecordsOnlyPatch")
-            try write("seed", to: recordsOnlyRootURL.appendingPathComponent("Seed.swift"))
-            let recordsOnlyStore = makeStore()
-            let recordsOnlyRoot = try await loadStoppedRoot(in: recordsOnlyStore, path: recordsOnlyRootURL.path)
-            let retainedRecordsOnly = await recordsOnlyStore.searchCatalogSnapshot(
-                rootScope: .visibleWorkspace,
-                requirement: .recordsOnly
-            )
-            XCTAssertTrue(retainedRecordsOnly.rootPathIndexes.isEmpty)
-            let recordsOnlyBeforePatch = try await diagnosticsForRoot(
-                rootID: recordsOnlyRoot.id,
-                in: recordsOnlyStore.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            )
-            XCTAssertEqual(recordsOnlyBeforePatch.authoritativeRebuildCount, 1)
-            XCTAssertEqual(recordsOnlyBeforePatch.pathIndexBuildCount, 0)
-            XCTAssertEqual(recordsOnlyBeforePatch.overlayPathIndexBuildCount, 0)
-
-            let addedRelativePath = "RecordsOnlyAdded.swift"
-            try write("added", to: recordsOnlyRootURL.appendingPathComponent(addedRelativePath))
-            await recordsOnlyStore.replayObservedFileSystemDeltas(
-                rootID: recordsOnlyRoot.id,
-                deltas: [.fileAdded(addedRelativePath)]
-            )
-            let patchedRecordsOnly = await recordsOnlyStore.searchCatalogSnapshot(
-                rootScope: .visibleWorkspace,
-                requirement: .recordsOnly
-            )
-            XCTAssertTrue(patchedRecordsOnly.rootPathIndexes.isEmpty)
-            XCTAssertFalse(retainedRecordsOnly.files.contains { $0.standardizedRelativePath == addedRelativePath })
-            XCTAssertTrue(patchedRecordsOnly.files.contains { $0.standardizedRelativePath == addedRelativePath })
-            XCTAssertEqual(patchedRecordsOnly.files.map(\.id), patchedRecordsOnly.entries.map(\.id))
-            let recordsOnlyAfterPatch = try await diagnosticsForRoot(
-                rootID: recordsOnlyRoot.id,
-                in: recordsOnlyStore.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            )
-            XCTAssertEqual(recordsOnlyAfterPatch.patchCount, recordsOnlyBeforePatch.patchCount + 1)
-            XCTAssertEqual(recordsOnlyAfterPatch.authoritativeRebuildCount, 1)
-            XCTAssertEqual(recordsOnlyAfterPatch.pathIndexBuildCount, 0)
-            XCTAssertEqual(recordsOnlyAfterPatch.overlayPathIndexBuildCount, 0)
-
-            let promoted = await recordsOnlyStore.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            XCTAssertEqual(promoted.rootPathIndexes.count, 1)
-            let promotionDiagnostics = try await diagnosticsForRoot(
-                rootID: recordsOnlyRoot.id,
-                in: recordsOnlyStore.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            )
-            XCTAssertEqual(promotionDiagnostics.patchCount, recordsOnlyAfterPatch.patchCount)
-            XCTAssertEqual(promotionDiagnostics.authoritativeRebuildCount, 1)
-            XCTAssertEqual(promotionDiagnostics.pathIndexBuildCount, 1)
-            XCTAssertEqual(promotionDiagnostics.overlayPathIndexBuildCount, 0)
-            let promotedService = WorkspaceSearchService()
-            await promotedService.prepareIndex(from: promoted)
-            let promotedResult = await promotedService.search("RecordsOnlyAdded", limit: 5)
-            XCTAssertEqual(promotedResult.results.map(\.standardizedRelativePath), [addedRelativePath])
-
-            let repeatedPromotion = await recordsOnlyStore.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            // D-6: generation-token identity, not instance identity -- see the comment at this
-            // file's first conversion site.
-            XCTAssertEqual(promoted.rootPathIndexes[0].identity, repeatedPromotion.rootPathIndexes[0].identity)
-            let repeatedPromotionDiagnostics = try await diagnosticsForRoot(
-                rootID: recordsOnlyRoot.id,
-                in: recordsOnlyStore.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            )
-            XCTAssertEqual(repeatedPromotionDiagnostics, promotionDiagnostics)
+            // P4-7b b3 removal (design doc §4.4): this sub-scenario tested the shard-cache
+            // "promotion" path -- a `.recordsOnly` shard upgraded to `.recordsAndPathIndexes` by a
+            // later caller that requested indexes, via `makeRootPathSearchIndex`. That function is
+            // deleted (§4.1.0's invariant: no Swift path index is ever built over Rust-owned
+            // tables) and nothing in production requests `.recordsAndPathIndexes` anymore
+            // (`WorkspaceSearchService` -- the only caller that ever did -- now consumes
+            // `WorkspaceFileContextStore.searchRootQueryHandles`). The promotion mechanism's own
+            // bookkeeping (`rootsNeedingPromotion`, `pathIndexBuildCount`, the promoted-vs-repeated
+            // generation-token identity check this scenario also covered) is therefore retired
+            // along with it -- there is no `.recordsOnly` sub-scenario for it to test.
+            //
+            // The parity `.recordsOnly` assertions this scenario opened with (a patch producing an
+            // updated `.recordsOnly` snapshot with `rootPathIndexes.isEmpty`) remain covered above
+            // by `initialPrefixService`/`patchedPrefixService`'s empty-query parity checks, which
+            // now exercise `WorkspaceSearchService`'s Rust-backed path unconditionally.
         }
 
         func testCanonicalBatchFallbacksCoverFullResyncGapOverflowAndUnsafeAmbiguity() async throws {
@@ -651,7 +549,8 @@ import XCTest
             let rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
             XCTAssertEqual(rootDiagnostics.patchCount, 0)
             XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 7)
-            XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 7)
+            // P4-7b b3: 0, not 7 -- path-index construction is retired.
+            XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(rootDiagnostics.overlayPathIndexBuildCount, 0)
             assertFallbackInvariant(rootDiagnostics, expected: [
                 .generationGap: 3,
@@ -689,7 +588,8 @@ import XCTest
             let rootBDiagnostics = try diagnosticsForRoot(rootID: rootB.id, in: diagnostics)
             XCTAssertEqual(rootADiagnostics.patchCount, 0)
             XCTAssertEqual(rootADiagnostics.authoritativeRebuildCount, 2)
-            XCTAssertEqual(rootADiagnostics.pathIndexBuildCount, 2)
+            // P4-7b b3: 0, not 2 -- path-index construction is retired.
+            XCTAssertEqual(rootADiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(rootADiagnostics.overlayPathIndexBuildCount, 0)
             assertFallbackInvariant(rootADiagnostics, expected: [.patchThresholdExceeded: 1])
             XCTAssertEqual(rootBDiagnostics.buildCount, 1)

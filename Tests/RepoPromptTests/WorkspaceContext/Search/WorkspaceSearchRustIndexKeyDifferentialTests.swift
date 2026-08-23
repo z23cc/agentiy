@@ -2,9 +2,11 @@ import AgentryCoreBridge
 @testable import RepoPromptApp
 import XCTest
 
-/// P4-7b §4.3 (phase b2) -- the read facade + hard-assertion differential, no cutover. Runs the
-/// Swift arm (`WorkspaceSearchRootPathIndex.search` + the *unchanged* Swift merge comparator) and
-/// the Rust arm (`WorkspaceFileContextStore.searchRootQueryHandles`'s handles, queried via
+/// P4-7b §4.3 (phase b2, updated at b3) -- the read facade + hard-assertion differential. Runs the
+/// Swift arm (`WorkspaceSearchService.authoritativeGlobalResultsForTesting`, the sanctioned DEBUG
+/// ground-truth helper -- see the b3 update note on `swiftMergedIDs` below for why this suite no
+/// longer builds a `WorkspaceSearchRootPathIndex` directly) and the Rust arm
+/// (`WorkspaceFileContextStore.searchRootQueryHandles`'s handles, queried via
 /// `CoreInventorySnapshot.query(haystackVariant: .indexKey)`, merged with the *same* comparator)
 /// over the same generation, and asserts ordered-candidate identity equality.
 ///
@@ -121,33 +123,30 @@ final class WorkspaceSearchRustIndexKeyDifferentialTests: XCTestCase {
 
     // MARK: - Arms
 
-    /// The Swift arm: `WorkspaceSearchRootPathIndex.search`, one call per root, merged with the
-    /// exact comparator `WorkspaceSearchService.candidatePrecedes` uses (score is always `1` on
-    /// both engines, so `WorkspaceInventoryOrdering.compareUTF8Binary(tieBreakKey)` carries the
-    /// entire order; ties fall back to `searchCatalogEntryPrecedes`, unreachable here given the
-    /// corpus's unique paths).
+    /// The Swift arm. P4-7b b3 update: originally `WorkspaceSearchRootPathIndex.search`, one call
+    /// per root over an explicit `.recordsAndPathIndexes` shard fetch, merged by hand with the
+    /// production comparator. `makeRootPathSearchIndex` -- the sole constructor of that per-shard
+    /// index -- is deleted at b3 (§4.1.0's co-location invariant), so `.recordsAndPathIndexes` now
+    /// intentionally `preconditionFailure`s (D-14). Switched to the same sanctioned DEBUG ground-
+    /// truth helper `WorkspacePerRootPathSearchIndexTests` already uses post-flip --
+    /// `WorkspaceSearchService.authoritativeGlobalResultsForTesting` -- which builds one global
+    /// Swift `PathSearchIndex` directly from a `.recordsOnly` snapshot's `entries` (no path index,
+    /// no shard-level construction, nothing this suite's own `WorkspaceSearchColocationGateTests`
+    /// sibling would flag). A single global index and this suite's old per-root-then-merge produce
+    /// identical orderings for the same reason §4.4's global-top-K note gives: score is always `1`
+    /// on every engine, so `WorkspaceInventoryOrdering.compareUTF8Binary(tieBreakKey)` (falling back
+    /// to `searchCatalogEntryPrecedes`) is the entire order regardless of how the candidate set was
+    /// partitioned before sorting.
     private func swiftMergedIDs(
-        rootPathIndexes: [WorkspaceSearchRootPathIndex],
+        snapshot: WorkspaceSearchCatalogSnapshot,
         pattern: String,
         limit: Int
     ) -> [UUID] {
-        rootPathIndexes
-            .flatMap { $0.search(pattern, limit: limit) }
-            .sorted(by: candidatePrecedesForTesting)
-            .prefix(limit)
-            .map(\.entry.id)
-    }
-
-    private func candidatePrecedesForTesting(
-        _ lhs: WorkspaceSearchRootPathIndex.Candidate,
-        _ rhs: WorkspaceSearchRootPathIndex.Candidate
-    ) -> Bool {
-        if lhs.score != rhs.score { return lhs.score > rhs.score }
-        switch WorkspaceInventoryOrdering.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
-        case .orderedAscending: return true
-        case .orderedDescending: return false
-        case .orderedSame: return WorkspaceInventoryOrdering.searchCatalogEntryPrecedes(lhs.entry, rhs.entry)
-        }
+        WorkspaceSearchService.authoritativeGlobalResultsForTesting(
+            from: snapshot,
+            query: pattern,
+            limit: limit
+        ).map(\.id)
     }
 
     /// The Rust arm: one `CoreInventorySnapshot.query(haystackVariant: .indexKey)` call per root's
@@ -180,22 +179,19 @@ final class WorkspaceSearchRustIndexKeyDifferentialTests: XCTestCase {
             .map(\.id)
     }
 
-    /// Empty query: Swift's `mergeRootEntries` k-way merges retained per-root entry arrays by
-    /// `WorkspaceInventoryOrdering.searchCatalogEntryPrecedes` -- catalog order, not tie-break
-    /// order (§4.2.1). Rust's analogue is `inventorySnapshotPage` (`CoreInventorySnapshot.page`),
-    /// paging `generation.files`, itself sorted into the single-root branch's relative-path order
+    /// Empty query, Rust arm: `inventorySnapshotPage` (`CoreInventorySnapshot.page`), paging
+    /// `generation.files`, itself sorted into the single-root branch's relative-path order
     /// (`rebuild_generation`'s doc comment) -- which, within one root, is the identical sequence
     /// full-path order produces (a constant per-root prefix does not change intra-root relative
-    /// order), so per-root paged sequences and Swift's per-root `entries` arrays are directly
-    /// comparable before this test's own k-way merge. Entries are files-only (§1.5.2's carry-
-    /// forward) -- folders are not read here.
-    private func swiftEmptyQueryMergedIDs(rootPathIndexes: [WorkspaceSearchRootPathIndex]) -> [UUID] {
-        rootPathIndexes
-            .flatMap(\.entries)
-            .sorted(by: WorkspaceInventoryOrdering.searchCatalogEntryPrecedes)
-            .map(\.id)
-    }
-
+    /// order), so per-root paged sequences and the Swift arm's own catalog-order `entries` are
+    /// directly comparable before this test's own k-way merge. Entries are files-only (§1.5.2's
+    /// carry-forward) -- folders are not read here.
+    ///
+    /// The Swift arm no longer needs a dedicated helper here: `snapshot.entries` (a `.recordsOnly`
+    /// fetch) is already catalog-order-sortable directly -- `WorkspaceInventoryOrdering
+    /// .searchCatalogEntryPrecedes` applied at each call site is `mergeRootEntries`'s own k-way-
+    /// merge comparator, unaffected by path-index requirement (`entries` is populated unconditionally
+    /// by `composeSearchCatalogSnapshot`; only `rootPathIndexes` -- deleted at b3 -- was gated).
     private func rustEmptyQueryMergedIDs(handles: WorkspaceSearchRootQueryHandles) async throws -> [UUID] {
         var all: [(fullPath: String, id: UUID)] = []
         for handle in handles.perRoot {
@@ -223,22 +219,18 @@ final class WorkspaceSearchRustIndexKeyDifferentialTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
-        let recordsAndIndexes = await store.searchCatalogSnapshot(
-            rootScope: .visibleWorkspace,
-            requirement: .recordsAndPathIndexes
-        )
-        let rootPathIndexes = recordsAndIndexes.rootPathIndexes
-        XCTAssertFalse(rootPathIndexes.isEmpty, "fixture must produce at least one path index", file: file, line: line)
+        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+        XCTAssertFalse(snapshot.roots.isEmpty, "fixture must produce at least one loaded root", file: file, line: line)
 
         guard let handles = await store.searchRootQueryHandles(rootScope: .visibleWorkspace) else {
             XCTFail("expected search root query handles to open against a loaded workspace", file: file, line: line)
             return
         }
-        XCTAssertEqual(handles.perRoot.count, rootPathIndexes.count, file: file, line: line)
-        XCTAssertEqual(handles.scopeGeneration, recordsAndIndexes.generation, "b2's staleness key is the Swift scope generation, not any Rust generation (§1.5 Check B)", file: file, line: line)
+        XCTAssertEqual(handles.perRoot.count, snapshot.roots.count, file: file, line: line)
+        XCTAssertEqual(handles.scopeGeneration, snapshot.generation, "b2's staleness key is the Swift scope generation, not any Rust generation (§1.5 Check B)", file: file, line: line)
 
         for (pattern, limit) in queryPatterns() {
-            let swiftIDs = swiftMergedIDs(rootPathIndexes: rootPathIndexes, pattern: pattern, limit: limit)
+            let swiftIDs = swiftMergedIDs(snapshot: snapshot, pattern: pattern, limit: limit)
             let rustIDs = try await rustMergedIDs(handles: handles, pattern: pattern, limit: limit)
             XCTAssertEqual(
                 swiftIDs, rustIDs,
@@ -247,7 +239,7 @@ final class WorkspaceSearchRustIndexKeyDifferentialTests: XCTestCase {
             )
         }
 
-        let swiftEmptyIDs = swiftEmptyQueryMergedIDs(rootPathIndexes: rootPathIndexes)
+        let swiftEmptyIDs = snapshot.entries.sorted(by: WorkspaceInventoryOrdering.searchCatalogEntryPrecedes).map(\.id)
         let rustEmptyIDs = try await rustEmptyQueryMergedIDs(handles: handles)
         XCTAssertEqual(
             swiftEmptyIDs, rustEmptyIDs,
@@ -290,18 +282,14 @@ final class WorkspaceSearchRustIndexKeyDifferentialTests: XCTestCase {
         }
         _ = try await store.loadRoot(path: container.path)
 
-        let recordsAndIndexes = await store.searchCatalogSnapshot(
-            rootScope: .visibleWorkspace,
-            requirement: .recordsAndPathIndexes
-        )
-        let rootPathIndexes = recordsAndIndexes.rootPathIndexes
-        XCTAssertEqual(rootPathIndexes.reduce(0) { $0 + $1.count }, fileCount)
+        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+        XCTAssertEqual(snapshot.entries.count, fileCount)
 
         guard let handles = await store.searchRootQueryHandles(rootScope: .visibleWorkspace) else {
             return XCTFail("expected search root query handles to open against the large-corpus root")
         }
 
-        let swiftEmptyIDs = swiftEmptyQueryMergedIDs(rootPathIndexes: rootPathIndexes)
+        let swiftEmptyIDs = snapshot.entries.sorted(by: WorkspaceInventoryOrdering.searchCatalogEntryPrecedes).map(\.id)
         let rustEmptyIDs = try await rustEmptyQueryMergedIDs(handles: handles)
         XCTAssertEqual(swiftEmptyIDs.count, fileCount)
         XCTAssertEqual(

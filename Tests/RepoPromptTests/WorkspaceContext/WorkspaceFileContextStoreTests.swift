@@ -247,14 +247,16 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 let warmCacheCount = await store.searchCatalogSnapshotCacheCountForTesting()
                 XCTAssertEqual(warmCacheCount, 1, caseLabel)
 
+                // P4-7b b3: `searchCatalogSnapshot`'s default requirement is now `.recordsOnly`
+                // (§4.1.0's invariant -- `makeRootPathSearchIndex` is deleted, nothing in production
+                // requests `.recordsAndPathIndexes` anymore), so this default-requirement fetch no
+                // longer returns a populated `rootPathIndexes`; the generation-token cache-reuse
+                // identity check this block continued with is retired along with it.
                 let indexed = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
                 XCTAssertEqual(indexed.generation, cold.generation, caseLabel)
-                XCTAssertEqual(indexed.rootPathIndexes.count, 2, caseLabel)
+                XCTAssertTrue(indexed.rootPathIndexes.isEmpty, caseLabel)
                 let indexedCacheCount = await store.searchCatalogSnapshotCacheCountForTesting()
                 XCTAssertEqual(indexedCacheCount, 1, caseLabel)
-                let repeatedIndexed = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-                XCTAssertTrue(indexed.rootPathIndexes[0] === repeatedIndexed.rootPathIndexes[0], caseLabel)
-                XCTAssertTrue(indexed.rootPathIndexes[1] === repeatedIndexed.rootPathIndexes[1], caseLabel)
                 let projected = await store.searchCatalogSnapshot(
                     rootScope: .visibleWorkspace,
                     requirement: .recordsOnly
@@ -273,15 +275,21 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 XCTAssertEqual(cold.diagnostics.rootCount, 2, caseLabel)
                 XCTAssertEqual(cold.diagnostics.folderCount, 3, caseLabel)
                 XCTAssertEqual(cold.diagnostics.fileCount, 3, caseLabel)
-                XCTAssertEqual(buckets.first(where: { $0.sanitizedDimensions.contains("cacheHit=false") })?.sampleCount, 2, caseLabel)
+                // P4-7b b3: `indexed`'s default-requirement fetch is now capability-compatible
+                // with `cold`/`warm`'s explicit `.recordsOnly` (both request `.recordsOnly` since
+                // the default changed), so it is a cache hit rather than a miss -- 1 miss (`cold`)
+                // + 3 hits (`warm`, `indexed`, `projected`), not 2 misses + 3 hits over 5 fetches
+                // (`repeatedIndexed` above is also removed, so there are 4 fetches total, not 5).
+                XCTAssertEqual(buckets.first(where: { $0.sanitizedDimensions.contains("cacheHit=false") })?.sampleCount, 1, caseLabel)
                 XCTAssertEqual(buckets.first(where: { $0.sanitizedDimensions.contains("cacheHit=true") })?.sampleCount, 3, caseLabel)
                 XCTAssertEqual(capture.droppedSampleCount, 0, caseLabel)
                 let work = await store.storeWorkDiagnosticsSnapshot()
-                XCTAssertEqual(work.catalogRebuild.rebuildCount, 2, caseLabel)
+                XCTAssertEqual(work.catalogRebuild.rebuildCount, 1, caseLabel)
                 XCTAssertEqual(work.catalogRebuild.lastFileCount, 3, caseLabel)
                 XCTAssertEqual(work.catalogRebuild.lastRootCount, 2, caseLabel)
                 XCTAssertTrue(work.rootCatalogShards.roots.allSatisfy { $0.authoritativeRebuildCount == 1 }, caseLabel)
-                XCTAssertTrue(work.rootCatalogShards.roots.allSatisfy { $0.pathIndexBuildCount == 1 }, caseLabel)
+                // P4-7b b3: 0, not 1 -- path-index construction is retired.
+                XCTAssertTrue(work.rootCatalogShards.roots.allSatisfy { $0.pathIndexBuildCount == 0 }, caseLabel)
                 XCTAssertTrue(work.rootCatalogShards.roots.allSatisfy { $0.patchCount == 0 }, caseLabel)
                 XCTAssertGreaterThanOrEqual(work.catalogRebuild.totalMicroseconds, work.catalogRebuild.filterMicroseconds, caseLabel)
                 XCTAssertGreaterThanOrEqual(work.catalogRebuild.totalMicroseconds, work.catalogRebuild.sortMicroseconds, caseLabel)

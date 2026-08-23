@@ -119,9 +119,8 @@ final class AgentContextFileBrowseServiceTests: XCTestCase {
         try write("target", to: rootURL.appendingPathComponent("Sources/Target.swift"))
         let store = WorkspaceFileContextStore()
         let root = try await store.loadRoot(path: rootURL.path)
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
         let searchService = WorkspaceSearchService()
-        await searchService.prepareIndex(from: snapshot)
+        await searchService.prepareIndex(from: store, rootScope: .visibleWorkspace)
         let service = AgentContextFileBrowseService(store: store, searchService: searchService)
 
         let indexed = try await availableResult(service.search(

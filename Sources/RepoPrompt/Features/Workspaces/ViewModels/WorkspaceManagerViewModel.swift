@@ -1741,7 +1741,10 @@ class WorkspaceManagerViewModel: ObservableObject {
             hydrationGeneration: UInt64
         ) async -> (generation: UInt64, durationMS: Double?) {
             let startMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
-            let indexedGeneration = await workspaceSearchService.rebuildIndex(from: snapshot)
+            let indexedGeneration = await workspaceSearchService.rebuildIndex(
+                from: fileManager.workspaceFileContextStore,
+                rootScope: .visibleWorkspace
+            )
             let durationMS = startMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) }
             WorkspaceRestorePerfLog.event(
                 "workspaceSwitch.searchIndexRebuild.end",
@@ -7668,7 +7671,11 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
         await workspaceSearchService.startKeepingFresh(with: fileManager.workspaceFileContextStore)
         guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
-        let searchCatalogRequirement: WorkspaceSearchCatalogAccessRequirement = .recordsAndPathIndexes
+        // P4-7b b3: `.recordsOnly` -- `WorkspaceSearchService.rebuildIndex(from:rootScope:)` now
+        // fetches its own `WorkspaceSearchRootQueryHandles` from the store; this locally-fetched
+        // `snapshot` is used only for the readiness-state/logging fields below (generation, root/
+        // folder/file counts, entry count), which `.recordsOnly` still provides in full.
+        let searchCatalogRequirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
         #if DEBUG
             let searchIndexBuildStoreWorkBefore = await fileManager.workspaceFileContextStore.storeWorkDiagnosticsSnapshot()
             let searchIndexBuildSearchWorkBefore = await workspaceSearchService.workDiagnosticsSnapshot()
@@ -7727,7 +7734,10 @@ class WorkspaceManagerViewModel: ObservableObject {
             if let duration = initialIndexedResult.durationMS { totalSearchIndexRebuildDurationMS += duration }
             if let duration = initialWarmedResult.durationMS { totalPathLookupWarmDurationMS += duration }
         #else
-            async let indexedGeneration = workspaceSearchService.rebuildIndex(from: initialSearchSnapshot)
+            async let indexedGeneration = workspaceSearchService.rebuildIndex(
+                from: fileManager.workspaceFileContextStore,
+                rootScope: .visibleWorkspace
+            )
             async let warmedGeneration = fileManager.workspaceFileContextStore.warmPathLookupIndexes(rootScope: .visibleWorkspace)
             var indexGeneration = await indexedGeneration
             _ = await warmedGeneration
@@ -7781,7 +7791,10 @@ class WorkspaceManagerViewModel: ObservableObject {
                 indexGeneration = rebuildResult.generation
                 if let duration = rebuildResult.durationMS { totalSearchIndexRebuildDurationMS += duration }
             #else
-                indexGeneration = await workspaceSearchService.rebuildIndex(from: snapshot)
+                indexGeneration = await workspaceSearchService.rebuildIndex(
+                    from: fileManager.workspaceFileContextStore,
+                    rootScope: .visibleWorkspace
+                )
             #endif
             guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
         }

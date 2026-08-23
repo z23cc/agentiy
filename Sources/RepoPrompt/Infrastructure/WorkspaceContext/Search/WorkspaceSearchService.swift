@@ -1,22 +1,44 @@
+import AgentryCoreBridge
 import Foundation
 
-/// Actor-owned workspace path-search facade built from immutable root catalog shards.
+/// Actor-owned workspace path-search facade.
 ///
-/// Each catalog shard owns one immutable C `PathSearchIndex`. Scope generations retain the
-/// relevant root-index references, and searches merge root-local candidates into the exact
-/// historical global rank order without rebuilding or mutating a shared C index.
+/// P4-7b b3 (design doc `docs/designs/p4-7-pathsearch-production-cutover-v2-2026-08-23.md` §4.4):
+/// the flip. This actor no longer builds or holds a Swift C `PathSearchIndex` over Rust-owned
+/// tables -- searches issue `inventoryQuery(.indexKey)` against Rust snapshot handles the store
+/// vends (`WorkspaceFileContextStore.searchRootQueryHandles(rootScope:)`), and the empty query
+/// pages `generation.files` directly (`inventorySnapshotPage`, §4.2.1). The cross-root merge stays
+/// in Swift, unchanged: `WorkspaceInventoryOrdering.compareUTF8Binary(tieBreakKey)` -- score is
+/// always `1` on both engines, so the tie-break key alone carries the ordering (§1.5 Check A) --
+/// then `WorkspaceInventoryOrdering.searchCatalogEntryPrecedes` as the final tiebreak.
+///
+/// `readyHandles` retains `WorkspaceSearchRootQueryHandles`, not per-root index objects.
+/// Hold-per-generation is the chosen retention policy (§4.5): at most one *ready* handle set plus
+/// at most one *in-flight* set during a rebuild are ever retained, and `commit(_:)` always
+/// open-then-swaps -- the replacement set is fully built before the superseded set's last
+/// reference is dropped, so there is never a window where a concurrent `search(...)` finds no
+/// handle. Closing is ARC-driven (`CoreInventorySnapshot`'s own `deinit`); there is no explicit
+/// close call anywhere in this actor.
+///
+/// `currentIndexedGeneration`/`currentSnapshotGeneration` remain keyed off the Swift scope
+/// generation the store computes (`scopedSnapshotGeneration`), never off any Rust generation
+/// (§1.5 Check B) -- this actor never reads a Rust generation for staleness purposes.
 actor WorkspaceSearchService {
     private struct PreparedIndex {
         let generation: UInt64
         let diagnostics: WorkspaceCatalogDiagnostics
-        let rootPathIndexes: [WorkspaceSearchRootPathIndex]
-        let entryCount: Int
+        let handles: WorkspaceSearchRootQueryHandles
         #if DEBUG
-            let orderMicroseconds: UInt64
-            let materializationMicroseconds: UInt64
-            let cIndexBuildMicroseconds: UInt64
             let totalMicroseconds: UInt64
         #endif
+    }
+
+    /// One reconstructed candidate: the entry plus the subject text that ordered it, so the merge
+    /// comparator below is byte-identical in shape to the pre-flip `WorkspaceSearchRootPathIndex
+    /// .Candidate`-based merge (`candidatePrecedes`/`entryPrecedes`).
+    private struct RankedCandidate {
+        let entry: WorkspaceSearchCatalogEntry
+        let tieBreakKey: String
     }
 
     private struct RankedCandidateCursor {
@@ -29,7 +51,7 @@ actor WorkspaceSearchService {
         let entryIndex: Int
     }
 
-    private var readyRootPathIndexes: [WorkspaceSearchRootPathIndex] = []
+    private var readyHandles = WorkspaceSearchRootQueryHandles(scopeGeneration: 0, perRoot: [])
     private var currentSnapshotGeneration: UInt64?
     private var currentIndexedGeneration: UInt64?
     private var currentDiagnostics: WorkspaceCatalogDiagnostics?
@@ -42,6 +64,13 @@ actor WorkspaceSearchService {
     private var automaticIndexBuildDelayNanoseconds: UInt64
     private var discardedAutomaticRebuildCompletions = 0
     private var isReadyIndexUsable = true
+    /// §4.6: retained so a query-time failure inside `search(...)` can self-trigger a rebuild
+    /// without every caller threading a store reference through `search(...)` itself. Matches the
+    /// strong retention `appliedIndexListenerTask`'s own closure already performs for the
+    /// lifetime of `startKeepingFresh`/`stopKeepingFresh` -- this does not add a new retention
+    /// shape, it makes an existing one available to one more method.
+    private var retainedStore: WorkspaceFileContextStore?
+    private var retainedRootScope: WorkspaceLookupRootScope = .visibleWorkspace
     #if DEBUG
         struct RebuildWorkDiagnosticsSnapshot: Equatable {
             let rebuildCount: Int
@@ -55,12 +84,25 @@ actor WorkspaceSearchService {
         }
 
         private var debugRebuildCount = 0
-        private var debugOrderMicroseconds: UInt64 = 0
-        private var debugMaterializationMicroseconds: UInt64 = 0
-        private var debugCIndexBuildMicroseconds: UInt64 = 0
         private var debugTotalMicroseconds: UInt64 = 0
         private var debugDebounceCancellationCount = 0
         private var debugLastEntryCount = 0
+        /// §4.7 done-when: "zero Swift path-index constructions during a search-driven catalog
+        /// generation." This actor's own production paths (`search`, `rebuildIndex`/`prepareIndex`,
+        /// the live event-driven rebuild path) never construct a `WorkspaceSearchRootPathIndex`/
+        /// `PathSearchIndex` -- there is no instance-level code path left that could increment this,
+        /// which is the invariant itself, not a gap in the counter. (The DEBUG-only ground-truth
+        /// helper below, `authoritativeGlobalResultsForTesting`, is `static` and constructs its own
+        /// `PathSearchIndex` independently of any instance -- it cannot and does not touch this
+        /// counter; `Scripts/source_layout_guardrails.sh`'s P4-7b §4.1.0 section is what pins that
+        /// helper as the *only* remaining construction site in this file, structurally.) A test
+        /// asserting this counter is 0 across a search-driven catalog generation
+        /// (`WorkspaceSearchColocationGateTests`) is the behavioral half of the co-location gate;
+        /// the guardrail script is the mechanical half.
+        private(set) var debugPathIndexConstructionCount = 0
+        /// §4.6: queries that failed with a handle-invalidation or transport/decode error, counted
+        /// so a caller-side diagnostic can distinguish "no matches" from "search degraded."
+        private(set) var discardedQueryErrorCount = 0
         private var searchDidCaptureGenerationHandler: (@Sendable (UInt64?) async -> Void)?
         private var automaticRebuildDidStartHandler: (@Sendable (UInt64) async -> Void)?
     #endif
@@ -87,7 +129,7 @@ actor WorkspaceSearchService {
     }
 
     var indexedPathCount: Int {
-        readyRootPathIndexes.reduce(0) { $0 + $1.count }
+        currentDiagnostics?.fileCount ?? 0
     }
 
     var pendingGeneration: UInt64? {
@@ -106,9 +148,9 @@ actor WorkspaceSearchService {
         func workDiagnosticsSnapshot() -> RebuildWorkDiagnosticsSnapshot {
             RebuildWorkDiagnosticsSnapshot(
                 rebuildCount: debugRebuildCount,
-                orderMicroseconds: debugOrderMicroseconds,
-                materializationMicroseconds: debugMaterializationMicroseconds,
-                cIndexBuildMicroseconds: debugCIndexBuildMicroseconds,
+                orderMicroseconds: 0,
+                materializationMicroseconds: 0,
+                cIndexBuildMicroseconds: 0,
                 totalMicroseconds: debugTotalMicroseconds,
                 debounceCancellationCount: debugDebounceCancellationCount,
                 staleDiscardedCount: discardedAutomaticRebuildCompletions,
@@ -128,6 +170,14 @@ actor WorkspaceSearchService {
             automaticRebuildDidStartHandler = handler
         }
 
+        /// DEBUG-only ground-truth reference arm (design doc §6.1's zero-reference-proof names
+        /// this as a P4-7c deletion target, not a P4-7b one -- it takes a snapshot directly and is
+        /// independent of this actor's own state, so the b3 flip does not touch it). Builds a
+        /// fresh Swift `PathSearchIndex` over `snapshot.entries` and searches it synchronously --
+        /// the only remaining Swift path-index construction reachable through this file. `static`,
+        /// so it cannot and does not touch `debugPathIndexConstructionCount` (an instance-level
+        /// counter); `Scripts/source_layout_guardrails.sh`'s P4-7b §4.1.0 section is what pins this
+        /// as the *only* construction site left in this file, structurally rather than by count.
         static func authoritativeGlobalResultsForTesting(
             from snapshot: WorkspaceSearchCatalogSnapshot,
             query: String,
@@ -154,6 +204,8 @@ actor WorkspaceSearchService {
         debounceNanoseconds: UInt64 = 50_000_000
     ) async {
         appliedIndexListenerTask?.cancel()
+        retainedStore = store
+        retainedRootScope = rootScope
         let stream = await store.appliedIndexEvents()
         appliedIndexListenerTask = Task { [weak self, store] in
             for await event in stream {
@@ -190,32 +242,78 @@ actor WorkspaceSearchService {
         activeRebuildGeneration = nil
     }
 
+    /// P4-7b b3: `handles` is optional because `WorkspaceFileContextStore.searchRootQueryHandles`
+    /// can fail to open (scope unavailable, or any one root's handle open failing) -- §4.6's
+    /// fail-visible rule: a failed vend must never silently commit an empty, "ready" index. `nil`
+    /// marks the index unusable and returns the *previous* indexed generation unchanged (matching
+    /// the existing cancelled-rebuild return shape below), rather than advancing to a generation
+    /// that was never actually indexed.
     @discardableResult
-    func rebuildIndex(from snapshot: WorkspaceSearchCatalogSnapshot) async -> UInt64 {
+    func rebuildIndex(
+        from handles: WorkspaceSearchRootQueryHandles?,
+        diagnostics: WorkspaceCatalogDiagnostics
+    ) async -> UInt64 {
         rebuildSerial &+= 1
         let serial = rebuildSerial
         pendingRebuildTask?.cancel()
         pendingRebuildTask = nil
         pendingRebuildGeneration = nil
-        activeRebuildGeneration = snapshot.generation
-        latestObservedCatalogGeneration = snapshot.generation
+        activeRebuildGeneration = diagnostics.generation
+        latestObservedCatalogGeneration = diagnostics.generation
 
-        let prepared = Self.prepareIndex(from: snapshot)
+        guard let handles else {
+            isReadyIndexUsable = false
+            #if DEBUG
+                discardedQueryErrorCount += 1
+            #endif
+            activeRebuildGeneration = nil
+            return currentIndexedGeneration ?? diagnostics.generation
+        }
+        let prepared = Self.prepareIndex(handles: handles, diagnostics: diagnostics)
         #if DEBUG
             recordPreparedIndexWork(prepared)
         #endif
         guard serial == rebuildSerial, !Task.isCancelled else {
             activeRebuildGeneration = nil
-            return currentIndexedGeneration ?? snapshot.generation
+            return currentIndexedGeneration ?? diagnostics.generation
         }
         commit(prepared)
         activeRebuildGeneration = nil
-        return snapshot.generation
+        return diagnostics.generation
+    }
+
+    /// Convenience over `rebuildIndex(from:diagnostics:)`: fetches both from `store` for callers
+    /// that do not already have them in hand (mirrors the pre-flip pattern where a caller fetched
+    /// one `WorkspaceSearchCatalogSnapshot` and passed it through). `store.catalogDiagnostics`
+    /// pages the root for accurate counts -- an explicitly out-of-scope-to-retire page-through
+    /// (design doc §1.2.1: `catalogDiagnostics` is one of the store's own surviving Tier-1 read
+    /// sites), paid once per rebuild, not per search.
+    @discardableResult
+    func rebuildIndex(
+        from store: WorkspaceFileContextStore,
+        rootScope: WorkspaceLookupRootScope
+    ) async -> UInt64 {
+        retainedStore = store
+        retainedRootScope = rootScope
+        async let handles = store.searchRootQueryHandles(rootScope: rootScope)
+        async let diagnostics = store.catalogDiagnostics(rootScope: rootScope)
+        return await rebuildIndex(from: handles, diagnostics: diagnostics)
     }
 
     @discardableResult
-    func prepareIndex(from snapshot: WorkspaceSearchCatalogSnapshot) async -> UInt64 {
-        await rebuildIndex(from: snapshot)
+    func prepareIndex(
+        from handles: WorkspaceSearchRootQueryHandles?,
+        diagnostics: WorkspaceCatalogDiagnostics
+    ) async -> UInt64 {
+        await rebuildIndex(from: handles, diagnostics: diagnostics)
+    }
+
+    @discardableResult
+    func prepareIndex(
+        from store: WorkspaceFileContextStore,
+        rootScope: WorkspaceLookupRootScope
+    ) async -> UInt64 {
+        await rebuildIndex(from: store, rootScope: rootScope)
     }
 
     func reset() async {
@@ -224,7 +322,7 @@ actor WorkspaceSearchService {
         appliedIndexListenerTask = nil
         pendingRebuildTask?.cancel()
         pendingRebuildTask = nil
-        readyRootPathIndexes = []
+        readyHandles = WorkspaceSearchRootQueryHandles(scopeGeneration: 0, perRoot: [])
         currentSnapshotGeneration = nil
         currentIndexedGeneration = nil
         currentDiagnostics = nil
@@ -232,6 +330,7 @@ actor WorkspaceSearchService {
         pendingRebuildGeneration = nil
         activeRebuildGeneration = nil
         isReadyIndexUsable = true
+        retainedStore = nil
     }
 
     func search(_ query: String, limit: Int = 300) async -> WorkspaceSearchQueryResult {
@@ -249,7 +348,7 @@ actor WorkspaceSearchService {
             return queryResult(query: query, results: [], isStale: stale)
         }
 
-        let rootPathIndexesAtSearchStart = readyRootPathIndexes
+        let handlesAtSearchStart = readyHandles
         let generationAtSearchStart = currentIndexedGeneration
         let snapshotGenerationAtSearchStart = currentSnapshotGeneration
         #if DEBUG
@@ -258,20 +357,12 @@ actor WorkspaceSearchService {
             }
         #endif
 
-        let results: [WorkspaceSearchCatalogEntry]
-        if trimmed.isEmpty {
-            for index in rootPathIndexesAtSearchStart {
-                index.recordEmptyQueryShadowParity(limit: boundedLimit)
-            }
-            results = Self.mergeRootEntries(rootPathIndexesAtSearchStart, limit: boundedLimit)
+        let results: [WorkspaceSearchCatalogEntry] = if trimmed.isEmpty {
+            await emptyQueryResults(handlesAtSearchStart, limit: boundedLimit)
         } else {
-            results = await withTaskGroup(of: [WorkspaceSearchCatalogEntry].self) { group in
+            await withTaskGroup(of: [WorkspaceSearchCatalogEntry].self) { group in
                 group.addTask {
-                    await Self.searchRootIndexes(
-                        rootPathIndexesAtSearchStart,
-                        query: trimmed,
-                        limit: boundedLimit
-                    )
+                    await self.nonEmptyQueryResults(handlesAtSearchStart, query: trimmed, limit: boundedLimit)
                 }
                 let value = await group.next() ?? []
                 group.cancelAll()
@@ -330,7 +421,7 @@ actor WorkspaceSearchService {
         debounceNanoseconds: UInt64
     ) async {
         if event.isRootUnload {
-            dropReadyRootIndex(rootID: event.rootID)
+            dropReadyRootHandle(rootID: event.rootID)
         }
 
         let catalogGeneration = await store.catalogGeneration(rootScope: rootScope)
@@ -391,14 +482,14 @@ actor WorkspaceSearchService {
         guard pendingRebuildGeneration == targetGeneration || activeRebuildGeneration == targetGeneration else { return }
         pendingRebuildGeneration = nil
         activeRebuildGeneration = targetGeneration
-        let snapshot = await store.searchCatalogSnapshot(rootScope: rootScope)
-        latestObservedCatalogGeneration = snapshot.generation
-        guard snapshot.generation == targetGeneration else {
+        let diagnostics = await store.catalogDiagnostics(rootScope: rootScope)
+        latestObservedCatalogGeneration = diagnostics.generation
+        guard diagnostics.generation == targetGeneration else {
             activeRebuildGeneration = nil
             scheduleRebuild(
                 from: store,
                 rootScope: rootScope,
-                targetGeneration: snapshot.generation,
+                targetGeneration: diagnostics.generation,
                 debounceNanoseconds: 0
             )
             return
@@ -410,18 +501,26 @@ actor WorkspaceSearchService {
         if automaticIndexBuildDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: automaticIndexBuildDelayNanoseconds)
         }
-        let prepared = Self.prepareIndex(from: snapshot)
+        let handles = await store.searchRootQueryHandles(rootScope: rootScope)
+        let prepared = handles.map { Self.prepareIndex(handles: $0, diagnostics: diagnostics) }
         #if DEBUG
-            recordPreparedIndexWork(prepared)
+            if let prepared { recordPreparedIndexWork(prepared) }
         #endif
-        guard !Task.isCancelled,
+        guard let prepared,
+              !Task.isCancelled,
               latestObservedCatalogGeneration == prepared.generation,
               pendingRebuildGeneration == nil || pendingRebuildGeneration == prepared.generation,
               activeRebuildGeneration == prepared.generation
         else {
             discardedAutomaticRebuildCompletions += 1
-            if activeRebuildGeneration == prepared.generation {
+            if activeRebuildGeneration == targetGeneration {
                 activeRebuildGeneration = nil
+            }
+            if handles == nil {
+                isReadyIndexUsable = false
+                #if DEBUG
+                    discardedQueryErrorCount += 1
+                #endif
             }
             return
         }
@@ -430,58 +529,202 @@ actor WorkspaceSearchService {
         pendingRebuildTask = nil
     }
 
-    private func dropReadyRootIndex(rootID: UUID) {
-        readyRootPathIndexes.removeAll { $0.identity.rootID == rootID }
+    private func dropReadyRootHandle(rootID: UUID) {
+        readyHandles = WorkspaceSearchRootQueryHandles(
+            scopeGeneration: readyHandles.scopeGeneration,
+            perRoot: readyHandles.perRoot.filter { $0.identity.rootID != rootID }
+        )
     }
 
     private func commit(_ prepared: PreparedIndex) {
-        readyRootPathIndexes = prepared.rootPathIndexes
+        readyHandles = prepared.handles
         currentSnapshotGeneration = prepared.generation
         currentDiagnostics = prepared.diagnostics
         currentIndexedGeneration = prepared.generation
         isReadyIndexUsable = true
     }
 
-    private static func prepareIndex(from snapshot: WorkspaceSearchCatalogSnapshot) -> PreparedIndex {
+    private static func prepareIndex(
+        handles: WorkspaceSearchRootQueryHandles,
+        diagnostics: WorkspaceCatalogDiagnostics
+    ) -> PreparedIndex {
         #if DEBUG
             let totalStart = DispatchTime.now().uptimeNanoseconds
-            let materializationStart = totalStart
-        #endif
-        let rootPathIndexes = snapshot.rootPathIndexes
-        let entryCount = rootPathIndexes.reduce(0) { $0 + $1.count }
-        #if DEBUG
             let end = DispatchTime.now().uptimeNanoseconds
             return PreparedIndex(
-                generation: snapshot.generation,
-                diagnostics: snapshot.diagnostics,
-                rootPathIndexes: rootPathIndexes,
-                entryCount: entryCount,
-                orderMicroseconds: 0,
-                materializationMicroseconds: elapsedMicroseconds(since: materializationStart, through: end),
-                cIndexBuildMicroseconds: 0,
+                generation: diagnostics.generation,
+                diagnostics: diagnostics,
+                handles: handles,
                 totalMicroseconds: elapsedMicroseconds(since: totalStart, through: end)
             )
         #else
             return PreparedIndex(
-                generation: snapshot.generation,
-                diagnostics: snapshot.diagnostics,
-                rootPathIndexes: rootPathIndexes,
-                entryCount: entryCount
+                generation: diagnostics.generation,
+                diagnostics: diagnostics,
+                handles: handles
             )
         #endif
     }
 
-    private static func searchRootIndexes(
-        _ rootPathIndexes: [WorkspaceSearchRootPathIndex],
+    // MARK: - Query execution (§4.4: per-root `inventoryQuery(.indexKey)`, merged in Swift)
+
+    private func nonEmptyQueryResults(
+        _ handles: WorkspaceSearchRootQueryHandles,
         query: String,
         limit: Int
     ) async -> [WorkspaceSearchCatalogEntry] {
-        var candidateBatches: [[WorkspaceSearchRootPathIndex.Candidate]] = []
-        candidateBatches.reserveCapacity(rootPathIndexes.count)
-        for index in rootPathIndexes {
+        var candidateBatches: [[RankedCandidate]] = []
+        candidateBatches.reserveCapacity(handles.perRoot.count)
+        for handle in handles.perRoot {
             if Task.isCancelled { return [] }
-            await candidateBatches.append(index.searchVerifyingShadow(query, limit: limit))
+            do {
+                let result = try await handle.snapshot.query(
+                    pattern: query,
+                    limit: UInt64(limit),
+                    haystackVariant: .indexKey,
+                    nonEmptyRelativePrefix: "",
+                    emptyRelativePathValue: ""
+                )
+                let batch = result.candidates.map { candidate in
+                    RankedCandidate(
+                        entry: Self.catalogEntry(from: candidate, rootPath: handle.rootPath, rootName: handle.rootName),
+                        tieBreakKey: candidate.tieBreakKey
+                    )
+                }
+                candidateBatches.append(batch)
+            } catch let CoreBridgeError.inventoryHandleInvalidated(reason) {
+                await handleQueryInvalidation(reason: reason, rootID: handle.identity.rootID)
+                candidateBatches.append([])
+            } catch {
+                await handleQueryTransportFailure()
+                candidateBatches.append([])
+            }
         }
+        return Self.mergeCandidateBatches(candidateBatches, limit: limit)
+    }
+
+    /// §4.2.1: the empty query is not a query -- it is a catalog-order (not tie-break-order)
+    /// k-way merge of retained per-root entry arrays. Each root's own first page (offset 0, limit
+    /// `limit`) already IS that root's local top-`limit` in catalog order (`generation.files`,
+    /// sorted -- `rebuild_generation`'s doc comment); merging each root's local top-`limit` and
+    /// truncating to the global top-`limit` is exactly as correct as the non-empty path's identical
+    /// per-root-then-merge shape (a global top-N element must be a member of its own root's local
+    /// top-N). This is bounded per root at `limit`, not a whole-root page-through.
+    private func emptyQueryResults(
+        _ handles: WorkspaceSearchRootQueryHandles,
+        limit: Int
+    ) async -> [WorkspaceSearchCatalogEntry] {
+        var perRootEntries: [[WorkspaceSearchCatalogEntry]] = []
+        perRootEntries.reserveCapacity(handles.perRoot.count)
+        for handle in handles.perRoot {
+            if Task.isCancelled { return [] }
+            do {
+                var collected: [WorkspaceSearchCatalogEntry] = []
+                var offset: UInt64 = 0
+                while collected.count < limit {
+                    let page = try await handle.snapshot.page(offset: offset, limit: UInt64(limit))
+                    for file in page.files {
+                        collected.append(Self.catalogEntry(from: file, rootPath: handle.rootPath, rootName: handle.rootName))
+                    }
+                    offset += page.returnedCount
+                    if !page.hasMore || page.returnedCount == 0 { break }
+                }
+                perRootEntries.append(collected)
+            } catch let CoreBridgeError.inventoryHandleInvalidated(reason) {
+                await handleQueryInvalidation(reason: reason, rootID: handle.identity.rootID)
+                perRootEntries.append([])
+            } catch {
+                await handleQueryTransportFailure()
+                perRootEntries.append([])
+            }
+        }
+        return Self.mergeEntryBatches(perRootEntries, limit: limit)
+    }
+
+    private static func catalogEntry(
+        from candidate: CoreInventoryQueryCandidateV1,
+        rootPath: String,
+        rootName: String
+    ) -> WorkspaceSearchCatalogEntry {
+        let file = WorkspaceFileRecord(
+            id: candidate.id,
+            rootID: candidate.rootID,
+            name: candidate.name,
+            relativePath: candidate.standardizedRelativePath,
+            fullPath: candidate.standardizedFullPath,
+            parentFolderID: nil
+        )
+        let root = WorkspaceRootRecord(id: candidate.rootID, name: rootName, fullPath: rootPath)
+        return WorkspaceSearchCatalogEntry(file: file, root: root)
+    }
+
+    private static func catalogEntry(
+        from file: CoreInventoryFileRecordV1,
+        rootPath: String,
+        rootName: String
+    ) -> WorkspaceSearchCatalogEntry {
+        let record = WorkspaceFileRecord(
+            id: file.id,
+            rootID: file.rootID,
+            name: file.name,
+            relativePath: file.standardizedRelativePath,
+            fullPath: file.standardizedFullPath,
+            parentFolderID: nil
+        )
+        let root = WorkspaceRootRecord(id: file.rootID, name: rootName, fullPath: rootPath)
+        return WorkspaceSearchCatalogEntry(file: record, root: root)
+    }
+
+    // MARK: - §4.6 fallback policy (fail visible, never fail empty)
+
+    /// `.rootClosed`: drop that root's handle from the *ready* set (so the next search no longer
+    /// queries it) and schedule a rebuild -- other roots still answer this and future searches.
+    /// `.scopeClosed`/`.identityChanged`: the whole index is untrustworthy; mark it unusable (a
+    /// full re-bootstrap from a fresh snapshot) and schedule a rebuild. Neither path degrades this
+    /// call's own in-flight results to empty -- the caller already appended `[]` for this root's
+    /// batch and other roots' batches are unaffected.
+    private func handleQueryInvalidation(reason: CoreInventoryHandleInvalidationReason, rootID: UUID) async {
+        switch reason {
+        case .rootClosed:
+            dropReadyRootHandle(rootID: rootID)
+        case .scopeClosed, .identityChanged:
+            isReadyIndexUsable = false
+        }
+        #if DEBUG
+            discardedQueryErrorCount += 1
+        #endif
+        await triggerReactiveRebuildIfPossible()
+    }
+
+    /// Any other query error (transport/decode failure): §4.6's explicit "must not degrade to
+    /// empty results silently" case -- mark the index unusable, count it, and schedule a rebuild.
+    private func handleQueryTransportFailure() async {
+        isReadyIndexUsable = false
+        #if DEBUG
+            discardedQueryErrorCount += 1
+        #endif
+        await triggerReactiveRebuildIfPossible()
+    }
+
+    /// Self-heals a query-time failure. Necessary because this actor is event-driven
+    /// (`store.appliedIndexEvents()`), not polling -- without an explicit trigger here, a
+    /// transient handle/transport failure with no *further* catalog mutation would leave
+    /// `isReadyIndexUsable == false` forever, since no new applied-index event would ever arrive
+    /// to naturally prompt a retry.
+    private func triggerReactiveRebuildIfPossible() async {
+        guard let store = retainedStore else { return }
+        let rootScope = retainedRootScope
+        let freshGeneration = await store.catalogGeneration(rootScope: rootScope)
+        guard pendingRebuildGeneration != freshGeneration, activeRebuildGeneration != freshGeneration else { return }
+        scheduleRebuild(from: store, rootScope: rootScope, targetGeneration: freshGeneration, debounceNanoseconds: 0)
+    }
+
+    // MARK: - Merge (unchanged comparator; only the candidate source changed)
+
+    private static func mergeCandidateBatches(
+        _ candidateBatches: [[RankedCandidate]],
+        limit: Int
+    ) -> [WorkspaceSearchCatalogEntry] {
         var heap: [RankedCandidateCursor] = []
         heap.reserveCapacity(candidateBatches.count)
 
@@ -529,7 +772,6 @@ actor WorkspaceSearchService {
         var results: [WorkspaceSearchCatalogEntry] = []
         results.reserveCapacity(limit)
         while results.count < limit, let cursor = pop() {
-            if Task.isCancelled { return [] }
             let candidate = candidateBatches[cursor.rootIndex][cursor.candidateIndex]
             if seenIDs.insert(candidate.entry.id).inserted {
                 results.append(candidate.entry)
@@ -542,17 +784,17 @@ actor WorkspaceSearchService {
         return results
     }
 
-    private static func mergeRootEntries(
-        _ rootPathIndexes: [WorkspaceSearchRootPathIndex],
+    private static func mergeEntryBatches(
+        _ perRootEntries: [[WorkspaceSearchCatalogEntry]],
         limit: Int
     ) -> [WorkspaceSearchCatalogEntry] {
         var heap: [EntryCursor] = []
-        heap.reserveCapacity(rootPathIndexes.count)
+        heap.reserveCapacity(perRootEntries.count)
 
         func cursorPrecedes(_ lhs: EntryCursor, _ rhs: EntryCursor) -> Bool {
             entryPrecedes(
-                rootPathIndexes[lhs.rootIndex].entries[lhs.entryIndex],
-                rootPathIndexes[rhs.rootIndex].entries[rhs.entryIndex]
+                perRootEntries[lhs.rootIndex][lhs.entryIndex],
+                perRootEntries[rhs.rootIndex][rhs.entryIndex]
             )
         }
 
@@ -585,34 +827,32 @@ actor WorkspaceSearchService {
             return first
         }
 
-        for rootIndex in rootPathIndexes.indices where !rootPathIndexes[rootIndex].entries.isEmpty {
+        for rootIndex in perRootEntries.indices where !perRootEntries[rootIndex].isEmpty {
             push(EntryCursor(rootIndex: rootIndex, entryIndex: 0))
         }
 
         var results: [WorkspaceSearchCatalogEntry] = []
         results.reserveCapacity(limit)
         while results.count < limit, let cursor = pop() {
-            results.append(rootPathIndexes[cursor.rootIndex].entries[cursor.entryIndex])
+            results.append(perRootEntries[cursor.rootIndex][cursor.entryIndex])
             let nextEntryIndex = cursor.entryIndex + 1
-            if nextEntryIndex < rootPathIndexes[cursor.rootIndex].entries.count {
+            if nextEntryIndex < perRootEntries[cursor.rootIndex].count {
                 push(EntryCursor(rootIndex: cursor.rootIndex, entryIndex: nextEntryIndex))
             }
         }
         return results
     }
 
-    private static func candidatePrecedes(
-        _ lhs: WorkspaceSearchRootPathIndex.Candidate,
-        _ rhs: WorkspaceSearchRootPathIndex.Candidate
-    ) -> Bool {
-        if lhs.score != rhs.score { return lhs.score > rhs.score }
+    private static func candidatePrecedes(_ lhs: RankedCandidate, _ rhs: RankedCandidate) -> Bool {
+        // Score is always `1` on both engines (design doc §1.5 Check A), so the tie-break key
+        // alone carries the ordering -- unchanged from the pre-flip comparator's shape.
         switch WorkspaceInventoryOrdering.compareUTF8Binary(lhs.tieBreakKey, rhs.tieBreakKey) {
         case .orderedAscending:
-            return true
+            true
         case .orderedDescending:
-            return false
+            false
         case .orderedSame:
-            return entryPrecedes(lhs.entry, rhs.entry)
+            entryPrecedes(lhs.entry, rhs.entry)
         }
     }
 
@@ -630,11 +870,8 @@ actor WorkspaceSearchService {
     #if DEBUG
         private func recordPreparedIndexWork(_ prepared: PreparedIndex) {
             debugRebuildCount += 1
-            debugOrderMicroseconds &+= prepared.orderMicroseconds
-            debugMaterializationMicroseconds &+= prepared.materializationMicroseconds
-            debugCIndexBuildMicroseconds &+= prepared.cIndexBuildMicroseconds
             debugTotalMicroseconds &+= prepared.totalMicroseconds
-            debugLastEntryCount = prepared.entryCount
+            debugLastEntryCount = prepared.diagnostics.fileCount
         }
 
         private static func elapsedMicroseconds(since start: UInt64, through end: UInt64) -> UInt64 {

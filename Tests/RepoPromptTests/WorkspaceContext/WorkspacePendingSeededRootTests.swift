@@ -51,11 +51,13 @@ import XCTest
                 Set(snapshot.files.map(\.standardizedRelativePath)),
                 fixture.expectedTargetFiles
             )
-            let pathIndex = try XCTUnwrap(snapshot.rootPathIndexes.first)
-            guard case .projectedReuse = pathIndex.buildKind else {
-                return XCTFail("Expected the atomically published shard to retain projected reuse")
-            }
-            XCTAssertFalse(pathIndex.search("Tracked", limit: 20).isEmpty)
+            // P4-7b b3 removal (design doc §4.2.2/§4.4): `searchCatalogSnapshot`'s default
+            // requirement is now `.recordsOnly`, so this default-requirement fetch no longer
+            // populates `rootPathIndexes` to inspect the projected-reuse shard's `buildKind`/search
+            // through -- accepted per §4.2.2 ("the search-time projected shadow... dies at b3 with
+            // the Swift index"). The claim this checked -- that "Tracked.swift" is present and
+            // discoverable in the atomically-published seeded shard -- is already pinned above by
+            // the `snapshot.files` membership assertion (`fixture.expectedTargetFiles`).
             let empty = await store.folder(rootID: physicalRoot.id, relativePath: "Empty")
             let emptyDeep = await store.folder(rootID: physicalRoot.id, relativePath: "Empty/Deep")
             let emptyLeaf = await store.folder(rootID: physicalRoot.id, relativePath: "Empty/Deep/Leaf")
@@ -86,9 +88,8 @@ import XCTest
                 relativePath: "PostCommit.swift"
             )
             XCTAssertNotNil(postCommitRecord)
-            let patchedSnapshot = await store.searchCatalogSnapshot(rootScope: fixture.scope(for: prepared.binding))
-            let patchedIndex = try XCTUnwrap(patchedSnapshot.rootPathIndexes.first)
-            XCTAssertFalse(patchedIndex.search("PostCommit", limit: 20).isEmpty)
+            // P4-7b b3 removal: same reason as above -- the claim (PostCommit.swift discoverable
+            // after the watcher-driven patch) is already pinned by `postCommitRecord` above.
 
             let tracked = try XCTUnwrap(snapshot.files.first { $0.standardizedRelativePath == "Tracked.swift" })
             let read = try await store.interactiveReadSnapshot(for: tracked)

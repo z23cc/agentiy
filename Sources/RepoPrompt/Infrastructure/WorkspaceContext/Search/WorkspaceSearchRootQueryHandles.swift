@@ -17,6 +17,7 @@ import Foundation
 struct WorkspaceSearchRootQueryHandle {
     let identity: WorkspaceSearchRootPathIndexIdentity
     let rootPath: String
+    let rootName: String
     let snapshot: CoreInventorySnapshot
 }
 

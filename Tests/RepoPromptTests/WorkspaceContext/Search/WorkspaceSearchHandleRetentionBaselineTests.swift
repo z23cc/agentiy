@@ -35,9 +35,20 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
 
     /// The shared edit-storm fixture (b2 defines it; b3 re-runs the identical shape post-flip and
     /// compares against the numbers this test records). One file added per iteration, with an
-    /// active `searchCatalogSnapshot(requirement: .recordsAndPathIndexes)` read between each delta
-    /// -- simulating `WorkspaceSearchService.startKeepingFresh`'s always-subscribed shape, the
-    /// scenario in which handle retention pressure (post-b3) would show up if it were going to.
+    /// active `searchCatalogSnapshot(requirement: .recordsOnly)` read between each delta -- simulating
+    /// `WorkspaceSearchService.startKeepingFresh`'s always-subscribed shape, the scenario in which
+    /// handle retention pressure (post-b3) would show up if it were going to.
+    ///
+    /// P4-7b b3 update: originally requested `.recordsAndPathIndexes` (that was still the live,
+    /// functional capability when this baseline was authored in b2). b3 deletes
+    /// `makeRootPathSearchIndex` -- every shard's `pathSearchIndex` is now always nil -- so
+    /// requesting `.recordsAndPathIndexes` now intentionally `preconditionFailure`s in
+    /// `composeSearchCatalogSnapshot` (D-14: "`.recordsAndPathIndexes` unreachable", fail loud not
+    /// silent, per §4.6's fallback policy applied to the read side too). Switched to `.recordsOnly`
+    /// -- the only requirement any real caller uses post-flip -- which still exercises the identical
+    /// shard patch/rebuild/fallback-counting machinery this baseline measures; `requirement` only
+    /// gates whether `composeSearchCatalogSnapshot` unwraps `shard.pathSearchIndex`, not whether the
+    /// shard is built, patched, or counted.
     private func runEditStorm(
         store: WorkspaceFileContextStore,
         rootID: UUID,
@@ -48,7 +59,7 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
             let relativePath = String(format: "%04d-Storm.swift", index)
             try write("storm-\(index)", to: rootURL.appendingPathComponent(relativePath))
             await store.replayObservedFileSystemDeltas(rootID: rootID, deltas: [.fileAdded(relativePath)])
-            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace, requirement: .recordsAndPathIndexes)
+            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace, requirement: .recordsOnly)
         }
     }
 
@@ -129,7 +140,7 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
             let relativePath = String(format: "%04d-Storm.swift", index)
             try write("storm-\(index)", to: root.appendingPathComponent(relativePath))
             await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileAdded(relativePath)])
-            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace, requirement: .recordsAndPathIndexes)
+            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace, requirement: .recordsOnly)
             // Open-then-drop immediately -- the b2 shape (no retained holder across iterations),
             // matching how the differential suite uses it, not b3's hold-per-generation policy.
             _ = await store.searchRootQueryHandles(rootScope: .visibleWorkspace)
