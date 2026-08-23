@@ -1078,6 +1078,11 @@ impl CoreRuntime {
                     non_empty_relative_prefix: decoded.non_empty_relative_prefix,
                     empty_relative_path_value: decoded.empty_relative_path_value,
                 },
+                // P4-7a phase a1 is domain-logic-only (design doc §3); the wire does not carry
+                // the logical prefix pair yet, so `.Suggestion` queries decode with no binding
+                // projection until phase a3 threads it through `encode_query_request` /
+                // `decode_query_request`.
+                logical_prefix: None,
             };
             let handle_id = runtime::inventory_scope::SnapshotHandleId::from_raw(request.handle_id);
             match scope.query(&identity, handle_id, query_request)? {

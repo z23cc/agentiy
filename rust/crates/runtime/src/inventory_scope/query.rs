@@ -7,18 +7,30 @@
 //!   [`super::path_index::RootPathIndex`] built by P4-3b, whose subject text is
 //!   `path_search_index_key` (`displayPath` + `\n` + `standardizedFullPath`). O(log n)-ish via the
 //!   already-built index; no per-query index construction.
-//! - [`QueryHaystackVariant::Suggestion`]: the `AgentFileTagSuggestionService` seam. Joins
-//!   `[name, standardizedRelativePath, standardizedFullPath, displayPath]` per entry and matches
-//!   with an ad hoc `PathSearchIndex` built over the composed haystacks for this call. **Flagged
-//!   deviation:** the design's full haystack additionally joins a `logicalPath`
-//!   (`WorkspaceRootBindingProjection.projectedLogicalDisplayPath`), which needs per-root
-//!   physical->logical binding data this crate does not model at P4-4; P4-7 (the real caller
-//!   cutover) is where that field and the hard-assertion result-set-and-order parity differential
-//!   land, per the design's own step list. This variant still keeps the whole computation
-//!   server-side -- no per-row payload crosses the FFI for a query that doesn't match, which is
-//!   the win §6.3 of the design credits to this call -- but does not yet reuse a persistent
-//!   per-root haystack-variant index the way `.IndexKey` does; that is a P4-7 optimization
-//!   opportunity, not a P4-4 contract requirement.
+//! - [`QueryHaystackVariant::Suggestion`]: the `AgentFileTagSuggestionService` seam (P4-7a,
+//!   design doc §5.1). Composes, per entry, exactly Swift's `searchHaystack(for:lookupContext:)`
+//!   (`AgentFileTagSuggestionService.swift:129-141`): `[logicalPath, entry.displayPath, name,
+//!   standardizedRelativePath, standardizedFullPath]`, each component trimmed
+//!   (ASCII/Unicode-whitespace, matching Swift's `.whitespacesAndNewlines` closely enough that no
+//!   reachable path component distinguishes them -- see `run_suggestion_query`'s doc comment) and
+//!   dropped if empty after trimming, then joined with `\n` -- never an unconditional fixed-arity
+//!   join. `entry.display_path` is the entry's own *stored* default composition
+//!   (`InventorySearchCatalogEntry::new`, byte-exact port of `WorkspaceSearchCatalogEntry`'s
+//!   default init), not `request.prefix.display_path(...)` -- every catalog-entry construction
+//!   site in Swift passes `displayPath: nil`, so the two are equal in every reachable case, and
+//!   using the stored field removes any dependency on the caller supplying a `prefix` that
+//!   happens to reduce to the same composition. `logicalPath` comes from
+//!   `request.logical_prefix: Option<QueryPrefix>` -- `None` when the caller has no worktree
+//!   binding projection (matching Swift's `compactMap` drop of a `nil` `logicalPath`), `Some` when
+//!   it does; the Rust side never re-derives physical->logical binding policy, it only
+//!   concatenates the Swift-computed prefix (parent §4.2's rule, restated for the logical pair).
+//!   `request.prefix` is `.IndexKey`-only for this variant -- see the module's tests for an
+//!   executable pin. This variant matches with an ad hoc `PathSearchIndex` built over the composed
+//!   haystacks for this call: the whole computation stays server-side (no per-row payload crosses
+//!   the FFI for a query that doesn't match, the win §6.3 of the design credits to this call), but
+//!   it does not yet reuse a persistent per-root haystack-variant index the way `.IndexKey` does --
+//!   design §5.2 decides against building one at P4-7a and names the escalation branch if the
+//!   mention-path SLO requires it.
 
 use crate::inventory::InventorySearchCatalogEntry;
 
@@ -78,6 +90,11 @@ pub struct InventoryQueryRequest {
     pub limit: usize,
     pub haystack_variant: QueryHaystackVariant,
     pub prefix: QueryPrefix,
+    /// The `.Suggestion` variant's logical-path prefix pair (design §5.1's `logicalPath`
+    /// component), `None` when the caller has no worktree binding projection. `.IndexKey` never
+    /// reads this field. Not yet threaded onto the wire (P4-7a phase a1 is domain-logic-only, per
+    /// design §3's slice split) -- `api.rs`'s decode passes `None` until phase a3.
+    pub logical_prefix: Option<QueryPrefix>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,22 +154,50 @@ pub fn run_query(generation: &RootGeneration, request: &InventoryQueryRequest) -
     }
 }
 
+/// Byte-exact port of Swift's `searchHaystack(for:lookupContext:)`
+/// (`AgentFileTagSuggestionService.swift:129-141`): `logicalPath` first (absent when there is no
+/// binding projection, exactly mirroring Swift's `compactMap` drop of a `nil` optional -- never
+/// coerced to an empty string, which would wrongly survive the trim step and emit a spurious
+/// leading `\n`), then `entry.display_path` (the stored default composition -- see the module doc
+/// comment for why this, not `request.prefix.display_path(...)`, is the byte-exact match), then
+/// `name`, `standardized_relative_path`, `standardized_full_path`. Each present component is
+/// trimmed and dropped if it becomes empty, then the survivors are joined with `\n` -- Rust's
+/// `str::trim()` trims Unicode `White_Space`, a strict superset-agreeing-on-ASCII of Swift's
+/// `.whitespacesAndNewlines` (Zs + tab/newline/CR); no path component this crate ever sees
+/// reaches the codepoints where they'd disagree, so this is deliberately not re-derived as a
+/// custom trimmer (parent §4.2: no ICU/Unicode-policy work moves Rust-side).
+fn suggestion_haystack(logical_path: Option<&str>, entry: &InventorySearchCatalogEntry) -> String {
+    [
+        logical_path,
+        Some(entry.display_path.as_str()),
+        Some(entry.name.as_str()),
+        Some(entry.standardized_relative_path.as_str()),
+        Some(entry.standardized_full_path.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|component| !component.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+/// `request.prefix` is deliberately unread here -- it is `.IndexKey`-only (see the module doc
+/// comment); `suggestion_query_ignores_the_indexkey_prefix_field` below pins that as an
+/// executable contract rather than a comment a future edit can silently invalidate.
 fn run_suggestion_query(
     entries: &[InventorySearchCatalogEntry],
     request: &InventoryQueryRequest,
 ) -> Vec<InventoryQueryCandidate> {
-    let display_paths: Vec<String> = entries
-        .iter()
-        .map(|entry| request.prefix.display_path(&entry.standardized_relative_path))
-        .collect();
+    let display_paths: Vec<String> = entries.iter().map(|entry| entry.display_path.clone()).collect();
     let haystacks: Vec<String> = entries
         .iter()
-        .zip(&display_paths)
-        .map(|(entry, display_path)| {
-            format!(
-                "{}\n{}\n{}\n{}",
-                entry.name, entry.standardized_relative_path, entry.standardized_full_path, display_path
-            )
+        .map(|entry| {
+            let logical_path = request
+                .logical_prefix
+                .as_ref()
+                .map(|prefix| prefix.display_path(&entry.standardized_relative_path));
+            suggestion_haystack(logical_path.as_deref(), entry)
         })
         .collect();
     let index = crate::pathsearch::PathSearchIndex::new(&haystacks);
@@ -171,6 +216,7 @@ fn run_suggestion_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::{InventoryFileRecord, InventoryRootRecord, InventoryUuid};
 
     fn prefix() -> QueryPrefix {
         QueryPrefix {
@@ -207,6 +253,7 @@ mod tests {
                 limit: 10,
                 haystack_variant: QueryHaystackVariant::IndexKey,
                 prefix: prefix(),
+                logical_prefix: None,
             },
         );
         assert_eq!(result.generation, 7);
@@ -282,6 +329,7 @@ mod tests {
                 limit: entries.len(),
                 haystack_variant: QueryHaystackVariant::IndexKey,
                 prefix: prefix(),
+                logical_prefix: None,
             },
         );
 
@@ -299,5 +347,203 @@ mod tests {
                 candidate.entry.standardized_full_path
             );
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // P4-7a phase a1 (design doc §5.1): the suggestion haystack is now a byte-exact port of
+    // Swift's `searchHaystack(for:lookupContext:)`. These tests pin that against hand-computed
+    // literal expected strings (not derived expressions -- an expression mirroring the
+    // implementation would prove nothing) over the design's named adversarial cases: a nested
+    // entry, a root-level entry (empty relative path -- mismatch #3, the `\n\n` run the old
+    // unconditional `format!` produced), CJK/emoji/combining-mark rows, a worktree-bound
+    // `logicalPath` (including its interaction with the root-level case), and a whitespace-only
+    // component (mismatch #3's trim-then-drop half). `candidate.tie_break_key` is asserted rather
+    // than a private helper's return value: for `.Suggestion`,
+    // `PathSearchMatch::tie_break_key` is an owned clone of the exact haystack string that
+    // matched (`pathsearch/index.rs:159`, pinned by `pathsearch::tests`), so a broad
+    // match-everything glob recovers every composed haystack unmodified, exactly mirroring how
+    // `index_key_query_tie_break_key_matches_the_indexs_own_subject_text_over_adversarial_entries`
+    // above uses the same field for `.IndexKey`.
+
+    fn physical_root() -> InventoryRootRecord {
+        InventoryRootRecord {
+            id: [0xBB; 16],
+            name: "PhysRoot".to_owned(),
+            standardized_full_path: "/physroot".to_owned(),
+        }
+    }
+
+    /// `id_marker` distinguishes rows; `relative_path`/`name` follow the real
+    /// `WorkspaceFileRecord` shape (name is the basename, not the whole relative path) so the
+    /// nested-vs-root-level distinction in `InventorySearchCatalogEntry::new`'s
+    /// `default_display_path` branch is actually exercised.
+    fn suggestion_entry(id_marker: u8, relative_path: &str, name: &str) -> InventorySearchCatalogEntry {
+        let root = physical_root();
+        let mut id = [0u8; 16];
+        id[0] = id_marker;
+        let full_path = format!("/physroot/{relative_path}");
+        let file = InventoryFileRecord {
+            id,
+            root_id: root.id,
+            name: name.to_owned(),
+            relative_path: relative_path.to_owned(),
+            standardized_relative_path: relative_path.to_owned(),
+            full_path: full_path.clone(),
+            standardized_full_path: full_path,
+            parent_folder_id: None,
+            modification_date: None,
+        };
+        InventorySearchCatalogEntry::new(&file, &root)
+    }
+
+    fn suggestion_haystacks_by_id(
+        entries: &[InventorySearchCatalogEntry],
+        logical_prefix: Option<QueryPrefix>,
+    ) -> std::collections::HashMap<InventoryUuid, String> {
+        let lifetime = super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(3));
+        let mut generation = RootGeneration::empty(physical_root().id, lifetime);
+        generation.generation = 1;
+        generation.entries = entries.to_vec();
+        let result = run_query(
+            &generation,
+            &InventoryQueryRequest {
+                pattern: "*".to_owned(),
+                limit: entries.len(),
+                haystack_variant: QueryHaystackVariant::Suggestion,
+                // Deliberately not the composition Swift would actually pass for `.Suggestion` --
+                // proving `run_suggestion_query` never reads this field is
+                // `suggestion_query_ignores_the_indexkey_prefix_field` below; every haystack test
+                // uses this same garbage value so a regression that starts reading it fails *all*
+                // of them, not just the dedicated one.
+                prefix: QueryPrefix {
+                    non_empty_relative_prefix: "GARBAGE/".to_owned(),
+                    empty_relative_path_value: "GARBAGE".to_owned(),
+                },
+                logical_prefix,
+            },
+        );
+        assert_eq!(result.candidates.len(), entries.len(), "the broad glob must match every row");
+        result.candidates.into_iter().map(|c| (c.entry.id, c.tie_break_key)).collect()
+    }
+
+    #[test]
+    fn suggestion_haystack_matches_swift_composition_with_no_binding_projection() {
+        let nested = suggestion_entry(1, "src/App.swift", "App.swift");
+        let root_level = suggestion_entry(2, "", "Root");
+        // CJK / emoji / combining-mark rows (P3-2 adversarial corpus shape): none of these
+        // codepoints are ASCII/Unicode whitespace, so trimming must leave them byte-identical --
+        // this proves the join doesn't corrupt multi-byte UTF-8 or normalize anything.
+        let emoji = suggestion_entry(3, "\u{1F600}-Face.swift", "\u{1F600}-Face.swift");
+        let cjk = suggestion_entry(4, "\u{4E2D}\u{6587}.swift", "\u{4E2D}\u{6587}.swift");
+        let combining = suggestion_entry(5, "e\u{0301}-Decomposed.swift", "e\u{0301}-Decomposed.swift");
+        let entries = vec![nested.clone(), root_level.clone(), emoji.clone(), cjk.clone(), combining.clone()];
+
+        let haystacks = suggestion_haystacks_by_id(&entries, None);
+
+        assert_eq!(
+            haystacks[&nested.id],
+            "PhysRoot/src/App.swift\nApp.swift\nsrc/App.swift\n/physroot/src/App.swift"
+        );
+        // Mismatch #3, closed: no `\n\n` run for the empty relative path -- the dropped-empty
+        // `standardized_relative_path` component simply isn't there, not present-but-blank.
+        assert_eq!(haystacks[&root_level.id], "PhysRoot\nRoot\n/physroot/");
+        assert_eq!(
+            haystacks[&emoji.id],
+            "PhysRoot/\u{1F600}-Face.swift\n\u{1F600}-Face.swift\n\u{1F600}-Face.swift\n/physroot/\u{1F600}-Face.swift"
+        );
+        assert_eq!(
+            haystacks[&cjk.id],
+            "PhysRoot/\u{4E2D}\u{6587}.swift\n\u{4E2D}\u{6587}.swift\n\u{4E2D}\u{6587}.swift\n/physroot/\u{4E2D}\u{6587}.swift"
+        );
+        assert_eq!(
+            haystacks[&combining.id],
+            "PhysRoot/e\u{0301}-Decomposed.swift\ne\u{0301}-Decomposed.swift\ne\u{0301}-Decomposed.swift\n\
+             /physroot/e\u{0301}-Decomposed.swift"
+        );
+    }
+
+    /// A worktree-bound `logicalPath`, branch 1 of `ClientPathFormatter.displayPath` (solo
+    /// visible logical root named "App": no prefix, empty-relative override is the root name --
+    /// design §5.1's `WorkspacePathPolicyTests` extension pins that this is what
+    /// `WorkspaceRootBindingProjection.projectedLogicalDisplayPath` actually produces in that
+    /// configuration). Includes the root-level entry inside the bound configuration too (design
+    /// §14's self-review flags exactly this intersection as the easy miss).
+    #[test]
+    fn suggestion_haystack_matches_swift_composition_with_worktree_bound_projection() {
+        let nested = suggestion_entry(1, "src/App.swift", "App.swift");
+        let root_level = suggestion_entry(2, "", "Root");
+        let entries = vec![nested.clone(), root_level.clone()];
+        let logical_prefix = QueryPrefix {
+            non_empty_relative_prefix: String::new(),
+            empty_relative_path_value: "App".to_owned(),
+        };
+
+        let haystacks = suggestion_haystacks_by_id(&entries, Some(logical_prefix));
+
+        // `logicalPath` ends up byte-identical to `standardizedRelativePath` in this branch --
+        // Swift does not dedupe (only `filter { !$0.isEmpty }`), so neither must Rust. Position-
+        // sensitive matching means this duplication is load-bearing, not redundant.
+        assert_eq!(
+            haystacks[&nested.id],
+            "src/App.swift\nPhysRoot/src/App.swift\nApp.swift\nsrc/App.swift\n/physroot/src/App.swift"
+        );
+        assert_eq!(haystacks[&root_level.id], "App\nPhysRoot\nRoot\n/physroot/");
+    }
+
+    /// Isolated fixture (a direct struct literal, not `InventorySearchCatalogEntry::new`) so the
+    /// trim-then-drop behavior is provable independent of realistic path construction: two
+    /// components are whitespace-only and must vanish entirely (not survive as an empty string),
+    /// while the two components with real content plus surrounding whitespace must survive
+    /// trimmed.
+    #[test]
+    fn suggestion_haystack_trims_and_drops_whitespace_only_components() {
+        let entry = InventorySearchCatalogEntry {
+            id: [0xCC; 16],
+            root_id: [0xBB; 16],
+            root_path: "/physroot".to_owned(),
+            root_name: "PhysRoot".to_owned(),
+            name: "  ".to_owned(),
+            relative_path: "  ".to_owned(),
+            standardized_relative_path: "  ".to_owned(),
+            full_path: "/physroot/  ".to_owned(),
+            standardized_full_path: "/physroot/  ".to_owned(),
+            display_path: "Root/  ".to_owned(),
+        };
+        let entries = vec![entry.clone()];
+
+        let haystacks = suggestion_haystacks_by_id(&entries, None);
+
+        assert_eq!(haystacks[&entry.id], "Root/\n/physroot/");
+    }
+
+    /// `request.prefix` is `.IndexKey`-only (module doc comment); this pins that as an executable
+    /// contract so a future edit that starts reading it in `run_suggestion_query` fails a test
+    /// instead of silently reintroducing the ambiguous-root-composition mismatch §1.5 Check A
+    /// describes for the *response* `display_path`.
+    #[test]
+    fn suggestion_query_ignores_the_indexkey_prefix_field() {
+        let entries = vec![suggestion_entry(1, "src/App.swift", "App.swift")];
+        let lifetime = super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(4));
+        let mut generation = RootGeneration::empty(physical_root().id, lifetime);
+        generation.generation = 1;
+        generation.entries = entries;
+
+        let request_for = |prefix: QueryPrefix| InventoryQueryRequest {
+            pattern: "*".to_owned(),
+            limit: 10,
+            haystack_variant: QueryHaystackVariant::Suggestion,
+            prefix,
+            logical_prefix: None,
+        };
+        let with_empty_prefix = run_query(&generation, &request_for(QueryPrefix::default()));
+        let with_garbage_prefix = run_query(
+            &generation,
+            &request_for(QueryPrefix {
+                non_empty_relative_prefix: "GARBAGE/".to_owned(),
+                empty_relative_path_value: "GARBAGE".to_owned(),
+            }),
+        );
+
+        assert_eq!(with_empty_prefix, with_garbage_prefix);
     }
 }
