@@ -184,10 +184,14 @@ final class WorkspacePathPolicyTests: XCTestCase {
         ]
 
         for testCase in cases {
-            let prefix = inventoryQueryDisplayPrefix(root: testCase.root, visibleRoots: testCase.visibleRoots)
+            // P4-7a phase a3: `ClientPathFormatter.displayPrefix` is now the production
+            // implementation `inventoryQuery`'s Swift callers use (design doc §5.1) -- this test
+            // pins it against `displayPath`'s own output rather than re-deriving the branch logic
+            // a second time, so the two can never silently drift apart.
+            let prefix = ClientPathFormatter.displayPrefix(root: testCase.root, visibleRoots: testCase.visibleRoots)
 
             for relativePath in ["Sources/File.swift", "", "Nested/Dir/Leaf.swift"] {
-                let composed = relativePath.isEmpty ? prefix.emptyRelativePathValue : prefix.value + relativePath
+                let composed = relativePath.isEmpty ? prefix.emptyRelativePathValue : prefix.nonEmptyRelativePrefix + relativePath
                 let reference = ClientPathFormatter.displayPath(
                     root: testCase.root,
                     relativePath: relativePath,
@@ -200,32 +204,6 @@ final class WorkspacePathPolicyTests: XCTestCase {
                 )
             }
         }
-    }
-
-    /// Mirrors the frozen `CompactQueryV1` contract: Swift computes one display prefix per root
-    /// (the non-empty-relative-path form) plus a distinct empty-relative-path override value,
-    /// since every branch of `ClientPathFormatter.displayPath` special-cases the empty relative
-    /// path rather than reducing to `prefix + ""`.
-    private struct InventoryQueryDisplayPrefix {
-        let value: String
-        let emptyRelativePathValue: String
-    }
-
-    private func inventoryQueryDisplayPrefix(
-        root: WorkspaceRootRef,
-        visibleRoots: [WorkspaceRootRef]
-    ) -> InventoryQueryDisplayPrefix {
-        if visibleRoots.count <= 1 {
-            return InventoryQueryDisplayPrefix(value: "", emptyRelativePathValue: root.name)
-        }
-        let canonicalMatches = visibleRoots.filter { $0.name.caseInsensitiveCompare(root.name) == .orderedSame }
-        if canonicalMatches.count == 1 {
-            return InventoryQueryDisplayPrefix(value: root.name + "/", emptyRelativePathValue: root.name)
-        }
-        return InventoryQueryDisplayPrefix(
-            value: root.standardizedFullPath + "/",
-            emptyRelativePathValue: root.standardizedFullPath
-        )
     }
 
     private func makeRoot(id: UUID = UUID(), name: String, fullPath: String) -> WorkspaceRootRef {

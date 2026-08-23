@@ -1101,14 +1101,16 @@ public final class CoreInventorySnapshot: @unchecked Sendable {
         limit: UInt64,
         haystackVariant: CoreInventoryQueryHaystackVariant,
         nonEmptyRelativePrefix: String,
-        emptyRelativePathValue: String
+        emptyRelativePathValue: String,
+        logicalPrefix: (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)? = nil
     ) async throws -> CoreInventoryQueryResult {
         let bytes = CoreInventoryScopeWire.encodeQueryRequest(
             pattern: pattern,
             limit: limit,
             haystackVariant: haystackVariant,
             nonEmptyRelativePrefix: nonEmptyRelativePrefix,
-            emptyRelativePathValue: emptyRelativePathValue
+            emptyRelativePathValue: emptyRelativePathValue,
+            logicalPrefix: logicalPrefix
         )
         let response = try await bridge.inventoryQuery(scopeID: scopeID, handleID: handleID, bytes: bytes)
         let (generation, candidates) = try CoreInventoryScopeWire.decodeQueryResponse(response.bytes)
@@ -1865,25 +1867,37 @@ enum CoreInventoryScopeWire {
         )
     }
 
-    /// P4-5: mirrors `agentry_runtime::inventory_scope::wire::encode_query_request` byte-for-byte
-    /// (`sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx),
-    /// stringRangeWords,blob` in `fingerprint()` below -- already frozen by the contract, not
-    /// re-derived here).
+    /// P4-5/P4-7a phase a3: mirrors `agentry_runtime::inventory_scope::wire::encode_query_request`
+    /// byte-for-byte (`sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,
+    /// emptyOverrideIdx,logicalPresent,logicalPrefixIdx,logicalEmptyOverrideIdx),stringRangeWords,
+    /// blob` in `fingerprint()` below -- already frozen by the contract, not re-derived here).
+    /// `logicalPrefix` is `nil` when the caller has no worktree binding projection (`.IndexKey`
+    /// always passes `nil`); when present, its `nonEmptyRelativePrefix` may legitimately be empty
+    /// (branch 1 of `ClientPathFormatter.displayPath`) -- the wire's `logicalPresent` flag is what
+    /// disambiguates that from "absent," never the string's own emptiness (design doc §5.1;
+    /// `Tests/AgentryCoreBridgeTests`'s `QueryRequestWireTests` pins the round trip).
     static func encodeQueryRequest(
         pattern: String,
         limit: UInt64,
         haystackVariant: CoreInventoryQueryHaystackVariant,
         nonEmptyRelativePrefix: String,
-        emptyRelativePathValue: String
+        emptyRelativePathValue: String,
+        logicalPrefix: (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)? = nil
     ) -> Data {
         var pool = CoreInventoryScopeInternPool()
         let patternIdx = pool.intern(pattern)
         let prefixIdx = pool.intern(nonEmptyRelativePrefix)
         let emptyOverrideIdx = pool.intern(emptyRelativePathValue)
+        let logicalPresent: UInt64 = logicalPrefix == nil ? 0 : 1
+        let logicalPrefixIdx = pool.intern(logicalPrefix?.nonEmptyRelativePrefix ?? "")
+        let logicalEmptyOverrideIdx = pool.intern(logicalPrefix?.emptyRelativePathValue ?? "")
 
         var writer = CoreInventoryScopeWriter()
         writer.writeHeader(kind: .queryRequest)
-        writer.writeWords([patternIdx, limit, haystackVariant.rawValue, prefixIdx, emptyOverrideIdx])
+        writer.writeWords([
+            patternIdx, limit, haystackVariant.rawValue, prefixIdx, emptyOverrideIdx,
+            logicalPresent, logicalPrefixIdx, logicalEmptyOverrideIdx,
+        ])
         writer.writeWords(pool.rangeWords)
         writer.writeBlob(pool.blob)
         return writer.buffer
@@ -1893,22 +1907,34 @@ enum CoreInventoryScopeWire {
     /// on the shadow-arm hot path (Swift only ever encodes requests and decodes responses) but
     /// kept symmetric with `decodeDeltaEvent` above.
     static func decodeQueryRequest(_ data: Data) throws -> (
-        pattern: String, limit: UInt64, haystackVariant: UInt64, nonEmptyRelativePrefix: String, emptyRelativePathValue: String
+        pattern: String,
+        limit: UInt64,
+        haystackVariant: UInt64,
+        nonEmptyRelativePrefix: String,
+        emptyRelativePathValue: String,
+        logicalPrefix: (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)?
     ) {
         var reader = CoreInventoryScopeReader(data)
         try reader.readHeader(expected: .queryRequest)
-        let header = try reader.readWords(maxWords: 5)
-        guard header.count == 5 else { throw CoreInventoryScopeWireError.malformed }
+        let header = try reader.readWords(maxWords: 8)
+        guard header.count == 8 else { throw CoreInventoryScopeWireError.malformed }
         let rangeWords = try reader.readWords(maxWords: coreInventoryScopeMaxWordsPerSection)
         let blob = try reader.readBlob()
         try reader.finish()
         let pool = CoreInventoryScopePoolReader(blob: blob, rangeWords: rangeWords)
+        let logicalPrefix: (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)?
+        switch header[5] {
+        case 0: logicalPrefix = nil
+        case 1: logicalPrefix = (try pool.resolve(header[6]), try pool.resolve(header[7]))
+        default: throw CoreInventoryScopeWireError.malformed
+        }
         return (
             pattern: try pool.resolve(header[0]),
             limit: header[1],
             haystackVariant: header[2],
             nonEmptyRelativePrefix: try pool.resolve(header[3]),
-            emptyRelativePathValue: try pool.resolve(header[4])
+            emptyRelativePathValue: try pool.resolve(header[4]),
+            logicalPrefix: logicalPrefix
         )
     }
 
@@ -2264,7 +2290,7 @@ enum CoreInventoryScopeWire {
         sections.resolveRequest=fileIdWords,folderIdWords
         sections.lookupRequest=pathWords,stringRangeWords,blob
         sections.factBlock=header(present,generation,rootLifetimeHi,rootLifetimeLo),factRowWords,stringRangeWords,blob
-        sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx),stringRangeWords,blob
+        sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx,logicalPresent,logicalPrefixIdx,logicalEmptyOverrideIdx),stringRangeWords,blob
         sections.queryResponse=header(present,generation),candidateRowWords,stringRangeWords,blob
         sections.generationAdvanced=rootId,rootLifetimeId,appliedIndexGeneration,catalogGenerationPresent,catalogGeneration,rebuiltAuthoritative,upsertedCount,removedCount,modifiedCount
         sections.rootPublished=rootId,rootLifetimeId

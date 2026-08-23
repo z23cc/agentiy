@@ -244,7 +244,8 @@ actor WorkspaceInventoryScopeAuthority {
         limit: UInt64,
         haystackVariant: CoreInventoryQueryHaystackVariant,
         nonEmptyRelativePrefix: String,
-        emptyRelativePathValue: String
+        emptyRelativePathValue: String,
+        logicalPrefix: (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)? = nil
     ) async throws -> CoreInventoryQueryResult {
         let scope = try await requireScope()
         let snapshot = try await scope.openSnapshot(rootID: rootID)
@@ -254,7 +255,8 @@ actor WorkspaceInventoryScopeAuthority {
             limit: limit,
             haystackVariant: haystackVariant,
             nonEmptyRelativePrefix: nonEmptyRelativePrefix,
-            emptyRelativePathValue: emptyRelativePathValue
+            emptyRelativePathValue: emptyRelativePathValue,
+            logicalPrefix: logicalPrefix
         )
     }
 

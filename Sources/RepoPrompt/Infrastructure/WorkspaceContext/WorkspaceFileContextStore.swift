@@ -2846,6 +2846,11 @@ actor WorkspaceFileContextStore {
         private var codemapTargetedReadyFreezeCountForTesting = 0
         private var codemapFullRootGraphFreezeCountForTesting = 0
         private var filesInRootRequestCountForTesting = 0
+        /// P4-7a phase a3 byte-accounting done-when (design §5.3): a call counter on
+        /// `searchCatalogSnapshot`, the sole choke point that vends `.entries` -- asserted zero
+        /// across a `.suggestion`-routed `AgentFileTagSuggestionService.suggestions(for:)` call to
+        /// discharge "the whole-entries walk is provably gone," per §11's proof requirement.
+        private var searchCatalogSnapshotCallCountForTesting = 0
         private var appliedIndexRecordLookupRequestCountForTesting = 0
         private var appliedIndexRecordLookupRequestedRecordCountForTesting = 0
         private var appliedIndexRootSnapshotRequestCountForTesting = 0
@@ -7575,6 +7580,9 @@ actor WorkspaceFileContextStore {
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace,
         requirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
     ) async -> WorkspaceSearchCatalogSnapshot {
+        #if DEBUG
+            searchCatalogSnapshotCallCountForTesting += 1
+        #endif
         let catalogSnapshotState = EditFlowPerf.begin(EditFlowPerf.Stage.Search.catalogSnapshot)
         if rootsForPathLookupIgnoringPublishedAuthority(scope: rootScope).contains(where: {
             !publishedSeededAuthorityIsQueryable(rootID: $0.id)
@@ -7818,6 +7826,35 @@ actor WorkspaceFileContextStore {
         }
         guard perRoot.count == roots.count else { return nil }
         return WorkspaceSearchRootQueryHandles(scopeGeneration: generation, perRoot: perRoot)
+    }
+
+    /// P4-7a phase a3 (design doc §5.3): the store-vended seam `AgentFileTagSuggestionService`
+    /// calls for its `.suggestion` cutover. `inventoryScopeAuthorityInstance()` stays private to
+    /// the store, the same ownership rule `searchRootQueryHandles` above applies for
+    /// `WorkspaceSearchService` -- the suggestion service must not grow an authority dependency
+    /// either. Unlike `searchRootQueryHandles`'s held-per-generation handles (§4.5, justified for
+    /// the steady-state interactive search path), this opens and closes one snapshot per call
+    /// (`WorkspaceInventoryScopeAuthority.query`'s existing shape) -- `.Suggestion` only serves the
+    /// cold-start/stale-window/worktree-bound fallback cases (design §3), not a per-keystroke path,
+    /// so the retention-budget machinery §4.5 built for the common case is not warranted here.
+    func suggestionQuery(
+        rootID: UUID,
+        pattern: String,
+        limit: UInt64,
+        nonEmptyRelativePrefix: String,
+        emptyRelativePathValue: String,
+        logicalPrefix: (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)?
+    ) async throws -> CoreInventoryQueryResult {
+        let authority = try await inventoryScopeAuthorityInstance()
+        return try await authority.query(
+            rootID: rootID,
+            pattern: pattern,
+            limit: limit,
+            haystackVariant: .suggestion,
+            nonEmptyRelativePrefix: nonEmptyRelativePrefix,
+            emptyRelativePathValue: emptyRelativePathValue,
+            logicalPrefix: logicalPrefix
+        )
     }
 
     private func prepareAndPublishRootCatalogShardBatch(
@@ -14600,6 +14637,17 @@ actor WorkspaceFileContextStore {
 
         func resetFilesInRootRequestCountForTesting() {
             filesInRootRequestCountForTesting = 0
+        }
+
+        /// P4-7a phase a3 byte-accounting done-when: reset before a `.suggestion`-routed
+        /// `AgentFileTagSuggestionService.suggestions(for:)` call, then assert
+        /// `searchCatalogSnapshotRequestCountForTesting()` is still zero afterward.
+        func resetSearchCatalogSnapshotRequestCountForTesting() {
+            searchCatalogSnapshotCallCountForTesting = 0
+        }
+
+        func searchCatalogSnapshotRequestCountForTesting() -> Int {
+            searchCatalogSnapshotCallCountForTesting
         }
 
         func fileEnumerationRequestCountForTesting() -> Int {

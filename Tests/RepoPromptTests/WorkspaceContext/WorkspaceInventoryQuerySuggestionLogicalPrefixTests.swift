@@ -19,33 +19,6 @@ import XCTest
 /// abstraction the design's `logical_prefix: Option<QueryPrefix>` field relies on is actually valid,
 /// not just that the branch-selection formula matches in isolation.
 final class WorkspaceInventoryQuerySuggestionLogicalPrefixTests: XCTestCase {
-    private struct LogicalQueryPrefix {
-        let value: String
-        let emptyRelativePathValue: String
-
-        func displayPath(relativePath: String) -> String {
-            relativePath.isEmpty ? emptyRelativePathValue : value + relativePath
-        }
-    }
-
-    /// Mirrors `WorkspacePathPolicyTests`'s private `inventoryQueryDisplayPrefix(root:visibleRoots:)`
-    /// verbatim (same three `ClientPathFormatter.displayPath` branches), applied to the *logical*
-    /// root and the *logical* visible-roots list -- exactly what design §5.1 says a3's Swift caller
-    /// must compute per physical root from its bound logical root.
-    private func logicalPrefix(logicalRoot: WorkspaceRootRef, visibleLogicalRoots: [WorkspaceRootRef]) -> LogicalQueryPrefix {
-        if visibleLogicalRoots.count <= 1 {
-            return LogicalQueryPrefix(value: "", emptyRelativePathValue: logicalRoot.name)
-        }
-        let canonicalMatches = visibleLogicalRoots.filter { $0.name.caseInsensitiveCompare(logicalRoot.name) == .orderedSame }
-        if canonicalMatches.count == 1 {
-            return LogicalQueryPrefix(value: logicalRoot.name + "/", emptyRelativePathValue: logicalRoot.name)
-        }
-        return LogicalQueryPrefix(
-            value: logicalRoot.standardizedFullPath + "/",
-            emptyRelativePathValue: logicalRoot.standardizedFullPath
-        )
-    }
-
     private func assertLogicalPrefixReproducesProjectedLogicalDisplayPath(
         logicalRoot: WorkspaceRootRef,
         physicalRoot: WorkspaceRootRef,
@@ -69,7 +42,7 @@ final class WorkspaceInventoryQuerySuggestionLogicalPrefixTests: XCTestCase {
             boundRoots: [.init(logicalRoot: logicalRoot, physicalRoot: physicalRoot, binding: binding)],
             visibleLogicalRoots: visibleLogicalRoots
         )
-        let prefix = logicalPrefix(logicalRoot: logicalRoot, visibleLogicalRoots: visibleLogicalRoots)
+        let prefix = ClientPathFormatter.displayPrefix(root: logicalRoot, visibleRoots: visibleLogicalRoots)
 
         // The corpus of relative paths every entry under this physical root could have, including
         // the empty-relative-path (root-level entry) special case every branch handles distinctly.
@@ -83,8 +56,11 @@ final class WorkspaceInventoryQuerySuggestionLogicalPrefixTests: XCTestCase {
                 file: file,
                 line: line
             )
+            let composed = relativePath.isEmpty
+                ? prefix.emptyRelativePathValue
+                : prefix.nonEmptyRelativePrefix + relativePath
             XCTAssertEqual(
-                prefix.displayPath(relativePath: relativePath),
+                composed,
                 expected,
                 "\(label), relativePath=\"\(relativePath)\"",
                 file: file,

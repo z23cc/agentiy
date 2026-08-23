@@ -1078,11 +1078,15 @@ impl CoreRuntime {
                     non_empty_relative_prefix: decoded.non_empty_relative_prefix,
                     empty_relative_path_value: decoded.empty_relative_path_value,
                 },
-                // P4-7a phase a1 is domain-logic-only (design doc §3); the wire does not carry
-                // the logical prefix pair yet, so `.Suggestion` queries decode with no binding
-                // projection until phase a3 threads it through `encode_query_request` /
-                // `decode_query_request`.
-                logical_prefix: None,
+                // P4-7a phase a3: the wire's `logical_prefix` presence flag disambiguates "no
+                // binding projection" from "a projection whose non-empty-relative prefix is
+                // legitimately empty" -- see wire.rs's decode doc comment.
+                logical_prefix: decoded.logical_prefix.map(|(non_empty_relative_prefix, empty_relative_path_value)| {
+                    runtime::inventory_scope::QueryPrefix {
+                        non_empty_relative_prefix,
+                        empty_relative_path_value,
+                    }
+                }),
             };
             let handle_id = runtime::inventory_scope::SnapshotHandleId::from_raw(request.handle_id);
             match scope.query(&identity, handle_id, query_request)? {
@@ -1840,8 +1844,8 @@ mod tests {
         // (`path_search_index_key`), so a bare "App" prefix would only match a key that starts
         // with it -- our display path is prefixed with the root name ("root/App.swift..."). An
         // explicit `*App*` matches anywhere in the composed key regardless of anchoring.
-        let query_bytes =
-            runtime::inventory_scope::encode_query_request("*App*", 10, 0, "root/", "root");
+            let query_bytes =
+                runtime::inventory_scope::encode_query_request("*App*", 10, 0, "root/", "root", None);
         let query_result = core
             .inventory_query(CompactQueryV1 {
                 runtime_identity: identity.clone(),

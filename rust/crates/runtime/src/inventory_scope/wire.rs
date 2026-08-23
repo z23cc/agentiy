@@ -1392,8 +1392,13 @@ pub fn decode_fact_block(bytes: &[u8]) -> Result<FactBlock, WireError> {
 
 // ================================================================================================
 // Query request/response (`inventoryQuery`, contract doc §5.3/§6): haystack variant selector +
-// per-root display prefix (both the non-empty-relative form and the distinct empty-relative-path
-// override -- see `query.rs`'s domain type, which this wire (de)serializes verbatim).
+// physical per-root display prefix (both the non-empty-relative form and the distinct
+// empty-relative-path override) + P4-7a phase a3's logical prefix pair (design §5.1), an
+// identically-shaped pair present only when the caller has a worktree binding projection --
+// `logical_present` disambiguates absent (`.IndexKey`, or `.Suggestion` with no projection) from
+// present-but-empty (a real logical prefix whose `non_empty_relative_prefix` is legitimately "",
+// branch 1 of `ClientPathFormatter.displayPath`) -- see `query.rs`'s domain type, which this wire
+// (de)serializes verbatim.
 // ================================================================================================
 
 #[must_use]
@@ -1403,16 +1408,30 @@ pub fn encode_query_request(
     haystack_variant: u64,
     non_empty_relative_prefix: &str,
     empty_relative_path_value: &str,
+    logical_prefix: Option<(&str, &str)>,
 ) -> Vec<u8> {
     let mut pool = InternPoolBuilder::new();
     let pattern_idx = pool.intern(pattern);
     let prefix_idx = pool.intern(non_empty_relative_prefix);
     let empty_override_idx = pool.intern(empty_relative_path_value);
+    let logical_present = u64::from(logical_prefix.is_some());
+    let (logical_non_empty_relative_prefix, logical_empty_relative_path_value) = logical_prefix.unwrap_or(("", ""));
+    let logical_prefix_idx = pool.intern(logical_non_empty_relative_prefix);
+    let logical_empty_override_idx = pool.intern(logical_empty_relative_path_value);
     let (blob, range_words) = pool.finish();
 
     let mut writer = Writer::header(MessageKind::QueryRequest);
     writer
-        .write_words(&[pattern_idx, limit, haystack_variant, prefix_idx, empty_override_idx])
+        .write_words(&[
+            pattern_idx,
+            limit,
+            haystack_variant,
+            prefix_idx,
+            empty_override_idx,
+            logical_present,
+            logical_prefix_idx,
+            logical_empty_override_idx,
+        ])
         .expect("bounded");
     writer.write_words(&range_words).expect("bounded by caller");
     writer.write_blob(&blob).expect("bounded by caller");
@@ -1425,12 +1444,17 @@ pub struct DecodedQueryRequest {
     pub haystack_variant: u64,
     pub non_empty_relative_prefix: String,
     pub empty_relative_path_value: String,
+    /// `None` when the caller has no worktree binding projection (`logical_present == 0`);
+    /// `Some` never collapses a legitimately-empty `non_empty_relative_prefix` into `None` --
+    /// that would silently drop the logical component for a bound single-visible-root workspace,
+    /// exactly the worktree case P4-7a's differential is supposed to prove (design §5.1).
+    pub logical_prefix: Option<(String, String)>,
 }
 
 pub fn decode_query_request(bytes: &[u8]) -> Result<DecodedQueryRequest, WireError> {
     let mut reader = Reader::open(bytes, MessageKind::QueryRequest)?;
-    let header_words = reader.read_words(5, "query request header")?;
-    let &[pattern_idx, limit, haystack_variant, prefix_idx, empty_override_idx] =
+    let header_words = reader.read_words(8, "query request header")?;
+    let &[pattern_idx, limit, haystack_variant, prefix_idx, empty_override_idx, logical_present, logical_prefix_idx, logical_empty_override_idx] =
         header_words.as_slice()
     else {
         return Err(WireError::Malformed("query request header"));
@@ -1439,7 +1463,16 @@ pub fn decode_query_request(bytes: &[u8]) -> Result<DecodedQueryRequest, WireErr
     let blob = reader.read_blob("utf8_blob")?;
     reader.finish()?;
     let pool = InternPoolReader::new(blob, &range_words)?;
+    let logical_prefix = match logical_present {
+        0 => None,
+        1 => Some((
+            pool.resolve(logical_prefix_idx)?.to_owned(),
+            pool.resolve(logical_empty_override_idx)?.to_owned(),
+        )),
+        _ => return Err(WireError::Malformed("query request logical prefix presence flag")),
+    };
     Ok(DecodedQueryRequest {
+        logical_prefix,
         pattern: pool.resolve(pattern_idx)?.to_owned(),
         limit,
         haystack_variant,
@@ -1827,8 +1860,8 @@ stringRangeWords,blob\n\
          sections.lookupRequest=pathWords,stringRangeWords,blob\n\
          sections.factBlock=header(present,generation,rootLifetimeHi,rootLifetimeLo),factRowWords,\
 stringRangeWords,blob\n\
-         sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx),\
-stringRangeWords,blob\n\
+           sections.queryRequest=header(patternIdx,limit,haystackVariant,prefixIdx,emptyOverrideIdx,\
+logicalPresent,logicalPrefixIdx,logicalEmptyOverrideIdx),stringRangeWords,blob\n\
          sections.queryResponse=header(present,generation),candidateRowWords,stringRangeWords,blob\n\
          sections.generationAdvanced=rootId,rootLifetimeId,appliedIndexGeneration,\
 catalogGenerationPresent,catalogGeneration,rebuiltAuthoritative,upsertedCount,removedCount,\
@@ -2163,13 +2196,59 @@ mod tests {
 
     #[test]
     fn query_request_round_trips_prefix_and_empty_relative_override() {
-        let bytes = encode_query_request("App*", 20, 1, "root/", "root");
+        let bytes = encode_query_request("App*", 20, 1, "root/", "root", None);
         let decoded = decode_query_request(&bytes).expect("decode");
         assert_eq!(decoded.pattern, "App*");
         assert_eq!(decoded.limit, 20);
         assert_eq!(decoded.haystack_variant, 1);
         assert_eq!(decoded.non_empty_relative_prefix, "root/");
         assert_eq!(decoded.empty_relative_path_value, "root");
+        assert_eq!(decoded.logical_prefix, None);
+    }
+
+    /// P4-7a phase a3 (design §5.1): a present-but-legitimately-empty logical prefix (branch 1
+    /// of `ClientPathFormatter.displayPath` -- a solo visible logical root has no prefix) must
+    /// round-trip as `Some(("", ...))`, never collapse to `None`. `None` and
+    /// `Some(("", "App"))` are different wire states (`logical_present`), not the same state
+    /// spelled two ways -- conflating them would silently drop the `logicalPath` haystack
+    /// component for exactly the bound-single-root workspace this variant exists to serve.
+    #[test]
+    fn query_request_round_trips_present_but_empty_logical_prefix() {
+        let bytes = encode_query_request("App*", 20, 1, "root/", "root", Some(("", "App")));
+        let decoded = decode_query_request(&bytes).expect("decode");
+        assert_eq!(decoded.logical_prefix, Some((String::new(), "App".to_owned())));
+    }
+
+    #[test]
+    fn query_request_round_trips_non_empty_logical_prefix() {
+        let bytes = encode_query_request("App*", 20, 1, "root/", "root", Some(("App/", "App")));
+        let decoded = decode_query_request(&bytes).expect("decode");
+        assert_eq!(decoded.logical_prefix, Some(("App/".to_owned(), "App".to_owned())));
+    }
+
+    /// Regression pin for P4-7a's a3 header widening (5 -> 8 words: `logicalPresent`,
+    /// `logicalPrefixIdx`, `logicalEmptyOverrideIdx` added), mirroring
+    /// `query_response_rejects_stride_11_legacy_shaped_row_words`'s precedent: a Swift encoder
+    /// that still emits the pre-a3 five-word header must be rejected as malformed, never
+    /// silently misdecoded as a shorter or differently-shaped request. Swift and Rust change
+    /// this wire shape atomically in the same commit precisely so this case never occurs in
+    /// production; this test is the fail-closed backstop if it ever does.
+    #[test]
+    fn query_request_rejects_legacy_five_word_header() {
+        let mut pool = InternPoolBuilder::new();
+        let pattern_idx = pool.intern("App*");
+        let prefix_idx = pool.intern("root/");
+        let empty_override_idx = pool.intern("root");
+        let (blob, range_words) = pool.finish();
+        let mut writer = Writer::header(MessageKind::QueryRequest);
+        writer.write_words(&[pattern_idx, 20, 1, prefix_idx, empty_override_idx]).expect("bounded");
+        writer.write_words(&range_words).expect("bounded by caller");
+        writer.write_blob(&blob).expect("bounded by caller");
+        let bytes = writer.finish();
+        assert!(matches!(
+            decode_query_request(&bytes),
+            Err(WireError::Malformed("query request header"))
+        ));
     }
 
     #[test]
@@ -2239,7 +2318,7 @@ mod tests {
         // until its hardcoded constant is updated to match -- the drift can never pass silently.
         assert_eq!(
             fingerprint(),
-            "c31808756c14c1ed0325987b34c21e272359e4e0504a8402b3fd4b5e3c36c9c3"
+            "82e2e432dc51dd3c2cb7bae38f50219ef4522f2d14b5ea82678fb1d8a3d1418a"
         );
     }
 

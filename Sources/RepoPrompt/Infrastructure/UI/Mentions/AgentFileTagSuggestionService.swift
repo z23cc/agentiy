@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Foundation
 
 @MainActor
@@ -30,6 +31,12 @@ final class AgentFileTagSuggestionService {
     private var cachedCandidates: [FileCandidate] = []
     private var cachedLookupContext: WorkspaceLookupContext = .visibleWorkspace
     private var cachedGenerationSignature: UInt64?
+    #if DEBUG
+        /// P4-7a phase a3 (design §4.6-style fail-visible discipline, applied to this seam):
+        /// counted rather than silently swallowed when a per-root `.suggestion` query fails --
+        /// see `storeBackedCatalogResults`'s catch block.
+        private(set) var storeBackedQueryFailureCountForTesting = 0
+    #endif
 
     init(
         store: WorkspaceFileContextStore?,
@@ -99,53 +106,113 @@ final class AgentFileTagSuggestionService {
         return await storeBackedCatalogResults(for: query, limit: limit, store: store, lookupContext: lookupContext)
     }
 
+    /// P4-7a phase a3 (design doc §5.3): the fallback path -- worktree-bound sessions, cold start,
+    /// and stale-index windows (`catalogResults(for:limit:store:lookupContext:)`'s comment above
+    /// names the same three cases; the fast path through `searchService.search` handles the
+    /// steady-state common case for free after P4-7b). Issues one `inventoryQuery(.suggestion)`
+    /// per visible root (mirroring `WorkspaceSearchService.nonEmptyQueryResults`'s per-root-then-
+    /// merge shape for `.indexKey`, `Search/WorkspaceSearchService.swift:566-596`) via the store's
+    /// `suggestionQuery` seam -- `snapshot.entries` is never read on this path, discharging parent
+    /// §11's "the whole-entries walk is provably gone" and the private per-query `PathSearchIndex`
+    /// this replaces (design §5.3).
+    ///
+    /// **Root order.** Per-root results are concatenated in `store.rootRefs(scope:)`'s order --
+    /// this is a merge-free concatenation (unlike `.indexKey`'s tie-break-key-sensitive cross-root
+    /// merge), because `scoredSuggestions` re-scores and truncates every candidate this method
+    /// returns; only the final scored-and-truncated list is user-visible, so this method's own
+    /// ordering is not independently load-bearing.
+    ///
+    /// **Result-set consequence of the per-root fan-out (design §14's discipline: name what
+    /// changed).** The pre-cutover implementation ran one `PathSearchIndex` over every visible
+    /// root's entries combined and truncated to `limit` **globally**. This method truncates each
+    /// root's own candidates to `limit` and then concatenates -- a strict superset in a multi-root
+    /// configuration. `scoredSuggestions`' re-scoring absorbs this (every entry that reaches it is
+    /// still ranked and cut to `maxResults`), so a fallback-path candidate that the old global
+    /// truncation would have discarded can now survive and appear in the final suggestion list.
+    /// This is a real, intentionally-accepted behavior change on the fallback path only --
+    /// `AgentFileTagSuggestionParityDifferentialTests` pins it as its own named case rather than
+    /// asserting single-root-only equivalence and calling the differential complete.
     private func storeBackedCatalogResults(
         for query: String,
         limit: Int,
         store: WorkspaceFileContextStore,
         lookupContext: WorkspaceLookupContext
     ) async -> [WorkspaceSearchCatalogEntry] {
-        // `.recordsOnly`: this fallback reads only `snapshot.entries` below and never
-        // `snapshot.rootPathIndexes`. See design doc §1.3 (P4-7 pre-slice).
-        let snapshot = await store.searchCatalogSnapshot(
-            rootScope: lookupContext.rootScope,
-            requirement: .recordsOnly
-        )
-        let entries = snapshot.entries
         let boundedLimit = max(0, limit)
         guard boundedLimit > 0 else { return [] }
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return Array(entries.prefix(boundedLimit)) }
+        let roots = await store.rootRefs(scope: lookupContext.rootScope)
+        guard !roots.isEmpty else { return [] }
 
-        let indexedPaths = entries.map { searchHaystack(for: $0, lookupContext: lookupContext) }
-        let index = await PathSearchIndex.build(paths: indexedPaths)
-        let hits = await index.search(trimmed, limit: boundedLimit)
         var seenIDs = Set<UUID>()
         var results: [WorkspaceSearchCatalogEntry] = []
-        results.reserveCapacity(hits.count)
-        for hit in hits where entries.indices.contains(hit.index) {
-            let entry = entries[hit.index]
-            guard seenIDs.insert(entry.id).inserted else { continue }
-            results.append(entry)
+        for root in roots {
+            let logicalPrefix = Self.logicalPrefix(forPhysicalRoot: root, lookupContext: lookupContext)
+            do {
+                let result = try await store.suggestionQuery(
+                    rootID: root.id,
+                    pattern: query,
+                    limit: UInt64(boundedLimit),
+                    nonEmptyRelativePrefix: "",
+                    emptyRelativePathValue: "",
+                    logicalPrefix: logicalPrefix
+                )
+                for candidate in result.candidates where seenIDs.insert(candidate.id).inserted {
+                    results.append(Self.catalogEntry(from: candidate, rootPath: root.standardizedFullPath, rootName: root.name))
+                }
+            } catch {
+                // §4.6's fail-visible-never-fail-empty rule was written for the search facade's
+                // handle-based reads; this seam opens a fresh snapshot per call and has no ready-
+                // handle state to mark stale, so there is no equivalent visible-failure signal to
+                // set here. Counted rather than silently swallowed -- see the DEBUG counter below.
+                #if DEBUG
+                    storeBackedQueryFailureCountForTesting += 1
+                #endif
+                continue
+            }
         }
         return results
     }
 
-    private func searchHaystack(for entry: WorkspaceSearchCatalogEntry, lookupContext: WorkspaceLookupContext) -> String {
-        let logicalPath = lookupContext.bindingProjection?.projectedLogicalDisplayPath(
-            forPhysicalPath: entry.standardizedFullPath,
-            display: .relative
+    /// Per-root physical->logical binding data (design §5.1's `logicalPath` component), computed
+    /// once per physical root rather than per entry: `nil` when the root has no binding projection
+    /// (matching Swift's `compactMap` drop of a `nil` `logicalPath`), otherwise the bound logical
+    /// root's `ClientPathFormatter.displayPrefix` pair -- the same per-root-prefix shape
+    /// `WorkspacePathPolicyTests`'s logical-pair extension (P4-7a phase a1) pins against
+    /// `WorkspaceRootBindingProjection.projectedLogicalDisplayPath` across all three branches plus
+    /// the empty-relative-path case.
+    private static func logicalPrefix(
+        forPhysicalRoot root: WorkspaceRootRef,
+        lookupContext: WorkspaceLookupContext
+    ) -> (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)? {
+        guard let projection = lookupContext.bindingProjection,
+              let boundRoot = projection.boundRoot(containingPhysicalAbsolutePath: root.standardizedFullPath)
+        else { return nil }
+        return ClientPathFormatter.displayPrefix(root: boundRoot.logicalRoot, visibleRoots: projection.visibleLogicalRootRefs)
+    }
+
+    /// Reconstructs the entry locally from the candidate's own fields plus the queried root's
+    /// `rootPath`/`rootName` -- mirroring `WorkspaceSearchService.catalogEntry(from:rootPath:
+    /// rootName:)` (`Search/WorkspaceSearchService.swift:639-653`) rather than trusting the wire's
+    /// `displayPath` field. `WorkspaceSearchCatalogEntry.init`'s default `displayPath: nil`
+    /// composition (`rootName + "/" + relativePath`) is exactly `entry.display_path`, the stored
+    /// field `.suggestion`'s haystack and response both use Rust-side (design §5.1's fourth
+    /// mismatch fix, `query.rs`'s module doc) -- reconstructing it here rather than decoding the
+    /// wire's copy proves that byte-equality by construction instead of by trust.
+    private static func catalogEntry(
+        from candidate: CoreInventoryQueryCandidateV1,
+        rootPath: String,
+        rootName: String
+    ) -> WorkspaceSearchCatalogEntry {
+        let file = WorkspaceFileRecord(
+            id: candidate.id,
+            rootID: candidate.rootID,
+            name: candidate.name,
+            relativePath: candidate.standardizedRelativePath,
+            fullPath: candidate.standardizedFullPath,
+            parentFolderID: nil
         )
-        return [
-            logicalPath,
-            entry.displayPath,
-            entry.name,
-            entry.standardizedRelativePath,
-            entry.standardizedFullPath
-        ]
-        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-        .joined(separator: "\n")
+        let root = WorkspaceRootRecord(id: candidate.rootID, name: rootName, fullPath: rootPath)
+        return WorkspaceSearchCatalogEntry(file: file, root: root)
     }
 
     private func makeCandidates(
@@ -452,6 +519,17 @@ final class AgentFileTagSuggestionService {
 
         var pathSearchIndexIsBuiltForTesting: Bool {
             false
+        }
+
+        /// P4-7a phase a3's hard-assertion differential seam (design §5.3): exposes
+        /// `catalogResults(for:limit:store:lookupContext:)`'s raw result set/order -- the level
+        /// the differential is mandated against -- independent of `suggestions(for:)`'s later
+        /// fuzzy re-scoring and `maxResults` truncation, which is a separate transformation this
+        /// slice does not touch.
+        func catalogResultsForTesting(for query: String, limit: Int) async -> [WorkspaceSearchCatalogEntry] {
+            guard let store else { return [] }
+            let lookupContext = await currentLookupContext()
+            return await catalogResults(for: query, limit: limit, store: store, lookupContext: lookupContext)
         }
     #endif
 }

@@ -326,6 +326,36 @@ package enum ClientPathFormatter {
             .map(String.init)
     }
 
+    /// The decomposed form of `displayPath`'s branch selection: one per-root prefix pair --
+    /// `nonEmptyRelativePrefix` (concatenated ahead of a non-empty standardized relative path) and
+    /// `emptyRelativePathValue` (the distinct value substituted for the root-level, empty-relative-
+    /// path case every branch special-cases) -- rather than a value composed against one specific
+    /// relative path. P4-7a (design doc `p4-7-pathsearch-production-cutover-v2-2026-08-23.md`
+    /// §5.1) is this function's first production caller: `inventoryQuery`'s `CompactQueryV1` wire
+    /// carries exactly this pair per root (both the physical and, when a worktree binding
+    /// projection exists, the logical one) so Rust can compose a per-entry display path without
+    /// re-deriving root-visibility policy (parent §4.2's rule) -- see
+    /// `WorkspacePathPolicyTests.testInventoryQueryDisplayPrefixCompositionMatchesClientPathFormatterAcrossAllBranchesAndEmptyRelativePath`,
+    /// which predates this production implementation and pins `prefix.value + relativePath` /
+    /// `prefix.emptyRelativePathValue` against `displayPath`'s own output across all three
+    /// branches. Composing `nonEmptyRelativePrefix + standardizedRelativePath` reproduces
+    /// `displayPath`'s non-empty branches exactly for any well-formed standardized relative path
+    /// (no leading/trailing slash to normalize away, unlike `StandardizedPath.join`'s general
+    /// case) -- branch 3 below is therefore plain concatenation, not `StandardizedPath.join`.
+    package static func displayPrefix(
+        root: WorkspaceRootRef,
+        visibleRoots: [WorkspaceRootRef]
+    ) -> (nonEmptyRelativePrefix: String, emptyRelativePathValue: String) {
+        if visibleRoots.count <= 1 {
+            return ("", root.name)
+        }
+        let canonicalMatches = visibleRoots.filter { $0.name.caseInsensitiveCompare(root.name) == .orderedSame }
+        if canonicalMatches.count == 1 {
+            return ("\(root.name)/", root.name)
+        }
+        return ("\(root.standardizedFullPath)/", root.standardizedFullPath)
+    }
+
     package static func displayPath(
         root: WorkspaceRootRef,
         relativePath: String,
