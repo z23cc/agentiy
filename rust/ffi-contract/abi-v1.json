@@ -265,6 +265,27 @@
     "oversize": "compact-payloadRejected-event",
     "terminalMayEvictOldestData": true
   },
+  "agentClaudeV1": {
+    "additiveInAbiEpoch": 1,
+    "abiEpochDecision": "no bump: additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9/inventoryScopeV1 (P3-3/P3-4/P4-4), each of which added CoreRuntime exports without bumping abiEpoch",
+    "contractDoc": "docs/architecture/rust-agent-claude-v1.md",
+    "designDoc": "docs/designs/p6-claude-vertical-2026-08-23.md",
+    "scope": "claudeCode provider kind only; GLM/Kimi/custom-Claude-compatible are P6-9",
+    "exports": [
+      "agentOpenScope", "agentStartOrResume", "agentSendUserMessage", "agentInterruptTurn",
+      "agentRespondPermission", "agentApplyModelAndEffort", "agentShutdown"
+    ],
+    "eventEnvelope": {
+      "mechanism": "a versioned, batched JSON object per event ({\"v\":1,\"kind\":...}), crossing on the existing generic openSubscription/tryDrain surface -- no per-domain subscribe export, same precedent as inventoryScopeV1",
+      "rustSource": "agentry_runtime::agent_claude::event::AgentClaudeEvent",
+      "lossClassification": "contract §7.1 -- lossless/coalescible/droppable per kind, with sessionStateChanged's is_idle field (not the kind alone) selecting lossless vs coalescible"
+    },
+    "interruptOutcomes": ["acknowledged", "noTurnInFlight", "staleGeneration", "timedOut", "failed"],
+    "inv_p6_1": "no export accepts a single protocol line; the sole per-line export (agent_claude_decode_line_debug_v1, P6-5) is DEBUG-feature-gated and never a UniFFI export by construction -- asserted against exports.txt by rust/crates/ffi/tests/agent_claude_exports_contract.rs",
+    "sessionPersistence": "unchanged -- AgentSession/AgentSessionIndex stay Swift-owned for the whole vertical (design §6); Rust holds live-run state in memory only",
+    "runtimeIdentityRequired": true,
+    "productFallback": "none"
+  },
   "fixtureManifest": "rust/benchmarks/fixtures/v1/manifest.json",
   "sloRegistry": "rust/benchmarks/slo-v1.json",
   "exportsInventory": "rust/ffi-contract/exports.txt"

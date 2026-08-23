@@ -1501,6 +1501,119 @@ pub(crate) fn wire_error(error: runtime::inventory_scope::WireError) -> CoreErro
     }
 }
 
+// ================================================================================================
+// P6-6: agent-claude-v1 FFI surface (`docs/architecture/rust-agent-claude-v1.md`,
+// `docs/designs/p6-claude-vertical-2026-08-23.md` §11 P6-6). Every export is synchronous and fast
+// (charter §8.2: fast enqueue-only FFI, work inside the runtime, results via terminal events),
+// matching every other export in this file -- none traverse the P0 operation registry. Event-plane
+// events cross as the versioned, batched `agent_claude::event::AgentClaudeEvent` JSON envelope
+// (design D-6), decoded Swift-side from the generic `RuntimeEvent.payload` bytes the existing
+// `openSubscription`/`tryDrain` surface already returns -- no new subscription export, mirroring
+// `inventory-scope-v1`'s precedent of reusing the generic subscription surface verbatim.
+// ================================================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentClaudeEnvironmentEntryV1 {
+    pub key: String,
+    pub value: String,
+}
+
+/// Contract §5.1: the already-resolved spawn command this crate receives. **Never logged** (design
+/// R8) -- `environment` in particular must never reach any diagnostic sink, including this crate's
+/// own `RuntimeEvent` stream; see `agent_claude::scope::AgentClaudeScopeConfig`'s doc comment.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CoreAgentClaudeScopeConfigV1 {
+    pub command: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<CoreAgentClaudeEnvironmentEntryV1>,
+    pub working_directory: Option<String>,
+    pub permission_mode: Option<String>,
+    pub mcp_config_path: Option<String>,
+    pub mcp_strict_mode: bool,
+    pub disallowed_built_in_tools: Vec<String>,
+    /// GLM's `--append-system-prompt` workaround (contract §2.5 item 1) -- inert (`None`) for every
+    /// production `claudeCode` configuration this vertical's scope covers.
+    pub append_system_prompt: Option<String>,
+    pub idle_fallback_millis: u64,
+    pub interrupt_ack_timeout_millis: u64,
+}
+
+impl CoreAgentClaudeScopeConfigV1 {
+    pub(crate) fn runtime_config(&self) -> runtime::agent_claude::AgentClaudeScopeConfig {
+        runtime::agent_claude::AgentClaudeScopeConfig {
+            command: self.command.clone(),
+            arguments: self.arguments.clone(),
+            environment: self.environment.iter().map(|entry| (entry.key.clone(), entry.value.clone())).collect(),
+            working_directory: self.working_directory.clone(),
+            permission_mode: self.permission_mode.clone(),
+            mcp_config_path: self.mcp_config_path.clone(),
+            mcp_strict_mode: self.mcp_strict_mode,
+            disallowed_built_in_tools: self.disallowed_built_in_tools.clone(),
+            append_system_prompt: self.append_system_prompt.clone(),
+            idle_fallback: std::time::Duration::from_millis(self.idle_fallback_millis),
+            interrupt_ack_timeout: std::time::Duration::from_millis(self.interrupt_ack_timeout_millis),
+            raw_argv_for_testing: false,
+        }
+    }
+}
+
+/// Mirrors `InventoryScopeHandleV1`'s doc comment exactly: `subscription_scope_id` is computed
+/// once, Rust-side, at `agent_open_scope` time and handed to Swift here so it never re-derives the
+/// `AgentClaudeScopeId -> ScopeId` conversion. Pass this string as `SubscriptionScope.scope_id` to
+/// the existing, unchanged generic `CoreRuntime.openSubscription`/`tryDrain` surface.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct AgentClaudeScopeHandleV1 {
+    pub scope_id: String,
+    pub subscription_scope_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct AgentClaudeStartReceiptV1 {
+    pub pid: i32,
+    pub process_group_id: i32,
+}
+
+/// Contract §4: the fast-enqueue receipt for `agent_interrupt_turn`. The actual outcome (one of
+/// the five contract §5.3 variants) arrives later as an `interruptOutcome` terminal-class event on
+/// the subscription, correlated by this same `request_id` -- charter §8.2's command+event shape,
+/// not an async FFI method.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct AgentClaudeInterruptReceiptV1 {
+    pub request_id: String,
+}
+
+/// Contract §7.1's permission **protocol** half: the two decision shapes
+/// `agent_claude::permission::PermissionDecision` already defines, re-exposed at the FFI boundary
+/// with the exact same two-case split (`agent_claude::scope::PermissionDecisionInput`'s doc comment
+/// explains why this is a third, FFI-owned name rather than exporting the protocol module's type
+/// directly).
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum AgentClaudePermissionDecisionV1 {
+    Allow { include_updated_permissions: bool },
+    Deny { message: String, interrupt: bool },
+}
+
+impl From<AgentClaudePermissionDecisionV1> for runtime::agent_claude::PermissionDecisionInput {
+    fn from(value: AgentClaudePermissionDecisionV1) -> Self {
+        match value {
+            AgentClaudePermissionDecisionV1::Allow { include_updated_permissions } => {
+                Self::Allow { include_updated_permissions }
+            }
+            AgentClaudePermissionDecisionV1::Deny { message, interrupt } => Self::Deny { message, interrupt },
+        }
+    }
+}
+
+/// Routes a caller-supplied scope-id string to the typed `AgentClaudeScopeId` this crate's registry
+/// addresses scopes by (contract doc §1: "handles are explicit IDs, not proxy objects", the same
+/// discipline `parse_inventory_scope_id` enforces for the inventory-scope-v1 surface).
+pub(crate) fn parse_agent_claude_scope_id(value: &str) -> Result<runtime::agent_claude::AgentClaudeScopeId, CoreError> {
+    value.parse().map_err(|_| CoreError::AgentClaudeInvalidRequest { message: "invalid agent-claude scope id".to_string() })
+}
+
+// `From<AgentScopeError>`/`From<ScopeRegistryError>` for `CoreError` live in `errors.rs`, matching
+// every other domain's error-mapping placement in this crate.
+
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct CoreInventoryScopeConfigV1 {
     pub live_generation_cap: u64,

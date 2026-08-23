@@ -1,5 +1,6 @@
 use agentry_proto::DecodeError;
 use agentry_runtime::inventory_scope::{BulkLoadError, ScopeError, ScopeRegistryError};
+use agentry_runtime::agent_claude::{AgentScopeError, ScopeRegistryError as AgentClaudeScopeRegistryError};
 use agentry_runtime::{
     IdentifierError, IdentityError, RegistryError, RuntimeError, SearchError, SubscriptionError,
 };
@@ -125,6 +126,25 @@ pub enum CoreError {
     },
     #[error("{message}")]
     InventoryScopeInvalidRequest { message: String },
+    // P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md, design §11 P6-6).
+    #[error("unknown agent-claude scope")]
+    AgentClaudeUnknownScope,
+    #[error("agent-claude scope is closed")]
+    AgentClaudeScopeClosed,
+    #[error("agent-claude scope already has a running process")]
+    AgentClaudeAlreadyRunning,
+    #[error("agent-claude scope has no running process")]
+    AgentClaudeNotRunning,
+    #[error("unknown agent-claude permission request id")]
+    AgentClaudeUnknownPermissionRequest,
+    #[error("agent-claude spawn failed: {message}")]
+    AgentClaudeSpawnFailed { message: String },
+    #[error("agent-claude reaper registration failed: {message}")]
+    AgentClaudeReaperFailed { message: String },
+    #[error("agent-claude transport write failed: {message}")]
+    AgentClaudeTransportWriteFailed { message: String },
+    #[error("{message}")]
+    AgentClaudeInvalidRequest { message: String },
 }
 
 impl From<IdentifierError> for CoreError {
@@ -311,6 +331,32 @@ impl From<BulkLoadError> for CoreError {
             BulkLoadError::Unknown => Self::InventoryScopeBulkLoadUnknown,
             BulkLoadError::AlreadyTerminal => Self::InventoryScopeBulkLoadAlreadyTerminal,
             BulkLoadError::RootMismatch => Self::InventoryScopeBulkLoadRootMismatch,
+        }
+    }
+}
+
+impl From<AgentScopeError> for CoreError {
+    fn from(value: AgentScopeError) -> Self {
+        match value {
+            AgentScopeError::IdentityMismatch => Self::StaleRuntimeIdentity,
+            AgentScopeError::ScopeClosed => Self::AgentClaudeScopeClosed,
+            AgentScopeError::AlreadyRunning => Self::AgentClaudeAlreadyRunning,
+            AgentScopeError::NotRunning => Self::AgentClaudeNotRunning,
+            AgentScopeError::UnknownScope => Self::AgentClaudeUnknownScope,
+            AgentScopeError::UnknownPermissionRequest => Self::AgentClaudeUnknownPermissionRequest,
+            AgentScopeError::Spawn(message) => Self::AgentClaudeSpawnFailed { message },
+            AgentScopeError::Reaper(message) => Self::AgentClaudeReaperFailed { message },
+            AgentScopeError::TransportWrite(message) => Self::AgentClaudeTransportWriteFailed { message },
+            AgentScopeError::InvalidArgument(what) => Self::AgentClaudeInvalidRequest { message: what.to_string() },
+        }
+    }
+}
+
+impl From<AgentClaudeScopeRegistryError> for CoreError {
+    fn from(value: AgentClaudeScopeRegistryError) -> Self {
+        match value {
+            AgentClaudeScopeRegistryError::IdentityMismatch => Self::StaleRuntimeIdentity,
+            AgentClaudeScopeRegistryError::UnknownScope => Self::AgentClaudeUnknownScope,
         }
     }
 }

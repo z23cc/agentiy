@@ -651,6 +651,51 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
+    /**
+     * See `agent_claude::scope`'s module doc comment: a scope-reduced, fire-and-forget
+     * placeholder for this slice -- no ACK tracking or deferred/pending flag-settings state. Full
+     * parity is P6-7's job.
+     */
+    func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?) throws
+
+    /**
+     * Contract §4: fenced by `turn_generation`, no pre-check (design §5.3 -- the pre-check is
+     * *removed*, not made remote). Fast: the generation/in-flight classification runs
+     * synchronously; only a genuine ACK round trip (when the named generation is current and a
+     * turn is in flight) is pushed onto a background thread inside the scope.
+     */
+    func agentInterruptTurn(identity: RuntimeIdentity, scopeId: String, turnGeneration: UInt64, reason: String) throws  -> AgentClaudeInterruptReceiptV1
+
+    func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScopeConfigV1) throws  -> AgentClaudeScopeHandleV1
+
+    /**
+     * Contract §7.1's permission **protocol** half only -- policy (auto-approval matching,
+     * secure-store decisions) stays Swift/core-owned; this call only encodes and writes the
+     * caller's already-decided outcome back to the CLI.
+     */
+    func agentRespondPermission(identity: RuntimeIdentity, scopeId: String, requestId: String, decision: AgentClaudePermissionDecisionV1) throws
+
+    /**
+     * Returns the newly minted `turn_generation` (contract §4's interrupt-fencing token).
+     */
+    func agentSendUserMessage(identity: RuntimeIdentity, scopeId: String, text: String) throws  -> UInt64
+
+    /**
+     * Idempotent: flushes deferred turn completions, escalates SIGTERM -> grace -> SIGKILL against
+     * the process group via the shared reaper, then removes the scope from the registry. There is
+     * no separate `agent_close_scope` export -- shutdown and close are one terminal operation for
+     * this domain (design's seven-export enumeration), unlike `inventory-scope-v1`'s separate
+     * open/close pair.
+     */
+    func agentShutdown(identity: RuntimeIdentity, scopeId: String) throws
+
+    /**
+     * Contract §5.1: spawns the child, registers it with the shared reaper, and starts the
+     * per-stream reader threads. Returns `pid`/`process_group_id` synchronously so the caller's
+     * expected-agent-PID fence (design §4.6) can register immediately on return.
+     */
+    func agentStartOrResume(identity: RuntimeIdentity, scopeId: String, resumeSessionId: String?) throws  -> AgentClaudeStartReceiptV1
+
     func applyEditsBatchCompactV1(request: CoreApplyEditsBatchRequestV1) throws  -> CoreCompactApplyEditsBatchResultV1
 
     func beginShutdown(identity: RuntimeIdentity) throws  -> ShutdownReceipt
@@ -860,6 +905,119 @@ public convenience init(config: CoreConfig)throws  {
 
 
 
+
+    /**
+     * See `agent_claude::scope`'s module doc comment: a scope-reduced, fire-and-forget
+     * placeholder for this slice -- no ACK tracking or deferred/pending flag-settings state. Full
+     * parity is P6-7's job.
+     */
+open func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_apply_model_and_effort(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterOptionString.lower(model),
+        FfiConverterOptionString.lower(effort),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Contract §4: fenced by `turn_generation`, no pre-check (design §5.3 -- the pre-check is
+     * *removed*, not made remote). Fast: the generation/in-flight classification runs
+     * synchronously; only a genuine ACK round trip (when the named generation is current and a
+     * turn is in flight) is pushed onto a background thread inside the scope.
+     */
+open func agentInterruptTurn(identity: RuntimeIdentity, scopeId: String, turnGeneration: UInt64, reason: String)throws  -> AgentClaudeInterruptReceiptV1  {
+    return try  FfiConverterTypeAgentClaudeInterruptReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_interrupt_turn(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterUInt64.lower(turnGeneration),
+        FfiConverterString.lower(reason),uniffiCallStatus
+    )
+})
+}
+
+open func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScopeConfigV1)throws  -> AgentClaudeScopeHandleV1  {
+    return try  FfiConverterTypeAgentClaudeScopeHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_open_scope(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(config),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Contract §7.1's permission **protocol** half only -- policy (auto-approval matching,
+     * secure-store decisions) stays Swift/core-owned; this call only encodes and writes the
+     * caller's already-decided outcome back to the CLI.
+     */
+open func agentRespondPermission(identity: RuntimeIdentity, scopeId: String, requestId: String, decision: AgentClaudePermissionDecisionV1)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_respond_permission(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(requestId),
+        FfiConverterTypeAgentClaudePermissionDecisionV1_lower(decision),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Returns the newly minted `turn_generation` (contract §4's interrupt-fencing token).
+     */
+open func agentSendUserMessage(identity: RuntimeIdentity, scopeId: String, text: String)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_send_user_message(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Idempotent: flushes deferred turn completions, escalates SIGTERM -> grace -> SIGKILL against
+     * the process group via the shared reaper, then removes the scope from the registry. There is
+     * no separate `agent_close_scope` export -- shutdown and close are one terminal operation for
+     * this domain (design's seven-export enumeration), unlike `inventory-scope-v1`'s separate
+     * open/close pair.
+     */
+open func agentShutdown(identity: RuntimeIdentity, scopeId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_shutdown(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Contract §5.1: spawns the child, registers it with the shared reaper, and starts the
+     * per-stream reader threads. Returns `pid`/`process_group_id` synchronously so the caller's
+     * expected-agent-PID fence (design §4.6) can register immediately on return.
+     */
+open func agentStartOrResume(identity: RuntimeIdentity, scopeId: String, resumeSessionId: String?)throws  -> AgentClaudeStartReceiptV1  {
+    return try  FfiConverterTypeAgentClaudeStartReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_start_or_resume(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterOptionString.lower(resumeSessionId),uniffiCallStatus
+    )
+})
+}
 
 open func applyEditsBatchCompactV1(request: CoreApplyEditsBatchRequestV1)throws  -> CoreCompactApplyEditsBatchResultV1  {
     return try  FfiConverterTypeCoreCompactApplyEditsBatchResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
@@ -1637,6 +1795,176 @@ public func FfiConverterTypeAdmissionReceipt_lift(_ buf: RustBuffer) throws -> A
 #endif
 public func FfiConverterTypeAdmissionReceipt_lower(_ value: AdmissionReceipt) -> RustBuffer {
     return FfiConverterTypeAdmissionReceipt.lower(value)
+}
+
+
+/**
+ * Contract §4: the fast-enqueue receipt for `agent_interrupt_turn`. The actual outcome (one of
+ * the five contract §5.3 variants) arrives later as an `interruptOutcome` terminal-class event on
+ * the subscription, correlated by this same `request_id` -- charter §8.2's command+event shape,
+ * not an async FFI method.
+ */
+public struct AgentClaudeInterruptReceiptV1: Equatable, Hashable {
+    public let requestId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(requestId: String) {
+        self.requestId = requestId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentClaudeInterruptReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentClaudeInterruptReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentClaudeInterruptReceiptV1 {
+        return
+            try AgentClaudeInterruptReceiptV1(
+                requestId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentClaudeInterruptReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.requestId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeInterruptReceiptV1_lift(_ buf: RustBuffer) throws -> AgentClaudeInterruptReceiptV1 {
+    return try FfiConverterTypeAgentClaudeInterruptReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeInterruptReceiptV1_lower(_ value: AgentClaudeInterruptReceiptV1) -> RustBuffer {
+    return FfiConverterTypeAgentClaudeInterruptReceiptV1.lower(value)
+}
+
+
+/**
+ * Mirrors `InventoryScopeHandleV1`'s doc comment exactly: `subscription_scope_id` is computed
+ * once, Rust-side, at `agent_open_scope` time and handed to Swift here so it never re-derives the
+ * `AgentClaudeScopeId -> ScopeId` conversion. Pass this string as `SubscriptionScope.scope_id` to
+ * the existing, unchanged generic `CoreRuntime.openSubscription`/`tryDrain` surface.
+ */
+public struct AgentClaudeScopeHandleV1: Equatable, Hashable {
+    public let scopeId: String
+    public let subscriptionScopeId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(scopeId: String, subscriptionScopeId: String) {
+        self.scopeId = scopeId
+        self.subscriptionScopeId = subscriptionScopeId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentClaudeScopeHandleV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentClaudeScopeHandleV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentClaudeScopeHandleV1 {
+        return
+            try AgentClaudeScopeHandleV1(
+                scopeId: FfiConverterString.read(from: &buf),
+                subscriptionScopeId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentClaudeScopeHandleV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterString.write(value.subscriptionScopeId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeScopeHandleV1_lift(_ buf: RustBuffer) throws -> AgentClaudeScopeHandleV1 {
+    return try FfiConverterTypeAgentClaudeScopeHandleV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeScopeHandleV1_lower(_ value: AgentClaudeScopeHandleV1) -> RustBuffer {
+    return FfiConverterTypeAgentClaudeScopeHandleV1.lower(value)
+}
+
+
+public struct AgentClaudeStartReceiptV1: Equatable, Hashable {
+    public let pid: Int32
+    public let processGroupId: Int32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(pid: Int32, processGroupId: Int32) {
+        self.pid = pid
+        self.processGroupId = processGroupId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentClaudeStartReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentClaudeStartReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentClaudeStartReceiptV1 {
+        return
+            try AgentClaudeStartReceiptV1(
+                pid: FfiConverterInt32.read(from: &buf),
+                processGroupId: FfiConverterInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentClaudeStartReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterInt32.write(value.pid, into: &buf)
+        FfiConverterInt32.write(value.processGroupId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeStartReceiptV1_lift(_ buf: RustBuffer) throws -> AgentClaudeStartReceiptV1 {
+    return try FfiConverterTypeAgentClaudeStartReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeStartReceiptV1_lower(_ value: AgentClaudeStartReceiptV1) -> RustBuffer {
+    return FfiConverterTypeAgentClaudeStartReceiptV1.lower(value)
 }
 
 
@@ -2426,6 +2754,163 @@ public func FfiConverterTypeCompactRegexSubjectSummary_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeCompactRegexSubjectSummary_lower(_ value: CompactRegexSubjectSummary) -> RustBuffer {
     return FfiConverterTypeCompactRegexSubjectSummary.lower(value)
+}
+
+
+public struct CoreAgentClaudeEnvironmentEntryV1: Equatable, Hashable {
+    public let key: String
+    public let value: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(key: String, value: String) {
+        self.key = key
+        self.value = value
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentClaudeEnvironmentEntryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentClaudeEnvironmentEntryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentClaudeEnvironmentEntryV1 {
+        return
+            try CoreAgentClaudeEnvironmentEntryV1(
+                key: FfiConverterString.read(from: &buf),
+                value: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentClaudeEnvironmentEntryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.key, into: &buf)
+        FfiConverterString.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentClaudeEnvironmentEntryV1_lift(_ buf: RustBuffer) throws -> CoreAgentClaudeEnvironmentEntryV1 {
+    return try FfiConverterTypeCoreAgentClaudeEnvironmentEntryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentClaudeEnvironmentEntryV1_lower(_ value: CoreAgentClaudeEnvironmentEntryV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentClaudeEnvironmentEntryV1.lower(value)
+}
+
+
+/**
+ * Contract §5.1: the already-resolved spawn command this crate receives. **Never logged** (design
+ * R8) -- `environment` in particular must never reach any diagnostic sink, including this crate's
+ * own `RuntimeEvent` stream; see `agent_claude::scope::AgentClaudeScopeConfig`'s doc comment.
+ */
+public struct CoreAgentClaudeScopeConfigV1: Equatable, Hashable {
+    public let command: String
+    public let arguments: [String]
+    public let environment: [CoreAgentClaudeEnvironmentEntryV1]
+    public let workingDirectory: String?
+    public let permissionMode: String?
+    public let mcpConfigPath: String?
+    public let mcpStrictMode: Bool
+    public let disallowedBuiltInTools: [String]
+    /**
+     * GLM's `--append-system-prompt` workaround (contract §2.5 item 1) -- inert (`None`) for every
+     * production `claudeCode` configuration this vertical's scope covers.
+     */
+    public let appendSystemPrompt: String?
+    public let idleFallbackMillis: UInt64
+    public let interruptAckTimeoutMillis: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(command: String, arguments: [String], environment: [CoreAgentClaudeEnvironmentEntryV1], workingDirectory: String?, permissionMode: String?, mcpConfigPath: String?, mcpStrictMode: Bool, disallowedBuiltInTools: [String],
+        /**
+         * GLM's `--append-system-prompt` workaround (contract §2.5 item 1) -- inert (`None`) for every
+         * production `claudeCode` configuration this vertical's scope covers.
+         */appendSystemPrompt: String?, idleFallbackMillis: UInt64, interruptAckTimeoutMillis: UInt64) {
+        self.command = command
+        self.arguments = arguments
+        self.environment = environment
+        self.workingDirectory = workingDirectory
+        self.permissionMode = permissionMode
+        self.mcpConfigPath = mcpConfigPath
+        self.mcpStrictMode = mcpStrictMode
+        self.disallowedBuiltInTools = disallowedBuiltInTools
+        self.appendSystemPrompt = appendSystemPrompt
+        self.idleFallbackMillis = idleFallbackMillis
+        self.interruptAckTimeoutMillis = interruptAckTimeoutMillis
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentClaudeScopeConfigV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentClaudeScopeConfigV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentClaudeScopeConfigV1 {
+        return
+            try CoreAgentClaudeScopeConfigV1(
+                command: FfiConverterString.read(from: &buf),
+                arguments: FfiConverterSequenceString.read(from: &buf),
+                environment: FfiConverterSequenceTypeCoreAgentClaudeEnvironmentEntryV1.read(from: &buf),
+                workingDirectory: FfiConverterOptionString.read(from: &buf),
+                permissionMode: FfiConverterOptionString.read(from: &buf),
+                mcpConfigPath: FfiConverterOptionString.read(from: &buf),
+                mcpStrictMode: FfiConverterBool.read(from: &buf),
+                disallowedBuiltInTools: FfiConverterSequenceString.read(from: &buf),
+                appendSystemPrompt: FfiConverterOptionString.read(from: &buf),
+                idleFallbackMillis: FfiConverterUInt64.read(from: &buf),
+                interruptAckTimeoutMillis: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentClaudeScopeConfigV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.command, into: &buf)
+        FfiConverterSequenceString.write(value.arguments, into: &buf)
+        FfiConverterSequenceTypeCoreAgentClaudeEnvironmentEntryV1.write(value.environment, into: &buf)
+        FfiConverterOptionString.write(value.workingDirectory, into: &buf)
+        FfiConverterOptionString.write(value.permissionMode, into: &buf)
+        FfiConverterOptionString.write(value.mcpConfigPath, into: &buf)
+        FfiConverterBool.write(value.mcpStrictMode, into: &buf)
+        FfiConverterSequenceString.write(value.disallowedBuiltInTools, into: &buf)
+        FfiConverterOptionString.write(value.appendSystemPrompt, into: &buf)
+        FfiConverterUInt64.write(value.idleFallbackMillis, into: &buf)
+        FfiConverterUInt64.write(value.interruptAckTimeoutMillis, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentClaudeScopeConfigV1_lift(_ buf: RustBuffer) throws -> CoreAgentClaudeScopeConfigV1 {
+    return try FfiConverterTypeCoreAgentClaudeScopeConfigV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(_ value: CoreAgentClaudeScopeConfigV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentClaudeScopeConfigV1.lower(value)
 }
 
 
@@ -6754,6 +7239,86 @@ public func FfiConverterTypeAdmissionDisposition_lower(_ value: AdmissionDisposi
 
 
 
+/**
+ * Contract §7.1's permission **protocol** half: the two decision shapes
+ * `agent_claude::permission::PermissionDecision` already defines, re-exposed at the FFI boundary
+ * with the exact same two-case split (`agent_claude::scope::PermissionDecisionInput`'s doc comment
+ * explains why this is a third, FFI-owned name rather than exporting the protocol module's type
+ * directly).
+ */
+
+public enum AgentClaudePermissionDecisionV1: Equatable, Hashable {
+
+    case allow(includeUpdatedPermissions: Bool
+    )
+    case deny(message: String, interrupt: Bool
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentClaudePermissionDecisionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentClaudePermissionDecisionV1: FfiConverterRustBuffer {
+    typealias SwiftType = AgentClaudePermissionDecisionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentClaudePermissionDecisionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .allow(includeUpdatedPermissions: try FfiConverterBool.read(from: &buf)
+        )
+
+        case 2: return .deny(message: try FfiConverterString.read(from: &buf), interrupt: try FfiConverterBool.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentClaudePermissionDecisionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .allow(includeUpdatedPermissions):
+            writeInt(&buf, Int32(1))
+            FfiConverterBool.write(includeUpdatedPermissions, into: &buf)
+
+
+        case let .deny(message,interrupt):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(message, into: &buf)
+            FfiConverterBool.write(interrupt, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudePermissionDecisionV1_lift(_ buf: RustBuffer) throws -> AgentClaudePermissionDecisionV1 {
+    return try FfiConverterTypeAgentClaudePermissionDecisionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudePermissionDecisionV1_lower(_ value: AgentClaudePermissionDecisionV1) -> RustBuffer {
+    return FfiConverterTypeAgentClaudePermissionDecisionV1.lower(value)
+}
+
+
+
 
 public enum CancelDisposition: Equatable, Hashable {
 
@@ -7066,6 +7631,19 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case InventoryScopeInvalidRequest(message: String
     )
+    case AgentClaudeUnknownScope
+    case AgentClaudeScopeClosed
+    case AgentClaudeAlreadyRunning
+    case AgentClaudeNotRunning
+    case AgentClaudeUnknownPermissionRequest
+    case AgentClaudeSpawnFailed(message: String
+    )
+    case AgentClaudeReaperFailed(message: String
+    )
+    case AgentClaudeTransportWriteFailed(message: String
+    )
+    case AgentClaudeInvalidRequest(message: String
+    )
 
 
 
@@ -7164,6 +7742,23 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             reason: try FfiConverterTypeInventoryHandleInvalidationReasonV1.read(from: &buf)
             )
         case 53: return .InventoryScopeInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 54: return .AgentClaudeUnknownScope
+        case 55: return .AgentClaudeScopeClosed
+        case 56: return .AgentClaudeAlreadyRunning
+        case 57: return .AgentClaudeNotRunning
+        case 58: return .AgentClaudeUnknownPermissionRequest
+        case 59: return .AgentClaudeSpawnFailed(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 60: return .AgentClaudeReaperFailed(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 61: return .AgentClaudeTransportWriteFailed(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 62: return .AgentClaudeInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -7396,6 +7991,46 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case let .InventoryScopeInvalidRequest(message):
             writeInt(&buf, Int32(53))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case .AgentClaudeUnknownScope:
+            writeInt(&buf, Int32(54))
+
+
+        case .AgentClaudeScopeClosed:
+            writeInt(&buf, Int32(55))
+
+
+        case .AgentClaudeAlreadyRunning:
+            writeInt(&buf, Int32(56))
+
+
+        case .AgentClaudeNotRunning:
+            writeInt(&buf, Int32(57))
+
+
+        case .AgentClaudeUnknownPermissionRequest:
+            writeInt(&buf, Int32(58))
+
+
+        case let .AgentClaudeSpawnFailed(message):
+            writeInt(&buf, Int32(59))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentClaudeReaperFailed(message):
+            writeInt(&buf, Int32(60))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentClaudeTransportWriteFailed(message):
+            writeInt(&buf, Int32(61))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentClaudeInvalidRequest(message):
+            writeInt(&buf, Int32(62))
             FfiConverterString.write(message, into: &buf)
 
         }
@@ -8930,6 +9565,31 @@ fileprivate struct FfiConverterSequenceTypeCompactRegexSubjectSummary: FfiConver
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoreAgentClaudeEnvironmentEntryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreAgentClaudeEnvironmentEntryV1]
+
+    public static func write(_ value: [CoreAgentClaudeEnvironmentEntryV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreAgentClaudeEnvironmentEntryV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreAgentClaudeEnvironmentEntryV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreAgentClaudeEnvironmentEntryV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreAgentClaudeEnvironmentEntryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCoreApplyEditsOperationV1: FfiConverterRustBuffer {
     typealias SwiftType = [CoreApplyEditsOperationV1]
 
@@ -9293,6 +9953,27 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_func_core_panic_forensics() != 20183) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_apply_model_and_effort() != 25113) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_interrupt_turn() != 14421) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_open_scope() != 12578) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_respond_permission() != 30809) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_send_user_message() != 4943) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_shutdown() != 55087) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_start_or_resume() != 19319) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_apply_edits_batch_compact_v1() != 64411) {

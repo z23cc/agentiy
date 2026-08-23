@@ -25,6 +25,10 @@ use crate::types::{
     SubscriptionId, SubscriptionScope, parse_inventory_scope_id, parse_root_id,
     parse_root_lifetime_id, wire_error,
 };
+use crate::types::{
+    AgentClaudeInterruptReceiptV1, AgentClaudePermissionDecisionV1, AgentClaudeScopeHandleV1, AgentClaudeStartReceiptV1,
+    CoreAgentClaudeScopeConfigV1,
+};
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
 use std::os::fd::IntoRawFd;
@@ -104,6 +108,7 @@ pub struct CoreRuntime {
     path_search_service: runtime::pathsearch::PathSearchFindService,
     token_accounting_service: runtime::tokenacct::TokenAccountingService,
     inventory_scope_registry: runtime::inventory_scope::ScopeRegistry,
+    agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -1229,6 +1234,140 @@ impl CoreRuntime {
     pub fn panic_forensics(&self) -> Vec<String> {
         core_panic_forensics()
     }
+
+    // ============================================================================================
+    // P6-6: agent-claude-v1 FFI surface (`docs/architecture/rust-agent-claude-v1.md`,
+    // `docs/designs/p6-claude-vertical-2026-08-23.md` §11 P6-6). Synchronous and fast throughout
+    // (charter §8.2): commands admit work and return a receipt; results (including the five-
+    // outcome interrupt contract, §5.3) arrive as events on the reused generic subscription surface
+    // (`openSubscription`/`tryDrain`, unchanged) -- no per-domain subscribe export, same precedent
+    // as `inventory-scope-v1`.
+    // ============================================================================================
+
+    pub fn agent_open_scope(
+        &self,
+        identity: RuntimeIdentity,
+        config: CoreAgentClaudeScopeConfigV1,
+    ) -> Result<AgentClaudeScopeHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_claude_scope_registry.open_scope(identity, config.runtime_config());
+            // Wires this scope's event-plane publication into the same `SubscriptionHub` every
+            // other P0/P4 consumer already publishes into -- reused verbatim, not re-derived (see
+            // `AgentClaudeScope::attach_event_sink`'s doc comment, mirroring
+            // `InventoryScope::attach_event_sink` exactly).
+            scope.attach_event_sink(
+                std::sync::Arc::clone(self.inner.subscriptions()),
+                scope.scope_id().to_subscription_scope_id(),
+            );
+            Ok(AgentClaudeScopeHandleV1 {
+                scope_id: scope.scope_id().to_string(),
+                subscription_scope_id: scope.scope_id().to_subscription_scope_id().to_string(),
+            })
+        })
+    }
+
+    /// Contract §5.1: spawns the child, registers it with the shared reaper, and starts the
+    /// per-stream reader threads. Returns `pid`/`process_group_id` synchronously so the caller's
+    /// expected-agent-PID fence (design §4.6) can register immediately on return.
+    pub fn agent_start_or_resume(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        resume_session_id: Option<String>,
+    ) -> Result<AgentClaudeStartReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_claude_scope(&scope_id)?;
+            let receipt = scope.start_or_resume(&identity, resume_session_id)?;
+            Ok(AgentClaudeStartReceiptV1 { pid: receipt.pid, process_group_id: receipt.process_group_id })
+        })
+    }
+
+    /// Returns the newly minted `turn_generation` (contract §4's interrupt-fencing token).
+    pub fn agent_send_user_message(&self, identity: RuntimeIdentity, scope_id: String, text: String) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_claude_scope(&scope_id)?;
+            Ok(scope.send_user_message(&identity, &text)?)
+        })
+    }
+
+    /// Contract §4: fenced by `turn_generation`, no pre-check (design §5.3 -- the pre-check is
+    /// *removed*, not made remote). Fast: the generation/in-flight classification runs
+    /// synchronously; only a genuine ACK round trip (when the named generation is current and a
+    /// turn is in flight) is pushed onto a background thread inside the scope.
+    pub fn agent_interrupt_turn(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        turn_generation: u64,
+        reason: String,
+    ) -> Result<AgentClaudeInterruptReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_claude_scope(&scope_id)?;
+            let request_id = scope.interrupt_turn(&identity, turn_generation, reason)?;
+            Ok(AgentClaudeInterruptReceiptV1 { request_id })
+        })
+    }
+
+    /// Contract §7.1's permission **protocol** half only -- policy (auto-approval matching,
+    /// secure-store decisions) stays Swift/core-owned; this call only encodes and writes the
+    /// caller's already-decided outcome back to the CLI.
+    pub fn agent_respond_permission(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        request_id: String,
+        decision: AgentClaudePermissionDecisionV1,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_claude_scope(&scope_id)?;
+            scope.respond_permission(&identity, &request_id, decision.into())?;
+            Ok(())
+        })
+    }
+
+    /// See `agent_claude::scope`'s module doc comment: a scope-reduced, fire-and-forget
+    /// placeholder for this slice -- no ACK tracking or deferred/pending flag-settings state. Full
+    /// parity is P6-7's job.
+    pub fn agent_apply_model_and_effort(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_claude_scope(&scope_id)?;
+            scope.apply_model_and_effort(&identity, model, effort)?;
+            Ok(())
+        })
+    }
+
+    /// Idempotent: flushes deferred turn completions, escalates SIGTERM -> grace -> SIGKILL against
+    /// the process group via the shared reaper, then removes the scope from the registry. There is
+    /// no separate `agent_close_scope` export -- shutdown and close are one terminal operation for
+    /// this domain (design's seven-export enumeration), unlike `inventory-scope-v1`'s separate
+    /// open/close pair.
+    pub fn agent_shutdown(&self, identity: RuntimeIdentity, scope_id: String) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let parsed_scope_id = crate::types::parse_agent_claude_scope_id(&scope_id)?;
+            self.agent_claude_scope_registry.close_scope(&identity, parsed_scope_id)?;
+            Ok(())
+        })
+    }
 }
 
 /// Module-level (not tied to any `CoreRuntime` instance) panic forensics for
@@ -1305,6 +1444,7 @@ impl CoreRuntime {
             path_search_service: runtime::pathsearch::PathSearchFindService,
             token_accounting_service: runtime::tokenacct::TokenAccountingService,
             inventory_scope_registry: runtime::inventory_scope::ScopeRegistry::new(),
+            agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry::new(),
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),
@@ -1355,6 +1495,17 @@ impl CoreRuntime {
         self.inventory_scope_registry
             .get(scope_id)
             .ok_or(CoreError::InventoryScopeUnknownScope)
+    }
+
+    /// P6-6: the agent-claude-v1 counterpart of `inventory_scope` above.
+    fn agent_claude_scope(
+        &self,
+        scope_id: &str,
+    ) -> Result<std::sync::Arc<runtime::agent_claude::AgentClaudeScope>, CoreError> {
+        let scope_id = crate::types::parse_agent_claude_scope_id(scope_id)?;
+        self.agent_claude_scope_registry
+            .get(scope_id)
+            .ok_or(CoreError::AgentClaudeUnknownScope)
     }
 
     #[cfg(test)]
@@ -2264,6 +2415,185 @@ mod tests {
                     actual: 50,
                 },
             }
+        );
+    }
+
+    // ============================================================================================
+    // P6-6: agent-claude-v1 FFI surface tests -- "the real bridge" the design's done-when names.
+    // ============================================================================================
+
+    /// Cross-package binary lookup: `agent-claude-synthetic-cli` is a `[[bin]]` target owned by
+    /// `agentry-runtime` (`rust/crates/runtime/tests/support/synthetic_cli.rs`), so
+    /// `CARGO_BIN_EXE_...` (only set for a package's own test targets) is not available here.
+    /// `cargo test --workspace` (this crate's official validation path, `make dev-cargo-test
+    /// CARGO_PACKAGE=all`) builds every workspace binary target before running any test, so by the
+    /// time this runs the binary is a sibling of this test binary's own executable directory. A
+    /// narrow `-p agentry-ffi`-only invocation does not build sibling-package binaries -- run
+    /// `cargo build -p agentry-runtime --bin agent-claude-synthetic-cli` first if using one.
+    fn agent_claude_synthetic_cli_path() -> std::path::PathBuf {
+        let mut path = std::env::current_exe().expect("current test executable");
+        path.pop();
+        if path.ends_with("deps") {
+            path.pop();
+        }
+        path.push("agent-claude-synthetic-cli");
+        assert!(
+            path.is_file(),
+            "expected {path:?} to exist -- run via `cargo test --workspace` / `make dev-cargo-test \
+             CARGO_PACKAGE=all`, or build the sibling binary explicitly first"
+        );
+        path
+    }
+
+    fn agent_claude_config(command: &str, arguments: Vec<String>) -> CoreAgentClaudeScopeConfigV1 {
+        CoreAgentClaudeScopeConfigV1 {
+            command: command.to_owned(),
+            arguments,
+            environment: Vec::new(),
+            working_directory: None,
+            permission_mode: None,
+            mcp_config_path: None,
+            mcp_strict_mode: false,
+            disallowed_built_in_tools: Vec::new(),
+            append_system_prompt: None,
+            idle_fallback_millis: 1_000,
+            interrupt_ack_timeout_millis: 400,
+        }
+    }
+
+    fn agent_claude_open_subscription(core: &CoreRuntime, identity: &RuntimeIdentity, subscription_scope_id: &str) -> SubscriptionId {
+        core.open_subscription(SubscriptionScope {
+            runtime_identity: identity.clone(),
+            scope_id: crate::types::ScopeId { value: subscription_scope_id.to_owned() },
+            max_queued_events: 0,
+            max_queued_bytes: 0,
+        })
+        .expect("open subscription against the derived subscription_scope_id")
+        .subscription_id
+    }
+
+    #[test]
+    fn agent_claude_full_lifecycle_round_trips_through_the_ffi_surface() {
+        let (core, identity, _cancellation) = initialized_core();
+        let cli = agent_claude_synthetic_cli_path();
+        let scope = core
+            .agent_open_scope(identity.clone(), agent_claude_config(cli.to_str().expect("utf8 path"), vec!["well-behaved".to_owned()]))
+            .expect("open scope");
+        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+
+        let receipt = core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
+        assert!(receipt.pid > 0);
+        assert_eq!(receipt.pid, receipt.process_group_id, "the child is the leader of its own new process group");
+
+        let generation = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send");
+        assert_eq!(generation, 1, "generation numbering starts at 1 (0 is the never-sent sentinel)");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut saw_turn_completed = false;
+        while std::time::Instant::now() < deadline && !saw_turn_completed {
+            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
+            for event in batch.events {
+                if let Some(decoded) = runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
+                    && decoded.kind.wire_name() == "turnCompleted"
+                {
+                    saw_turn_completed = true;
+                }
+            }
+            if !saw_turn_completed {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        assert!(saw_turn_completed, "turnCompleted must flow through the real FFI subscription surface, decoded from the real batched event envelope");
+
+        core.close_subscription(subscription).expect("close subscription");
+        core.agent_shutdown(identity.clone(), scope.scope_id.clone()).expect("shutdown");
+        core.agent_shutdown(identity, scope.scope_id).expect("shutdown is idempotent");
+    }
+
+    #[test]
+    fn agent_claude_interrupt_stale_generation_is_reachable_through_the_ffi_surface() {
+        // P6-6 done-when: "a test proving staleGeneration is reachable" -- through the real bridge,
+        // not just the runtime crate directly (see `agent_claude_scope.rs`'s cargo-only twin).
+        let (core, identity, _cancellation) = initialized_core();
+        let scope = core.agent_open_scope(identity.clone(), agent_claude_config("/bin/sleep", vec!["5".to_owned()])).expect("open scope");
+        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
+
+        let generation_one = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "one".to_owned()).expect("send 1");
+        let generation_two = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "two".to_owned()).expect("send 2");
+        assert_eq!(generation_two, generation_one + 1);
+
+        let receipt = core
+            .agent_interrupt_turn(identity.clone(), scope.scope_id.clone(), generation_one, "stale test".to_owned())
+            .expect("interrupt naming the superseded generation");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut outcome = None;
+        while std::time::Instant::now() < deadline && outcome.is_none() {
+            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
+            for event in batch.events {
+                if let Some(decoded) = runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
+                    && decoded.kind.wire_name() == "interruptOutcome"
+                    && decoded.fields.get("request_id").and_then(|value| value.as_str()) == Some(receipt.request_id.as_str())
+                {
+                    outcome = Some(decoded);
+                }
+            }
+            if outcome.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        let outcome = outcome.expect("interruptOutcome must be published through the real FFI subscription surface");
+        assert_eq!(outcome.fields.get("outcome").and_then(|value| value.as_str()), Some("staleGeneration"));
+        assert_eq!(outcome.fields.get("current_generation").and_then(serde_json::Value::as_u64), Some(generation_two));
+        assert_eq!(outcome.fields.get("current_turn_in_flight").and_then(serde_json::Value::as_bool), Some(true));
+
+        core.close_subscription(subscription).expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+    }
+
+    #[test]
+    fn agent_claude_every_command_rejects_a_mismatched_runtime_identity() {
+        let (core, identity, _cancellation) = initialized_core();
+        let intruder_core = CoreRuntime::new(config()).expect("second runtime");
+        let intruder = intruder_core.initialize().expect("initialize intruder").runtime_identity;
+
+        let scope = core.agent_open_scope(identity.clone(), agent_claude_config("/bin/sleep", vec!["2".to_owned()])).expect("open scope");
+
+        assert_eq!(
+            core.agent_start_or_resume(intruder.clone(), scope.scope_id.clone(), None).unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start under the real identity");
+        assert_eq!(
+            core.agent_send_user_message(intruder.clone(), scope.scope_id.clone(), "hi".to_owned()).unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(
+            core.agent_interrupt_turn(intruder.clone(), scope.scope_id.clone(), 1, "x".to_owned()).unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(
+            core.agent_apply_model_and_effort(intruder.clone(), scope.scope_id.clone(), None, None).unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(
+            core.agent_respond_permission(intruder.clone(), scope.scope_id.clone(), "unknown".to_owned(), AgentClaudePermissionDecisionV1::Allow { include_updated_permissions: false })
+                .unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(core.agent_shutdown(intruder, scope.scope_id.clone()).unwrap_err(), CoreError::StaleRuntimeIdentity);
+
+        core.agent_shutdown(identity, scope.scope_id).expect("the real identity can still shut the scope down");
+    }
+
+    #[test]
+    fn agent_claude_unknown_scope_id_is_a_typed_error_not_a_panic() {
+        let (core, identity, _cancellation) = initialized_core();
+        let bogus_scope_id = runtime::agent_claude::AgentClaudeScopeId::mint().to_string();
+        assert_eq!(
+            core.agent_start_or_resume(identity, bogus_scope_id, None).unwrap_err(),
+            CoreError::AgentClaudeUnknownScope
         );
     }
 }
