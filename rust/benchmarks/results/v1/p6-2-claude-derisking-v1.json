@@ -71,8 +71,11 @@
         }
       ]
     },
-    "partB_coexistenceSoak": {
+    "partB_rustOnlySoak": {
       "verdict": "GO",
+      "testName": "part_b_rust_only_soak_reduced",
+      "coexistenceArmRun": false,
+      "coexistenceArmNote": "no harness in this repo puts agent_claude_derisking_spike::reaper and Swift's ChildStatusReaperRegistry in the same process; R2 (a second reaper/SIGCHLD handler stealing Swift's statuses) is argued structurally (zero SIGCHLD handlers, zero waitpid(-1)/WAIT_MYPGRP calls in reaper.rs), not measured -- see the P6-2 results doc section 5",
       "cyclesRegistered": 10000,
       "cyclesRun": 400,
       "reductionReason": "session token/wall-clock budget; stated explicitly, not silently substituted",
@@ -86,7 +89,7 @@
       "echildCount": 0,
       "pendingAtQuiesce": 0,
       "residualCompletedUnclaimedAtQuiesce": 40,
-      "residualExplanation": "exactly the scopeDroppedWithoutWait cycle count; expected by design (this spike's harness has no automatic reclaimer for that case)",
+      "residualExplanation": "exactly the scopeDroppedWithoutWait cycle count; this is an open reaper-design gap (no reclamation policy for completed-but-unclaimed registrations left by the orphan backstop), not a benign harness detail -- see finding F-reaper-reclamation-gap below and the P6-2 results doc section 5, finding 3",
       "sigchldHandlersInstalled": 0,
       "waitpidNegativeOneCalls": 0,
       "waitMyPgrpCalls": 0,
@@ -103,6 +106,13 @@
           "id": "BUG-double-reap-race",
           "summary": "the registration-time direct probe and the background sweep's probe could race on the same PID; the loser saw ECHILD (a same-reaper double-reap artifact, not a genuine sole-owner violation) -- caused a spurious ~25% Lost-outcome rate in the soak before the fix",
           "fix": "per-slot reaping: AtomicBool compare-exchange guard"
+        }
+      ],
+      "findings": [
+        {
+          "id": "F-reaper-reclamation-gap",
+          "summary": "contract section 5.2's orphan backstop hands a dropped scope's PID to the shared reaper but is silent on the map entry afterward; registered_count() grows by one per scope-drop-without-shutdown and never shrinks, unaddressed by contract section 4.4's four-structure cap",
+          "favorability": "genuine design gap, not alarming to E-P6-2's own pass criteria (no thread/FD growth observed), named as a P6-4 prerequisite"
         }
       ]
     },

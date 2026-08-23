@@ -41,7 +41,7 @@ amended with an interim path.
 | E-P6-1(b) -- whole-stream wall/allocation ratio | **BLOCKED** | Not measurable on a synthetic-only corpus of 10 adversarial lines; a ratio over that population is noise, not a throughput signal -- see section 2. |
 | E-P6-1(c) -- host-owned-tool-name predicate | **GO** | 53 curated cases (full 27/27 alias-table coverage + adversarial prefixed/`functions.`-prefixed/case forms), 0 mismatches on both the Swift arm (real `MCPIntegrationHelper.isRepoPromptToolName`) and the Rust arm (ported predicate) -- section 3. |
 | E-P6-2 Part A -- spawn-attribute parity | **GO (8 of 9 configurations; "with cwd" deferred to P6-4, named)** | 9 Rust-side configs / 8 Swift-side configs (config 9, SIGKILL escalation, is reaper-owned, Rust-only), all pass. Two contract-refining findings recorded, both favorable or precise-not-alarming -- section 4. |
-| E-P6-2 Part B -- coexistence soak | **GO (reduced scale, named)** | 400 cycles (design registers 10,000; reduction is session-budget-bounded and stated, not silent), 0 cycle failures, 0 ECHILD, 0 SIGCHLD handlers, TSan-clean, ASan-clean -- section 5. |
+| E-P6-2 Part B -- coexistence soak | **GO (Rust-only, reduced scale, named)** | 400 cycles (design registers 10,000; reduction is session-budget-bounded and stated, not silent), 0 cycle failures, 0 ECHILD, 0 SIGCHLD handlers, TSan-clean, ASan-clean. No Swift-supervised arm ran in-process (R2 is argued structurally, not measured); a reaper-entry reclamation-policy gap was found and named as a P6-4 prerequisite (finding 3) -- section 5. |
 | E-P6-2 R2b -- thread-scaling | **GO** | `2N + 1` exactly at N = 1/4/16, reaper contribution exactly 1, verified twice: once with synthetic reader threads (isolating the reaper's own contribution) and once with a fully real spawn+reader+reaper stack -- section 5. |
 | E-P6-3 -- adversarial stream (no deadlock, bounded memory) | **GO (subset of the named matrix; deferred rows named)** | Oversized-line overflow-and-recover, mid-line-stall, flood-with-bounded-memory-and-surviving-terminal-event, and the named deadlock probe all pass on stable toolchain. TSan run on this specific test file is **inconclusive** (tooling interaction, not a race finding) -- section 6. |
 | E-P6-3(e) -- D-8 cap derivation | **BLOCKED, same root cause as E-P6-1(a)/(b)** | "Observed maximum per-turn transcript size" requires real turn-size distribution data this spike cannot produce without the same missing real-traffic corpus -- section 7. |
@@ -220,21 +220,38 @@ race. Fixed with a per-slot `reaping: AtomicBool` compare-exchange guard (`reape
 fix, the soak reported spurious `Lost` (ECHILD) outcomes at roughly a 25% rate; after, zero across
 every run in this section.
 
-**Part A soak** (`part_b_coexistence_soak_reduced`): **400 cycles**, not the design's registered
-10,000 -- a session-token/wall-clock-budget reduction, stated here rather than substituted
-silently. Distribution: 10% each of SIGTERM-ignoring-requiring-SIGKILL, grandchild-orphan,
+**No Swift-supervised arm ran in this process.** The design's registered Part B method is to run
+Rust-supervised children **and** Swift-supervised (`ChildStatusReaperRegistry`-owned) children
+concurrently in one process, to test R2 ("a second reaper or `SIGCHLD` handler steals statuses from
+Swift's sole owners"). No harness in this repo puts the Rust reaper and the Swift
+`ChildStatusReaperRegistry` in the same process -- that needs either the P6-6 FFI bridge or a
+throwaway `dlopen` harness judged out of proportion for a spike -- so what actually ran
+(`part_b_rust_only_soak_reduced`, renamed from an earlier `part_b_coexistence_soak_reduced` to say
+this plainly) is a **Rust-only soak**, not the registered coexistence measurement. What substitutes
+for R2 here is a *structural* argument, not a measured one: `reaper.rs` installs no `SIGCHLD`
+handler anywhere (`grep -n SIGCHLD reaper.rs` matches nothing) and never calls `waitpid(-1, ...)` or
+any `WAIT_MYPGRP`-style broad wait -- every reap targets a specific, individually-registered PID via
+`kqueue`/`waitid`. By construction that reaper cannot observe or consume a status belonging to a PID
+Swift's `ChildStatusReaperRegistry` owns and never registered with it. That is reasonable spike
+evidence, not a replacement for the registered measurement; true same-process coexistence testing is
+named as a P6-4 prerequisite below (finding 3 covers the closely related reclamation-policy gap this
+same soak surfaced).
+
+**Soak parameters**: **400 cycles**, not the design's registered 10,000 -- a
+session-token/wall-clock-budget reduction, stated here rather than substituted silently.
+Distribution: 10% each of SIGTERM-ignoring-requiring-SIGKILL, grandchild-orphan,
 scope-dropped-without-an-explicit-wait, and 70% normal-exit (the design's own cycle-type list,
 weighted toward the cheap case so 400 real spawns finish in a bounded wall-clock window).
 
 *Pass, as measured:* 0 cycle failures; 0 `ECHILD` (`reaper.echild_count() == 0`); 0 still-*pending*
 registrations at quiesce (`reaper.pending_count() == 0` -- every spawned child was actually reaped,
-including the 40 "scope dropped without wait" cycles, via the periodic self-heal sweep); 40
-residual *completed-but-unclaimed* map entries at quiesce, which is **expected, not a leak**: those
-are exactly the "scope dropped without an explicit wait" cycles, which by design never call
-`forget()` (this spike's harness does not model an automatic reclaimer for that case -- a real
-Rust agent scope's own lifecycle would presumably reclaim on next access or its own drop path,
-which is P6-4 territory, not modeled here). No `waitpid(-1)`, no `WAIT_MYPGRP` anywhere in
-`reaper.rs`; no `sigaction(SIGCHLD, ...)` call anywhere in the spike.
+including the 40 "scope dropped without wait" cycles, via the periodic self-heal sweep); 40 residual
+*completed-but-unclaimed* map entries at quiesce. **This residual is not benign and is recorded as
+finding 3 below, not waved off as expected-and-fine**: those 40 entries are exactly the "scope
+dropped without an explicit wait" cycles -- the same shape as contract section 5.2's orphan
+backstop path -- and nothing in the reaper reclaims them. A long-lived process that repeatedly hits
+that path grows the map without bound, which is precisely what section 4.4's "no fifth structure...
+'it is small in practice' is not a bound" rule is aimed at. See finding 3.
 
 **Sanitizers**, run against `cargo +nightly test --target aarch64-apple-darwin -Zbuild-std` with
 `RUSTFLAGS="-Z sanitizer=thread"` and separately `"-Z sanitizer=address"`:
@@ -254,6 +271,27 @@ threads, real `reaper.rs` reaping -- at each N, confirming zero residual registr
 pending, zero `ECHILD`, and every session's real synthetic-CLI child correctly reaped, in 2.69s
 total across all three N values. See section 7 for what this does and does not answer for design
 open question 1.
+
+**Finding 3 (new design gap, P6-4 prerequisite): the reaper has no reclamation policy for
+completed-but-unclaimed registrations.** Contract section 5.2's orphan backstop says a dropped
+scope's PID gets "handed to the shared reaper," but is silent on what happens to that PID's map
+entry once the reaper has reaped it and nobody calls `wait_for_exit`/`forget` -- which is exactly
+what happens on the orphan-backstop path by definition (there is no waiter left to call either).
+The soak above demonstrates this concretely: 40 of 400 cycles (the `ScopeDropWithoutWait` kind)
+leave a completed-but-unclaimed entry in the reaper's map forever; `registered_count()` grows by
+one per such cycle and never shrinks, while `pending_count()` correctly stays at zero (the reap
+itself is not leaked, only the bookkeeping entry). Extrapolated to the design's registered 10,000
+cycles at the same 10% rate, that is roughly 1,000 permanently-resident entries from one soak run
+alone. Contract section 4.4 caps four structures and states explicitly that "any new per-session
+accumulation added later must either fit inside one of these four caps or arrive with its own
+registered cap, policy and drift entry -- 'it is small in practice' is not a bound"; this map has
+neither today. This does not fail E-P6-2 (no thread or FD growth was observed -- the leak, such as
+it is, is bookkeeping-only, bounded by process lifetime, and each entry is a small fixed-size
+struct), so the Part B verdict below stays GO, but P6-4 must not carry this contract gap forward
+unaddressed: either (a) the reaper reclaims an entry itself once reaped and unclaimed past some
+bound (e.g. on the next sweep pass after reaping, if no waiter arrived), or (b) the map is
+registered under section 4.4 with its own explicit cap and eviction policy. Recorded here rather
+than silently patched via the `pending_count()` assertion change alone.
 
 ## 6. E-P6-3 -- adversarial stream: GO (named subset), TSan inconclusive on this file
 
@@ -348,6 +386,9 @@ Per the `agentClaudeV1` SLO block's `followUpConditions`:
 differential -- P6-3's own done-when needs the same corpus this document found missing. It does not
 re-scope the vertical to codec-only, since E-P6-2 (the experiment whose failure would trigger that)
 passed. It records the process-supervision de-risking the design asked for as complete to the
-design's own bar, with two dependency-surface findings (section 4) that directly inform P6-4's
-implementation, and it records exactly one item -- the real-traffic corpus -- as the thing standing
-between this state and P6-3 beginning.
+design's own bar, with two dependency-surface findings (section 4) plus a reaper reclamation-policy
+gap and an unrun same-process coexistence measurement (both section 5, finding 3 and the
+no-Swift-arm note) that directly inform P6-4's implementation, and it records exactly one item -- the
+real-traffic corpus -- as the thing standing between this state and P6-3 beginning. The section 5
+findings are P6-4 prerequisites, not P6-3 blockers: they concern the reaper's own bookkeeping
+correctness under P6-4 implementation, not the codec/translator parity work P6-3 covers.

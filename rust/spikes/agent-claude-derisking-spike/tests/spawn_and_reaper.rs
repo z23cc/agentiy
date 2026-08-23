@@ -358,8 +358,23 @@ fn run_cycle(reaper: &Reaper, kind: CycleKind) -> Result<(), String> {
     }
 }
 
+/// **No Swift-supervised arm runs in this process.** The design's registered Part B method is
+/// "run Rust-supervised children **and** Swift-supervised (`ChildStatusReaperRegistry`-owned)
+/// children concurrently in one process" to test R2 ("a second reaper or SIGCHLD handler steals
+/// statuses from Swift's sole owners"). No harness in this repo puts the Rust reaper and the Swift
+/// `ChildStatusReaperRegistry` in the same process (that needs either the P6-6 FFI bridge or a
+/// throwaway `dlopen` harness judged out of proportion for a spike), so this test is a Rust-only
+/// soak, not the registered coexistence measurement. What substitutes for R2 here is a *structural*
+/// argument, not a measured one: `rust/spikes/agent-claude-derisking-spike/src/reaper.rs` installs
+/// no `SIGCHLD` handler anywhere (`grep -n SIGCHLD` on that file matches nothing) and never calls
+/// `waitpid(-1, ...)` or any `WAIT_MYPGRP`-style broad wait -- every reap targets a specific,
+/// individually-registered PID via `kqueue`/`waitid`. By construction that reaper cannot observe or
+/// consume a status belonging to a PID Swift's `ChildStatusReaperRegistry` owns and never registered
+/// with it. That argument is a reasonable substitute for a spike, not a replacement for the
+/// registered measurement -- true same-process coexistence testing is named as a P6-4 prerequisite
+/// in the P6-2 results doc, section 5.
 #[test]
-fn part_b_coexistence_soak_reduced() {
+fn part_b_rust_only_soak_reduced() {
     let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // Reduced from the design's registered 10,000 cycles to a session-budget-bounded 400 --
     // named and justified in the P6-2 results doc, not silently substituted. Cycle-kind
@@ -392,8 +407,10 @@ fn part_b_coexistence_soak_reduced() {
     assert_eq!(reaper.pending_count(), 0, "zero still-pending registrations at quiesce (every entry was reaped)");
     let residual = reaper.registered_count();
     eprintln!(
-        "part_b_coexistence_soak_reduced: {residual} completed-but-unclaimed entries residual \
-         (expected: exactly the ScopeDropWithoutWait cycle count, ~1/10 of {CYCLES})"
+        "part_b_rust_only_soak_reduced: {residual} completed-but-unclaimed entries residual \
+         (expected: exactly the ScopeDropWithoutWait cycle count, ~1/10 of {CYCLES}) -- this residue \
+         is the reclamation-policy gap named in the P6-2 results doc, section 5, finding 3, not a \
+         test bug"
     );
     reaper.shutdown();
 }

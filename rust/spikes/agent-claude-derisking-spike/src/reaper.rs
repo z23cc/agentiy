@@ -257,8 +257,16 @@ impl Reaper {
     /// [`Self::registered_count`], this excludes completed-but-not-yet-[`forget`](Self::forget)ten
     /// entries -- e.g. a "scope dropped without an explicit wait" registration that the periodic
     /// sweep already self-healed but nobody has reclaimed. Zero here is the real "no leaked reap
-    /// ownership" property; `registered_count() - pending_count()` is residue this spike's harness
-    /// does not model an automatic reclaimer for (see the P6-2 results doc).
+    /// ownership" property; `registered_count() - pending_count()` is residue.
+    ///
+    /// **This residue is a genuine open design gap, not just an unmodeled harness detail.**
+    /// Contract section 5.2's orphan backstop hands an orphaned PID to the shared reaper but does
+    /// not say who reclaims the map entry afterward, and section 4.4's four-structure cap has no
+    /// slot registered for "completed-but-unclaimed reaper entries". A long-lived process that
+    /// repeatedly drops scopes without an explicit `shutdown`/`forget` (exactly the orphan-backstop
+    /// path) will grow this map without bound. P6-4 must either add a reclamation policy to the
+    /// contract (e.g. `forget`-on-reap for orphan-backstop entries with no waiter) or register this
+    /// map under section 4.4 with its own cap -- see the P6-2 results doc, section 5, finding 3.
     pub fn pending_count(&self) -> usize {
         let entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         entries
