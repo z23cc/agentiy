@@ -403,21 +403,29 @@ is unaffected since it does not depend on P6-4. Real same-process Swift/Rust rea
   warnings).
 - `make dev-lint`: green (Swift-side; unaffected by this Rust-only step).
 
-**Follow-up validation pass, after the post-landing corrections above (§2/§3/§5) landed as a second
-commit on top of the original `603b4c10`:**
+**Follow-up validation, at the final commit (`3469dbc0`), across three post-landing correction
+rounds on top of the original `603b4c10` (`bace9ce6`, `a9868525`, `3469dbc0` -- see §2/§3/§5 for
+what each round fixed):**
 
-- `cargo test -p agentry-runtime` (full crate): 339 lib tests (+6: 3 `queue.rs` regression tests, 3
-  `reaper.rs` reclamation-transition regression tests) + all integration binaries green.
-- `cargo test --workspace` (coordinated `make dev-cargo-test CARGO_PACKAGE=all`): 337 passed, 2
-  ignored, 0 failed, across every workspace crate.
-- TSan/ASan re-run on every touched file (lib `agent_claude::process::*`, `agent_claude_process_reader`,
-  `agent_claude_process_coexistence`, `agent_claude_process_coexistence_hostile`): clean except the
-  named, pre-existing, unrelated `deadlock_probe_stdin_starved_flood_reader_never_stalls` TSan flake
-  (§5), reproduced standalone against unmodified logic and left named rather than papered over.
-- `cargo run --locked -p xtask -- generate` then `-- generate --check`: zero-diff again
-  (fingerprint-only identity-file regeneration; `bindingChecksum`/`expectedExports` unchanged).
-- `make dev-cargo-archive PROFILE=debug`, `make dev-cargo-test CARGO_PACKAGE=all`,
-  `make dev-codex-schema-check` (`cargo-codegen --check`), `make dev-swift-build PRODUCT=Agentry`,
-  `make dev-lint` -- all coordinated via `./conductor`, all green (tickets `0810cdbf`, `e013b022`,
-  `1ae73105`, `fc40742f`, `898389d9`).
-- `./Scripts/guardrails.sh`: green, including the two new Rust FFI guardrail assertions above.
+- `cargo test -p agentry-runtime` (full crate): 341 lib tests (+8 over the `603b4c10` baseline: 4
+  `queue.rs` regression tests across the eviction-coalescing and byte-budget-reset fixes, 4
+  `reaper.rs` regression tests across the reclamation-transition fix and the recycled-pid signal
+  hazard) + all integration binaries green.
+- `cargo test --workspace` (coordinated `make dev-cargo-test CARGO_PACKAGE=all`, ticket `26156207`):
+  passed, 0 failed, across every workspace crate.
+- TSan/ASan re-run on every touched file after every round (lib `agent_claude::process::*`, 32
+  tests; `agent_claude_process_reader`; `agent_claude_process_coexistence`;
+  `agent_claude_process_coexistence_hostile`, including a filtered single-test run proving the
+  SIGCHLD test is order-independent): clean except the named, pre-existing, unrelated
+  `deadlock_probe_stdin_starved_flood_reader_never_stalls` TSan flake (§5), reproduced standalone
+  against unmodified logic, root cause left honestly undiagnosed rather than papered over.
+- `cargo run --locked -p xtask -- generate` then `-- generate --check`: zero-diff at every round,
+  including the final one (fingerprint-only identity-file regeneration;
+  `bindingChecksum`/`expectedExports` unchanged).
+- Coordinated `./conductor` matrix at the final commit, all green: `cargo-archive --profile debug`
+  (`ec28de97`), `cargo-test --package all` (`26156207`), `cargo-codegen --check` (`87b530fa`,
+  zero-diff), `swift-build --product Agentry` (`84412477`, only pre-existing unrelated deprecation
+  warnings), `lint` (`678ca1e8`, 0/1550 files require formatting, swiftlint clean).
+- `./Scripts/guardrails.sh`: green at every round, including the two new Rust FFI guardrail
+  assertions above.
+- Nothing in this step was pushed to any remote, per the task's own scope.
