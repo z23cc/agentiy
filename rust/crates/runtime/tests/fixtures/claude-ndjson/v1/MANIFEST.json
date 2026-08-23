@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "corpus": "claude-ndjson-v1",
+  "contractDoc": "docs/architecture/rust-agent-claude-v1.md",
+  "designDoc": "docs/designs/p6-claude-vertical-2026-08-23.md",
+  "status": "P6-1 PARTIAL. Only the synthetic/adversarial half (synthetic/) is committed. The real-traffic half is NOT YET CAPTURED and is explicitly named here as an incomplete, blocking item for P6-2's E-P6-1 gate -- do not read this manifest as satisfying E-P6-1's corpus requirement on its own. Capturing it requires launching the visible Agentry debug app and running >=20 real multi-turn Claude Code conversations against the live Anthropic API (real API spend); both require explicit end-user approval per this repo's operating norms, which has not yet been given (asked and deferred during P6-1). When approved, captured-and-redacted turns land under captured/ alongside this file, following the naming/provenance scheme below, and this manifest's status and files[] gain new captured entries -- no renaming or restructuring of the synthetic/ half is expected.",
+  "redactionContract": "Design doc section 9: capture is via the existing DEBUG raw-event log (agent_mode.claude_raw_event_logging_enabled / ..._file_path), which already records protocol.inbound.raw / protocol.outbound.raw. Before anything is committed: (1) a redaction pass replaces user prompt text, file contents, absolute paths under $HOME, and every initialize.account.* field with typed synthetic values preserving byte lengths and UTF-8 shape (the framer and recovery heuristics are length- and byte-sensitive); (2) the environment map is never captured at all; (3) a review step reads the redacted corpus end to end before staging; (4) rpce-contribution-check runs in commit mode over the staged corpus. This contract applies only to a future captured/ subdirectory -- every file below is provenance: synthetic (hand-authored, contains no captured session data, needs no redaction pass).",
+  "provenanceValues": ["synthetic", "captured-redacted"],
+  "fileFormat": "Each *.ndjson file is the raw byte stream RepoPrompt's stdout reader would see for one scenario -- newline-delimited (or, for crlf-line-ending.ndjson, CRLF-delimited) JSON records exactly as they would arrive on the wire, including intentionally malformed content. Files are fed to the framer/codec as-is, not pre-parsed.",
+  "corpusRequirementCoverage": {
+    "note": "Design section 8 E-P6-1's corpus list, split by whether a well-behaved real CLI conversation can produce the shape naturally (real-capture-only, not represented here) or not (synthesizable now, represented here).",
+    "realCaptureOnly": [
+      "plain text",
+      "thinking/reasoning deltas",
+      "tool use + tool results",
+      "system/init",
+      "result with and without errors[]",
+      "session_state_changed sequences including idle",
+      "approval can_use_tool round-trips"
+    ],
+    "synthesizedHere": [
+      "all four malformed-line recovery classes (design D-1), positive and (where distinguishable) negative",
+      ">=1 line above 1 MB",
+      "non-UTF-8 bytes",
+      "CRLF line endings"
+    ]
+  },
+  "files": [
+    {
+      "path": "synthetic/d1-concatenated-split-positive.ndjson",
+      "provenance": "synthetic",
+      "targets": "D-1 recovery heuristic 1 (concatenated-segment split), positive",
+      "description": "Two complete, well-formed JSON objects concatenated with no separator, both far under the 2 MiB recovery threshold (ClaudeNativeProcessSessionController.swift maxConcatenatedRecoveryBytes).",
+      "expectedBehavior": "Primary JSONSerialization parse fails (trailing data after the first close-brace). splitConcatenatedJSONObjectPayloads finds 2 balanced brace-depth segments; both decode independently and route as two status stream results. Raw-event kinds expected: protocol.decode.recovered, protocol.inbound.recoveredSegment (x2)."
+    },
+    {
+      "path": "synthetic/d1-concatenated-split-negative.ndjson",
+      "provenance": "synthetic",
+      "targets": "D-1 recovery heuristic 1, negative",
+      "description": "A single unterminated JSON candidate (opens a string that never closes, never returns to brace-depth 0). Deliberately under 40 characters so it cannot accidentally qualify for the plaintext-salvage heuristic either.",
+      "expectedBehavior": "splitConcatenatedJSONObjectPayloads finds 0 completed segments (guard segments.count > 1 fails at count 0); every other heuristic also declines (no embedded-type marker beyond offset 0, no embedded control char, too short for salvage). Lands on protocol.decode.skipped."
+    },
+    {
+      "path": "synthetic/d1-embedded-tail-positive.ndjson",
+      "provenance": "synthetic",
+      "targets": "D-1 recovery heuristic 2 (embedded-tail scan), positive",
+      "description": "Non-JSON garbage prefix followed by exactly one embedded well-formed type-tagged JSON object.",
+      "expectedBehavior": "The concatenated-split heuristic finds only 1 balanced segment here (not >1) and correctly declines first; recoverEmbeddedInboundTailIfNeeded then finds the type marker at a non-zero offset and recovers the trailing object. Raw-event kinds expected: protocol.inbound.recoveredTail."
+    },
+    {
+      "path": "synthetic/d1-embedded-tail-negative.ndjson",
+      "provenance": "synthetic",
+      "targets": "D-1 recovery heuristic 2, negative",
+      "description": "Pure garbage with no type marker anywhere, under 40 characters.",
+      "expectedBehavior": "jsonObjectStartOffsetsInData finds zero marker occurrences; every heuristic declines; lands on protocol.decode.skipped."
+    },
+    {
+      "path": "synthetic/d1-json-control-char-repair-embedded-lf.ndjson",
+      "provenance": "synthetic",
+      "targets": "D-1 recovery heuristic 3 (JSON string control-character repair)",
+      "description": "A raw (unescaped) 0x0A byte embedded inside a JSON string value (status field split across a literal newline). LineFramer's quote-tracking keeps this as one logical line (it only splits on 0x0A when NOT inside a JSON string), so it reaches handleLine as a single Data blob containing the literal control byte.",
+      "expectedBehavior": "IMPORTANT, traced against source rather than assumed: ClaudeSDKProtocolCodec.decodeLine has its OWN internal repair-and-retry step (parseJSONObject -> sanitizeJSONControlCharactersInStrings), which handles exactly this shape and succeeds on the FIRST call from handleLine -- before ever reaching the controller-level recoverInvalidJSONStringControlCharsIfNeeded heuristic (which is only invoked from handleLine's catch block, i.e. only when the codec's own decodeLine already threw CodecError.invalidJSON). This fixture therefore currently exercises the CODEC's built-in repair path, not the controller's separate heuristic. Both must still be byte-exact-ported per D-1, since ClaudeSDKProtocolCodec.decodeLine's own contract includes this fallback -- but this specific shape does not demonstrate the controller-level heuristic firing. OPEN QUESTION FOR P6-3: is there any real-traffic shape where the codec's own sanitize-and-retry fails (e.g. the whole blob is not valid UTF-8) while the controller's byte-level repairJSONStringControlCharacters would still succeed? Preliminary analysis in this manifest's authoring session found no such case for valid single-control-char-inside-a-string inputs (both paths require the final repaired bytes to be valid UTF-8 for JSONSerialization to accept them, so a genuinely non-UTF-8 blob fails both). P6-3's differential should either find a real distinguishing input or record that the controller-level heuristic is effectively a defense-in-depth backstop with no currently-reachable distinct trigger, rather than silently porting it as exercised when it isn't."
+    },
+    {
+      "path": "synthetic/d1-plaintext-salvage-positive.ndjson",
+      "provenance": "synthetic",
+      "targets": "D-1 recovery heuristic 4 (plaintext-assistant salvage), positive",
+      "description": "Plain prose text (not JSON): >=40 characters, >=24 Unicode letters, >=4 words of length >=4, <=8 of the symbols brace/bracket/semicolon, no tab character, does not start with an open-brace, open-bracket, period, or slash.",
+      "expectedBehavior": "recoverPlaintextAssistantDeltaIfNeeded/recoverablePlaintextAssistantFragment qualifies this line and emits it directly as a content AIStreamResult (bypassing the translator). HARNESS PRECONDITION: this heuristic is only attempted while a turn is in flight (guard turnInFlight); a P6-3 differential replaying this fixture standalone must first drive a send_user_message (or the Rust equivalent) to set that state, or this line will correctly fall through to protocol.decode.skipped instead."
+    },
+    {
+      "path": "synthetic/d1-plaintext-salvage-negative-too-short.ndjson",
+      "provenance": "synthetic",
+      "targets": "D-1 recovery heuristic 4, negative",
+      "description": "Ten characters -- fails the >=40-character floor regardless of turn-in-flight state.",
+      "expectedBehavior": "recoverablePlaintextAssistantFragment returns nil at the length guard; every heuristic declines; lands on protocol.decode.skipped."
+    },
+    {
+      "path": "synthetic/oversized-line-over-1mb.ndjson",
+      "provenance": "synthetic",
+      "targets": "E-P6-1 corpus requirement: >=1 line above 1 MB",
+      "description": "A well-formed result message (subtype success) carrying a 1,100,000-byte result text field plus a usage object. Total line size > 1 MiB, safely under the framer's 8 MiB max-line cap.",
+      "expectedBehavior": "Decodes cleanly on the first parse attempt -- no recovery heuristic involved. Emits a final_content result (the huge text) followed by the authoritative message_stop result (design section 3's turn-boundary signal). Exercises the framer's carry-buffer growth path and the codec's/translator's large-payload handling, not the recovery dispatch."
+    },
+    {
+      "path": "synthetic/non-utf8-bytes.ndjson",
+      "provenance": "synthetic",
+      "targets": "E-P6-1 corpus requirement: non-UTF-8 bytes",
+      "description": "JSON-shaped content with one lone invalid UTF-8 byte (0xFF, never a valid UTF-8 leading byte) embedded inside a string value.",
+      "expectedBehavior": "Traced against source: JSONSerialization's primary parse fails on the invalid byte. All four recovery heuristics correctly decline: concatenated-split and plaintext-salvage both require String(data:encoding:.utf8) to succeed on the whole blob, which it cannot; the embedded type marker sits at offset 0, which recoverEmbeddedInboundTailIfNeeded explicitly skips (the same parse that already failed upstream); control-char-repair requires an embedded 0x0A/0x0D, which is absent here. Lands on protocol.decode.skipped with a non-utf8 placeholder preview (the String(data:encoding:.utf8) fallback in the skip-record preview also fails)."
+    },
+    {
+      "path": "synthetic/crlf-line-ending.ndjson",
+      "provenance": "synthetic",
+      "targets": "E-P6-1 corpus requirement: CRLF line endings",
+      "description": "A well-formed line terminated by CRLF instead of LF.",
+      "expectedBehavior": "LineFramer.emitLine strips the trailing LF and then, seeing the new last byte is 0x0D, strips that too -- the decoded line has no trailing whitespace. Decodes cleanly as a status stream result. No recovery heuristic involved; exercises framer terminator-stripping specifically."
+    }
+  ]
+}

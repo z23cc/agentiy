@@ -1,2 +1,7 @@
 # Preserve upstream Sparkle distribution bytes, including upstream header whitespace.
 Vendor/Sparkle/** -whitespace
+
+# P6-1 (docs/architecture/rust-agent-claude-v1.md): this synthetic fixture's whole purpose is an
+# intentional CRLF line terminator (the byte sequence under test, not accidental trailing
+# whitespace) -- see MANIFEST.json in the same directory.
+rust/crates/runtime/tests/fixtures/claude-ndjson/v1/synthetic/crlf-line-ending.ndjson -whitespace
