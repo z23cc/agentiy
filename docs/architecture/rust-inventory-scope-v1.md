@@ -915,44 +915,49 @@ of this amendment's scope -- neither landed here.
 ground-truth reference arm (`authoritativeGlobalResultsForTesting`, kept for P4-7c's deletion gate,
 independent of any instance).
 
-The behavioral half went through one correction after initial landing. It first asserted a
-dedicated `WorkspaceSearchService.debugPathIndexConstructionCount` instance counter stayed 0 --
-but that counter had no code path left anywhere in the actor's instance-level surface that could
-ever increment it (the whole point of the b3 flip), so the assertion was `0 == 0` by construction
-and could not have failed under any regression, including one that reintroduced eager path-index
-construction. Removed in favor of the store-level diagnostic that has real (if currently unreachable
-in correct code) plumbing behind it: `WorkspaceFileContextStore.storeWorkDiagnosticsSnapshot()
-.rootCatalogShards.roots[*].pathIndexBuildCount`/`.overlayPathIndexBuildCount`, incremented
-generically by `registerPublishedRootCatalogShard` off `shard.pathSearchIndex?.buildKind` --
-every shard-publication site funnels through it, so any future code that made a shard carry a real
-path index again (through `buildAuthoritativeRootCatalogShard`'s currently-hardcoded
-`pathSearchIndex: nil`, the dead `rootsNeedingPromotion` branch, or the patch path's
-`previousShard.pathSearchIndex?.applyingPatch(...)` chain) would move it automatically, without this
-suite needing an update.
+The behavioral half took three attempts to land honestly, and the history is worth stating plainly
+rather than smoothing over. Draft 1 asserted a dedicated
+`WorkspaceSearchService.debugPathIndexConstructionCount` instance counter stayed 0 -- but that
+counter had no code path left anywhere in the actor's instance-level surface that could ever
+increment it (the whole point of the b3 flip), so the assertion was `0 == 0` by construction and
+could not have failed under any regression. Draft 2 switched to the store's `pathIndexBuildCount`/
+`overlayPathIndexBuildCount` shard diagnostics, reasoning that `registerPublishedRootCatalogShard`
+-- their one live increment site -- funnels every shard publication through it. A live test run
+disproved this: `WorkspaceSearchService`'s post-b3 production path (`searchRootQueryHandles` ->
+`authority.openSnapshot`) never touches the shard system at all (the store's own comment: "keep
+catalog publication fully lazy until a caller requests a catalog capability"), so
+`rootCatalogShards.roots` is empty throughout the gate suite's scenarios and the sum is 0 for the
+trivial reason -- vacuous again, for a different structural cause than draft 1.
 
-This is a real improvement over the removed counter but not a complete fix of the same underlying
-problem: the *only* live route left to a non-nil shard path index is a caller explicitly requesting
-the retired `.recordsAndPathIndexes` capability, and D-14 above documents that this now
-`preconditionFailure`s in `composeSearchCatalogSnapshot` *before* `registerPublishedRootCatalogShard`
-is ever reached -- so this counter, like its predecessor, cannot currently be demonstrated moving
-without crashing the process, and `WorkspaceSearchColocationGateTests` does not attempt to (a
-fixture-sanity companion in the style of `WorkspaceSearchHandleRetentionBaselineTests`' `patchCount
-> 0` guard was drafted and discarded for exactly this reason -- documented in that test file's own
-header comment). What it does provide, honestly stated: the counter's plumbing would catch the
-*shape* of regression most likely to occur -- shard-level path-index construction reintroduced
-through one of the three call sites above -- automatically and without a suite update, which the
-removed instance counter structurally could not do under any circumstance. Together with the
-mechanical guardrail (which *is* fully exercised, by grep, on every run) these discharge §4.7's
-"index accounting" and "co-location gate test" done-when items -- the mandated gate that never
-landed at P4-6b now exists, with its behavioral half's actual guarantee stated precisely rather than
-oversold.
+Draft 3, landed here, is the honest conclusion rather than a third counter: §4.7's "zero Swift
+path-index constructions" is a *structural* property post-b3, not a runtime quantity. There is no
+construction site left in the service's own code to instrument, by design -- any runtime counter
+reached for will be either definitionally unreachable (draft 1) or fed by a subsystem the service no
+longer calls (draft 2), because that is a property of the architecture, not a gap in the search for
+one. `Scripts/source_layout_guardrails.sh`'s grep is the real enforcement here, exercised on every
+invocation. `WorkspaceSearchColocationGateTests` adds, honestly: (1) correct results through every
+shape a search-driven catalog generation takes (cold rebuild, non-empty query, empty query, live
+event-driven rebuild) -- real coverage of the flipped path, not a construction check; (2)
+`discardedQueryErrorCount` (§4.6, incremented by `handleQueryInvalidation`/
+`handleQueryTransportFailure` on the live query path -- a real, live instrumentation point, unlike
+either discarded counter) stays 0 across all four shapes, distinguishing "search returned results"
+from "search silently degraded and returned results anyway"; and (3) a blunt backstop, noted rather
+than exercised: a regression that made the service request the retired `.recordsAndPathIndexes`
+capability again would `preconditionFailure` in `composeSearchCatalogSnapshot` (D-14) -- unmissable,
+if not a clean assertion. Together with the mechanical guardrail these discharge §4.7's "index
+accounting" and "co-location gate test" done-when items -- the mandated gate that never landed at
+P4-6b now exists, with its behavioral half's actual guarantee stated as what it structurally is
+rather than as a counter it never needed.
 
 ### 13.3 Drift register D-13–D-15
 
 | ID | Drift | Status |
 |---|---|---|
 | D-13 | `retentionBoundary` rate becomes sensitive to search handle retention (§4.5's hold-per-generation policy: ≤2 handles/root attributable to search). | Registered, not yet re-measured post-flip. b2's baseline (`WorkspaceSearchHandleRetentionBaselineTests`): `retentionBoundary=0` over a 39-patch edit storm on unmodified pre-flip code. §4.5's own done-when ("a behavior test asserting `retentionBoundary` occurrences... are not greater than the... baseline") is **not separately re-run against the post-flip system in this pass** -- named follow-up, tracked in `slo-v1.json`'s `p4SevenBResults.followUpConditions`. |
-| D-14 | `WorkspaceSearchCatalogAccessRequirement` keeps `.recordsAndPathIndexes` (not deleted, per §4.4's explicit option) but the capability is unreachable from any production caller; `WorkspaceSearchCatalogSnapshot.rootPathIndexes` is likewise kept, not deleted. | Implemented as the lighter of §4.4's two options -- deletion costs more (touches `WorkspaceSwitchSearchIndexDiagnostics.swift`'s switch and internal shard-capability bookkeeping that assume two cases) than it buys, since the invariant (§4.1.0) is already enforced by `makeRootPathSearchIndex`'s deletion regardless of whether the enum case exists to be requested. "Unreachable" is not merely aspirational: `composeSearchCatalogSnapshot` now `preconditionFailure`s (`shard.pathSearchIndex` is always nil post-deletion) if any caller actually requests `.recordsAndPathIndexes` -- fail loud, not silently under-deliver, mirroring §4.6's read-side fallback discipline. This crashed two of b2's own committed test files that pinned the pre-flip Swift arm by requesting `.recordsAndPathIndexes` directly (`WorkspaceSearchHandleRetentionBaselineTests`, `WorkspaceSearchRustIndexKeyDifferentialTests`) -- both updated in the b3 commit to route through `.recordsOnly` (the shard patch/retention counters these baselines measure are unaffected by the path-index requirement) and, for the ordered-candidate arm specifically, through the sanctioned DEBUG ground-truth helper `WorkspaceSearchService.authoritativeGlobalResultsForTesting` that `WorkspacePerRootPathSearchIndexTests` already used post-flip. No coverage was dropped; both suites remained green with equivalent assertions. |
+| D-14 | `WorkspaceSearchCatalogAccessRequirement` keeps `.recordsAndPathIndexes` (not deleted, per §4.4's explicit option) but the capability is unreachable from any production caller; `WorkspaceSearchCatalogSnapshot.rootPathIndexes` is likewise kept, not deleted. | Implemented as the lighter of §4.4's two options -- deletion costs more (touches `WorkspaceSwitchSearchIndexDiagnostics.swift`'s switch and internal shard-capability bookkeeping that assume two cases) than it buys, since the invariant (§4.1.0) is already enforced by `makeRootPathSearchIndex`'s deletion regardless of whether the enum case exists to be requested. "Unreachable" is not merely aspirational: `composeSearchCatalogSnapshot` now `preconditionFailure`s (`shard.pathSearchIndex` is always nil post-deletion) if any caller actually requests `.recordsAndPathIndexes` -- fail loud, not silently under-deliver, mirroring §4.6's read-side fallback discipline. This crashed two of b2's own committed test files that pinned the pre-flip Swift arm by requesting `.recordsAndPathIndexes` directly (`WorkspaceSearchHandleRetentionBaselineTests`, `WorkspaceSearchRustIndexKeyDifferentialTests`) -- both updated in the b3 commit to route through `.recordsOnly` (the shard patch/retention counters these baselines measure are unaffected by the path-index requirement) and, for the ordered-candidate arm specifically, through the sanctioned DEBUG ground-truth helper `WorkspaceSearchService.authoritativeGlobalResultsForTesting` that `WorkspacePerRootPathSearchIndexTests` already used post-flip. No coverage was dropped, but the claims are not byte-for-byte identical: the ordered-candidate
+Swift arm went from per-root `WorkspaceSearchRootPathIndex.search` + an explicit re-sort by
+`tieBreakKey` to a single global index whose internal ordering is now trusted rather than
+re-derived per root. Equivalent claims, narrower Swift arm -- both suites remained green. |
 | D-15 | The seeded-root diff-replay self-check (`WorkspacePendingSeededRootTests`) and the search-time projected shadow (`installRootSeedSearchShadow`) both read `snapshot.rootPathIndexes`, now always empty by default -- the projected-reuse-identity assertions those tests made are removed (documented in-place; §4.2.2's accepted gap). | Implemented as designed. The underlying claims (files discoverable/searchable after seeding) remain covered by the surrounding record-level assertions in the same tests, not lost -- only the *index-object*-level redundant re-check is gone. |
 
 ### 13.4 Known deferred items (named, not silent)

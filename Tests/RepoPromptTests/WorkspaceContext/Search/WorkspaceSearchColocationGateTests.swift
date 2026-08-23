@@ -8,38 +8,38 @@ import XCTest
 /// (asserts `makeRootPathSearchIndex` never returns and `WorkspaceSearchService` never constructs
 /// a Swift path index outside its DEBUG-only ground-truth helper).
 ///
-/// Distinct from "index accounting" as a *counter that exists* -- this suite is the counter
-/// actually being exercised, across every shape a search-driven catalog generation can take
-/// (cold rebuild, non-empty query, empty query, live event-driven rebuild), asserting it stays at
-/// 0 throughout. §4.7's own done-when is explicit that this is *not* "zero
-/// `fetchFileTreePageIndex` invocations" -- the page-through survives for other shard consumers
-/// (§1.2.1) -- so this suite does not assert anything about page-through call counts, only about
-/// Swift path-index *construction*.
+/// §4.7's own done-when is explicit that this is *not* "zero `fetchFileTreePageIndex`
+/// invocations" -- the page-through survives for other shard consumers (§1.2.1) -- so this suite
+/// does not assert anything about page-through call counts, only about Swift path-index
+/// *construction* during a search-driven catalog generation.
 ///
-/// The counter checked here is the store-level `pathIndexBuildCount`/`overlayPathIndexBuildCount`
-/// diagnostics (`WorkspaceFileContextStore.storeWorkDiagnosticsSnapshot()`), not a dedicated
-/// per-instance counter on `WorkspaceSearchService`. An earlier draft of this suite asserted a
-/// `WorkspaceSearchService.debugPathIndexConstructionCount` instance counter instead; that counter
-/// had no code path anywhere in the actor's instance-level surface that could ever increment it
-/// (the whole point of the b3 flip), so the assertion was `0 == 0` by construction and could not
-/// have failed under any regression -- exactly the "assertion that reads as passing while proving
-/// nothing" failure mode `WorkspaceSearchHandleRetentionBaselineTests`' own header warns against.
+/// This suite's history is worth stating plainly rather than leaving implicit, because it took
+/// three attempts to land honestly. Draft 1 asserted a dedicated
+/// `WorkspaceSearchService.debugPathIndexConstructionCount` instance counter; that counter had no
+/// code path anywhere in the actor's instance-level surface that could ever increment it, so the
+/// assertion was `0 == 0` by construction -- vacuous. Draft 2 switched to the store's
+/// `pathIndexBuildCount`/`overlayPathIndexBuildCount` shard diagnostics, reasoning that
+/// `registerPublishedRootCatalogShard` -- their one live increment site -- funnels every shard
+/// publication through it; a live test run disproved this: `WorkspaceSearchService`'s post-b3
+/// production path (`searchRootQueryHandles` -> `authority.openSnapshot`) never touches the shard
+/// system at all (the store's own comment: "keep catalog publication fully lazy until a caller
+/// requests a catalog capability"), so `rootCatalogShards.roots` is empty throughout this suite's
+/// scenarios and the sum is 0 for the trivial reason -- vacuous again, just for a different
+/// structural cause than draft 1.
 ///
-/// The store-level diagnostic is a real improvement, not a full fix of that structural problem:
-/// `registerPublishedRootCatalogShard` (every shard-publication site funnels through it) increments
-/// it generically off `shard.pathSearchIndex?.buildKind`, so *any* future code that made a shard
-/// carry a real path index again -- through `buildAuthoritativeRootCatalogShard`'s currently-
-/// hardcoded `pathSearchIndex: nil`, the dead `rootsNeedingPromotion` branch, or the patch path's
-/// `previousShard.pathSearchIndex?.applyingPatch(...)` chain -- would move it automatically, with no
-/// suite update required. It is deliberately *not* proven positively exercisable here the way
-/// `WorkspaceSearchHandleRetentionBaselineTests` proves its own fixture-sanity guard: the only route
-/// left to a non-nil shard path index is the caller explicitly requesting the retired
-/// `.recordsAndPathIndexes` capability, which now `preconditionFailure`s in `composeSearchCatalogSnapshot`
-/// before `registerPublishedRootCatalogShard` is ever reached (D-14) -- there is no way to demonstrate
-/// this counter moving without crashing the process. The guarantee this suite provides is narrower
-/// than it first appears: it pins that the *shape* of a co-location regression most likely to occur
-/// (shard-level construction reintroduced through one of those three call sites) would be caught,
-/// not that the counter's plumbing has been positively verified end-to-end.
+/// The honest conclusion, landed here as draft 3: §4.7's "zero Swift path-index constructions" is
+/// a *structural* property post-b3, not a runtime quantity -- there is no construction site left in
+/// the service's own code to instrument, by design. `Scripts/source_layout_guardrails.sh`'s grep is
+/// the actual enforcement, exercised on every invocation. What this suite adds on top, honestly:
+/// (1) correct results through every shape a search-driven catalog generation takes (cold rebuild,
+/// non-empty query, empty query, live event-driven rebuild) -- real coverage of the flipped path,
+/// not a construction check; (2) `discardedQueryErrorCount` (§4.6, incremented by
+/// `handleQueryInvalidation`/`handleQueryTransportFailure` on the live query path) stays 0 across
+/// all four shapes, distinguishing "search returned results" from "search silently degraded and
+/// returned results anyway" -- the one instrumentation point the flipped path actually has; and
+/// (3) a blunt backstop noted for the record rather than exercised here: a regression that made the
+/// service request the retired `.recordsAndPathIndexes` capability again would `preconditionFailure`
+/// in `composeSearchCatalogSnapshot` (D-14) -- unmissable, if not a clean assertion.
 final class WorkspaceSearchColocationGateTests: XCTestCase {
     private func makeTestDirectory(name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
@@ -56,16 +56,6 @@ final class WorkspaceSearchColocationGateTests: XCTestCase {
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// Sums `pathIndexBuildCount` + `overlayPathIndexBuildCount` across every root's shard
-    /// diagnostics -- the live counter a regression that reintroduced Swift path-index construction
-    /// during a search-driven catalog generation would actually move.
-    private func swiftPathIndexConstructionCount(store: WorkspaceFileContextStore) async -> Int {
-        let diagnostics = await store.storeWorkDiagnosticsSnapshot()
-        return diagnostics.rootCatalogShards.roots.reduce(0) { total, root in
-            total + root.pathIndexBuildCount + root.overlayPathIndexBuildCount
-        }
-    }
-
     func testSearchDrivenCatalogGenerationConstructsZeroSwiftPathIndexes() async throws {
         let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
         let root = try makeTestDirectory(name: "ColocationGate")
@@ -74,25 +64,25 @@ final class WorkspaceSearchColocationGateTests: XCTestCase {
         let record = try await store.loadRoot(path: root.path)
 
         let service = WorkspaceSearchService()
-        var constructionCount = await swiftPathIndexConstructionCount(store: store)
-        XCTAssertEqual(constructionCount, 0)
+        var discardedErrorCount = await service.discardedQueryErrorCount
+        XCTAssertEqual(discardedErrorCount, 0)
 
         // Cold rebuild.
         _ = await service.rebuildIndex(from: store, rootScope: .visibleWorkspace)
-        constructionCount = await swiftPathIndexConstructionCount(store: store)
-        XCTAssertEqual(constructionCount, 0, "cold rebuild must not construct a Swift path index")
+        discardedErrorCount = await service.discardedQueryErrorCount
+        XCTAssertEqual(discardedErrorCount, 0, "cold rebuild must not silently discard a query error")
 
         // Non-empty query (per-root `inventoryQuery(.indexKey)`, merged in Swift -- §4.4).
         let nonEmpty = await service.search("Alpha", limit: 10)
         XCTAssertFalse(nonEmpty.results.isEmpty)
-        constructionCount = await swiftPathIndexConstructionCount(store: store)
-        XCTAssertEqual(constructionCount, 0, "a non-empty query must not construct a Swift path index")
+        discardedErrorCount = await service.discardedQueryErrorCount
+        XCTAssertEqual(discardedErrorCount, 0, "a non-empty query must not silently discard a query error")
 
         // Empty query (per-root `inventorySnapshotPage`, merged in Swift -- §4.2.1).
         let empty = await service.search("", limit: 10)
         XCTAssertFalse(empty.results.isEmpty)
-        constructionCount = await swiftPathIndexConstructionCount(store: store)
-        XCTAssertEqual(constructionCount, 0, "an empty query must not construct a Swift path index")
+        discardedErrorCount = await service.discardedQueryErrorCount
+        XCTAssertEqual(discardedErrorCount, 0, "an empty query must not silently discard a query error")
 
         // Live, event-driven rebuild -- the shape a real search-driven catalog generation takes
         // in production (`startKeepingFresh` -> `appliedIndexEvents()` -> `scheduleRebuild` ->
@@ -108,12 +98,12 @@ final class WorkspaceSearchColocationGateTests: XCTestCase {
             reachedGeneration = await service.indexedGeneration
         }
         XCTAssertEqual(reachedGeneration, expectedGeneration, "live rebuild did not reach the target generation in time")
-        constructionCount = await swiftPathIndexConstructionCount(store: store)
-        XCTAssertEqual(constructionCount, 0, "a live, event-driven rebuild must not construct a Swift path index")
+        discardedErrorCount = await service.discardedQueryErrorCount
+        XCTAssertEqual(discardedErrorCount, 0, "a live, event-driven rebuild must not silently discard a query error")
 
         let gammaResult = await service.search("Gamma", limit: 10)
         XCTAssertEqual(gammaResult.results.map(\.standardizedRelativePath), ["Sources/Gamma.swift"])
-        constructionCount = await swiftPathIndexConstructionCount(store: store)
-        XCTAssertEqual(constructionCount, 0)
+        discardedErrorCount = await service.discardedQueryErrorCount
+        XCTAssertEqual(discardedErrorCount, 0)
     }
 }
