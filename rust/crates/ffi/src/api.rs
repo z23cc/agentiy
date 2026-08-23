@@ -1124,6 +1124,37 @@ impl CoreRuntime {
         })
     }
 
+    /// P4-6b prep-4 gap-closure: `InventoryScope::resolve_records_scope_wide`'s FFI export --
+    /// see that method's doc comment for why an id-keyed, root-less resolve exists at all. Reuses
+    /// `decode_resolve_request`/`encode_fact_block` byte-for-byte (the request/response shapes
+    /// never carried root_id in their own bytes -- it was always a separate FFI parameter, which
+    /// this export simply omits). Block-level `generation`/`root_lifetime` are meaningless across
+    /// roots and are `Some(0)`/zeroed rather than `None`, so decoders must not mistake this for
+    /// the single-root "whole-block stale" signal -- callers use only each row's own `root_id`.
+    pub fn inventory_resolve_records_scope_wide(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        bytes: Vec<u8>,
+    ) -> Result<CompactRecordBlockV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let (file_ids, folder_ids) =
+                runtime::inventory_scope::decode_resolve_request(&bytes).map_err(wire_error)?;
+            let rows = scope.resolve_records_scope_wide(&identity, &file_ids, &folder_ids)?;
+            Ok(CompactRecordBlockV1 {
+                bytes: runtime::inventory_scope::encode_fact_block(&runtime::inventory_scope::FactBlock {
+                    generation: Some(0),
+                    root_lifetime_hi: 0,
+                    root_lifetime_lo: 0,
+                    rows,
+                }),
+            })
+        })
+    }
+
     pub fn inventory_open_projected_shard(
         &self,
         request: InventoryProjectedShardRequestV1,

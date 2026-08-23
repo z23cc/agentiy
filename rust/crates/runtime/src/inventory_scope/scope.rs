@@ -1156,6 +1156,65 @@ impl InventoryScope {
         })
     }
 
+    /// P4-6b prep-4 gap-closure (contract doc §12 amendment): the P4-6a-frozen call shape for
+    /// several codemap sites (`WorkspaceFileContextStore.inventoryRecordFacts(fileIDs:folderIDs:)`)
+    /// is id-keyed with **no root known in advance** -- one site (`requestCodemapArtifactWithOwnership
+    /// (forFileID:)`) exists specifically to *discover* the owning root from the resolved record.
+    /// `resolve_records` above requires the caller to already know `root_id`, which this shape
+    /// cannot supply. Rather than push root-discovery into Swift (which would need a second,
+    /// authority-shadowing `file_id -> RootId` index -- exactly the second-source-of-truth the
+    /// charter forbids), this scope-wide variant resolves under the same single lock acquisition,
+    /// walking every currently-open root's identity maps. Each id exists in at most one root (ids
+    /// are minted per-scope, never reused across roots), so first-match-wins is unambiguous, not a
+    /// priority order a caller needs to reason about. No `expected_catalog_generation` staleness
+    /// guard: unlike a single-root read, there is no one generation number to pin against here --
+    /// each fact is computed against its own owning root's live generation. Cost is O(ids x open
+    /// roots), acceptable at this scope's expected root counts (single digits to low tens); a
+    /// future per-scope reverse index is an optimization, not a correctness requirement.
+    pub fn resolve_records_scope_wide(
+        &self,
+        identity: &RuntimeIdentity,
+        file_ids: &[crate::inventory::InventoryUuid],
+        folder_ids: &[crate::inventory::InventoryUuid],
+    ) -> Result<Vec<super::wire::FactRow>, ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            let mut file_rows: Vec<Option<super::wire::FactRow>> = vec![None; file_ids.len()];
+            let mut folder_rows: Vec<Option<super::wire::FactRow>> = vec![None; folder_ids.len()];
+            for root in state.roots.values() {
+                let rows = super::resolve::resolve_by_ids(root, file_ids, folder_ids);
+                for (index, row) in rows.into_iter().enumerate() {
+                    if !row.exists {
+                        continue;
+                    }
+                    let slot = if index < file_ids.len() {
+                        &mut file_rows[index]
+                    } else {
+                        &mut folder_rows[index - file_ids.len()]
+                    };
+                    if slot.is_none() {
+                        *slot = Some(row);
+                    }
+                }
+            }
+            let mut rows = Vec::with_capacity(file_ids.len() + folder_ids.len());
+            for (index, &id) in file_ids.iter().enumerate() {
+                let (hi, lo) = super::wire::uuid_to_words(&id);
+                rows.push(file_rows[index].take().unwrap_or_else(|| super::resolve::absent_row(hi, lo)));
+            }
+            for (index, &id) in folder_ids.iter().enumerate() {
+                let (hi, lo) = super::wire::uuid_to_words(&id);
+                rows.push(folder_rows[index].take().unwrap_or_else(|| super::resolve::absent_row(hi, lo)));
+            }
+            Ok(rows)
+        })
+    }
+
     /// `inventoryLookupPaths`: the identical fact shape, keyed by path, against the same live
     /// identity maps as `resolve_records` (see that method's doc comment). Handle-based per
     /// contract doc §5.3's read-plane listing: the `SnapshotHandleId` selects which root's live

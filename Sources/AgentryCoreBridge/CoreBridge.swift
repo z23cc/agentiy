@@ -280,6 +280,13 @@ protocol CoreRuntimeTransport: Sendable {
         expectedCatalogGeneration: UInt64?,
         bytes: Data
     ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1
+    /// P4-6b prep-4: `inventoryResolveRecordsScopeWide`'s facade completion (id-keyed, no root
+    /// known in advance -- see `InventoryScope::resolve_records_scope_wide`'s doc comment).
+    func inventoryResolveRecordsScopeWide(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1
     /// P4-6b prep slice 1: `inventoryLookupPaths`'s facade completion.
     func inventoryLookupPaths(
         identity: CoreRuntimeIdentity,
@@ -1533,6 +1540,22 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 expectedCatalogGeneration: expectedCatalogGeneration,
                 bytes: bytes
             ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryResolveRecordsScopeWide(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1 {
+        do {
+            return try runtime.inventoryResolveRecordsScopeWide(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                bytes: bytes
+            )
         } catch {
             throw Self.map(error)
         }

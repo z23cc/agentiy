@@ -206,6 +206,15 @@ actor WorkspaceInventoryScopeAuthority {
         )
     }
 
+    /// P4-6b prep-4: id-keyed, no-root-known resolve (contract doc §12 amendment) -- the primitive
+    /// `WorkspaceFileContextStore.inventoryRecordFacts(fileIDs:folderIDs:)`'s direct (non-
+    /// `appliedIndexRecordLookup`) callers need, several of which discover the owning root *from*
+    /// the resolved record rather than supplying one.
+    func resolveRecordsScopeWide(fileIDs: [UUID], folderIDs: [UUID]) async throws -> CoreInventoryRecordBlock {
+        let scope = try await requireScope()
+        return try await scope.resolveRecordsScopeWide(fileIDs: fileIDs, folderIDs: folderIDs)
+    }
+
     /// Opens a snapshot handle and immediately resolves `relativePaths` against it, closing the
     /// handle afterward -- `inventoryLookupPaths` is handle-based at the facade layer (contract
     /// doc §5.3) but every call site of this authority wants a one-shot, root-scoped lookup, so

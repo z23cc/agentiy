@@ -64,6 +64,56 @@ final class CoreInventoryScopeReadFacadeTests: XCTestCase {
         _ = try await bridge.close()
     }
 
+    // MARK: - resolveRecordsScopeWide (P4-6b prep-4 gap-closure)
+
+    /// The id-keyed, no-root-known-in-advance shape `WorkspaceFileContextStore
+    /// .inventoryRecordFacts(fileIDs:folderIDs:)`'s direct callers need: an id resolves against
+    /// whichever open root actually holds it, and its fact carries that root's id so the caller
+    /// can discover it after the fact -- proven here across two distinct roots in one scope.
+    func testResolveRecordsScopeWideFindsIdsAcrossMultipleOpenRootsAndReportsAbsent() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let scope = try await CoreInventoryScope.open(bridge: bridge)
+        let rootA = UUID()
+        let rootB = UUID()
+        let lifetimeA = try await scope.openRoot(rootID: rootA, name: "a", standardizedFullPath: "/a")
+        let lifetimeB = try await scope.openRoot(rootID: rootB, name: "b", standardizedFullPath: "/b")
+        let fileInA = UUID()
+        let fileInB = UUID()
+        let bulkA = try await scope.beginBulkLoad(rootID: rootA, rootLifetimeID: lifetimeA)
+        _ = try await scope.pushBulkChunk(
+            bulkLoadID: bulkA, rootID: rootA,
+            files: [sampleFile(id: fileInA, rootID: rootA, name: "A.swift", relativePath: "src/A.swift")], folders: []
+        )
+        _ = try await scope.commitBulkLoad(bulkLoadID: bulkA)
+        let bulkB = try await scope.beginBulkLoad(rootID: rootB, rootLifetimeID: lifetimeB)
+        _ = try await scope.pushBulkChunk(
+            bulkLoadID: bulkB, rootID: rootB,
+            files: [sampleFile(id: fileInB, rootID: rootB, name: "B.swift", relativePath: "src/B.swift")], folders: []
+        )
+        _ = try await scope.commitBulkLoad(bulkLoadID: bulkB)
+
+        let missingID = UUID()
+        let block = try await scope.resolveRecordsScopeWide(fileIDs: [fileInA, fileInB, missingID], folderIDs: [])
+        XCTAssertEqual(block.filesByID.count, 3)
+
+        let factA = try XCTUnwrap(block.filesByID[fileInA])
+        XCTAssertTrue(factA.exists)
+        XCTAssertEqual(factA.rootID, rootA)
+        XCTAssertEqual(factA.name, "A.swift")
+
+        let factB = try XCTUnwrap(block.filesByID[fileInB])
+        XCTAssertTrue(factB.exists)
+        XCTAssertEqual(factB.rootID, rootB)
+        XCTAssertEqual(factB.name, "B.swift")
+
+        let missing = try XCTUnwrap(block.filesByID[missingID])
+        XCTAssertFalse(missing.exists)
+        XCTAssertNil(missing.rootID)
+
+        await scope.close()
+        _ = try await bridge.close()
+    }
+
     /// §4.3.1's D-8 staleness check: `expectedCatalogGeneration` pinning a mismatched generation
     /// returns a whole-block-stale result (`generation == nil`, both dictionaries empty) rather
     /// than silently reading whatever the live generation currently is.

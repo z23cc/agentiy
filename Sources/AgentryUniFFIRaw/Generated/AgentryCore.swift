@@ -724,6 +724,17 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func inventoryResolveRecords(request: InventoryResolveRequestV1) throws  -> CompactRecordBlockV1
 
+    /**
+     * P4-6b prep-4 gap-closure: `InventoryScope::resolve_records_scope_wide`'s FFI export --
+     * see that method's doc comment for why an id-keyed, root-less resolve exists at all. Reuses
+     * `decode_resolve_request`/`encode_fact_block` byte-for-byte (the request/response shapes
+     * never carried root_id in their own bytes -- it was always a separate FFI parameter, which
+     * this export simply omits). Block-level `generation`/`root_lifetime` are meaningless across
+     * roots and are `Some(0)`/zeroed rather than `None`, so decoders must not mistake this for
+     * the single-root "whole-block stale" signal -- callers use only each row's own `root_id`.
+     */
+    func inventoryResolveRecordsScopeWide(identity: RuntimeIdentity, scopeId: String, bytes: Data) throws  -> CompactRecordBlockV1
+
     func inventoryScopeDiagnostics(identity: RuntimeIdentity, scopeId: String) throws  -> InventoryDiagnosticsV1
 
     func inventorySnapshotPage(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, offset: UInt64, limit: UInt64) throws  -> CompactInventoryPageV1
@@ -1162,6 +1173,27 @@ open func inventoryResolveRecords(request: InventoryResolveRequestV1)throws  -> 
     uniffi_agentry_ffi_fn_method_coreruntime_inventory_resolve_records(
             self.uniffiCloneHandle(),
         FfiConverterTypeInventoryResolveRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * P4-6b prep-4 gap-closure: `InventoryScope::resolve_records_scope_wide`'s FFI export --
+     * see that method's doc comment for why an id-keyed, root-less resolve exists at all. Reuses
+     * `decode_resolve_request`/`encode_fact_block` byte-for-byte (the request/response shapes
+     * never carried root_id in their own bytes -- it was always a separate FFI parameter, which
+     * this export simply omits). Block-level `generation`/`root_lifetime` are meaningless across
+     * roots and are `Some(0)`/zeroed rather than `None`, so decoders must not mistake this for
+     * the single-root "whole-block stale" signal -- callers use only each row's own `root_id`.
+     */
+open func inventoryResolveRecordsScopeWide(identity: RuntimeIdentity, scopeId: String, bytes: Data)throws  -> CompactRecordBlockV1  {
+    return try  FfiConverterTypeCompactRecordBlockV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_resolve_records_scope_wide(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(bytes),uniffiCallStatus
     )
 })
 }
@@ -9655,6 +9687,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_resolve_records() != 25142) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_resolve_records_scope_wide() != 35005) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_scope_diagnostics() != 13298) {

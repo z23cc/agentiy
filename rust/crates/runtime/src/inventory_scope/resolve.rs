@@ -70,7 +70,7 @@ fn fingerprint_folder(record: &InventoryFolderRecord) -> u64 {
     hasher.finish()
 }
 
-fn absent_row(key_hi: u64, key_lo: u64) -> FactRow {
+pub(super) fn absent_row(key_hi: u64, key_lo: u64) -> FactRow {
     FactRow {
         key_hi,
         key_lo,

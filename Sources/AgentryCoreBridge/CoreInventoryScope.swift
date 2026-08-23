@@ -137,6 +137,16 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
 
+    /// P4-6b prep-4: `inventoryResolveRecordsScopeWide`'s facade completion -- same
+    /// already-landed-FFI-export pattern as the others in this extension.
+    func inventoryResolveRecordsScopeWide(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
     func inventoryLookupPaths(
         identity: CoreRuntimeIdentity,
         scopeID: String,
@@ -404,6 +414,15 @@ extension AgentryCoreBridge {
                 expectedCatalogGeneration: expectedCatalogGeneration,
                 bytes: bytes
             )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryResolveRecordsScopeWide(scopeID: String, bytes: Data) throws -> AgentryUniFFIRaw.CompactRecordBlockV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryResolveRecordsScopeWide(identity: identity, scopeID: scopeID, bytes: bytes)
         } catch {
             throw mapTransportError(error)
         }
@@ -902,6 +921,38 @@ public final class CoreInventoryScope: @unchecked Sendable {
         // `resolve_by_ids`'s doc comment (`rust/crates/runtime/src/inventory_scope/resolve.rs`).
         // Correlated by position, not by decoding the row's own key words -- see
         // `CoreInventoryFactRowV1`'s doc comment.
+        var filesByID: [UUID: CoreInventoryRecordFact] = [:]
+        filesByID.reserveCapacity(fileIDs.count)
+        for (index, id) in fileIDs.enumerated() where index < block.rows.count {
+            filesByID[id] = CoreInventoryRecordFact(block.rows[index])
+        }
+        var foldersByID: [UUID: CoreInventoryRecordFact] = [:]
+        foldersByID.reserveCapacity(folderIDs.count)
+        for (index, id) in folderIDs.enumerated() {
+            let rowIndex = fileIDs.count + index
+            guard rowIndex < block.rows.count else { continue }
+            foldersByID[id] = CoreInventoryRecordFact(block.rows[rowIndex])
+        }
+        return CoreInventoryRecordBlock(
+            generation: block.generation, rootLifetimeID: block.rootLifetimeID,
+            filesByID: filesByID, foldersByID: foldersByID
+        )
+    }
+
+    /// P4-6b prep-4 gap-closure: id-keyed, root-less resolve (contract doc §12 amendment) --
+    /// see `InventoryScope::resolve_records_scope_wide`'s doc comment for why this exists
+    /// alongside `resolveRecords` rather than replacing it. Each returned fact's own `rootID`
+    /// (already part of `CoreInventoryRecordFact`) tells the caller which root it came from;
+    /// there is no single block-level generation to stale-check against across roots, so unlike
+    /// `resolveRecords` this never returns a whole-block-stale result -- absent ids are absent
+    /// facts, not staleness.
+    public func resolveRecordsScopeWide(
+        fileIDs: [UUID],
+        folderIDs: [UUID]
+    ) async throws -> CoreInventoryRecordBlock {
+        let bytes = CoreInventoryScopeWire.encodeResolveRequest(fileIDs: fileIDs, folderIDs: folderIDs)
+        let response = try await bridge.inventoryResolveRecordsScopeWide(scopeID: scopeID, bytes: bytes)
+        let block = try CoreInventoryScopeWire.decodeFactBlock(response.bytes)
         var filesByID: [UUID: CoreInventoryRecordFact] = [:]
         filesByID.reserveCapacity(fileIDs.count)
         for (index, id) in fileIDs.enumerated() where index < block.rows.count {

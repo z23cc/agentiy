@@ -110,6 +110,43 @@ fn seeded_scope(seed: u64, config: InventoryScopeConfig) -> (InventoryScope, Run
 }
 
 // ---------------------------------------------------------------------------------------------
+// P4-6b prep-4 gap-closure: `resolve_records_scope_wide` finds an id in whichever open root
+// actually holds it, without the caller knowing the root in advance -- the shape
+// `WorkspaceFileContextStore.inventoryRecordFacts(fileIDs:folderIDs:)`'s direct callers need
+// (contract doc §12 amendment; `InventoryScope::resolve_records_scope_wide`'s doc comment).
+#[test]
+fn resolve_records_scope_wide_finds_ids_across_multiple_open_roots_and_reports_absent() {
+    let (scope, identity) = seeded_scope(1, InventoryScopeConfig::default());
+    let root_a = root_id(1);
+    let root_b = root_id(2);
+    let lifetime_a = scope.open_root(&identity, root_a, "a".to_owned(), "/a".to_owned()).expect("open a");
+    let lifetime_b = scope.open_root(&identity, root_b, "b".to_owned(), "/b".to_owned()).expect("open b");
+
+    let file_in_a = file(1, root_a, "src/A.swift");
+    let file_in_b = file(2, root_b, "src/B.swift");
+    scope.apply_delta(&identity, upsert_files_command(&scope, root_a, lifetime_a, vec![file_in_a.clone()], false));
+    scope.apply_delta(&identity, upsert_files_command(&scope, root_b, lifetime_b, vec![file_in_b.clone()], false));
+
+    let missing_id = {
+        let mut id = [0u8; 16];
+        id[15] = 0xFF;
+        id
+    };
+    let rows = scope
+        .resolve_records_scope_wide(&identity, &[file_in_a.id, file_in_b.id, missing_id], &[])
+        .expect("resolve scope-wide");
+    assert_eq!(rows.len(), 3);
+    assert!(rows[0].exists);
+    assert_eq!(rows[0].root_id, Some(root_a));
+    assert_eq!(rows[0].name.as_deref(), Some("src/A.swift"));
+    assert!(rows[1].exists);
+    assert_eq!(rows[1].root_id, Some(root_b));
+    assert_eq!(rows[1].name.as_deref(), Some("src/B.swift"));
+    assert!(!rows[2].exists);
+    assert_eq!(rows[2].record_fingerprint, 0);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Fallback reason 1/8: missingReusableShard -- first delta against a root with no published
 // generation must rebuild, not patch.
 #[test]
