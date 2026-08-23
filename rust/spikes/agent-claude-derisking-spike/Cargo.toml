@@ -1,0 +1,38 @@
+[package]
+name = "agent-claude-derisking-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "P6-2 de-risking spikes for the Claude vertical (docs/architecture/rust-agent-claude-v1.md, docs/designs/p6-claude-vertical-2026-08-23.md): E-P6-1(c) host-owned-tool-name predicate differential, E-P6-2 spawn-attribute parity + reaper coexistence soak, E-P6-3 adversarial-stream harness. Throwaway de-risking code, GO/NO-GO evidence only -- NOT the P6-3/P6-4 production port. Isolated from the parent rust/ workspace, matching the inventory-scope-spike/treesitter-spike precedent."
+
+# Keep this spike isolated from the parent rust workspace, matching the
+# inventory-scope-spike/treesitter-spike precedent (own Cargo.lock, not a
+# member of rust/Cargo.toml, not touched by make dev-cargo-* or xtask codegen).
+[workspace]
+
+[lib]
+name = "agent_claude_derisking_spike"
+path = "src/lib.rs"
+
+[[bin]]
+name = "probe"
+path = "bin/probe.rs"
+
+[[bin]]
+name = "synthetic_cli"
+path = "bin/synthetic_cli.rs"
+
+[dependencies]
+# Pinned to the exact version already vetted for rust/crates/runtime (rust/Cargo.toml,
+# rust/crates/runtime/Cargo.toml) so this spike's findings transfer directly to P6-4.
+nix = { version = "=0.30.1", features = ["fs", "process", "event", "signal"] }
+libc = "0.2.189"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+debug = true

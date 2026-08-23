@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "step": "P6-2",
+  "designDoc": "docs/designs/p6-claude-vertical-2026-08-23.md",
+  "designSection": 8,
+  "contractDoc": "docs/architecture/rust-agent-claude-v1.md",
+  "sloRegistrations": "rust/benchmarks/slo-v1.json#agentClaudeV1",
+  "rustSpike": "rust/spikes/agent-claude-derisking-spike",
+  "swiftArmTests": [
+    "Tests/RepoPromptTests/AgentMode/ClaudeCompatible/HostOwnedToolNamePredicateDifferentialTests.swift",
+    "Tests/RepoPromptTests/AgentMode/ClaudeCompatible/SpawnAttributeParityTests.swift"
+  ],
+  "environment": {
+    "architecture": "aarch64",
+    "target": "aarch64-apple-darwin",
+    "rustcStable": "1.97.1",
+    "rustcNightlyUsedForSanitizers": "nightly-2026-08-15-aarch64-apple-darwin (via +nightly default resolution)",
+    "nixVersion": "=0.30.1",
+    "libcVersion": "0.2.189"
+  },
+  "eP6_1CodecTranslatorParityAndThroughput": {
+    "a_eventStreamEquality": {
+      "verdict": "BLOCKED",
+      "reason": "corpus missing all 7 realCaptureOnly content categories per MANIFEST.json's own corpusRequirementCoverage; verified by reading all 10 synthetic/*.ndjson files directly -- they exercise at most 2-3 of the 13 inbound-message-type branches in contract section 2.3, never a multi-turn sequence",
+      "noRustCodecOrTranslatorPortWritten": true
+    },
+    "b_wholeStreamThroughputRatio": {
+      "verdict": "BLOCKED",
+      "reason": "not measurable on a 10-line synthetic-only corpus; a ratio over that population is noise, not a throughput signal"
+    },
+    "c_hostOwnedToolPredicate": {
+      "verdict": "GO",
+      "fixture": "rust/spikes/agent-claude-derisking-spike/fixtures/host-owned-tool-name-cases-v1.json",
+      "caseCount": 53,
+      "expectedTrueCount": 42,
+      "expectedFalseCount": 11,
+      "aliasTableCoverage": "27/27",
+      "swiftArm": {
+        "testTarget": "HostOwnedToolNamePredicateDifferentialTests",
+        "result": "2/2 passed",
+        "ticket": "69402ff4-cd3d-4511-97f5-c69e7aa15864",
+        "execSeconds": 41.3
+      },
+      "rustArm": {
+        "testModule": "src/tool_owned.rs::tests",
+        "result": "2/2 passed"
+      },
+      "mismatches": 0
+    }
+  },
+  "eP6_2SpawnAttributeParityAndReaperCoexistenceSoak": {
+    "partA_attributeParity": {
+      "verdict": "GO",
+      "configurationsRust": 9,
+      "configurationsSwift": 8,
+      "cwdConfiguration": "deferred to P6-4 (posix_spawn_file_actions_addchdir_np has no nix 0.30.1 wrapper and no libc 0.2.189 declaration on any Apple target, confirmed by direct source read)",
+      "rustResult": "9/9 configs pass (as part of the 11-test spawn_and_reaper.rs suite)",
+      "swiftResult": "8/8 pass",
+      "swiftTicket": "8e1d015d-9ea0-4451-be1c-8ec558691e1b",
+      "swiftExecSeconds": 30.3,
+      "findings": [
+        {
+          "id": "F-POSIX_SPAWN_CLOEXEC_DEFAULT",
+          "summary": "achievable with zero unsafe via PosixSpawnFlags::from_bits_truncate, narrower than contract section 5.1/12's open question",
+          "favorability": "favorable, narrows a named open question"
+        },
+        {
+          "id": "F-waitid-apple-gap",
+          "summary": "nix::sys::wait::waitid is cfg-gated off Apple targets entirely (contract claimed it safe with zero new unsafe); libc::waitid IS declared for Apple, so the confirmed P6-4 gap is one safe wrapper function (one unsafe block), not a from-scratch extern block",
+          "favorability": "corrects a contract inaccuracy; not alarming once precisely stated"
+        }
+      ]
+    },
+    "partB_coexistenceSoak": {
+      "verdict": "GO",
+      "cyclesRegistered": 10000,
+      "cyclesRun": 400,
+      "reductionReason": "session token/wall-clock budget; stated explicitly, not silently substituted",
+      "cycleDistribution": {
+        "sigtermIgnoringEscalation": "10%",
+        "grandchildOrphan": "10%",
+        "scopeDroppedWithoutWait": "10%",
+        "normalExit": "70%"
+      },
+      "cycleFailures": 0,
+      "echildCount": 0,
+      "pendingAtQuiesce": 0,
+      "residualCompletedUnclaimedAtQuiesce": 40,
+      "residualExplanation": "exactly the scopeDroppedWithoutWait cycle count; expected by design (this spike's harness has no automatic reclaimer for that case)",
+      "sigchldHandlersInstalled": 0,
+      "waitpidNegativeOneCalls": 0,
+      "waitMyPgrpCalls": 0,
+      "tsan": {"ran": true, "clean": true, "testsPassed": "11/11", "execSeconds": 24.31},
+      "asan": {"ran": true, "clean": true, "testsPassed": "11/11", "execSeconds": 23.13},
+      "bugsFoundAndFixedDuringThisExperiment": [
+        {
+          "id": "BUG-waitid-missing-WNOHANG",
+          "summary": "waitid_probe omitted WNOHANG, causing it to block the calling thread until the target PID actually exited -- hung Reaper::register on any not-yet-exited child, and stalled the shared reaper thread's periodic sweep for every other PID",
+          "diagnosedVia": "live process observed at near-zero parent CPU with a spinning unterminated child ~4.75 minutes after test start, found via ps/lsof, not a harness-reported hang",
+          "fix": "add libc::WNOHANG to the waitid flags"
+        },
+        {
+          "id": "BUG-double-reap-race",
+          "summary": "the registration-time direct probe and the background sweep's probe could race on the same PID; the loser saw ECHILD (a same-reaper double-reap artifact, not a genuine sole-owner violation) -- caused a spurious ~25% Lost-outcome rate in the soak before the fix",
+          "fix": "per-slot reaping: AtomicBool compare-exchange guard"
+        }
+      ]
+    },
+    "r2bThreadScaling": {
+      "verdict": "GO",
+      "sizesTested": [1, 4, 16],
+      "formula": "2N + 1",
+      "reaperContributionExact": 1,
+      "syntheticReaderThreadTest": {"name": "r2b_thread_budget_scales_as_2n_plus_1", "result": "pass at N=1,4,16"},
+      "realStackTest": {
+        "name": "combined_session_scaling.rs::combined_real_sessions_thread_budget_and_zero_leaks",
+        "result": "pass at N=1,4,16",
+        "totalExecSeconds": 2.69,
+        "zeroLeaksVerified": true,
+        "zeroEchildVerified": true,
+        "zeroPendingAtQuiesceVerified": true
+      }
+    }
+  },
+  "eP6_3AdversarialStreamNoDeadlockBoundedMemory": {
+    "verdict": "GO (named subset)",
+    "stableToolchainResult": "4/4 passed, 4.25s",
+    "testsRun": [
+      "oversized_line_triggers_framer_overflow_not_a_crash",
+      "mid_line_stall_completes_without_deadlock",
+      "flood_bounded_memory_zero_terminal_loss",
+      "deadlock_probe_stdin_starved_flood_reader_never_stalls"
+    ],
+    "matrixRowsNotAttempted": [
+      "exit-without-EOF",
+      "exit-while-control-request-outstanding",
+      "interleaved control_response under flood",
+      "can_use_tool request during flood",
+      "concatenated/embedded-tail malformed lines under flood"
+    ],
+    "matrixRowsNotAttemptedReason": "require the real control-protocol shape (control_request/control_response, can_use_tool), which needs the P6-3 codec; no codec was built to service this experiment either, matching E-P6-1's scope discipline",
+    "tsan": {
+      "ran": true,
+      "result": "inconclusive",
+      "detail": "4/4 failures, all zero-bytes/zero-lines-read symptoms from the spawned synthetic_cli child under -Zbuild-std cross-target instrumentation, not a ThreadSanitizer race report; the identical invocation pattern against spawn_and_reaper.rs (also spawning real child processes) passed 11/11 clean in the same session",
+      "notChasedFurtherReason": "time-budget call; recorded as a named P6-4 follow-up rather than left unstated"
+    },
+    "d8CapDerivation": {
+      "verdict": "BLOCKED",
+      "reason": "same root cause as E-P6-1(a)/(b); observed-maximum-per-turn-transcript-size requires real turn-size distribution data this spike's adversarial synthetic volumes cannot substitute for"
+    },
+    "openQuestion1": {
+      "verdict": "answered at registered N range (1, 4, 16)",
+      "notClosedBeyondRegisteredRange": "nested agent_run fan-out at higher N remains explicit future work per the design's own framing"
+    }
+  },
+  "overallVerdict": "GO-with-E-P6-1(a)/(b)-blocked-named",
+  "followUpConditions": [
+    "E-P6-1(a)/(b) requires the real-traffic corpus capture (deferred user approval for live Agentry app launch + Anthropic API spend) before it can be scored",
+    "P6-3's own done-when is gated on the same corpus; this document does not unblock it",
+    "D-8's cap remains the contract's placeholder (8 MiB, matching the framer cap) pending real per-turn size data",
+    "get a real TSan pass on the stream-reader harness specifically once it exists as production P6-3/P6-4 code, not a spike"
+  ]
+}

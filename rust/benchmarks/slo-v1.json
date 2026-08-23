@@ -341,7 +341,7 @@
     ]
   },
   "agentClaudeV1": {
-    "status": "P6-1 contract freeze: E-P6-1/E-P6-2/E-P6-3 criteria registered per charter section 15.3 item 3 and the P4-2 pattern -- criteria fixed before any Rust codec/spawner/reaper candidate exists (P6-3/P6-4 have not started). P6-2 is the GO/NO-GO gate that runs these and records results; this block carries no measured numbers yet.",
+    "status": "P6-2 GO/NO-GO gate complete: overall verdict GO-with-E-P6-1(a)/(b)-blocked-named. E-P6-1(c), E-P6-2 (Part A/Part B/R2b), and E-P6-3 (named subset) pass their registered criteria; E-P6-1(a)/(b) is correctly reported BLOCKED (not scored pass/fail) pending the real-traffic corpus capture, per the P6-1-named gap. See p6TwoResults below and rust/benchmarks/results/v1/p6-2-claude-derisking-v1.md.",
     "contractDoc": "docs/architecture/rust-agent-claude-v1.md",
     "designDoc": "docs/designs/p6-claude-vertical-2026-08-23.md",
     "registeredBeforeCandidateExists": true,
@@ -394,9 +394,28 @@
       }
     },
     "followUpConditions": [
-      "run E-P6-1/E-P6-2/E-P6-3 at P6-2 and record pass/fail against these pre-registered criteria before P6-3 begins",
-      "if E-P6-2 fails, formally re-scope the vertical to codec-only before any further step (design section 11, P6-2 done-when)",
-      "D-8's per-turn resnapshot-buffer cap is set from E-P6-3(e) once measured; open question 1 (threads vs a Rust async reactor for readers) is answered from E-P6-3(f)"
+      "DONE at P6-2: E-P6-1/E-P6-2/E-P6-3 run and recorded pass/fail (or BLOCKED, where unscoreable) against these pre-registered criteria -- see p6TwoResults below",
+      "E-P6-2 did not fail; the codec-only re-scope condition (design section 11, P6-2 done-when) does not trigger",
+      "D-8's per-turn resnapshot-buffer cap remains the placeholder (8 MiB) -- E-P6-3(e) could not be measured from synthetic-only adversarial volumes; blocked on the same real-traffic corpus gap as E-P6-1(a)/(b). Open question 1 is answered for the registered N=1/4/16 range from E-P6-3(f)/R2b combined-stack evidence; higher-N (nested agent_run fan-out) remains named future work"
+    ]
+  },
+  "p6TwoResults": {
+    "step": "P6-2 -- De-risking experiments (GO/NO-GO gate)",
+    "decision": "GO-with-E-P6-1(a)/(b)-blocked-named",
+    "decisionNote": "E-P6-1(c), E-P6-2 Part A/Part B/R2b, and E-P6-3 (named subset) pass their registered criteria; E-P6-1(a)/(b) is BLOCKED (not scored pass/fail) pending the real-traffic corpus capture named as an incomplete item at P6-1 -- do not read this as 'all E-P6-1 criteria measured and passed'. E-P6-2 did not fail, so the vertical is not re-scoped to codec-only.",
+    "resultsJson": "rust/benchmarks/results/v1/p6-2-claude-derisking-v1.json",
+    "resultsMarkdown": "rust/benchmarks/results/v1/p6-2-claude-derisking-v1.md",
+    "spikeSource": "rust/spikes/agent-claude-derisking-spike",
+    "swiftArmTests": [
+      "Tests/RepoPromptTests/AgentMode/ClaudeCompatible/HostOwnedToolNamePredicateDifferentialTests.swift",
+      "Tests/RepoPromptTests/AgentMode/ClaudeCompatible/SpawnAttributeParityTests.swift"
+    ],
+    "followUpConditions": [
+      "capture and redact the real-traffic corpus half (design section 9) to unblock E-P6-1(a)/(b), which in turn unblocks P6-3's own done-when",
+      "P6-4: waitid needs one safe wrapper around libc::waitid (nix has no Apple-target waitid wrapper, corrected from the contract's blanket 'zero new unsafe' claim -- see rust-agent-claude-v1.md section 5.2/section 12 and the P6-2 results doc section 4)",
+      "P6-4: POSIX_SPAWN_CLOEXEC_DEFAULT is confirmed achievable via PosixSpawnFlags::from_bits_truncate with zero unsafe -- narrows the contract's open question favorably",
+      "get a real TSan pass on the stream-reader harness specifically once it is production P6-3/P6-4 code (this spike's E-P6-3 TSan attempt was inconclusive due to a build/tooling interaction, not a race finding)",
+      "D-8's cap stays the 8 MiB placeholder pending real per-turn size data from the same corpus gap"
     ]
   }
 }

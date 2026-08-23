@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "predicate": "isRepoPromptToolName",
+  "serverName": "RepoPromptCE",
+  "cases": [
+    {
+      "input": "ask_user",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "ask_user_question",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "get_file_tree",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "file_search",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "read_file",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "get_code_structure",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "apply_edits",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "file_actions",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "manage_selection",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "prompt",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "workspace_context",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "ask_oracle",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "oracle_send",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "oracle_utils",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "oracle_chat_log",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "history",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "git",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "bind_context",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "manage_workspaces",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "context_builder",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "share_thoughts",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "wait_for_next_user_instruction",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "agent_explore",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "agent_run",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "agent_manage",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "set_status",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "app_settings",
+      "expected": true,
+      "note": "exact-canonical"
+    },
+    {
+      "input": "READ_FILE",
+      "expected": true,
+      "note": "uppercase"
+    },
+    {
+      "input": "  read_file  ",
+      "expected": true,
+      "note": "whitespace-padded"
+    },
+    {
+      "input": "functions.read_file",
+      "expected": true,
+      "note": "functions-prefix"
+    },
+    {
+      "input": "functions.functions.read_file",
+      "expected": true,
+      "note": "functions-prefix-repeated-loop"
+    },
+    {
+      "input": "FUNCTIONS.FUNCTIONS.FUNCTIONS.read_file",
+      "expected": true,
+      "note": "functions-prefix-repeated-loop-uppercase"
+    },
+    {
+      "input": "mcp__RepoPromptCE__read_file",
+      "expected": true,
+      "note": "explicit-prefix-mcp-double-underscore"
+    },
+    {
+      "input": "mcp_RepoPromptCE__read_file",
+      "expected": true,
+      "note": "explicit-prefix-mcp-single-underscore"
+    },
+    {
+      "input": "RepoPromptCE__read_file",
+      "expected": true,
+      "note": "explicit-prefix-double-underscore"
+    },
+    {
+      "input": "RepoPromptCE_read_file",
+      "expected": true,
+      "note": "explicit-prefix-single-underscore"
+    },
+    {
+      "input": "REPOPROMPTCE__read_file",
+      "expected": true,
+      "note": "explicit-prefix-uppercase-server"
+    },
+    {
+      "input": "functions.mcp__RepoPromptCE__read_file",
+      "expected": true,
+      "note": "functions-then-explicit-prefix"
+    },
+    {
+      "input": "  FUNCTIONS.READ_FILE  ",
+      "expected": true,
+      "note": "whitespace-plus-functions-plus-case"
+    },
+    {
+      "input": "mcp__RepoPromptCE__mcp__RepoPromptCE__read_file",
+      "expected": false,
+      "note": "double-explicit-prefix-single-strip-only"
+    },
+    {
+      "input": "mcp__RepoPromptCE__ask_user_question",
+      "expected": true,
+      "note": "alias-merge-source-prefixed"
+    },
+    {
+      "input": "unknown_tool",
+      "expected": false,
+      "note": "unknown-plain"
+    },
+    {
+      "input": "mcp__RepoPromptCE__unknown_tool",
+      "expected": false,
+      "note": "unknown-with-explicit-prefix"
+    },
+    {
+      "input": "",
+      "expected": false,
+      "note": "empty-string"
+    },
+    {
+      "input": "   ",
+      "expected": false,
+      "note": "whitespace-only"
+    },
+    {
+      "input": "RepoPromptCE_",
+      "expected": false,
+      "note": "prefix-alone-empty-remainder"
+    },
+    {
+      "input": "repopromptce__unknown",
+      "expected": false,
+      "note": "lowercase-prefix-unknown-remainder"
+    },
+    {
+      "input": "other_server__read_file",
+      "expected": false,
+      "note": "wrong-server-prefix"
+    },
+    {
+      "input": "mcp__othertool__read_file",
+      "expected": false,
+      "note": "wrong-mcp-server-prefix"
+    },
+    {
+      "input": "promptx",
+      "expected": false,
+      "note": "near-miss-suffix"
+    },
+    {
+      "input": "git_tool",
+      "expected": false,
+      "note": "near-miss-suffix-2"
+    },
+    {
+      "input": "MCP__REPOPROMPTCE__context_builder",
+      "expected": true,
+      "note": "all-uppercase-explicit-prefix"
+    },
+    {
+      "input": "functions.mcp_RepoPromptCE__context_builder",
+      "expected": true,
+      "note": "functions-then-single-underscore-explicit-prefix"
+    }
+  ]
+}
