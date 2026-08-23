@@ -141,7 +141,13 @@ impl<C: Clock> TurnState<C> {
             clock,
             idle_fallback,
             pending_turn_ids: VecDeque::new(),
-            next_turn_id: 0,
+            // P6-6: starts at 1, not 0. `next_turn_id` doubles as the interrupt-fencing
+            // `turn_generation` (contract §4) at the scope layer, which needs an unambiguous
+            // "no turn has ever been sent" sentinel distinct from any real generation -- 0 is that
+            // sentinel. Turn-ID *values* are otherwise opaque outside this module (no test or
+            // caller depends on the sequence starting at any particular number), so this is a safe,
+            // non-behavior-changing renumbering, not a contract change.
+            next_turn_id: 1,
             pending_deferred: VecDeque::new(),
             observed_session_state_changed: false,
             turn_was_interrupted: false,

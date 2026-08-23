@@ -23,17 +23,24 @@
 //! - [`debug_shadow_ffi`] (`cfg(debug_assertions)` only) -- P6-5: the sole per-line export this
 //!   vertical ever carries, `agent_claude_decode_line_debug_v1`, absent from every release build
 //!   (INV-P6-1 §3.3).
+//! - [`event`] -- P6-6: the versioned, batched event envelope (design D-6) and the contract §7.1
+//!   event-catalog loss classification, including the `sessionStateChanged(idle)` trap.
+//! - [`scope`] -- P6-6: `AgentClaudeScope`/`ScopeRegistry`, the stateful integration object the FFI
+//!   crate's exports (this step's next commit) call into -- wires every module above into one live
+//!   session, publishing through the shared `SubscriptionHub` (contract §5.1).
 
 pub mod codec;
 pub mod control;
 pub mod debug_shadow;
 #[cfg(debug_assertions)]
 pub mod debug_shadow_ffi;
+pub mod event;
 pub mod framer;
 pub mod permission;
 pub mod process;
 pub mod recovery;
 pub mod resnapshot;
+pub mod scope;
 pub mod tool_owned;
 pub mod translator;
 pub mod turn_state;
@@ -51,6 +58,10 @@ pub use permission::{
 };
 pub use recovery::{RecoveryDiagnostic, RecoveryOutcome, recover_invalid_json_line};
 pub use resnapshot::{RESNAPSHOT_BUFFER_CAP_BYTES, ResnapshotBuffer, ResnapshotTruncated};
+pub use scope::{
+    AgentClaudeScope, AgentClaudeScopeConfig, AgentClaudeScopeDiagnostics, AgentClaudeScopeId, AgentScopeError,
+    PermissionDecisionInput, ScopeRegistry, ScopeRegistryError, StartReceipt,
+};
 pub use translator::{InvocationId, LIFECYCLE_TYPE, StreamResult, Translator, should_suppress_user_facing_stream_result};
 pub use turn_state::{TurnDiagnostic, TurnEvent, TurnState, TurnStatus};
 

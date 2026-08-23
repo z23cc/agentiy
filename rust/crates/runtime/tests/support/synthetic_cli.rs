@@ -28,6 +28,15 @@
 //!   stdin at all** -- the deadlock probe (design §8 E-P6-3): a parent write to this child's stdin
 //!   will block once the pipe buffer fills, and INV-P6-2 requires that this never stalls the
 //!   *stdout reader* thread regardless.
+//! - `scripted <script-path>` -- P6-6: an interactive `agent_claude::scope::AgentClaudeScope`
+//!   driver. A background thread reads NDJSON lines from stdin and immediately ACKs any
+//!   `control_request` (as a `control_response` success naming the same `request_id`) unless
+//!   ACKing has been disabled by the script -- this is what lets a scope-level test exercise the
+//!   real interrupt round trip without hand-rolling the protocol. The main thread executes the
+//!   script file line by line: `OUT <raw json>` writes that line verbatim to stdout (flushed);
+//!   `SLEEP <ms>` sleeps; `NOACK`/`ACK` toggle the background ACK responder (`NOACK` before an
+//!   interrupt drives the 1.5 s ACK-timeout outcome). Exiting the script (EOF) exits the process,
+//!   producing a normal stdout EOF.
 
 // Not part of `agentry-runtime`'s `src/` -- a separate binary crate root under this package's
 // `tests/support/`, outside `Scripts/rust_ffi_guardrails.py`'s two-site `agent_claude::process`
@@ -37,7 +46,9 @@
 // `SAFETY` comment at the call site.
 #![allow(unsafe_code)]
 
-use std::io::Write;
+use std::io::{BufRead, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -117,6 +128,62 @@ fn main() {
                 writeln!(stdout, r#"{{"type":"stream_event","seq":{i}}}"#).expect("write");
                 i += 1;
             }
+        }
+        "scripted" => {
+            let script_path = args.get(2).cloned().unwrap_or_default();
+            let script = std::fs::read_to_string(&script_path)
+                .unwrap_or_else(|error| panic!("failed to read scripted-mode script {script_path:?}: {error}"));
+            let ack_enabled = Arc::new(AtomicBool::new(true));
+            let ack_flag = Arc::clone(&ack_enabled);
+            // Background stdin responder: ACKs every control_request as an immediate success
+            // control_response naming the same request_id, unless the script has disabled it via
+            // `NOACK` (used to drive the 1.5 s interrupt-ACK-timeout outcome from the real scope).
+            let _responder = std::thread::spawn(move || {
+                let stdin = std::io::stdin();
+                for line in stdin.lock().lines() {
+                    let Ok(line) = line else { break };
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                    if value.get("type").and_then(|v| v.as_str()) != Some("control_request") {
+                        continue;
+                    }
+                    if !ack_flag.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let Some(request_id) = value.get("request_id").and_then(|v| v.as_str()) else { continue };
+                    let response = serde_json::json!({
+                        "type": "control_response",
+                        "response": {"subtype": "success", "request_id": request_id},
+                    });
+                    let mut out = std::io::stdout();
+                    let _ = writeln!(out, "{response}");
+                    let _ = out.flush();
+                }
+            });
+            for raw_line in script.lines() {
+                let line = raw_line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let (directive, rest) = line.split_once(' ').unwrap_or((line, ""));
+                match directive {
+                    "OUT" => {
+                        writeln!(stdout, "{rest}").expect("write scripted OUT line");
+                        stdout.flush().expect("flush");
+                    }
+                    "SLEEP" => {
+                        let ms: u64 = rest.trim().parse().unwrap_or(0);
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
+                    "NOACK" => ack_enabled.store(false, Ordering::SeqCst),
+                    "ACK" => ack_enabled.store(true, Ordering::SeqCst),
+                    other => eprintln!("scripted: ignoring unknown directive {other:?}"),
+                }
+            }
+            // Deliberately not joined: exiting the process (dropping stdin) unblocks the
+            // responder's read loop, and this binary has nothing left to do once the script ends.
         }
         other => {
             eprintln!("unknown synthetic-cli mode: {other}");
