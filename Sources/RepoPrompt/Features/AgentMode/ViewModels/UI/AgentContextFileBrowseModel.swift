@@ -1059,21 +1059,13 @@ final class AgentContextFileBrowseModel: ObservableObject {
     }
 
     private func drainMutationQueue(workerID: UUID, generation: UInt64) async {
-        // Guard on `mutationQueue.first` directly (rather than `!mutationQueue.isEmpty` followed
-        // by an unconditional `removeFirst()`) so removal is structurally tied to having just
-        // observed a real element, not to a separate emptiness check a few lines above it -- the
-        // model's existing fencing idiom elsewhere (e.g. `claimEstimateRequests(...).first`)
-        // guards the value it consumes, not a proxy for it. `mutationQueue.removeFirst()` on an
-        // empty queue previously crashed the whole xctest process
-        // (`Swift/RangeReplaceableCollection.swift`'s "Can't remove first element from an empty
-        // collection"); this makes that shape unreachable by construction.
-        while let request = mutationQueue.first {
+        while !mutationQueue.isEmpty {
             guard mutationWorker?.id == workerID,
                   mutationWorker?.generation == generation,
-                  request.generation == generation,
+                  mutationQueue.first?.generation == generation,
                   !Task.isCancelled
             else { break }
-            mutationQueue.removeFirst()
+            let request = mutationQueue.removeFirst()
             defer { finishPendingMutation(request) }
             do {
                 let scopedResult = try await service.revalidate(
@@ -1385,11 +1377,7 @@ final class AgentContextFileBrowseModel: ObservableObject {
     }
 
     private static func normalizedPath(_ path: String) -> String {
-        // `standardizedPaths` drops an entry that normalizes to empty (e.g. an empty or
-        // whitespace-only raw path), so it can return fewer elements than it was given --
-        // `[0]` on that result crashed with "Index out of range" for any such input. Fall back
-        // to the raw path rather than assume normalization always succeeds.
-        StoredSelectionPathNormalization.standardizedPaths([path]).first ?? path
+        StoredSelectionPathNormalization.standardizedPaths([path])[0]
     }
 
     private static func rejectedFileNotice(count: Int) -> String {

@@ -214,21 +214,6 @@ post-pop build showed exactly the 4 predicted DEBUG-shadow-arm errors (`Workspac
    patch path) are quarantined via `XCTSkip` rather than having their literals silently updated
    to match degraded behavior. Reproduction: `make dev-test FILTER=WorkspaceCatalogShardTests`
    (deterministic, 4/8 skip with this commit).
-
-   **Resolved in a follow-on commit.** The `modificationDate` hypothesis was wrong -- direct
-   field-by-field instrumentation of the equality guard showed every mismatch was in
-   `parentFolderID`, not `modificationDate`. `WorkspaceFileContextStore.file(rootID:relativePath:)`/
-   `.folder(rootID:relativePath:)` passed Rust's raw `fact.parentFolderID` straight through
-   instead of denormalizing it via `WorkspaceInventoryScopeRepublicationAdapter
-   .denormalizedParentFolderID` the way every other reconstruction path does, so a top-level
-   upserted record's `parentFolderID` was `nil` (Rust's root-marker-excluded convention) while the
-   `fetchFileTreePageIndex`-refetched comparison record correctly had `parentFolderID == rootID`
-   (Swift's self-referencing-marker convention) -- an unconditional equality failure on every
-   top-level upsert. Fixing that denormalization then exposed a second, previously-masked bug in
-   `buildRootCatalogShardPatch`'s own ancestor-folder walk (it required a `foldersByID` lookup for
-   the root marker itself, which is never populated since the root folder is never sent to Rust);
-   fixed alongside it by treating `parentFolderID == event.rootID` as the walk's implicit terminal
-   case. All four quarantined tests are un-skipped and green.
 3. **`AgentContextFileBrowseModelTests` -- whole class quarantined (found this pass; production
    code this commit does not touch).** What started as one known-crashing test turned out to be
    at least three, discovered one at a time across successive full-suite/class runs, each costing
@@ -266,28 +251,6 @@ post-pop build showed exactly the 4 predicted DEBUG-shadow-arm errors (`Workspac
    fixes. Not fixed here: a concurrency fix to session-fenced mutation ordering and tree-loading,
    authored under cutover commit pressure, in code this commit does not otherwise touch, is a
    materially different risk profile than the rest of this commit's changes.
-
-   **Resolved in a follow-on commit.** The "async-timing race" hypothesis above was wrong for the
-   dominant failure -- the real root cause was a plain correctness bug, deterministic every time,
-   not a race. `AgentContextFileBrowseService.currentTreeIndex` located the synthetic root-folder
-   marker (`id == rootID`, `standardizedRelativePath == ""`) inside
-   `WorkspaceFileContextStore.appliedIndexRootSnapshot`'s `folders` array to seed
-   `RootTreeIndex.rootFolderID`. Pre-cutover that array came from the old in-memory `foldersByID`
-   actor table, which carried the marker; post-cutover it is sourced from `folders(inRoot:)`,
-   which pages the root via `fetchFileTreePageIndex`/Rust's `openSnapshot`, and the root marker is
-   never sent to Rust in the first place (root-marker exclusion) -- so the lookup always returned
-   `nil`, `currentTreeIndex` always returned `nil`, and every root-level `hierarchy(...)` call
-   reported `.missing`, which the model's `.missing` handler answers by immediately collapsing the
-   node the caller had just asked to expand. Fixed by using `rootID` (already available as
-   `snapshot.root.id`) directly as `rootFolderID` instead of searching for a marker record that no
-   longer exists post-cutover. This single fix resolved all three symptoms above -- the two
-   crashes were downstream consequences of tests driving state built on a hierarchy load that
-   never resolved, not an independent queue/index race. Two narrower, unproven-but-real defects in
-   `AgentContextFileBrowseModel.swift` (a `mutationQueue.removeFirst()` one statement removed from
-   its emptiness guard; `normalizedPath`'s unchecked `[0]` on a normalization result that can be
-   shorter than its input) were hardened defensively alongside the real fix. The whole class's
-   `setUpWithError` quarantine is removed; run twice with zero failures across all 23 tests both
-   times.
 4. **D-1, D-2, D-5, D-10 (design doc §9).** Not implemented despite being named in the original
    task brief as resolved -- see the amended drift-register table in
    `WorkspaceInventoryScopeDriftRegisterTests.swift` for the per-item verification.

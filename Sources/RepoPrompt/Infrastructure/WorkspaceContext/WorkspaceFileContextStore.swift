@@ -11317,19 +11317,6 @@ actor WorkspaceFileContextStore {
     // D-13 (see `inventoryRecordFacts`'s doc comment for the full reasoning): the fact wire
     // carries only standardized paths, so the reconstructed record's raw `.relativePath`/
     // `.fullPath` hold the standardized string, not the true original raw string.
-    //
-    // P4-6b item 1 fix (`docs/architecture/rust-inventory-scope-v1.md` §12.3): `fact.parentFolderID`
-    // is Rust's convention (root-marker excluded -- a top-level item's parent is genuinely `nil`
-    // there, per the contract doc §4's "instance-identity" note and the republication adapter's own
-    // `denormalizedParentFolderID` doc comment). Swift's own record convention self-references the
-    // root (`parentFolderID == rootID`) for a top-level item instead. Passing `fact.parentFolderID`
-    // straight through (as this used to) silently produced a record whose `parentFolderID` disagreed
-    // with the same file/folder's Rust-round-tripped reconstruction elsewhere (e.g.
-    // `WorkspaceInventoryScopeRepublicationAdapter.workspaceFileRecord(_:)`, which does denormalize),
-    // making `buildRootCatalogShardPatch`'s upserted-record equality guard
-    // (`WorkspaceInventoryCatalogBuilders.swift`) fail on every top-level upsert and fall back to
-    // `.patchApplicationBackstop` -- not a `modificationDate` round-trip precision loss, the leading
-    // hypothesis recorded when this was quarantined turned out to be wrong.
     func file(rootID: UUID, relativePath: String) async -> WorkspaceFileRecord? {
         guard let authority = try? await inventoryScopeAuthorityInstance(),
               let result = try? await authority.lookupPaths(rootID: rootID, relativePaths: [StandardizedPath.relative(relativePath)]),
@@ -11341,10 +11328,7 @@ actor WorkspaceFileContextStore {
         return WorkspaceFileRecord(
             id: fileID, rootID: factRootID, name: name,
             relativePath: stdRel, fullPath: stdFull,
-            parentFolderID: WorkspaceInventoryScopeRepublicationAdapter.denormalizedParentFolderID(
-                fact.parentFolderID, rootID: factRootID
-            ),
-            modificationDate: fact.modificationDate
+            parentFolderID: fact.parentFolderID, modificationDate: fact.modificationDate
         )
     }
 
@@ -11359,10 +11343,7 @@ actor WorkspaceFileContextStore {
         return WorkspaceFolderRecord(
             id: folderID, rootID: factRootID, name: name,
             relativePath: stdRel, fullPath: stdFull,
-            parentFolderID: WorkspaceInventoryScopeRepublicationAdapter.denormalizedParentFolderID(
-                fact.parentFolderID, rootID: factRootID
-            ),
-            modificationDate: fact.modificationDate
+            parentFolderID: fact.parentFolderID, modificationDate: fact.modificationDate
         )
     }
 

@@ -458,29 +458,14 @@ actor AgentContextFileBrowseService {
             return cached
         }
 
-        // P4-6b regression fix: this used to find the synthetic root-folder marker
-        // (`id == rootID`, `standardizedRelativePath == ""`) inside `snapshot.folders` and use
-        // *its* id as `rootFolderID`. Pre-cutover, `snapshot.folders` (`WorkspaceFileContextStore
-        // .folders(inRoot:)`) was read from the old in-memory `foldersByID` actor table, which did
-        // carry that marker. Post-cutover, `folders(inRoot:)` pages the root via
-        // `fetchFileTreePageIndex`/Rust's `openSnapshot`, and the root marker is never sent to
-        // Rust in the first place (root-marker exclusion, `WorkspaceFileContextStore
-        // .fetchFileTreePageIndex`'s doc comment) -- so `snapshot.folders` never contains it
-        // anymore, `first(where:)` always returned `nil`, and every root-level `hierarchy(...)`
-        // call reported `.missing`, permanently collapsing the node the caller just expanded
-        // (`AgentContextFileBrowseModel.requestHierarchy`'s `.missing` case). `snapshot.root.id`
-        // already equals `rootID` (`WorkspaceFileContextStore.appliedIndexRootSnapshot` builds it
-        // from `rootStatesByID[rootID]?.root`) and top-level folders/files already carry
-        // `parentFolderID == rootID` as their self-referencing marker (the same convention
-        // `WorkspaceInventoryScopeRepublicationAdapter.denormalizedParentFolderID` restores), so
-        // `rootID` itself is the correct `rootFolderID` -- no lookup into `snapshot.folders` needed.
         guard let snapshot = await store.appliedIndexRootSnapshot(rootID: rootID),
-              snapshot.root.standardizedFullPath == allowedRoot.standardizedFullPath
+              snapshot.root.standardizedFullPath == allowedRoot.standardizedFullPath,
+              let rootFolder = snapshot.folders.first(where: { $0.standardizedRelativePath.isEmpty })
         else {
             treeIndexesByRootID.removeValue(forKey: rootID)
             return nil
         }
-        let index = Self.makeTreeIndex(snapshot: snapshot, rootFolderID: rootID)
+        let index = Self.makeTreeIndex(snapshot: snapshot, rootFolderID: rootFolder.id)
         treeIndexesByRootID[rootID] = index
         return index
     }
