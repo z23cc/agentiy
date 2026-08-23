@@ -14,7 +14,15 @@ agentry-proto.workspace = true
 # TD-2 (textdecode): docs/designs/textdecode-policy-v2-2026-08-22.md §4.2/§4.4.
 chardetng.workspace = true
 encoding_rs.workspace = true
-nix = { workspace = true, features = ["fs"] }
+# P6-1 (docs/architecture/rust-agent-claude-v1.md §5.1/§5.2/§12): `process`/`event`/`signal` are
+# pinned ahead of P6-4's spawner/reaper implementation -- feature flags on this already-audited,
+# already-pinned crate, not a new dependency. `process` gates `nix::spawn` (posix_spawn/posix_spawnp,
+# PosixSpawnAttr, PosixSpawnFileActions) and `nix::sys::wait` (waitpid/waitid); `event` gates
+# `nix::sys::event` (kqueue/kevent, EVFILT_PROC/EVFILT_TIMER); `signal` gates `nix::sys::signal::SigSet`
+# for the spawnattr sigmask/sigdefault arguments. Confirmed gap (not covered by any of these features):
+# `posix_spawn_file_actions_addchdir_np` has no `nix` wrapper and is absent from `libc` 0.2.189 on every
+# Apple target -- P6-4 needs one hand-declared `extern "C"` binding for it, unconditionally.
+nix = { workspace = true, features = ["fs", "process", "event", "signal"] }
 pcre2.workspace = true
 # P4-4: `inventory_scope::wire::fingerprint()` hashes the `inventory-scope-v1` schema descriptor
 # with a fixed, portable algorithm so the Swift mirror can independently reproduce it (a

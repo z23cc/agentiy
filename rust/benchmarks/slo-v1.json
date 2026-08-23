@@ -339,5 +339,64 @@
       "measure real FFI-dispatch tax through the bridge and re-derive D-1's N (P4-2 condition 3, still open)",
       "add a Swift-side memory-footprint probe alongside the P4-6b peak-RSS re-run (P4-2 condition 2)"
     ]
+  },
+  "agentClaudeV1": {
+    "status": "P6-1 contract freeze: E-P6-1/E-P6-2/E-P6-3 criteria registered per charter section 15.3 item 3 and the P4-2 pattern -- criteria fixed before any Rust codec/spawner/reaper candidate exists (P6-3/P6-4 have not started). P6-2 is the GO/NO-GO gate that runs these and records results; this block carries no measured numbers yet.",
+    "contractDoc": "docs/architecture/rust-agent-claude-v1.md",
+    "designDoc": "docs/designs/p6-claude-vertical-2026-08-23.md",
+    "registeredBeforeCandidateExists": true,
+    "mustCompleteBeforeStep": "P6-3 (codec/translator/framer, cargo-only)",
+    "experiments": {
+      "eP6_1CodecTranslatorParityAndThroughput": {
+        "description": "kill criterion for porting the codec at all -- design section 8, E-P6-1. Corpus: frozen NDJSON corpus, >= 20 real turns spanning plain text, thinking/reasoning deltas, tool use + tool results, system/init, result with and without errors[], session_state_changed sequences including idle, approval can_use_tool round-trips, all four malformed-line recovery classes (design D-1), >= 1 line above 1 MB, non-UTF-8 bytes, CRLF.",
+        "referenceArm": "Swift package translator (RepoPromptClaudeCompatibleProvider), driven line-by-line as the controller drives it today, producing serialized ClaudeProviderStreamResult values",
+        "candidateArm": "Rust pipeline driven whole-stream (bytes in, event batch out) -- never per line; a per-line measurement would gate on the boundary tax INV-P6-1 forbids from existing (the P1 measurement-symmetry rule)",
+        "pass": {
+          "a": "100% event-stream equality on the corpus -- same ordered events, same fields, same suppression decisions (design D-2), same recovered segments (design D-1)",
+          "b": {
+            "wallMaximumReferenceRatio": 1.1,
+            "allocationsMaximumReferenceRatio": 1.25,
+            "note": "whole-stream wall/allocations vs the Swift arm, at the same product-visible work"
+          },
+          "c": "the host-owned-tool-error predicate (rust-agent-claude-v1.md section 8) agrees with MCPIntegrationHelper.isRepoPromptToolName across the full alias table plus prefixed/normalized/functions.-prefixed adversarial forms"
+        },
+        "fail": "any event-stream mismatch not explainable as a registered drift item (D-1 through D-9), or (b) missed after one round of profiling -- either returns the design to review: the codec stays in the Swift package and the vertical reduces to process supervision only"
+      },
+      "eP6_2SpawnAttributeParityAndReaperCoexistenceSoak": {
+        "description": "the R2/R2b gate -- design section 8, E-P6-2. Two parts, both required.",
+        "partA_attributeParity": {
+          "method": "a tiny C/Rust probe child reports its own getpgid(0), sigprocmask, SIGPIPE disposition, open-FD set with FD_CLOEXEC flags, and getcwd; launched via Swift ProcessLauncher.spawn and via the Rust spawner with identical inputs; diff the reports",
+          "pass": "byte-identical reports across >= 8 configurations (with/without cwd, with/without inherited env keys, deep argv, argv with spaces/UTF-8, missing binary, non-executable binary, binary that execs a shell that forks a grandchild, binary that ignores SIGTERM)"
+        },
+        "partB_coexistenceSoak": {
+          "method": "in one process, run Rust-supervised children and Swift-supervised children (ProcessTermination-owned) concurrently: 10,000 randomized cycles of spawn / normal-exit / interrupt / SIGTERM-ignoring-child / SIGKILL-escalation / grandchild-orphan / scope-drop-without-shutdown / runtime-identity swap",
+          "pass": "zero ECHILD on either side's targeted waitpid; zero zombies at quiesce; zero surviving process groups; exit statuses correctly attributed on both sides; zero SIGCHLD handlers installed (asserted via sigaction(SIGCHLD, NULL, &old)); no unbounded thread or FD growth; clean under TSan and ASan"
+        },
+        "partB_threadScalingR2b": {
+          "description": "absolute count, not a leak check -- a per-child reap thread would show up here as 3N and would still pass every other E-P6-2 criterion, which is the whole point of measuring it",
+          "sizes": [1, 4, 16],
+          "maximumTotalThreadsFormula": "2N + 1",
+          "reaperThreadContributionExact": 1
+        },
+        "fail": "any status mis-attribution or any surviving group -- a failure means process supervision does not move in this vertical, and P6 reduces to the codec plus an unchanged Swift transport (still-shippable, smaller vertical); this is why E-P6-2 runs before P6-3, not after"
+      },
+      "eP6_3AdversarialStreamNoDeadlockBoundedMemory": {
+        "description": "the R3 gate and the instrument retiring the FileHandleChunkChannel hazard -- design section 8, E-P6-3. A synthetic CLI stands in for claude, driven through: max-rate flood (>= 100 MB/s well-formed NDJSON); a single line exceeding the 8 MiB framer cap; a line that stalls mid-object for 30s; stdout closed while stdin writes are pending; exit without EOF; exit while a control request is outstanding; interleaved control_response under flood; a can_use_tool request issued during flood; concatenated/embedded-tail malformed lines under flood; and the deadlock probe -- a child that stops reading its stdin while continuing to write stdout at max rate, with the parent concurrently issuing an interrupt.",
+        "pass": {
+          "a": "no deadlock -- the interrupt is acknowledged or times out within its 1.5s deadline in every case, and the reader thread is never observed blocked on a write or on a response",
+          "b": "peak RSS attributable to the session stays below (framer carry + event queue + resnapshot buffer + per-thread stack reservation, counted explicitly per the 2N+1 E-P6-2 thread budget) + 32 MiB slack",
+          "c": "zero terminal-class events dropped across the whole matrix (turnCompleted, approvalRequest, interruptOutcome)",
+          "d": "every induced gap is followed by a successful resnapshot with no transcript corruption",
+          "e": "the observed maximum per-turn transcript size is recorded and D-8's per-turn resnapshot-buffer cap is set to >= 4x it",
+          "f": "clean under TSan; zero FD/thread leaks after 1,000 sessions"
+        },
+        "fail": "any deadlock, any dropped terminal event, or memory exceeding the declared bound -- returns INV-P6-2 to review"
+      }
+    },
+    "followUpConditions": [
+      "run E-P6-1/E-P6-2/E-P6-3 at P6-2 and record pass/fail against these pre-registered criteria before P6-3 begins",
+      "if E-P6-2 fails, formally re-scope the vertical to codec-only before any further step (design section 11, P6-2 done-when)",
+      "D-8's per-turn resnapshot-buffer cap is set from E-P6-3(e) once measured; open question 1 (threads vs a Rust async reactor for readers) is answered from E-P6-3(f)"
+    ]
   }
 }
