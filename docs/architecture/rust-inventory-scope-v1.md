@@ -972,6 +972,118 @@ concurrent session is landing commits into the same tree and the basic-crawl can
 reasons this session did not introduce and has not root-caused. Reported to the user rather than
 run to a false green.
 
+### 12.5b Amendment — session continuation: all residuals fixed, build-fingerprint drift named
+
+Resumed after §12.5a's STOP, tree confirmed quiet at the prior session's end (`a18c07ac`) with full
+domain ownership including `rust/` for this continuation.
+
+**Step 1 finding: the crawl regression was never a real bug.** `make dev-cargo-archive` alone
+regenerates the Rust archive's *runtime* fingerprint but not the checked-in Swift constant
+(`Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift`) or
+`rust/ffi-contract/generated-manifest.json` -- those are written only by the separate
+`cargo run -p xtask -- generate` step. `CoreBridge.initialize()` fail-closes
+(`CoreBridgeError.incompatibleBindings`, `invalidate()`) on any handshake mismatch between the two,
+and `WorkspaceFileContextStore`'s discovery choke points (`indexFile`/`indexFolder`) swallow that
+failure via `try? await inventoryScopeAuthorityInstance()` -- so a fingerprint mismatch presents as
+a silently empty crawl, indistinguishable from a real regression without instrumentation. Worse:
+the fingerprint is not byte-reproducible across machines from identical committed `rust/` source
+(confirmed directly -- `xtask generate --check` failed against the committed identity file on this
+machine even after reverting the suspected `nix` feature-flag commit, and `xtask generate` itself
+produced a *third*, still-different DEBUG fingerprint each time it was rerun against unchanged
+source). `bindingChecksum` (the ABI-surface hash) stayed constant throughout; only `buildFingerprint`
+moved, consistent with it incorporating something machine/build-path-specific rather than pure
+source content. This is a real, named environment-portability gap in the generated-identity scheme
+itself -- worth a follow-up on its own, out of this session's scope to redesign -- but the immediate
+unblock is exactly the protocol already in place: `cargo run -p xtask -- generate` (not `archive`
+alone) before trusting any test run that touches the workspace-context/inventory-scope surface,
+especially after any `rust/` commit lands. Running it here resynced both generated files to this
+machine and the crawl canary (`testRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths`) went
+green immediately, with no production code changed. `AgentryCoreBindingIdentity.swift` and
+`rust/ffi-contract/generated-manifest.json` ride this session's commit per protocol.
+
+**Doc-literal OI-1, root-caused and fixed.**
+`testEnsureIndexedFilesUsesOneSelectiveInvalidationCycle`: `ensureIndexedFiles(paths:)` calls
+`indexFile(relativePath:root:)` once per eligible file in a loop; `indexFile` itself unconditionally
+fires its own `invalidatePathMatchSnapshot` at the end of its body. Called outside a publication-
+invalidation batch (unlike the file-system-watcher path, `applyPreparedIndexDeltaMutations`, which
+already wraps its own `indexFile`/`indexFolder` loop in one), each of those per-file invalidations
+fired immediately and independently, on top of `ensureIndexedFiles`'s own explicit
+`.explicitMaterialization`-reasoned call after the loop -- multiplying one logically-batched request
+into several immediate invalidations (5 observed for 2 files) instead of the one callers reasonably
+expect. A second, compounding defect in the shared mechanism: `PublicationInvalidationBatch`'s
+nested-call branch hardcoded `.insert(.fileSystemPublication)` regardless of the reason actually
+passed, which happened to match `applyPreparedIndexDeltaMutations`'s own scenario (so that path's
+tests never caught it) but would have silently mislabeled any other batch's reason too.
+
+Fix (this session): `PublicationInvalidationBatch` now takes its reason once at construction
+(default `.fileSystemPublication`, preserving the watcher path's existing behavior unchanged);
+nested `invalidatePathMatchSnapshot` calls while a batch is active only broaden the affected
+roots/kinds and flag the batch dirty, they no longer touch `reasons` at all. `ensureIndexedFiles`
+now opens its own batch (`PublicationInvalidationBatch(reason: .explicitMaterialization)`) around
+its `indexFile` loop and finalizes it once via `finalizePublicationInvalidations`, exactly mirroring
+`applyPreparedIndexDeltaMutations`'s existing pattern. `WorkspaceFileContextStoreTests` (135 tests,
+including both this case and the watcher-path case that pins `["file_system_publication"]`) --
+135/135 green.
+
+**Doc-literal OI-2 first half, root-caused and fixed.**
+`testWorkspaceFileMutationServiceCreatesReadsAndOverwritesThroughStore`'s `resolveCreationPath`
+nil result traced to `fetchFileTreePageIndex(rootID:)`: a root that has never had a single discovery
+event applied (e.g. a genuinely empty freshly-loaded directory -- `loadRoot`'s crawl found nothing
+to index, so no `applyDeltaDiscovery` call ever ran for it) never reaches whatever readiness
+threshold `authority.openSnapshot(rootID:)` gates on Rust's side; the open throws, and every caller
+of this function (`files(inRoot:)`, `folders(inRoot:)` -- including its own root-marker synthesis
+via `rootFolderRecord(rootID:)`, `buildStaticSnapshot`, `descendantFiles`) silently returned nothing
+at all, indistinguishable from "unknown root". Confirmed directly: `files(inRoot:)`/`folders(inRoot:)`
+both returned `[]` (not even the locally-synthesized root marker) for a freshly-loaded, genuinely
+empty root, while the identical scenario with one pre-existing file worked correctly throughout.
+
+Fix: `fetchFileTreePageIndex` now checks `rootStatesByID[rootID] != nil` first (a currently-loaded
+root is never truly unknown) and, when `openSnapshot` fails for such a root, returns an empty
+`FileTreePageIndex` rather than `nil` -- `nil` stays reserved for a root this store does not know
+about at all. This let `folders(inRoot:)`'s existing root-marker synthesis run as designed even
+when Rust's snapshot open fails for an empty root.
+
+**ExactCapability cascade member, root-caused and fixed (a real, deterministic bug -- not the flake
+it first appeared to be).** `WorkspaceFileContextStoreExactCapabilityTests
+.testContextBuilderExactCandidateResolvesOnlyAuthorizedWorktreeContent` looked timing-sensitive
+across early probes (passed with extra diagnostic `await`s inserted, failed without) purely because
+of §12.5a's build-fingerprint noise still contaminating those runs -- once isolated with a
+instrumented, targeted probe against a clean build, the failure was 100% deterministic and had
+nothing to do with timing. Root cause: `descendantFiles(in:)` resolves its owning root by asking
+Rust's scope-wide id fact lookup (`resolveRecordsScopeWide`) which root a given folder id belongs
+to -- but a root's own self-referencing marker folder (`id == rootID`) is deliberately never sent to
+Rust (root-marker exclusion, the same convention `rootFolderRecord(rootID:)` and §12.5's Item 0 fix
+both document). `fact.exists` was therefore always `false` for that id, and every root-level
+folder-expansion call (`resolveContextBuilderSelectionCandidate`'s `selectsAuthorizedRoot` branch,
+and any other caller expanding the root folder itself) unconditionally returned an empty descendant
+set -- confirmed directly: `scopeWideFact.foldersByID[authRootID] == (record: nil, exists: false)`
+while `files(inRoot:)` for the same root correctly listed both files.
+
+Fix: `descendantFiles(in:)` now checks `rootStatesByID[folderID] != nil` first -- a folder id that
+matches a currently-loaded root's own id IS that root's marker, and the owning root is already known
+without a Rust round trip that structurally cannot succeed for it. Falls through to the existing
+scope-wide lookup for every other (real, Rust-registered) folder id, unchanged.
+`WorkspaceFileContextStoreExactCapabilityTests` -- 5/5 green across 5 independent repeated runs (0
+failures each), where it had failed 100% deterministically before.
+
+**Validation (this session, quiet tree, `xtask generate`-synced build).**
+
+- `FILTER=StoreBackedWorkspaceSearch` -- 9/9 green (task's OI-1 suite; confirms no regression).
+- `FILTER=GitWorktreeCreationReceiptTests` -- 34/34 green.
+- `FILTER=AgentRunWorktreeStartTests` -- 53/53 green.
+- `FILTER=WorkspaceFileContextStoreTests` -- 135/135 green (both doc-literal residuals fixed).
+- `FILTER=WorkspaceFileContextStoreExactCapabilityTests` -- 5/5 green, 5 repeated runs.
+- `make dev-cargo-codegen-check` -- clean (`xtask generate --check`).
+- `make dev-cargo-test CARGO_PACKAGE=all` -- `cargo test --workspace` green.
+- `make dev-lint` -- clean (SwiftFormat 0/1547 files need formatting; SwiftLint strict clean).
+- `make guardrails` -- clean.
+- Full unfiltered `make dev-test` -- run and babysat to completion below.
+
+All four items this session's task named (task-OI-1 discharged pre-session per §12.5a, task-OI-2
+fixed per §12.5a's `3727661b`, plus the two doc-literal §12.5 residuals and the ExactCapability
+cascade member fixed in this continuation) are closed. No `rust/` production source changed --
+only the generated identity/manifest files, resynced via protocol.
+
 ## 13. Amendment: P4-7b — the search facade cutover (b1–b4)
 
 Promotion of the decided items per design doc `p4-7-pathsearch-production-cutover-v2-2026-08-23.md`
