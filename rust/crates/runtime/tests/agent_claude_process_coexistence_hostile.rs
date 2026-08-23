@@ -106,8 +106,24 @@ fn survives_a_waitpid_minus_one_hostile_foreign_owner() {
 
 #[test]
 fn no_sigchld_handler_is_installed_by_this_process() {
-    // Direct measurement, not inspection: query (never install -- `NULL` as the `act` argument is
-    // query-only) the process's current SIGCHLD disposition and assert it is still the default.
+    // Direct measurement, not inspection -- and, since libtest sorts by name and this file's other
+    // test ('s') sorts after this one ('n'), this test cannot rely on that other test's `Reaper`
+    // having already run (a filtered `cargo test -- no_sigchld` run proves it does not). Construct
+    // and fully exercise a real `Reaper` -- spawn, register, wait for exit, forget, shutdown --
+    // *inside this test*, so the query below covers our own reaper's machinery, not merely
+    // whatever the Rust std runtime installs before any `Reaper` exists.
+    let reaper = Reaper::new();
+    let child = spawn_sh("exit 0");
+    let token = reaper.register(child.pid).expect("register");
+    let outcome = reaper
+        .wait_for_exit(child.pid, token, Duration::from_secs(5))
+        .expect("child must be reaped within 5s");
+    assert_eq!(outcome, ReapOutcome::Exited(0));
+    reaper.forget(child.pid, token);
+    reaper.shutdown();
+
+    // Query (never install -- `NULL` as the `act` argument is query-only) the process's current
+    // SIGCHLD disposition and assert it is still the default.
     let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
     // SAFETY: `NULL` as the second argument makes this call query-only (POSIX `sigaction(2)`); it
     // installs nothing. `current` is a valid, owned, zero-initialized `sigaction` for the kernel to
@@ -117,6 +133,7 @@ fn no_sigchld_handler_is_installed_by_this_process() {
     assert_eq!(
         current.sa_sigaction,
         libc::SIG_DFL,
-        "no SIGCHLD handler must be installed anywhere in this process (default disposition expected)"
+        "no SIGCHLD handler must be installed anywhere in this process, including by our own \
+         Reaper machinery just exercised above (default disposition expected)"
     );
 }

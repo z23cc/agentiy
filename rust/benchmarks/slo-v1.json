@@ -426,7 +426,7 @@
     "resultsMarkdown": "rust/benchmarks/results/v1/p6-4-process-supervisor-v1.md",
     "productionSource": "rust/crates/runtime/src/agent_claude/process/",
     "discharges": {
-      "reaperReclamationPolicy": "p6TwoResults.followUpConditions item 3 -- provenance-typed registration (register vs register_orphan), not a time-based grace period; corrected post-landing to add reassign_as_orphan/terminate_and_orphan, the in-place transition the actual owned-at-spawn-time ScopeDropWithoutWait shape needs; see results doc section 2",
+      "reaperReclamationPolicy": "p6TwoResults.followUpConditions item 3 -- provenance-typed registration (register vs register_orphan), not a time-based grace period; corrected post-landing to add reassign_as_orphan/terminate_and_orphan, the in-place transition the actual owned-at-spawn-time ScopeDropWithoutWait shape needs, with reassign_as_orphan reporting whether the child was already reaped so terminate_and_orphan never signals a possibly-recycled pid; see results doc section 2",
       "waitidUnsafeWrapper": "p6TwoResults.followUpConditions item 2 -- landed as reaper.rs::waitid_probe, the crate's second #[allow(unsafe_code)] site alongside addchdir; see results doc section 4",
       "addchdirNp": "confirmed P6-4 prerequisite from contract section 5.2/section 12 -- landed as agent_claude::process::addchdir; see results doc section 4",
       "coexistenceTesting": "p6TwoResults.followUpConditions item 4 -- Arm A (two independent Reaper instances, a cheap regression net, explicitly not R2 evidence) plus Arm B (adversarial waitpid(-1) foreign owner, the load-bearing measurement, plus a direct sigaction(SIGCHLD, NULL, ...) measurement added post-landing); see results doc section 3",
@@ -464,7 +464,7 @@
       },
       "noSigchldHandlerInstalled": {
         "status": "measured",
-        "note": "corrected post-landing from an inspected claim (the same structural-argument substitution this prerequisite exists to eliminate) to a direct measurement: no_sigchld_handler_is_installed_by_this_process calls sigaction(SIGCHLD, NULL, &old) in Arm B's binary and asserts SIG_DFL; Arm B's hostile thread itself uses waitpid(-1) polling, not a signal handler"
+        "note": "corrected post-landing from an inspected claim (the same structural-argument substitution this prerequisite exists to eliminate) to a direct measurement: no_sigchld_handler_is_installed_by_this_process constructs and fully exercises a real Reaper before calling sigaction(SIGCHLD, NULL, &old) and asserting SIG_DFL -- an ordering fix, since the test binary's other test would otherwise let a filtered run query before any Reaper existed; Arm B's hostile thread itself uses waitpid(-1) polling, not a signal handler"
       },
       "noNewTokioFeaturesGuardrail": {
         "status": "measured",

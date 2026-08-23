@@ -199,7 +199,14 @@ pub fn terminate_and_orphan(
     poll_interval: Duration,
     grace: Duration,
 ) -> Result<(), RegisterError> {
-    reaper.reassign_as_orphan(pid, token)?;
+    let already_reaped = reaper.reassign_as_orphan(pid, token)?;
+    if already_reaped {
+        // The child was already destructively `waitpid`-reaped before this call arrived -- the PID
+        // may already be recycled by the OS for an unrelated process. Signaling it now would be
+        // exactly the hazard the module doc's rejected-grace-period paragraph names; there is
+        // nothing left to terminate, so this is a deliberate no-op, not an oversight.
+        return Ok(());
+    }
     let target = Pid::from_raw(pid);
     let _ = killpg(target, Signal::SIGTERM);
     let deadline = std::time::Instant::now() + grace;
@@ -442,11 +449,17 @@ impl Reaper {
     /// match the value [`Self::register`] returned for `pid`; it is the sole-owner proof that lets
     /// this call confirm ownership without ever re-registering (re-registering would spuriously
     /// collide with the still-resident entry via `AlreadyRegistered` -- the exact bug this method
-    /// exists to avoid). If the slot's reap already completed before this call arrives (a benign
-    /// race against the reaper thread, which may run `reaper_complete` concurrently), this
-    /// reclaims the now-orphaned entry immediately instead of leaving it to a reap that already
-    /// happened.
-    pub fn reassign_as_orphan(&self, pid: i32, token: u64) -> Result<(), RegisterError> {
+    /// exists to avoid).
+    ///
+    /// Returns `Ok(true)` if the slot's reap had **already completed** before this call arrived (a
+    /// benign race against the reaper thread, which may run `reaper_complete` concurrently) -- in
+    /// which case this reclaims the now-orphaned entry immediately, and the PID is already
+    /// destructively `waitpid`-reaped and may already be recycled by the OS. Returns `Ok(false)` if
+    /// the child was still pending, now marked orphan for the reaper to self-reclaim on its next
+    /// reap. Callers **must** check this: signaling a PID after `Ok(true)` risks hitting an
+    /// unrelated, recycled process -- exactly the hazard the module doc's rejected-grace-period
+    /// paragraph names (see [`terminate_and_orphan`], the paired free function that does this).
+    pub fn reassign_as_orphan(&self, pid: i32, token: u64) -> Result<bool, RegisterError> {
         let slot = {
             let entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             entries.get(&pid).cloned()
@@ -470,7 +483,7 @@ impl Reaper {
                 self.shared.orphan_reclaim_count.fetch_add(1, Ordering::SeqCst);
             }
         }
-        Ok(())
+        Ok(already_done)
     }
 
     /// Blocks the caller until this PID's slot is reaped or `timeout` elapses. `token` must match
@@ -801,6 +814,29 @@ mod tests {
         assert_eq!(reaper.reassign_as_orphan(child.pid, token.wrapping_add(1)), Err(RegisterError::NotOwned));
         assert_eq!(reaper.registered_count(), 1, "a rejected reassignment must not disturb the owned entry");
         let _ = terminate_and_reap(&reaper, child.pid, token, Duration::from_millis(200));
+        reaper.shutdown();
+    }
+
+    #[test]
+    fn reassign_as_orphan_reports_true_when_the_child_was_already_reaped() {
+        // Regression test for the exact hazard the module doc's rejected-grace-period paragraph
+        // names: once a pid is destructively `waitpid`-reaped, the OS may already have recycled
+        // it for an unrelated process, so a caller must be told "do not signal this pid" rather
+        // than being handed an `Ok(())` indistinguishable from "safe to proceed".
+        let reaper = Reaper::new();
+        let child = spawn_sh("exit 0");
+        let token = reaper.register(child.pid).expect("register");
+        let outcome = reaper
+            .wait_for_exit(child.pid, token, Duration::from_secs(5))
+            .expect("child must be reaped within 5s");
+        assert_eq!(outcome, ReapOutcome::Exited(0));
+        let already_reaped = reaper.reassign_as_orphan(child.pid, token).expect("token is still valid");
+        assert!(already_reaped, "reassigning an already-completed slot must report true, not silently succeed as false");
+        assert_eq!(
+            reaper.registered_count(),
+            0,
+            "the now-orphaned, already-completed entry must be reclaimed immediately, not left resident"
+        );
         reaper.shutdown();
     }
 

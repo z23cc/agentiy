@@ -28,34 +28,41 @@ pub enum QueueEvent {
     /// The reserved-capacity terminal-class event slot (`turnCompleted`/`interruptOutcome` shape)
     /// -- never evicted by ring pressure.
     Terminal(String),
-    /// Emitted when one or more `Line` events were evicted for capacity in a single [`push`]
-    /// call -- the gap-record analogue (contract §7.1 / `subscription.rs`'s pressure policy).
-    /// Coalesced: exactly one `Gap` is ever produced per `push`, however many `Line`s that one
-    /// call evicted to make room (see `push`'s own doc for the bug this coalescing fixes).
+    /// The reserved-capacity gap-record slot (contract §7.1 / `subscription.rs`'s pressure
+    /// policy), mirroring `Terminal`'s "own slot, not a ring entry" treatment. Every `Line` evicted
+    /// by ring pressure -- across however many separate [`push`] calls happen before the next
+    /// [`BoundedEventQueue::drain`] -- coalesces into this **one** outstanding record: at most one
+    /// `Gap` event can ever be observed per drain, never one per eviction and never one per `push`
+    /// call either (see `push`'s own doc for the defect this closes and the weaker guarantee an
+    /// earlier draft settled for).
     ///
     /// [`push`]: BoundedEventQueue::push
     Gap { first_dropped_seq: u64, dropped_count: u64 },
 }
 
-/// Fixed accounting cost for a `Diagnostic`/`Gap` event -- also reserved headroom in [`push`] so a
-/// single push never needs a second eviction pass to make room for the coalesced `Gap` it might
-/// emit.
-///
-/// [`push`]: BoundedEventQueue::push
-const GAP_COST: usize = 64;
-
 fn event_byte_cost(event: &QueueEvent) -> usize {
     match event {
         QueueEvent::Line { bytes, .. } => bytes.len(),
-        QueueEvent::Diagnostic(_) | QueueEvent::Gap { .. } => GAP_COST,
+        QueueEvent::Diagnostic(_) | QueueEvent::Gap { .. } => 64,
         QueueEvent::Terminal(s) => s.len(),
     }
+}
+
+/// Accumulator for the reserved gap slot (see `QueueEvent::Gap`'s doc) -- not itself a
+/// `QueueEvent`; materialized into one only when [`BoundedEventQueue::drain`] is called.
+struct GapAccumulator {
+    first_dropped_seq: u64,
+    dropped_count: u64,
 }
 
 struct Inner {
     ring: VecDeque<QueueEvent>,
     current_bytes: usize,
     terminal: Option<QueueEvent>,
+    /// Reserved coalesced-gap slot -- lives outside the ring entirely (like `terminal`), so it
+    /// never competes with `Line`/`Diagnostic` content for `max_events`/`max_bytes` headroom and
+    /// never needs a second eviction pass to make room for itself.
+    gap: Option<GapAccumulator>,
 }
 
 pub struct BoundedEventQueue {
@@ -80,6 +87,7 @@ impl BoundedEventQueue {
                 ring: VecDeque::new(),
                 current_bytes: 0,
                 terminal: None,
+                gap: None,
             }),
             condvar: Condvar::new(),
             dropped_count: AtomicU64::new(0),
@@ -90,47 +98,44 @@ impl BoundedEventQueue {
     }
 
     /// Non-blocking by construction -- never waits for space (INV-P6-2's non-blocking-publish
-    /// half). Evicts the oldest ring entries and records **at most one** coalesced `Gap` when
-    /// `event` would exceed either cap.
+    /// half). Evicts the oldest ring entries and merges every evicted `Line` into the one reserved
+    /// gap slot (see `QueueEvent::Gap`'s doc) when `event` would exceed either cap.
     ///
-    /// **The bug an earlier draft had.** That version evicted one oldest entry, and if it was a
-    /// `Line`, immediately pushed a replacement `Gap` back onto the *same* ring before re-checking
-    /// the loop condition. Because pop-one/push-one leaves `ring.len()` unchanged, a count-cap-
-    /// bound workload (many small events, nowhere near the byte cap) never made the count
-    /// predicate false, so a single `push` call walked the *entire* ring converting every resident
-    /// `Line` into its own `Gap` -- measured steady state ~255 `Gap`s + 1 `Line` out of a
-    /// 256-capacity ring under sustained flood pressure. This version defers the `Gap` push until
-    /// after eviction is decided, reserving headroom for it up front (two slots and `cost +
-    /// GAP_COST` bytes, not just one and `cost`) so it never needs a second eviction pass -- at
-    /// most one `Gap` record is created per `push`, however many `Line`s that call evicted. Full
-    /// coalesce-by-key / lossy-before-lossless prioritization (`subscription.rs`'s richer policy)
-    /// is out of scope here -- this module's only guarantee is bounding `Gap` production to one
-    /// record per `push` call.
+    /// **Two defects an earlier draft had, in order of discovery.** The first version evicted one
+    /// oldest entry and, if it was a `Line`, immediately pushed a replacement `Gap` *back onto the
+    /// same ring* before re-checking the loop condition; pop-one/push-one leaves `ring.len()`
+    /// unchanged, so a count-cap-bound workload never made the loop's predicate false and a single
+    /// `push` call walked the entire ring converting every resident `Line` into its own `Gap`
+    /// (measured steady state ~255 `Gap`s + 1 `Line` out of a 256-capacity ring). A second draft
+    /// moved the `Gap` push to after the loop and reserved headroom for it, bounding production to
+    /// one `Gap` per `push` call -- an improvement, but under sustained count pressure (a flood
+    /// that evicts on every single `push`) that still degrades to roughly half the ring being `Gap`
+    /// records at equilibrium, not the "coalesce lossy notification" property contract §7.1
+    /// actually wants. This version closes it exactly, mirroring the `terminal` reserved slot
+    /// already in this struct: eviction merges into `Inner::gap`, which never occupies a ring
+    /// entry and is only materialized into a `QueueEvent::Gap` by `drain`. At most one `Gap` can
+    /// ever be observed per drain, regardless of how many `push` calls evicted content in between.
     pub fn push(&self, event: QueueEvent) {
         let cost = event_byte_cost(&event);
         let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Reserve room for both the incoming event and a possible coalesced `Gap`, unconditionally
-        // -- whether or not this pass ends up evicting a `Line` (and therefore actually needing to
-        // emit one). Mildly conservative when no `Gap` turns out to be needed; never wrong.
-        let reserved_slots = self.max_events.saturating_sub(2).max(1);
-        let mut first_dropped_seq: Option<u64> = None;
-        let mut dropped_lines: u64 = 0;
-        while guard.ring.len() >= reserved_slots || guard.current_bytes + cost + GAP_COST > self.max_bytes {
+        while guard.ring.len() >= self.max_events || guard.current_bytes + cost > self.max_bytes {
             let Some(evicted) = guard.ring.pop_front() else {
-                break; // ring already empty -- the incoming event (plus reserved gap headroom)
-                       // alone exceeds the byte cap; admitted anyway below.
+                break; // ring already empty but the incoming event alone exceeds the byte cap --
+                       // admitted anyway below.
             };
             guard.current_bytes -= event_byte_cost(&evicted);
             self.dropped_count.fetch_add(1, Ordering::SeqCst);
             if let QueueEvent::Line { seq, .. } = evicted {
-                first_dropped_seq.get_or_insert(seq);
-                dropped_lines += 1;
+                match &mut guard.gap {
+                    Some(existing) => existing.dropped_count += 1,
+                    None => {
+                        guard.gap = Some(GapAccumulator {
+                            first_dropped_seq: seq,
+                            dropped_count: 1,
+                        });
+                    }
+                }
             }
-        }
-        if let Some(first_dropped_seq) = first_dropped_seq {
-            let gap = QueueEvent::Gap { first_dropped_seq, dropped_count: dropped_lines };
-            guard.current_bytes += event_byte_cost(&gap);
-            guard.ring.push_back(gap);
         }
         guard.current_bytes += cost;
         guard.ring.push_back(event);
@@ -147,9 +152,19 @@ impl BoundedEventQueue {
         self.condvar.notify_all();
     }
 
+    /// Drains the ring, prepending the single coalesced `Gap` record (if any content was evicted
+    /// since the last drain) -- chronologically first, since it represents the oldest content this
+    /// queue ever held.
     pub fn drain(&self) -> Vec<QueueEvent> {
         let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.ring.drain(..).collect()
+        let gap = guard.gap.take().map(|g| QueueEvent::Gap {
+            first_dropped_seq: g.first_dropped_seq,
+            dropped_count: g.dropped_count,
+        });
+        let mut drained = Vec::with_capacity(guard.ring.len() + usize::from(gap.is_some()));
+        drained.extend(gap);
+        drained.extend(guard.ring.drain(..));
+        drained
     }
 
     pub fn take_terminal(&self, timeout: std::time::Duration) -> Option<QueueEvent> {
@@ -167,22 +182,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_single_push_that_evicts_many_lines_emits_only_one_coalesced_gap() {
-        // Regression test for the exact defect an earlier draft had (see `push`'s own doc): a
-        // naive "pop one, push a replacement Gap back" loop never shrinks `ring.len()` (pop one,
-        // push one), so a count- or byte-bound eviction pass inside a *single* `push` call walked
-        // the entire ring, converting every resident `Line` into its own `Gap`. Fill the ring with
-        // many tiny `Line`s that fit comfortably (no eviction yet), then make one `push` call whose
-        // byte cost forces evicting all of them at once -- that one call must coalesce into exactly
-        // one `Gap`, not twenty.
+    fn a_single_push_that_evicts_many_lines_coalesces_into_the_one_reserved_gap_slot() {
+        // Regression test for the first defect an earlier draft had (see `push`'s own doc): fill
+        // the ring with many tiny `Line`s that fit comfortably (no eviction yet), then make one
+        // `push` call whose byte cost forces evicting all of them at once -- the reserved gap slot
+        // must absorb all twenty, not spawn twenty ring entries.
         let queue = BoundedEventQueue::with_limits(64, 100);
         for seq in 0..20u64 {
             queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 2] });
         }
-        queue.push(QueueEvent::Line { seq: 999, bytes: vec![b'y'; 80] });
+        // 20 * 2 = 40 resident bytes; admitting a 100-byte event needs current_bytes back to 0
+        // (40 + 100 > 100 at every count down to zero, 0 + 100 == 100 stops it there) -- evicts
+        // exactly all twenty in this one call.
+        queue.push(QueueEvent::Line { seq: 999, bytes: vec![b'y'; 100] });
         let drained = queue.drain();
         let gap_count = drained.iter().filter(|e| matches!(e, QueueEvent::Gap { .. })).count();
-        assert_eq!(gap_count, 1, "one push evicting many Lines must coalesce into exactly one Gap, got {drained:?}");
+        assert_eq!(gap_count, 1, "twenty evicted Lines must coalesce into exactly one Gap, got {drained:?}");
+        assert!(
+            matches!(drained.first(), Some(QueueEvent::Gap { dropped_count: 20, .. })),
+            "the coalesced Gap must report all 20 evicted Lines: {drained:?}"
+        );
         assert!(
             drained.iter().any(|e| matches!(e, QueueEvent::Line { seq: 999, .. })),
             "the newly admitted event must be present: {drained:?}"
@@ -190,18 +209,23 @@ mod tests {
     }
 
     #[test]
-    fn sustained_count_pressure_never_evicts_every_retained_line() {
-        // Complementary regression net at the count-cap boundary (rather than the byte-cap
-        // boundary above): pushing far more small `Line`s than `max_events` must still leave at
-        // least one `Line` resident, not degrade the whole ring into `Gap`s.
+    fn sustained_count_pressure_across_many_separate_pushes_still_yields_exactly_one_gap() {
+        // The second, subtler defect an earlier draft had (see `push`'s own doc): bounding `Gap`
+        // production to "at most one per `push` call" still degrades to roughly half the ring
+        // being `Gap` records under *sustained* count pressure across many separate `push` calls
+        // (a real flood evicts on nearly every call). The reserved gap slot closes this exactly:
+        // regardless of how many of the 64 pushes below evict something, at most one `Gap` can
+        // ever be observed at drain time.
         let queue = BoundedEventQueue::with_limits(8, 1_048_576);
         for seq in 0..64u64 {
             queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 8] });
         }
         let drained = queue.drain();
-        assert!(drained.len() <= 8, "ring must never exceed its configured event cap: {drained:?}");
+        assert!(drained.len() <= 9, "ring must never exceed its configured event cap plus the one gap slot: {drained:?}");
+        let gap_count = drained.iter().filter(|e| matches!(e, QueueEvent::Gap { .. })).count();
+        assert!(gap_count <= 1, "sustained pressure across many pushes must still yield at most one Gap: {drained:?}");
         let line_count = drained.iter().filter(|e| matches!(e, QueueEvent::Line { .. })).count();
-        assert!(line_count >= 1, "sustained count pressure must not evict every retained Line: {drained:?}");
+        assert_eq!(line_count, 8, "every non-gap ring slot must be real retained Line content, not further gap residue: {drained:?}");
     }
 
     #[test]
