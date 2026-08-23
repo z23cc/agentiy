@@ -935,8 +935,19 @@ actor WorkspaceFileContextStore {
         var topologyInvalidationRequested = false
         var affectedRootKinds = Set<WorkspaceRootKind>()
         var affectedRootIDs = Set<UUID>()
-        var reasons = Set<CatalogInvalidationReason>()
+        // OI-1 fix (contract doc §12.5a): the batch's reason is fixed by whoever opens it, not
+        // accumulated from the individual mutation choke points (`indexFile`/`indexFolder`) that
+        // fire while the batch is active -- those are incidental effects of applying a mutation,
+        // not independently meaningful invalidation reasons. Seeded at construction so every
+        // nested `invalidatePathMatchSnapshot` call while this batch is active coalesces into the
+        // opener's single intent instead of each contributing its own (previously hardcoded)
+        // reason.
+        var reasons: Set<CatalogInvalidationReason>
         var searchContentInvalidations = WorkspaceSearchContentInvalidationBatch()
+
+        init(reason: CatalogInvalidationReason = .fileSystemPublication) {
+            reasons = [reason]
+        }
     }
 
     private struct ScopedIngressBarrierTarget {
@@ -9436,6 +9447,18 @@ actor WorkspaceFileContextStore {
                 )
             }
         }
+        // OI-1 fix (contract doc §12.5a): batch every `indexFile` call's own internal
+        // `invalidatePathMatchSnapshot` invocation into one coalesced, `.explicitMaterialization`-
+        // reasoned invalidation -- mirroring `applyPreparedIndexDeltaMutations`'s existing pattern
+        // for the file-system-watcher path. Without this, each `indexFile` call fired its own
+        // immediate invalidation (one per eligible file) in addition to this function's own final
+        // explicit call, multiplying `storeWorkDiagnosticsSnapshot().invalidations` far past the
+        // one entry callers reasonably expect for one batched `ensureIndexedFiles` request.
+        precondition(activePublicationInvalidationBatch == nil)
+        let invalidationBatch = PublicationInvalidationBatch(reason: .explicitMaterialization)
+        activePublicationInvalidationBatch = invalidationBatch
+        defer { activePublicationInvalidationBatch = nil }
+
         for eligible in eligibleFiles {
             guard codemapFencesByRootID[eligible.rootID] != nil,
                   let state = rootStatesByID[eligible.rootID],
@@ -9451,17 +9474,12 @@ actor WorkspaceFileContextStore {
             indexed.append(eligible.fullPath)
             upsertedFilesByRoot[eligible.rootID, default: []].append(newFile)
         }
-        if !indexed.isEmpty {
-            let affectedKinds = Set(upsertedFilesByRoot.keys.compactMap { rootStatesByID[$0]?.root.kind })
-            invalidatePathMatchSnapshot(
-                affectedRootKinds: affectedKinds,
-                reason: .explicitMaterialization,
-                affectedRootIDs: Set(upsertedFilesByRoot.keys)
-            )
-            // P4-6b: no manual publish here -- `indexFile` above already applied each mutation to
-            // the Rust authority, and the event-drain loop republishes from Rust's own event
-            // stream (design doc §4.3).
-        }
+        // P4-6b: no manual publish here -- `indexFile` above already applied each mutation to
+        // the Rust authority, and the event-drain loop republishes from Rust's own event
+        // stream (design doc §4.3). The batch opened above still needs an explicit finalize,
+        // though: `finalizePublicationInvalidations` is what actually performs the coalesced
+        // topology invalidation `indexFile`'s nested calls only flagged as requested.
+        finalizePublicationInvalidations(invalidationBatch)
         return indexed
     }
 
@@ -9910,10 +9928,23 @@ actor WorkspaceFileContextStore {
         var childFileIDsByFolderID: [UUID: [UUID]] = [:]
     }
 
+    // OI-2 (doc-literal) fix (contract doc §12.5a resolution): a root that has never had a
+    // single discovery event applied (e.g. a freshly loaded, genuinely empty directory -- no
+    // `applyDeltaDiscovery` call ever ran for it, since `loadRoot`'s crawl found nothing to
+    // index) never reaches whatever readiness threshold `authority.openSnapshot(rootID:)` gates
+    // on Rust's side, so the open throws and every caller of this function (`files(inRoot:)`,
+    // `folders(inRoot:)` -- including its own root-marker synthesis, `buildStaticSnapshot`,
+    // `descendantFiles`) silently returned nothing at all for a root that is legitimately loaded
+    // and legitimately has zero files, indistinguishable from "unknown root"/"open genuinely
+    // failed". A currently-loaded root (present in `rootStatesByID`) is never truly unknown, so
+    // an `openSnapshot` failure for one is treated as "nothing indexed yet" (an empty page
+    // index, not `nil`) rather than propagated as a hard failure -- `nil` stays reserved for a
+    // root this store does not know about at all.
     private func fetchFileTreePageIndex(rootID: UUID) async -> FileTreePageIndex? {
+        guard rootStatesByID[rootID] != nil else { return nil }
         guard let authority = try? await inventoryScopeAuthorityInstance(),
               let snapshot = try? await authority.openSnapshot(rootID: rootID)
-        else { return nil }
+        else { return FileTreePageIndex() }
         defer { Task { await snapshot.close() } }
         var index = FileTreePageIndex()
         var offset: UInt64 = 0
@@ -19416,12 +19447,30 @@ actor WorkspaceFileContextStore {
     /// once to answer the descendant walk (mirrors `fetchFileTreePageIndex`'s existing Tier-1
     /// shape; the recursive walk itself is unchanged, just against the paged adjacency maps
     /// instead of `RootState`'s per-root maps).
+    ///
+    /// OI-2 (doc-literal, ExactCapability cascade) fix (contract doc §12.5a resolution): the
+    /// scope-wide id fact lookup can never resolve `folderID` when it IS a root's own
+    /// self-referencing marker (`id == rootID`) -- that marker is deliberately never sent to
+    /// Rust (root-marker exclusion, see `rootFolderRecord(rootID:)` immediately above), so
+    /// `fact.exists` was always `false` for it and every root-level folder-expansion call
+    /// (`resolveContextBuilderSelectionCandidate`'s `selectsAuthorizedRoot` branch, and any other
+    /// caller that expands the root folder itself) unconditionally returned an empty descendant
+    /// set despite the root having real, discoverable files. A `folderID` that matches a
+    /// currently-loaded root's own id is never actually unknown -- the owning root IS that id --
+    /// so this fast path answers it directly instead of round-tripping through Rust for a fact
+    /// that structurally cannot exist there.
     private func descendantFiles(in folderID: UUID) async -> [WorkspaceFileRecord] {
-        guard let authority = try? await inventoryScopeAuthorityInstance(),
-              let block = try? await authority.resolveRecordsScopeWide(fileIDs: [], folderIDs: [folderID]),
-              let fact = block.foldersByID[folderID], fact.exists, let rootID = fact.rootID,
-              let pageIndex = await fetchFileTreePageIndex(rootID: rootID)
-        else { return [] }
+        let rootID: UUID
+        if rootStatesByID[folderID] != nil {
+            rootID = folderID
+        } else {
+            guard let authority = try? await inventoryScopeAuthorityInstance(),
+                  let block = try? await authority.resolveRecordsScopeWide(fileIDs: [], folderIDs: [folderID]),
+                  let fact = block.foldersByID[folderID], fact.exists, let factRootID = fact.rootID
+            else { return [] }
+            rootID = factRootID
+        }
+        guard let pageIndex = await fetchFileTreePageIndex(rootID: rootID) else { return [] }
         let ids = descendantFileIDs(in: folderID, pageIndex: pageIndex)
         return ids.compactMap { pageIndex.filesByID[$0] }
             .sorted { $0.standardizedRelativePath < $1.standardizedRelativePath }
@@ -20174,10 +20223,12 @@ actor WorkspaceFileContextStore {
         affectedRootIDs: Set<UUID> = []
     ) {
         if let activePublicationInvalidationBatch {
+            // The batch's own reason (set once at construction, see `PublicationInvalidationBatch`)
+            // is authoritative -- a nested call while the batch is active only broadens which
+            // roots/kinds are affected and marks the batch dirty, it does not re-derive the reason.
             activePublicationInvalidationBatch.topologyInvalidationRequested = true
             activePublicationInvalidationBatch.affectedRootKinds.formUnion(affectedRootKinds)
             activePublicationInvalidationBatch.affectedRootIDs.formUnion(affectedRootIDs)
-            activePublicationInvalidationBatch.reasons.insert(.fileSystemPublication)
             return
         }
         performPathMatchSnapshotInvalidation(
