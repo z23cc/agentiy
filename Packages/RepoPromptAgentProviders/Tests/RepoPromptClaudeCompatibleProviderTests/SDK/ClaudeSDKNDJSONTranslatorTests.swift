@@ -126,6 +126,37 @@ final class ClaudeSDKNDJSONTranslatorTests: XCTestCase {
         XCTAssertEqual(translator.cliSessionID, "claude-session-2")
     }
 
+    /// Two-arm pin for the Foundation `.prettyPrinted, .sortedKeys` byte format that
+    /// `rust/crates/runtime/src/agent_claude/translator.rs`'s
+    /// `foundation_pretty_printed_json_matches_a_captured_foundation_sample_byte_for_byte` test
+    /// asserts against on the Rust side (captured live from this exact Foundation call). Without
+    /// this, "the Rust port is byte-exact" rested on a one-sided check -- this closes the gap by
+    /// running the SAME nested/sorted-keys/array value through the real
+    /// `serializeJSONObjectString` call site (tool_use `input` -> `toolArgsJSON`) and comparing to
+    /// the identical literal.
+    func testToolArgsJSONMatchesTheFoundationPrettyPrintByteFormatCapturedOnTheRustSide() throws {
+        var translator = ClaudeSDKNDJSONTranslator()
+        let line = jsonLine([
+            "type": "assistant",
+            "message": [
+                "content": [
+                    [
+                        "type": "tool_use",
+                        "id": "toolu_pretty_print_pin",
+                        "name": "some_tool",
+                        "input": ["b": 2, "a": ["x": 1, "y": [1, 2, 3]], "c": "hello"]
+                    ]
+                ]
+            ]
+        ])
+
+        let results = translator.parseNDJSONLine(line)
+        let toolCall = try XCTUnwrap(results.first { $0.type == "tool_call" })
+
+        let expected = "{\n  \"a\" : {\n    \"x\" : 1,\n    \"y\" : [\n      1,\n      2,\n      3\n    ]\n  },\n  \"b\" : 2,\n  \"c\" : \"hello\"\n}"
+        XCTAssertEqual(toolCall.toolArgsJSON, expected)
+    }
+
     private func jsonObject(from jsonString: String?, file: StaticString = #filePath, line: UInt = #line) throws -> [String: String] {
         let value = try XCTUnwrap(jsonString, file: file, line: line)
         let data = Data(value.utf8)
