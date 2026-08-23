@@ -155,6 +155,22 @@ impl BoundedEventQueue {
     /// Drains the ring, prepending the single coalesced `Gap` record (if any content was evicted
     /// since the last drain) -- chronologically first, since it represents the oldest content this
     /// queue ever held.
+    ///
+    /// **Bug an earlier draft had, found by review (pre-existing since the first P6-4 landing,
+    /// `603b4c10`).** `current_bytes` was never reset here -- it only ever decreases inside
+    /// `push`'s eviction loop, by the byte cost of items actually still resident. Every drained
+    /// event's bytes stayed charged against the budget forever, so the effective byte budget
+    /// shrank monotonically across drain cycles: once the stale surplus approached `max_bytes`,
+    /// every subsequent `push` would evict the *entire* ring (eviction can only reclaim bytes for
+    /// resident items, never the surplus) and then admit anyway via the ring-empty break --
+    /// steady state ~1 resident event, in a long-running session that drains and refills
+    /// repeatedly (the P6-8 soak shape), the same symptom class the two eviction-coalescing fixes
+    /// above exist to prevent, reached by a different route. Every test up to this point
+    /// constructed a fresh queue, pushed, drained once, and asserted -- none pushed again after a
+    /// drain, which is why the leak went unnoticed through two prior correction passes. Draining
+    /// the ring empties it completely, so resetting to exactly `0` (not merely subtracting the
+    /// drained items' cost) is correct: `terminal` and the gap accumulator never contribute to
+    /// `current_bytes` in the first place.
     pub fn drain(&self) -> Vec<QueueEvent> {
         let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let gap = guard.gap.take().map(|g| QueueEvent::Gap {
@@ -164,6 +180,7 @@ impl BoundedEventQueue {
         let mut drained = Vec::with_capacity(guard.ring.len() + usize::from(gap.is_some()));
         drained.extend(gap);
         drained.extend(guard.ring.drain(..));
+        guard.current_bytes = 0;
         drained
     }
 
@@ -226,6 +243,31 @@ mod tests {
         assert!(gap_count <= 1, "sustained pressure across many pushes must still yield at most one Gap: {drained:?}");
         let line_count = drained.iter().filter(|e| matches!(e, QueueEvent::Line { .. })).count();
         assert_eq!(line_count, 8, "every non-gap ring slot must be real retained Line content, not further gap residue: {drained:?}");
+    }
+
+    #[test]
+    fn drain_resets_the_byte_budget_so_a_refill_after_drain_starts_clean() {
+        // Regression test for the exact defect review found: an earlier `drain` never reset
+        // `current_bytes`, so every drained event's bytes stayed charged against the budget
+        // forever -- a long-running session that drains and refills repeatedly (the P6-8 soak
+        // shape) would see the effective byte budget shrink monotonically until every `push`
+        // evicted the entire ring. Fill to exactly the byte cap, drain, then push the same volume
+        // again: without the reset this second batch would immediately start evicting (producing
+        // a Gap); with it, all 8 land clean.
+        let queue = BoundedEventQueue::with_limits(8, 100);
+        for seq in 0..8u64 {
+            queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 10] });
+        }
+        assert_eq!(queue.drain().len(), 8, "first batch must land in full");
+        for seq in 8..16u64 {
+            queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 10] });
+        }
+        let refilled = queue.drain();
+        assert!(
+            !refilled.iter().any(|e| matches!(e, QueueEvent::Gap { .. })),
+            "a drained queue must start from a clean byte budget, not a stale carried-over one: {refilled:?}"
+        );
+        assert_eq!(refilled.len(), 8, "the second batch must also land in full: {refilled:?}");
     }
 
     #[test]

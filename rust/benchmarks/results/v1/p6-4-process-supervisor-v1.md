@@ -87,7 +87,13 @@ shape (added in a post-landing correction -- see below).**
   reassignment (wrong token, foreign PID) never risks a `killpg` against a process group this call
   does not actually own -- and skips signaling entirely when the `bool` reports "already reaped"
   (a gap an earlier draft of this same correction still had: it checked the `Result` but discarded
-  the `bool`, so it always signaled).
+  the `bool`, so it always signaled). **Narrows, does not eliminate, the recycled-PID window**:
+  `Ok(false)` means "not reaped *at the moment of this check*" -- the reaper thread can still reap
+  and self-reclaim the slot between this call returning and the `killpg` a few lines later. That
+  residual window is inherent to any check-then-signal sequence against an externally-reaped
+  resource (the same shape `terminate_and_reap` and `ProcessTermination.swift` already have); this
+  fix closes the large, structural version of the hazard (the "always signal, never check" case),
+  not the inherent TOCTOU sliver.
 
 **Post-landing correction (advisor review, after commit `603b4c10`): the original fix
 under-specified the transition and missed the shape the soak actually found.** The first landing
@@ -291,12 +297,28 @@ coalesce-by-key / lossy-before-lossless prioritization (`subscription.rs`'s rich
 stays out of this module's scope -- its guarantee is exactly one outstanding `Gap` record between
 drains.
 
+**A third `queue.rs` defect, found by the same review round: `drain` never reset `current_bytes`.**
+Pre-existing since the very first P6-4 landing (`603b4c10`), not introduced by either eviction
+correction above -- but `drain` is the consumer API the flood test calls and P6-6 wires to the hub,
+so it sits on the live path. `current_bytes` only ever decreased inside `push`'s eviction loop, by
+the cost of items still resident; every drained event's bytes stayed charged against the budget
+forever. In a long-running session that drains and refills repeatedly (the P6-8 soak shape), the
+effective byte budget shrinks monotonically across drain cycles until every `push` evicts the
+entire ring -- the same symptom class the two corrections above exist to prevent, reached through
+the one code path none of those tests exercised (all of them construct a queue, push, drain once,
+and assert; none pushes again after a drain). Fixed with a one-line reset to exactly `0` after the
+ring drain (`terminal` and the gap accumulator never contributed to `current_bytes` in the first
+place, so this is exact, not approximate). New test:
+`drain_resets_the_byte_budget_so_a_refill_after_drain_starts_clean` -- fills to the byte cap, drains,
+refills the same volume, and asserts the second batch lands with zero `Gap` records.
+
 **TSan/ASan.** `RUSTFLAGS="-Z sanitizer=thread"` and `"-Z sanitizer=address"`, both via
 `+nightly -Zbuild-std --target aarch64-apple-darwin`, both `--test-threads=1`:
 
-- Lib unit tests (`agent_claude::process::*`, 31 tests -- up from 24: 3 new `queue.rs` regression
-  tests plus 4 new `reaper.rs` regression tests for the reclamation-transition fix and the
-  recycled-PID signaling hazard): **TSan clean, ASan clean.**
+- Lib unit tests (`agent_claude::process::*`, 32 tests -- up from 24: 4 new `queue.rs` regression
+  tests (eviction coalescing x2, the byte-budget-reset fix) plus 4 new `reaper.rs` regression tests
+  for the reclamation-transition fix and the recycled-PID signaling hazard): **TSan clean, ASan
+  clean.**
 - `agent_claude_process_reader` (7 tests, one strengthened assertion): **ASan clean.** **TSan**:
   clean except the named, pre-existing, unrelated `deadlock_probe_stdin_starved_flood_reader_never_stalls`
   flake above (reproduces standalone against unmodified logic; not touched by this step's fixes).
