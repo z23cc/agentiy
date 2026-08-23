@@ -833,6 +833,7 @@ allowed_tracked_docs=(
   "docs/architecture/context-composer.md"
   "docs/architecture/headless-mcp-runtime.md"
   "docs/architecture/provider-plugins.md"
+  "docs/architecture/rust-agent-claude-v1.md"
   "docs/architecture/rust-apply-edits-compact-v1.md"
   "docs/architecture/rust-codemap-compact-v1.md"
   "docs/architecture/rust-ffi.md"
@@ -952,6 +953,43 @@ print_matches \
   "removed path_search.c C engine call sites (P4-7c c3 co-location invariant) must not return" \
   grep -R -n -E 'path_search_create\(|path_search_find\(|path_search_projected_find|path_search_destroy\(|path_search_cancellation_create\(' \
     Sources/RepoPrompt Sources/RepoPromptC
+
+# 11. P6-1 §1.2 headless-isolation guardrail (docs/architecture/rust-agent-claude-v1.md,
+# design doc docs/designs/p6-claude-vertical-2026-08-23.md §1.2): the interactive Claude native
+# runtime is a GUI-scope-only capability today, verified rather than assumed, by exactly one
+# reachability chain -- ClaudeNativeProcessSessionController is constructed only inside
+# ClaudeAgentModeCoordinator.makeDefaultController, ClaudeAgentModeCoordinator is constructed
+# only inside AgentModeViewModel (a @MainActor GUI view model), and the headless direct-MCP
+# composition (Sources/RepoPromptMCP) never constructs either symbol -- so charter §15.3 gate 5
+# (topology parity) is satisfied by a drift guard rather than a parallel headless cutover. This
+# check pins that chain structurally; it deliberately does not assert "Sources/RepoPromptMCP
+# contains zero occurrences of Claude/claude" (unlike the design doc's prose, the tree today has
+# a few benign ones -- an example client name in a doc comment and an external MCP client-name
+# classifier in DirectHeadlessMCPService.swift -- neither constructs either symbol). It also
+# cannot yet assert anything about the post-cutover Rust agent scope, which does not exist at
+# P6-1; a later slice must extend this guard once that scope lands.
+claude_native_controller_construction_sites="$(grep -R -n -F 'ClaudeNativeProcessSessionController(' \
+  Sources/RepoPrompt 2>/dev/null || true)"
+unexpected_claude_native_controller_construction_sites="$(printf '%s\n' "$claude_native_controller_construction_sites" \
+  | grep -v -F 'Sources/RepoPrompt/Features/AgentMode/Runtime/Claude/ClaudeAgentModeCoordinator.swift:' || true)"
+if [[ -n "$unexpected_claude_native_controller_construction_sites" ]]; then
+  fail "ClaudeNativeProcessSessionController must be constructed only inside ClaudeAgentModeCoordinator.makeDefaultController"
+  printf '%s\n' "$unexpected_claude_native_controller_construction_sites" >&2
+fi
+
+claude_coordinator_construction_sites="$(grep -R -n -F 'ClaudeAgentModeCoordinator(' \
+  Sources/RepoPrompt 2>/dev/null || true)"
+unexpected_claude_coordinator_construction_sites="$(printf '%s\n' "$claude_coordinator_construction_sites" \
+  | grep -v -F 'Sources/RepoPrompt/Features/AgentMode/ViewModels/AgentModeViewModel.swift:' || true)"
+if [[ -n "$unexpected_claude_coordinator_construction_sites" ]]; then
+  fail "ClaudeAgentModeCoordinator must be constructed only inside AgentModeViewModel (the @MainActor GUI view model)"
+  printf '%s\n' "$unexpected_claude_coordinator_construction_sites" >&2
+fi
+
+print_matches \
+  "headless RepoPromptMCP must not construct the interactive Claude native runtime (ClaudeAgentModeCoordinator/ClaudeNativeProcessSessionController)" \
+  grep -R -n -E 'ClaudeAgentModeCoordinator\(|ClaudeNativeProcessSessionController\(' \
+    Sources/RepoPromptMCP
 
 if [[ "$failures" -ne 0 ]]; then
   printf 'Source layout guardrails failed (%s issue%s).\n' "$failures" "$([[ "$failures" == 1 ]] && printf '' || printf 's')" >&2

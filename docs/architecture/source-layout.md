@@ -87,7 +87,7 @@ AgentryCoreBridgeTests → AgentryCoreBridge → AgentryUniFFIRaw
   → CAgentryRustCore → libagentry_ffi.a
 ```
 
-`RepoPromptApp`, existing executable targets, and existing app integration tests must not directly import or depend on `AgentryUniFFIRaw`. Generated bindings and headers are reviewed artifacts but remain private implementation detail behind the handwritten bridge. The Phase 0 contracts, gates, fixture rules, and dependency policy are documented in [`rust-ffi.md`](rust-ffi.md).
+`RepoPromptApp`, existing executable targets, and existing app integration tests must not directly import or depend on `AgentryUniFFIRaw`. Generated bindings and headers are reviewed artifacts but remain private implementation detail behind the handwritten bridge. The Phase 0 contracts, gates, fixture rules, and dependency policy are documented in [`rust-ffi.md`](rust-ffi.md). Per-domain Rust boundary/wire contracts for later phases live alongside it: [`rust-inventory-scope-v1.md`](rust-inventory-scope-v1.md), [`rust-search-leaf-v1.md`](rust-search-leaf-v1.md), [`rust-codemap-compact-v1.md`](rust-codemap-compact-v1.md), [`rust-apply-edits-compact-v1.md`](rust-apply-edits-compact-v1.md), and (Phase 6, Claude vertical) [`rust-agent-claude-v1.md`](rust-agent-claude-v1.md).
 
 The legacy top-level layer buckets under `Sources/RepoPrompt` have been pruned and must not be recreated:
 

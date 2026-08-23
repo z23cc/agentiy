@@ -168,7 +168,7 @@ The Agent Mode side of the bridge ships three small adapters under `Sources/Repo
 
 - Carries a `ClaudeCompatiblePluginRuntimeConfig` and delegates `NativeAgentRuntimeControlling` to a controller factory closure.
 - Today the factory returns a `ClaudeNativeProcessSessionController` (core-owned process control). A future slice can replace the factory body with a package-driven controller without changing the adapter's public shape.
-- `AgentModeViewModel.makeClaudeCompatibleNativeController(...)` is the single call site that constructs and hands the adapter to `ClaudeAgentModeCoordinator`.
+- `ClaudeAgentModeCoordinator.makeDefaultController` (`ClaudeAgentModeCoordinator.swift:165-186`) is the single call site that constructs the controller and hands it to the adapter; it is invoked as the `claudeControllerFactory` default in `ClaudeAgentModeCoordinator.init` (`:157`). *(Corrected at P6-1: this section previously named a since-removed `AgentModeViewModel.makeClaudeCompatibleNativeController(...)` call site; no such method exists in the current tree.)*
 
 ### `ClaudeCompatibleHeadlessProviderAdapter`
 
@@ -258,7 +258,7 @@ The recommended pattern when adding (for example) a hypothetical `acmeAgent` fam
    - Add the new cases to `AgentProviderKind` and the supporting maps (`commandName`, `displayName`, `mcpClientNameHint`, `runtimeKind`, `usesClaudeNativeRuntime` / new flags, `claudeRuntimeVariant` if relevant, `agentDescription`).
    - Extend `AgentProviderBindingID` if the new family needs its own permission/settings grouping; otherwise reuse an existing binding ID and keep secure-store documents grouped accordingly.
    - Add a branch in `AgentRuntimeProviderService.makeProvider(...)` that builds the headless provider and wraps it in the new adapter.
-   - For interactive runs, add a sibling of `AgentModeViewModel.makeClaudeCompatibleNativeController(...)` that constructs the adapter; pass it through `ClaudeAgentModeCoordinator`'s factory or add a coordinator analogue if the new family needs distinct steering rules.
+   - For interactive runs, add a sibling of `ClaudeAgentModeCoordinator.makeDefaultController` that constructs the adapter; pass it through `ClaudeAgentModeCoordinator`'s factory or add a coordinator analogue if the new family needs distinct steering rules.
 
 6. **Plug into the model catalog.**
    - Forward the new family's branches in `AgentModelCatalog` to `AcmeModelCatalogAdapter` so option ordering, defaults, validation, display names, and discovery payloads come from the package while preserving `AgentModel` raw values for persisted user selections.
@@ -298,7 +298,6 @@ Add the relevant focused suite before any catalog/codec change, and snapshot mod
 - `Sources/RepoPrompt/Features/AgentMode/Runtime/Native/NativeAgentRuntimeContracts.swift` — provider-neutral runtime contract.
 - `Sources/RepoPromptShared/Workflows/` — provider-neutral RepoPrompt workflow IDs, catalog metadata, variants, and renderers shared by the app, installs, MCP prompt registration, and direct headless execution.
 - `Sources/RepoPrompt/Features/AgentMode/Runtime/Providers/AgentRuntimeProviderService.swift` — `AgentProviderKind` and headless factory.
-- `Sources/RepoPrompt/Features/AgentMode/ViewModels/AgentModeViewModel.swift` — `makeClaudeCompatibleNativeController(...)`.
-- `Sources/RepoPrompt/Features/AgentMode/Runtime/Claude/ClaudeAgentModeCoordinator.swift` — interactive Claude-compatible coordinator.
+- `Sources/RepoPrompt/Features/AgentMode/Runtime/Claude/ClaudeAgentModeCoordinator.swift` — interactive Claude-compatible coordinator; `makeDefaultController` (`:165-186`) is the factory call site (the swap point for a future Rust-backed controller; see `docs/architecture/rust-agent-claude-v1.md`).
 - SwiftPM package manifest docs: <https://docs.swift.org/package-manager/PackageDescription/PackageDescription.html>
 - Xcode local package override workflow: <https://developer.apple.com/documentation/xcode/editing-a-package-dependency-as-a-local-package>
