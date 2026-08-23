@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "88b88036da4a0e27ba0fe3c461adac3b341fe256ea6f9a2982d8929bc181d861",
+  "buildFingerprint": "c511efbcc6471294831cf59fa773b276969b8bf569a958d32228f9988bc6adf5",
   "bindingChecksum": "43a8ea4faf014bd1315017bd9b74912e9bbd88c84c04461ed2edbcb650e7e2a9",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:bca9ed493118e664379cf0dcab8ea9de32b88a0a2dcb23623385b9269a7ff40a",
+    "rustSourceRevision": "tree:4fa829fd0699b72287efdae5eda21f69cc25d4b5bd8e715ded733c34538d1724",
     "cargoLockDigest": "fcca6a5250528fdb8f212604bd81141a0bbdd452c26daffbe85dd0cbf3a68474",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "511a1eb3199cadbf6de7a236f38654b12a92bc4b39bb5129faa220436268b157",
+  "archiveSha256": "f02da84ef5a0bc7c1ce0a517f9a20cd056994cc3e0f1006f6d92472b96183fe4",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -62,7 +62,7 @@
   ],
   "artifactSha256": {
     "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "e92472d2173c0ac77c4ce7d8c2d771ad50e7c2978ebb8edb2f63805409c554c6",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "d5f75786cd571c2cc79be8e317a2d43925b21017af080f82ace205215a2996e6",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "b11c1132020b48f1f6a092760560780d05dc66c2ce5edb78b4f23ca5ad8f3c7d",
     "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "fda45c615cd32e587b2cdf5303b378eac8afbce3cf2a6a028ece8428f3c92ae5",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"

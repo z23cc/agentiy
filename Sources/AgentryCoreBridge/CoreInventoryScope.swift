@@ -611,6 +611,10 @@ public struct CoreInventoryFactRowV1: Sendable, Equatable {
     public let standardizedFullPath: String?
     public let name: String?
     public let recordFingerprint: UInt64
+    /// P4-6b gap-closure: the projected fields §4.3.1 named but P4-4 never wired -- see
+    /// `FACT_ROW_STRIDE`'s Rust doc comment. `nil` for a non-existent row.
+    public let parentFolderID: UUID?
+    public let modificationDate: Date?
 }
 
 /// `wire.rs`'s `FactBlock`: `generation == nil` is the whole-block-stale case (contract doc §5.3),
@@ -636,6 +640,8 @@ public struct CoreInventoryRecordFact: Sendable, Equatable {
     public let standardizedFullPath: String?
     public let name: String?
     public let recordFingerprint: UInt64
+    public let parentFolderID: UUID?
+    public let modificationDate: Date?
 
     fileprivate init(_ row: CoreInventoryFactRowV1) {
         exists = row.exists
@@ -648,6 +654,8 @@ public struct CoreInventoryRecordFact: Sendable, Equatable {
         standardizedFullPath = row.standardizedFullPath
         name = row.name
         recordFingerprint = row.recordFingerprint
+        parentFolderID = row.parentFolderID
+        modificationDate = row.modificationDate
     }
 }
 
@@ -1229,7 +1237,7 @@ private let coreInventoryScopeOptionalWord = UInt64.max
 private let coreInventoryScopeRecordStride = 14
 private let coreInventoryScopeDiscoveryRecordStride = 12
 private let coreInventoryScopeCandidateRowStride = 11
-private let coreInventoryScopeFactRowStride = 18
+private let coreInventoryScopeFactRowStride = 23
 private let coreInventoryScopeMaxWordsPerSection = 8 * 1024 * 1024
 private let coreInventoryScopeMaxRowsPerCall = 200_000
 private let coreInventoryScopeMaxBlobBytes = 64 * 1024 * 1024
@@ -1589,6 +1597,10 @@ enum CoreInventoryScopeWire {
             let fileID: UUID? = filePresent == 1 ? coreInventoryUUID(fromHi: fileHi, lo: fileLo) : nil
             let folderID: UUID? = folderPresent == 1 ? coreInventoryUUID(fromHi: folderHi, lo: folderLo) : nil
             let rootID: UUID? = rootPresent == 1 ? coreInventoryUUID(fromHi: rootHi, lo: rootLo) : nil
+            let parentPresent = nextWord(); let parentHi = nextWord(); let parentLo = nextWord()
+            let modPresent = nextWord(); let modBits = nextWord()
+            let parentFolderID: UUID? = parentPresent == 1 ? coreInventoryUUID(fromHi: parentHi, lo: parentLo) : nil
+               let modificationDate: Date? = modPresent == 1 ? Date(timeIntervalSinceReferenceDate: Double(bitPattern: modBits)) : nil
             rows.append(CoreInventoryFactRowV1(
                 exists: exists,
                 fileID: fileID,
@@ -1599,7 +1611,9 @@ enum CoreInventoryScopeWire {
                 standardizedRelativePath: try pool.resolveOptional(stdRelIdx),
                 standardizedFullPath: try pool.resolveOptional(stdFullIdx),
                 name: try pool.resolveOptional(nameIdx),
-                recordFingerprint: recordFingerprint
+                recordFingerprint: recordFingerprint,
+                parentFolderID: parentFolderID,
+                modificationDate: modificationDate
             ))
             index += coreInventoryScopeFactRowStride
         }
@@ -2127,7 +2141,7 @@ enum CoreInventoryScopeWire {
         inventory-scope-v1
         version=1
         kinds=bulkChunk:1,deltaEvent:2,resolveRequest:3,lookupRequest:4,factBlock:5,queryRequest:6,queryResponse:7,generationAdvanced:8,rootPublished:9,rootUnloaded:10,shardFallback:11,resnapshotRequired:12,discoveryBulkChunk:13,discoveryDeltaEvent:14
-        strides=stringRange:2,record:14,discoveryRecord:12,factRow:18,candidate:11
+        strides=stringRange:2,record:14,discoveryRecord:12,factRow:23,candidate:11
         optionalWord=18446744073709551615
         limits=blob:67108864,string:65536,words:8388608,rows:200000,ids:50000,paths:50000
         endianness=words:little-endian,uuidHalves:big-endian

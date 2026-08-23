@@ -78,8 +78,19 @@ pub const DISCOVERY_RECORD_STRIDE: usize = 12;
 /// exists(1) + file_id_present(1) + file_id_hi(1) + file_id_lo(1) + folder_id_present(1) +
 /// folder_id_hi(1) + folder_id_lo(1) + root_id_present(1) + root_id_hi(1) + root_id_lo(1) +
 /// is_discoverable(1) + path_round_trips_to_self(1) + standardized_relative_path_idx(1) +
-/// standardized_full_path_idx(1) + name_idx(1) + record_fingerprint(1) = 18.
-pub const FACT_ROW_STRIDE: usize = 18;
+/// standardized_full_path_idx(1) + name_idx(1) + record_fingerprint(1) +
+/// parent_folder_id_present(1) + parent_folder_id_hi(1) + parent_folder_id_lo(1) +
+/// modification_date_present(1) + modification_date_bits(1) = 23.
+///
+/// P4-6b gap-closure (contract doc §12 amendment): `appliedIndexRecordLookup`'s two production
+/// consumers (`AgentContextFileBrowseService.swift:715,721`) read `parentFolderID`/
+/// `modificationDate` off the returned record -- fields the original 18-word fact row (P4-4) never
+/// carried because the design's `<projected fields>` clause in §4.3.1's `inventoryResolveRecords`
+/// sketch was never implemented. Additive: the 18 pre-existing words and their field order are
+/// unchanged; these five are appended, so `MAX_ROWS_PER_CALL`-bounded decode of an old-shaped
+/// blob would simply fail the stride-multiple check rather than silently misread a row --
+/// there is no persisted wire content to migrate (facts are never persisted, contract doc §1.1).
+pub const FACT_ROW_STRIDE: usize = 23;
 /// Words per query candidate row: id(2) + root_id(2) + name_idx(1) + relative_path_idx(1) +
 /// standardized_relative_path_idx(1) + full_path_idx(1) + standardized_full_path_idx(1) +
 /// display_path_idx(1) + score(1) = 11. `display_path` carries the per-root-prefix composition
@@ -1237,6 +1248,10 @@ pub struct FactRow {
     /// D-11 (contract doc §7): a fingerprint the caller can compare a captured record against.
     /// Zero for a non-existent row.
     pub record_fingerprint: u64,
+    /// P4-6b gap-closure (see `FACT_ROW_STRIDE`'s doc comment): the projected fields §4.3.1 named
+    /// but P4-4 never wired. `None` for a non-existent row.
+    pub parent_folder_id: Option<InventoryUuid>,
+    pub modification_date: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1275,11 +1290,17 @@ pub fn encode_fact_block(block: &FactBlock) -> Vec<u8> {
             pool.intern_optional(row.standardized_full_path.as_deref()),
         ]);
         // `name` and `record_fingerprint` appended in a second pass below to keep the stride
-        // table above readable; see the doc comment on `FACT_ROW_STRIDE` for the full 16-word
-        // layout (14 above + name_idx + fingerprint packed as one word each).
+        // table above readable; see the doc comment on `FACT_ROW_STRIDE` for the full word
+        // layout (14 above + name_idx + fingerprint, then the P4-6b gap-closure fields below).
         let name_idx = pool.intern_optional(row.name.as_deref());
         rows.push(name_idx);
         rows.push(row.record_fingerprint);
+        let (parent_present, parent_hi, parent_lo) = optional_uuid_to_words(row.parent_folder_id);
+        let (mod_present, mod_bits) = match row.modification_date {
+            Some(value) => (1, value.to_bits()),
+            None => (0, 0),
+        };
+        rows.extend([parent_present, parent_hi, parent_lo, mod_present, mod_bits]);
     }
     let (present, generation) = match block.generation {
         Some(value) => (1u64, value),
@@ -1323,10 +1344,21 @@ pub fn decode_fact_block(bytes: &[u8]) -> Result<FactBlock, WireError> {
     let rows = rows_words
         .chunks_exact(FACT_ROW_STRIDE)
         .map(|row| {
-            let &[key_hi, key_lo, exists, file_present, file_hi, file_lo, folder_present, folder_hi, folder_lo, root_present, root_hi, root_lo, is_discoverable, path_round_trips_to_self, standardized_relative_path_idx, standardized_full_path_idx, name_idx, record_fingerprint] =
+            let &[key_hi, key_lo, exists, file_present, file_hi, file_lo, folder_present, folder_hi, folder_lo, root_present, root_hi, root_lo, is_discoverable, path_round_trips_to_self, standardized_relative_path_idx, standardized_full_path_idx, name_idx, record_fingerprint, parent_present, parent_hi, parent_lo, mod_present, mod_bits] =
                 row
             else {
                 return Err(WireError::Malformed("fact row"));
+            };
+            let modification_date = match mod_present {
+                0 => None,
+                1 => {
+                    let value = f64::from_bits(mod_bits);
+                    if value.is_nan() {
+                        return Err(WireError::Malformed("fact row modification_date"));
+                    }
+                    Some(value)
+                }
+                _ => return Err(WireError::Malformed("fact row modification_date presence flag")),
             };
             Ok(FactRow {
                 key_hi,
@@ -1341,6 +1373,8 @@ pub fn decode_fact_block(bytes: &[u8]) -> Result<FactBlock, WireError> {
                 standardized_full_path: pool.resolve_optional(standardized_full_path_idx)?.map(str::to_owned),
                 name: pool.resolve_optional(name_idx)?.map(str::to_owned),
                 record_fingerprint,
+                parent_folder_id: optional_uuid_from_words(parent_present, parent_hi, parent_lo)?,
+                modification_date,
             })
         })
         .collect::<Result<Vec<_>, WireError>>()?;
@@ -2086,6 +2120,8 @@ mod tests {
                     standardized_full_path: Some("/root/a/b.swift".to_owned()),
                     name: Some("b.swift".to_owned()),
                     record_fingerprint: 999,
+                    parent_folder_id: Some([3; 16]),
+                    modification_date: Some(12345.5),
                 },
                 FactRow {
                     key_hi: 11,
@@ -2100,6 +2136,8 @@ mod tests {
                     standardized_full_path: None,
                     name: None,
                     record_fingerprint: 0,
+                    parent_folder_id: None,
+                    modification_date: None,
                 },
             ],
         };
@@ -2174,7 +2212,7 @@ mod tests {
         // until its hardcoded constant is updated to match -- the drift can never pass silently.
         assert_eq!(
             fingerprint(),
-            "c46b159823c150a40ab0b13ceba561d33c0645452a5e688e9fa0f17b2261210f"
+            "488cf8351bbb30aa78bc65a9dcbcdf94739a77848bc43d480c397a0ac443fdac"
         );
     }
 

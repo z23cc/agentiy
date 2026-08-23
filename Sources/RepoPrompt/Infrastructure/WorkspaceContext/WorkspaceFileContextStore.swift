@@ -2945,6 +2945,27 @@ actor WorkspaceFileContextStore {
         // shadow scope on request.
         private let isInventoryScopeShadowValidationEnabled: Bool
         private var inventoryScopeShadowForwarder: WorkspaceInventoryScopeShadowForwarder?
+    #endif
+
+    // P4-6b: the production mutation/read authority (`WorkspaceInventoryScopeAuthority`). Opened
+    // lazily on first use -- see that type's doc comment for the root-lifecycle technique it
+    // shares with the (now-deleted) shadow forwarder. Ships in release builds; unlike the shadow
+    // forwarder this is not `#if DEBUG`.
+    private var inventoryScopeAuthority: WorkspaceInventoryScopeAuthority?
+
+    struct WorkspaceInventoryScopeAuthorityUnavailable: Error {}
+
+    private func inventoryScopeAuthorityInstance() async throws -> WorkspaceInventoryScopeAuthority {
+        if let inventoryScopeAuthority { return inventoryScopeAuthority }
+        guard let bridge = try await AgentryCoreService.shared.runtime() as? AgentryCoreBridge else {
+            throw WorkspaceInventoryScopeAuthorityUnavailable()
+        }
+        let authority = WorkspaceInventoryScopeAuthority(bridge: bridge)
+        inventoryScopeAuthority = authority
+        return authority
+    }
+
+    #if DEBUG
         private var pendingInventoryScopeShadowEvents: [WorkspaceAppliedIndexBatchEvent] = []
         private(set) var inventoryScopeShadowComparisonCountForTesting = 0
         private(set) var inventoryScopeShadowMismatchCountForTesting = 0
@@ -3130,6 +3151,9 @@ actor WorkspaceFileContextStore {
         }
         for continuation in appliedIndexContinuations.values {
             continuation.finish()
+        }
+        if let inventoryScopeAuthority {
+            Task { await inventoryScopeAuthority.close() }
         }
     }
 
@@ -11223,6 +11247,9 @@ actor WorkspaceFileContextStore {
                 sessionRootLifetimeClock.advance()
             }
             guard let state = rootStatesByID.removeValue(forKey: rootID) else { continue }
+            if let inventoryScopeAuthority {
+                await inventoryScopeAuthority.closeRoot(rootID: rootID)
+            }
             invalidateRootSeedSearchShadow(rootID: rootID)
             let rootEpoch = WorkspaceCodemapRootEpoch(
                 rootID: rootID,

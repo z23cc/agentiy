@@ -84,6 +84,8 @@ fn absent_row(key_hi: u64, key_lo: u64) -> FactRow {
         standardized_full_path: None,
         name: None,
         record_fingerprint: 0,
+        parent_folder_id: None,
+        modification_date: None,
     }
 }
 
@@ -103,6 +105,8 @@ fn file_row(key_hi: u64, key_lo: u64, maps: &IdentityMaps, id: InventoryUuid, re
         standardized_full_path: Some(record.standardized_full_path.clone()),
         name: Some(record.name.clone()),
         record_fingerprint: fingerprint_file(record),
+        parent_folder_id: record.parent_folder_id,
+        modification_date: record.modification_date,
     }
 }
 
@@ -128,6 +132,8 @@ fn folder_row(
         standardized_full_path: Some(record.standardized_full_path.clone()),
         name: Some(record.name.clone()),
         record_fingerprint: fingerprint_folder(record),
+        parent_folder_id: record.parent_folder_id,
+        modification_date: record.modification_date,
     }
 }
 
@@ -283,6 +289,22 @@ mod tests {
         assert_eq!(rows[1].key_lo, 1);
         assert!(rows[1].exists);
         assert_eq!(rows[1].file_id, Some([1; 16]));
+    }
+
+    #[test]
+    fn resolve_by_ids_carries_parent_folder_id_and_modification_date() {
+        let mut root = new_root();
+        let mut record = file(1, "App.swift", "src/App.swift");
+        record.parent_folder_id = Some([7; 16]);
+        record.modification_date = Some(1_700_000_000.5);
+        root.maps.upsert_file(record);
+        let rows = resolve_by_ids(&root, &[[1; 16]], &[]);
+        assert_eq!(rows[0].parent_folder_id, Some([7; 16]));
+        assert_eq!(rows[0].modification_date, Some(1_700_000_000.5));
+
+        let absent = resolve_by_ids(&root, &[[9; 16]], &[]);
+        assert_eq!(absent[0].parent_folder_id, None);
+        assert_eq!(absent[0].modification_date, None);
     }
 
     #[test]
