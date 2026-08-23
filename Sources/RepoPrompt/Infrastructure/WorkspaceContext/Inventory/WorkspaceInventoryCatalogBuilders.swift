@@ -167,7 +167,13 @@ enum WorkspaceInventoryCatalogBuilders {
         let representedFolderIDs = Set(oldFoldersByID.keys).union(upsertedFoldersByID.keys)
         for file in upsertedFilesByID.values {
             var parentFolderID = file.parentFolderID
-            while let folderID = parentFolderID {
+            // The root-self-referencing marker (`parentFolderID == event.rootID`) is the walk's
+            // implicit terminal case, not a folder that ever appears in `foldersByID`/
+            // `representedFolderIDs` -- the root folder is never sent to Rust and is never a
+            // member of any shard's folder list (contract doc §5.4's root-marker exclusion). A
+            // lookup miss here is not "unrepresented ancestor", it's "reached the root"; treating
+            // it as a lookup failure would decline every top-level file's patch unconditionally.
+            while let folderID = parentFolderID, folderID != event.rootID {
                 guard representedFolderIDs.contains(folderID),
                       let folder = foldersByID[folderID]
                 else { return nil }
