@@ -129,8 +129,15 @@ final class ClaudeCodecShadowComparatorTests: XCTestCase {
         let mismatches = await controller.test_claudeCodecShadowComparatorMismatches()
         let compared = await controller.test_claudeCodecShadowComparatorComparedCount()
         XCTAssertTrue(mismatches.isEmpty, "shadow arm reported mismatches: \(mismatches.joined(separator: "\n"))")
-        XCTAssertGreaterThan(compared, 0, "the corpus must actually exercise the comparator, not merely skip every line")
         XCTAssertGreaterThan(totalLinesFed, 0)
+        // Every line in `comparableFixtures` decodes on the primary (no-repair) path by
+        // construction -- that is precisely why each fixture was curated into this list rather
+        // than the excluded D-1/malformed set (comment above). So a passing zero-mismatch run
+        // must have compared *every* fed line: `compared == totalLinesFed` is a real coverage
+        // assertion, not a magic number -- it fails the way a comparator that regresses to
+        // skip-everything would fail (`comparedCount` stuck at 0), which a bare `> 0` check on a
+        // trivially-satisfied `mismatches.isEmpty` cannot catch.
+        XCTAssertEqual(compared, totalLinesFed, "every fed line from the curated comparable-fixture set must be compared, not skipped")
     }
 
     /// The `sessionStateChanged(idle)` sequence specifically, isolated from the rest of the corpus
@@ -139,12 +146,18 @@ final class ClaudeCodecShadowComparatorTests: XCTestCase {
     /// half; this is purely "does the translator agree on the text of each state").
     func testSessionStateChangedIdleSequenceMatchesAcrossBothArms() async throws {
         let controller = makeController(enableComparator: true)
-        for line in try fixtureLines("realcapture-session-state-changed-idle-sequence.ndjson") {
+        let fixtureLines = try fixtureLines("realcapture-session-state-changed-idle-sequence.ndjson")
+        // A separate, differently-worded assertion from the coverage check below: if this fires,
+        // the fixture's own line count changed (a fixture-authoring concern), not a comparator
+        // regression -- keeping the two failure modes distinguishable is the point of not folding
+        // this into a single hardcoded `compared == 3`.
+        XCTAssertEqual(fixtureLines.count, 3, "expected exactly the three session_state_changed lines (running/compacting/idle); fixture content changed")
+        for line in fixtureLines {
             await controller.test_handleLine(line)
         }
         let mismatches = await controller.test_claudeCodecShadowComparatorMismatches()
         XCTAssertEqual(mismatches, [])
         let compared = await controller.test_claudeCodecShadowComparatorComparedCount()
-        XCTAssertEqual(compared, 3, "all three session_state_changed lines (running/compacting/idle) must be compared")
+        XCTAssertEqual(compared, fixtureLines.count, "every session_state_changed line must be compared, not skipped")
     }
 }

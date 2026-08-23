@@ -94,10 +94,20 @@
 
         // MARK: - Field comparison
 
-        /// `tool_invocation_id` is deliberately excluded (Rust's `translator.rs` module doc: a
-        /// synthetic `InvocationId(u64)` can never structurally match Swift's `UUID`); every other
-        /// field is compared as a normalized string so numeric/bool/string mismatches all funnel
-        /// through one code path.
+        /// Field coverage is exhaustive over `AIStreamResult`'s wire-shaped stored properties minus
+        /// exactly two, both excluded for a stated structural reason rather than by omission:
+        /// - `toolInvocationID` (Rust's `translator.rs` module doc: a synthetic `InvocationId(u64)`
+        ///   can never structurally match Swift's `UUID`; tool correlation is checked by *relative*
+        ///   identity within each arm instead, not cross-arm value equality).
+        /// - `cleanupHandle` (a Swift-only runtime handle with no wire representation at all --
+        ///   `debug_shadow_ffi.rs`'s `stream_result_to_json` has no corresponding key).
+        ///
+        /// Every other field -- including `cost` and `contentMessageID`, both actively populated by
+        /// both arms' translators (`translator.rs`'s `total_cost_usd`/`content_message_id` handling,
+        /// `ClaudeSDKNDJSONTranslator.swift`'s matching reads) -- is compared as a normalized string
+        /// so numeric/bool/string mismatches all funnel through one code path. If `AIStreamResult`
+        /// grows a new wire-shaped field, add it here explicitly; there is no reflection-based
+        /// fallback, so an unlisted field is silently uncompared.
         private func compareOneResult(_ swift: AIStreamResult, _ rust: [String: Any], index: Int, lineData: Data) {
             func check(_ field: String, _ swiftValue: String?, _ rustKey: String) {
                 let rustValue = (rust[rustKey] as? String)
@@ -112,7 +122,7 @@
                 let rustValue = (rust[rustKey] as? NSNumber)?.intValue
                 if swiftValue != rustValue {
                     recordMismatch(
-                        .fieldMismatch(index: index, field: field, swiftValue: swiftValue.map(String.init) ?? "<nil>", rustValue: rustValue.map(String.init) ?? "<nil>"),
+                        .fieldMismatch(index: index, field: field, swiftValue: Self.describe(swiftValue), rustValue: Self.describe(rustValue)),
                         lineData: lineData
                     )
                 }
@@ -121,7 +131,19 @@
                 let rustValue = (rust[rustKey] as? Bool)
                 if swiftValue != rustValue {
                     recordMismatch(
-                        .fieldMismatch(index: index, field: field, swiftValue: swiftValue.map(String.init) ?? "<nil>", rustValue: rustValue.map(String.init) ?? "<nil>"),
+                        .fieldMismatch(index: index, field: field, swiftValue: Self.describe(swiftValue), rustValue: Self.describe(rustValue)),
+                        lineData: lineData
+                    )
+                }
+            }
+            /// Both arms parse the same JSON number token for `total_cost_usd`, so exact bit equality
+            /// is the correct comparison -- no tolerance window is introduced, matching this
+            /// comparator's zero-tolerance stance on every other field.
+            func checkDouble(_ field: String, _ swiftValue: Double?, _ rustKey: String) {
+                let rustValue = (rust[rustKey] as? NSNumber)?.doubleValue
+                if swiftValue != rustValue {
+                    recordMismatch(
+                        .fieldMismatch(index: index, field: field, swiftValue: Self.describe(swiftValue), rustValue: Self.describe(rustValue)),
                         lineData: lineData
                     )
                 }
@@ -132,6 +154,7 @@
             check("reasoning", swift.reasoning, "reasoning")
             checkNumber("promptTokens", swift.promptTokens, "promptTokens")
             checkNumber("completionTokens", swift.completionTokens, "completionTokens")
+            checkDouble("cost", swift.cost, "cost")
             check("toolName", swift.toolName, "toolName")
             check("toolArgs", swift.toolArgs, "toolArgs")
             check("toolOutput", swift.toolOutput, "toolOutput")
@@ -142,6 +165,18 @@
             check("stopReason", swift.stopReason, "stopReason")
             checkNumber("modelContextWindow", swift.modelContextWindow, "modelContextWindow")
             checkNumber("contextUsedTokens", swift.contextUsedTokens, "contextUsedTokens")
+            check("contentMessageID", swift.contentMessageID, "contentMessageID")
+        }
+
+        /// Shared, non-generic-closure-context formatting for mismatch messages -- pulled out of
+        /// `compareOneResult`'s local functions because inlining an equivalent `.map(String.init) ??
+        /// "<nil>"` expression directly in each closure's call to `recordMismatch` overloaded the
+        /// type-checker (`swift build` failed with "failed to produce diagnostic for expression" on
+        /// the `checkDouble` closure specifically, once a fourth near-identical local function was
+        /// added); a single concretely-typed helper keeps each closure's own expression simple.
+        private static func describe(_ value: (some Any)?) -> String {
+            guard let value else { return "<nil>" }
+            return String(describing: value)
         }
 
         private func recordMismatch(_ kind: Mismatch.Kind, lineData: Data) {

@@ -30,6 +30,17 @@
 //! ordering -- P6-7's turn-level differential will need either a Swift-side fix (reorder
 //! `shutdown()`'s two calls) or a registered intentional-drift item before that differential can go
 //! green on this exact edge case. Flagged for the campaign record; not resolved by this module.
+//!
+//! **The exact delta, for P6-7:** this is narrower than "shutdown ordering disagrees" -- the two
+//! arms already agree on the *silent-drop* half (turn IDs that never received any result are
+//! cleared with no event on both sides, `on_shutdown`'s `pending_turn_ids.clear()` mirroring
+//! Swift's unconditional `clearTurnIDQueue()`). They disagree only on the *deferred-flush* half:
+//! **Rust's `on_shutdown` emits one `TurnCompleted` event per already-resulted-but-not-yet-idle-
+//! confirmed turn (N = `pending_deferred.len()` at shutdown time), preserving each entry's original
+//! status; Swift's current `shutdown()` emits zero, because its queue-clear-before-flush ordering
+//! makes `cancelAuthoritativeLifecycleState`'s guard exit immediately.** All other shutdown
+//! behavior -- the silent-drop half, and every EOF-path behavior -- is identical between the two
+//! arms.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
