@@ -87,19 +87,6 @@ actor WorkspaceSearchService {
         private var debugTotalMicroseconds: UInt64 = 0
         private var debugDebounceCancellationCount = 0
         private var debugLastEntryCount = 0
-        /// §4.7 done-when: "zero Swift path-index constructions during a search-driven catalog
-        /// generation." This actor's own production paths (`search`, `rebuildIndex`/`prepareIndex`,
-        /// the live event-driven rebuild path) never construct a `WorkspaceSearchRootPathIndex`/
-        /// `PathSearchIndex` -- there is no instance-level code path left that could increment this,
-        /// which is the invariant itself, not a gap in the counter. (The DEBUG-only ground-truth
-        /// helper below, `authoritativeGlobalResultsForTesting`, is `static` and constructs its own
-        /// `PathSearchIndex` independently of any instance -- it cannot and does not touch this
-        /// counter; `Scripts/source_layout_guardrails.sh`'s P4-7b §4.1.0 section is what pins that
-        /// helper as the *only* remaining construction site in this file, structurally.) A test
-        /// asserting this counter is 0 across a search-driven catalog generation
-        /// (`WorkspaceSearchColocationGateTests`) is the behavioral half of the co-location gate;
-        /// the guardrail script is the mechanical half.
-        private(set) var debugPathIndexConstructionCount = 0
         /// §4.6: queries that failed with a handle-invalidation or transport/decode error, counted
         /// so a caller-side diagnostic can distinguish "no matches" from "search degraded."
         private(set) var discardedQueryErrorCount = 0
@@ -175,9 +162,17 @@ actor WorkspaceSearchService {
         /// independent of this actor's own state, so the b3 flip does not touch it). Builds a
         /// fresh Swift `PathSearchIndex` over `snapshot.entries` and searches it synchronously --
         /// the only remaining Swift path-index construction reachable through this file. `static`,
-        /// so it cannot and does not touch `debugPathIndexConstructionCount` (an instance-level
-        /// counter); `Scripts/source_layout_guardrails.sh`'s P4-7b §4.1.0 section is what pins this
-        /// as the *only* construction site left in this file, structurally rather than by count.
+        /// with no instance-level counterpart left in this actor to touch: every instance-level
+        /// production path (`search`, `rebuildIndex`/`prepareIndex`, the live event-driven rebuild
+        /// path) consumes `WorkspaceFileContextStore.searchRootQueryHandles`/Rust query results only,
+        /// never a Swift `PathSearchIndex`. `Scripts/source_layout_guardrails.sh`'s P4-7b §4.1.0
+        /// section pins this helper as the *only* construction site left in this file (mechanical
+        /// half); `WorkspaceSearchColocationGateTests` pins the *behavioral* half by asserting the
+        /// live store-level `pathIndexBuildCount`/`overlayPathIndexBuildCount` diagnostics (which
+        /// would move if a regression made this actor request `.recordsAndPathIndexes` again) stay 0
+        /// across a search-driven catalog generation -- a per-instance counter on this actor would
+        /// have nothing to increment it and so, unlike that diagnostic, could never catch such a
+        /// regression.
         static func authoritativeGlobalResultsForTesting(
             from snapshot: WorkspaceSearchCatalogSnapshot,
             query: String,

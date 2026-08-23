@@ -909,18 +909,43 @@ of this amendment's scope -- neither landed here.
 
 ### 13.2 Index accounting and the co-location gate (b4)
 
-`WorkspaceSearchService.debugPathIndexConstructionCount` (DEBUG-only, instance-level) never
-increments on any production path -- there is no code left in that actor's instance-level surface
-that could construct a `WorkspaceSearchRootPathIndex`/`PathSearchIndex`. The DEBUG-only
-ground-truth reference arm (`authoritativeGlobalResultsForTesting`, kept for P4-7c's deletion gate)
-is `static` and cannot touch it; `Scripts/source_layout_guardrails.sh`'s new P4-7b §4.1.0 section is
-what pins that helper as the *sole* remaining construction site in the file, structurally --
-asserting `makeRootPathSearchIndex` never returns anywhere in `Sources/RepoPrompt`, and that
-`WorkspaceSearchService.swift` never constructs a Swift path index outside that one named
-exception. `WorkspaceSearchColocationGateTests` is the behavioral half: a search-driven catalog
-generation (cold rebuild, non-empty query, empty query, live event-driven rebuild) asserts the
-counter stays 0 throughout. Together these discharge §4.7's "index accounting" and "co-location
-gate test" done-when items -- the mandated gate that never landed at P4-6b now exists.
+`Scripts/source_layout_guardrails.sh`'s new P4-7b §4.1.0 section is the mechanical half: it asserts
+`makeRootPathSearchIndex` never returns anywhere in `Sources/RepoPrompt`, and that
+`WorkspaceSearchService.swift` never constructs a Swift path index outside the DEBUG-only static
+ground-truth reference arm (`authoritativeGlobalResultsForTesting`, kept for P4-7c's deletion gate,
+independent of any instance).
+
+The behavioral half went through one correction after initial landing. It first asserted a
+dedicated `WorkspaceSearchService.debugPathIndexConstructionCount` instance counter stayed 0 --
+but that counter had no code path left anywhere in the actor's instance-level surface that could
+ever increment it (the whole point of the b3 flip), so the assertion was `0 == 0` by construction
+and could not have failed under any regression, including one that reintroduced eager path-index
+construction. Removed in favor of the store-level diagnostic that has real (if currently unreachable
+in correct code) plumbing behind it: `WorkspaceFileContextStore.storeWorkDiagnosticsSnapshot()
+.rootCatalogShards.roots[*].pathIndexBuildCount`/`.overlayPathIndexBuildCount`, incremented
+generically by `registerPublishedRootCatalogShard` off `shard.pathSearchIndex?.buildKind` --
+every shard-publication site funnels through it, so any future code that made a shard carry a real
+path index again (through `buildAuthoritativeRootCatalogShard`'s currently-hardcoded
+`pathSearchIndex: nil`, the dead `rootsNeedingPromotion` branch, or the patch path's
+`previousShard.pathSearchIndex?.applyingPatch(...)` chain) would move it automatically, without this
+suite needing an update.
+
+This is a real improvement over the removed counter but not a complete fix of the same underlying
+problem: the *only* live route left to a non-nil shard path index is a caller explicitly requesting
+the retired `.recordsAndPathIndexes` capability, and D-14 above documents that this now
+`preconditionFailure`s in `composeSearchCatalogSnapshot` *before* `registerPublishedRootCatalogShard`
+is ever reached -- so this counter, like its predecessor, cannot currently be demonstrated moving
+without crashing the process, and `WorkspaceSearchColocationGateTests` does not attempt to (a
+fixture-sanity companion in the style of `WorkspaceSearchHandleRetentionBaselineTests`' `patchCount
+> 0` guard was drafted and discarded for exactly this reason -- documented in that test file's own
+header comment). What it does provide, honestly stated: the counter's plumbing would catch the
+*shape* of regression most likely to occur -- shard-level path-index construction reintroduced
+through one of the three call sites above -- automatically and without a suite update, which the
+removed instance counter structurally could not do under any circumstance. Together with the
+mechanical guardrail (which *is* fully exercised, by grep, on every run) these discharge §4.7's
+"index accounting" and "co-location gate test" done-when items -- the mandated gate that never
+landed at P4-6b now exists, with its behavioral half's actual guarantee stated precisely rather than
+oversold.
 
 ### 13.3 Drift register D-13–D-15
 
