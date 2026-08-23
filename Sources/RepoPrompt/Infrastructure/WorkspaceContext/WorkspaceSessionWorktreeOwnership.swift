@@ -63,12 +63,6 @@ struct WorkspaceRootSeedShadowScope: Hashable {
     let appliedIndexGeneration: UInt64
 }
 
-struct WorkspaceRootSeedShadowPreparation {
-    let scope: WorkspaceRootSeedShadowScope
-    let snapshot: WorkspaceRootReusableSnapshot
-    let planHandle: WorkspaceRootTargetSeedPlanHandle
-}
-
 struct WorkspaceSessionWorktreeOwnershipPreparation {
     let token: WorkspaceSessionWorktreeOwnershipToken
     let bindingFingerprint: String
@@ -77,7 +71,6 @@ struct WorkspaceSessionWorktreeOwnershipPreparation {
     let materializationHintObservationsByPhysicalRootPath: [
         String: WorkspaceRootMaterializationHintObservation
     ]
-    let rootSeedShadowPreparations: [WorkspaceRootSeedShadowPreparation]
     let pendingSeededRootPreparations: [WorkspacePendingSeededRootPreparation]
 
     init(
@@ -88,7 +81,6 @@ struct WorkspaceSessionWorktreeOwnershipPreparation {
         materializationHintObservationsByPhysicalRootPath: [
             String: WorkspaceRootMaterializationHintObservation
         ] = [:],
-        rootSeedShadowPreparations: [WorkspaceRootSeedShadowPreparation] = [],
         pendingSeededRootPreparations: [WorkspacePendingSeededRootPreparation] = []
     ) {
         self.token = token
@@ -96,7 +88,6 @@ struct WorkspaceSessionWorktreeOwnershipPreparation {
         self.roots = roots
         self.reusesInstalledOwnership = reusesInstalledOwnership
         self.materializationHintObservationsByPhysicalRootPath = materializationHintObservationsByPhysicalRootPath
-        self.rootSeedShadowPreparations = rootSeedShadowPreparations
         self.pendingSeededRootPreparations = pendingSeededRootPreparations
     }
 }

@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Foundation
 import OSLog
 
@@ -149,18 +150,6 @@ actor AgentContextFileBrowseService {
         var descendantsByFolderID: [UUID: [WorkspaceFileRecord]] = [:]
     }
 
-    private struct SearchIndexKey: Hashable {
-        let rootScope: WorkspaceLookupRootScope
-        let catalogGeneration: UInt64
-        let projectionIdentity: String
-        let selectedRootID: UUID?
-    }
-
-    private struct StoreSearchIndex {
-        let entries: [WorkspaceSearchCatalogEntry]
-        let index: PathSearchIndex
-    }
-
     private struct RevalidatedRecord {
         let record: WorkspaceFileRecord
         let rootGeneration: UInt64
@@ -181,7 +170,12 @@ actor AgentContextFileBrowseService {
     private let store: WorkspaceFileContextStore
     private let indexedSearch: IndexedSearch?
     private var treeIndexesByRootID: [UUID: RootTreeIndex] = [:]
-    private var searchIndexesByKey: [SearchIndexKey: StoreSearchIndex] = [:]
+    #if DEBUG
+        /// P4-7c c1 (design doc §6.2): mirrors `AgentFileTagSuggestionService
+        /// .storeBackedQueryFailureCountForTesting` -- §4.6's fail-visible-never-fail-empty
+        /// discipline, applied to this seam's per-root `.suggestion` query fan-out.
+        private(set) var storeBackedQueryFailureCountForTesting = 0
+    #endif
 
     init(store: WorkspaceFileContextStore, searchService: WorkspaceSearchService?) {
         self.store = store
@@ -201,15 +195,9 @@ actor AgentContextFileBrowseService {
 
     func pruneCaches(
         retainingRootIDs: Set<UUID>,
-        lookupContext: WorkspaceLookupContext
+        lookupContext _: WorkspaceLookupContext
     ) {
         treeIndexesByRootID = treeIndexesByRootID.filter { retainingRootIDs.contains($0.key) }
-        let projectionIdentity = Self.projectionIdentity(lookupContext.bindingProjection)
-        searchIndexesByKey = searchIndexesByKey.filter { key, _ in
-            key.rootScope == lookupContext.rootScope
-                && key.projectionIdentity == projectionIdentity
-                && key.selectedRootID.map(retainingRootIDs.contains) != false
-        }
     }
 
     func roots(lookupContext: WorkspaceLookupContext) async -> AgentContextFileBrowseRootsResult {
@@ -529,51 +517,67 @@ actor AgentContextFileBrowseService {
         return sortFiles(files)
     }
 
+    /// P4-7c c1 (design doc §6.2): the fallback path -- reached only when the fast indexed-search
+    /// path (`indexedSearchIsAdmissible`) is inadmissible or its index is stale/not-ready. Mirrors
+    /// `AgentFileTagSuggestionService.storeBackedCatalogResults`'s P4-7a a3 shape exactly: one
+    /// `inventoryQuery(.suggestion)` per allowed root (via the store's `suggestionQuery` seam), no
+    /// `snapshot.entries` read, no private `PathSearchIndex`. This holder's haystack
+    /// (`searchHaystack(for:lookupContext:)`, deleted alongside this rewrite) was byte-identical in
+    /// component list, order, and trim/empty-drop semantics to `AgentFileTagSuggestionService`'s
+    /// pre-a3 haystack -- confirmed by direct comparison during P4-7c recon -- so `.suggestion`'s
+    /// a1 byte-equality parity holds here without a separate haystack-parity gate.
+    ///
+    /// **Root order and truncation.** Same accepted behavior change as a3 (design §5.3's doc
+    /// comment): per-root results are concatenated in `store.rootRefs(scope:)` order and each
+    /// root's own candidates are truncated to `limit` before concatenation, rather than the old
+    /// single global index's globally-truncated result. This is safe here for the identical reason
+    /// a3 states it's safe there: every candidate this method returns is re-scored and re-truncated
+    /// by `score(records:query:physicalRoots:lookupContext:)` before reaching a caller, so this
+    /// method's own ordering/truncation is not independently load-bearing --
+    /// `AgentContextFileBrowseSearchParityTests` pins the multi-root case as its own named
+    /// differential rather than asserting single-root-only equivalence.
     private func storeBackedCandidates(
         query: String,
-        scope: AgentContextFileBrowseRootScope,
+        scope _: AgentContextFileBrowseRootScope,
         lookupContext: WorkspaceLookupContext,
         allowedRootIDs: Set<UUID>,
         limit: Int
     ) async throws -> [WorkspaceSearchCatalogEntry] {
-        let access = await store.searchCatalogAccess(
-            rootScope: lookupContext.rootScope,
-            requirement: .recordsOnly
-        )
-        guard case let .available(snapshot) = access else { return [] }
+        guard limit > 0, !allowedRootIDs.isEmpty else { return [] }
+        let roots = await store.rootRefs(scope: lookupContext.rootScope).filter { allowedRootIDs.contains($0.id) }
+        guard !roots.isEmpty else { return [] }
         try Task.checkCancellation()
-        let selectedRootID: UUID? = if case let .root(rootID) = scope { rootID } else { nil }
-        let key = SearchIndexKey(
-            rootScope: lookupContext.rootScope,
-            catalogGeneration: snapshot.generation,
-            projectionIdentity: Self.projectionIdentity(lookupContext.bindingProjection),
-            selectedRootID: selectedRootID
-        )
-        let cached: StoreSearchIndex
-        if let existing = searchIndexesByKey[key] {
-            cached = existing
-        } else {
-            let entries = snapshot.entries.filter {
-                allowedRootIDs.contains($0.rootID) && !Self.isGitDataPath($0.standardizedRelativePath)
+
+        var seenIDs = Set<UUID>()
+        var results: [WorkspaceSearchCatalogEntry] = []
+        for root in roots {
+            let logicalPrefix = Self.logicalPrefix(forPhysicalRoot: root, lookupContext: lookupContext)
+            do {
+                let result = try await store.suggestionQuery(
+                    rootID: root.id,
+                    pattern: query,
+                    limit: UInt64(limit),
+                    nonEmptyRelativePrefix: "",
+                    emptyRelativePathValue: "",
+                    logicalPrefix: logicalPrefix
+                )
+                for candidate in result.candidates where seenIDs.insert(candidate.id).inserted {
+                    results.append(Self.catalogEntry(from: candidate, rootPath: root.standardizedFullPath, rootName: root.name))
+                }
+            } catch {
+                // §4.6's fail-visible-never-fail-empty rule was written for the search facade's
+                // handle-based reads; this seam opens a fresh snapshot per call and has no ready-
+                // handle state to mark stale, so there is no equivalent visible-failure signal to
+                // set here. Counted rather than silently swallowed -- mirrors
+                // `AgentFileTagSuggestionService.storeBackedCatalogResults`'s identical catch block.
+                #if DEBUG
+                    storeBackedQueryFailureCountForTesting += 1
+                #endif
+                continue
             }
-            let haystacks = entries.map { searchHaystack(for: $0, lookupContext: lookupContext) }
             try Task.checkCancellation()
-            let built = await StoreSearchIndex(entries: entries, index: PathSearchIndex.build(paths: haystacks))
-            try Task.checkCancellation()
-            searchIndexesByKey = searchIndexesByKey.filter {
-                $0.key.rootScope != key.rootScope || $0.key.catalogGeneration == key.catalogGeneration
-            }
-            searchIndexesByKey[key] = built
-            cached = built
         }
-        let hits = await cached.index.search(query, limit: limit)
-        try Task.checkCancellation()
-        var seen = Set<UUID>()
-        return hits.compactMap { hit in
-            guard cached.entries.indices.contains(hit.index) else { return nil }
-            let entry = cached.entries[hit.index]
-            return seen.insert(entry.id).inserted ? entry : nil
-        }
+        return results
     }
 
     private func revalidatedRecords(
@@ -813,24 +817,38 @@ actor AgentContextFileBrowseService {
             && lookupContext.bindingProjection == nil
     }
 
-    private func searchHaystack(
-        for entry: WorkspaceSearchCatalogEntry,
+    /// Per-root physical->logical binding data (mirrors `AgentFileTagSuggestionService
+    /// .logicalPrefix(forPhysicalRoot:lookupContext:)`, P4-7a design §5.1's `logicalPath`
+    /// component): `nil` when the root has no binding projection, otherwise the bound logical
+    /// root's `ClientPathFormatter.displayPrefix` pair.
+    private static func logicalPrefix(
+        forPhysicalRoot root: WorkspaceRootRef,
         lookupContext: WorkspaceLookupContext
-    ) -> String {
-        let logicalPath = lookupContext.bindingProjection?.projectedLogicalDisplayPath(
-            forPhysicalPath: entry.standardizedFullPath,
-            display: .relative
+    ) -> (nonEmptyRelativePrefix: String, emptyRelativePathValue: String)? {
+        guard let projection = lookupContext.bindingProjection,
+              let boundRoot = projection.boundRoot(containingPhysicalAbsolutePath: root.standardizedFullPath)
+        else { return nil }
+        return ClientPathFormatter.displayPrefix(root: boundRoot.logicalRoot, visibleRoots: projection.visibleLogicalRootRefs)
+    }
+
+    /// Reconstructs the entry locally from the candidate's own fields plus the queried root's
+    /// `rootPath`/`rootName`, mirroring `AgentFileTagSuggestionService.catalogEntry(from:rootPath:
+    /// rootName:)` exactly (P4-7a design §5.1's fourth mismatch fix).
+    private static func catalogEntry(
+        from candidate: CoreInventoryQueryCandidateV1,
+        rootPath: String,
+        rootName: String
+    ) -> WorkspaceSearchCatalogEntry {
+        let file = WorkspaceFileRecord(
+            id: candidate.id,
+            rootID: candidate.rootID,
+            name: candidate.name,
+            relativePath: candidate.standardizedRelativePath,
+            fullPath: candidate.standardizedFullPath,
+            parentFolderID: nil
         )
-        return [
-            logicalPath,
-            entry.displayPath,
-            entry.name,
-            entry.standardizedRelativePath,
-            entry.standardizedFullPath
-        ]
-        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-        .joined(separator: "\n")
+        let root = WorkspaceRootRecord(id: candidate.rootID, name: rootName, fullPath: rootPath)
+        return WorkspaceSearchCatalogEntry(file: file, root: root)
     }
 
     private static func makeFolder(_ record: WorkspaceFolderRecord) -> AgentContextFileBrowseFolder {
@@ -886,13 +904,5 @@ actor AgentContextFileBrowseService {
         let components = normalized.split(separator: "/").map(String.init)
         guard components.count > 1 else { return "" }
         return components.dropLast().joined(separator: "/")
-    }
-
-    private static func projectionIdentity(_ projection: WorkspaceRootBindingProjection?) -> String {
-        guard let projection else { return "unprojected" }
-        let roots = projection.boundRootsForMetadata.map {
-            "\($0.logicalRoot.id.uuidString):\($0.logicalRoot.standardizedFullPath)->\($0.physicalRoot.id.uuidString):\($0.physicalRoot.standardizedFullPath)"
-        }
-        return ([projection.sessionID.uuidString] + roots).joined(separator: "|")
     }
 }

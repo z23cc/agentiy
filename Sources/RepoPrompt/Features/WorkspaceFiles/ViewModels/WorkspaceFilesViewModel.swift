@@ -1,6 +1,8 @@
+import AgentryCoreBridge
 import AppKit
 import Combine
 import Foundation
+import RepoPromptDomainRuntime
 import RepoPromptSearchCore
 import SwiftUI
 #if DEBUG || EDIT_FLOW_PERF
@@ -863,14 +865,21 @@ class WorkspaceFilesViewModel: ObservableObject {
 
     // MARK: - Path Search Caches
 
+    /// P4-7c c1 (design doc §6.3, branch (a)): recon confirmed the markdown-link fallback
+    /// (`searchFallbackCandidates`) is reached from exactly one production call site --
+    /// `MarkdownFileLinkOpener` (`Infrastructure/UI/Markdown/MarkdownFileLinkInteraction.swift`),
+    /// wired as a per-tap SwiftUI environment callback at `AgentModeView.swift:1471` -- one query
+    /// per user-initiated link click, never a loop over every link in a rendered document. Call
+    /// frequency is therefore low, per §6.3's decision criteria, and this holder ports to the
+    /// stateless `pathSearchFindV1` kernel rather than deferring: no persistent Swift index/cache
+    /// survives this rewrite (the corpus is rebuilt per call, accepted per §6.3), so the
+    /// generation-keyed cache fields this comment used to sit above
+    /// (`markdownPathSearchIndex`/`markdownPathSearchEntries`/`markdownPathSearchGeneration`) and
+    /// `clearPathResolutionCaches()`'s sole reason to exist are both deleted with it.
     private struct MarkdownPathSearchEntry {
         let queryPath: String
         let fileFullPath: String
     }
-
-    private var markdownPathSearchIndex: PathSearchIndex?
-    private var markdownPathSearchEntries: [MarkdownPathSearchEntry] = []
-    private var markdownPathSearchGeneration: UInt64?
 
     @MainActor
     private func bumpHierarchyGeneration(forRootFullPath rootFullPath: String?) {
@@ -893,13 +902,6 @@ class WorkspaceFilesViewModel: ObservableObject {
             // Root disappearing is also a topology change for external consumers.
             hierarchyGenerationSignature &+= 1
         }
-    }
-
-    @MainActor
-    private func clearPathResolutionCaches() async {
-        markdownPathSearchIndex = nil
-        markdownPathSearchEntries.removeAll(keepingCapacity: false)
-        markdownPathSearchGeneration = nil
     }
 
     @discardableResult
@@ -5016,7 +5018,6 @@ class WorkspaceFilesViewModel: ObservableObject {
             recomputeAncestorStates(startingAt: parent)
         }
         invalidateStaticSnapshot(forRootFullPath: rootKey)
-        await clearPathResolutionCaches()
         publishRootFoldersChanged()
         return outcome.file
     }
@@ -5768,7 +5769,6 @@ class WorkspaceFilesViewModel: ObservableObject {
 
         // Mark snapshot cache as dirty and bump that root gen
         invalidateStaticSnapshot(forRootFullPath: stdRoot)
-        await clearPathResolutionCaches()
 
         if let workspaceRoot = workspaceFileContextRootsByRootKey.removeValue(forKey: rootKey) {
             await workspaceFileContextStore.unloadRoot(id: workspaceRoot.id)
@@ -6405,7 +6405,6 @@ class WorkspaceFilesViewModel: ObservableObject {
         rootHierarchyGenerations.removeAll()
         hierarchyGenerationSignature &+= 1
         invalidateStaticSnapshot(forRootFullPath: nil)
-        await clearPathResolutionCaches()
         await Task.yield()
 
         await workspaceFileContextStore.unloadRoots(ids: storeRootsToUnload.map(\.id))
@@ -6428,7 +6427,6 @@ class WorkspaceFilesViewModel: ObservableObject {
         rootShellLoadedPaths.removeAll()
         rootHierarchyGenerations.removeAll()
         invalidateStaticSnapshot(forRootFullPath: nil)
-        await clearPathResolutionCaches()
         if hadRoots {
             allFoldersUnloadedPublisher.send(())
         }
@@ -12111,20 +12109,25 @@ extension WorkspaceFilesViewModel {
         return basenameMatches.count == 1 ? basenameMatches[0] : nil
     }
 
+    /// P4-7c c1 (design doc §6.3, branch (a) -- see this file's "Path Search Caches" doc comment
+    /// for the recon that selected this branch). Builds the corpus fresh per call over
+    /// `fileHierarchyIndex.filesByFullPath` (a view-model projection, not the inventory table --
+    /// `inventoryQuery` would be the wrong tool per §6.3) and queries it via the stateless
+    /// `pathSearchFindV1` kernel (`Sources/AgentryCoreBridge/CorePathSearch.swift`). That seam's
+    /// own doc calls per-call corpus construction "NOT the eventual production shape" for a
+    /// per-keystroke caller -- this is not one: `searchFallbackCandidates` is reached only as the
+    /// last resort of `resolveFileForMarkdownLink` (after exact and unique-basename resolution both
+    /// fail), itself called only from `MarkdownFileLinkOpener`'s one-tap-per-click callback, so the
+    /// per-call rebuild this rewrite accepts is bounded by link clicks, not keystrokes or document
+    /// size.
     @MainActor
-    private func ensureMarkdownPathSearchIndex() async {
-        let generation = currentHierarchyGenerationSignature()
-        guard markdownPathSearchGeneration != generation || markdownPathSearchIndex == nil else {
-            return
-        }
-
+    private func searchFallbackCandidates(for normalizedPath: String) async -> [FileViewModel] {
         let files = fileHierarchyIndex.filesByFullPath.values.sorted {
             $0.standardizedFullPath.localizedStandardCompare($1.standardizedFullPath) == .orderedAscending
         }
 
         var entries: [MarkdownPathSearchEntry] = []
         entries.reserveCapacity(files.count * 2)
-
         for file in files {
             let relativePath = file.standardizedRelativePath
             entries.append(MarkdownPathSearchEntry(queryPath: relativePath, fileFullPath: file.standardizedFullPath))
@@ -12134,16 +12137,7 @@ extension WorkspaceFilesViewModel {
                 entries.append(MarkdownPathSearchEntry(queryPath: uniqueRelativePath, fileFullPath: file.standardizedFullPath))
             }
         }
-
-        markdownPathSearchEntries = entries
-        markdownPathSearchIndex = await PathSearchIndex.build(paths: entries.map(\.queryPath))
-        markdownPathSearchGeneration = generation
-    }
-
-    @MainActor
-    private func searchFallbackCandidates(for normalizedPath: String) async -> [FileViewModel] {
-        await ensureMarkdownPathSearchIndex()
-        guard let markdownPathSearchIndex else { return [] }
+        guard !entries.isEmpty else { return [] }
 
         var queries: [String] = []
         let standardizedPath = (normalizedPath as NSString).standardizingPath
@@ -12155,18 +12149,32 @@ extension WorkspaceFilesViewModel {
         if !basename.isEmpty, !queries.contains(basename) {
             queries.append(basename)
         }
+        guard !queries.isEmpty else { return [] }
 
         var bestRankByFullPath: [String: Int] = [:]
-        for query in queries {
-            let results = await markdownPathSearchIndex.search(query, limit: 64)
-            for (rank, candidate) in results.enumerated() {
-                guard candidate.index >= 0, candidate.index < markdownPathSearchEntries.count else { continue }
-                let entry = markdownPathSearchEntries[candidate.index]
-                let currentRank = bestRankByFullPath[entry.fileFullPath] ?? .max
-                if rank < currentRank {
-                    bestRankByFullPath[entry.fileFullPath] = rank
+        do {
+            let client = try await AgentryCoreService.shared.computeClient()
+            let corpusPaths = entries.map(\.queryPath)
+            let coreQueries = queries.map {
+                CorePathSearchQueryV1(pattern: $0, limit: 64, mode: .find)
+            }
+            let results = try await client.pathSearchFindV1(corpusPaths: corpusPaths, queries: coreQueries)
+            for result in results {
+                for (rank, ordinal) in result.ordinals.enumerated() {
+                    guard let index = Int(exactly: ordinal), entries.indices.contains(index) else { continue }
+                    let entry = entries[index]
+                    let currentRank = bestRankByFullPath[entry.fileFullPath] ?? .max
+                    if rank < currentRank {
+                        bestRankByFullPath[entry.fileFullPath] = rank
+                    }
                 }
             }
+        } catch {
+            // Fail visible-to-the-caller-as-"no fallback candidate", not a crash: the caller
+            // (`resolveFileForMarkdownLink`) already treats an empty result as "could not resolve",
+            // its ordinary not-found outcome, mirroring `AgentFileTagSuggestionService
+            // .storeBackedCatalogResults`'s identical per-query catch discipline (design §4.6).
+            return []
         }
 
         let selectedPaths = Set(selectedFiles.map(\.standardizedFullPath))
@@ -12196,6 +12204,17 @@ extension WorkspaceFilesViewModel {
             }
             .map(\.file)
     }
+
+    #if DEBUG
+        /// P4-7c c1: direct test seam for the rewired fallback (§6.3), since
+        /// `searchFallbackCandidates` is private and reaching it only through
+        /// `resolveFileForMarkdownLink`/`openFileForMarkdownLink` would require the exact- and
+        /// unique-basename resolution steps ahead of it to be engineered to fail on every fixture.
+        @MainActor
+        func searchFallbackCandidatesForTesting(for normalizedPath: String) async -> [FileViewModel] {
+            await searchFallbackCandidates(for: normalizedPath)
+        }
+    #endif
 
     @MainActor
     func resolveFolderForUserInput(

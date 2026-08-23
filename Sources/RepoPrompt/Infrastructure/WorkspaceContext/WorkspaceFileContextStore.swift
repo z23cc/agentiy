@@ -2744,12 +2744,6 @@ actor WorkspaceFileContextStore {
     private var searchCatalogSnapshotsByScope: [WorkspaceLookupRootScope: SearchCatalogSnapshotCacheEntry] = [:]
     private var nextSearchCatalogSnapshotAccessSequence: UInt64 = 0
     private var publishedRootCatalogShardsByRootID: [UUID: RootCatalogShard] = [:]
-    private struct RootSeedSearchShadow {
-        let scope: WorkspaceRootSeedShadowScope
-        let control: WorkspaceProjectedPathSearchShadowControl
-    }
-
-    private var rootSeedSearchShadowsByRootID: [UUID: RootSeedSearchShadow] = [:]
     private var rootCatalogShardWeakReferencesByRootID: [UUID: [WeakRootCatalogShardReference]] = [:]
     private var rootCatalogShardDeltaStatesByRootID: [UUID: RootCatalogShardDeltaState] = [:]
     private var pathMatchSnapshotIdentitiesByScope: [WorkspaceLookupRootScope: PathMatchCacheIdentity] = [:]
@@ -4061,16 +4055,18 @@ actor WorkspaceFileContextStore {
                     return .fallback(.seededShardPreparationFailure)
                 }
             #endif
-            // P4-6b reroute: `WorkspaceProjectedPathSearchIndex`'s initializer is kept purely for
-            // its validation side effect -- it is the diff-seeded fast path's own correctness
+            // P4-6b reroute, P4-7c c1 update: `WorkspaceSeededRootReplayValidator.evaluate` (no
+            // C-engine dependency, `Models/WorkspaceSeededRootReplayVerdict.swift`) is kept purely
+            // for its validation side effect -- it is the diff-seeded fast path's own correctness
             // self-check (replayed diff vs. cached base snapshot), not a search-index nicety. A
-            // `nil` here means the replay disagreed with the snapshot and must fall back to the
-            // ordinary full crawl, exactly as before this reroute. The resulting index object
-            // itself is discarded -- Rust builds its own path-search index internally from the
-            // seeded records below (contract doc §5.2/§11; the already-ported orchestration in
-            // `rust/crates/runtime/src/inventory_scope/path_index/`), so no Swift-side
-            // `WorkspaceSearchRootPathIndex`/`RootCatalogShard` is constructed for this root.
-            guard let projected = WorkspaceProjectedPathSearchIndex(
+            // `.disagrees` verdict means the replay disagreed with the snapshot and must fall back
+            // to the ordinary full crawl, exactly as before this reroute. No index object is ever
+            // constructed on this path any more -- Rust builds its own path-search index
+            // internally from the seeded records below (contract doc §5.2/§11; the already-ported
+            // orchestration in `rust/crates/runtime/src/inventory_scope/path_index/`), so no
+            // Swift-side `WorkspaceSearchRootPathIndex`/`RootCatalogShard` is constructed for this
+            // root.
+            guard case let .agrees(replayStatistics) = WorkspaceSeededRootReplayValidator.evaluate(
                 snapshot: snapshot,
                 planHandle: planHandle,
                 additionalChangedRelativePaths: replay.changedRelativePaths,
@@ -4110,9 +4106,9 @@ actor WorkspaceFileContextStore {
             ready.phase = .readyForCommit
             pendingSeededRootsByID[pendingID] = ready
             WorktreeStartupInstrumentation.recordSeedProjectedPreparation(
-                baseEntryCount: projected.baseEntryCount,
-                overlayEntryCount: projected.overlayEntryCount,
-                tombstoneCount: projected.tombstoneCount
+                baseEntryCount: replayStatistics.baseEntryCount,
+                overlayEntryCount: replayStatistics.overlayEntryCount,
+                tombstoneCount: replayStatistics.tombstoneCount
             )
             WorktreeStartupInstrumentation.record(
                 .seedReadyForCommit,
@@ -4796,13 +4792,6 @@ actor WorkspaceFileContextStore {
         #endif
         latestSessionWorktreeOwnershipGenerationByOwnerID[ownerID] = generation
         let installedToken = installedSessionWorktreeOwnershipTokenByOwnerID[ownerID]
-        if let installedToken,
-           let installedRecord = sessionWorktreeOwnershipRecordsByToken[installedToken]
-        {
-            for root in installedRecord.roots {
-                invalidateRootSeedSearchShadow(rootID: root.rootID)
-            }
-        }
         let token = WorkspaceSessionWorktreeOwnershipToken(ownerID: ownerID, generation: generation)
         let supersededTokens = sessionWorktreeOwnershipRecordsByToken.keys.filter {
             $0.ownerID == ownerID && $0 != installedToken
@@ -4825,7 +4814,6 @@ actor WorkspaceFileContextStore {
         do {
             var preparedRoots: [WorkspaceSessionWorktreeOwnedRoot] = []
             var materializationHintObservations: [String: WorkspaceRootMaterializationHintObservation] = [:]
-            var rootSeedShadowPreparations: [WorkspaceRootSeedShadowPreparation] = []
             var pendingSeededRootPreparations: [WorkspacePendingSeededRootPreparation] = []
             for path in standardizedPaths {
                 try Task.checkCancellation()
@@ -5111,20 +5099,12 @@ actor WorkspaceFileContextStore {
                         }
                         WorktreeStartupInstrumentation.recordInventoryComparison(matched: matches)
                         if matches {
-                            let scope = WorkspaceRootSeedShadowScope(
-                                token: token,
-                                bindingFingerprint: bindingFingerprint,
-                                rootID: root.id,
-                                lifetimeID: state.lifetimeID,
-                                standardizedPhysicalPath: path,
-                                catalogGeneration: rootCatalogGeneration,
-                                appliedIndexGeneration: appliedIndexGeneration
-                            )
-                            rootSeedShadowPreparations.append(WorkspaceRootSeedShadowPreparation(
-                                scope: scope,
-                                snapshot: planHandle.snapshot,
-                                planHandle: planHandle
-                            ))
+                            // P4-7c c1: this branch used to also build a `WorkspaceRootSeedShadowPreparation`
+                            // for `installRootSeedSearchShadow` to consume later -- that consumer's own
+                            // output (`rootSeedSearchShadowsByRootID`) had zero production readers once
+                            // `.recordsAndPathIndexes` became unreachable at P4-7b (D-14), so it and this
+                            // construction are deleted together; the `matches`-based `.shadowVerified`
+                            // diagnostic below is independent of it and is preserved verbatim.
                             WorktreeStartupInstrumentation.record(
                                 .shadowVerified,
                                 context: startupContext,
@@ -5171,7 +5151,6 @@ actor WorkspaceFileContextStore {
                 roots: preparedRoots,
                 reusesInstalledOwnership: false,
                 materializationHintObservationsByPhysicalRootPath: materializationHintObservations,
-                rootSeedShadowPreparations: rootSeedShadowPreparations,
                 pendingSeededRootPreparations: pendingSeededRootPreparations
             )
         } catch {
@@ -5235,9 +5214,6 @@ actor WorkspaceFileContextStore {
         var previousResources = SessionWorktreeOwnershipRemoval()
         if let previousToken, previousToken != preparation.token {
             previousResources = removeSessionWorktreeOwnershipToken(previousToken)
-        }
-        for shadowPreparation in preparation.rootSeedShadowPreparations {
-            await installRootSeedSearchShadow(shadowPreparation)
         }
         scheduleOrphanedSessionWorktreeResourceCleanup(previousResources)
         return record.roots
@@ -5595,10 +5571,6 @@ actor WorkspaceFileContextStore {
         if let previousToken, previousToken != preparation.token {
             previousResources = removeSessionWorktreeOwnershipToken(previousToken)
         }
-        for shadowPreparation in preparation.rootSeedShadowPreparations {
-            await installRootSeedSearchShadow(shadowPreparation)
-        }
-
         // Watchers were activated and revalidated while private. Finalization
         // only retires the proof; visibility waiters remain held until it succeeds.
         for (service, activationProof, context) in pendingServices {
@@ -5697,8 +5669,7 @@ actor WorkspaceFileContextStore {
             roots: roots,
             reusesInstalledOwnership: false,
             materializationHintObservationsByPhysicalRootPath:
-            preparation.materializationHintObservationsByPhysicalRootPath,
-            rootSeedShadowPreparations: preparation.rootSeedShadowPreparations
+            preparation.materializationHintObservationsByPhysicalRootPath
         )
         let committedRoots = try await commitSessionWorktreeOwnership(replacement)
         #if DEBUG
@@ -6073,9 +6044,6 @@ actor WorkspaceFileContextStore {
             lifetimeID: ownedRoot.lifetimeID
         )
         sessionWorktreeOwnershipTokensByRootLifetime[rootKey, default: []].insert(token)
-        if sessionWorktreeOwnershipTokensByRootLifetime[rootKey] != Set([token]) {
-            invalidateRootSeedSearchShadow(rootID: ownedRoot.rootID)
-        }
         removeSessionWorktreeReservation(
             standardizedPath: ownedRoot.standardizedPhysicalPath,
             token: token
@@ -6138,9 +6106,6 @@ actor WorkspaceFileContextStore {
             }
         }
         for root in record?.roots ?? [] {
-            if rootSeedSearchShadowsByRootID[root.rootID]?.scope.token == token {
-                invalidateRootSeedSearchShadow(rootID: root.rootID)
-            }
             let key = SessionWorktreeRootLifetimeKey(rootID: root.rootID, lifetimeID: root.lifetimeID)
             sessionWorktreeOwnershipTokensByRootLifetime[key]?.remove(token)
             if sessionWorktreeOwnershipTokensByRootLifetime[key]?.isEmpty == true {
@@ -8033,73 +7998,13 @@ actor WorkspaceFileContextStore {
         )
     }
 
-    private func installRootSeedSearchShadow(_ preparation: WorkspaceRootSeedShadowPreparation) async {
-        let scope = preparation.scope
-        let lifetimeKey = SessionWorktreeRootLifetimeKey(rootID: scope.rootID, lifetimeID: scope.lifetimeID)
-        guard installedSessionWorktreeOwnershipTokenByOwnerID[scope.token.ownerID] == scope.token,
-              latestSessionWorktreeOwnershipGenerationByOwnerID[scope.token.ownerID] == scope.token.generation,
-              let record = sessionWorktreeOwnershipRecordsByToken[scope.token],
-              record.bindingFingerprint == scope.bindingFingerprint,
-              record.roots.contains(where: {
-                  $0.rootID == scope.rootID
-                      && $0.lifetimeID == scope.lifetimeID
-                      && $0.standardizedPhysicalPath == scope.standardizedPhysicalPath
-              }),
-              sessionWorktreeOwnershipTokensByRootLifetime[lifetimeKey] == Set([scope.token]),
-              let state = rootStatesByID[scope.rootID],
-              state.lifetimeID == scope.lifetimeID,
-              state.root.standardizedFullPath == scope.standardizedPhysicalPath,
-              catalogGenerationsByRootID[scope.rootID] == scope.catalogGeneration,
-              appliedIndexGenerationsByRootID[scope.rootID] == scope.appliedIndexGeneration
-        else {
-            WorktreeStartupInstrumentation.recordShadowFallback(.ownerSuperseded)
-            return
-        }
-        let entries = await buildAuthoritativeCatalogComponents(roots: [state.root]).entries
-        guard let projection = WorkspaceProjectedPathSearchIndex(
-            snapshot: preparation.snapshot,
-            planHandle: preparation.planHandle,
-            additionalChangedRelativePaths: .empty,
-            root: state.root,
-            authoritativeEntries: entries
-        ) else {
-            WorktreeStartupInstrumentation.recordShadowFallback(.projectedSearchMismatch)
-            return
-        }
-        invalidateRootSeedSearchShadow(rootID: scope.rootID)
-        let control = WorkspaceProjectedPathSearchShadowControl(scope: scope, projection: projection)
-        rootSeedSearchShadowsByRootID[scope.rootID] = RootSeedSearchShadow(
-            scope: scope,
-            control: control
-        )
-    }
-
-    private func rootSeedSearchShadowControl(
-        key: RootCatalogShardKey,
-        root: WorkspaceRootRecord
-    ) -> WorkspaceProjectedPathSearchShadowControl? {
-        guard let shadow = rootSeedSearchShadowsByRootID[root.id] else { return nil }
-        let scope = shadow.scope
-        let lifetimeKey = SessionWorktreeRootLifetimeKey(rootID: scope.rootID, lifetimeID: scope.lifetimeID)
-        guard shadow.control.isActive,
-              scope.rootID == key.rootID,
-              scope.lifetimeID == key.lifetimeID,
-              scope.catalogGeneration == key.topologyGeneration,
-              scope.standardizedPhysicalPath == root.standardizedFullPath,
-              appliedIndexGenerationsByRootID[root.id] == scope.appliedIndexGeneration,
-              installedSessionWorktreeOwnershipTokenByOwnerID[scope.token.ownerID] == scope.token,
-              latestSessionWorktreeOwnershipGenerationByOwnerID[scope.token.ownerID] == scope.token.generation,
-              sessionWorktreeOwnershipTokensByRootLifetime[lifetimeKey] == Set([scope.token])
-        else {
-            invalidateRootSeedSearchShadow(rootID: root.id)
-            return nil
-        }
-        return shadow.control
-    }
-
-    private func invalidateRootSeedSearchShadow(rootID: UUID) {
-        rootSeedSearchShadowsByRootID.removeValue(forKey: rootID)?.control.invalidate()
-    }
+    // P4-7c c1: `installRootSeedSearchShadow`, `rootSeedSearchShadowControl`, and
+    // `invalidateRootSeedSearchShadow` were deleted here. Their sole output
+    // (`rootSeedSearchShadowsByRootID`) had zero production readers once P4-7b made
+    // `.recordsAndPathIndexes` unreachable from any production caller (D-14) -- the only reader,
+    // `rootSeedSearchShadowControl`, was only ever called from `buildAuthoritativeRootPathIndexes`,
+    // which only runs for that retired capability. See `docs/architecture/rust-inventory-scope-v1.md`
+    // §13's P4-7c amendment.
 
     private func registerPublishedRootCatalogShard(
         _ shard: RootCatalogShard,
@@ -8161,8 +8066,6 @@ actor WorkspaceFileContextStore {
     }
 
     private func applyAppliedIndexEventToRootCatalogShard(_ event: WorkspaceAppliedIndexBatchEvent) async {
-        // Any post-initialization filesystem publication invalidates the one-shot shadow plan.
-        invalidateRootSeedSearchShadow(rootID: event.rootID)
         if event.isRootUnload {
             publishedRootCatalogShardsByRootID.removeValue(forKey: event.rootID)
             rootCatalogShardDeltaStatesByRootID.removeValue(forKey: event.rootID)
@@ -8643,14 +8546,10 @@ actor WorkspaceFileContextStore {
                 lifetimeID: state.lifetimeID,
                 topologyGeneration: catalogGenerationsByRootID[root.id] ?? 0
             )
-            let shadowControl = rootCatalogShardKey(for: root).flatMap {
-                rootSeedSearchShadowControl(key: $0, root: root)
-            }
             return WorkspaceSearchRootPathIndex(
                 identity: identity,
                 rootPath: root.standardizedFullPath,
-                entries: rootEntries,
-                shadowControl: shadowControl
+                entries: rootEntries
             )
         }
         #if DEBUG
@@ -11095,7 +10994,6 @@ actor WorkspaceFileContextStore {
             if let inventoryScopeAuthority {
                 await inventoryScopeAuthority.closeRoot(rootID: rootID)
             }
-            invalidateRootSeedSearchShadow(rootID: rootID)
             let rootEpoch = WorkspaceCodemapRootEpoch(
                 rootID: rootID,
                 rootLifetimeID: state.lifetimeID
