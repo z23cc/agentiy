@@ -174,6 +174,14 @@ final actor ClaudeNativeProcessSessionController {
     private var pendingControlRequestTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var pendingPermissionRequests: [String: PendingPermissionRequest] = [:]
     private var translator: ClaudeSDKNDJSONTranslator
+    #if DEBUG
+        /// P6-5 DEBUG shadow arm (`docs/designs/p6-claude-vertical-2026-08-23.md` P6-5,
+        /// `docs/architecture/rust-agent-claude-v1.md` §3.4/§14): opt-in-only (default disabled,
+        /// absent from any code path a release build can reach -- `#if DEBUG`), independent live
+        /// codec/translator comparator against the Rust arm. See `ClaudeCodecShadowComparator`'s
+        /// own doc for the independence and scope guarantees.
+        private let claudeCodecShadowComparator: ClaudeCodecShadowComparator?
+    #endif
     private var sessionID: String?
     private var turnInFlight: Bool {
         pendingTurnIDHead < pendingTurnIDBuffer.count
@@ -332,30 +340,65 @@ final actor ClaudeNativeProcessSessionController {
             .description
     }
 
-    init(
-        runID: UUID,
-        tabID: UUID,
-        windowID: Int,
-        workspacePath: String?,
-        config: ClaudeCodeAgentConfig,
-        environmentResolver: any ClaudeCodeLaunchEnvironmentResolving = ClaudeCodeLaunchEnvironmentResolver(),
-        authoritativeTurnIdleFallbackSeconds: TimeInterval = 1.0
-    ) {
-        self.runID = runID
-        self.tabID = tabID
-        self.windowID = windowID
-        self.workspacePath = workspacePath
-        self.config = config
-        self.environmentResolver = environmentResolver
-        self.authoritativeTurnIdleFallbackSeconds = authoritativeTurnIdleFallbackSeconds
-        rawEventFileLoggingEnabled = Self.isRawEventFileLoggingEnabled()
-        rawEventLogFileURL = nil
-        rawEventLogFileSessionID = nil
-        translator = ClaudeSDKNDJSONTranslator(enableDebugLogging: config.enableDebugLogging)
-        let stream = Self.makeEventsStream()
-        eventsStream = stream.stream
-        eventsContinuation = stream.continuation
-    }
+    #if DEBUG
+        /// P6-5: the DEBUG-only initializer overload, carrying the shadow-comparator opt-in
+        /// parameter. Mirrors the established mechanism `WorkspaceFileContextStore`'s
+        /// `enableInventoryScopeShadowValidation`/`enableCatalogShardShadowValidation` already use
+        /// (design doc §3.4 precedent) -- Swift does not support conditionally compiling individual
+        /// parameters inside one parameter list, only whole declarations, so this is a full second
+        /// `init` overload rather than a single conditional parameter.
+        init(
+            runID: UUID,
+            tabID: UUID,
+            windowID: Int,
+            workspacePath: String?,
+            config: ClaudeCodeAgentConfig,
+            environmentResolver: any ClaudeCodeLaunchEnvironmentResolving = ClaudeCodeLaunchEnvironmentResolver(),
+            authoritativeTurnIdleFallbackSeconds: TimeInterval = 1.0,
+            enableClaudeCodecShadowComparator: Bool = false
+        ) {
+            self.runID = runID
+            self.tabID = tabID
+            self.windowID = windowID
+            self.workspacePath = workspacePath
+            self.config = config
+            self.environmentResolver = environmentResolver
+            self.authoritativeTurnIdleFallbackSeconds = authoritativeTurnIdleFallbackSeconds
+            rawEventFileLoggingEnabled = Self.isRawEventFileLoggingEnabled()
+            rawEventLogFileURL = nil
+            rawEventLogFileSessionID = nil
+            translator = ClaudeSDKNDJSONTranslator(enableDebugLogging: config.enableDebugLogging)
+            claudeCodecShadowComparator = enableClaudeCodecShadowComparator ? ClaudeCodecShadowComparator() : nil
+            let stream = Self.makeEventsStream()
+            eventsStream = stream.stream
+            eventsContinuation = stream.continuation
+        }
+    #else
+        init(
+            runID: UUID,
+            tabID: UUID,
+            windowID: Int,
+            workspacePath: String?,
+            config: ClaudeCodeAgentConfig,
+            environmentResolver: any ClaudeCodeLaunchEnvironmentResolving = ClaudeCodeLaunchEnvironmentResolver(),
+            authoritativeTurnIdleFallbackSeconds: TimeInterval = 1.0
+        ) {
+            self.runID = runID
+            self.tabID = tabID
+            self.windowID = windowID
+            self.workspacePath = workspacePath
+            self.config = config
+            self.environmentResolver = environmentResolver
+            self.authoritativeTurnIdleFallbackSeconds = authoritativeTurnIdleFallbackSeconds
+            rawEventFileLoggingEnabled = Self.isRawEventFileLoggingEnabled()
+            rawEventLogFileURL = nil
+            rawEventLogFileSessionID = nil
+            translator = ClaudeSDKNDJSONTranslator(enableDebugLogging: config.enableDebugLogging)
+            let stream = Self.makeEventsStream()
+            eventsStream = stream.stream
+            eventsContinuation = stream.continuation
+        }
+    #endif
 
     func ensureEventsStreamReady() {
         guard eventsContinuation == nil else { return }
@@ -944,6 +987,9 @@ final actor ClaudeNativeProcessSessionController {
     }
 
     private func handleLine(_ lineData: Data) async {
+        #if DEBUG
+            claudeCodecShadowComparator?.observe(lineData)
+        #endif
         writeRawEventLogRecord(kind: "protocol.inbound.raw", payload: lineRecordPayload(from: lineData))
         do {
             guard let inbound = try ClaudeSDKProtocolCodec.decodeLine(lineData) else { return }
@@ -1655,6 +1701,30 @@ final actor ClaudeNativeProcessSessionController {
 
         func test_determineTurnStatus(payload: [String: Any], stopReasonHint: String? = nil) -> TurnStatus {
             determineTurnStatus(from: payload, stopReasonHint: stopReasonHint)
+        }
+
+        /// P6-5: feeds a raw line directly to the shadow comparator (bypassing the process/stdout
+        /// pipeline entirely) so a test can replay a corpus fixture through the exact comparator
+        /// instance this controller is holding, then read back its accumulated report.
+        func test_observeLineWithClaudeCodecShadowComparator(_ lineData: Data) {
+            claudeCodecShadowComparator?.observe(lineData)
+        }
+
+        /// P6-5: routes a raw line through the REAL `handleLine` dispatch (decode, recovery
+        /// heuristics, translation, emission) -- the live shadow arm's actual production call site,
+        /// not a harness that bypasses it. Only well-formed fixture lines should be driven through
+        /// this (malformed-on-purpose fixtures can reach `failProtocolAndShutdown`, which this
+        /// controller does not expect to run outside a real live session).
+        func test_handleLine(_ lineData: Data) async {
+            await handleLine(lineData)
+        }
+
+        func test_claudeCodecShadowComparatorMismatches() -> [String] {
+            claudeCodecShadowComparator?.mismatches.map(\.description) ?? []
+        }
+
+        func test_claudeCodecShadowComparatorComparedCount() -> Int {
+            claudeCodecShadowComparator?.comparedCount ?? 0
         }
 
         func test_setTurnWasInterrupted(_ value: Bool) {
