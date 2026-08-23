@@ -93,11 +93,15 @@ pub const DISCOVERY_RECORD_STRIDE: usize = 12;
 pub const FACT_ROW_STRIDE: usize = 23;
 /// Words per query candidate row: id(2) + root_id(2) + name_idx(1) + relative_path_idx(1) +
 /// standardized_relative_path_idx(1) + full_path_idx(1) + standardized_full_path_idx(1) +
-/// display_path_idx(1) + score(1) = 11. `display_path` carries the per-root-prefix composition
-/// contract doc §6 pins (`ClientPathFormatter.displayPath`-equivalent) -- it is Rust-computed
-/// (`query::QueryPrefix::display_path`) and must reach the caller, not be discarded after
-/// computation.
-pub const CANDIDATE_ROW_STRIDE: usize = 11;
+/// display_path_idx(1) + tie_break_key_idx(1) + score(1) = 12. `display_path` carries the
+/// per-root-prefix composition contract doc §6 pins (`ClientPathFormatter.displayPath`-equivalent)
+/// -- it is Rust-computed (`query::QueryPrefix::display_path`) and must reach the caller, not be
+/// discarded after computation. `tie_break_key` (P4-7b §4.2) is the matched subject string
+/// (`PathIndexCandidate.tie_break_key` / `PathSearchMatch.tie_break_key`) -- the response's
+/// `display_path` is caller-prefix-composed and is NOT byte-identical to the index's own stored
+/// key in multi-root configurations with ambiguous root names, so it cannot be reconstructed
+/// client-side; it must ride the wire as its own field.
+pub const CANDIDATE_ROW_STRIDE: usize = 12;
 
 // ---- fail-closed limits ------------------------------------------------------------------------
 
@@ -1454,6 +1458,7 @@ pub struct QueryCandidateRow {
     pub full_path: String,
     pub standardized_full_path: String,
     pub display_path: String,
+    pub tie_break_key: String,
     pub score: i64,
 }
 
@@ -1475,6 +1480,7 @@ pub fn encode_query_response(generation: Option<u64>, candidates: &[QueryCandida
             pool.intern(&candidate.full_path),
             pool.intern(&candidate.standardized_full_path),
             pool.intern(&candidate.display_path),
+            pool.intern(&candidate.tie_break_key),
             // Sign-preserving two's-complement pack/unpack (`as i64 as u64` / `as u64 as i64`):
             // scores are `i32` today (always `1` in this crate, per `PathSearchMatch`/
             // `PathIndexCandidate`'s doc comments) so this never actually wraps, but the pack is
@@ -1522,7 +1528,7 @@ pub fn decode_query_response(bytes: &[u8]) -> Result<(Option<u64>, Vec<QueryCand
     let candidates = rows_words
         .chunks_exact(CANDIDATE_ROW_STRIDE)
         .map(|row| {
-            let &[id_hi, id_lo, root_hi, root_lo, name_idx, relative_path_idx, standardized_relative_path_idx, full_path_idx, standardized_full_path_idx, display_path_idx, score] =
+            let &[id_hi, id_lo, root_hi, root_lo, name_idx, relative_path_idx, standardized_relative_path_idx, full_path_idx, standardized_full_path_idx, display_path_idx, tie_break_key_idx, score] =
                 row
             else {
                 return Err(WireError::Malformed("candidate row"));
@@ -1536,6 +1542,7 @@ pub fn decode_query_response(bytes: &[u8]) -> Result<(Option<u64>, Vec<QueryCand
                 full_path: pool.resolve(full_path_idx)?.to_owned(),
                 standardized_full_path: pool.resolve(standardized_full_path_idx)?.to_owned(),
                 display_path: pool.resolve(display_path_idx)?.to_owned(),
+                tie_break_key: pool.resolve(tie_break_key_idx)?.to_owned(),
                 // See `encode_query_response`'s doc comment on this same cast pair.
                 score: score as i64,
             })
@@ -2176,6 +2183,7 @@ mod tests {
             full_path: "/repo/src/App.swift".to_owned(),
             standardized_full_path: "/repo/src/App.swift".to_owned(),
             display_path: "root/src/App.swift".to_owned(),
+            tie_break_key: "root/src/App.swift\n/repo/src/App.swift".to_owned(),
             score: 42,
         }];
         let bytes = encode_query_response(Some(3), &candidates);
@@ -2183,12 +2191,31 @@ mod tests {
         assert_eq!(generation, Some(3));
         assert_eq!(decoded[0].id, candidates[0].id);
         assert_eq!(decoded[0].display_path, "root/src/App.swift");
+        assert_eq!(decoded[0].tie_break_key, "root/src/App.swift\n/repo/src/App.swift");
         assert_eq!(decoded[0].score, 42);
 
         let bytes = encode_query_response(None, &[]);
         let (generation, decoded) = decode_query_response(&bytes).expect("decode");
         assert_eq!(generation, None);
         assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn query_response_rejects_stride_11_legacy_shaped_row_words() {
+        // Regression pin for P4-7b's stride widening (11 -> 12 words/row, `tie_break_key`
+        // added): a payload whose rows section declares exactly the OLD (pre-P4-7b) stride's
+        // word count must be rejected as malformed, never silently misdecoded as a shorter or
+        // differently-shaped row list.
+        let mut writer = Writer::header(MessageKind::QueryResponse);
+        writer.write_words(&[0, 0]).expect("header words"); // present=0, generation=0
+        writer.write_words(&vec![0u64; 11]).expect("legacy-stride row words");
+        writer.write_words(&[]).expect("string_range_words");
+        writer.write_blob(&[]).expect("utf8_blob");
+        let bytes = writer.finish();
+        assert!(matches!(
+            decode_query_response(&bytes),
+            Err(WireError::Malformed("candidate row stride"))
+        ));
     }
 
     #[test]
@@ -2212,7 +2239,7 @@ mod tests {
         // until its hardcoded constant is updated to match -- the drift can never pass silently.
         assert_eq!(
             fingerprint(),
-            "488cf8351bbb30aa78bc65a9dcbcdf94739a77848bc43d480c397a0ac443fdac"
+            "c31808756c14c1ed0325987b34c21e272359e4e0504a8402b3fd4b5e3c36c9c3"
         );
     }
 

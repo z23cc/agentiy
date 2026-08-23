@@ -13,7 +13,7 @@ final class InventoryScopeWireFingerprintTests: XCTestCase {
     func testSwiftMirrorFingerprintMatchesRustTruth() {
         XCTAssertEqual(
             CoreInventoryScopeWire.fingerprint(),
-                "488cf8351bbb30aa78bc65a9dcbcdf94739a77848bc43d480c397a0ac443fdac",
+                "c31808756c14c1ed0325987b34c21e272359e4e0504a8402b3fd4b5e3c36c9c3",
             """
             The Swift mirror's inventory-scope-v1 wire fingerprint no longer matches Rust's \
             (agentry_runtime::inventory_scope::wire::fingerprint). Re-derive both sides' \

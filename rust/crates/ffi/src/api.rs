@@ -1094,6 +1094,7 @@ impl CoreRuntime {
                             full_path: candidate.entry.full_path,
                             standardized_full_path: candidate.entry.standardized_full_path,
                             display_path: candidate.display_path,
+                            tie_break_key: candidate.tie_break_key,
                             score: candidate.score,
                         })
                         .collect();

@@ -649,6 +649,12 @@ public struct CoreInventoryQueryCandidateV1: Sendable, Equatable {
     public let fullPath: String
     public let standardizedFullPath: String
     public let displayPath: String
+    /// The matched subject string (P4-7b §4.2): Rust's `PathIndexCandidate.tie_break_key` /
+    /// `PathSearchMatch.tie_break_key`, i.e. the index's own subject-text composition for
+    /// `.indexKey`. `displayPath` above is the caller-prefix-composed value and is NOT
+    /// byte-identical to this in multi-root configurations with ambiguous root names -- do not
+    /// reconstruct one from the other; both must be consumed as sent.
+    public let tieBreakKey: String
     public let score: Int64
 }
 
@@ -1343,7 +1349,7 @@ private let coreInventoryScopeStringRangeStride = 2
 private let coreInventoryScopeOptionalWord = UInt64.max
 private let coreInventoryScopeRecordStride = 14
 private let coreInventoryScopeDiscoveryRecordStride = 12
-private let coreInventoryScopeCandidateRowStride = 11
+private let coreInventoryScopeCandidateRowStride = 12
 private let coreInventoryScopeFactRowStride = 23
 private let coreInventoryScopeMaxWordsPerSection = 8 * 1024 * 1024
 private let coreInventoryScopeMaxRowsPerCall = 200_000
@@ -1943,7 +1949,8 @@ enum CoreInventoryScopeWire {
                 fullPath: try pool.resolve(row[base + 7]),
                 standardizedFullPath: try pool.resolve(row[base + 8]),
                 displayPath: try pool.resolve(row[base + 9]),
-                score: Int64(bitPattern: row[base + 10])
+                tieBreakKey: try pool.resolve(row[base + 10]),
+                score: Int64(bitPattern: row[base + 11])
             ))
             index += coreInventoryScopeCandidateRowStride
         }
@@ -2248,7 +2255,7 @@ enum CoreInventoryScopeWire {
         inventory-scope-v1
         version=1
         kinds=bulkChunk:1,deltaEvent:2,resolveRequest:3,lookupRequest:4,factBlock:5,queryRequest:6,queryResponse:7,generationAdvanced:8,rootPublished:9,rootUnloaded:10,shardFallback:11,resnapshotRequired:12,discoveryBulkChunk:13,discoveryDeltaEvent:14
-        strides=stringRange:2,record:14,discoveryRecord:12,factRow:23,candidate:11
+        strides=stringRange:2,record:14,discoveryRecord:12,factRow:23,candidate:12
         optionalWord=18446744073709551615
         limits=blob:67108864,string:65536,words:8388608,rows:200000,ids:50000,paths:50000
         endianness=words:little-endian,uuidHalves:big-endian

@@ -63,6 +63,15 @@ final class CoreInventoryScopeShadowDifferentialTests: XCTestCase {
         XCTAssertEqual(result.generation, 0)
         XCTAssertEqual(Set(result.candidates.map(\.standardizedRelativePath)), Set(["App.swift", "src/Utils.swift"]))
         XCTAssertFalse(result.candidates.contains { $0.standardizedRelativePath == "README.md" })
+        // P4-7b §4.2: the wire's `tie_break_key` field (widened stride, decoded here through the
+        // full Swift -> FFI -> Rust round trip) must resolve to non-empty subject text for every
+        // candidate -- a stride/field misalignment would decode empty strings or throw, not pass
+        // silently. It is deliberately NOT asserted equal to `displayPath + "\n" + standardizedFullPath`
+        // here: this call's prefix arguments are empty, so the wire's caller-composed `displayPath`
+        // diverges from the index's own stored subject text (§1.5 Check A) -- that equality is
+        // pinned against the index's real composition in the Rust-side
+        // `index_key_query_tie_break_key_matches_the_indexs_own_subject_text_over_adversarial_entries`.
+        XCTAssertFalse(result.candidates.contains { $0.tieBreakKey.isEmpty })
 
         // The empty query is the whole-catalog merge order -- every record comes back.
         let emptyQueryResult = try await snapshot.query(

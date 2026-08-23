@@ -84,6 +84,12 @@ pub struct InventoryQueryRequest {
 pub struct InventoryQueryCandidate {
     pub entry: InventorySearchCatalogEntry,
     pub display_path: String,
+    /// The matched subject string (P4-7b §4.2): `.IndexKey` carries
+    /// `PathIndexCandidate::tie_break_key` unchanged (the index's own `path_search_index_key`
+    /// composition); `.Suggestion` carries `PathSearchMatch::tie_break_key` (the composed
+    /// suggestion haystack). Not derivable from `display_path` client-side -- see the wire's
+    /// `QueryCandidateRow::tie_break_key` doc comment.
+    pub tie_break_key: String,
     pub score: i64,
 }
 
@@ -118,6 +124,7 @@ pub fn run_query(generation: &RootGeneration, request: &InventoryQueryRequest) -
                 InventoryQueryCandidate {
                     entry: candidate.entry,
                     display_path,
+                    tie_break_key: candidate.tie_break_key,
                     score: i64::from(candidate.score),
                 }
             })
@@ -155,6 +162,7 @@ fn run_suggestion_query(
         .map(|matched| InventoryQueryCandidate {
             entry: entries[matched.index].clone(),
             display_path: display_paths[matched.index].clone(),
+            tie_break_key: matched.tie_break_key,
             score: i64::from(matched.score),
         })
         .collect()
@@ -203,5 +211,93 @@ mod tests {
         );
         assert_eq!(result.generation, 7);
         assert!(result.candidates.is_empty());
+    }
+
+    /// P4-7b §4.2 done-when: for `.IndexKey`, every returned candidate's `tie_break_key` is
+    /// byte-identical to `path_search_index_key(entry)` -- the index's own subject-text
+    /// composition -- over an adversarial entry corpus (the P3-2 corpus shape: CJK, emoji, a
+    /// combining-mark row, and a root-level entry with an empty relative path). This is what
+    /// makes the wire's `tie_break_key` field trustworthy as the cross-root merge's sole ordering
+    /// input (§1.5 Check A) rather than something a caller could get away with reconstructing.
+    #[test]
+    fn index_key_query_tie_break_key_matches_the_indexs_own_subject_text_over_adversarial_entries() {
+        use super::super::ids::{RootLifetimeId, UuidMinter};
+        use super::super::path_index::{RootPathIndex, path_search_index_key};
+        use crate::inventory::{InventoryFileRecord, InventoryRootRecord};
+        use std::sync::Arc;
+
+        let root = InventoryRootRecord {
+            id: [0xAA; 16],
+            name: "Root".to_owned(),
+            standardized_full_path: "/root".to_owned(),
+        };
+        let files = [
+            ("swift", "App.swift"),
+            ("emoji", "\u{1F600}-Face.swift"),
+            ("cjk", "\u{4E2D}\u{6587}.swift"),
+            // A combining-mark row: "e" + COMBINING ACUTE ACCENT (U+0301), decomposed rather
+            // than precomposed -- the exact shape `ordering.rs`'s canonical-equivalence
+            // divergence note (§1.5 evidence index) is about.
+            ("combining", "e\u{0301}-Decomposed.swift"),
+            // Root-level entry: empty relative path, the branch §4.2.1's empty-pattern recon
+            // and §1.5 Check A both call out by name.
+            ("root-level", ""),
+        ];
+        let entries: Vec<InventorySearchCatalogEntry> = files
+            .into_iter()
+            .enumerate()
+            .map(|(index, (marker, relative_path))| {
+                let mut id = [0u8; 16];
+                id[0] = index as u8;
+                let name = if relative_path.is_empty() { "Root" } else { relative_path };
+                let file = InventoryFileRecord {
+                    id,
+                    root_id: root.id,
+                    name: name.to_owned(),
+                    relative_path: relative_path.to_owned(),
+                    standardized_relative_path: relative_path.to_owned(),
+                    full_path: format!("/root/{relative_path}"),
+                    standardized_full_path: format!("/root/{relative_path}"),
+                    parent_folder_id: None,
+                    modification_date: None,
+                };
+                let _ = marker;
+                InventorySearchCatalogEntry::new(&file, &root)
+            })
+            .collect();
+
+        let lifetime = RootLifetimeId::mint(&UuidMinter::seeded(2));
+        let mut generation = RootGeneration::empty(root.id, lifetime);
+        generation.generation = 1;
+        generation.entries = entries.clone();
+        generation.path_index = Arc::new(RootPathIndex::full(&entries));
+
+        // A broad match-everything glob so every adversarial row is a candidate -- this test
+        // pins the tie-break-key equality, not the matching engine (already parity-proven,
+        // P3-3).
+        let result = run_query(
+            &generation,
+            &InventoryQueryRequest {
+                pattern: "*".to_owned(),
+                limit: entries.len(),
+                haystack_variant: QueryHaystackVariant::IndexKey,
+                prefix: prefix(),
+            },
+        );
+
+        assert_eq!(
+            result.candidates.len(),
+            entries.len(),
+            "every adversarial row must match the broad glob"
+        );
+        for candidate in &result.candidates {
+            let expected = path_search_index_key(&candidate.entry);
+            assert_eq!(
+                candidate.tie_break_key, expected,
+                "tie_break_key must be the index's own subject text for entry {:?}, never a \
+                 caller-reconstructible approximation",
+                candidate.entry.standardized_full_path
+            );
+        }
     }
 }
