@@ -1,16 +1,20 @@
 import Foundation
 
-// ---- Public friendly domain types (P3-3 slice-2b phase-2 path-search DIFFERENTIAL-ONLY seam) --
+// ---- Public friendly domain types (P3-3 slice-2b phase-2 path-search seam) -------------------
 //
-// IMPORTANT: this seam is DIFFERENTIAL-ONLY -- see
-// rust/crates/runtime/src/pathsearch/wire.rs's module doc. It batches an entire corpus plus every
-// query into ONE call, rebuilding the whole Rust `PathSearchIndex` per call -- this is NOT the
-// eventual production shape (which needs the P4 stateful scope-registry handle primitive; a
-// per-keystroke caller rebuilding the whole corpus every query would pay the same whole-table tax
-// the P3-2c inventory benchmark measured to be prohibitive, 57545bfa). This module exists so
-// `RustPathSearchProbe` can drive the real Rust seam (no mocking) against the real C-backed Swift
-// `PathSearchIndex` (`Sources/RepoPrompt/Infrastructure/WorkspaceContext/Search/PathSearchIndex.swift`)
-// and assert exact parity.
+// P4-7c c1 update: `.find`-mode `pathSearchFindV1` now has a real production caller --
+// `WorkspaceFilesViewModel`'s markdown-link-open fallback (holder #5, design doc §6.3) -- chosen
+// specifically because that caller's frequency (one per-tap SwiftUI callback, not a per-keystroke
+// or document-wide loop) tolerates rebuilding the whole corpus index per call. It batches an
+// entire corpus plus every query into ONE call, rebuilding the whole Rust `PathSearchIndex` per
+// call -- this remains NOT the shape for a per-keystroke or high-frequency caller (which would
+// need the P4 stateful scope-registry handle primitive; a per-keystroke caller rebuilding the
+// whole corpus every query would pay the same whole-table tax the P3-2c inventory benchmark
+// measured to be prohibitive, 57545bfa). `.projected` mode remains DIFFERENTIAL-ONLY with no
+// production caller as of P4-7c: `RustPathSearchProbe` and the Swift C-backed `PathSearchIndex` it
+// was differentially tested against are both deleted at P4-7c c3 -- see
+// `docs/architecture/rust-inventory-scope-v1.md`'s P4-7c amendment for the historical parity
+// evidence this seam's differential coverage established before that deletion.
 
 /// One path-search query's mode: mirrors `PathSearchIndex`'s two entry points
 /// (`searchSynchronously` vs `searchProjectedSynchronously`).

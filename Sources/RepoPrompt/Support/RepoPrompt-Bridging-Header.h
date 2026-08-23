@@ -43,7 +43,7 @@ bool repo_parse_gitignore_line(const char *line, repo_gitignore_pattern *result)
 // Search scoring functions
 #include "../../RepoPromptC/include/search_scoring.h"
 
-// Path search functions
-#include "../../RepoPromptC/include/path_search.h"
+// P4-7c c3: `path_search.h`/`path_search.c` deleted -- the C-backed Swift `PathSearchIndex` that
+// was their sole consumer is deleted in the same commit (`Search/PathSearchIndex.swift`).
 
 #endif /* RepoPrompt_Bridging_Header_h */

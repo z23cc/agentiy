@@ -157,40 +157,13 @@ actor WorkspaceSearchService {
             automaticRebuildDidStartHandler = handler
         }
 
-        /// DEBUG-only ground-truth reference arm (design doc §6.1's zero-reference-proof names
-        /// this as a P4-7c deletion target, not a P4-7b one -- it takes a snapshot directly and is
-        /// independent of this actor's own state, so the b3 flip does not touch it). Builds a
-        /// fresh Swift `PathSearchIndex` over `snapshot.entries` and searches it synchronously --
-        /// the only remaining Swift path-index construction reachable through this file. `static`,
-        /// with no instance-level counterpart left in this actor to touch: every instance-level
-        /// production path (`search`, `rebuildIndex`/`prepareIndex`, the live event-driven rebuild
-        /// path) consumes `WorkspaceFileContextStore.searchRootQueryHandles`/Rust query results only,
-        /// never a Swift `PathSearchIndex`. `Scripts/source_layout_guardrails.sh`'s P4-7b §4.1.0
-        /// section pins this helper as the *only* construction site left in this file (mechanical
-        /// half); `WorkspaceSearchColocationGateTests` pins the *behavioral* half by asserting the
-        /// live store-level `pathIndexBuildCount`/`overlayPathIndexBuildCount` diagnostics (which
-        /// would move if a regression made this actor request `.recordsAndPathIndexes` again) stay 0
-        /// across a search-driven catalog generation -- a per-instance counter on this actor would
-        /// have nothing to increment it and so, unlike that diagnostic, could never catch such a
-        /// regression.
-        static func authoritativeGlobalResultsForTesting(
-            from snapshot: WorkspaceSearchCatalogSnapshot,
-            query: String,
-            limit: Int
-        ) -> [WorkspaceSearchCatalogEntry] {
-            let boundedLimit = max(0, limit)
-            guard boundedLimit > 0 else { return [] }
-            let orderedEntries = orderEntries(snapshot.entries)
-            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                return Array(orderedEntries.prefix(boundedLimit))
-            }
-            let index = PathSearchIndex(paths: orderedEntries.map(\.pathSearchIndexKey))
-            return index.searchSynchronously(trimmed, limit: boundedLimit).compactMap { candidate in
-                guard orderedEntries.indices.contains(candidate.index) else { return nil }
-                return orderedEntries[candidate.index]
-            }
-        }
+        // P4-7c c3: `authoritativeGlobalResultsForTesting` deleted -- it was the last Swift
+        // `PathSearchIndex` construction site reachable through this file (design doc §6.1's
+        // zero-reference-proof named it as this slice's deletion target). No replacement seam was
+        // added: its only callers (`WorkspacePerRootPathSearchIndexTests`,
+        // `WorkspaceSearchRustIndexKeyDifferentialTests`) are deleted in the same commit, and no
+        // production caller ever used it. `orderEntries` (its sole helper) is deleted alongside it,
+        // below.
     #endif
 
     func startKeepingFresh(
@@ -856,10 +829,6 @@ actor WorkspaceSearchService {
         _ rhs: WorkspaceSearchCatalogEntry
     ) -> Bool {
         WorkspaceInventoryOrdering.searchCatalogEntryPrecedes(lhs, rhs)
-    }
-
-    private static func orderEntries(_ entries: [WorkspaceSearchCatalogEntry]) -> [WorkspaceSearchCatalogEntry] {
-        entries.sorted(by: entryPrecedes)
     }
 
     #if DEBUG

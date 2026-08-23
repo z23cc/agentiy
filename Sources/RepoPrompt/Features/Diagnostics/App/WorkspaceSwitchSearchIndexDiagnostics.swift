@@ -23,7 +23,6 @@
 
             return [
                 "requestedCapability": searchCatalogRequirementDescription(requestedCapability),
-                "snapshotPathIndexes": "\(snapshot.rootPathIndexes.count)",
                 "catalogRebuildWorkDelta": "\(storeAfter.catalogRebuild.rebuildCount - storeBefore.catalogRebuild.rebuildCount)",
                 "searchRebuildWorkDelta": "\(searchAfter.rebuildCount - searchBefore.rebuildCount)",
                 "searchStaleDiscardedDelta": "\(searchAfter.staleDiscardedCount - searchBefore.staleDiscardedCount)",
@@ -46,8 +45,6 @@
             switch requirement {
             case .recordsOnly:
                 "recordsOnly"
-            case .recordsAndPathIndexes:
-                "recordsAndPathIndexes"
             }
         }
 

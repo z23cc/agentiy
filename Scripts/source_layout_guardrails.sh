@@ -910,40 +910,48 @@ if [[ -n "$unexpected_domain_runtime_inventory_refs" ]]; then
   printf '%s\n' "$unexpected_domain_runtime_inventory_refs" >&2
 fi
 
-# 10. P4-7b §4.1.0 co-location invariant (docs/architecture/rust-inventory-scope-v1.md, amended
-# by docs/designs/p4-7-pathsearch-production-cutover-v2-2026-08-23.md §4.7): no build may ship
-# where the inventory tables are served from Rust while the search facade builds a Swift path
-# index over them. `makeRootPathSearchIndex` was that constructor and is deleted at the P4-7b b3
-# flip; `WorkspaceSearchService` (the sole production caller that ever requested
-# `.recordsAndPathIndexes`) now consumes `WorkspaceFileContextStore.searchRootQueryHandles`
-# instead and must never itself construct a `WorkspaceSearchRootPathIndex`/`PathSearchIndex` in a
-# live (non-DEBUG-ground-truth) code path. The structural/mechanical form the design doc asks for
-# (mirroring the cargo `path_index_builders_take_no_table_shaped_parameter` precedent) is these two
-# greps: the deleted constructor must never return, and the search facade must never construct the
-# type it used to own.
+# 10. P4-7b §4.1.0 co-location invariant, hardened to outright deletion at P4-7c c3
+# (docs/architecture/rust-inventory-scope-v1.md, amended by
+# docs/designs/p4-7-pathsearch-production-cutover-v2-2026-08-23.md §6.5): no build may ship where
+# the inventory tables are served from Rust while the search facade builds a Swift path index over
+# them. P4-7b b3 made that structurally unreachable (`makeRootPathSearchIndex` deleted, D-14); P4-7c
+# c3 goes further and deletes the C-backed Swift index itself -- `PathSearchIndex.swift`,
+# `Sources/RepoPromptC/src/Utils/path_search.c`, and `Sources/RepoPromptC/include/path_search.h` --
+# so the invariant now holds by construction, not by a single surviving DEBUG-only exception. These
+# checks guard against reintroduction: the deleted files must never come back, the deleted
+# constructor name must never return, and the deleted types' call shapes (constructor calls, not
+# bare type names -- doc-comment provenance references to the deleted history, e.g. in
+# `WorkspaceSeededRootReplayVerdict.swift` and this slice's differential test suites, are
+# deliberately preserved and must not trip this check) must never reappear anywhere in
+# `Sources/RepoPrompt`.
 print_matches \
   "removed makeRootPathSearchIndex (P4-7b §4.1.0 co-location invariant) must not return" \
   grep -R -n -F 'makeRootPathSearchIndex(' \
     Sources/RepoPrompt
 
-workspace_search_service_source="Sources/RepoPrompt/Infrastructure/WorkspaceContext/Search/WorkspaceSearchService.swift"
-if [[ ! -f "$workspace_search_service_source" ]]; then
-  fail "required search facade source missing: $workspace_search_service_source"
-else
-  # One known, deliberate exception: `authoritativeGlobalResultsForTesting`, the DEBUG-only
-  # ground-truth reference arm (design doc §6.1's P4-7c deletion target, not a P4-7b one --
-  # independent of this actor's own state) builds a fresh `PathSearchIndex` over a caller-supplied
-  # snapshot's entries to compute an oracle result. Anything beyond that one construction is a real
-  # regression of the co-location invariant.
-  search_service_index_construction_refs="$(grep -n -E 'WorkspaceSearchRootPathIndex\(|[^.]PathSearchIndex\(' \
-    "$workspace_search_service_source" 2>/dev/null || true)"
-  unexpected_search_service_index_construction_refs="$(printf '%s\n' "$search_service_index_construction_refs" \
-    | grep -v -F 'let index = PathSearchIndex(paths: orderedEntries.map(\.pathSearchIndexKey))' || true)"
-  if [[ -n "$unexpected_search_service_index_construction_refs" ]]; then
-    fail "WorkspaceSearchService must not construct a Swift path index outside the DEBUG-only ground-truth helper (P4-7b §4.1.0 co-location invariant)"
-    printf '%s\n' "$unexpected_search_service_index_construction_refs" >&2
+for deleted_path_search_file in \
+  "Sources/RepoPrompt/Infrastructure/WorkspaceContext/Search/PathSearchIndex.swift" \
+  "Sources/RepoPromptC/src/Utils/path_search.c" \
+  "Sources/RepoPromptC/include/path_search.h" \
+  "Sources/RepoPromptDomainRuntime/PathSearch/RustPathSearchProbe.swift"; do
+  if [[ -e "$deleted_path_search_file" ]]; then
+    fail "deleted at P4-7c c3, must not be reintroduced: $deleted_path_search_file"
   fi
-fi
+done
+
+print_matches \
+  "removed PathSearchIndex/WorkspaceSearchRootPathIndex/WorkspaceProjectedPathSearchIndex constructor calls (P4-7c c3 co-location invariant) must not return" \
+  grep -R -n -E '(^|[^.[:alnum:]_])PathSearchIndex\(|PathSearchIndex\.build\(|WorkspaceSearchRootPathIndex\(|WorkspaceProjectedPathSearchIndex\(' \
+    Sources/RepoPrompt
+
+# `print_matches` reconstructs its command from unquoted `$@`, so a pattern argument containing a
+# literal space would be re-split before reaching grep -- every alternative below is intentionally
+# space-free (`path_search.h`'s own existence is already guarded by the file-existence loop above,
+# so a stray `#include` of it is covered there, not duplicated here).
+print_matches \
+  "removed path_search.c C engine call sites (P4-7c c3 co-location invariant) must not return" \
+  grep -R -n -E 'path_search_create\(|path_search_find\(|path_search_projected_find|path_search_destroy\(|path_search_cancellation_create\(' \
+    Sources/RepoPrompt Sources/RepoPromptC
 
 if [[ "$failures" -ne 0 ]]; then
   printf 'Source layout guardrails failed (%s issue%s).\n' "$failures" "$([[ "$failures" == 1 ]] && printf '' || printf 's')" >&2

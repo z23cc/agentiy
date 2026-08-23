@@ -446,18 +446,21 @@ struct RootNeutralTreeInventory: Hashable {
     let entries: [RootNeutralTreeInventoryEntry]
 }
 
+/// P4-7c c3: dropped the `index: PathSearchIndex` stored property. Nothing ever read it --
+/// `WorkspaceProjectedPathSearchIndex`'s replay guard chain (now `WorkspaceSeededRootReplayValidator`,
+/// see `WorkspaceSeededRootReplayVerdict.swift`) only ever consumed `relativePaths`/`stableOrdinals`
+/// via binary search, never this eagerly-built Swift C-engine index. Deleting it here is what makes
+/// `PathSearchIndex.swift` deletable without leaving this type stranded.
 final class WorkspaceSearchRelativePathBase: @unchecked Sendable {
     let relativePaths: [String]
     let filenames: [String]
     let stableOrdinals: [Int]
-    let index: PathSearchIndex
 
     init(relativePaths: [String], stableOrdinals: [Int]) {
         precondition(relativePaths.count == stableOrdinals.count)
         self.relativePaths = relativePaths.map(StandardizedPath.relative)
         filenames = self.relativePaths.map { ($0 as NSString).lastPathComponent }
         self.stableOrdinals = stableOrdinals
-        index = PathSearchIndex(paths: self.relativePaths)
     }
 }
 

@@ -227,21 +227,18 @@ final class WorkspaceSearchCatalogGenerationLease: @unchecked Sendable {
     }
 }
 
+/// P4-7c c3: `.recordsAndPathIndexes` deleted outright (not just made unreachable, as P4-7b b3
+/// left it -- D-14). `WorkspaceSearchRootPathIndex`, the type that capability vended, no longer
+/// exists (`PathSearchIndex.swift` is deleted this slice), so a caller requesting it can no longer
+/// even compile, which is a strictly stronger guarantee than b3's `preconditionFailure`. This enum
+/// stays single-case rather than being deleted outright: it remains a parameter on
+/// `searchCatalogSnapshot`/`searchCatalogAccess` and several internal shard-build helpers, and
+/// collapsing those signatures is a separable, larger change than this slice's scope.
 enum WorkspaceSearchCatalogAccessRequirement: Equatable {
     case recordsOnly
-    case recordsAndPathIndexes
 
-    func satisfies(_ requirement: WorkspaceSearchCatalogAccessRequirement) -> Bool {
-        switch (self, requirement) {
-        case (.recordsAndPathIndexes, _), (.recordsOnly, .recordsOnly):
-            true
-        case (.recordsOnly, .recordsAndPathIndexes):
-            false
-        }
-    }
-
-    var requiresPathIndexes: Bool {
-        self == .recordsAndPathIndexes
+    func satisfies(_: WorkspaceSearchCatalogAccessRequirement) -> Bool {
+        true
     }
 }
 
@@ -251,17 +248,20 @@ struct WorkspaceSearchCatalogSnapshot: Equatable {
     let roots: [WorkspaceRootRecord]
     let files: [WorkspaceFileRecord]
     let entries: [WorkspaceSearchCatalogEntry]
-    let rootPathIndexes: [WorkspaceSearchRootPathIndex]
     let diagnostics: WorkspaceCatalogDiagnostics
     private let generationLease: WorkspaceSearchCatalogGenerationLease?
 
+    /// P4-7c c3: `rootPathIndexes: [WorkspaceSearchRootPathIndex]` and `recordsOnlyProjection()`
+    /// deleted -- `WorkspaceSearchRootPathIndex` no longer exists, and the field was always `[]` in
+    /// production since P4-7b b3 (D-14). Every call site that read it asserted `.isEmpty`; those
+    /// assertions were removed at their call sites rather than ported, since there is no longer a
+    /// field to assert emptiness of.
     init(
         generation: UInt64,
         rootScope: WorkspaceLookupRootScope,
         roots: [WorkspaceRootRecord],
         files: [WorkspaceFileRecord],
         entries: [WorkspaceSearchCatalogEntry],
-        rootPathIndexes: [WorkspaceSearchRootPathIndex] = [],
         diagnostics: WorkspaceCatalogDiagnostics,
         generationLease: WorkspaceSearchCatalogGenerationLease? = nil
     ) {
@@ -270,22 +270,8 @@ struct WorkspaceSearchCatalogSnapshot: Equatable {
         self.roots = roots
         self.files = files
         self.entries = entries
-        self.rootPathIndexes = rootPathIndexes
         self.diagnostics = diagnostics
         self.generationLease = generationLease
-    }
-
-    func recordsOnlyProjection() -> WorkspaceSearchCatalogSnapshot {
-        guard !rootPathIndexes.isEmpty else { return self }
-        return WorkspaceSearchCatalogSnapshot(
-            generation: generation,
-            rootScope: rootScope,
-            roots: roots,
-            files: files,
-            entries: entries,
-            diagnostics: diagnostics,
-            generationLease: generationLease
-        )
     }
 
     static func == (lhs: WorkspaceSearchCatalogSnapshot, rhs: WorkspaceSearchCatalogSnapshot) -> Bool {

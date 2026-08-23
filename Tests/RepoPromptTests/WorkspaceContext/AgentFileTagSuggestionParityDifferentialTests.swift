@@ -6,19 +6,20 @@ import XCTest
 /// mandated hard-assertion differential -- "result set and order, over a fixed query corpus x a
 /// fixed corpus of entries, asserted element-by-element -- not as a set, not as a prefix."
 ///
-/// **The oracle is a reimplementation, not the deleted production code.** `storeBackedCatalogResults`
-/// no longer builds a Swift `PathSearchIndex` at all (that is the whole point of the cutover) --
-/// this suite's `oracle*` functions independently reproduce the pre-cutover algorithm
-/// (`searchHaystack` + a private per-root `PathSearchIndex`) purely as a comparison fixture, using
-/// infra (`PathSearchIndex`) that stays in the tree until P4-7c's deletion gate.
-///
-/// **The oracle is per-root, matching the new implementation's own shape, not the old single-
-/// global-index shape (design §14's discipline: name what changed).** The pre-cutover
-/// implementation ran one index over every visible root's entries combined and truncated to
-/// `limit` globally; `storeBackedCatalogResults` now issues one `inventoryQuery(.suggestion)` per
-/// root, each truncated to `limit`, concatenated. `testMultiRootFanOutIsASupersetOfGlobalTruncation`
-/// below pins that difference by name, comparing against a *global* oracle instead, rather than
-/// letting a single-root-only suite pass while silently not exercising the one case that changed.
+/// P4-7c c3 update: the oracle-driven differential methods (`testResultSetAndOrderMatchesOracleSingleRootNoBindingProjection`,
+/// `testResultSetAndOrderMatchesPerRootOracleTwoRoots`, `testMultiRootFanOutIsASupersetOfThePreCutoverGlobalTruncation`,
+/// and the oracle loop inside what was `testResultSetAndOrderMatchesOracleSingleRootWorktreeBound`)
+/// and their `oracle*` helpers are deleted in this commit. They independently reproduced the
+/// pre-cutover algorithm (`searchHaystack` + a private per-root `PathSearchIndex`) purely as a
+/// comparison fixture, driving a real `PathSearchIndex` instance -- the type this slice deletes,
+/// so they can no longer compile. Their evidentiary value (proving a3's `.suggestion`-backed
+/// cutover matched the pre-cutover algorithm result-for-result, including the named per-root-vs-
+/// global truncation divergence) was already captured at a3 and is preserved in this file's git
+/// history and the a3 commit message; it is not re-derived here. `testWorktreeBoundDisplayPathIsReconstructedFromRootName`,
+/// below, salvages the one oracle-*independent* assertion the deleted worktree-bound test carried
+/// (§1.5 Check A: `displayPath` is reconstructed from the queried root's own name, not a caller-
+/// prefix-composed value) -- that pin does not touch the oracle and survives unchanged. The four
+/// oracle-independent tests below (limit boundaries, byte accounting) are otherwise untouched.
 @MainActor
 final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
     // MARK: - Fixture
@@ -69,79 +70,6 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
         )
     }
 
-    // MARK: - Oracle (pre-cutover algorithm, reimplemented independently -- see file doc comment)
-
-    private func oracleHaystack(entry: WorkspaceSearchCatalogEntry, bindingProjection: WorkspaceRootBindingProjection?) -> String {
-        let logicalPath = bindingProjection?.projectedLogicalDisplayPath(
-            forPhysicalPath: entry.standardizedFullPath,
-            display: .relative
-        )
-        return [logicalPath, entry.displayPath, entry.name, entry.standardizedRelativePath, entry.standardizedFullPath]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-    }
-
-    private func oracleSearch(entries: [WorkspaceSearchCatalogEntry], query: String, limit: Int, bindingProjection: WorkspaceRootBindingProjection?) async -> [WorkspaceSearchCatalogEntry] {
-        guard limit > 0 else { return [] }
-        let haystacks = entries.map { oracleHaystack(entry: $0, bindingProjection: bindingProjection) }
-        let index = await PathSearchIndex.build(paths: haystacks)
-        let hits = await index.search(query, limit: limit)
-        var seenIDs = Set<UUID>()
-        var results: [WorkspaceSearchCatalogEntry] = []
-        for hit in hits where entries.indices.contains(hit.index) {
-            let entry = entries[hit.index]
-            guard seenIDs.insert(entry.id).inserted else { continue }
-            results.append(entry)
-        }
-        return results
-    }
-
-    /// Matches the new implementation's own shape: one index per root, each truncated to `limit`,
-    /// concatenated in `store.rootRefs(scope:)`'s order.
-    private func oraclePerRootResults(
-        store: WorkspaceFileContextStore,
-        query: String,
-        limit: Int,
-        bindingProjection: WorkspaceRootBindingProjection?
-    ) async -> [WorkspaceSearchCatalogEntry] {
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace, requirement: .recordsOnly)
-        let roots = await store.rootRefs(scope: .visibleWorkspace)
-        var seenIDs = Set<UUID>()
-        var results: [WorkspaceSearchCatalogEntry] = []
-        for root in roots {
-            let entries = snapshot.entries.filter { $0.rootID == root.id }
-            for entry in await oracleSearch(entries: entries, query: query, limit: limit, bindingProjection: bindingProjection)
-                where seenIDs.insert(entry.id).inserted
-            {
-                results.append(entry)
-            }
-        }
-        return results
-    }
-
-    /// The pre-cutover shape: one global index over every visible root's entries combined,
-    /// truncated to `limit` globally.
-    private func oracleGlobalResults(
-        store: WorkspaceFileContextStore,
-        query: String,
-        limit: Int,
-        bindingProjection: WorkspaceRootBindingProjection?
-    ) async -> [WorkspaceSearchCatalogEntry] {
-        let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace, requirement: .recordsOnly)
-        return await oracleSearch(entries: snapshot.entries, query: query, limit: limit, bindingProjection: bindingProjection)
-    }
-
-    private func queryPatterns() -> [(pattern: String, limit: Int)] {
-        [
-            ("*.swift", 300),
-            ("Sources App", 300),
-            ("中文", 300),
-            ("🎉", 300),
-            ("swift", 10000)
-        ]
-    }
-
     private func makeWorktreeBoundProjection(physicalRoot: WorkspaceRootRef) -> WorkspaceRootBindingProjection {
         let logicalRoot = WorkspaceRootRef(id: UUID(), name: "LogicalApp", fullPath: "/logical/App")
         let binding = AgentSessionWorktreeBinding(
@@ -160,23 +88,17 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
         )
     }
 
-    // MARK: - Single root: per-root/global oracle coincide, element-by-element equality holds in both binding configurations
+    // MARK: - Salvaged oracle-independent pin (§1.5 Check A)
 
-    func testResultSetAndOrderMatchesOracleSingleRootNoBindingProjection() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
-        let container = try makeTestDirectory(name: "SuggestionSingleRoot")
-        try writeCorpus(under: container, suffix: "1")
-        _ = try await store.loadRoot(path: container.path)
-        let service = makeService(store: store, bindingProjection: nil)
-
-        for (pattern, limit) in queryPatterns() {
-            let actual = await service.catalogResultsForTesting(for: pattern, limit: limit)
-            let expected = await oraclePerRootResults(store: store, query: pattern, limit: limit, bindingProjection: nil)
-            XCTAssertEqual(actual.map(\.id), expected.map(\.id), "pattern='\(pattern)' limit=\(limit)")
-        }
-    }
-
-    func testResultSetAndOrderMatchesOracleSingleRootWorktreeBound() async throws {
+    /// a2's advisor note, closed the loop: `.suggestion` ignores `request.prefix` entirely
+    /// (a1's `suggestion_query_ignores_the_indexkey_prefix_field`), so the returned entry's
+    /// `displayPath` must be the stored default (`rootName + "/" + relativePath`), reconstructed
+    /// locally from the candidate + the queried root's own name/path
+    /// (`AgentFileTagSuggestionService.catalogEntry(from:rootPath:rootName:)`) -- not a
+    /// caller-prefix-composed value. This is the configuration (§1.5 Check A) where the two
+    /// would diverge if that regressed. Oracle-independent: carried no `PathSearchIndex`
+    /// dependency even before P4-7c c3 deleted the oracle-driven differential above it.
+    func testWorktreeBoundDisplayPathIsReconstructedFromRootName() async throws {
         let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
         let container = try makeTestDirectory(name: "SuggestionSingleRootWorktree")
         try writeCorpus(under: container, suffix: "1")
@@ -185,75 +107,11 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
         let projection = makeWorktreeBoundProjection(physicalRoot: physicalRoot)
         let service = makeService(store: store, bindingProjection: projection)
 
-        for (pattern, limit) in queryPatterns() {
-            let actual = await service.catalogResultsForTesting(for: pattern, limit: limit)
-            let expected = await oraclePerRootResults(store: store, query: pattern, limit: limit, bindingProjection: projection)
-            XCTAssertEqual(actual.map(\.id), expected.map(\.id), "pattern='\(pattern)' limit=\(limit)")
-        }
-
-        // a2's advisor note, closed the loop: `.suggestion` ignores `request.prefix` entirely
-        // (a1's `suggestion_query_ignores_the_indexkey_prefix_field`), so the returned entry's
-        // `displayPath` must be the stored default (`rootName + "/" + relativePath`), reconstructed
-        // locally from the candidate + the queried root's own name/path
-        // (`AgentFileTagSuggestionService.catalogEntry(from:rootPath:rootName:)`) -- not a
-        // caller-prefix-composed value. This is the configuration (§1.5 Check A) where the two
-        // would diverge if that regressed.
         let results = await service.catalogResultsForTesting(for: "App1", limit: 10)
         guard let appEntry = results.first(where: { $0.name == "App1.swift" }) else {
             return XCTFail("expected App1.swift in results")
         }
         XCTAssertEqual(appEntry.displayPath, "\(record.name)/Sources/App1.swift")
-    }
-
-    // MARK: - Multi-root: the per-root oracle still holds element-by-element, in both configs.
-
-    func testResultSetAndOrderMatchesPerRootOracleTwoRoots() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
-        let containerA = try makeTestDirectory(name: "SuggestionMultiRootA")
-        let containerB = try makeTestDirectory(name: "SuggestionMultiRootB")
-        try writeCorpus(under: containerA, suffix: "A")
-        try writeCorpus(under: containerB, suffix: "B")
-        _ = try await store.loadRoot(path: containerA.path)
-        _ = try await store.loadRoot(path: containerB.path)
-        let service = makeService(store: store, bindingProjection: nil)
-
-        for (pattern, limit) in queryPatterns() {
-            let actual = await service.catalogResultsForTesting(for: pattern, limit: limit)
-            let expected = await oraclePerRootResults(store: store, query: pattern, limit: limit, bindingProjection: nil)
-            XCTAssertEqual(actual.map(\.id), expected.map(\.id), "pattern='\(pattern)' limit=\(limit)")
-        }
-    }
-
-    // MARK: - Named divergence from the pre-cutover global-truncation behavior (design §14)
-
-    /// The per-root fan-out is a strict superset of the old global-truncation result whenever the
-    /// per-root limit is smaller than the combined match count -- a real, intentionally-accepted
-    /// fallback-path behavior change (see this file's and `storeBackedCatalogResults`'s doc
-    /// comments), pinned here rather than left as an untested assumption.
-    func testMultiRootFanOutIsASupersetOfThePreCutoverGlobalTruncation() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
-        let containerA = try makeTestDirectory(name: "SuggestionSupersetA")
-        let containerB = try makeTestDirectory(name: "SuggestionSupersetB")
-        try writeCorpus(under: containerA, suffix: "A")
-        try writeCorpus(under: containerB, suffix: "B")
-        _ = try await store.loadRoot(path: containerA.path)
-        _ = try await store.loadRoot(path: containerB.path)
-        let service = makeService(store: store, bindingProjection: nil)
-
-        // "SuggestionSuperset" is a literal substring of every entry's `standardizedFullPath`
-        // (both containers are named `SuggestionSupersetA-<uuid>`/`SuggestionSupersetB-<uuid>`),
-        // so it matches all 5 entries in each of the 2 roots -- 10 combined matches against a
-        // limit of 3.
-        let limit = 3
-        let newResults = await service.catalogResultsForTesting(for: "SuggestionSuperset", limit: limit)
-        let globalOracle = await oracleGlobalResults(store: store, query: "SuggestionSuperset", limit: limit, bindingProjection: nil)
-
-        XCTAssertEqual(globalOracle.count, limit, "the old global oracle must actually truncate for this to be a meaningful comparison")
-        XCTAssertGreaterThan(
-            newResults.count, globalOracle.count,
-            "per-root fan-out (each root capped at \(limit)) must return more candidates than the old single global index capped at \(limit) once combined matches exceed the limit"
-        )
-        XCTAssertEqual(Set(newResults.map(\.id)).count, newResults.count, "no duplicate ids across the concatenated per-root results")
     }
 
     // MARK: - Limit boundaries

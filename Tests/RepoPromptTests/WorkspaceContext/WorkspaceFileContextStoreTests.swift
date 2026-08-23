@@ -236,32 +236,30 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                     rootScope: .visibleWorkspace,
                     requirement: .recordsOnly
                 )
-                XCTAssertTrue(cold.rootPathIndexes.isEmpty, caseLabel)
                 let coldCacheCount = await store.searchCatalogSnapshotCacheCountForTesting()
                 XCTAssertEqual(coldCacheCount, 1, caseLabel)
                 let warm = await store.searchCatalogSnapshot(
                     rootScope: .visibleWorkspace,
                     requirement: .recordsOnly
                 )
-                XCTAssertTrue(warm.rootPathIndexes.isEmpty, caseLabel)
                 let warmCacheCount = await store.searchCatalogSnapshotCacheCountForTesting()
                 XCTAssertEqual(warmCacheCount, 1, caseLabel)
 
                 // P4-7b b3: `searchCatalogSnapshot`'s default requirement is now `.recordsOnly`
                 // (§4.1.0's invariant -- `makeRootPathSearchIndex` is deleted, nothing in production
-                // requests `.recordsAndPathIndexes` anymore), so this default-requirement fetch no
-                // longer returns a populated `rootPathIndexes`; the generation-token cache-reuse
-                // identity check this block continued with is retired along with it.
+                // requests `.recordsAndPathIndexes` anymore -- P4-7c c3 deletes the capability
+                // outright), so this default-requirement fetch no longer returns a populated
+                // `rootPathIndexes`; the generation-token cache-reuse identity check this block
+                // continued with is retired along with it. `rootPathIndexes` itself is deleted at
+                // c3, so the `.isEmpty` assertions below are removed rather than ported.
                 let indexed = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
                 XCTAssertEqual(indexed.generation, cold.generation, caseLabel)
-                XCTAssertTrue(indexed.rootPathIndexes.isEmpty, caseLabel)
                 let indexedCacheCount = await store.searchCatalogSnapshotCacheCountForTesting()
                 XCTAssertEqual(indexedCacheCount, 1, caseLabel)
                 let projected = await store.searchCatalogSnapshot(
                     rootScope: .visibleWorkspace,
                     requirement: .recordsOnly
                 )
-                XCTAssertTrue(projected.rootPathIndexes.isEmpty, caseLabel)
                 XCTAssertEqual(projected.generation, indexed.generation, caseLabel)
                 let projectedCacheCount = await store.searchCatalogSnapshotCacheCountForTesting()
                 XCTAssertEqual(projectedCacheCount, 1, caseLabel)

@@ -853,6 +853,29 @@ P4-7b. Filed as named open items (OI-1, OI-2 — deliberately not `D-`-numbered:
 an accepted, justified deviation the drift register exists to track) per this document's own
 convention (§12.3/§12.4) rather than left undiscovered; no P4-7b done-when depends on either.
 
+**P4-7c confirmation and expanded characterization (OI-2).** The full unfiltered suite run at
+P4-7c c3 surfaced OI-2's `catalogMismatch` family more broadly than "five": across two runs it
+cascaded into 8-16 failing tests beyond `GitWorktreeCreationReceiptTests` itself --
+`AgentRunWorktreeStartTests` (3), `WorktreeAPISmokeHarnessTests` (5),
+`WorkspaceFileContextStoreExactCapabilityTests` (1), and `WorktreeStartupInstrumentationTests` (1)
+all failed with the identical `catalogMismatch` string, directly or via a wrapping error -- one root
+cause cascading through every consumer of git-worktree-reuse admission, not several independent new
+ones. Confirmed via direct bisection, not assumed: `GitWorktreeCreationReceiptTests
+.testLoadedRootAdmissionCurrentnessClassifiesCatalogStaleness` and `AgentRunWorktreeStartTests
+.testCoordinatorCreateCarriesReceiptIntoEligibleOwnershipPreparation` were run directly (`swift
+test --filter`) against `2f41e59f` -- the commit immediately preceding P4-7c c1, with zero P4-7c
+code present -- and both fail identically there. Additionally, `git diff` across every P4-7c c1/c2/c3
+change shows **zero lines touched** in `WorkspaceRootReusableSnapshotCoordinator.swift` (the file
+that produces every `catalogMismatch` verdict) or in
+`loadedRootCatalogBatchEvidence`/`admitReusableSnapshotForLoadedRoot`/
+`loadedRootReusableSnapshotCurrentness` (`WorkspaceFileContextStore.swift`'s classification
+functions) -- P4-7c's holder #6 port (`WorkspaceSeededRootReplayValidator`, §14.1) lives entirely in
+`preparePendingSeededRoot`, a disjoint code path none of these tests exercise. The differing failure
+count between runs (8 vs. 18, the delta including OI-1 itself) indicates OI-2's cascade is
+timing/ordering-sensitive under full-suite parallelism, not that its scope changed -- still
+unconfirmed root cause, still out of P4-7c's scope to fix, still reproducible independent of every
+P4-7c change.
+
 ## 13. Amendment: P4-7b — the search facade cutover (b1–b4)
 
 Promotion of the decided items per design doc `p4-7-pathsearch-production-cutover-v2-2026-08-23.md`
@@ -980,3 +1003,197 @@ re-derived per root. Equivalent claims, narrower Swift arm -- both suites remain
 - **§7's full-suite validation row** is deferred to P4-7c per this task's own instruction; the
   broad, non-exhaustive sweeps run during b3/b4 (§13.1/§13.2 above and the commit message) are
   evidence toward it, not a discharge of it.
+
+## 14. Amendment: P4-7c — the deletion gate (c1–c3)
+
+Promotion of the decided items per design doc
+`p4-7-pathsearch-production-cutover-v2-2026-08-23.md` §6, landed across two commits on `dev`: c1
+(`a2ace1f6`, holder disposition) and c2/c3 (this commit, zero-reference proof + the atomic
+deletion). This is P4-7's closing amendment -- P4-7a (`2f41e59f`), P4-7b (§13 above), and P4-7c
+(this section) together retire the whole PathSearch production-cutover campaign; no further P4-7
+phase remains.
+
+### 14.1 Holder disposition (c1)
+
+Three holders remained after P4-7b b3 made `.recordsAndPathIndexes` unreachable from the search
+facade (D-14); §6.2-§6.4 named their dispositions.
+
+- **Holder #4 (`AgentContextFileBrowseService.storeBackedCandidates`).** §6.2's original
+  complication -- `AgentContextFileBrowseModelTests` was a whole-class quarantine that could not
+  validate a rewire -- no longer applied at c1's HEAD: the root-marker `.missing` fix (§12.5) had
+  already taken the class to 23/23 green. The rewire branch was taken outright: rewired onto the
+  store-vended `suggestionQuery(rootID:pattern:limit:...)` seam, the same `.suggestion` haystack
+  shape `AgentFileTagSuggestionService` cut over to at a3, confirmed byte-identical to the
+  pre-rewrite `searchHaystack(for:lookupContext:)` by direct source comparison. Landed with a new
+  differential, `AgentContextFileBrowseSearchParityTests`.
+- **Holder #5 (`WorkspaceFilesViewModel`'s markdown-link-open fallback).** §6.3's recon-then-decide:
+  static call-graph analysis (no live-session measurement was available this slice -- no visible app
+  relaunch was authorized, per this slice's own constraint) found exactly one production call site,
+  `MarkdownFileLinkOpener` wired as a per-tap SwiftUI environment callback (`AgentModeView.swift`),
+  not a per-keystroke or document-wide loop. That frequency profile tolerates rebuilding the whole
+  corpus index per call, so branch (a) was taken: ported onto `AgentryCoreBridge`'s stateless
+  `pathSearchFindV1(corpusPaths:queries:)` `.find`-mode seam. This is a substitution of static
+  call-graph analysis for the design's originally-envisioned live measurement, recorded here rather
+  than silently treated as equivalent. `CorePathSearch.swift`'s module doc, previously "DIFFERENTIAL-
+  ONLY, no production caller," is corrected: `.find` mode now has a real production caller;
+  `.projected` mode remains differential-only with no production caller (its Swift counterpart,
+  `WorkspaceProjectedPathSearchIndex.searchProjectedSynchronously`, is deleted at c3).
+- **Holder #6 (the seeded-root diff-replay self-check, `WorkspaceProjectedPathSearchIndex.init`).**
+  §6.4 said "port the verdict, not the object," and named Rust's `projected.rs` as already carrying
+  the projected shape. Direct investigation found this is not quite right: `projected.rs`'s own
+  module doc explicitly *defers* the one thing this holder needs -- a seed-plan-record-stream reader
+  -- stating it "needs a real seed-plan reader, which belongs beside the rest of the Swift ingress
+  layer." A repo-wide sweep for `TargetSeedPlan|plan_handle` in `rust/` returned zero decode
+  plumbing. Porting the verdict to Rust as §6.4's literal text suggested was therefore not available
+  as written. This is the one place this slice takes a design-doc branch that isn't the doc's own
+  literal text, per the task's own explicit allowance ("if a §6 branch condition lands on 'gate ships
+  partial rather than silently relaxed', that is a legitimate outcome -- record it precisely").
+  Resolution: the verdict logic -- `WorkspaceProjectedPathSearchIndex.init`'s guard chain, faithfully
+  ported line-for-line, same order and conditions -- was extracted into a new Swift-only type,
+  `WorkspaceSeededRootReplayVerdict.swift` (`WorkspaceSeededRootReplayValidator.evaluate(...)  ->
+  WorkspaceSeededRootReplayVerdict`), with **zero `PathSearchIndex` dependency**: the verdict was
+  always computed before any C-engine index was constructed, so the two were separable all along.
+  This both honors §6.4's "port the verdict, not the object" spirit exactly and respects design
+  §4.2's own rule that seed-plan decode stays Swift. `preparePendingSeededRoot` was rewired onto the
+  new validator; `WorkspaceSeededRootReplayVerdictTests` pins agreement, corrupted-base-ordinal
+  disagreement (RK-8's required corrupted-replay coverage), and snapshot-identity-mismatch
+  disagreement. The second holder-#6 consumer, `installRootSeedSearchShadow`, was **not** ported at
+  all: D-14's confirmation that `.recordsAndPathIndexes` was unreachable from any production caller
+  made its sole reader, `buildAuthoritativeRootPathIndexes`, provably dead code -- deleted outright at
+  c1, no verdict-equivalent needed because it never served a production purpose after P4-7b.
+
+### 14.2 Zero-reference proof and guardrail hardening (c2)
+
+A `file_search` sweep for every symbol c3 would delete (`PathSearchIndex`,
+`WorkspaceSearchRootPathIndex`, `WorkspaceProjectedPathSearchIndex`,
+`WorkspaceProjectedPathSearchShadowControl`, `WorkspacePathSearchOverlayHistory`,
+`WorkspaceSearchRelativePathBase`'s `PathSearchIndex` dependency, `rootPathIndexes`,
+`.recordsAndPathIndexes`, `requiresPathIndexes`, and the C engine's `path_search_*` symbols) surfaced
+one holder not named by §6.5's original enumeration: `WorkspaceSearchRootQueryHandle.identity`
+(`WorkspaceSearchRootQueryHandles.swift`) is typed `WorkspaceSearchRootPathIndexIdentity` -- a plain
+three-field (`rootID`/`lifetimeID`/`topologyGeneration`) `Equatable, Hashable` struct originally
+defined *inside* `PathSearchIndex.swift`. Rather than deleting it (its P4-7b b2 read facade is very
+much alive), it was relocated verbatim -- same name, same three fields, same conformances -- into
+`WorkspaceSearchRootQueryHandles.swift`, its one surviving production consumer.
+
+`WorkspaceFileSearchIndexTimeToReadyBenchmarkTests.swift` was named by §6.5's original enumeration as
+a deletion target; a direct symbol sweep of that file at c2's HEAD found **zero** references to any
+symbol c3 deletes. It was left untouched rather than deleted -- the design doc's list predates
+whatever later change already decoupled it, and deleting a 1106-line benchmark suite with no actual
+dependency on the deleted types would have destroyed real, unrelated coverage for no reason. (One
+real, `RPCE_BENCHMARK_TESTS`-flag-gated staleness inside that file *is* a genuine c3 consequence --
+see §14.5.)
+
+`Scripts/source_layout_guardrails.sh`'s P4-7b §4.1.0 section (item 10) was hardened from "the search
+facade must never construct the type outside one DEBUG exception" to "the type and the C engine no
+longer exist, period": the deleted files must never be reintroduced (existence check), the deleted
+constructor name must never return (unchanged from P4-7b), and the deleted types'/functions' call
+shapes -- constructor calls and C function calls, not bare type names, so that this file's and
+`WorkspaceSeededRootReplayVerdict.swift`'s own deliberate doc-comment provenance references do not
+trip the check -- must never reappear in `Sources/RepoPrompt`.
+
+### 14.3 The atomic deletion (c3)
+
+One commit (this one), after c1/c2 proved it safe:
+
+- `Sources/RepoPrompt/Infrastructure/WorkspaceContext/Search/PathSearchIndex.swift` (1538 lines) --
+  `PathSearchIndex`, `WorkspaceSearchRootPathIndexIdentity` (relocated, not lost -- §14.2),
+  `WorkspaceProjectedPathSearchShadowControl`, `WorkspaceSearchRootPathIndex`,
+  `WorkspacePathSearchOverlayHistory`/`WorkspacePathSearchOverlayHistoryMetrics`,
+  `WorkspaceProjectedPathSearchIndex`.
+- `Sources/RepoPromptC/src/Utils/path_search.c` (845 lines) and
+  `Sources/RepoPromptC/include/path_search.h` (108 lines) -- the C engine `PathSearchIndex.swift`
+  called through (`path_search_create`/`path_search_find`/`path_search_projected_find_cancellable`/
+  etc.); `RepoPromptC`'s SwiftPM target has no explicit `sources:` list (glob-based), so no
+  `Package.swift` edit was needed. The bridging header's `#include "path_search.h"` line was removed.
+- `Sources/RepoPromptDomainRuntime/PathSearch/RustPathSearchProbe.swift` (44 lines) -- the
+  differential-only Rust-seam probe that existed solely to drive `pathSearchFindV1` against the real
+  C-backed `PathSearchIndex`; its parent directory is now empty.
+- `WorkspaceSearchRelativePathBase` (`WorkspaceRootSeedModels.swift`) kept as a type, dropped its
+  `index: PathSearchIndex` stored property -- confirmed via a repo-wide sweep that nothing ever read
+  `.index`, only `.relativePaths`/`.stableOrdinals`/`.filenames`.
+- `RootCatalogShard.pathSearchIndex: WorkspaceSearchRootPathIndex?` field deleted, along with every
+  construction/consumption site: the shard-cache "promotion" path (`rootsNeedingPromotion`, dead
+  since P4-7b b3 made `.recordsAndPathIndexes` unreachable), the patch path's
+  `applyingPatch(...)`/`patchedPathSearchIndex`, `buildAuthoritativeRootPathIndexes`, and
+  `composeSearchCatalogSnapshot`'s `preconditionFailure`-guarded unwrap.
+- `WorkspaceSearchCatalogAccessRequirement` collapsed to a single case (`.recordsOnly`) --
+  `.recordsAndPathIndexes` deleted outright (D-14's "unreachable" hardened to "does not compile"),
+  `requiresPathIndexes` deleted. `WorkspaceSearchCatalogSnapshot.rootPathIndexes` and
+  `recordsOnlyProjection()` deleted.
+- `WorkspaceSwitchSearchIndexDiagnostics.swift`'s `snapshotPathIndexes` field and its
+  `.recordsAndPathIndexes` switch case deleted (D-14 had named this file's switch as one reason
+  deletion "costs more" at b3 -- that cost is paid here).
+- `WorkspaceSearchService.authoritativeGlobalResultsForTesting` (the DEBUG-only ground-truth arm, the
+  last Swift `PathSearchIndex` construction site) and its sole helper, `orderEntries`, deleted.
+- Test files deleted outright (coverage superseded by the type's non-existence or already-landed
+  Rust-side parity): `PathSearchIndexRecoveryTests.swift` (134 lines, C-engine test arm),
+  `WorkspaceProjectedPathSearchTests.swift` (564 lines), `WorkspacePerRootPathSearchIndexTests.swift`
+  (441 lines), `PathSearchRustSwiftDifferentialTests.swift` (372 lines),
+  `WorkspaceSearchRustIndexKeyDifferentialTests.swift` (385 lines -- its Swift arm was
+  `authoritativeGlobalResultsForTesting`; with no Swift arm left there is nothing to differential
+  against).
+- Test files split, not deleted wholesale (oracle-driven methods dropped, oracle-independent pins
+  kept -- an oracle instantiating a live `PathSearchIndex` cannot survive the type's deletion, but
+  the behavioral claims some of those tests carried do not depend on the oracle):
+  `AgentFileTagSuggestionParityDifferentialTests.swift` (deleted
+  `testResultSetAndOrderMatchesOracleSingleRootNoBindingProjection`,
+  `testResultSetAndOrderMatchesPerRootOracleTwoRoots`,
+  `testMultiRootFanOutIsASupersetOfThePreCutoverGlobalTruncation`, and the `oracle*` helpers; kept
+  the limit-boundary tests, the byte-accounting test, and salvaged the oracle-independent §1.5 Check
+  A `displayPath`-reconstruction assertion into a new standalone test,
+  `testWorktreeBoundDisplayPathIsReconstructedFromRootName`) and
+  `AgentContextFileBrowseSearchParityTests.swift` (c1's own new file -- deleted
+  `testSearchResultsMatchPreRewriteOracleForAdmissibleAllRootScope` and its `oracleHaystack`/
+  `oracleIndexedSearch` helpers; kept the empty-query and limit-boundary tests). Both deleted
+  differentials' evidentiary value (proving the a3/c1 cutovers matched pre-cutover behavior
+  result-for-result) was already captured at the time each landed and is preserved in git history and
+  the respective commit messages; it is not re-derived here.
+- `rootPathIndexes.isEmpty` assertions removed at their call sites (the field no longer exists) in
+  `WorkspaceFileContextStoreTests.swift`, `WorkspaceCatalogShardTests.swift`, and
+  `StoreBackedWorkspaceSearchTests.swift`; the fetches themselves were retained where they had a
+  meaningful side effect (settling rebuild work later assertions inspect).
+
+### 14.4 Drift register D-14/D-15 resolution
+
+| ID | Status at P4-7c |
+|---|---|
+| D-14 | **Resolved.** `.recordsAndPathIndexes` and `rootPathIndexes` -- kept at b3 as "the lighter of §4.4's two options" because deletion touched `WorkspaceSwitchSearchIndexDiagnostics.swift`'s switch and internal shard-capability bookkeeping -- are both deleted at c3. That bookkeeping (`RootCatalogShard.pathSearchIndex`, the shard-cache promotion path, `composeSearchCatalogSnapshot`'s unwrap) is deleted in the same commit, so the cost b3 deferred is paid in full here, not carried forward. |
+| D-15 | **Resolved, mechanically confirmed.** The seeded-root diff-replay self-check's projected-reuse-identity re-check was already removed at b3 (D-15's original entry); this slice replaces the self-check itself with the Swift-only `WorkspaceSeededRootReplayVerdict` (§14.1), which carries strictly more of the original guard chain (all fourteen disagreement reasons, faithfully ported) than the record-level assertions D-15 said remained as the sole coverage. `installRootSeedSearchShadow`, the other §D-15-adjacent projected-shadow consumer, is deleted outright (§14.1) rather than resolved by replacement, having been confirmed provably dead. |
+
+### 14.5 Deferred items carried forward (named, not silent)
+
+- **`WorkspaceFileSearchIndexTimeToReadyBenchmarkTests`'s `RPCE_BENCHMARK_TESTS`-gated
+  `pathIndexBuild == 1`/`coldCounterVectorIsValid(counters, pathIndexBuild: 1)` assertions
+  (`testLargeRepositoryTimeToReadyBenchmark`, around line 444/447) are now stale** -- they expect a
+  full path-index build that can never happen post-c3. §13.4 predicted this exact spot ("likely
+  P4-7c, when the harness's whole premise ... needs redesigning around what 'time to ready' means
+  once the index no longer exists to build") and that larger redesign is confirmed, again, as out of
+  this slice's scope: the flag is off by default (not compiled in `make dev-test`, so this is not a
+  live gate failure), and "what does time-to-ready mean with no index to build" is a real design
+  question, not a mechanical follow-up. Left as a named, not silently discovered, residual for
+  whichever phase next touches that harness.
+- **Live smoke deferred.** This slice's task explicitly withheld authorization for a visible app
+  relaunch (`make dev-run`/live CE MCP smoke flow); §7's b4/a3/c3 rows all ask for it. Deferred, not
+  skipped -- record explicitly rather than silently treated as discharged. The daemon-coordinated
+  build/test/lint/guardrail gates below are the substitute evidence this pass provides.
+- **SLO 100k tier / release-profile re-capture, D-13's post-flip re-measurement** -- unchanged from
+  §13.4, still open, still out of this document's scope.
+
+### 14.6 Validation matrix results (§7's c1/c3 rows)
+
+- `make dev-swift-build PRODUCT=Agentry` -- green.
+- `make dev-swift-build PRODUCT=agentry-mcp` -- green (confirms the C link succeeds after
+  `path_search.c`'s removal).
+- `make dev-lint` (format-check + SwiftLint strict) -- green.
+- `make guardrails` -- green, including the hardened P4-7c c3 additions (§14.2).
+- Full `make dev-test` -- green modulo the OI-1/OI-2 family, confirmed pre-existing and unrelated to
+  every P4-7c change by direct bisection against `2f41e59f` (§12.5's P4-7c confirmation note, above).
+  No other new failure surfaced across two independent full-suite runs.
+- `make dev-cargo-test CARGO_PACKAGE=all` -- not run: no `rust/` file was touched by any P4-7c c1-c3
+  change (holder #6 stayed Swift-only, §14.1), so the task's own conditional gate ("if you touch
+  rust/") does not apply. `make guardrails` already confirms no FFI/codegen drift.
+- Live CE MCP smoke flow -- deferred (§14.5): no visible app relaunch was authorized this slice.
+
+P4-7's three phases (a: `2f41e59f`; b: §13 above; c: this section) are complete. No further P4-7
+phase remains.

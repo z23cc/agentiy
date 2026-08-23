@@ -308,11 +308,12 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             XCTAssertEqual(phases.catalog.fileCount, 5)
             XCTAssertEqual(phases.catalog.pathIndexKeyMicroseconds, 0)
             XCTAssertEqual(phases.catalog.pathIndexConstructionMicroseconds, 0)
-            let recordsOnlySnapshot = await store.searchCatalogSnapshot(
+            // P4-7c c3: `rootPathIndexes` is deleted, so this fetch is retained only for its side
+            // effect (settling the records-only rebuild the diagnostics below inspect).
+            _ = await store.searchCatalogSnapshot(
                 rootScope: scope,
                 requirement: .recordsOnly
             )
-            XCTAssertTrue(recordsOnlySnapshot.rootPathIndexes.isEmpty)
             let coldDiagnostics = await store.storeWorkDiagnosticsSnapshot()
             XCTAssertEqual(coldDiagnostics.catalogRebuild.rebuildCount, 1)
             let worktreeShard = try XCTUnwrap(

@@ -1,12 +1,23 @@
 import AgentryCoreBridge
 import Foundation
 
+/// P4-7b b1/b2's root-generation identity triple (rootID + lifetimeID + topologyGeneration).
+/// Originally defined in `PathSearchIndex.swift` (deleted at P4-7c c3) as
+/// `WorkspaceSearchRootPathIndexIdentity`; relocated here verbatim (same name, same three fields,
+/// same `Equatable`/`Hashable` conformance) because `WorkspaceSearchRootQueryHandle.identity`,
+/// below, is its one surviving production consumer -- the Swift `WorkspaceSearchRootPathIndex` it
+/// was originally named after no longer exists.
+struct WorkspaceSearchRootPathIndexIdentity: Equatable, Hashable {
+    let rootID: UUID
+    let lifetimeID: UUID
+    let topologyGeneration: UInt64
+}
+
 /// P4-7b §4.3/§4.5: one open Rust snapshot handle for one root, vended by
-/// `WorkspaceFileContextStore.searchRootQueryHandles(rootScope:)` alongside (not instead of, at
-/// b2) `searchCatalogSnapshot`'s Swift-built `rootPathIndexes`.
+/// `WorkspaceFileContextStore.searchRootQueryHandles(rootScope:)`.
 ///
-/// `identity` mirrors `WorkspaceSearchRootPathIndexIdentity` so a b3 caller can reuse the exact
-/// same root-generation bookkeeping the Swift arm already has -- this is deliberately not a new
+/// `identity` mirrors the pre-P4-7c Swift arm's root-generation bookkeeping (see
+/// `WorkspaceSearchRootPathIndexIdentity`'s doc comment, above) -- this is deliberately not a new
 /// identity shape.
 ///
 /// ARC-driven close (§4.5 item 3): `CoreInventorySnapshot` itself already closes its Rust-side
@@ -31,8 +42,7 @@ struct WorkspaceSearchRootQueryHandle {
 /// Retention budget (§4.5): at most one *ready* set per scope plus at most one *in-flight* set
 /// during a rebuild is the caller's responsibility to uphold (≤2 open handles per root,
 /// attributable to search, against the scope-wide `cap = 8`) -- this type itself does not enforce
-/// it, the same way `WorkspaceSearchRootPathIndex` does not enforce `WorkspaceSearchService`'s own
-/// single-`readyRootPathIndexes`-array discipline today.
+/// it.
 struct WorkspaceSearchRootQueryHandles {
     let scopeGeneration: UInt64
     let perRoot: [WorkspaceSearchRootQueryHandle]

@@ -2588,7 +2588,9 @@ actor WorkspaceFileContextStore {
         let projectionFileIndexByID: [UUID: Int]
         let folders: [WorkspaceFolderRecord]
         let entries: [WorkspaceSearchCatalogEntry]
-        let pathSearchIndex: WorkspaceSearchRootPathIndex?
+        /// P4-7c c3: `pathSearchIndex: WorkspaceSearchRootPathIndex?` deleted -- it was always `nil`
+        /// in production since P4-7b b3 (`makeRootPathSearchIndex` deleted, D-14) and the type it
+        /// pointed at is deleted this slice.
         let appliedIndexGeneration: UInt64
 
         var folderCount: Int {
@@ -2602,7 +2604,6 @@ actor WorkspaceFileContextStore {
             precomputedProjectionFiles: [RootCatalogProjectionFile]? = nil,
             folders: [WorkspaceFolderRecord],
             entries: [WorkspaceSearchCatalogEntry],
-            pathSearchIndex: WorkspaceSearchRootPathIndex?,
             appliedIndexGeneration: UInt64
         ) {
             self.key = key
@@ -2625,7 +2626,6 @@ actor WorkspaceFileContextStore {
             )
             self.folders = folders
             self.entries = entries
-            self.pathSearchIndex = pathSearchIndex
             self.appliedIndexGeneration = appliedIndexGeneration
         }
     }
@@ -2672,7 +2672,6 @@ actor WorkspaceFileContextStore {
     private enum RootCatalogShardBuildKind {
         case patch
         case authoritative
-        case promotion
     }
 
     private struct RootCatalogShardBuilderOutput {
@@ -7526,9 +7525,9 @@ actor WorkspaceFileContextStore {
 
     /// P4-7b b3: the default drops to `.recordsOnly` -- `WorkspaceSearchService` (the last caller
     /// that ever requested `.recordsAndPathIndexes`) now consumes `searchRootQueryHandles`
-    /// instead. A caller that still explicitly asks for `.recordsAndPathIndexes` gets an empty
-    /// `rootPathIndexes` and trips `prepareAndPublishRootCatalogShardBatch`'s own precondition
-    /// rather than silently under-delivering.
+    /// instead. P4-7c c3 deletes `.recordsAndPathIndexes` outright, so a caller that still asks for
+    /// it no longer compiles, rather than silently under-delivering or tripping a runtime
+    /// precondition.
     func searchCatalogAccess(
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace,
         requirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
@@ -7570,9 +7569,7 @@ actor WorkspaceFileContextStore {
                             folderCount: cached.snapshot.diagnostics.folderCount
                         )
                     )
-                    return requirement.requiresPathIndexes
-                        ? cached.snapshot
-                        : cached.snapshot.recordsOnlyProjection()
+                    return cached.snapshot
                 }
             } else {
                 searchCatalogSnapshotsByScope.removeValue(forKey: rootScope)
@@ -7600,8 +7597,7 @@ actor WorkspaceFileContextStore {
                 rootScope: rootScope,
                 generation: generation,
                 roots: roots,
-                shards: shards,
-                requirement: requirement
+                shards: shards
             )
             shouldCacheSnapshot = true
             #if DEBUG
@@ -7609,8 +7605,7 @@ actor WorkspaceFileContextStore {
                     let authoritativeSnapshot = await buildAuthoritativeSearchCatalogSnapshot(
                         rootScope: rootScope,
                         generation: generation,
-                        roots: roots,
-                        requirement: .recordsOnly
+                        roots: roots
                     )
                     let composedBytes = catalogShadowBytes(composedSnapshot)
                     let authoritativeBytes = catalogShadowBytes(authoritativeSnapshot)
@@ -7631,8 +7626,7 @@ actor WorkspaceFileContextStore {
                         composedSnapshot = await buildAuthoritativeSearchCatalogSnapshot(
                             rootScope: rootScope,
                             generation: generation,
-                            roots: roots,
-                            requirement: requirement
+                            roots: roots
                         )
                         shouldCacheSnapshot = false
                     }
@@ -7647,16 +7641,14 @@ actor WorkspaceFileContextStore {
                     await buildAuthoritativeSearchCatalogSnapshot(
                         rootScope: rootScope,
                         generation: generation,
-                        roots: roots,
-                        requirement: requirement
+                        roots: roots
                     )
                 }
             #else
                 snapshot = await buildAuthoritativeSearchCatalogSnapshot(
                     rootScope: rootScope,
                     generation: generation,
-                    roots: roots,
-                    requirement: requirement
+                    roots: roots
                 )
             #endif
         }
@@ -7826,12 +7818,14 @@ actor WorkspaceFileContextStore {
         for roots: [WorkspaceRootRecord],
         requirement: WorkspaceSearchCatalogAccessRequirement
     ) async -> [RootCatalogShard]? {
+        // P4-7c c3: the `rootsNeedingPromotion` accumulation deleted. It existed to upgrade a
+        // `.recordsOnly` shard to `.recordsAndPathIndexes` on demand; that capability is deleted
+        // this slice (D-14 already made it unreachable at P4-7b b3), so nothing can ever populate
+        // it.
         var keysByRootID: [UUID: RootCatalogShardKey] = [:]
         keysByRootID.reserveCapacity(roots.count)
         var rootsNeedingAuthoritativeBuild: [(root: WorkspaceRootRecord, key: RootCatalogShardKey)] = []
-        var rootsNeedingPromotion: [(root: WorkspaceRootRecord, key: RootCatalogShardKey, shard: RootCatalogShard)] = []
         rootsNeedingAuthoritativeBuild.reserveCapacity(roots.count)
-        rootsNeedingPromotion.reserveCapacity(roots.count)
 
         for root in roots {
             guard let key = rootCatalogShardKey(for: root) else { return nil }
@@ -7839,9 +7833,6 @@ actor WorkspaceFileContextStore {
             guard let published = publishedRootCatalogShardsByRootID[root.id], published.key == key else {
                 rootsNeedingAuthoritativeBuild.append((root, key))
                 continue
-            }
-            if requirement.requiresPathIndexes, published.pathSearchIndex == nil {
-                rootsNeedingPromotion.append((root, key, published))
             }
         }
 
@@ -7870,61 +7861,17 @@ actor WorkspaceFileContextStore {
                 return nil
             }
         }
-        for candidate in rootsNeedingPromotion {
-            guard canPublishAnotherRootCatalogShard(rootID: candidate.root.id) else {
-                #if DEBUG
-                    recordRootCatalogShardFallback(
-                        rootID: candidate.root.id,
-                        lifetimeID: candidate.key.lifetimeID,
-                        reason: .retentionBoundary
-                    )
-                #endif
-                return nil
-            }
-        }
-
         // Build the complete replacement batch privately; the actor publishes it with one assignment below.
         var newlyBuiltShardsByRootID: [UUID: (shard: RootCatalogShard, kind: RootCatalogShardBuildKind)] = [:]
-        newlyBuiltShardsByRootID.reserveCapacity(
-            rootsNeedingAuthoritativeBuild.count + rootsNeedingPromotion.count
-        )
+        newlyBuiltShardsByRootID.reserveCapacity(rootsNeedingAuthoritativeBuild.count)
         for candidate in rootsNeedingAuthoritativeBuild {
             let appliedIndexGeneration = appliedIndexGenerationsByRootID[candidate.root.id] ?? 0
-            let savedCapability = rootCatalogShardDeltaStatesByRootID[candidate.root.id].flatMap { state in
-                state.lifetimeID == candidate.key.lifetimeID ? state.capability : nil
-            }
-            let buildRequirement = if let savedCapability, savedCapability.satisfies(requirement) {
-                savedCapability
-            } else {
-                requirement
-            }
             let shard = await buildAuthoritativeRootCatalogShard(
                 root: candidate.root,
                 key: candidate.key,
-                appliedIndexGeneration: appliedIndexGeneration,
-                requirement: buildRequirement
+                appliedIndexGeneration: appliedIndexGeneration
             )
             newlyBuiltShardsByRootID[candidate.root.id] = (shard, .authoritative)
-        }
-        for candidate in rootsNeedingPromotion {
-            let promoted = RootCatalogShard(
-                key: candidate.shard.key,
-                root: candidate.shard.root,
-                files: candidate.shard.files,
-                folders: candidate.shard.folders,
-                entries: candidate.shard.entries,
-                // P4-7b b3: the promotion path existed to upgrade a `.recordsOnly` shard to
-                // `.recordsAndPathIndexes` on demand. Nothing requests path indexes anymore
-                // (`makeRootPathSearchIndex` is deleted -- §4.1.0's invariant), so
-                // `rootsNeedingPromotion` above is now always empty and this branch is dead code
-                // kept only because deleting the whole promotion path is a larger, separable change
-                // than this slice's scope. `nil` here would fire the `!requirement.requiresPathIndexes
-                // || rootPathIndexes.count == roots.count` precondition below if that ever stopped
-                // being true -- fail closed rather than silently construct an index again.
-                pathSearchIndex: nil,
-                appliedIndexGeneration: candidate.shard.appliedIndexGeneration
-            )
-            newlyBuiltShardsByRootID[candidate.root.id] = (promoted, .promotion)
         }
 
         var publication = publishedRootCatalogShardsByRootID
@@ -7933,9 +7880,7 @@ actor WorkspaceFileContextStore {
             guard let key = keysByRootID[root.id] else { return nil }
             if let newlyBuilt = newlyBuiltShardsByRootID[root.id]?.shard {
                 publication[root.id] = newlyBuilt
-            } else if let retained = publishedRootCatalogShardsByRootID[root.id], retained.key == key,
-                      !requirement.requiresPathIndexes || retained.pathSearchIndex != nil
-            {
+            } else if let retained = publishedRootCatalogShardsByRootID[root.id], retained.key == key {
                 publication[root.id] = retained
             } else {
                 return nil
@@ -7945,12 +7890,12 @@ actor WorkspaceFileContextStore {
         publishedRootCatalogShardsByRootID = publication
         for built in newlyBuiltShardsByRootID.values {
             switch built.kind {
-            case .authoritative, .promotion:
+            case .authoritative:
                 rootCatalogShardDeltaStatesByRootID[built.shard.key.rootID] = RootCatalogShardDeltaState(
                     lifetimeID: built.shard.key.lifetimeID,
                     lastAppliedIndexGeneration: built.shard.appliedIndexGeneration,
                     isDirty: false,
-                    capability: built.shard.pathSearchIndex == nil ? .recordsOnly : .recordsAndPathIndexes
+                    capability: .recordsOnly
                 )
             case .patch:
                 break
@@ -7978,22 +7923,15 @@ actor WorkspaceFileContextStore {
     private func buildAuthoritativeRootCatalogShard(
         root: WorkspaceRootRecord,
         key: RootCatalogShardKey,
-        appliedIndexGeneration: UInt64,
-        requirement: WorkspaceSearchCatalogAccessRequirement
+        appliedIndexGeneration: UInt64
     ) async -> RootCatalogShard {
         let components = await buildAuthoritativeCatalogComponents(roots: [root])
-        // P4-7b b3: `makeRootPathSearchIndex` is deleted (§4.1.0's invariant -- no Swift path
-        // index is ever built over Rust-owned tables). `requirement.requiresPathIndexes` becoming
-        // true here would now silently produce a shard with `pathSearchIndex == nil`, which the
-        // caller's `precondition(!requirement.requiresPathIndexes || rootPathIndexes.count ==
-        // roots.count)` catches -- fail closed, not fail silent, if some caller still asks.
         return RootCatalogShard(
             key: key,
             root: root,
             files: components.files,
             folders: components.folders,
             entries: components.entries,
-            pathSearchIndex: nil,
             appliedIndexGeneration: appliedIndexGeneration
         )
     }
@@ -8019,19 +7957,16 @@ actor WorkspaceFileContextStore {
                 rootCatalogShardPatchCountsByRootID[shard.key.rootID, default: 0] += 1
             case .authoritative:
                 rootCatalogShardAuthoritativeRebuildCountsByRootID[shard.key.rootID, default: 0] += 1
-            case .promotion:
-                break
             }
-            switch shard.pathSearchIndex?.buildKind {
-            case .full:
-                rootCatalogShardFullPathIndexBuildCountsByRootID[shard.key.rootID, default: 0] += 1
-            case .overlay:
-                rootCatalogShardOverlayPathIndexBuildCountsByRootID[shard.key.rootID, default: 0] += 1
-            case .projectedReuse:
-                rootCatalogShardOverlayPathIndexBuildCountsByRootID[shard.key.rootID, default: 0] += 1
-            case .reused, nil:
-                break
-            }
+            // P4-7c c3: the `switch shard.pathSearchIndex?.buildKind` increment block deleted --
+            // `pathSearchIndex` no longer exists on `RootCatalogShard`. It was already always `nil`
+            // in production since P4-7b b3, so `rootCatalogShardFullPathIndexBuildCountsByRootID`/
+            // `rootCatalogShardOverlayPathIndexBuildCountsByRootID` were already permanently empty
+            // (every read site sums to 0) -- deleting the dead increment site changes no observable
+            // behavior. The dictionaries themselves are left in place unincremented rather than
+            // deleted: ~20 existing test assertions across `WorkspaceCatalogShardTests`,
+            // `StoreBackedWorkspaceSearchTests`, and `WorkspaceFileContextStoreTests` read
+            // `pathIndexBuildCount`/`overlayPathIndexBuildCount` expecting 0, and still do.
             let liveCount = liveRootCatalogShards(rootID: shard.key.rootID).count
             rootCatalogShardMaxLiveGenerationCountsByRootID[shard.key.rootID] = max(
                 rootCatalogShardMaxLiveGenerationCountsByRootID[shard.key.rootID] ?? 0,
@@ -8104,9 +8039,9 @@ actor WorkspaceFileContextStore {
             )
             return
         }
-        let fallbackRequirement: WorkspaceSearchCatalogAccessRequirement = previousShard.pathSearchIndex == nil
-            ? .recordsOnly
-            : .recordsAndPathIndexes
+        // P4-7c c3: `previousShard.pathSearchIndex` no longer exists -- it was always `nil` in
+        // production since P4-7b b3, so this was always `.recordsOnly` already.
+        let fallbackRequirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
         let deltaState = rootCatalogShardDeltaStatesByRootID[event.rootID] ?? RootCatalogShardDeltaState(
             lifetimeID: previousShard.key.lifetimeID,
             lastAppliedIndexGeneration: previousShard.appliedIndexGeneration,
@@ -8293,22 +8228,12 @@ actor WorkspaceFileContextStore {
         }
 
         let patchedEntries = builderOutput.files.map { WorkspaceSearchCatalogEntry(file: $0, root: state.root) }
-        let patchedPathSearchIndex = previousShard.pathSearchIndex?.applyingPatch(
-            identity: WorkspaceSearchRootPathIndexIdentity(
-                rootID: currentKey.rootID,
-                lifetimeID: currentKey.lifetimeID,
-                topologyGeneration: currentKey.topologyGeneration
-            ),
-            entries: patchedEntries,
-            changedFileIDs: builderOutput.pathIndexChangedFileIDs
-        )
         let patchedShard = RootCatalogShard(
             key: currentKey,
             root: state.root,
             files: builderOutput.files,
             folders: builderOutput.folders,
             entries: patchedEntries,
-            pathSearchIndex: patchedPathSearchIndex,
             appliedIndexGeneration: event.generation
         )
         var publication = publishedRootCatalogShardsByRootID
@@ -8352,8 +8277,7 @@ actor WorkspaceFileContextStore {
         let rebuiltShard = await buildAuthoritativeRootCatalogShard(
             root: root,
             key: key,
-            appliedIndexGeneration: appliedIndexGeneration,
-            requirement: requirement
+            appliedIndexGeneration: appliedIndexGeneration
         )
         var publication = publishedRootCatalogShardsByRootID
         publication[root.id] = rebuiltShard
@@ -8495,8 +8419,7 @@ actor WorkspaceFileContextStore {
     private func buildAuthoritativeSearchCatalogSnapshot(
         rootScope: WorkspaceLookupRootScope,
         generation: UInt64,
-        roots: [WorkspaceRootRecord],
-        requirement: WorkspaceSearchCatalogAccessRequirement
+        roots: [WorkspaceRootRecord]
     ) async -> WorkspaceSearchCatalogSnapshot {
         let components = await buildAuthoritativeCatalogComponents(roots: roots)
         let diagnostics = WorkspaceCatalogDiagnostics(
@@ -8506,69 +8429,26 @@ actor WorkspaceFileContextStore {
             folderCount: components.folders.count,
             fileCount: components.files.count
         )
-        let rootPathIndexes = requirement.requiresPathIndexes
-            ? buildAuthoritativeRootPathIndexes(roots: roots, entries: components.entries)
-            : []
-        precondition(!requirement.requiresPathIndexes || rootPathIndexes.count == roots.count)
         return WorkspaceSearchCatalogSnapshot(
             generation: generation,
             rootScope: rootScope,
             roots: roots,
             files: components.files,
             entries: components.entries,
-            rootPathIndexes: rootPathIndexes,
             diagnostics: diagnostics
         )
     }
 
-    private func buildAuthoritativeRootPathIndexes(
-        roots: [WorkspaceRootRecord],
-        entries: [WorkspaceSearchCatalogEntry]
-    ) -> [WorkspaceSearchRootPathIndex] {
-        #if DEBUG
-            let keyStart = WorkspaceFileSearchDebugTiming.now()
-        #endif
-        let entriesByRootID = Dictionary(grouping: entries, by: \.rootID)
-        #if DEBUG
-            WorkspaceFileSearchDebugContext.catalogBuildObserver?.recordPathIndexKey(
-                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
-                    since: keyStart,
-                    through: WorkspaceFileSearchDebugTiming.now()
-                )
-            )
-            let constructionStart = WorkspaceFileSearchDebugTiming.now()
-        #endif
-        let indexes: [WorkspaceSearchRootPathIndex] = roots.compactMap { root in
-            guard let state = rootStatesByID[root.id] else { return nil }
-            let rootEntries = entriesByRootID[root.id] ?? []
-            let identity = WorkspaceSearchRootPathIndexIdentity(
-                rootID: root.id,
-                lifetimeID: state.lifetimeID,
-                topologyGeneration: catalogGenerationsByRootID[root.id] ?? 0
-            )
-            return WorkspaceSearchRootPathIndex(
-                identity: identity,
-                rootPath: root.standardizedFullPath,
-                entries: rootEntries
-            )
-        }
-        #if DEBUG
-            WorkspaceFileSearchDebugContext.catalogBuildObserver?.recordPathIndexConstruction(
-                nanoseconds: WorkspaceFileSearchDebugTiming.elapsed(
-                    since: constructionStart,
-                    through: WorkspaceFileSearchDebugTiming.now()
-                )
-            )
-        #endif
-        return indexes
-    }
+    // P4-7c c3: `buildAuthoritativeRootPathIndexes` deleted -- its sole caller
+    // (`buildAuthoritativeSearchCatalogSnapshot`, above) always passed `requirement.requiresPathIndexes
+    // == false` in production since P4-7b b3; the type it built, `WorkspaceSearchRootPathIndex`, no
+    // longer exists (`PathSearchIndex.swift` is deleted this slice).
 
     private func composeSearchCatalogSnapshot(
         rootScope: WorkspaceLookupRootScope,
         generation: UInt64,
         roots: [WorkspaceRootRecord],
-        shards: [RootCatalogShard],
-        requirement: WorkspaceSearchCatalogAccessRequirement
+        shards: [RootCatalogShard]
     ) -> WorkspaceSearchCatalogSnapshot {
         let merged: (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry])
         if let shard = shards.first, shards.count == 1 {
@@ -8589,23 +8469,16 @@ actor WorkspaceFileContextStore {
             folderCount: shards.reduce(0) { $0 + $1.folderCount },
             fileCount: merged.files.count
         )
-        let rootPathIndexes: [WorkspaceSearchRootPathIndex] = if requirement.requiresPathIndexes {
-            shards.map { shard in
-                guard let pathSearchIndex = shard.pathSearchIndex else {
-                    preconditionFailure("Indexed catalog composition requires one path index per root")
-                }
-                return pathSearchIndex
-            }
-        } else {
-            []
-        }
+        // P4-7c c3: the `requirement.requiresPathIndexes` branch that unwrapped
+        // `shard.pathSearchIndex` (`preconditionFailure`-ing on `nil`, per D-14) is deleted --
+        // `pathSearchIndex` no longer exists on `RootCatalogShard`, and `requirement` is always
+        // `.recordsOnly` (the enum's only remaining case).
         return WorkspaceSearchCatalogSnapshot(
             generation: generation,
             rootScope: rootScope,
             roots: roots,
             files: merged.files,
             entries: merged.entries,
-            rootPathIndexes: rootPathIndexes,
             diagnostics: diagnostics,
             generationLease: WorkspaceSearchCatalogGenerationLease(
                 retaining: shards.map { $0 as AnyObject }
@@ -15218,7 +15091,6 @@ actor WorkspaceFileContextStore {
             precomputedProjectionFiles: projectionFiles,
             folders: folders,
             entries: entries,
-            pathSearchIndex: nil,
             appliedIndexGeneration: snapshot.appliedIndexGeneration
         )
     }

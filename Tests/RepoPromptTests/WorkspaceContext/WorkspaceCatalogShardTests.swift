@@ -36,7 +36,6 @@ import XCTest
             XCTAssertEqual(singleRootSnapshot.roots.map(\.id), [rootA.id])
             XCTAssertEqual(singleRootSnapshot.files.map(\.standardizedRelativePath), ["A.swift"])
             XCTAssertEqual(singleRootSnapshot.files.map(\.id), singleRootSnapshot.entries.map(\.id))
-            XCTAssertTrue(singleRootSnapshot.rootPathIndexes.isEmpty)
             var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             var rootADiagnostics = try diagnosticsForRoot(rootID: rootA.id, in: diagnostics)
             XCTAssertEqual(rootADiagnostics.authoritativeRebuildCount, 1)
@@ -56,7 +55,6 @@ import XCTest
             XCTAssertEqual(multiRootSnapshot.roots.map(\.id), [rootA.id, rootB.id])
             XCTAssertEqual(multiRootSnapshot.files.map(\.standardizedRelativePath), ["A.swift", "B.swift"])
             XCTAssertEqual(multiRootSnapshot.files.map(\.id), multiRootSnapshot.entries.map(\.id))
-            XCTAssertTrue(multiRootSnapshot.rootPathIndexes.isEmpty)
             diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             let recordsOnlyDiagnostics = diagnostics
             rootADiagnostics = try diagnosticsForRoot(rootID: rootA.id, in: diagnostics)
@@ -215,7 +213,6 @@ import XCTest
                 requirement: .recordsOnly
             )
             XCTAssertEqual(recoveredSnapshot, backstopSnapshot)
-            XCTAssertTrue(recoveredSnapshot.rootPathIndexes.isEmpty)
 
             diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             rootDiagnostics = try XCTUnwrap(diagnostics.roots.first { $0.rootID == root.id })
@@ -237,8 +234,9 @@ import XCTest
             XCTAssertEqual(diagnostics.shadowComparisonCount, cap + 1)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
 
-            let indexedRecovery = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            XCTAssertTrue(indexedRecovery.rootPathIndexes.isEmpty)
+            // P4-7c c3: `rootPathIndexes` is deleted, so this re-fetch is retained only for its
+            // side effect (settling any post-recovery rebuild work the diagnostics below inspect).
+            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
             let indexedDiagnostics = try await diagnosticsForRoot(
                 rootID: root.id,
                 in: store.storeWorkDiagnosticsSnapshot().rootCatalogShards
@@ -609,7 +607,6 @@ import XCTest
                 rootScope: .visibleWorkspace,
                 requirement: .recordsOnly
             )
-            XCTAssertTrue(initialSnapshot.rootPathIndexes.isEmpty)
             var retainedSnapshots = [initialSnapshot]
             let cap = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards.liveGenerationCapPerRoot
 
@@ -639,7 +636,6 @@ import XCTest
                 rootScope: .visibleWorkspace,
                 requirement: .recordsOnly
             )
-            XCTAssertTrue(recoveredSnapshot.rootPathIndexes.isEmpty)
             XCTAssertTrue(recoveredSnapshot.files.contains { $0.standardizedRelativePath == "Backstop.swift" })
             XCTAssertTrue(recoveredSnapshot.files.contains { $0.standardizedRelativePath == "Recovered.swift" })
 
