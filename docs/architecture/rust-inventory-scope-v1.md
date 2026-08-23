@@ -773,3 +773,82 @@ graph-index shard built authority-side) are all still unimplemented as of this c
 directly against the running tree rather than assumed from an earlier plan. See the amended
 drift-register table in `WorkspaceInventoryScopeDriftRegisterTests.swift` for the per-item
 evidence.
+
+### 12.5 P4-7b Item 0 — a third root-marker-exclusion regression, fixed; two orthogonal ones found and deferred
+
+Found and fixed while reproducing P4-7b's mandated pre-flight baseline check (unmodified HEAD at
+`744379b6`). §12.3a fixed two root-marker-exclusion symptoms (the catalog-shard patch decline and
+`AgentContextFileBrowseModelTests`'s tree-index seed); this is a third, independent symptom of the
+same root cause the two named regressions did not touch.
+
+**Root cause.** `WorkspaceFileContextStore.fetchFileTreePageIndex` pages only Rust-owned records,
+and the root's own self-referencing folder marker (`id == rootID`, `standardizedRelativePath ==
+""`) is never sent to Rust (root-marker exclusion, matching `rootFolderRecord(rootID:)`'s doc
+comment). Pre-P4-6b, `state.folderIDsByRelativePath`'s keys always included that marker under the
+`""` key (verified against the `fe14d61e` diff). Three call sites read `fetchFileTreePageIndex`'s
+output without restoring the marker Swift used to synthesize for them, undercounting real folders
+by one per root:
+
+- `WorkspaceFileContextStore.folder(rootID:relativePath:)` — the general fact accessor: querying
+  the root's own path (`relativePath == ""`) always fell through to a Rust lookup that always
+  misses (Rust has no fact for a path it was never told about), returning `nil` instead of the
+  root's folder record. Broke `lookupDiscoverableCatalogPathForExactAbsoluteSearchScope` for a
+  root-folder-exact query (`StoreBackedWorkspaceSearchTests
+  .testExactAbsoluteScopeHelperReturnsDeepestDiscoverableFileFolderAndRootFolder`).
+- `WorkspaceFileContextStore.buildAuthoritativeCatalogComponents(roots:)` (feeds
+  `RootCatalogShard.folders`, `WorkspaceCatalogDiagnostics.folderCount`, and the DEBUG catalog-sort
+  instrumentation) — undercounted folders by one per root
+  (`StoreBackedWorkspaceSearchTests.testDebugColdScopedPathSearchPhaseAccounting`'s
+  `sortFolderInputCount`; `WorkspaceFileContextStoreTests
+  .testStaticPathAndSearchSnapshotCachesReuseScopesAndBoundLRU`'s `diagnostics.folderCount`).
+- `WorkspaceFileContextStore.folders(inRoot:)` (production; feeds
+  `appliedIndexRootSnapshot(rootID:).folders`) and the DEBUG-only
+  `debugAuthoritativeCatalogSortProbe`'s `sourceFolders` — same undercount, one per root.
+  `GitWorktreeCreationReceiptTests` already `.subtracting([""])`'d this function's result in
+  anticipation of the marker's presence, which is independent confirmation the omission was
+  unintended.
+
+**Fix.** All four sites now synthesize the marker the same way `rootFolderRecord(rootID:)`
+already does elsewhere in this file, restoring the pre-P4-6b count. Verified non-regressing against
+`AgentContextFileBrowseModelTests` (23/23 green) — `AgentContextFileBrowseService.currentTreeIndex`
+was already written to tolerate the marker's presence or absence in `snapshot.folders`
+(`makeTreeIndex`'s `folder.id != rootFolderID` filter keeps the marker out of the
+`parentFolderID`-keyed grouping either way, per its own P4-6b-regression doc comment) — and against
+`WorkspacePerRootPathSearchIndexTests`, `WorkspaceProjectedPathSearchTests`,
+`WorkspaceInventoryScopeDriftRegisterTests`, `WorkspaceCatalogShardTests` (baseline 4 Bucket-B
+skips, no new ones), and the full `StoreBackedWorkspaceSearchTests`/`WorkspaceFileContextStoreTests`
+suites.
+
+**Two further pre-existing failures found while validating this fix, confirmed present on
+unmodified `744379b6` (i.e. independent of this fix, and independent of each other), genuinely
+orthogonal to P4-7b's search-facade slice, and deferred rather than fixed here:**
+
+- **Open item OI-1 (new; not drift — a bug, not an accepted deviation).**
+  `WorkspaceFileContextStoreTests
+  .testBatchedTopologyInvalidationUsesOneSelectiveCycleAndPreservesCatalog`'s
+  `testEnsureIndexedFilesUsesOneSelectiveInvalidationCycle` case: `store.ensureIndexedFiles(paths:)`
+  is expected to record exactly one new `WorkspaceCatalogDiagnostics` invalidation entry
+  (`work.invalidations.count == before + 1`, `evictedScopes == ["all_loaded",
+  "visible_workspace"]` on the last entry) but records several more (`5` vs. the expected `3`
+  total, and the last entry's `evictedScopes` is `[]`, i.e. an unrelated later invalidation). This is
+  a topology-invalidation-cycle-counting defect in `ensureIndexedFiles`'s selective-invalidation
+  path, not a root-marker or search-facade issue.
+- **Open item OI-2 (new; not drift — a bug, not an accepted deviation).**
+  `WorkspaceFileContextStoreTests
+  .testWriteAdaptersAndApplyEditsMaterializeCreateOverwriteAndFailurePostconditions`'s
+  `testWorkspaceFileMutationServiceCreatesReadsAndOverwritesThroughStore` case:
+  `WorkspaceFileMutationService.createFile(userPath: "Created.swift", ...,
+  pathResolutionPolicy: .canonicalAliasFirst)` against a single freshly-loaded root throws
+  `fileSystemServiceNotFoundWithContext("Could not resolve a destination within the current
+  workspace for 'Created.swift'...")` from `WorkspaceFileMutationService.swift:223` —
+  `store.resolveCreationPath` returns `nil` for a minimal single-root, unambiguous file-creation
+  path. Also reproduces via `GitWorktreeCreationReceiptTests`' five `catalogMismatch` failures
+  (`WorkspaceRootReusableSnapshotCoordinator` catalog-currentness classification), which fail
+  independently of D-17 but may share a cause in the same read-resolution surface — unconfirmed,
+  named separately pending a root-cause investigation neither P4-7b slice touches.
+
+Both are reproducible in isolation on unmodified `744379b6` (verified by `git stash`-ing this
+fix and re-running each filtered test), so neither is a regression introduced by this fix or by
+P4-7b. Filed as named open items (OI-1, OI-2 — deliberately not `D-`-numbered: they are bugs, not
+an accepted, justified deviation the drift register exists to track) per this document's own
+convention (§12.3/§12.4) rather than left undiscovered; no P4-7b done-when depends on either.

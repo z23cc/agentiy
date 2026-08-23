@@ -168,11 +168,16 @@ enum WorkspaceInventoryCatalogBuilders {
         for file in upsertedFilesByID.values {
             var parentFolderID = file.parentFolderID
             // The root-self-referencing marker (`parentFolderID == event.rootID`) is the walk's
-            // implicit terminal case, not a folder that ever appears in `foldersByID`/
-            // `representedFolderIDs` -- the root folder is never sent to Rust and is never a
-            // member of any shard's folder list (contract doc §5.4's root-marker exclusion). A
-            // lookup miss here is not "unrepresented ancestor", it's "reached the root"; treating
-            // it as a lookup failure would decline every top-level file's patch unconditionally.
+            // implicit terminal case; the loop condition stops before ever consulting
+            // `representedFolderIDs`/`foldersByID` for it, so it does not matter whether either
+            // happens to carry a synthesized root-marker entry. `foldersByID` (this function's
+            // parameter) is always Rust-sourced and never carries it (root-marker exclusion,
+            // contract doc §5.4); `representedFolderIDs`, derived in part from the caller's
+            // previously-built shard folders, may carry a synthesized root-marker record (Item 0
+            // fix, `buildAuthoritativeCatalogComponents`) -- harmlessly, since it is never touched by
+            // a Rust-sourced event and this walk never looks it up. A lookup miss here is not
+            // "unrepresented ancestor", it's "reached the root"; treating it as a lookup failure
+            // would decline every top-level file's patch unconditionally.
             while let folderID = parentFolderID, folderID != event.rootID {
                 guard representedFolderIDs.contains(folderID),
                       let folder = foldersByID[folderID]

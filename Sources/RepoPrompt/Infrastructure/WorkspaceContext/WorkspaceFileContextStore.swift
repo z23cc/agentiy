@@ -6840,11 +6840,18 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    /// Item 0 fix (P4-7b tail, P4-6b regression): includes the synthesized root-marker folder
+    /// (relativePath == ""), matching the pre-P4-6b table's `folderIDsByRelativePath` which always
+    /// carried it under the "" key. `GitWorktreeCreationReceiptTests` already `.subtracting([""])`
+    /// in anticipation of this.
     func folders(inRoot rootID: UUID) async -> [WorkspaceFolderRecord] {
         guard let pageIndex = await fetchFileTreePageIndex(rootID: rootID) else { return [] }
-        return pageIndex.foldersByID.values
+        var folders = pageIndex.foldersByID.values
             .filter { isDiscoverableFolderID($0.id) }
-            .sorted { $0.standardizedRelativePath < $1.standardizedRelativePath }
+        if let marker = rootFolderRecord(rootID: rootID) {
+            folders.append(marker)
+        }
+        return folders.sorted { $0.standardizedRelativePath < $1.standardizedRelativePath }
     }
 
     // MARK: - P4-6a fact-returning inventory read surface
@@ -7369,6 +7376,11 @@ actor WorkspaceFileContextStore {
                 guard let pageIndex = await fetchFileTreePageIndex(rootID: root.id) else { continue }
                 sourceFiles.append(contentsOf: pageIndex.filesByID.values.filter { isDiscoverableFileID($0.id) })
                 sourceFolders.append(contentsOf: pageIndex.foldersByID.values.filter { isDiscoverableFolderID($0.id) })
+                // Item 0 fix (P4-7b tail, P4-6b regression): include the synthesized root-marker
+                // folder, matching `folders(inRoot:)`/`buildAuthoritativeCatalogComponents`.
+                if let marker = rootFolderRecord(rootID: root.id) {
+                    sourceFolders.append(marker)
+                }
             }
             guard !sourceFiles.isEmpty || !sourceFolders.isEmpty else {
                 return WorkspaceCatalogSortAttributionProbe(
@@ -8480,6 +8492,16 @@ actor WorkspaceFileContextStore {
             guard let pageIndex = await fetchFileTreePageIndex(rootID: root.id) else { continue }
             filesByID.merge(pageIndex.filesByID) { _, new in new }
             foldersByID.merge(pageIndex.foldersByID) { _, new in new }
+            // Item 0 fix (P4-7b tail, P4-6b regression): the root's own self-referencing folder
+            // marker is never sent to Rust (root-marker exclusion) and so is absent from
+            // `pageIndex.foldersByID`. Pre-P4-6b, `state.foldersByID` always carried it (the diff at
+            // `fe14d61e` -- "`state.folderIDsByRelativePath`'s keys ... always included the root
+            // marker" -- documents the invariant this restores); synthesize it here, matching
+            // `rootFolderRecord(rootID:)` and `buildStaticSnapshot`'s identical synthesis, so shard
+            // folder counts/sort input again include it as they did before the table deletion.
+            if let marker = rootFolderRecord(rootID: root.id) {
+                foldersByID[marker.id] = marker
+            }
         }
         let components = WorkspaceInventoryCatalogBuilders.buildAuthoritativeCatalogComponents(
             roots: roots,
@@ -11348,7 +11370,16 @@ actor WorkspaceFileContextStore {
         )
     }
 
+    // Item 0 fix (P4-7b tail, P4-6b regression): the root's own self-referencing folder marker
+    // (id == rootID, relativePath == "") is never sent to Rust (root-marker exclusion, matching
+    // `rootFolderRecord(rootID:)`/`buildStaticSnapshot`'s synthesis) -- pre-P4-6b,
+    // `state.folderIDsByRelativePath` always carried this marker under the "" key, so this general
+    // accessor must still answer it rather than falling through to a Rust lookup that always misses.
     func folder(rootID: UUID, relativePath: String) async -> WorkspaceFolderRecord? {
+        let standardizedRelativePath = StandardizedPath.relative(relativePath)
+        if standardizedRelativePath.isEmpty {
+            return rootFolderRecord(rootID: rootID)
+        }
         guard let authority = try? await inventoryScopeAuthorityInstance(),
               let result = try? await authority.lookupPaths(rootID: rootID, relativePaths: [StandardizedPath.relative(relativePath)]),
               let fact = result.factsByPath[StandardizedPath.relative(relativePath)], fact.exists,
