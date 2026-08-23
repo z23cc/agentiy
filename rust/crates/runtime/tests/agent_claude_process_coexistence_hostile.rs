@@ -16,6 +16,15 @@
 //! correctly-typed outcome within a bounded time, never an infinite hang, and a status the thief
 //! wins is surfaced as `ReapOutcome::Lost` (`ChildOwnershipLost`, contract §5.2), never silently
 //! misattributed to the wrong PID.**
+//!
+//! Also asserts the design's R2 mechanism verbatim (contract §5.2): `sigaction(SIGCHLD, NULL,
+//! &old)` reports the default disposition -- nothing in this process, including this file's own
+//! hostile thread, installs a SIGCHLD handler. An earlier results doc recorded this as inspected
+//! ("reaper.rs installs no SIGCHLD handler anywhere") rather than measured, the same
+//! structural-argument substitution prerequisite 2 exists to eliminate; this binary is its own
+//! crate root, so its `#![allow(unsafe_code)]` below is outside `Scripts/rust_ffi_guardrails.py`'s
+//! `src/`-only two-site count.
+#![allow(unsafe_code)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -93,4 +102,21 @@ fn survives_a_waitpid_minus_one_hostile_foreign_owner() {
     );
 
     reaper.shutdown();
+}
+
+#[test]
+fn no_sigchld_handler_is_installed_by_this_process() {
+    // Direct measurement, not inspection: query (never install -- `NULL` as the `act` argument is
+    // query-only) the process's current SIGCHLD disposition and assert it is still the default.
+    let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
+    // SAFETY: `NULL` as the second argument makes this call query-only (POSIX `sigaction(2)`); it
+    // installs nothing. `current` is a valid, owned, zero-initialized `sigaction` for the kernel to
+    // write the existing disposition into.
+    let rc = unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut current) };
+    assert_eq!(rc, 0, "sigaction query must succeed");
+    assert_eq!(
+        current.sa_sigaction,
+        libc::SIG_DFL,
+        "no SIGCHLD handler must be installed anywhere in this process (default disposition expected)"
+    );
 }

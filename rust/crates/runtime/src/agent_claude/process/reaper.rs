@@ -38,6 +38,21 @@
 //! caller that raced the grace window, and a caller in an escalation path (`terminate_and_reap`)
 //! reading that `None` would `killpg` a PID the OS may already have recycled. Provenance typing
 //! removes the ambiguity at the type level instead of tuning it away with a duration constant.
+//!
+//! **A first landing of this fix under-specified the transition and missed the shape the P6-2 soak
+//! actually found.** The soak's `ScopeDropWithoutWait` residue comes from a PID a scope already
+//! registered as **owned** at spawn time (to get a token for its own normal-path `wait_for_exit`),
+//! which then drops without `shutdown`. A backstop that re-registers that PID fresh via
+//! `register_orphan` collides with the still-resident owned entry -- `AlreadyRegistered` -- and a
+//! naive backstop returns early on that error: no SIGKILL escalation, and the *owned* entry (whose
+//! token holder is gone) sits in the map forever, the exact gap this module exists to close, just
+//! moved rather than fixed. [`Reaper::reassign_as_orphan`] closes it: given the scope's own
+//! still-valid token (proof of sole ownership -- nothing else could hold it), it converts the
+//! existing slot's reclamation policy from owned to orphan **in place**, never re-registering, so
+//! there is no collision to early-return on. [`terminate_and_orphan`] is the paired free function:
+//! confirm ownership via `reassign_as_orphan` *first*, signal the group *second* -- reordered from
+//! an earlier draft that signaled before confirming ownership, which risked a `killpg` against a
+//! live, still-owned process group on any registration collision.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -69,22 +84,24 @@ pub enum RegisterError {
     /// Mirrors `ProcessTerminationError.childOwnershipLost`: this reaper is not the sole potential
     /// owner of this PID's status -- something is already registered for it.
     AlreadyRegistered,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Provenance {
-    /// Registered via [`Reaper::register`]: reclaimed only by the caller's own explicit
-    /// [`Reaper::forget`], exactly as today.
-    Owned,
-    /// Registered via [`Reaper::register_orphan`]: no token was issued, so nothing can ever call
-    /// `wait_for_exit`/`forget` for this PID. Reclaimed by the reaper itself the instant its reap
-    /// completes (see module doc).
-    Orphan,
+    /// [`Reaper::reassign_as_orphan`] was called for a pid/token pair this reaper does not
+    /// recognize as a live owned registration -- never registered, already forgotten, or a token
+    /// that does not match the current holder. Distinct from `AlreadyRegistered`: this call never
+    /// registers anything, so collision is not the failure mode here.
+    NotOwned,
 }
 
 struct Slot {
     token: u64,
-    provenance: Provenance,
+    /// Reclamation policy for this slot's map entry once reaped (see module doc): `false` (owned)
+    /// means only the caller's own explicit [`Reaper::forget`] reclaims it; `true` (orphan) means
+    /// the reaper reclaims it itself inside [`reaper_complete`], immediately on reap. Starts at
+    /// whichever [`Reaper::register`]/[`Reaper::register_orphan`] chose, and may be flipped
+    /// false-to-true in place by [`Reaper::reassign_as_orphan`] -- never true-to-false, so a plain
+    /// `AtomicBool` (not a full `Provenance` enum) is enough; interior mutability is required here
+    /// specifically because the reassignment happens after the slot is already shared with the
+    /// reaper thread.
+    is_orphan: std::sync::atomic::AtomicBool,
     outcome: Mutex<Option<ReapOutcome>>,
     condvar: Condvar,
     /// Claims exclusive probe/reap rights for this PID within this reaper -- guards against the
@@ -165,11 +182,44 @@ pub fn terminate_and_reap(reaper: &Reaper, pid: i32, token: u64, grace: Duration
     reaper.wait_for_exit(pid, token, Duration::from_secs(2))
 }
 
-/// The orphan-backstop path (contract §5.2, design §4.2): a scope was dropped without `shutdown`.
-/// Signals the group, hands the PID to the shared reaper as an **orphan** registration (no token
-/// -- see module doc), and polls [`Reaper::is_registered`] (which needs no token) to decide
-/// whether to escalate to SIGKILL after `grace`. Fire-and-forget by design: the caller that drops
-/// a scope this way has, by definition, nothing left to hand an outcome to.
+/// The orphan-backstop path (contract §5.2, design §4.2) for the production shape the P6-2 spike's
+/// soak actually found: a scope registered its child as **owned** at spawn time (to get a token
+/// for its own normal-path `wait_for_exit`/`forget` lifecycle), then dropped without calling
+/// `shutdown`. `token` is the scope's own still-valid owned-registration token -- sole-owner proof
+/// that survives the drop. Confirms that ownership and flips the slot to self-reclaiming orphan
+/// provenance via [`Reaper::reassign_as_orphan`] (never re-registers, which would spuriously
+/// collide with the still-resident owned entry it is trying to hand off -- see module doc), *then*
+/// signals the group and polls [`Reaper::is_registered`] (which needs no token) to decide whether
+/// to escalate to SIGKILL after `grace`. Fire-and-forget by design: the caller that drops a scope
+/// this way has, by definition, nothing left to hand an outcome to.
+pub fn terminate_and_orphan(
+    reaper: &Reaper,
+    pid: i32,
+    token: u64,
+    poll_interval: Duration,
+    grace: Duration,
+) -> Result<(), RegisterError> {
+    reaper.reassign_as_orphan(pid, token)?;
+    let target = Pid::from_raw(pid);
+    let _ = killpg(target, Signal::SIGTERM);
+    let deadline = std::time::Instant::now() + grace;
+    while std::time::Instant::now() < deadline {
+        if !reaper.is_registered(pid) {
+            return Ok(()); // reaped (and, being orphan-provenance, already reclaimed)
+        }
+        std::thread::sleep(poll_interval);
+    }
+    if reaper.is_registered(pid) {
+        let _ = killpg(target, Signal::SIGKILL);
+    }
+    Ok(())
+}
+
+/// The orphan-backstop path for a PID that was **never registered with this reaper at all** --
+/// distinct from [`terminate_and_orphan`], which is the P6-2-soak-found production shape (an
+/// *already owned* registration whose scope dropped). Registers fresh as an orphan, signals the
+/// group, and polls for escalation; a registration collision here means some other owner
+/// genuinely has this PID, so this backstop steps back rather than fighting over it.
 pub fn terminate_orphan_backstop(reaper: &Reaper, pid: i32, poll_interval: Duration, grace: Duration) {
     let target = Pid::from_raw(pid);
     let _ = killpg(target, Signal::SIGTERM);
@@ -238,11 +288,13 @@ fn reaper_destructive_reap(shared: &Shared, pid: i32) {
     }
 }
 
-/// Records the outcome. For [`Provenance::Owned`] slots this does **not** remove the map entry --
-/// [`Reaper::wait_for_exit`]/[`Reaper::forget`] still need it. For [`Provenance::Orphan`] slots
-/// this removes the entry immediately: no token was ever issued for it, so no caller can observe
-/// its absence as anything other than "already handled" (see module doc's rejected-alternative
-/// paragraph for why this is exact rather than time-based).
+/// Records the outcome. For an owned (`is_orphan == false`) slot this does **not** remove the map
+/// entry -- [`Reaper::wait_for_exit`]/[`Reaper::forget`] still need it. For an orphan
+/// (`is_orphan == true`) slot this removes the entry immediately: no token was ever issued for an
+/// orphan-registered PID (and [`Reaper::reassign_as_orphan`] only flips an owned slot to orphan
+/// given its own still-valid token), so no caller can observe its absence as anything other than
+/// "already handled" (see module doc's rejected-alternative paragraph for why this is exact rather
+/// than time-based).
 fn reaper_complete(shared: &Shared, pid: i32, outcome: ReapOutcome) {
     let slot = {
         let entries = shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -255,10 +307,17 @@ fn reaper_complete(shared: &Shared, pid: i32, outcome: ReapOutcome) {
         *guard = Some(outcome);
         slot.condvar.notify_all();
     }
-    if slot.provenance == Provenance::Orphan {
+    if slot.is_orphan.load(Ordering::SeqCst) {
+        // Guarded by identity (not just presence): a concurrent `reassign_as_orphan` racing this
+        // same completion could also observe orphan provenance and attempt to reclaim. Both take
+        // this same `entries` lock for the actual removal, so only whichever wins the race
+        // observes `remove(&pid)` return `Some`, and only that side counts the reclaim -- the
+        // `Arc::ptr_eq` check additionally guards against a pathological forget+re-register of the
+        // same pid landing between the two locks (a different slot must never be reclaimed here).
         let mut entries = shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        entries.remove(&pid);
-        shared.orphan_reclaim_count.fetch_add(1, Ordering::SeqCst);
+        if entries.get(&pid).is_some_and(|resident| Arc::ptr_eq(resident, &slot)) && entries.remove(&pid).is_some() {
+            shared.orphan_reclaim_count.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -328,7 +387,7 @@ impl Reaper {
             .count()
     }
 
-    fn register_with(&self, pid: i32, provenance: Provenance) -> Result<u64, RegisterError> {
+    fn register_with(&self, pid: i32, orphan: bool) -> Result<u64, RegisterError> {
         let token = self.shared.next_token.fetch_add(1, Ordering::SeqCst);
         {
             let mut entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -339,7 +398,7 @@ impl Reaper {
                 pid,
                 Arc::new(Slot {
                     token,
-                    provenance,
+                    is_orphan: std::sync::atomic::AtomicBool::new(orphan),
                     outcome: Mutex::new(None),
                     condvar: Condvar::new(),
                     reaping: std::sync::atomic::AtomicBool::new(false),
@@ -367,20 +426,58 @@ impl Reaper {
     /// [`Self::forget`] -- unchanged from the P6-2 spike, bounded by the same caller discipline
     /// `ProcessTermination.swift`'s registry already relies on today.
     pub fn register(&self, pid: i32) -> Result<u64, RegisterError> {
-        self.register_with(pid, Provenance::Owned)
+        self.register_with(pid, false)
     }
 
     /// Registers a PID as an orphan-backstop registration (contract §5.2's orphan backstop, design
     /// §4.2): no token is issued, so nothing can ever call `wait_for_exit`/`forget` for this PID --
     /// the reaper reclaims the entry itself the instant the reap completes (see module doc).
     pub fn register_orphan(&self, pid: i32) -> Result<(), RegisterError> {
-        self.register_with(pid, Provenance::Orphan).map(|_| ())
+        self.register_with(pid, true).map(|_| ())
+    }
+
+    /// Converts an existing **owned** registration into an **orphan** one in place -- the real
+    /// orphan-backstop shape (module doc): a scope registered its child as owned at spawn time to
+    /// get a token for its own lifecycle, then dropped without calling `shutdown`. `token` must
+    /// match the value [`Self::register`] returned for `pid`; it is the sole-owner proof that lets
+    /// this call confirm ownership without ever re-registering (re-registering would spuriously
+    /// collide with the still-resident entry via `AlreadyRegistered` -- the exact bug this method
+    /// exists to avoid). If the slot's reap already completed before this call arrives (a benign
+    /// race against the reaper thread, which may run `reaper_complete` concurrently), this
+    /// reclaims the now-orphaned entry immediately instead of leaving it to a reap that already
+    /// happened.
+    pub fn reassign_as_orphan(&self, pid: i32, token: u64) -> Result<(), RegisterError> {
+        let slot = {
+            let entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries.get(&pid).cloned()
+        };
+        let Some(slot) = slot else { return Err(RegisterError::NotOwned) };
+        if slot.token != token {
+            return Err(RegisterError::NotOwned);
+        }
+        slot.is_orphan.store(true, Ordering::SeqCst);
+        let already_done = slot
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        if already_done {
+            // See `reaper_complete`'s matching guard: identity-checked removal so a concurrent
+            // completion (or a pathological forget+re-register racing between our two locks) can
+            // never be double-reclaimed or misattributed.
+            let mut entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if entries.get(&pid).is_some_and(|resident| Arc::ptr_eq(resident, &slot)) && entries.remove(&pid).is_some() {
+                self.shared.orphan_reclaim_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        Ok(())
     }
 
     /// Blocks the caller until this PID's slot is reaped or `timeout` elapses. `token` must match
-    /// the value [`Self::register`] returned. Only meaningful for [`Provenance::Owned`]
-    /// registrations -- an orphan registration never hands out a token, so no caller can construct
-    /// a valid call here for one.
+    /// the value [`Self::register`] returned. Only meaningful for owned registrations -- an orphan
+    /// registration (via [`Self::register_orphan`], or an owned one later converted by
+    /// [`Self::reassign_as_orphan`]) never hands out a token, so no caller can construct a valid
+    /// call here for one.
     pub fn wait_for_exit(&self, pid: i32, token: u64, timeout: Duration) -> Option<ReapOutcome> {
         let slot = {
             let entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -400,7 +497,7 @@ impl Reaper {
         *guard
     }
 
-    /// Test-only: registers `pid` as [`Provenance::Owned`] **without** submitting the
+    /// Test-only: registers `pid` as owned **without** submitting the
     /// `EVFILT_PROC` kevent -- the only way this reaper can ever learn of the PID's exit is
     /// therefore the periodic sweep (probe point 2/3), never the kevent wake (probe point 1's
     /// registration-time direct probe still runs, so the pid must not have exited yet at
@@ -415,7 +512,7 @@ impl Reaper {
             pid,
             Arc::new(Slot {
                 token,
-                provenance: Provenance::Owned,
+                is_orphan: std::sync::atomic::AtomicBool::new(false),
                 outcome: Mutex::new(None),
                 condvar: Condvar::new(),
                 reaping: std::sync::atomic::AtomicBool::new(false),
@@ -619,13 +716,18 @@ mod tests {
 
     #[test]
     fn orphan_registration_leaves_zero_residual_entries() {
-        // The P6-2-found reclamation-policy gap (finding 3): a scope-dropped-without-shutdown PID
-        // must not leave a permanently-resident map entry. `register_orphan` issues no token, so
-        // nothing can ever call `wait_for_exit`/`forget` for it -- the reaper must reclaim it
-        // itself the instant the reap completes.
+        // The P6-2-found reclamation-policy gap (finding 3), exercised in the *actual* shape the
+        // soak found: the scope registers its child as **owned** at spawn time (to get a token for
+        // its own normal-path lifecycle), then drops without `shutdown`. An earlier draft of this
+        // fix used `terminate_orphan_backstop` (fresh `register_orphan`) here, which collided with
+        // this still-resident owned entry via `AlreadyRegistered` and silently no-op'd -- no
+        // escalation, entry resident forever, the exact gap moved rather than closed. Regression
+        // net for that: `terminate_and_orphan` must succeed via `reassign_as_orphan`.
         let reaper = Reaper::new();
         let child = spawn_sh("exit 0");
-        terminate_orphan_backstop(&reaper, child.pid, Duration::from_millis(20), Duration::from_secs(2));
+        let token = reaper.register(child.pid).expect("owned registration at spawn time");
+        terminate_and_orphan(&reaper, child.pid, token, Duration::from_millis(20), Duration::from_secs(2))
+            .expect("the scope's own still-valid token must be accepted for reassignment");
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while reaper.is_registered(child.pid) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
@@ -639,12 +741,15 @@ mod tests {
     #[test]
     fn orphan_backstop_soak_leaves_zero_residual_entries_across_many_cycles() {
         // Scaled-up regression net directly targeting the P6-2 spike's finding: 40/400
-        // scope-drop-without-wait cycles left a permanently-resident entry there. This soak
-        // repeats the same shape and asserts the count returns to exactly zero every time.
+        // scope-drop-without-wait cycles left a permanently-resident entry there. Registers each
+        // child as owned at spawn time (the real shape), then hands it off via
+        // `terminate_and_orphan`, and asserts the count returns to exactly zero every time.
         let reaper = Reaper::new();
         for i in 0..200 {
             let child = spawn_sh("exit 0");
-            terminate_orphan_backstop(&reaper, child.pid, Duration::from_millis(5), Duration::from_secs(2));
+            let token = reaper.register(child.pid).expect("owned registration at spawn time");
+            terminate_and_orphan(&reaper, child.pid, token, Duration::from_millis(5), Duration::from_secs(2))
+                .unwrap_or_else(|err| panic!("cycle {i}: reassignment must succeed, got {err:?}"));
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
             while reaper.is_registered(child.pid) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
@@ -653,6 +758,56 @@ mod tests {
         }
         assert_eq!(reaper.registered_count(), 0, "zero residual entries after 200 scope-drop-without-wait cycles");
         assert_eq!(reaper.echild_count(), 0);
+        reaper.shutdown();
+    }
+
+    #[test]
+    fn owned_registration_dropped_without_wait_is_still_escalated_to_sigkill() {
+        // End-to-end regression for the exact bug an earlier draft had: a scope drops an owned
+        // registration whose child ignores SIGTERM. `terminate_and_orphan` must both confirm
+        // ownership (via the scope's still-valid token) *and* actually escalate to SIGKILL --
+        // proving the reassignment path does not silently swallow the signal/escalation sequence
+        // the way a fresh `register_orphan` collision would have.
+        use std::io::Read as _;
+        let reaper = Reaper::new();
+        let child = spawn_sh("trap '' TERM; echo ready; while true; do sleep 1; done");
+        let token = reaper.register(child.pid).expect("owned registration at spawn time");
+        let mut out = std::fs::File::from(child.stdout_read);
+        let mut ready_byte = [0u8; 1];
+        let mut line = Vec::new();
+        loop {
+            out.read_exact(&mut ready_byte).expect("child must print a ready line before dying");
+            if ready_byte[0] == b'\n' {
+                break;
+            }
+            line.push(ready_byte[0]);
+        }
+        assert_eq!(line, b"ready");
+        terminate_and_orphan(&reaper, child.pid, token, Duration::from_millis(20), Duration::from_millis(300))
+            .expect("reassignment must succeed against the scope's own token");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while reaper.is_registered(child.pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!reaper.is_registered(child.pid), "SIGTERM-ignoring child must still be escalated and reclaimed");
+        reaper.shutdown();
+    }
+
+    #[test]
+    fn reassign_as_orphan_rejects_a_stale_token_without_disturbing_the_real_one() {
+        let reaper = Reaper::new();
+        let child = spawn_sh("sleep 5");
+        let token = reaper.register(child.pid).expect("register");
+        assert_eq!(reaper.reassign_as_orphan(child.pid, token.wrapping_add(1)), Err(RegisterError::NotOwned));
+        assert_eq!(reaper.registered_count(), 1, "a rejected reassignment must not disturb the owned entry");
+        let _ = terminate_and_reap(&reaper, child.pid, token, Duration::from_millis(200));
+        reaper.shutdown();
+    }
+
+    #[test]
+    fn reassign_as_orphan_rejects_a_never_registered_pid() {
+        let reaper = Reaper::new();
+        assert_eq!(reaper.reassign_as_orphan(i32::MAX, 1), Err(RegisterError::NotOwned));
         reaper.shutdown();
     }
 

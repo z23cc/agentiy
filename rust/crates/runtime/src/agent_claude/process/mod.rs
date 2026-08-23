@@ -30,7 +30,7 @@ pub mod timer;
 
 pub use queue::{BoundedEventQueue, QueueEvent};
 pub use reader::{ReaderStats, spawn_stderr_reader, spawn_stdout_reader};
-pub use reaper::{ReapOutcome, Reaper, RegisterError, terminate_and_reap, terminate_orphan_backstop};
+pub use reaper::{ReapOutcome, Reaper, RegisterError, terminate_and_orphan, terminate_and_reap, terminate_orphan_backstop};
 pub use spawn::{SpawnConfig, SpawnError, SpawnedProcess, spawn};
 pub use stderr_tail::StderrTail;
 pub use thread_budget::AGENT_DOMAIN_THREAD_COUNT;

@@ -19,10 +19,20 @@ structural argument P6-2 used:
 
 | # | Prerequisite | Discharge |
 |---|---|---|
-| 1 | Reaper reclamation policy -- close the §5.2 orphan-backstop map-entry reclamation gap | §2 below: provenance-typed registration (`register` vs `register_orphan`), not a time-based grace period |
-| 2 | True coexistence testing -- replace the structural argument with a real measured arm | §3 below: two arms, honestly scoped -- Arm A (cheap regression net, not R2 evidence) and Arm B (the load-bearing adversarial foreign-owner measurement) |
+| 1 | Reaper reclamation policy -- close the §5.2 orphan-backstop map-entry reclamation gap | §2 below: provenance-typed registration, with `reassign_as_orphan`/`terminate_and_orphan` as the correct transition for the *actual* `ScopeDropWithoutWait` shape (owned-at-spawn-time) -- see this section's post-landing-correction note |
+| 2 | True coexistence testing -- replace the structural argument with a real measured arm | §3 below: two arms, honestly scoped -- Arm A (cheap regression net, not R2 evidence), Arm B (the load-bearing adversarial foreign-owner measurement), plus a direct `sigaction(SIGCHLD, NULL, ...)` measurement (added post-landing, see below) |
 | 3 | `addchdir_np` -- hand-declared `extern "C"` binding + scoped `unsafe_code` exception | §4 below |
 | 4 | E-P6-1(a)/(b) real-traffic corpus remains user-blocked | Still blocked, unchanged from P6-2 (§7) -- named, not silently worked around |
+
+**Post-landing correction pass.** An advisor review of the initial `603b4c10` landing, done before
+reporting this step complete, found three gaps in the initial pass at prerequisites 1 and 2 and in
+`queue.rs` (production code this step also lands): the reclamation-policy fix did not actually cover
+the shape the P6-2 soak found (it covered a different, easier shape); the bounded event queue's
+eviction loop coalesced incorrectly under sustained count pressure (a defect, not a design choice);
+and the "no SIGCHLD handler" R2 claim was inspected, not measured -- the same substitution
+prerequisite 2 itself exists to eliminate. All three are fixed below (§2, §3, §5) and landed as a
+second commit on top of `603b4c10`, with the corrections narrated in place rather than the original
+text silently rewritten.
 
 ## 1. Environment
 
@@ -51,32 +61,63 @@ raced the grace window; a caller in an escalation path (`terminate_and_reap`) re
 would `killpg` a PID the OS may already have recycled. Tuning the grace duration cannot remove this
 ambiguity, only make it rarer.
 
-**The fix actually landed: provenance-typed registration.**
+**The fix actually landed: provenance-typed registration, with a transition primitive for the real
+shape (added in a post-landing correction -- see below).**
 
 - `Reaper::register(pid) -> Result<u64, RegisterError>` -- **owned**. Unchanged from the spike:
   issues a token; the entry is reclaimed only by the caller's own explicit `forget(pid, token)`.
   Bounded by the same caller discipline `ProcessTermination.swift`'s registry already relies on.
-- `Reaper::register_orphan(pid) -> Result<(), RegisterError>` -- **orphan**. Issues **no token**,
-  so no caller can ever construct a valid `wait_for_exit`/`forget` call for this PID -- the
-  "no waiter exists" property design §4.2 assumes is now enforced by the type signature, not by
-  convention. The reaper reclaims the map entry itself, immediately, inside `reaper_complete`, the
-  instant the reap resolves.
-- `terminate_orphan_backstop(reaper, pid, poll_interval, grace)` is the orphan-backstop entry
-  point: signals the group, registers as orphan, polls `is_registered` (itself token-free) to
-  decide whether to escalate to SIGKILL after `grace`.
+- `Reaper::register_orphan(pid) -> Result<(), RegisterError>` -- **orphan**, for a PID **never
+  registered with this reaper at all**. Issues **no token**, so no caller can ever construct a valid
+  `wait_for_exit`/`forget` call for this PID -- the reaper reclaims the map entry itself, immediately,
+  inside `reaper_complete`, the instant the reap resolves.
+- `terminate_orphan_backstop(reaper, pid, poll_interval, grace)` pairs with `register_orphan` for
+  that never-registered shape.
+- `Reaper::reassign_as_orphan(pid, token) -> Result<(), RegisterError>` -- **the actual
+  `ScopeDropWithoutWait` shape the P6-2 soak found**: a scope registered its child as **owned** at
+  spawn time (to get a token for its own normal-path lifecycle), then dropped without `shutdown`.
+  Converts the *existing* slot's reclamation policy from owned to orphan **in place**, confirmed by
+  the scope's own still-valid token -- never re-registering, which would collide with the
+  still-resident owned entry via `AlreadyRegistered`.
+- `terminate_and_orphan(reaper, pid, token, poll_interval, grace)` pairs with `reassign_as_orphan`:
+  confirms ownership *first*, signals the group *second* -- deliberately ordered so a rejected
+  reassignment (wrong token, foreign PID) never risks a `killpg` against a process group this call
+  does not actually own.
 
-**Verified exact, not merely improved.** `rust/crates/runtime/src/agent_claude/process/reaper.rs`'s
-own unit tests:
+**Post-landing correction (advisor review, after commit `603b4c10`): the original fix
+under-specified the transition and missed the shape the soak actually found.** The first landing
+only exposed `register_orphan`/`terminate_orphan_backstop` -- registering fresh as an orphan. But
+`ScopeDropWithoutWait` in the real production shape is a PID a scope already registered as **owned**
+at spawn time; handing it to a backstop that calls `register_orphan` fresh collides with that
+still-resident owned entry (`AlreadyRegistered`), and the backstop returned early on that error: no
+SIGKILL escalation, and the *owned* entry (whose token holder is gone) still resident forever -- the
+gap moved, not closed, and the soak's own test only exercised never-registered PIDs so it passed
+anyway. `reassign_as_orphan`/`terminate_and_orphan` close it in the actual shape; see the corrected
+tests below and `owned_registration_dropped_without_wait_is_still_escalated_to_sigkill`, an
+end-to-end regression proving a SIGTERM-ignoring child registered as owned is still escalated to
+SIGKILL and reclaimed via the reassignment path.
 
-- `orphan_registration_leaves_zero_residual_entries` -- one cycle, asserts `registered_count() == 0`
-  and `orphan_reclaim_count() >= 1` after reclamation.
+**Verified exact, not merely improved, and now in the real shape.**
+`rust/crates/runtime/src/agent_claude/process/reaper.rs`'s own unit tests:
+
+- `orphan_registration_leaves_zero_residual_entries` -- registers owned at spawn time, then
+  `terminate_and_orphan`; asserts `registered_count() == 0` and `orphan_reclaim_count() >= 1` after
+  reclamation.
 - `orphan_backstop_soak_leaves_zero_residual_entries_across_many_cycles` -- **200** consecutive
-  `ScopeDropWithoutWait`-shaped cycles (the P6-2 soak's exact 10%-cycle-type shape, scaled up), each
-  individually asserted to leave zero residual entries. `registered_count() == 0` and
-  `echild_count() == 0` at the end -- the P6-2 finding does not recur at 5x its own scale.
+  register-owned-then-`terminate_and_orphan` cycles (the P6-2 soak's exact
+  10%-cycle-type shape, scaled up), each individually asserted to leave zero residual entries.
+  `registered_count() == 0` and `echild_count() == 0` at the end -- the P6-2 finding does not recur
+  at 5x its own scale, in the shape it was actually found in.
+- `owned_registration_dropped_without_wait_is_still_escalated_to_sigkill` -- end-to-end: a
+  SIGTERM-ignoring child, registered owned, handed off via `terminate_and_orphan`, is escalated to
+  SIGKILL and reclaimed.
+- `reassign_as_orphan_rejects_a_stale_token_without_disturbing_the_real_one` /
+  `reassign_as_orphan_rejects_a_never_registered_pid` -- the confirm-ownership-before-signaling
+  contract itself: a wrong token or unknown PID is rejected without mutating any real entry.
 
 This closes the gap exactly, not statistically: an orphan entry's map residency is
-`[registered, reaped]`, never longer, by construction rather than by a tuned bound.
+`[registered, reaped]`, never longer, by construction rather than by a tuned bound -- in the shape
+the soak actually found it in.
 
 ## 3. Coexistence testing (prerequisite 2): two arms, honestly scoped
 
@@ -110,6 +151,15 @@ the hostile thief and correctly surfaced as `Lost` -- `echild_count() == 35`, ma
 hangs, zero misattributions, zero unexpected outcomes across all 150. The race is real (not
 "structurally impossible to lose" by luck of scheduling) and every loss is typed and counted, never
 silent.
+
+**SIGCHLD, measured directly, not inspected (post-landing correction).** The first landing's R2
+evidence for "no SIGCHLD handler" was a documentation claim ("reaper.rs installs no SIGCHLD handler
+anywhere"), the same structural-argument-substituting-for-measurement pattern prerequisite 2 exists
+to eliminate -- caught by the same advisor review. `no_sigchld_handler_is_installed_by_this_process`
+(this binary, alongside the hostile thief) calls `sigaction(SIGCHLD, NULL, &old)` directly and
+asserts `old.sa_sigaction == SIG_DFL`. Its own `#![allow(unsafe_code)]` is this file's own crate
+root (each `tests/*.rs` file is its own binary), outside `Scripts/rust_ffi_guardrails.py`'s
+`src/`-only two-site count, the same pattern already established for `synthetic_cli.rs`.
 
 **What this does and does not establish.** It does not certify coexistence against the *actual*
 Swift `ChildStatusReaperRegistry` -- that needs the P6-6 FFI bridge (or a throwaway `dlopen` harness
@@ -176,7 +226,13 @@ system Python's presence or path.
 - `deadlock_probe_stdin_starved_flood_reader_never_stalls` -- the named E-P6-3 deadlock probe: a
   child floods stdout and never reads stdin; the parent's stdin write blocks once the pipe fills;
   the stdout reader's loop-iteration heartbeat is observed advancing throughout, direct evidence it
-  is unaffected.
+  is unaffected. **Named, not silently ignored: observed flaky under repeated standalone TSan runs**
+  (roughly 1-in-4 in one local sampling), independent of anything this step's fixes touch --
+  reproduces identically against the unmodified logic. Root cause not yet chased: plausibly the
+  fixed-duration synthetic child's flood completing before the test's 400 ms heartbeat window on a
+  loaded/instrumented run, racing wall-clock against the child's own timing rather than a defect in
+  the reader thread's non-blocking-publish guarantee. Left as a known, pre-existing, unrelated
+  flake rather than papered over.
 - `crash_on_signal_reader_reaches_clean_eof` -- a child that raises `SIGABRT` against itself (not
   `SIGSEGV`: Rust's std runtime installs its own SIGSEGV handler for stack-overflow-guard-page
   detection, which observed a `raise(SIGSEGV)` with no genuine faulting address and simply returned
@@ -184,13 +240,40 @@ system Python's presence or path.
   terminating by signal -- recorded rather than silently worked around). Reader reaches EOF cleanly;
   the reaper separately reports `Signaled(SIGABRT)` for the same child.
 
+**`queue.rs`'s bounded event queue: eviction-coalescing defect found and fixed (post-landing
+correction, advisor review).** The first landing's `push` evicted one oldest ring entry and, if it
+was a `Line`, immediately pushed a replacement `Gap` back onto the same ring before re-checking the
+loop condition. Because pop-one/push-one leaves `ring.len()` unchanged, a count-cap-bound workload
+(many small events, nowhere near the byte cap -- exactly the sustained-flood shape
+`flood_bounded_memory_and_zero_terminal_loss` already exercised) never made the count predicate
+false, so a *single* `push` call walked the entire ring converting every resident `Line` into its
+own `Gap` -- steady state ~255 `Gap`s + 1 `Line` out of a 256-capacity ring, silently, since the
+existing tests only asserted `peak_bytes`/terminal survival/`lines_read > 0`, none of which detect a
+ring that has degraded to almost-all-gaps. Fixed by deferring the `Gap` push until after eviction is
+decided, reserving headroom (two slots, `cost + GAP_COST` bytes) for it up front so at most **one**
+coalesced `Gap` record is created per `push` call, however many `Line`s that call evicted. New
+direct regression tests in `queue.rs` itself:
+`a_single_push_that_evicts_many_lines_emits_only_one_coalesced_gap` (twenty tiny lines evicted by
+one oversized incoming event -- exactly one `Gap`, not twenty),
+`sustained_count_pressure_never_evicts_every_retained_line`, and
+`a_single_oversized_event_is_admitted_anyway` (the pre-existing single-oversized-item policy,
+unchanged). `flood_bounded_memory_and_zero_terminal_loss` now additionally asserts the drained ring
+retains at least one real `Line` after a real flood, not just gap markers. Full coalesce-by-key /
+lossy-before-lossless prioritization (`subscription.rs`'s richer P6-6 policy) stays out of this
+module's scope -- its only guarantee is bounding `Gap` production to one record per `push`.
+
 **TSan/ASan.** `RUSTFLAGS="-Z sanitizer=thread"` and `"-Z sanitizer=address"`, both via
 `+nightly -Zbuild-std --target aarch64-apple-darwin`, both `--test-threads=1`:
 
-- Lib unit tests (`agent_claude::process::*`, 24 tests): **TSan clean, ASan clean.**
-- `agent_claude_process_reader` (7 tests): **TSan clean, ASan clean.**
+- Lib unit tests (`agent_claude::process::*`, 30 tests -- up from 24: 3 new `queue.rs` regression
+  tests plus 3 new `reaper.rs` regression tests for the reclamation-transition fix): **TSan clean,
+  ASan clean.**
+- `agent_claude_process_reader` (7 tests, one strengthened assertion): **ASan clean.** **TSan**:
+  clean except the named, pre-existing, unrelated `deadlock_probe_stdin_starved_flood_reader_never_stalls`
+  flake above (reproduces standalone against unmodified logic; not touched by this step's fixes).
 - `agent_claude_process_coexistence` (Arm A): **TSan clean, ASan clean.**
-- `agent_claude_process_coexistence_hostile` (Arm B): **TSan clean, ASan clean.**
+- `agent_claude_process_coexistence_hostile` (Arm B, now 2 tests -- the hostile-thief race plus the
+  new direct SIGCHLD measurement): **TSan clean, ASan clean.**
 
 This directly discharges the P6-2 results doc's own named follow-up: "get a real TSan pass on the
 stream-reader harness specifically... once it is production P6-3/P6-4 code."
@@ -268,4 +351,22 @@ is unaffected since it does not depend on P6-4. Real same-process Swift/Rust rea
 - `make dev-swift-build PRODUCT=Agentry`: green (only pre-existing, unrelated deprecation
   warnings).
 - `make dev-lint`: green (Swift-side; unaffected by this Rust-only step).
+
+**Follow-up validation pass, after the post-landing corrections above (§2/§3/§5) landed as a second
+commit on top of the original `603b4c10`:**
+
+- `cargo test -p agentry-runtime` (full crate): 339 lib tests (+6: 3 `queue.rs` regression tests, 3
+  `reaper.rs` reclamation-transition regression tests) + all integration binaries green.
+- `cargo test --workspace` (coordinated `make dev-cargo-test CARGO_PACKAGE=all`): 337 passed, 2
+  ignored, 0 failed, across every workspace crate.
+- TSan/ASan re-run on every touched file (lib `agent_claude::process::*`, `agent_claude_process_reader`,
+  `agent_claude_process_coexistence`, `agent_claude_process_coexistence_hostile`): clean except the
+  named, pre-existing, unrelated `deadlock_probe_stdin_starved_flood_reader_never_stalls` TSan flake
+  (§5), reproduced standalone against unmodified logic and left named rather than papered over.
+- `cargo run --locked -p xtask -- generate` then `-- generate --check`: zero-diff again
+  (fingerprint-only identity-file regeneration; `bindingChecksum`/`expectedExports` unchanged).
+- `make dev-cargo-archive PROFILE=debug`, `make dev-cargo-test CARGO_PACKAGE=all`,
+  `make dev-codex-schema-check` (`cargo-codegen --check`), `make dev-swift-build PRODUCT=Agentry`,
+  `make dev-lint` -- all coordinated via `./conductor`, all green (tickets `0810cdbf`, `e013b022`,
+  `1ae73105`, `fc40742f`, `898389d9`).
 - `./Scripts/guardrails.sh`: green, including the two new Rust FFI guardrail assertions above.

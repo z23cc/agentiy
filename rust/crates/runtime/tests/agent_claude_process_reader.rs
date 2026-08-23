@@ -119,6 +119,19 @@ fn flood_bounded_memory_and_zero_terminal_loss() {
         queue.peak_bytes.load(std::sync::atomic::Ordering::SeqCst) <= 1_048_576,
         "peak queue bytes must never exceed the registered 1 MiB cap"
     );
+    // Regression net for `queue.rs`'s eviction-coalescing fix (see that module's `push` doc): an
+    // earlier draft degraded the entire ring into individual `Gap` records under this exact
+    // sustained-flood, count-cap-bound shape. The drained ring after a real flood must still
+    // retain actual `Line` content, not just gap markers.
+    let drained = queue.drain();
+    let retained_lines = drained
+        .iter()
+        .filter(|event| matches!(event, QueueEvent::Line { .. }))
+        .count();
+    assert!(
+        retained_lines > 0,
+        "sustained flood pressure must not evict every retained Line from the ring: {drained:?}"
+    );
     let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
 }
 
