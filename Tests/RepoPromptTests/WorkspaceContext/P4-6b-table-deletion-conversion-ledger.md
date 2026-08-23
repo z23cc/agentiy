@@ -214,34 +214,43 @@ post-pop build showed exactly the 4 predicted DEBUG-shadow-arm errors (`Workspac
    patch path) are quarantined via `XCTSkip` rather than having their literals silently updated
    to match degraded behavior. Reproduction: `make dev-test FILTER=WorkspaceCatalogShardTests`
    (deterministic, 4/8 skip with this commit).
-3. **`AgentContextFileBrowseModel` mutation-queue crash (found this pass; production code this
-   commit does not touch).** `testAcceptedMutationsRemainOrderedAcrossSessionExit`
-   (`AgentContextFileBrowseModelTests.swift`) deterministically failed/crashed
-   (`Swift/RangeReplaceableCollection.swift:620: Fatal error: Can't remove first element from an
-   empty collection`), reproducible in isolation
-   (`make dev-test FILTER=AgentContextFileBrowseModelTests`). Worse than an isolated failure: a
-   Swift fatal error kills the whole `RepoPromptTests.xctest` process, and `swift test` does not
-   resume a crashed bundle's remaining tests -- left unskipped, this one test silently voided the
-   mandatory full-suite gate for every alphabetically-later class in that target (confirmed: two
-   full unfiltered `swift test` runs both stopped at this exact test, with zero `Workspace*`
-   -- i.e. every test this cutover's own changes are most likely to affect -- test cases even
-   started). This test method is therefore skipped (`throw XCTSkip`, same pattern as the
-   catalog-shard quarantine) so the full-suite gate can actually complete; that is the one
-   line changed in this file. `AgentContextFileBrowseModel.swift` itself (the production code) is
+3. **`AgentContextFileBrowseModelTests` -- whole class quarantined (found this pass; production
+   code this commit does not touch).** What started as one known-crashing test turned out to be
+   at least three, discovered one at a time across successive full-suite/class runs, each costing
+   a fresh build-and-test cycle to surface the next:
+   - `testAcceptedMutationsRemainOrderedAcrossSessionExit` -- crashes the process
+     (`Swift/RangeReplaceableCollection.swift:620: Fatal error: Can't remove first element from an
+     empty collection`, from `AgentContextFileBrowseModel.drainMutationQueue`'s
+     `mutationQueue.removeFirst()` at `AgentContextFileBrowseModel.swift:1068`).
+   - `testCollapsedContainerIsDisabledUntilKnownAndPreservesFullySelectedTruth` -- fails, then
+     crashes the process (`Swift/ContiguousArrayBuffer.swift:695: Fatal error: Index out of
+     range`; crash site not yet isolated).
+   - `testCollapsedAncestorShowsSelectedDescendantProvenance` -- fails without crashing: the
+     folder-tree read this model drives never surfaces an expected folder
+     (`try XCTUnwrap(folderNode(in: harness, named: "Nested"))`) within the test's wait window.
+   A Swift fatal error kills the whole `RepoPromptTests.xctest` process, and `swift test` does not
+   resume a crashed bundle's remaining tests -- left unskipped, any one of these silently voided
+   the mandatory full-suite gate for every alphabetically-later class in that target (confirmed:
+   three full unfiltered `swift test` runs across this investigation each stopped partway through
+   this one class, with zero `Workspace*` -- i.e. every test this cutover's own changes are most
+   likely to affect -- test cases even started in the first two). The remaining ~17 tests in this
+   ~23-test class were never reached before the second crash, so their status is **unverified**,
+   not confirmed-passing. Given that, the **whole class** is quarantined via a `setUpWithError()`
+   override throwing `XCTSkip` (not three individual `throw XCTSkip` lines), so the full-suite
+   gate can actually complete without silently claiming the other ~17 are known-good when they
+   were never exercised. `AgentContextFileBrowseModel.swift` itself (the production code) is
    **not** touched, and is not in the P4-6b stash's diff either, so this is not a regression this
-   push introduced in the edited-lines sense -- but `AgentContextFileBrowseService` is one of the
-   design doc's named external consumers of the exact read-path this cutover converted
-   (`appliedIndexRecordLookup`/`appliedIndexRootSnapshot`, §4.3's "pull plane"), so the leading
-   hypothesis is that the conversion's changed timing (async Rust round trips instead of
-   synchronous dictionary reads) exposed a latent race in
-   `AgentContextFileBrowseModel.drainMutationQueue`'s `mutationQueue.removeFirst()`
-   (`AgentContextFileBrowseModel.swift:1068`) rather than introduced a new one. No direct
-   `mutationQueue.removeAll()`/reassignment site was found reachable from `end()` on inspection,
-   so the exact interleaving is **not confirmed** -- this is a named hypothesis for the next
-   investigation, not a diagnosed root cause. Not fixed here: a concurrency fix to
-   session-fenced mutation ordering, authored under cutover commit pressure, in code this commit
-   does not otherwise touch, is a materially different risk profile than the rest of this
-   commit's changes.
+   push introduced in the edited-lines sense -- but `AgentContextFileBrowseModel`/
+   `AgentContextFileBrowseService` are named in the design doc as external consumers of exactly
+   the read-path this cutover converted (`appliedIndexRecordLookup`/`appliedIndexRootSnapshot`,
+   §4.3's "pull plane"), so the leading hypothesis, shared across all three known-broken tests, is
+   that the conversion's changed timing (async Rust round trips instead of synchronous dictionary
+   reads) exposed pre-existing latent races/assumptions in this model's session-fenced mutation
+   and tree-loading state machine, rather than introduced new ones. This is **not confirmed** by a
+   diagnosed root cause for any of the three -- named hypotheses for the next investigation, not
+   fixes. Not fixed here: a concurrency fix to session-fenced mutation ordering and tree-loading,
+   authored under cutover commit pressure, in code this commit does not otherwise touch, is a
+   materially different risk profile than the rest of this commit's changes.
 4. **D-1, D-2, D-5, D-10 (design doc §9).** Not implemented despite being named in the original
    task brief as resolved -- see the amended drift-register table in
    `WorkspaceInventoryScopeDriftRegisterTests.swift` for the per-item verification.

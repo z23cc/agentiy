@@ -695,17 +695,22 @@ a worse trade than shipping a named, reproducible open item.
   `.patchApplicationBackstop` and a full rebuild on every affected upsert. Four
   `WorkspaceCatalogShardTests` are quarantined (`XCTSkip`, not deleted, not silently
   re-literaled) pending investigation.
-- **`AgentContextFileBrowseModel` mutation-queue crash**, reproducible in isolation
-  (`testAcceptedMutationsRemainOrderedAcrossSessionExit`). A Swift fatal error crashes the whole
-  `RepoPromptTests.xctest` process, which otherwise silently voids the full-suite gate for every
-  alphabetically-later test class — confirmed by two full unfiltered runs, both of which stopped
-  at this exact test with zero `Workspace*` test cases (this cutover's own most-affected surface)
-  even started. The one test method is skipped (`XCTSkip`) so the gate can complete; the
-  production file (`AgentContextFileBrowseModel.swift`) is untouched. The leading hypothesis is
-  that this cutover's changed read-path timing (async Rust round trips where there were
-  synchronous dictionary reads) exposed a pre-existing latent race in
-  `AgentContextFileBrowseModel.drainMutationQueue` rather than introduced one, but the exact
-  interleaving is not confirmed.
+- **`AgentContextFileBrowseModelTests` — whole class quarantined.** What began as one known-crash
+  turned out to be at least three broken tests, each discovered only by running into it (three
+  full unfiltered `swift test` runs each stopped partway through this one class): two crash the
+  whole `RepoPromptTests.xctest` process outright (`mutationQueue.removeFirst()` on an empty
+  array; an out-of-range index, crash site not yet isolated), one fails without crashing (an
+  expected folder never surfaces in the tree read within the test's wait window). A Swift fatal
+  error kills the whole process and `swift test` does not resume a crashed bundle's remaining
+  tests, so any one of these silently voids the gate for every alphabetically-later class. The
+  remaining ~17 tests in the class were never reached, so their status is unverified. The whole
+  class is quarantined (`setUpWithError()` throwing `XCTSkip`), not the three known-broken tests
+  individually, so this doesn't silently claim the unverified ~17 are known-good. The production
+  file (`AgentContextFileBrowseModel.swift`) is untouched. The leading hypothesis, shared across
+  all three, is that this cutover's changed read-path timing (async Rust round trips where there
+  were synchronous dictionary reads) exposed pre-existing latent races/assumptions in this
+  model's session-fenced mutation and tree-loading state machine rather than introduced new ones,
+  but this is not confirmed by a diagnosed root cause.
 
 ### 12.4 Not shipped — drift-register items claimed resolved that were not
 
