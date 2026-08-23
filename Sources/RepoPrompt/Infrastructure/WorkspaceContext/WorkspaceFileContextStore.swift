@@ -7774,6 +7774,45 @@ actor WorkspaceFileContextStore {
         return snapshot
     }
 
+    /// P4-7b §4.3 (phase b2): vends one open Rust snapshot handle per root in `rootScope`,
+    /// alongside -- not instead of, at b2 -- `searchCatalogSnapshot`'s Swift-built
+    /// `rootPathIndexes`. `inventoryScopeAuthorityInstance()` stays private to the store;
+    /// `WorkspaceSearchService` must not grow an authority dependency (§4.3's ownership rule), both
+    /// to keep the generation plumbing in one place and to keep the search actor testable without
+    /// a live Rust scope. Returns `nil` if the scope is unavailable or any root's handle fails to
+    /// open -- an all-or-nothing vend, matching `precondition(rootPathIndexes.count == roots.count)`'s
+    /// existing all-or-nothing shape for the Swift arm.
+    ///
+    /// `scopeGeneration` is read via the same `scopedSnapshotGeneration`/`searchCatalogSnapshotValidationToken`
+    /// pair `searchCatalogSnapshot` uses -- the Swift scope generation, not any Rust generation
+    /// (§1.5 Check B).
+    func searchRootQueryHandles(
+        rootScope: WorkspaceLookupRootScope = .visibleWorkspace
+    ) async -> WorkspaceSearchRootQueryHandles? {
+        guard rootScopeAvailability(rootScope) == .available else { return nil }
+        let generation = scopedSnapshotGeneration(scope: rootScope)
+        let roots = rootsForPathLookup(scope: rootScope)
+        guard let authority = try? await inventoryScopeAuthorityInstance() else { return nil }
+        var perRoot: [WorkspaceSearchRootQueryHandle] = []
+        perRoot.reserveCapacity(roots.count)
+        for root in roots {
+            guard let state = rootStatesByID[root.id],
+                  let snapshot = try? await authority.openSnapshot(rootID: root.id)
+            else { continue }
+            perRoot.append(WorkspaceSearchRootQueryHandle(
+                identity: WorkspaceSearchRootPathIndexIdentity(
+                    rootID: root.id,
+                    lifetimeID: state.lifetimeID,
+                    topologyGeneration: catalogGenerationsByRootID[root.id] ?? 0
+                ),
+                rootPath: root.standardizedFullPath,
+                snapshot: snapshot
+            ))
+        }
+        guard perRoot.count == roots.count else { return nil }
+        return WorkspaceSearchRootQueryHandles(scopeGeneration: generation, perRoot: perRoot)
+    }
+
     private func prepareAndPublishRootCatalogShardBatch(
         for roots: [WorkspaceRootRecord],
         requirement: WorkspaceSearchCatalogAccessRequirement
@@ -19754,6 +19793,28 @@ actor WorkspaceFileContextStore {
 
         func searchCatalogSnapshotCacheCountForTesting() -> Int {
             searchCatalogSnapshotsByScope.count
+        }
+
+        /// P4-7b §4.3 b2 done-when (RK-12): Swift's own discoverability-filter membership, for the
+        /// differential that compares it against Rust's `managed_only` copy
+        /// (`WorkspaceInventoryFileRecordFact.isDiscoverable` / `.FolderRecordFact.isDiscoverable`
+        /// via `inventoryRecordFacts`). Compare these raw ID sets, not a derived "resulting
+        /// discoverable records" set -- the latter also differs by the Item 0 root-marker-folder
+        /// synthesis (docs/architecture/rust-inventory-scope-v1.md §12.5), which is a Swift-only
+        /// synthetic record Rust never claims to filter and is not part of what this done-when means.
+        func managedOnlyFileIDsForTesting() -> Set<UUID> {
+            managedOnlyFileIDs
+        }
+
+        func managedOnlyFolderIDsForTesting() -> Set<UUID> {
+            managedOnlyFolderIDs
+        }
+
+        /// P4-7b §4.5 done-when: the handle counters (`openHandleCount` in particular) the
+        /// handle-lifecycle soak reads to assert no leak across the soak's open/close cycles.
+        func inventoryScopeDiagnosticsForTesting() async -> CoreInventoryDiagnosticsV1? {
+            guard let authority = try? await inventoryScopeAuthorityInstance() else { return nil }
+            return try? await authority.diagnostics()
         }
 
         func sessionCatalogGenerationForTesting(scope: WorkspaceLookupRootScope) -> UInt64? {
