@@ -737,6 +737,18 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func inventoryScopeDiagnostics(identity: RuntimeIdentity, scopeId: String) throws  -> InventoryDiagnosticsV1
 
+    /**
+     * P4-6b gap-closure: production promotion of `InventoryScope::set_file_managed_only` --
+     * see that method's doc comment. Loose params (matches `inventory_lookup_paths`'s shape);
+     * `file_id`/`root_id` reuse `parse_root_id`'s generic 16-byte parser.
+     */
+    func inventorySetFileManagedOnly(identity: RuntimeIdentity, scopeId: String, rootId: Data, fileId: Data, managedOnly: Bool) throws
+
+    /**
+     * See `inventory_set_file_managed_only`'s doc comment; the folder counterpart.
+     */
+    func inventorySetFolderManagedOnly(identity: RuntimeIdentity, scopeId: String, rootId: Data, folderId: Data, managedOnly: Bool) throws
+
     func inventorySnapshotPage(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, offset: UInt64, limit: UInt64) throws  -> CompactInventoryPageV1
 
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
@@ -1207,6 +1219,40 @@ open func inventoryScopeDiagnostics(identity: RuntimeIdentity, scopeId: String)t
         FfiConverterString.lower(scopeId),uniffiCallStatus
     )
 })
+}
+
+    /**
+     * P4-6b gap-closure: production promotion of `InventoryScope::set_file_managed_only` --
+     * see that method's doc comment. Loose params (matches `inventory_lookup_paths`'s shape);
+     * `file_id`/`root_id` reuse `parse_root_id`'s generic 16-byte parser.
+     */
+open func inventorySetFileManagedOnly(identity: RuntimeIdentity, scopeId: String, rootId: Data, fileId: Data, managedOnly: Bool)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_set_file_managed_only(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(rootId),
+        FfiConverterData.lower(fileId),
+        FfiConverterBool.lower(managedOnly),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * See `inventory_set_file_managed_only`'s doc comment; the folder counterpart.
+     */
+open func inventorySetFolderManagedOnly(identity: RuntimeIdentity, scopeId: String, rootId: Data, folderId: Data, managedOnly: Bool)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_set_folder_managed_only(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(rootId),
+        FfiConverterData.lower(folderId),
+        FfiConverterBool.lower(managedOnly),uniffiCallStatus
+    )
+}
 }
 
 open func inventorySnapshotPage(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, offset: UInt64, limit: UInt64)throws  -> CompactInventoryPageV1  {
@@ -9693,6 +9739,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_scope_diagnostics() != 13298) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_set_file_managed_only() != 35271) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_set_folder_managed_only() != 10558) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_snapshot_page() != 11462) {

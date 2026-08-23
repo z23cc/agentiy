@@ -1470,6 +1470,54 @@ impl InventoryScope {
         });
     }
 
+    /// P4-6b gap-closure: the production promotion of `testing_set_file_managed_only` this type's
+    /// own doc comment above flagged as deferred ("that concept's real call site lives above this
+    /// crate") -- the cutover's choke points are exactly that call site. Identity-checked, unlike
+    /// the testing hook. Bypasses the delta pipeline by design: managed-only status is
+    /// orthogonal to record content/table membership (contract doc §4.1 item 4) and is not one of
+    /// the eight fallback-reason-producing state transitions, so it does not need generation
+    /// sequencing of its own.
+    pub fn set_file_managed_only(
+        &self,
+        identity: &RuntimeIdentity,
+        root_id: RootId,
+        id: crate::inventory::InventoryUuid,
+        managed_only: bool,
+    ) -> Result<(), ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            let root = state.roots.get_mut(&root_id).ok_or(ScopeError::UnknownRoot)?;
+            root.maps.set_file_managed_only(id, managed_only);
+            Ok(())
+        })
+    }
+
+    /// See `set_file_managed_only`'s doc comment; the folder counterpart.
+    pub fn set_folder_managed_only(
+        &self,
+        identity: &RuntimeIdentity,
+        root_id: RootId,
+        id: crate::inventory::InventoryUuid,
+        managed_only: bool,
+    ) -> Result<(), ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            let root = state.roots.get_mut(&root_id).ok_or(ScopeError::UnknownRoot)?;
+            root.maps.set_folder_managed_only(id, managed_only);
+            Ok(())
+        })
+    }
+
     /// Compares the currently published generation against a fresh authoritative rebuild of the
     /// same root and records `ShadowValidationMismatch` on disagreement. Exercises a fallback
     /// reason whose real (P4-5) trigger -- the shadow arm -- does not exist yet at P4-3a; see

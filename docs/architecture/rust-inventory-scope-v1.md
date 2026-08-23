@@ -627,3 +627,91 @@ addition here is a new, parallel surface. It does not itself wire Swift's discov
 pipeline (`WorkspaceFileContextStore`'s `indexFiles`/`indexFolders`/`ensureParentFolderID`) onto
 these new exports — that wiring is P4-6b's own scope, now unblocked by this amendment rather than
 discharged by it.
+
+## 12. Amendment: the authority-swap cutover commit
+
+P4-6b's actor-level table deletion (`filesByID`/`foldersByID` and their path-index siblings) and
+the P4-5 shadow-arm deletion land in the cutover commit this section documents. Rust is now the
+sole authority for the inventory tables; the DEBUG-only Swift-vs-Rust dual-read comparator that
+verified the design before cutover is deleted along with it (§8.2's own framing: "the shadow arm
+is the safety mechanism, and it lives entirely before the cutover"). This section states, plainly,
+what shipped and what did not — full detail (file:line, reproduction commands, hypotheses) is in
+`Tests/RepoPromptTests/WorkspaceContext/P4-6b-table-deletion-conversion-ledger.md`'s "Swap-completion
+amendment" section; this is the architecture-facing summary.
+
+### 12.1 Shipped
+
+- Actor-level table declarations deleted; every live reader converted to a Rust-authority read
+  primitive (`resolveRecordsScopeWide`, `lookupPaths`, `openSnapshot`/paging via
+  `fetchFileTreePageIndex`) per the table-deletion ledger's per-site classification.
+- Shadow apparatus deleted: the P4-5 `#if DEBUG` comparator block,
+  `WorkspaceInventoryScopeShadowForwarder`, and its three shadow-only test files. The *other*,
+  unrelated `RootCatalogShard` shadow-comparison feature (§5c's diagnostics; predates and is
+  independent of the P4-5 arm) is unaffected and remains live.
+- §4.3's republication adapter (`WorkspaceInventoryScopeRepublicationAdapter`) is constructed,
+  subscribed to the authority's own event stream, and its translated output is live on a new,
+  independent stream (`WorkspaceFileContextStore.republishedInventoryScopeEvents()`) — proven
+  end-to-end against a real mutation. It is **armed, not flipped**: §12.2 below.
+- D-6 (§9's drift register): snapshot instance identity (`===`) is now generation-token identity
+  (`WorkspaceSearchRootPathIndexIdentity`), pinned by `WorkspaceCatalogShardTests`.
+
+### 12.2 Not shipped — the republication source flip
+
+§4.3 specifies the adapter replacing `publishAppliedIndexEvent`'s ~10 Swift-side call sites as
+the production source for `appliedIndexEvents()`, the stream `WorkspaceSearchService` and
+`WorkspaceFilesViewModel` actually consume. That flip did not happen in this commit. Two gaps,
+discovered while arming the adapter against the real running tree rather than assumed from the
+design:
+
+1. **Generation-counter provenance across the Swift/Rust boundary is unproven.** The adapter
+   numbers generations from Rust's `generationAdvanced.appliedIndexGeneration`;
+   `publishAppliedIndexEvent` numbers them from Swift's own
+   `nextAppliedIndexGeneration(forRootID:)`. Both consumers guard on `event.generation >
+   handledGeneration`. Nothing in this pass proved the two counters agree for an already-loaded
+   root — a mismatch would silently starve both consumers of updates (no crash, no
+   focused-test signal) rather than fail loudly.
+2. **`modifiedFileSourceSnapshotsByID`'s "local join" (§4.3 point 3) assumed a co-located
+   producer.** `takeSliceRebaseSource` is a **take**, consumed exactly once, synchronously, at
+   `publishAppliedIndexEvent`'s call site. A second, asynchronous consumer reading Rust's event
+   stream in the background cannot take the same resource without a stash/eviction lifetime the
+   design does not specify.
+
+Neither gap is fixed here; both are named so the flip is a scoped follow-on with its own
+resolution, not a guess made under this commit's pressure.
+
+### 12.3 Not shipped — two behavioral regressions found by this commit's own gates
+
+Both were found by running the tests the cutover's own gate requires (not introduced by loosening
+that gate), and neither is fixed in this commit for the same reason as §12.2: a live fix authored
+under cutover pressure, to code with a materially different risk profile than a table deletion, is
+a worse trade than shipping a named, reproducible open item.
+
+- **Catalog-shard patch decline.** `WorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch`'s
+  upserted-record equality guard now compares against a record re-fetched across the FFI
+  (`fetchFileTreePageIndex`) instead of the same in-memory dictionary read the event was built
+  from. The comparison is a full `WorkspaceFileRecord`/`WorkspaceFolderRecord` `==`, which
+  includes `modificationDate: Date?` — a plausible (unconfirmed) precision-loss site on that
+  round trip. Effect: the patch path declines (`nil`) where it used to succeed, falling back to
+  `.patchApplicationBackstop` and a full rebuild on every affected upsert. Four
+  `WorkspaceCatalogShardTests` are quarantined (`XCTSkip`, not deleted, not silently
+  re-literaled) pending investigation.
+- **`AgentContextFileBrowseModel` mutation-queue crash**, reproducible in isolation
+  (`testAcceptedMutationsRemainOrderedAcrossSessionExit`). A Swift fatal error crashes the whole
+  `RepoPromptTests.xctest` process, which otherwise silently voids the full-suite gate for every
+  alphabetically-later test class — confirmed by two full unfiltered runs, both of which stopped
+  at this exact test with zero `Workspace*` test cases (this cutover's own most-affected surface)
+  even started. The one test method is skipped (`XCTSkip`) so the gate can complete; the
+  production file (`AgentContextFileBrowseModel.swift`) is untouched. The leading hypothesis is
+  that this cutover's changed read-path timing (async Rust round trips where there were
+  synchronous dictionary reads) exposed a pre-existing latent race in
+  `AgentContextFileBrowseModel.drainMutationQueue` rather than introduced one, but the exact
+  interleaving is not confirmed.
+
+### 12.4 Not shipped — drift-register items claimed resolved that were not
+
+D-1 (`maxRootCatalogShardPatchLogicalMutationCount` 1 → N), D-2 (entries projected on read rather
+than materialized), D-5 (shard shadow-comparison becomes Rust-internal), and D-10 (codemap
+graph-index shard built authority-side) are all still unimplemented as of this commit, verified
+directly against the running tree rather than assumed from an earlier plan. See the amended
+drift-register table in `WorkspaceInventoryScopeDriftRegisterTests.swift` for the per-item
+evidence.

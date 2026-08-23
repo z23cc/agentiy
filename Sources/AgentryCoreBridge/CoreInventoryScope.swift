@@ -147,6 +147,28 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
 
+    /// P4-6b gap-closure: production promotion of the discoverability-toggle FFI export -- see
+    /// `InventoryScope::set_file_managed_only`'s doc comment.
+    func inventorySetFileManagedOnly(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        fileID: Data,
+        managedOnly: Bool
+    ) throws {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
+    func inventorySetFolderManagedOnly(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        folderID: Data,
+        managedOnly: Bool
+    ) throws {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
     func inventoryLookupPaths(
         identity: CoreRuntimeIdentity,
         scopeID: String,
@@ -423,6 +445,30 @@ extension AgentryCoreBridge {
         let identity = try requireIdentity()
         do {
             return try transport.inventoryResolveRecordsScopeWide(identity: identity, scopeID: scopeID, bytes: bytes)
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventorySetFileManagedOnly(scopeID: String, rootID: UUID, fileID: UUID, managedOnly: Bool) throws {
+        let identity = try requireIdentity()
+        do {
+            try transport.inventorySetFileManagedOnly(
+                identity: identity, scopeID: scopeID, rootID: coreInventoryUUIDData(rootID),
+                fileID: coreInventoryUUIDData(fileID), managedOnly: managedOnly
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventorySetFolderManagedOnly(scopeID: String, rootID: UUID, folderID: UUID, managedOnly: Bool) throws {
+        let identity = try requireIdentity()
+        do {
+            try transport.inventorySetFolderManagedOnly(
+                identity: identity, scopeID: scopeID, rootID: coreInventoryUUIDData(rootID),
+                folderID: coreInventoryUUIDData(folderID), managedOnly: managedOnly
+            )
         } catch {
             throw mapTransportError(error)
         }
@@ -969,6 +1015,16 @@ public final class CoreInventoryScope: @unchecked Sendable {
             generation: block.generation, rootLifetimeID: block.rootLifetimeID,
             filesByID: filesByID, foldersByID: foldersByID
         )
+    }
+
+    /// P4-6b gap-closure: discoverability toggle -- the production promotion of the P4-3a
+    /// testing-only hook (`InventoryScope::set_file_managed_only`'s doc comment).
+    public func setFileManagedOnly(rootID: UUID, fileID: UUID, managedOnly: Bool) async throws {
+        try await bridge.inventorySetFileManagedOnly(scopeID: scopeID, rootID: rootID, fileID: fileID, managedOnly: managedOnly)
+    }
+
+    public func setFolderManagedOnly(rootID: UUID, folderID: UUID, managedOnly: Bool) async throws {
+        try await bridge.inventorySetFolderManagedOnly(scopeID: scopeID, rootID: rootID, folderID: folderID, managedOnly: managedOnly)
     }
 
     public func diagnostics() async throws -> CoreInventoryDiagnosticsV1 {

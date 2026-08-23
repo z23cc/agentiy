@@ -287,6 +287,22 @@ protocol CoreRuntimeTransport: Sendable {
         scopeID: String,
         bytes: Data
     ) throws -> AgentryUniFFIRaw.CompactRecordBlockV1
+    /// P4-6b gap-closure: discoverability toggle (see `InventoryScope::set_file_managed_only`'s
+    /// doc comment).
+    func inventorySetFileManagedOnly(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        fileID: Data,
+        managedOnly: Bool
+    ) throws
+    func inventorySetFolderManagedOnly(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        folderID: Data,
+        managedOnly: Bool
+    ) throws
     /// P4-6b prep slice 1: `inventoryLookupPaths`'s facade completion.
     func inventoryLookupPaths(
         identity: CoreRuntimeIdentity,
@@ -1555,6 +1571,38 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 identity: Self.rawIdentity(identity),
                 scopeId: scopeID,
                 bytes: bytes
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventorySetFileManagedOnly(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        fileID: Data,
+        managedOnly: Bool
+    ) throws {
+        do {
+            try runtime.inventorySetFileManagedOnly(
+                identity: Self.rawIdentity(identity), scopeId: scopeID, rootId: rootID, fileId: fileID, managedOnly: managedOnly
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventorySetFolderManagedOnly(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        folderID: Data,
+        managedOnly: Bool
+    ) throws {
+        do {
+            try runtime.inventorySetFolderManagedOnly(
+                identity: Self.rawIdentity(identity), scopeId: scopeID, rootId: rootID, folderId: folderID, managedOnly: managedOnly
             )
         } catch {
             throw Self.map(error)

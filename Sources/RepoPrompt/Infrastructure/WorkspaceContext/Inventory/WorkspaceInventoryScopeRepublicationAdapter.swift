@@ -12,14 +12,24 @@ import Foundation
 //     `generation`, `rootLifetimeID`, `isRootUnload`, `requiresFullResync`, `modifiedFileIDs`,
 //     `upsertedFolders`, `upsertedFiles`, and `modifiedFileSourceSnapshotsByID`.
 //
-// This adapter translates Rust's `CoreInventoryScopeEvent` stream into that exact shape. It is
-// DEBUG-verified now (§8.4's differential pattern extended to the event plane, alongside the
-// table-content, index, and read-facade shadow arms) by comparing its output against the same
-// mutation's real Swift-published event while Swift remains authoritative -- and is
-// production-armed (wired to replace Swift's own `publishAppliedIndexEvent` call sites) at the
-// P4-6b swap commit. Nothing calls this adapter in production yet; building it now is what lets
-// the swap commit be "flip the source, delete the old publication code" instead of designing this
-// under cutover time pressure.
+// This adapter translates Rust's `CoreInventoryScopeEvent` stream into that exact shape.
+//
+// P4-6b authority-swap update: the DEBUG shadow-arm differential harness that used to verify
+// this adapter pre-cutover (§8.4's pattern, comparing its output against the same mutation's
+// real Swift-published event) is deleted along with the rest of the shadow apparatus -- Rust is
+// now the sole authority, so there is no second arm left to compare against.
+//
+// **Armed, not flipped, as of this commit.** `WorkspaceFileContextStore` constructs this
+// adapter, subscribes it to `WorkspaceInventoryScopeAuthority.events()` (a hub-wide
+// subscription, started once per store), and merges its output onto
+// `republishedInventoryScopeEvents()` -- but that is a *separate* stream from
+// `appliedIndexEvents()`, the one `Search/WorkspaceSearchService.swift:157` and
+// `Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift:1520` actually subscribe to
+// via `publishAppliedIndexEvent`. See `WorkspaceFileContextStore.startInventoryScopeRepublicationTaskIfNeeded`'s
+// header comment for the two open gaps (generation-counter provenance across the Swift/Rust
+// boundary; `modifiedFileSourceSnapshotsByID`'s synchronous-take lifetime under an asynchronous
+// consumer) that keep the actual source flip -- "point the two consumers here, delete
+// `publishAppliedIndexEvent`" -- a follow-on rather than part of this commit.
 // ================================================================================================
 
 /// Fills in the two fields Rust's event stream does not carry -- `rootPath` and Swift's own
@@ -167,11 +177,11 @@ final class WorkspaceInventoryScopeRepublicationAdapter {
     /// Swift-published record's convention -- caught live by
     /// `testRepublicationAdapterMatchesRealSwiftPublishedEventForIncrementalAdd`'s dual-read
     /// comparison, not by inspection.
-    private static func denormalizedParentFolderID(_ parentFolderID: UUID?, rootID: UUID) -> UUID? {
+    static func denormalizedParentFolderID(_ parentFolderID: UUID?, rootID: UUID) -> UUID? {
         parentFolderID ?? rootID
     }
 
-    private static func workspaceFileRecord(_ file: CoreInventoryFileRecordV1) -> WorkspaceFileRecord {
+    static func workspaceFileRecord(_ file: CoreInventoryFileRecordV1) -> WorkspaceFileRecord {
         WorkspaceFileRecord(
             id: file.id,
             rootID: file.rootID,
@@ -183,7 +193,7 @@ final class WorkspaceInventoryScopeRepublicationAdapter {
         )
     }
 
-    private static func workspaceFolderRecord(_ folder: CoreInventoryFolderRecordV1) -> WorkspaceFolderRecord {
+    static func workspaceFolderRecord(_ folder: CoreInventoryFolderRecordV1) -> WorkspaceFolderRecord {
         WorkspaceFolderRecord(
             id: folder.id,
             rootID: folder.rootID,
@@ -192,6 +202,50 @@ final class WorkspaceInventoryScopeRepublicationAdapter {
             fullPath: folder.fullPath,
             parentFolderID: denormalizedParentFolderID(folder.parentFolderID, rootID: folder.rootID),
             modificationDate: folder.modificationDate
+        )
+    }
+
+    /// P4-6b table-deletion conversion ledger: reconstructs a full record from an
+    /// id-keyed/path-keyed fact (`CoreInventoryRecordFact`, `resolveRecordsScopeWide`/
+    /// `lookupPaths`) rather than from a bulk/discovery wire record. `standardizedRelativePath`/
+    /// `standardizedFullPath` are passed as the raw `relativePath`/`fullPath` constructor
+    /// arguments -- verified safe (D-13): `WorkspaceFileRecord`/`WorkspaceFolderRecord`
+    /// standardize those fields internally and idempotently, and no call site of a
+    /// fact-reconstructed record reads its raw (non-standardized) fields. `nil` when the fact
+    /// reports the id/path as absent, or is missing a field a live record always carries.
+    static func workspaceFileRecord(id: UUID, fact: CoreInventoryRecordFact) -> WorkspaceFileRecord? {
+        guard fact.exists,
+              let rootID = fact.rootID,
+              let relativePath = fact.standardizedRelativePath,
+              let fullPath = fact.standardizedFullPath,
+              let name = fact.name
+        else { return nil }
+        return WorkspaceFileRecord(
+            id: id,
+            rootID: rootID,
+            name: name,
+            relativePath: relativePath,
+            fullPath: fullPath,
+            parentFolderID: denormalizedParentFolderID(fact.parentFolderID, rootID: rootID),
+            modificationDate: fact.modificationDate
+        )
+    }
+
+    static func workspaceFolderRecord(id: UUID, fact: CoreInventoryRecordFact) -> WorkspaceFolderRecord? {
+        guard fact.exists,
+              let rootID = fact.rootID,
+              let relativePath = fact.standardizedRelativePath,
+              let fullPath = fact.standardizedFullPath,
+              let name = fact.name
+        else { return nil }
+        return WorkspaceFolderRecord(
+            id: id,
+            rootID: rootID,
+            name: name,
+            relativePath: relativePath,
+            fullPath: fullPath,
+            parentFolderID: denormalizedParentFolderID(fact.parentFolderID, rootID: rootID),
+            modificationDate: fact.modificationDate
         )
     }
 }

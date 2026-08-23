@@ -266,6 +266,19 @@ actor WorkspaceInventoryScopeAuthority {
         return try await scope.events(maxQueuedEvents: maxQueuedEvents, maxQueuedBytes: maxQueuedBytes)
     }
 
+    /// P4-6b gap-closure: discoverability toggle. `try?`-tolerant at every choke-point call
+    /// site by design (matching this type's other mutation methods) -- a failure here degrades
+    /// to "not yet marked managed-only," not data loss.
+    func setFileManagedOnly(rootID: UUID, fileID: UUID, managedOnly: Bool) async throws {
+        let scope = try await requireScope()
+        try await scope.setFileManagedOnly(rootID: rootID, fileID: fileID, managedOnly: managedOnly)
+    }
+
+    func setFolderManagedOnly(rootID: UUID, folderID: UUID, managedOnly: Bool) async throws {
+        let scope = try await requireScope()
+        try await scope.setFolderManagedOnly(rootID: rootID, folderID: folderID, managedOnly: managedOnly)
+    }
+
     func diagnostics() async throws -> CoreInventoryDiagnosticsV1 {
         let scope = try await requireScope()
         return try await scope.diagnostics()

@@ -725,6 +725,48 @@ impl CoreRuntime {
         })
     }
 
+    /// P4-6b gap-closure: production promotion of `InventoryScope::set_file_managed_only` --
+    /// see that method's doc comment. Loose params (matches `inventory_lookup_paths`'s shape);
+    /// `file_id`/`root_id` reuse `parse_root_id`'s generic 16-byte parser.
+    pub fn inventory_set_file_managed_only(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        root_id: Vec<u8>,
+        file_id: Vec<u8>,
+        managed_only: bool,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let root_id = parse_root_id(&root_id)?;
+            let file_id = parse_root_id(&file_id)?;
+            scope.set_file_managed_only(&identity, root_id, file_id, managed_only)?;
+            Ok(())
+        })
+    }
+
+    /// See `inventory_set_file_managed_only`'s doc comment; the folder counterpart.
+    pub fn inventory_set_folder_managed_only(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        root_id: Vec<u8>,
+        folder_id: Vec<u8>,
+        managed_only: bool,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let root_id = parse_root_id(&root_id)?;
+            let folder_id = parse_root_id(&folder_id)?;
+            scope.set_folder_managed_only(&identity, root_id, folder_id, managed_only)?;
+            Ok(())
+        })
+    }
+
     pub fn inventory_scope_diagnostics(
         &self,
         identity: RuntimeIdentity,
