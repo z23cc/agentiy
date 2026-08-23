@@ -9,6 +9,14 @@ publish.workspace = true
 [lib]
 path = "src/lib.rs"
 
+# P6-4: a portable, dependency-free synthetic-CLI stand-in for the process-supervision test
+# matrix (design §3.4/§8's "well-behaved, hostile, silent, huge-line, crash-on-signal" set) --
+# never shipped, driven only from `tests/agent_claude_process_*.rs` via `CARGO_BIN_EXE_...`. Not
+# subject to this package's `unsafe_code = "deny"` guardrail count (see the binary's own doc).
+[[bin]]
+name = "agent-claude-synthetic-cli"
+path = "tests/support/synthetic_cli.rs"
+
 [dependencies]
 agentry-proto.workspace = true
 # TD-2 (textdecode): docs/designs/textdecode-policy-v2-2026-08-22.md §4.2/§4.4.
@@ -23,7 +31,13 @@ encoding_rs.workspace = true
 # `posix_spawn_file_actions_addchdir_np` has no `nix` wrapper and is absent from `libc` 0.2.189 on every
 # Apple target -- P6-4 needs one hand-declared `extern "C"` binding for it, unconditionally.
 nix = { workspace = true, features = ["fs", "process", "event", "signal"] }
-pcre2.workspace = true
+# P6-4 (docs/architecture/rust-agent-claude-v1.md §5.1/§5.2/§12): the confirmed, unconditional
+# `posix_spawn_file_actions_addchdir_np` extern "C" binding (`agent_claude::process::addchdir`)
+# and `libc::waitid`'s `WNOHANG` flag (`agent_claude::process::reaper`) -- neither wrapped by `nix`
+# on Apple targets. Already present transitively via `nix` at this exact pinned version
+# (`rust/Cargo.lock:465`); promoted to a direct dependency, not a new crate in the tree.
+libc = { workspace = true }
+pcre2 = { workspace = true }
 # P6-3 (docs/architecture/rust-agent-claude-v1.md §2): the Claude codec/translator/recovery port
 # (`agent_claude`) is production code, not test-only -- promoted from dev-dependencies (below) to a
 # real dependency. Already a pinned workspace dependency used elsewhere as a real dependency
@@ -58,5 +72,20 @@ proptest.workspace = true
 # itself.
 serde = { workspace = true, features = ["derive"] }
 
-[lints]
-workspace = true
+# P6-4 (docs/architecture/rust-agent-claude-v1.md §5.2/§12): the confirmed `addchdir_np` extern "C"
+# binding needs an unconditional, narrowly-scoped `unsafe_code` exception. `#![forbid(unsafe_code)]`
+# (this crate's `src/lib.rs:3`, backed by the workspace's `unsafe_code = "forbid"`) can never be
+# downgraded by an inner `#[allow(...)]` -- that is `forbid`'s entire purpose, unlike `deny`. This
+# crate therefore declines `[lints] workspace = true` for the `rust` lint table specifically,
+# downgrades only `unsafe_code` to `deny` (every other rust lint stays at its default), and
+# `agent_claude::process::addchdir` plus `agent_claude::process::reaper::waitid_probe` (a second
+# Apple-specific `nix` gap found during P6-2) are the crate's *only* two `#[allow(unsafe_code)]`
+# sites -- asserted by `Scripts/rust_ffi_guardrails.py`. Clippy lints are re-pinned identically to
+# `rust/Cargo.toml`'s `[workspace.lints.clippy]` since `workspace = true` is all-or-nothing per
+# `[lints]` table.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

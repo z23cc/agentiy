@@ -29,6 +29,12 @@ agentry-runtime = { path = "crates/runtime", version = "=0.1.0" }
 chardetng = "=1.0.0"
 encoding_rs = "=0.8.35"
 nix = "=0.30.1"
+# P6-4 (docs/architecture/rust-agent-claude-v1.md §5.1/§5.2/§12): promoted from a transitive `nix`
+# dependency (already at this exact pinned version, `rust/Cargo.lock:465`) to a direct workspace
+# dependency -- needed for the hand-declared `posix_spawn_file_actions_addchdir_np` extern "C"
+# binding (no `nix` wrapper exists for it on Apple targets) and for `libc::waitid`'s `WNOHANG`
+# flag (also unwrapped by `nix` on Apple targets). Not a new crate in the dependency tree.
+libc = "=0.2.189"
 pcre2 = "=0.2.11"
 proptest = "=1.7.0"
 tokio = "=1.47.1"

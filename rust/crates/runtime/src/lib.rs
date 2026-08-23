@@ -1,6 +1,13 @@
 //! Owned runtime, operation, subscription, and wake lifecycle for Agentry.
 
-#![forbid(unsafe_code)]
+// P6-4 (docs/architecture/rust-agent-claude-v1.md §5.2/§12): downgraded from `forbid` to `deny`
+// so `agent_claude::process::addchdir` can carry the confirmed, unconditional, narrowly-scoped
+// `#[allow(unsafe_code)]` exception for the hand-declared `posix_spawn_file_actions_addchdir_np`
+// extern "C" binding -- `forbid` cannot be downgraded by any inner attribute, `deny` can. This is
+// one of the crate's two `#[allow(unsafe_code)]` sites -- the other is
+// `agent_claude::process::reaper::waitid_probe` (a second Apple-specific `nix` gap found during
+// P6-2). `Scripts/rust_ffi_guardrails.py` asserts these are the only two.
+#![deny(unsafe_code)]
 
 pub mod agent_claude;
 pub mod apply_edits;

@@ -419,5 +419,61 @@
       "get a real TSan pass on the stream-reader harness specifically once it is production P6-3/P6-4 code (this spike's E-P6-3 TSan attempt was inconclusive due to a build/tooling interaction, not a race finding)",
       "D-8's cap stays the 8 MiB placeholder pending real per-turn size data from the same corpus gap"
     ]
+  },
+  "p6FourResults": {
+    "step": "P6-4 -- Rust process supervisor (cargo-only, no FFI)",
+    "decision": "GO -- all four named P6-4 prerequisites discharged (reaper reclamation policy, true coexistence testing, addchdir_np, E-P6-1(a)/(b) corpus remains user-blocked and named rather than worked around); every P6-4 done-when item evidenced.",
+    "resultsMarkdown": "rust/benchmarks/results/v1/p6-4-process-supervisor-v1.md",
+    "productionSource": "rust/crates/runtime/src/agent_claude/process/",
+    "discharges": {
+      "reaperReclamationPolicy": "p6TwoResults.followUpConditions item 3 -- provenance-typed registration (register vs register_orphan), not a time-based grace period; see results doc section 2",
+      "waitidUnsafeWrapper": "p6TwoResults.followUpConditions item 2 -- landed as reaper.rs::waitid_probe, the crate's second #[allow(unsafe_code)] site alongside addchdir; see results doc section 4",
+      "addchdirNp": "confirmed P6-4 prerequisite from contract section 5.2/section 12 -- landed as agent_claude::process::addchdir; see results doc section 4",
+      "coexistenceTesting": "p6TwoResults.followUpConditions item 4 -- Arm A (two independent Reaper instances, a cheap regression net, explicitly not R2 evidence) plus Arm B (adversarial waitpid(-1) foreign owner, the load-bearing measurement); see results doc section 3",
+      "tsanOnStreamReader": "p6TwoResults.followUpConditions item 6 -- TSan/ASan clean on the reader/lib/coexistence tests against production P6-3/P6-4 code; see results doc section 5",
+      "posixSpawnCloexecDefault": "p6TwoResults.followUpConditions item 5 -- confirmed favorable finding carried forward unchanged, achievable with zero unsafe via PosixSpawnFlags::from_bits_truncate"
+    },
+    "criteria": {
+      "spawnAttributeParityStandingTests": {
+        "status": "measured",
+        "note": "E-P6-2 Part A's 9 configurations (including the previously-deferred 'with cwd' row) now run as standing cargo tests in agent_claude::process::spawn"
+      },
+      "synthenticCliMatrix": {
+        "status": "measured",
+        "note": "well-behaved, hostile-ignore-sigterm, silent, huge-line, crash-on-signal, flood, mid-line-stall, stdin-starved-flood -- tests/support/synthetic_cli.rs, driven from tests/agent_claude_process_reader.rs and reaper.rs's own tests"
+      },
+      "asanTsanClean": {
+        "status": "measured",
+        "note": "lib unit tests (24), agent_claude_process_reader (7), agent_claude_process_coexistence (Arm A), agent_claude_process_coexistence_hostile (Arm B) -- all TSan clean and ASan clean"
+      },
+      "leakSoakOneThousandSessions": {
+        "status": "measured",
+        "note": "50 batches of 20 concurrent real sessions (spawn + 2 reader threads + reaper registration); thread count returns to the pre-soak baseline every batch. Not run under ASan/TSan -- named reduction, results doc section 5"
+      },
+      "threadBudgetTwoNPlusOne": {
+        "status": "measured",
+        "note": "N = 1, 4, 16 with a fully real stack; thread count is exactly 2N + 1 while sessions are live and returns to baseline after"
+      },
+      "missedNoteExitSelfHeal": {
+        "status": "measured",
+        "note": "register_without_kevent_for_test bypasses EVFILT_PROC entirely; the periodic 0.5s sweep is the only reachable path and resolves the outcome"
+      },
+      "clockDiscontinuityTimerTest": {
+        "status": "measured",
+        "note": "deadline-based Deadline<Clock> primitive, parameterized at 0.5s/1.0s/1.5s against a FakeClock discontinuous jump; the reaper's own periodic sweep now consumes this same primitive"
+      },
+      "noSigchldHandlerInstalled": {
+        "status": "measured",
+        "note": "reaper.rs installs no SIGCHLD handler anywhere; Arm B's hostile thread uses waitpid(-1) polling, not a signal handler, and is isolated to its own binary"
+      },
+      "noNewTokioFeaturesGuardrail": {
+        "status": "measured",
+        "note": "Scripts/rust_ffi_guardrails.py now asserts agentry-runtime's tokio features stay exactly {macros, rt, sync, time}"
+      },
+      "eP6_1RealTrafficCorpus": {
+        "status": "blocked",
+        "blockedOn": "same user-blocked real-traffic corpus capture named at P6-1/P6-2 -- unchanged, not silently worked around"
+      }
+    }
   }
 }

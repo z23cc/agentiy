@@ -16,6 +16,7 @@
 
 pub mod codec;
 pub mod framer;
+pub mod process;
 pub mod recovery;
 pub mod tool_owned;
 pub mod translator;

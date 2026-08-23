@@ -115,6 +115,69 @@ def main() -> int:
     if ffi_manifest.get("lib", {}).get("crate-type") != ["staticlib"]:
         failures.append("agentry-ffi crate-type must be staticlib only")
 
+    # P6-4 (docs/architecture/rust-agent-claude-v1.md §5.1/§5.2/§12, design §4.1): the process
+    # supervisor is built entirely on plain threads + a shared kqueue reaper, deliberately without
+    # any new tokio feature (tokio::process is rejected; see the contract's §5.1). A silent tokio
+    # feature addition here would be exactly the kind of dependency-surface drift the design's own
+    # "no new tokio features, asserted by a guardrail check" P6-4 done-when line exists to catch.
+    runtime_manifest = load_toml(PRODUCT_MANIFESTS["agentry-runtime"], failures)
+    tokio_dependency = runtime_manifest.get("dependencies", {}).get("tokio", {})
+    if not isinstance(tokio_dependency, dict) or sorted(tokio_dependency.get("features", [])) != [
+        "macros",
+        "rt",
+        "sync",
+        "time",
+    ]:
+        failures.append(
+            "agentry-runtime's tokio features must stay exactly {macros, rt, sync, time} -- "
+            "P6-4's process supervisor deliberately needs no new tokio feature (process/signal/net)"
+        )
+    nix_dependency = runtime_manifest.get("dependencies", {}).get("nix", {})
+    if not isinstance(nix_dependency, dict) or sorted(nix_dependency.get("features", [])) != [
+        "event",
+        "fs",
+        "process",
+        "signal",
+    ]:
+        failures.append(
+            "agentry-runtime's nix features must stay exactly {event, fs, process, signal} -- "
+            "the P6-1-pinned set the spawner/reaper need, no more"
+        )
+
+    # P6-4: exactly two `#[allow(unsafe_code)]` sites are confirmed prerequisites --
+    # `agent_claude::process::addchdir` (the `posix_spawn_file_actions_addchdir_np` extern "C"
+    # binding) and `agent_claude::process::reaper::waitid_probe` (a second Apple-specific `nix`
+    # gap found during P6-2, wrapping the already-declared `libc::waitid`). A third site anywhere
+    # in `agentry-runtime`'s `src/` would be an unreviewed expansion of the crate's `unsafe_code`
+    # exception, which this crate declined `[lints] workspace = true` specifically to keep narrow
+    # (see `rust/crates/runtime/Cargo.toml`'s own comment).
+    unsafe_allow_sites: list[str] = []
+    for path in sorted((RUST / "crates/runtime/src").rglob("*.rs")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            # Only a real attribute counts -- doc comments (`///`, `//!`) that merely *mention*
+            # `#[allow(unsafe_code)]` in prose (as this file's own module docs do, describing where
+            # the sites live) must not be counted as a third site.
+            if stripped.startswith("#[allow(unsafe_code)") or stripped.startswith("#![allow(unsafe_code)"):
+                unsafe_allow_sites.append(f"{path.relative_to(ROOT)}:{line_number}")
+    expected_unsafe_allow_sites = {
+        "rust/crates/runtime/src/agent_claude/process/addchdir.rs",
+        "rust/crates/runtime/src/agent_claude/process/reaper.rs",
+    }
+    actual_files = {site.split(":", 1)[0] for site in unsafe_allow_sites}
+    if len(unsafe_allow_sites) != 2 or actual_files != expected_unsafe_allow_sites:
+        failures.append(
+            "agentry-runtime's src/ must contain exactly two #[allow(unsafe_code)] sites "
+            f"({sorted(expected_unsafe_allow_sites)}); found {unsafe_allow_sites}"
+        )
+    lib_rs_text = (RUST / "crates/runtime/src/lib.rs").read_text(encoding="utf-8", errors="replace")
+    if "#![deny(unsafe_code)]" not in lib_rs_text or "#![forbid(unsafe_code)]" in lib_rs_text:
+        failures.append(
+            "rust/crates/runtime/src/lib.rs must carry #![deny(unsafe_code)] (not forbid) -- "
+            "P6-4's two scoped #[allow(unsafe_code)] exceptions require deny, not forbid"
+        )
+
     xtask = load_toml(RUST / "tools/xtask/Cargo.toml", failures)
     xtask_dependencies = dependency_names(xtask)
     if "uniffi_bindgen" not in xtask_dependencies:
