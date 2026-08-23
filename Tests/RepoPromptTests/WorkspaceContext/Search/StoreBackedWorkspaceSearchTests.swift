@@ -359,9 +359,12 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             warmShard = try XCTUnwrap(
                 warmDiagnostics.rootCatalogShards.roots.first { $0.rootID == worktreeRecord.id }
             )
+            // Post-P4-7-pre-slice: `.auto`/`.both` request `.recordsOnly` (same as `.path`),
+            // so the cached `.recordsOnly` capability already satisfies them — a cache hit, not
+            // a rebuild, and no Swift path-index composition. See design doc §1.3.
             XCTAssertEqual(warmShard.authoritativeRebuildCount, 1)
-            XCTAssertEqual(warmShard.buildCount, worktreeShard.buildCount + 1)
-            XCTAssertEqual(warmShard.pathIndexBuildCount, 1)
+            XCTAssertEqual(warmShard.buildCount, worktreeShard.buildCount)
+            XCTAssertEqual(warmShard.pathIndexBuildCount, 0)
             XCTAssertEqual(warmShard.overlayPathIndexBuildCount, 0)
 
             _ = try await StoreBackedWorkspaceSearch.search(
@@ -378,7 +381,7 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
                 bothDiagnostics.rootCatalogShards.roots.first { $0.rootID == worktreeRecord.id }
             )
             XCTAssertEqual(bothShard.buildCount, warmShard.buildCount)
-            XCTAssertEqual(bothShard.pathIndexBuildCount, 1)
+            XCTAssertEqual(bothShard.pathIndexBuildCount, 0)
             XCTAssertEqual(bothShard.overlayPathIndexBuildCount, 0)
 
             let probeContainer = try makeTemporaryRoot(name: "DebugCatalogSortProbe")
@@ -2650,7 +2653,7 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
         let performSearchStart = try XCTUnwrap(source.range(of: "private static func performSearch("))
         try assertOrdered([
             "try await validateSearchReadiness(readinessTicket, workspaceManager: workspaceManager)",
-            "let catalogRequirement: WorkspaceSearchCatalogAccessRequirement = switch mode",
+            "let catalogRequirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly",
             "let catalogAccess = await store.searchCatalogAccess(",
             "requirement: catalogRequirement",
             "try await validateSearchReadiness(readinessTicket, workspaceManager: workspaceManager)",

@@ -297,12 +297,11 @@ enum StoreBackedWorkspaceSearch {
         #if DEBUG
             let diagnosticCatalogStart = WorkspaceFileSearchDebugTiming.now()
         #endif
-        let catalogRequirement: WorkspaceSearchCatalogAccessRequirement = switch mode {
-        case .path:
-            .recordsOnly
-        case .auto, .content, .both:
-            .recordsAndPathIndexes
-        }
+        // `.recordsOnly` for every mode: this call site consumes only `snapshot.files`
+        // (below) and has never read `snapshot.rootPathIndexes`. Requesting
+        // `.recordsAndPathIndexes` for `.auto`/`.content`/`.both` paid for a Swift path-index
+        // composition it discarded on every call. See design doc §1.3 (P4-7 pre-slice).
+        let catalogRequirement: WorkspaceSearchCatalogAccessRequirement = .recordsOnly
         let catalogAccess = await store.searchCatalogAccess(
             rootScope: rootScope,
             requirement: catalogRequirement

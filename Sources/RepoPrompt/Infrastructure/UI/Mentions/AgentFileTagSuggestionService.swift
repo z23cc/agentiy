@@ -105,7 +105,12 @@ final class AgentFileTagSuggestionService {
         store: WorkspaceFileContextStore,
         lookupContext: WorkspaceLookupContext
     ) async -> [WorkspaceSearchCatalogEntry] {
-        let snapshot = await store.searchCatalogSnapshot(rootScope: lookupContext.rootScope)
+        // `.recordsOnly`: this fallback reads only `snapshot.entries` below and never
+        // `snapshot.rootPathIndexes`. See design doc §1.3 (P4-7 pre-slice).
+        let snapshot = await store.searchCatalogSnapshot(
+            rootScope: lookupContext.rootScope,
+            requirement: .recordsOnly
+        )
         let entries = snapshot.entries
         let boundedLimit = max(0, limit)
         guard boundedLimit > 0 else { return [] }
