@@ -63,13 +63,33 @@ fn object_value(object: &Map<String, Value>, key: &str) -> Option<Map<String, Va
 /// return for an empty/all-whitespace line (contract §2.1: "trimmed of ASCII whitespace (empty ⇒
 /// no message)").
 pub fn decode_line(line_data: &[u8]) -> Result<Option<InboundMessage>, CodecError> {
+    decode_line_with(line_data, parse_json_object)
+}
+
+/// Primary-parse-only variant: skips §2.1's second-attempt JSON-string-control-character
+/// sanitize-and-retry pass, succeeding only when the very first `decode_object` attempt does.
+/// Used by the P6-5 debug shadow arm (`debug_shadow.rs`) to gate its live per-line comparison on
+/// exactly the same "does this decode on the first attempt" condition the Swift-side comparator
+/// evaluates independently (a plain `JSONSerialization.jsonObject` call) -- lines that only decode
+/// via the repair pass, or that need a D-1 recovery heuristic, are out of the live shadow arm's
+/// scope by construction (design §3.4: covered instead by the corpus differential, the fuzz target,
+/// and the synthetic-CLI matrix) rather than silently miscompared against a Swift arm that took a
+/// different repair path.
+pub fn decode_line_primary_only(line_data: &[u8]) -> Result<Option<InboundMessage>, CodecError> {
+    decode_line_with(line_data, decode_object)
+}
+
+fn decode_line_with(
+    line_data: &[u8],
+    parse: impl FnOnce(&[u8]) -> Result<Map<String, Value>, CodecError>,
+) -> Result<Option<InboundMessage>, CodecError> {
     let Some(trimmed) = super::framer::trimmed_ascii_whitespace(line_data) else {
         return Ok(None);
     };
     if trimmed.is_empty() {
         return Ok(None);
     }
-    let object = parse_json_object(trimmed)?;
+    let object = parse(trimmed)?;
 
     let message_type = object.get("type").and_then(Value::as_str).unwrap_or("");
     match message_type {
