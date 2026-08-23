@@ -6651,11 +6651,22 @@ actor WorkspaceFileContextStore {
         guard let state = rootStatesByID[currentness.rootID], state.service === service,
               let exactPaths = WorkspaceRootByteExactPathSet(relativePaths, rejectExactDuplicates: true)
         else { return .stale(.loadedRootOwnerStale) }
+        // OI-2 fix (contract doc §12.5 resolution): `state.fileIDsByRelativePath` is only ever
+        // populated by the legacy bulk-crawl choke points (`indexFiles`/`indexFolders`, plural,
+        // used solely by the initial `loadRoot` crawl). Every live/incremental discovery path
+        // post-P4-6b (`indexFile`/`indexFolder`, singular -- watcher events, worktree creation,
+        // seeded-root replay) routes straight through the Rust authority and never touches this
+        // Swift dict, so a file discovered any way other than the initial crawl always read back
+        // `nil` here -- `discoverable = false` for a genuinely discoverable, tracked file -- and
+        // tripped the `(true, _)`/`(false, _)` mismatch branch below against real git evidence,
+        // unconditionally producing `.catalogMismatch`. `inventoryPathLookups(in:relativePaths:)`
+        // (the same batched Rust-authoritative path/discoverability fact lookup already used by
+        // the codemap/B1/bucket-C read sites) is the live replacement.
+        let pathLookups = await inventoryPathLookups(in: state, relativePaths: exactPaths.sortedKeys.map(\.value))
         var discoverableByPath: [WorkspaceRootByteExactPathKey: Bool] = [:]
         discoverableByPath.reserveCapacity(exactPaths.count)
         for path in exactPaths.sortedKeys {
-            discoverableByPath[path] = state.fileIDsByRelativePath[path.value]
-                .map(isDiscoverableFileID) ?? false
+            discoverableByPath[path] = pathLookups.files[path.value]?.isDiscoverable ?? false
         }
         guard let evidence = await service.catalogProjectionEvidence(
             forCommittedRegularPaths: exactPaths
