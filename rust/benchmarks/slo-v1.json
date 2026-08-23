@@ -271,6 +271,47 @@
       "investigate whether the measured debug-profile latency is dominated by FFI/IPC dispatch tax or by the 'File-5' pattern's large match-set size, and choose a tighter representative pattern if the latter"
     ]
   },
+  "p4SevenAResults": {
+    "step": "P4-7a phase a2 -- the per-root suggestion-index decision (design doc p4-7-pathsearch-production-cutover-v2-2026-08-23.md §5.2)",
+    "decision": "Design §5.2's ruling stands: do not build a second persistent per-root index for `.Suggestion` at a2. `run_query(.Suggestion)`'s cold, worktree-bound cost (ad hoc haystack composition + PathSearchIndex build + search, release profile) is 2.54ms p50 / 2.84ms p99 at 10k paths and 37.91ms p50 / 43.42ms p99 at 100k paths. Both are well inside a fallback-path's interactive-adjacent budget (this variant serves only the cold-start/stale-window/worktree-bound cases per design §3 -- the steady-state mention path routes through `.indexKey`/`searchService.search` for free after P4-7b), and no escalation trigger is warranted.",
+    "measurementScope": {
+      "note": "This is a narrower, honest substitute for the registered product-level `inventoryScopeV1.experiments.e2ReadEconomicsAndPayloadTruth.relativeCaps.mentionSuggestionQueryAt100kMaximumReferenceRatio` criterion, not a discharge of it. That criterion is a Swift-vs-Rust ratio through the real `AgentFileTagSuggestionService` caller; the caller does not exist yet (phase a3 is the cutover) and no release-profile Swift reference capture exists for this query shape. This measurement is instead an absolute, Rust-only timing of `run_query(.Suggestion)` itself -- the exact per-call cost a2 is deciding whether to keep paying -- over a synthetic corpus, worktree-bound (a populated `logical_prefix`, the haystack's more expensive shape). See p4FourResults.criteria.mentionSuggestionQueryLatency for the still-blocked product-level criterion's status.",
+      "escalationRule": "design §5.2: if the registered mention SLO is missed once it can actually be measured (phase a3), escalate to a lazy per-root suggestion-variant index built on first `.Suggestion` query and invalidated with the generation. Not triggered by this measurement."
+    },
+    "tenKPaths": {
+      "status": "measured",
+      "profile": "release",
+      "pathCount": 10000,
+      "pattern": "5",
+      "patternNote": "substring pattern matching a large, representative fraction of the synthetic corpus (any name containing digit '5'), same representativeness rationale as p4SevenBResults.tenKPaths' \"File-5\" pattern",
+      "limit": 64,
+      "bindingProjection": "worktree-bound (branch 1: solo visible logical root)",
+      "warmupIterations": 10,
+      "sampleIterations": 50,
+      "p50Milliseconds": 2.54,
+      "p99Milliseconds": 2.84,
+      "harness": "rust/crates/runtime/src/inventory_scope/query.rs::a2_probe::a2_mention_suggestion_query_latency_10k_and_100k_worktree_bound",
+      "reproduction": "cd rust && cargo test -p agentry-runtime --release --lib -- --ignored --nocapture a2_mention_suggestion_query_latency_10k_and_100k_worktree_bound"
+    },
+    "hundredKPaths": {
+      "status": "measured",
+      "profile": "release",
+      "pathCount": 100000,
+      "pattern": "5",
+      "limit": 64,
+      "bindingProjection": "worktree-bound (branch 1: solo visible logical root)",
+      "warmupIterations": 5,
+      "sampleIterations": 20,
+      "p50Milliseconds": 37.91,
+      "p99Milliseconds": 43.42,
+      "harness": "rust/crates/runtime/src/inventory_scope/query.rs::a2_probe::a2_mention_suggestion_query_latency_10k_and_100k_worktree_bound",
+      "reproduction": "cd rust && cargo test -p agentry-runtime --release --lib -- --ignored --nocapture a2_mention_suggestion_query_latency_10k_and_100k_worktree_bound"
+    },
+    "followUpConditions": [
+      "at phase a3 (real caller wired), re-run through AgentFileTagSuggestionService and capture the registered product-level Swift-vs-Rust ratio (mentionSuggestionQueryAt100kMaximumReferenceRatio); this requires a release-profile Swift reference capture that does not exist yet",
+      "if that ratio criterion is missed, execute design §5.2's pre-agreed escalation (lazy per-root suggestion-variant index) rather than improvising under pressure"
+    ]
+  },
   "p4FourResults": {
     "step": "P4-4 -- FFI + bridge surface (E-2 partial re-run, this step's exit gate per the design's own instruction)",
     "decision": "E-2 partially discharged: wire-byte truth now measured through the real bridge; time-to-first-paint, B2 MainActor frame budget, mention-query, and process-level peak RSS remain BLOCKED pending P4-6b/P4-7 UI and consumer-rewiring infrastructure that does not exist yet.",
@@ -286,7 +327,7 @@
       },
       "rootBootstrapTimeToFirstPaint": {"status": "blocked", "blockedOn": "P4-6b (@MainActor UI wiring)"},
       "b2ProjectedShardMainActorFrameBudget": {"status": "blocked", "blockedOn": "P4-6b (@MainActor UI wiring); the Rust/FFI/bridge half of inventoryOpenProjectedShard is implemented and tested at P4-4"},
-      "mentionSuggestionQueryLatency": {"status": "blocked", "blockedOn": "P4-7 (AgentFileTagSuggestionService rewiring); inventoryQuery's Suggestion haystack variant is implemented and tested at P4-4 against a synthetic corpus, not the real caller"},
+      "mentionSuggestionQueryLatency": {"status": "blocked", "blockedOn": "P4-7a phase a3 (AgentFileTagSuggestionService rewiring) plus a release-profile Swift reference capture; this is a product-level Swift-vs-Rust ratio criterion, not yet dischargeable. A narrower, Rust-only absolute measurement exists as interim evidence for the a2 per-root-index decision -- see p4SevenAResults.a2 below; it does not discharge this criterion."},
       "peakRSSProcessLevel": {"status": "blocked", "blockedOn": "P4-6b (no comparable whole-process Swift-vs-Rust deployment exists pre-cutover)"}
     },
     "d1DispatchTax": {

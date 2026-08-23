@@ -547,3 +547,124 @@ mod tests {
         assert_eq!(with_empty_prefix, with_garbage_prefix);
     }
 }
+
+/// P4-7a phase a2 (design doc §5.2): the per-root suggestion-index decision. The design's ruling
+/// is to *not* build a second persistent per-root index at a2 -- `.Suggestion` keeps composing an
+/// ad hoc `PathSearchIndex` per call -- and to make that decision falsifiable by measuring the
+/// mention-path p50/p99 at 10k/100k paths, worktree-bound, cold, with a pre-agreed escalation (a
+/// lazy per-root suggestion-variant index) if the registered SLO is missed.
+///
+/// **What this measures, and what it does not (see the module's `#[ignore]` doc comment for the
+/// honesty rule this follows).** `rust/benchmarks/slo-v1.json`'s
+/// `inventoryScopeV1.experiments.e2ReadEconomicsAndPayloadTruth.relativeCaps.
+/// mentionSuggestionQueryAt100kMaximumReferenceRatio` is a **product-level Swift-vs-Rust ratio**
+/// through the real `AgentFileTagSuggestionService` caller -- that caller does not exist yet
+/// (phase a3 is the cutover) and no release-profile Swift reference capture exists for this query
+/// shape. This probe is therefore a narrower, honest substitute: an **absolute, Rust-only**
+/// measurement of `run_query(.Suggestion)`'s cost (ad hoc haystack composition + `PathSearchIndex`
+/// build + search, the exact cost a2 is deciding whether to keep paying per call), over a
+/// synthetic corpus, worktree-bound (a populated `logical_prefix`, the haystack's more expensive
+/// shape). It answers "is the per-call rebuild cheap enough to keep" on its own terms; it does not
+/// discharge the registered product-level criterion, which stays BLOCKED pending phase a3's real
+/// caller and a release-profile Swift capture -- recorded as such in `slo-v1.json`, not silently
+/// promoted to a pass.
+#[cfg(test)]
+mod a2_probe {
+    use super::*;
+    use crate::inventory::{InventoryFileRecord, InventoryRootRecord};
+    use std::time::Instant;
+
+    fn synth_entry(i: u32, root: &InventoryRootRecord) -> InventorySearchCatalogEntry {
+        let mut id = [0u8; 16];
+        id[0..4].copy_from_slice(&i.to_be_bytes());
+        let rel = format!("src/module_{}/File_{}.swift", i % 500, i);
+        let file = InventoryFileRecord {
+            id,
+            root_id: root.id,
+            name: format!("File_{i}.swift"),
+            relative_path: rel.clone(),
+            standardized_relative_path: rel.clone(),
+            full_path: format!("/repo/{rel}"),
+            standardized_full_path: format!("/repo/{rel}"),
+            parent_folder_id: None,
+            modification_date: Some(1_700_000_000.0 + f64::from(i)),
+        };
+        InventorySearchCatalogEntry::new(&file, root)
+    }
+
+    fn percentile(sorted_micros: &[u128], percentile: usize) -> u128 {
+        let rank = (sorted_micros.len() * percentile).div_ceil(100).saturating_sub(1);
+        sorted_micros[rank.min(sorted_micros.len() - 1)]
+    }
+
+    /// Cold, worktree-bound `.Suggestion` query latency at `path_count` entries. `warmup_iterations`
+    /// runs are discarded (JIT/allocator/cache warmup, matching `slo-v1.json`'s
+    /// `environment.warmupIterations` convention at a scale a per-call full-index-rebuild can
+    /// actually afford); `sample_iterations` runs are timed. Each sampled call still pays the full
+    /// ad hoc index build -- there is no persistent index for `.Suggestion` to warm into, which is
+    /// exactly the cost this probe exists to quantify.
+    fn measure(path_count: u32, warmup_iterations: usize, sample_iterations: usize) -> (u128, u128) {
+        let root = InventoryRootRecord {
+            id: [7u8; 16],
+            name: "PhysWorktree".to_owned(),
+            standardized_full_path: "/repo".to_owned(),
+        };
+        let entries: Vec<_> = (0..path_count).map(|i| synth_entry(i, &root)).collect();
+        let lifetime = super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(5));
+        let mut generation = RootGeneration::empty(root.id, lifetime);
+        generation.generation = 1;
+        generation.entries = entries;
+        // Worktree-bound: branch 1 (solo visible logical root) -- design §5.1's cheapest logical
+        // prefix to compute but still exercises the full five-component haystack every `.Suggestion`
+        // caller composes when there IS a binding projection (the a2 done-when's named
+        // configuration; a3's fallback callers are exactly those with one).
+        let logical_prefix = Some(QueryPrefix {
+            non_empty_relative_prefix: String::new(),
+            empty_relative_path_value: "App".to_owned(),
+        });
+        let request = InventoryQueryRequest {
+            // Matches a large, representative fraction of the synthetic corpus (any name
+            // containing digit '5') rather than a best-case exact/prefix match -- same
+            // representativeness rationale `WorkspaceSearchInteractiveLatencySLOTests`' "File-5"
+            // pattern documents for the sibling b4 SLO.
+            pattern: "5".to_owned(),
+            // `AgentFileTagSuggestionService`'s own candidate-limit formula
+            // (`max(maxResults * indexCandidateMultiplier, minimumIndexCandidateLimit)` with the
+            // service's default `maxResults: 5`).
+            limit: 64,
+            haystack_variant: QueryHaystackVariant::Suggestion,
+            prefix: QueryPrefix::default(),
+            logical_prefix,
+        };
+
+        for _ in 0..warmup_iterations {
+            std::hint::black_box(run_query(&generation, &request));
+        }
+        let mut micros: Vec<u128> = Vec::with_capacity(sample_iterations);
+        for _ in 0..sample_iterations {
+            let start = Instant::now();
+            std::hint::black_box(run_query(&generation, &request));
+            micros.push(Instant::now().duration_since(start).as_micros());
+        }
+        micros.sort_unstable();
+        (percentile(&micros, 50), percentile(&micros, 99))
+    }
+
+    /// Run explicitly (release profile, this is a synthetic-corpus timing probe, not a
+    /// `cargo test` default): `cargo test -p agentry-runtime --release -- --ignored --nocapture
+    /// a2_mention_suggestion_query_latency_10k_and_100k_worktree_bound`.
+    #[test]
+    #[ignore = "synthetic-corpus timing probe; run explicitly, see module doc comment"]
+    fn a2_mention_suggestion_query_latency_10k_and_100k_worktree_bound() {
+        for path_count in [10_000u32, 100_000u32] {
+            let (warmup, samples) = if path_count >= 100_000 { (5, 20) } else { (10, 50) };
+            let (p50, p99) = measure(path_count, warmup, samples);
+            eprintln!(
+                "a2_mention_suggestion_query_latency: path_count={path_count} p50_us={p50} p99_us={p99} \
+                 p50_ms={:.2} p99_ms={:.2}",
+                p50 as f64 / 1000.0,
+                p99 as f64 / 1000.0
+            );
+        }
+    }
+}
