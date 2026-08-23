@@ -37,6 +37,7 @@ dependencies = [
  "agentry-proto",
  "chardetng",
  "encoding_rs",
+ "libc",
  "nix",
  "pcre2",
  "serde_json",
