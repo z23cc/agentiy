@@ -12,8 +12,9 @@ package protocol FileEditHost {
 /// (round-2 Finding F2) -- `ApplyEditsService` downcasts to this protocol and, when present,
 /// prefers it over `readText`, routing to `ApplyEditsComputing`'s raw-bytes overload so Rust's
 /// apply-edits handler decodes via `textdecode()` as its own first step (single FFI crossing).
-/// Only `DirectHeadlessFileEditHost` (ladder 6, headless `agentry-mcp`) conforms today; GUI's
-/// `WorkspaceFileEditHost` does not, so this is a no-op for that path (TD-5 scope, §6.1).
+/// Both `DirectHeadlessFileEditHost` (ladder 6, headless `agentry-mcp`) and the GUI's
+/// `WorkspaceFileEditHost` conform. Each host remains responsible for stable-read/write-back
+/// validation around the raw byte snapshot.
 package protocol RawBytesFileEditHost {
     func readRawBytes(path: String) async throws -> Data
 }

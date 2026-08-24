@@ -55,7 +55,10 @@ fn concurrent_reader_makes_progress_while_a_publish_is_parked() {
         InventoryScopeConfig::default(),
     ));
     let hub = Arc::new(SubscriptionHub::new(identity.clone()).expect("hub"));
-    scope.attach_event_sink(Arc::clone(&hub), scope.scope_id().to_subscription_scope_id());
+    scope.attach_event_sink(
+        Arc::clone(&hub),
+        scope.scope_id().to_subscription_scope_id(),
+    );
 
     // Establish a real root with a published generation so the reader thread has something to
     // open snapshots against.
@@ -96,7 +99,12 @@ fn concurrent_reader_makes_progress_while_a_publish_is_parked() {
     let writer_identity = identity.clone();
     let triggering_root = [2u8; 16];
     let writer = thread::spawn(move || {
-        writer_scope.open_root(&writer_identity, triggering_root, "Root2".into(), "/root2".into())
+        writer_scope.open_root(
+            &writer_identity,
+            triggering_root,
+            "Root2".into(),
+            "/root2".into(),
+        )
     });
 
     // Deterministic: spin until the writer is actually parked (lock already released, per
@@ -108,7 +116,9 @@ fn concurrent_reader_makes_progress_while_a_publish_is_parked() {
     let reads_completed = Arc::new(AtomicU64::new(0));
     const TARGET_READS: u64 = 2_000;
     while reads_completed.load(Ordering::Relaxed) < TARGET_READS {
-        let _ = scope.diagnostics(&identity).expect("diagnostics must not block");
+        let _ = scope
+            .diagnostics(&identity)
+            .expect("diagnostics must not block");
         let handle = scope
             .open_snapshot(&identity, seeded_root, "lock-ordering-test")
             .expect("open_snapshot must not block");
@@ -141,12 +151,22 @@ fn publish_events_never_runs_with_state_still_locked_self_check() {
         InventoryScopeConfig::default(),
     );
     let hub = Arc::new(SubscriptionHub::new(identity.clone()).expect("hub"));
-    scope.attach_event_sink(Arc::clone(&hub), scope.scope_id().to_subscription_scope_id());
+    scope.attach_event_sink(
+        Arc::clone(&hub),
+        scope.scope_id().to_subscription_scope_id(),
+    );
 
     let root = [3u8; 16];
     scope
         .open_root(&identity, root, "Root".into(), "/root".into())
         .expect("open_root");
-    assert!(scope.testing_try_lock_state(), "state lock must be free after open_root returns");
-    assert_eq!(scope.publish_failure_count(), 0, "publish must have succeeded, not merely no-oped");
+    assert!(
+        scope.testing_try_lock_state(),
+        "state lock must be free after open_root returns"
+    );
+    assert_eq!(
+        scope.publish_failure_count(),
+        0,
+        "publish must have succeeded, not merely no-oped"
+    );
 }

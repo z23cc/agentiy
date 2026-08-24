@@ -140,6 +140,10 @@ protocol CoreRuntimeTransport: Sendable {
         cancellation: any CoreLeafCancellationHandle,
         request: CoreApplyEditsBatchRequestV1
     ) throws -> CoreCompactApplyEditsBatchResultV1
+    func textDecodeV1(
+        identity: CoreRuntimeIdentity,
+        rawBytes: Data
+    ) throws -> CoreTextDecodeResultV1
     func pathMatchScoreBatchV1(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -337,7 +341,9 @@ protocol CoreRuntimeTransport: Sendable {
     func agentStartOrResume(
         identity: CoreRuntimeIdentity,
         scopeID: String,
-        resumeSessionID: String?
+        resumeSessionID: String?,
+        model: String?,
+        effortLevel: String?
     ) throws -> AgentryUniFFIRaw.AgentClaudeStartReceiptV1
     func agentSendUserMessage(identity: CoreRuntimeIdentity, scopeID: String, text: String) throws -> UInt64
     func agentInterruptTurn(
@@ -356,7 +362,8 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         scopeID: String,
         model: String?,
-        effort: String?
+        effort: String?,
+        disposition: AgentryUniFFIRaw.AgentClaudeFlagSettingsDispositionV1
     ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1
     func agentShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
@@ -763,6 +770,50 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             propertyWords: value.propertyWords,
             enumWords: value.enumWords,
             variableWords: value.variableWords
+        )
+    }
+
+    func textDecodeV1(
+        identity: CoreRuntimeIdentity,
+        rawBytes: Data
+    ) throws -> CoreTextDecodeResultV1 {
+        let value: AgentryUniFFIRaw.CoreTextDecodeResultV1
+        do {
+            value = try runtime.textDecodeV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreTextDecodeResultV1.contractVersion,
+                rawBytes: rawBytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+        let encoding: CoreTextEncodingV1 = switch value.encoding {
+        case .utf8:
+            .utf8
+        case .utf16BigEndian:
+            .utf16BigEndian
+        case .utf16LittleEndian:
+            .utf16LittleEndian
+        case .utf32BigEndian:
+            .utf32BigEndian
+        case .utf32LittleEndian:
+            .utf32LittleEndian
+        case .legacy:
+            if let name = value.legacyEncodingName, !name.isEmpty {
+                .legacy(ianaName: name)
+            } else {
+                throw CoreComputeError.malformedResponse
+            }
+        }
+        if value.encoding != .legacy, value.legacyEncodingName != nil {
+            throw CoreComputeError.malformedResponse
+        }
+        return CoreTextDecodeResultV1(
+            text: value.text,
+            encoding: encoding,
+            bomPresent: value.bomPresent,
+            hadReplacements: value.hadReplacements,
+            policyID: value.policyId
         )
     }
 
@@ -1622,10 +1673,18 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     func agentStartOrResume(
         identity: CoreRuntimeIdentity,
         scopeID: String,
-        resumeSessionID: String?
+        resumeSessionID: String?,
+        model: String?,
+        effortLevel: String?
     ) throws -> AgentryUniFFIRaw.AgentClaudeStartReceiptV1 {
         do {
-            return try runtime.agentStartOrResume(identity: Self.rawIdentity(identity), scopeId: scopeID, resumeSessionId: resumeSessionID)
+            return try runtime.agentStartOrResume(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                resumeSessionId: resumeSessionID,
+                model: model,
+                effortLevel: effortLevel
+            )
         } catch {
             throw Self.map(error)
         }
@@ -1671,10 +1730,17 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         identity: CoreRuntimeIdentity,
         scopeID: String,
         model: String?,
-        effort: String?
+        effort: String?,
+        disposition: AgentryUniFFIRaw.AgentClaudeFlagSettingsDispositionV1
     ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1 {
         do {
-            return try runtime.agentApplyModelAndEffort(identity: Self.rawIdentity(identity), scopeId: scopeID, model: model, effort: effort)
+            return try runtime.agentApplyModelAndEffort(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                model: model,
+                effort: effort,
+                disposition: disposition
+            )
         } catch {
             throw Self.map(error)
         }
@@ -1784,6 +1850,13 @@ public actor AgentryCoreBridge {
     private var identity: CoreRuntimeIdentity?
     private var lifecycle = Lifecycle.created
     private var wakeSource: DispatchSourceRead?
+    /// A wake source may fire again while `drain(subscriptionID:)` is suspended in the async
+    /// decoder. Actor isolation alone does not serialize those reentrant tasks: a later drainer can
+    /// otherwise remove and yield a newer batch before the first drainer resumes, reversing the
+    /// Rust hub's authority order. Keep exactly one drain owner and reduce overlapping callbacks to
+    /// a pending bit; the owner performs another complete rearm/drain cycle before relinquishing.
+    private var wakeDrainInProgress = false
+    private var wakeDrainRequested = false
     private var subscriptions: [UInt64: CoreSubscriptionState] = [:]
 
     public static func start(
@@ -1977,6 +2050,18 @@ public actor AgentryCoreBridge {
     public func computeClient() throws -> CoreComputeClient {
         _ = try requireIdentity()
         return CoreComputeClient(bridge: self)
+    }
+
+    func prepareDirectComputeOperation() throws -> CoreDirectComputeOperationContext {
+        do {
+            let identity = try requireIdentity()
+            return CoreDirectComputeOperationContext(
+                transport: transport,
+                identity: identity
+            )
+        } catch {
+            throw mapComputeFailure(error)
+        }
     }
 
     func prepareComputeOperation() throws -> CoreComputeOperationContext {
@@ -2258,21 +2343,30 @@ public actor AgentryCoreBridge {
     }
 
     private func wakeFired() async {
-        guard let identity, lifecycle == .running else { return }
-        do {
-            repeat {
+        wakeDrainRequested = true
+        guard !wakeDrainInProgress else { return }
+        wakeDrainInProgress = true
+        defer { wakeDrainInProgress = false }
+
+        while wakeDrainRequested {
+            wakeDrainRequested = false
+            guard let identity, lifecycle == .running else { return }
+            do {
+                repeat {
+                    try await drainAll(identity: identity)
+                    // Guaranteed suspension per pass: if a registration-order bug ever
+                    // reappears, the loop degrades to a yielding poll instead of a
+                    // non-yielding actor monopoly that starves the registration path.
+                    await Task.yield()
+                } while try transport.rearmWake(identity: identity)
                 try await drainAll(identity: identity)
-                // Guaranteed suspension per pass: if a registration-order bug ever
-                // reappears, the loop degrades to a yielding poll instead of a
-                // non-yielding actor monopoly that starves the registration path.
-                await Task.yield()
-            } while try transport.rearmWake(identity: identity)
-            try await drainAll(identity: identity)
-        } catch {
-            let mapped = mapTransportError(error)
-            if mapped == .runtimeInvalidated {
-                noteInvalidationTrigger("wakeFired transport error: \(String(describing: error))")
-                invalidate()
+            } catch {
+                let mapped = mapTransportError(error)
+                if mapped == .runtimeInvalidated {
+                    noteInvalidationTrigger("wakeFired transport error: \(String(describing: error))")
+                    invalidate()
+                }
+                return
             }
         }
     }

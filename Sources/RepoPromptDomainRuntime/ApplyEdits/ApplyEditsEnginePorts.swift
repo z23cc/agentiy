@@ -1,5 +1,15 @@
 import Foundation
 
+package struct ApplyEditsRawBytesComputation: Sendable {
+    package let originalText: String
+    package let result: ApplyEditsResult
+
+    package init(originalText: String, result: ApplyEditsResult) {
+        self.originalText = originalText
+        self.result = result
+    }
+}
+
 package protocol ApplyEditsComputing: Sendable {
     func apply(
         request: ApplyEditsRequest,
@@ -19,8 +29,19 @@ package protocol ApplyEditsComputing: Sendable {
     ) async throws -> ApplyEditsResult
 }
 
-extension ApplyEditsComputing {
-    package func apply(
+/// Additive capability for computers that can return the exact decoded text they used for a
+/// raw-byte computation. `ApplyEditsService.preview` uses this value for approved-write change
+/// detection; reconstructing it independently in Swift would let the decoder policies drift.
+package protocol RawBytesApplyEditsComputing: ApplyEditsComputing {
+    func applyRawBytes(
+        request: ApplyEditsRequest,
+        rawBytes: Data,
+        options: ApplyEditsExecutionOptions
+    ) async throws -> ApplyEditsRawBytesComputation
+}
+
+package extension ApplyEditsComputing {
+    func apply(
         request: ApplyEditsRequest,
         toRawBytes rawBytes: Data,
         options: ApplyEditsExecutionOptions

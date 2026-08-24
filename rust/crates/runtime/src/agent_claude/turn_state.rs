@@ -55,7 +55,8 @@ pub const DEFAULT_IDLE_FALLBACK: Duration = Duration::from_millis(1000);
 /// `isCancelledTurnSignal`/`:1758-1768`). Shared verbatim with
 /// [`super::translator::should_suppress_result_error_emission`]'s interrupt-signal check -- same
 /// vocabulary, different call site (design: "not drift, and must not become drift").
-const CANCELLED_SIGNAL_TOKENS: [&str; 4] = ["interrupt", "cancel", "aborted", "request was aborted"];
+const CANCELLED_SIGNAL_TOKENS: [&str; 4] =
+    ["interrupt", "cancel", "aborted", "request was aborted"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatus {
@@ -122,13 +123,13 @@ pub struct TurnState<C: Clock> {
     /// is a cancellation side effect, not a real failure'").
     turn_was_interrupted: bool,
 
-    /// Port of `authoritativeIdleFallbackTask` + `authoritativeIdleFallbackGeneration`
-    /// (`:206`/`:207`) collapsed into one `Option<Deadline<C>>`: "only ever one live fallback task
-    /// at a time" is structural here (there is exactly one `Option` slot), so a separate generation
-    /// counter to detect a stale re-fire is unnecessary -- [`Deadline::poll`] itself already fires
-    /// at most once per arm, and every reschedule replaces the slot outright (an old `Deadline` that
-    /// hasn't fired yet is simply dropped, never polled again).
+    /// Port of `authoritativeIdleFallbackTask` (`:206`): exactly one live deadline is represented
+    /// by this slot. [`fallback_generation`](Self::fallback_generation) separately fences the
+    /// scope's sleeping worker so an old wakeup cannot poll a replacement deadline.
     fallback: Option<Deadline<C>>,
+    /// Monotonic token for the currently armed fallback. The scope uses it to ensure a sleeping
+    /// worker for an older turn can never poll (and accidentally release) a newly armed fallback.
+    fallback_generation: u64,
 }
 
 impl<C: Clock> TurnState<C> {
@@ -152,6 +153,7 @@ impl<C: Clock> TurnState<C> {
             observed_session_state_changed: false,
             turn_was_interrupted: false,
             fallback: None,
+            fallback_generation: 0,
         }
     }
 
@@ -196,7 +198,9 @@ impl<C: Clock> TurnState<C> {
             || is_cancelled_turn_signal(Some(&stop_reason))
             || is_cancelled_turn_signal(stop_reason_hint)
             || is_cancelled_turn_signal(nested_stop_reason)
-            || result_errors.iter().any(|message| is_cancelled_turn_signal(Some(message)))
+            || result_errors
+                .iter()
+                .any(|message| is_cancelled_turn_signal(Some(message)))
         {
             return TurnStatus::Cancelled;
         }
@@ -238,7 +242,10 @@ impl<C: Clock> TurnState<C> {
             self.schedule_fallback_if_needed();
             None
         } else {
-            let turn_id = self.pending_turn_ids.pop_front().expect("checked has_pending_turn_ids above");
+            let turn_id = self
+                .pending_turn_ids
+                .pop_front()
+                .expect("checked has_pending_turn_ids above");
             Some(TurnEvent::TurnCompleted { turn_id, status })
         }
     }
@@ -246,13 +253,24 @@ impl<C: Clock> TurnState<C> {
     /// Port of `session_state_changed` handling inside `handleStreamPayload` (`:1347-1355`): sets
     /// the session-scoped latch unconditionally (module doc), then releases a deferred completion
     /// only when `text`, lowercased/trimmed, is exactly `"idle"` (`:1351-1353`).
-    pub fn on_session_state_changed(&mut self, text: &str, diagnostic: impl FnMut(TurnDiagnostic)) -> Option<TurnEvent> {
+    pub fn on_session_state_changed(
+        &mut self,
+        text: &str,
+        diagnostic: impl FnMut(TurnDiagnostic),
+    ) -> Option<TurnEvent> {
         self.observed_session_state_changed = true;
-        if text.trim().to_lowercase() == "idle" { self.complete_next_deferred(diagnostic) } else { None }
+        if text.trim().to_lowercase() == "idle" {
+            self.complete_next_deferred(diagnostic)
+        } else {
+            None
+        }
     }
 
     /// Port of `completeNextDeferredTurnIfPending()` (`:1395-1408`).
-    fn complete_next_deferred(&mut self, mut diagnostic: impl FnMut(TurnDiagnostic)) -> Option<TurnEvent> {
+    fn complete_next_deferred(
+        &mut self,
+        mut diagnostic: impl FnMut(TurnDiagnostic),
+    ) -> Option<TurnEvent> {
         let status = self.pending_deferred.pop_front()?;
         self.fallback = None;
         let Some(turn_id) = self.pending_turn_ids.pop_front() else {
@@ -276,14 +294,39 @@ impl<C: Clock> TurnState<C> {
         if self.fallback.is_some() {
             return;
         }
+        self.fallback_generation = self.fallback_generation.wrapping_add(1).max(1);
         self.fallback = Some(Deadline::arm(Arc::clone(&self.clock), self.idle_fallback));
     }
 
+    /// Returns the generation-fenced sleep ticket the scope should schedule for the currently
+    /// armed fallback. Repeated reads return the same generation; the scope de-duplicates them.
+    pub fn fallback_poll_ticket(&self) -> Option<(u64, Duration)> {
+        self.fallback
+            .as_ref()
+            .map(|_| (self.fallback_generation, self.idle_fallback))
+    }
+
+    /// Polls only when `generation` still names the currently armed fallback. A worker waking after
+    /// `idle` released the old turn, or after a newer fallback was armed, becomes a no-op.
+    pub fn poll_fallback_for_generation(
+        &mut self,
+        generation: u64,
+        diagnostic: impl FnMut(TurnDiagnostic),
+    ) -> Option<TurnEvent> {
+        if self.fallback.is_none() || generation != self.fallback_generation {
+            return None;
+        }
+        self.poll_fallback(diagnostic)
+    }
+
     /// Port of `handleAuthoritativeIdleFallbackFired(generation:)` (`:1432-1449`). The caller
-    /// (P6-6's scope loop, or a test) polls this periodically; a no-op (`None`) when no fallback is
-    /// armed or it has not yet reached its deadline. Generation-staleness is structural here (module
-    /// doc on the `fallback` field) rather than an explicit counter comparison.
-    pub fn poll_fallback(&mut self, mut diagnostic: impl FnMut(TurnDiagnostic)) -> Option<TurnEvent> {
+    /// polls this after the deadline; a no-op (`None`) when no fallback is armed or it has not yet
+    /// reached its deadline. Production callers use [`Self::poll_fallback_for_generation`] so stale
+    /// sleeping workers are rejected before this deadline is inspected.
+    pub fn poll_fallback(
+        &mut self,
+        mut diagnostic: impl FnMut(TurnDiagnostic),
+    ) -> Option<TurnEvent> {
         let fired = self.fallback.as_mut().is_some_and(Deadline::poll);
         if !fired {
             return None;
@@ -317,7 +360,9 @@ impl<C: Clock> TurnState<C> {
         self.fallback = None;
         let mut events = Vec::new();
         while let Some(status) = self.pending_deferred.pop_front() {
-            let Some(turn_id) = self.pending_turn_ids.pop_front() else { break };
+            let Some(turn_id) = self.pending_turn_ids.pop_front() else {
+                break;
+            };
             events.push(TurnEvent::TurnCompleted { turn_id, status });
         }
         self.pending_deferred.clear();
@@ -343,9 +388,14 @@ impl<C: Clock> TurnState<C> {
     pub fn on_stdout_eof(&mut self) -> Vec<TurnEvent> {
         let mut events = self.flush_deferred();
         if !self.pending_turn_ids.is_empty() {
-            events.push(TurnEvent::Error("Claude process exited unexpectedly.".to_string()));
+            events.push(TurnEvent::Error(
+                "Claude process exited unexpectedly.".to_string(),
+            ));
             while let Some(turn_id) = self.pending_turn_ids.pop_front() {
-                events.push(TurnEvent::TurnCompleted { turn_id, status: TurnStatus::Failed });
+                events.push(TurnEvent::TurnCompleted {
+                    turn_id,
+                    status: TurnStatus::Failed,
+                });
             }
         }
         events
@@ -365,7 +415,9 @@ fn is_cancelled_turn_signal(value: Option<&str>) -> bool {
     if value.is_empty() {
         return false;
     }
-    CANCELLED_SIGNAL_TOKENS.iter().any(|token| value.contains(token))
+    CANCELLED_SIGNAL_TOKENS
+        .iter()
+        .any(|token| value.contains(token))
 }
 
 #[cfg(test)]
@@ -375,7 +427,10 @@ mod tests {
 
     fn state() -> (TurnState<FakeClock>, Arc<FakeClock>) {
         let clock = FakeClock::new();
-        (TurnState::with_idle_fallback(Arc::clone(&clock), Duration::from_millis(1000)), clock)
+        (
+            TurnState::with_idle_fallback(Arc::clone(&clock), Duration::from_millis(1000)),
+            clock,
+        )
     }
 
     fn no_diagnostics() -> impl FnMut(TurnDiagnostic) {
@@ -390,8 +445,17 @@ mod tests {
         let turn_id = turns.send_user_message();
         assert!(turns.has_pending_turn_ids());
         let event = turns.on_authoritative_result(TurnStatus::Completed, no_diagnostics());
-        assert_eq!(event, Some(TurnEvent::TurnCompleted { turn_id, status: TurnStatus::Completed }));
-        assert!(!turns.has_pending_turn_ids(), "legacy mode must dequeue immediately, not defer");
+        assert_eq!(
+            event,
+            Some(TurnEvent::TurnCompleted {
+                turn_id,
+                status: TurnStatus::Completed
+            })
+        );
+        assert!(
+            !turns.has_pending_turn_ids(),
+            "legacy mode must dequeue immediately, not defer"
+        );
     }
 
     // MARK: - Deferred mode: observedSessionStateChangedEvents latch
@@ -401,10 +465,19 @@ mod tests {
         let (mut turns, _clock) = state();
         turns.send_user_message();
         // A non-idle session_state_changed (e.g. "running") still sets the latch (module doc).
-        assert_eq!(turns.on_session_state_changed("running", no_diagnostics()), None);
+        assert_eq!(
+            turns.on_session_state_changed("running", no_diagnostics()),
+            None
+        );
         let event = turns.on_authoritative_result(TurnStatus::Completed, no_diagnostics());
-        assert_eq!(event, None, "once the latch is set, completion must defer even on the very next result");
-        assert!(turns.has_pending_turn_ids(), "turnInFlight must stay true across the deferral window");
+        assert_eq!(
+            event, None,
+            "once the latch is set, completion must defer even on the very next result"
+        );
+        assert!(
+            turns.has_pending_turn_ids(),
+            "turnInFlight must stay true across the deferral window"
+        );
     }
 
     #[test]
@@ -413,12 +486,21 @@ mod tests {
         let turn_id = turns.send_user_message();
         turns.on_session_state_changed("running", no_diagnostics());
         turns.on_authoritative_result(TurnStatus::Completed, no_diagnostics());
-        assert!(turns.has_pending_turn_ids(), "must not dequeue before idle arrives");
+        assert!(
+            turns.has_pending_turn_ids(),
+            "must not dequeue before idle arrives"
+        );
 
         // Case-insensitive / trimmed, matching the translator's own session_state_changed text
         // normalization (contract §2.3) -- the state machine trims/lowercases again defensively.
         let event = turns.on_session_state_changed("  IDLE  ", no_diagnostics());
-        assert_eq!(event, Some(TurnEvent::TurnCompleted { turn_id, status: TurnStatus::Completed }));
+        assert_eq!(
+            event,
+            Some(TurnEvent::TurnCompleted {
+                turn_id,
+                status: TurnStatus::Completed
+            })
+        );
         assert!(!turns.has_pending_turn_ids());
     }
 
@@ -433,15 +515,27 @@ mod tests {
 
         assert_eq!(
             turns.on_session_state_changed("idle", no_diagnostics()),
-            Some(TurnEvent::TurnCompleted { turn_id: first, status: TurnStatus::Completed })
+            Some(TurnEvent::TurnCompleted {
+                turn_id: first,
+                status: TurnStatus::Completed
+            })
         );
-        assert!(turns.has_pending_turn_ids(), "the second deferred turn must still be pending");
+        assert!(
+            turns.has_pending_turn_ids(),
+            "the second deferred turn must still be pending"
+        );
 
         // The fallback must have been rescheduled for the second entry -- confirmed by jumping the
         // clock and polling, rather than by inspecting private state.
         clock.jump_forward(Duration::from_millis(1000) + Duration::from_secs(600));
         let fallback_event = turns.poll_fallback(no_diagnostics());
-        assert_eq!(fallback_event, Some(TurnEvent::TurnCompleted { turn_id: second, status: TurnStatus::Failed }));
+        assert_eq!(
+            fallback_event,
+            Some(TurnEvent::TurnCompleted {
+                turn_id: second,
+                status: TurnStatus::Failed
+            })
+        );
     }
 
     // MARK: - The idle-fallback timer
@@ -453,13 +547,63 @@ mod tests {
         turns.on_session_state_changed("running", no_diagnostics());
         turns.on_authoritative_result(TurnStatus::Completed, no_diagnostics());
 
-        assert_eq!(turns.poll_fallback(no_diagnostics()), None, "must not fire before the deadline");
+        assert_eq!(
+            turns.poll_fallback(no_diagnostics()),
+            None,
+            "must not fire before the deadline"
+        );
         clock.jump_forward(Duration::from_millis(1000) + Duration::from_secs(600));
         assert_eq!(
             turns.poll_fallback(no_diagnostics()),
-            Some(TurnEvent::TurnCompleted { turn_id, status: TurnStatus::Completed })
+            Some(TurnEvent::TurnCompleted {
+                turn_id,
+                status: TurnStatus::Completed
+            })
         );
-        assert_eq!(turns.poll_fallback(no_diagnostics()), None, "must not fire a second time");
+        assert_eq!(
+            turns.poll_fallback(no_diagnostics()),
+            None,
+            "must not fire a second time"
+        );
+    }
+
+    #[test]
+    fn stale_fallback_generation_cannot_release_a_replacement_turn() {
+        let (mut turns, clock) = state();
+        let first = turns.send_user_message();
+        turns.on_session_state_changed("running", no_diagnostics());
+        turns.on_authoritative_result(TurnStatus::Completed, no_diagnostics());
+        let (first_generation, _) = turns.fallback_poll_ticket().expect("first fallback ticket");
+
+        assert_eq!(
+            turns.on_session_state_changed("idle", no_diagnostics()),
+            Some(TurnEvent::TurnCompleted {
+                turn_id: first,
+                status: TurnStatus::Completed
+            })
+        );
+
+        let second = turns.send_user_message();
+        turns.on_authoritative_result(TurnStatus::Failed, no_diagnostics());
+        let (second_generation, _) = turns
+            .fallback_poll_ticket()
+            .expect("replacement fallback ticket");
+        assert_ne!(first_generation, second_generation);
+
+        clock.jump_forward(Duration::from_millis(1000) + Duration::from_secs(600));
+        assert_eq!(
+            turns.poll_fallback_for_generation(first_generation, no_diagnostics()),
+            None,
+            "a stale worker must not poll the replacement deadline"
+        );
+        assert!(turns.has_pending_turn_ids());
+        assert_eq!(
+            turns.poll_fallback_for_generation(second_generation, no_diagnostics()),
+            Some(TurnEvent::TurnCompleted {
+                turn_id: second,
+                status: TurnStatus::Failed
+            })
+        );
     }
 
     #[test]
@@ -474,7 +618,10 @@ mod tests {
         // A stale "idle" arriving after the fallback already completed the turn must be a no-op:
         // pending_deferred is empty, so on_session_state_changed's complete_next_deferred returns
         // None via its `?` on an empty pop_front, never re-emitting a completion.
-        assert_eq!(turns.on_session_state_changed("idle", no_diagnostics()), None);
+        assert_eq!(
+            turns.on_session_state_changed("idle", no_diagnostics()),
+            None
+        );
     }
 
     // MARK: - The sessionStateChanged(idle) classification trap (design §5.2/§7.1)
@@ -498,7 +645,10 @@ mod tests {
         // Now deliver idle: exactly one completion, for the right turn.
         assert_eq!(
             turns.on_session_state_changed("idle", no_diagnostics()),
-            Some(TurnEvent::TurnCompleted { turn_id, status: TurnStatus::Completed })
+            Some(TurnEvent::TurnCompleted {
+                turn_id,
+                status: TurnStatus::Completed
+            })
         );
     }
 
@@ -509,38 +659,101 @@ mod tests {
         let (mut turns, _clock) = state();
         turns.mark_interrupted();
         assert!(turns.turn_was_interrupted_for_testing());
-        let status = turns.determine_status(true, "error_during_execution", "", None, None, &["boom".to_string()]);
-        assert_eq!(status, TurnStatus::Cancelled, "an ACKed interrupt makes the very next result a cancellation, not a failure");
-        assert!(!turns.turn_was_interrupted_for_testing(), "must be consumed on read");
+        let status = turns.determine_status(
+            true,
+            "error_during_execution",
+            "",
+            None,
+            None,
+            &["boom".to_string()],
+        );
+        assert_eq!(
+            status,
+            TurnStatus::Cancelled,
+            "an ACKed interrupt makes the very next result a cancellation, not a failure"
+        );
+        assert!(
+            !turns.turn_was_interrupted_for_testing(),
+            "must be consumed on read"
+        );
 
         // The SECOND result after the interrupt is evaluated normally -- proving the flag was truly
         // consumed, not merely ignored-then-reset-by-something-else.
-        let status = turns.determine_status(true, "error_during_execution", "", None, None, &["boom again".to_string()]);
+        let status = turns.determine_status(
+            true,
+            "error_during_execution",
+            "",
+            None,
+            None,
+            &["boom again".to_string()],
+        );
         assert_eq!(status, TurnStatus::Failed);
     }
 
     #[test]
-    fn cancelled_signal_tokens_are_substring_matched_across_every_input_including_nested_and_errors() {
+    fn cancelled_signal_tokens_are_substring_matched_across_every_input_including_nested_and_errors()
+     {
         let (mut turns, _clock) = state();
-        assert_eq!(turns.determine_status(false, "user_cancelled_it", "", None, None, &[]), TurnStatus::Cancelled);
-        assert_eq!(turns.determine_status(false, "", "the request was aborted", None, None, &[]), TurnStatus::Cancelled);
-        assert_eq!(turns.determine_status(false, "", "", Some("Interrupt"), None, &[]), TurnStatus::Cancelled);
-        assert_eq!(turns.determine_status(false, "", "", None, Some("cancelled by nested delta"), &[]), TurnStatus::Cancelled);
-        assert_eq!(turns.determine_status(false, "", "", None, None, &["Aborted mid-flight".to_string()]), TurnStatus::Cancelled);
+        assert_eq!(
+            turns.determine_status(false, "user_cancelled_it", "", None, None, &[]),
+            TurnStatus::Cancelled
+        );
+        assert_eq!(
+            turns.determine_status(false, "", "the request was aborted", None, None, &[]),
+            TurnStatus::Cancelled
+        );
+        assert_eq!(
+            turns.determine_status(false, "", "", Some("Interrupt"), None, &[]),
+            TurnStatus::Cancelled
+        );
+        assert_eq!(
+            turns.determine_status(false, "", "", None, Some("cancelled by nested delta"), &[]),
+            TurnStatus::Cancelled
+        );
+        assert_eq!(
+            turns.determine_status(
+                false,
+                "",
+                "",
+                None,
+                None,
+                &["Aborted mid-flight".to_string()]
+            ),
+            TurnStatus::Cancelled
+        );
     }
 
     #[test]
     fn is_error_or_error_subtype_or_nonempty_errors_maps_to_failed_when_not_cancelled() {
         let (mut turns, _clock) = state();
-        assert_eq!(turns.determine_status(true, "success", "", None, None, &[]), TurnStatus::Failed);
-        assert_eq!(turns.determine_status(false, "error_max_turns", "", None, None, &[]), TurnStatus::Failed);
-        assert_eq!(turns.determine_status(false, "success", "", None, None, &["Maximum turns exceeded".to_string()]), TurnStatus::Failed);
+        assert_eq!(
+            turns.determine_status(true, "success", "", None, None, &[]),
+            TurnStatus::Failed
+        );
+        assert_eq!(
+            turns.determine_status(false, "error_max_turns", "", None, None, &[]),
+            TurnStatus::Failed
+        );
+        assert_eq!(
+            turns.determine_status(
+                false,
+                "success",
+                "",
+                None,
+                None,
+                &["Maximum turns exceeded".to_string()]
+            ),
+            TurnStatus::Failed
+        );
     }
 
     #[test]
     fn no_error_and_no_cancel_signal_maps_to_completed() {
         let (mut turns, _clock) = state();
-        assert_eq!(turns.determine_status(false, "success", "end_turn", None, None, &[]), TurnStatus::Completed);
+        assert_eq!(
+            turns.determine_status(false, "success", "end_turn", None, None, &[]),
+            TurnStatus::Completed
+        );
     }
 
     #[test]
@@ -571,10 +784,19 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                TurnEvent::TurnCompleted { turn_id: deferred_turn, status: TurnStatus::Cancelled },
+                TurnEvent::TurnCompleted {
+                    turn_id: deferred_turn,
+                    status: TurnStatus::Cancelled
+                },
                 TurnEvent::Error("Claude process exited unexpectedly.".to_string()),
-                TurnEvent::TurnCompleted { turn_id: never_resulted_1, status: TurnStatus::Failed },
-                TurnEvent::TurnCompleted { turn_id: never_resulted_2, status: TurnStatus::Failed },
+                TurnEvent::TurnCompleted {
+                    turn_id: never_resulted_1,
+                    status: TurnStatus::Failed
+                },
+                TurnEvent::TurnCompleted {
+                    turn_id: never_resulted_2,
+                    status: TurnStatus::Failed
+                },
             ],
             "deferred status preserved verbatim, then exactly one Error, then the rest as Failed, in FIFO order"
         );
@@ -594,7 +816,13 @@ mod tests {
         turns.on_session_state_changed("running", no_diagnostics());
         turns.on_authoritative_result(TurnStatus::Completed, no_diagnostics());
         let events = turns.on_stdout_eof();
-        assert_eq!(events, vec![TurnEvent::TurnCompleted { turn_id, status: TurnStatus::Completed }]);
+        assert_eq!(
+            events,
+            vec![TurnEvent::TurnCompleted {
+                turn_id,
+                status: TurnStatus::Completed
+            }]
+        );
     }
 
     // MARK: - Shutdown: flush deferred, then silently drop the rest (module doc's discrepancy note)
@@ -610,10 +838,16 @@ mod tests {
         let events = turns.on_shutdown();
         assert_eq!(
             events,
-            vec![TurnEvent::TurnCompleted { turn_id: deferred_turn, status: TurnStatus::Failed }],
+            vec![TurnEvent::TurnCompleted {
+                turn_id: deferred_turn,
+                status: TurnStatus::Failed
+            }],
             "shutdown must flush deferred completions with their original status, never rewritten"
         );
-        assert!(!turns.has_pending_turn_ids(), "shutdown clears the whole queue, including never-resulted turns");
+        assert!(
+            !turns.has_pending_turn_ids(),
+            "shutdown clears the whole queue, including never-resulted turns"
+        );
     }
 
     #[test]
@@ -622,7 +856,13 @@ mod tests {
         let turn_id = turns.send_user_message();
         turns.on_session_state_changed("running", no_diagnostics());
         turns.on_authoritative_result(TurnStatus::Completed, no_diagnostics());
-        assert_eq!(turns.on_shutdown(), vec![TurnEvent::TurnCompleted { turn_id, status: TurnStatus::Completed }]);
+        assert_eq!(
+            turns.on_shutdown(),
+            vec![TurnEvent::TurnCompleted {
+                turn_id,
+                status: TurnStatus::Completed
+            }]
+        );
     }
 
     #[test]

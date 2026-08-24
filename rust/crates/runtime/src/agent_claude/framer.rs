@@ -24,7 +24,11 @@ pub fn trimmed_ascii_whitespace(data: &[u8]) -> Option<&[u8]> {
     while end > start && is_ascii_whitespace(data[end - 1]) {
         end -= 1;
     }
-    if start == end { None } else { Some(&data[start..end]) }
+    if start == end {
+        None
+    } else {
+        Some(&data[start..end])
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +55,10 @@ impl Default for FramerLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FramerDiagnostic {
     /// Carry buffer exceeded limits; prefix was discarded, tail retained, quote state reset.
-    Overflow { dropped_bytes: usize, retained_bytes: usize },
+    Overflow {
+        dropped_bytes: usize,
+        retained_bytes: usize,
+    },
     /// Quote-tracking state was force-reset because the line is not a JSON candidate.
     NonJsonCandidateQuoteStateReset,
 }
@@ -172,7 +179,9 @@ impl LineFramer {
             self.carry.extend_from_slice(&chunk[slice_start..]);
         }
 
-        if self.carry.len() > self.limits.max_carry_bytes || self.carry.len() > self.limits.max_line_bytes {
+        if self.carry.len() > self.limits.max_carry_bytes
+            || self.carry.len() > self.limits.max_line_bytes
+        {
             let retained = self.limits.tail_retain_bytes.min(self.carry.len());
             let dropped = self.carry.len() - retained;
             if retained > 0 {
@@ -185,7 +194,10 @@ impl LineFramer {
             self.is_escaping_json_string_character = false;
             self.has_seen_line_start = false;
             self.is_json_candidate = false;
-            diagnostics.push(FramerDiagnostic::Overflow { dropped_bytes: dropped, retained_bytes: retained });
+            diagnostics.push(FramerDiagnostic::Overflow {
+                dropped_bytes: dropped,
+                retained_bytes: retained,
+            });
         }
 
         for line in pending {
@@ -296,7 +308,11 @@ pub fn repair_json_string_control_characters(data: &[u8]) -> Option<Vec<u8>> {
         repaired.push(byte);
     }
 
-    if repaired == data { None } else { Some(repaired) }
+    if repaired == data {
+        None
+    } else {
+        Some(repaired)
+    }
 }
 
 #[cfg(test)]
@@ -316,7 +332,10 @@ mod tests {
     #[test]
     fn splits_plain_lines_on_newline() {
         let (lines, diags) = collect(LineFramer::default(), &[b"one\ntwo\nthree"]);
-        assert_eq!(lines, vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]);
+        assert_eq!(
+            lines,
+            vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
         assert!(diags.is_empty());
     }
 
@@ -328,31 +347,56 @@ mod tests {
 
     #[test]
     fn json_candidate_keeps_embedded_newline_inside_string() {
-        let (lines, _) = collect(LineFramer::default(), &[b"{\"a\":\"line\none\"}\n{\"b\":1}\n"]);
-        assert_eq!(lines, vec![b"{\"a\":\"line\none\"}".to_vec(), b"{\"b\":1}".to_vec()]);
+        let (lines, _) = collect(
+            LineFramer::default(),
+            &[b"{\"a\":\"line\none\"}\n{\"b\":1}\n"],
+        );
+        assert_eq!(
+            lines,
+            vec![b"{\"a\":\"line\none\"}".to_vec(), b"{\"b\":1}".to_vec()]
+        );
     }
 
     #[test]
     fn non_json_candidate_splits_on_every_newline_even_with_quotes() {
         let (lines, _) = collect(LineFramer::default(), &[b"garbage \"unterminated\nmore\n"]);
-        assert_eq!(lines, vec![b"garbage \"unterminated".to_vec(), b"more".to_vec()]);
+        assert_eq!(
+            lines,
+            vec![b"garbage \"unterminated".to_vec(), b"more".to_vec()]
+        );
     }
 
     #[test]
     fn escaped_quote_does_not_toggle_string_state() {
-        let (lines, _) = collect(LineFramer::default(), &[b"{\"a\":\"esc\\\"aped\nstill inside\"}\n"]);
-        assert_eq!(lines, vec![b"{\"a\":\"esc\\\"aped\nstill inside\"}".to_vec()]);
+        let (lines, _) = collect(
+            LineFramer::default(),
+            &[b"{\"a\":\"esc\\\"aped\nstill inside\"}\n"],
+        );
+        assert_eq!(
+            lines,
+            vec![b"{\"a\":\"esc\\\"aped\nstill inside\"}".to_vec()]
+        );
     }
 
     #[test]
     fn overflow_drops_prefix_and_retains_tail() {
-        let limits = FramerLimits { max_line_bytes: 16, max_carry_bytes: 16, tail_retain_bytes: 4 };
+        let limits = FramerLimits {
+            max_line_bytes: 16,
+            max_carry_bytes: 16,
+            tail_retain_bytes: 4,
+        };
         let chunk = vec![b'a'; 32];
         let (lines, diags) = collect(LineFramer::new(limits), &[&chunk]);
         // No newline was ever seen, so nothing is emitted via `feed`; `collect`'s trailing
         // `flush()` then emits whatever overflow left behind -- the retained 4-byte tail.
         assert_eq!(lines, vec![vec![b'a'; 4]]);
-        assert_eq!(diags, vec![FramerDiagnostic::Overflow { dropped_bytes: 28, retained_bytes: 4 }]);
+        assert_eq!(
+            diags,
+            vec![FramerDiagnostic::Overflow {
+                dropped_bytes: 28,
+                retained_bytes: 4
+            }]
+        );
     }
 
     #[test]
@@ -369,7 +413,10 @@ mod tests {
 
     #[test]
     fn repair_json_string_control_characters_requires_json_candidate_prefix() {
-        assert_eq!(repair_json_string_control_characters(b"not-json-at-all\nwith-newline"), None);
+        assert_eq!(
+            repair_json_string_control_characters(b"not-json-at-all\nwith-newline"),
+            None
+        );
     }
 
     #[test]
@@ -380,6 +427,9 @@ mod tests {
 
     #[test]
     fn repair_json_string_control_characters_returns_none_when_nothing_to_repair() {
-        assert_eq!(repair_json_string_control_characters(b"{\"a\":\"clean\"}"), None);
+        assert_eq!(
+            repair_json_string_control_characters(b"{\"a\":\"clean\"}"),
+            None
+        );
     }
 }

@@ -79,7 +79,10 @@ impl QueryPrefix {
         if standardized_relative_path.is_empty() {
             self.empty_relative_path_value.clone()
         } else {
-            format!("{}{}", self.non_empty_relative_prefix, standardized_relative_path)
+            format!(
+                "{}{}",
+                self.non_empty_relative_prefix, standardized_relative_path
+            )
         }
     }
 }
@@ -130,14 +133,19 @@ pub enum QueryReadOutcome {
 }
 
 #[must_use]
-pub fn run_query(generation: &RootGeneration, request: &InventoryQueryRequest) -> InventoryQueryResult {
+pub fn run_query(
+    generation: &RootGeneration,
+    request: &InventoryQueryRequest,
+) -> InventoryQueryResult {
     let candidates = match request.haystack_variant {
         QueryHaystackVariant::IndexKey => generation
             .path_index
             .search(&request.pattern, request.limit)
             .into_iter()
             .map(|candidate| {
-                let display_path = request.prefix.display_path(&candidate.entry.standardized_relative_path);
+                let display_path = request
+                    .prefix
+                    .display_path(&candidate.entry.standardized_relative_path);
                 InventoryQueryCandidate {
                     entry: candidate.entry,
                     display_path,
@@ -189,7 +197,10 @@ fn run_suggestion_query(
     entries: &[InventorySearchCatalogEntry],
     request: &InventoryQueryRequest,
 ) -> Vec<InventoryQueryCandidate> {
-    let display_paths: Vec<String> = entries.iter().map(|entry| entry.display_path.clone()).collect();
+    let display_paths: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.display_path.clone())
+        .collect();
     let haystacks: Vec<String> = entries
         .iter()
         .map(|entry| {
@@ -234,8 +245,14 @@ mod tests {
 
     #[test]
     fn haystack_variant_wire_round_trips() {
-        assert_eq!(QueryHaystackVariant::from_wire(0), Some(QueryHaystackVariant::IndexKey));
-        assert_eq!(QueryHaystackVariant::from_wire(1), Some(QueryHaystackVariant::Suggestion));
+        assert_eq!(
+            QueryHaystackVariant::from_wire(0),
+            Some(QueryHaystackVariant::IndexKey)
+        );
+        assert_eq!(
+            QueryHaystackVariant::from_wire(1),
+            Some(QueryHaystackVariant::Suggestion)
+        );
         assert_eq!(QueryHaystackVariant::from_wire(2), None);
         assert_eq!(QueryHaystackVariant::IndexKey.to_wire(), 0);
         assert_eq!(QueryHaystackVariant::Suggestion.to_wire(), 1);
@@ -243,7 +260,8 @@ mod tests {
 
     #[test]
     fn index_key_query_reports_the_generation_it_ran_against() {
-        let lifetime = super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(1));
+        let lifetime =
+            super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(1));
         let mut generation = RootGeneration::empty([0; 16], lifetime);
         generation.generation = 7;
         let result = run_query(
@@ -267,7 +285,8 @@ mod tests {
     /// makes the wire's `tie_break_key` field trustworthy as the cross-root merge's sole ordering
     /// input (§1.5 Check A) rather than something a caller could get away with reconstructing.
     #[test]
-    fn index_key_query_tie_break_key_matches_the_indexs_own_subject_text_over_adversarial_entries() {
+    fn index_key_query_tie_break_key_matches_the_indexs_own_subject_text_over_adversarial_entries()
+    {
         use super::super::ids::{RootLifetimeId, UuidMinter};
         use super::super::path_index::{RootPathIndex, path_search_index_key};
         use crate::inventory::{InventoryFileRecord, InventoryRootRecord};
@@ -296,7 +315,11 @@ mod tests {
             .map(|(index, (marker, relative_path))| {
                 let mut id = [0u8; 16];
                 id[0] = index as u8;
-                let name = if relative_path.is_empty() { "Root" } else { relative_path };
+                let name = if relative_path.is_empty() {
+                    "Root"
+                } else {
+                    relative_path
+                };
                 let file = InventoryFileRecord {
                     id,
                     root_id: root.id,
@@ -377,7 +400,11 @@ mod tests {
     /// `WorkspaceFileRecord` shape (name is the basename, not the whole relative path) so the
     /// nested-vs-root-level distinction in `InventorySearchCatalogEntry::new`'s
     /// `default_display_path` branch is actually exercised.
-    fn suggestion_entry(id_marker: u8, relative_path: &str, name: &str) -> InventorySearchCatalogEntry {
+    fn suggestion_entry(
+        id_marker: u8,
+        relative_path: &str,
+        name: &str,
+    ) -> InventorySearchCatalogEntry {
         let root = physical_root();
         let mut id = [0u8; 16];
         id[0] = id_marker;
@@ -400,7 +427,8 @@ mod tests {
         entries: &[InventorySearchCatalogEntry],
         logical_prefix: Option<QueryPrefix>,
     ) -> std::collections::HashMap<InventoryUuid, String> {
-        let lifetime = super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(3));
+        let lifetime =
+            super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(3));
         let mut generation = RootGeneration::empty(physical_root().id, lifetime);
         generation.generation = 1;
         generation.entries = entries.to_vec();
@@ -422,8 +450,16 @@ mod tests {
                 logical_prefix,
             },
         );
-        assert_eq!(result.candidates.len(), entries.len(), "the broad glob must match every row");
-        result.candidates.into_iter().map(|c| (c.entry.id, c.tie_break_key)).collect()
+        assert_eq!(
+            result.candidates.len(),
+            entries.len(),
+            "the broad glob must match every row"
+        );
+        result
+            .candidates
+            .into_iter()
+            .map(|c| (c.entry.id, c.tie_break_key))
+            .collect()
     }
 
     #[test]
@@ -435,8 +471,18 @@ mod tests {
         // this proves the join doesn't corrupt multi-byte UTF-8 or normalize anything.
         let emoji = suggestion_entry(3, "\u{1F600}-Face.swift", "\u{1F600}-Face.swift");
         let cjk = suggestion_entry(4, "\u{4E2D}\u{6587}.swift", "\u{4E2D}\u{6587}.swift");
-        let combining = suggestion_entry(5, "e\u{0301}-Decomposed.swift", "e\u{0301}-Decomposed.swift");
-        let entries = vec![nested.clone(), root_level.clone(), emoji.clone(), cjk.clone(), combining.clone()];
+        let combining = suggestion_entry(
+            5,
+            "e\u{0301}-Decomposed.swift",
+            "e\u{0301}-Decomposed.swift",
+        );
+        let entries = vec![
+            nested.clone(),
+            root_level.clone(),
+            emoji.clone(),
+            cjk.clone(),
+            combining.clone(),
+        ];
 
         let haystacks = suggestion_haystacks_by_id(&entries, None);
 
@@ -523,7 +569,8 @@ mod tests {
     #[test]
     fn suggestion_query_ignores_the_indexkey_prefix_field() {
         let entries = vec![suggestion_entry(1, "src/App.swift", "App.swift")];
-        let lifetime = super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(4));
+        let lifetime =
+            super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(4));
         let mut generation = RootGeneration::empty(physical_root().id, lifetime);
         generation.generation = 1;
         generation.entries = entries;
@@ -593,7 +640,9 @@ mod a2_probe {
     }
 
     fn percentile(sorted_micros: &[u128], percentile: usize) -> u128 {
-        let rank = (sorted_micros.len() * percentile).div_ceil(100).saturating_sub(1);
+        let rank = (sorted_micros.len() * percentile)
+            .div_ceil(100)
+            .saturating_sub(1);
         sorted_micros[rank.min(sorted_micros.len() - 1)]
     }
 
@@ -603,14 +652,19 @@ mod a2_probe {
     /// actually afford); `sample_iterations` runs are timed. Each sampled call still pays the full
     /// ad hoc index build -- there is no persistent index for `.Suggestion` to warm into, which is
     /// exactly the cost this probe exists to quantify.
-    fn measure(path_count: u32, warmup_iterations: usize, sample_iterations: usize) -> (u128, u128) {
+    fn measure(
+        path_count: u32,
+        warmup_iterations: usize,
+        sample_iterations: usize,
+    ) -> (u128, u128) {
         let root = InventoryRootRecord {
             id: [7u8; 16],
             name: "PhysWorktree".to_owned(),
             standardized_full_path: "/repo".to_owned(),
         };
         let entries: Vec<_> = (0..path_count).map(|i| synth_entry(i, &root)).collect();
-        let lifetime = super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(5));
+        let lifetime =
+            super::super::ids::RootLifetimeId::mint(&super::super::ids::UuidMinter::seeded(5));
         let mut generation = RootGeneration::empty(root.id, lifetime);
         generation.generation = 1;
         generation.entries = entries;
@@ -657,7 +711,11 @@ mod a2_probe {
     #[ignore = "synthetic-corpus timing probe; run explicitly, see module doc comment"]
     fn a2_mention_suggestion_query_latency_10k_and_100k_worktree_bound() {
         for path_count in [10_000u32, 100_000u32] {
-            let (warmup, samples) = if path_count >= 100_000 { (5, 20) } else { (10, 50) };
+            let (warmup, samples) = if path_count >= 100_000 {
+                (5, 20)
+            } else {
+                (10, 50)
+            };
             let (p50, p99) = measure(path_count, warmup, samples);
             eprintln!(
                 "a2_mention_suggestion_query_latency: path_count={path_count} p50_us={p50} p99_us={p99} \

@@ -1,6 +1,6 @@
 # Agent Provider Plugin Seam
 
-Current as of 2026-05-13. This document is contributor-facing: use it when you are wiring a new autonomous-agent provider, editing the Claude-compatible runtime, or moving code across the core ↔ plugin boundary.
+Current as of 2026-08-24. This document is contributor-facing: use it when you are wiring a new autonomous-agent provider, editing the Claude-compatible runtime, or moving code across the core ↔ plugin boundary.
 
 ## Scope and goals
 
@@ -23,9 +23,9 @@ The seam intentionally stops short of dynamic plugin loading. It is static Swift
 |     │                                                                          |
 |     │  NativeAgentRuntimeControlling (provider-neutral core contract)          |
 |     ▼                                                                          |
-| ClaudeCompatibleNativeSessionAdapter ─┐                                        |
+| ClaudeRustBackedNativeSessionAdapter ─┐                                      |
 | ClaudeCompatibleHeadlessProviderAdapter ├─ Agent Mode adapter trio             |
-| ClaudeCompatibleModelCatalogAdapter ──┘                                        |
+| ClaudeCompatibleModelCatalogAdapter ──┘                                       |
 |     │                                                                          |
 |     │  ClaudeCompatiblePluginBridge (feature bridge / Agent-Mode mappings)     |
 |     │                                                                          |
@@ -34,7 +34,7 @@ The seam intentionally stops short of dynamic plugin loading. It is static Swift
 +--------------------- package (RepoPromptClaudeCompatibleProvider) -------------+
 |                                                                                |
 | Plugin DTOs · prompt delivery · environment builder · catalog · headless args ·|
-| launch env resolver · Claude SDK codec/translator (pure logic)                 |
+| launch env resolver · headless Claude SDK codec/translator (pure logic)        |
 |                                                                                |
 +--------------------------------------------------------------------------------+
 ```
@@ -108,13 +108,14 @@ The remote-by-default policy avoids breaking checkouts that do not have a siblin
 | `ClaudeAgentToolPreferences`, `ClaudeCodeCompatibleBackendConfig`, `ClaudeCodeCompatibleBackendStore` | core |
 | MCP permission policies, Agentry MCP auto-approval, tool tracking | core |
 | Agent Mode transcript mutation, tool-card UI, run-state ownership | core |
-| Native process control (`ClaudeNativeProcessSessionController`) | core (this wave) |
+| Interactive process/NDJSON/turn/control authority (`agent_claude::AgentClaudeScope`) | Rust runtime |
 | Provider-neutral runtime contract (`NativeAgentRuntimeControlling`) | core |
 | Provider-neutral RepoPrompt workflow prompt catalog and renderers (`RepoPromptShared/Workflows`) | core |
 | Headless wrapper (`ClaudeCodeAgentProvider`) | core (delegates pure rules to package) |
 | `AgentModel` raw values, option DTOs, defaults | core (adapter forwards plugin DTOs back to these) |
 | Plugin IDs (`ClaudeCompatibleProviderPluginID`), runtime variants, backend IDs | package DTOs |
-| Claude SDK protocol codec and NDJSON translator | package |
+| Headless Claude SDK protocol codec and NDJSON translator | package |
+| Interactive Claude codec, translator, recovery, and supervision | Rust runtime |
 | Prompt delivery rules (XML wrapping, system-prompt overrides) | package |
 | Compatible-backend environment builder, removed env keys, no-model raw values | package |
 | Launch-environment resolver (slot mapping, model normalization, GLM legacy aliases) | package |
@@ -140,7 +141,7 @@ This is the only file in core that `import RepoPromptClaudeCompatibleProvider`. 
 
 Files that depend on this bridge (illustrative):
 
-- `Infrastructure/AI/Providers/ClaudeCode/SDK/ClaudeSDKNDJSONTranslator.swift` (stream mapping)
+- `Features/AgentMode/Providers/ClaudeCompatible/ClaudeRustBackedNativeSessionAdapter.swift` (interactive event mapping)
 - `Infrastructure/AI/Providers/ClaudeCode/ClaudeCodeLaunchEnvironmentResolver.swift` (model normalization, slot mapping, launch resolution)
 - `Infrastructure/AI/Providers/ClaudeCode/ClaudeCodeCompatibleBackendStore.swift` (env builder)
 - `Infrastructure/AI/Providers/ClaudeCode/ClaudeCodePromptDelivery.swift` (decorated user message)
@@ -160,15 +161,16 @@ Responsibilities the infrastructure bridge cannot cleanly own because they requi
 
 Everything else is a thin pass-through to `ClaudeCompatibleProviderRuntimeBridge`.
 
-## Adapter trio
+## Adapter façades
 
-The Agent Mode side of the bridge ships three small adapters under `Sources/RepoPrompt/Features/AgentMode/Providers/ClaudeCompatible/`.
+The Agent Mode side of the bridge keeps its interactive and headless façades under `Sources/RepoPrompt/Features/AgentMode/Providers/ClaudeCompatible/`.
 
-### `ClaudeCompatibleNativeSessionAdapter`
+### `ClaudeRustBackedNativeSessionAdapter`
 
-- Carries a `ClaudeCompatiblePluginRuntimeConfig` and delegates `NativeAgentRuntimeControlling` to a controller factory closure.
-- Today the factory returns a `ClaudeNativeProcessSessionController` (core-owned process control). A future slice can replace the factory body with a package-driven controller without changing the adapter's public shape.
-- `ClaudeAgentModeCoordinator.makeDefaultController` (`ClaudeAgentModeCoordinator.swift:165-186`) is the single call site that constructs the controller and hands it to the adapter; it is invoked as the `claudeControllerFactory` default in `ClaudeAgentModeCoordinator.init` (`:157`). *(Corrected at P6-1: this section previously named a since-removed `AgentModeViewModel.makeClaudeCompatibleNativeController(...)` call site; no such method exists in the current tree.)*
+- Since P6-9, this is the production `NativeAgentRuntimeControlling` implementation for all four interactive Claude-compatible variants (`standard`, GLM, Kimi, and custom-compatible) in both debug and release builds.
+- It owns the Swift-facing impedance layer over one `CoreAgentSession`; process supervision, NDJSON framing/codec, translation, turn/control state, recovery, and raw-event logging stay co-located in the Rust `AgentClaudeScope`.
+- Swift still resolves host-owned command paths, backend credentials/environment, and the GLM append prompt, then passes those launch facts into Rust. Provider secrets do not cross any diagnostic/logging boundary.
+- `ClaudeAgentModeCoordinator.makeDefaultController` is its only construction site. There is no environment flag or live Swift fallback; rollback is source/artifact rollback only.
 
 ### `ClaudeCompatibleHeadlessProviderAdapter`
 
@@ -210,7 +212,7 @@ protocol NativeAgentRuntimeControlling: Actor {
 }
 ```
 
-The associated event/session/turn types are currently `typealias`es over the Claude-native runtime DTOs (`NativeAgentRuntimeEvent = ClaudeNativeProcessSessionController.Event`, etc.). When a second native provider arrives, the aliases will become proper neutral DTOs and the Claude controller will conform via its own mapping. Until then the alias layer keeps the seam ergonomic without forcing churn on coordinators, runners, and tab-session storage.
+The associated event/session/turn types are proper provider-neutral DTOs. The Rust-backed Claude adapter maps its FFI events into these values, so a future native provider can conform without depending on Claude implementation types.
 
 `ClaudeSessionControlling` is retained as a backwards-compatible alias for existing Claude call sites.
 
@@ -237,7 +239,7 @@ Agentry cannot impose one MCP tool-call timeout across external ACP providers; c
 The recommended pattern when adding (for example) a hypothetical `acmeAgent` family:
 
 1. **Decide the runtime shape.**
-   - Interactive native CLI: implement `NativeAgentRuntimeControlling` for the new family, building an adapter analogous to `ClaudeCompatibleNativeSessionAdapter`.
+   - Interactive native CLI: implement `NativeAgentRuntimeControlling` for the new family, building a thin adapter analogous to `ClaudeRustBackedNativeSessionAdapter` over a domain-owned runtime scope.
    - Headless-only CLI: build a `HeadlessAgentProvider` and (optionally) wrap it in a per-family adapter for parity.
    - ACP-based: follow `Sources/RepoPrompt/Features/AgentMode/Providers/ACP/ACPAgentProvider.swift` instead — ACP runtimes do not yet flow through the Claude-compatible plugin seam.
 
@@ -280,7 +282,7 @@ Standard checks for changes that touch the seam:
 swift build --product Agentry
 
 # Focused suites used during Work Items 1–9
-swift test --filter 'ClaudeSDKNDJSONTranslatorTests|ClaudeCompatibleBackendEnvironmentTests|ClaudeNativeApprovalAndResumeTests|ClaudeCompatibleModelCatalogTests|ClaudeCompatiblePluginBridgeTests'
+swift test --filter 'ClaudeRustBackedTurnLevelDifferentialTests|ClaudeNativeRuntimeHostPolicyTests|ClaudeRustBackedAdapterCutoverTests|ClaudeCompatibleBackendEnvironmentTests|ClaudeCompatibleModelCatalogTests|ClaudeCompatiblePluginBridgeTests'
 
 # Package-only iteration
 cd Packages/RepoPromptAgentProviders && swift test
@@ -294,10 +296,10 @@ Add the relevant focused suite before any catalog/codec change, and snapshot mod
 - `Packages/RepoPromptAgentProviders/Package.swift` — provider package manifest.
 - `Packages/RepoPromptAgentProviders/Sources/RepoPromptClaudeCompatibleProvider/` — plugin DTOs, codec, translator, prompt delivery, environment builder, catalog, headless arg builder, launch-env resolver.
 - `Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeCode/ClaudeCompatibleProviderRuntimeBridge.swift` — single package import point.
-- `Sources/RepoPrompt/Features/AgentMode/Providers/ClaudeCompatible/` — Agent-Mode facade and adapter trio.
+- `Sources/RepoPrompt/Features/AgentMode/Providers/ClaudeCompatible/` — Agent-Mode facade and interactive/headless/catalog adapters.
 - `Sources/RepoPrompt/Features/AgentMode/Runtime/Native/NativeAgentRuntimeContracts.swift` — provider-neutral runtime contract.
 - `Sources/RepoPromptShared/Workflows/` — provider-neutral RepoPrompt workflow IDs, catalog metadata, variants, and renderers shared by the app, installs, MCP prompt registration, and direct headless execution.
 - `Sources/RepoPrompt/Features/AgentMode/Runtime/Providers/AgentRuntimeProviderService.swift` — `AgentProviderKind` and headless factory.
-- `Sources/RepoPrompt/Features/AgentMode/Runtime/Claude/ClaudeAgentModeCoordinator.swift` — interactive Claude-compatible coordinator; `makeDefaultController` (`:165-186`) is the factory call site (the swap point for a future Rust-backed controller; see `docs/architecture/rust-agent-claude-v1.md`).
+- `Sources/RepoPrompt/Features/AgentMode/Runtime/Claude/ClaudeAgentModeCoordinator.swift` — interactive Claude-compatible coordinator; `makeDefaultController` is the sole Rust-backed adapter construction site.
 - SwiftPM package manifest docs: <https://docs.swift.org/package-manager/PackageDescription/PackageDescription.html>
 - Xcode local package override workflow: <https://developer.apple.com/documentation/xcode/editing-a-package-dependency-as-a-local-package>

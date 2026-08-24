@@ -48,9 +48,16 @@ impl std::fmt::Display for SpawnError {
         match self {
             Self::Pipe(error) => write!(formatter, "pipe() failed: {error}"),
             Self::CloseOnExec(error) => write!(formatter, "setting FD_CLOEXEC failed: {error}"),
-            Self::FileActions(step, error) => write!(formatter, "posix_spawn_file_actions_{step} failed: {error}"),
-            Self::Chdir(errno) => write!(formatter, "posix_spawn_file_actions_addchdir_np failed: errno {errno}"),
-            Self::Attributes(step, error) => write!(formatter, "posix_spawnattr_{step} failed: {error}"),
+            Self::FileActions(step, error) => {
+                write!(formatter, "posix_spawn_file_actions_{step} failed: {error}")
+            }
+            Self::Chdir(errno) => write!(
+                formatter,
+                "posix_spawn_file_actions_addchdir_np failed: errno {errno}"
+            ),
+            Self::Attributes(step, error) => {
+                write!(formatter, "posix_spawnattr_{step} failed: {error}")
+            }
             Self::InvalidArgument(what) => write!(formatter, "invalid spawn argument: {what}"),
             Self::Spawn(error) => write!(formatter, "posix_spawnp failed: {error}"),
         }
@@ -112,7 +119,8 @@ pub fn spawn(config: &SpawnConfig) -> Result<SpawnedProcess, SpawnError> {
     // (if requested) chdir -- ProcessLauncher.swift:178-196. Order matches Swift: dup2/close
     // before chdir, since chdir affects only the child's subsequent relative-path resolution,
     // not the already-dup'd fds.
-    let mut file_actions = PosixSpawnFileActions::init().map_err(|e| SpawnError::FileActions("init", e))?;
+    let mut file_actions =
+        PosixSpawnFileActions::init().map_err(|e| SpawnError::FileActions("init", e))?;
     file_actions
         .add_dup2(stdin_read.as_raw_fd(), libc::STDIN_FILENO)
         .map_err(|e| SpawnError::FileActions("adddup2(stdin)", e))?;
@@ -157,8 +165,10 @@ pub fn spawn(config: &SpawnConfig) -> Result<SpawnedProcess, SpawnError> {
     // `POSIX_SPAWN_CLOEXEC_DEFAULT` has no named `nix` flag; `from_bits_truncate` on the raw libc
     // constant is a safe `bitflags`-generated constructor (confirmed during P6-2; see the spike's
     // module doc for the source-level verification).
-    let flags = PosixSpawnFlags::from_bits_truncate(base_flags.bits() | libc::POSIX_SPAWN_CLOEXEC_DEFAULT);
-    attr.set_flags(flags).map_err(|e| SpawnError::Attributes("setflags", e))?;
+    let flags =
+        PosixSpawnFlags::from_bits_truncate(base_flags.bits() | libc::POSIX_SPAWN_CLOEXEC_DEFAULT);
+    attr.set_flags(flags)
+        .map_err(|e| SpawnError::Attributes("setflags", e))?;
 
     let command_c = cstring(config.command, "command")?;
     let mut argv_c: Vec<CString> = Vec::with_capacity(config.arguments.len() + 1);
@@ -172,7 +182,8 @@ pub fn spawn(config: &SpawnConfig) -> Result<SpawnedProcess, SpawnError> {
         .map(|(k, v)| cstring(&format!("{k}={v}"), "environment entry"))
         .collect::<Result<_, _>>()?;
 
-    let pid = posix_spawnp(&command_c, &file_actions, &attr, &argv_c, &envp_c).map_err(SpawnError::Spawn)?;
+    let pid = posix_spawnp(&command_c, &file_actions, &attr, &argv_c, &envp_c)
+        .map_err(SpawnError::Spawn)?;
 
     // Parent-retained ends of the pipe halves handed to the child are closed by the spawned
     // process's own file actions above; the parent still holds the *other* halves and must close
@@ -225,7 +236,8 @@ mod tests {
         out.read_to_string(&mut buf).expect("read pwd output");
         let reported = buf.trim();
         let expected = std::fs::canonicalize(&tmp).unwrap_or(tmp.clone());
-        let reported_canonical = std::fs::canonicalize(reported).unwrap_or_else(|_| reported.into());
+        let reported_canonical =
+            std::fs::canonicalize(reported).unwrap_or_else(|_| reported.into());
         assert_eq!(reported_canonical, expected);
         let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
     }
@@ -241,7 +253,10 @@ mod tests {
         let mut out = std::fs::File::from(child.stdout_read);
         let mut buf = String::new();
         out.read_to_string(&mut buf).expect("read env output");
-        assert!(buf.trim().is_empty(), "expected no inherited environment, got {buf:?}");
+        assert!(
+            buf.trim().is_empty(),
+            "expected no inherited environment, got {buf:?}"
+        );
         let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
     }
 
@@ -254,7 +269,10 @@ mod tests {
             working_directory: None,
         })
         .expect_err("missing binary must fail to spawn");
-        assert!(matches!(err, SpawnError::Spawn(nix::Error::ENOENT)), "unexpected error: {err}");
+        assert!(
+            matches!(err, SpawnError::Spawn(nix::Error::ENOENT)),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -262,7 +280,10 @@ mod tests {
         let child = spawn_probe(&SpawnConfig {
             command: "/usr/bin/env",
             arguments: &[],
-            environment: &[("AGENT_CLAUDE_PROBE_KEY".to_string(), "probe-value".to_string())],
+            environment: &[(
+                "AGENT_CLAUDE_PROBE_KEY".to_string(),
+                "probe-value".to_string(),
+            )],
             working_directory: None,
         });
         let mut out = std::fs::File::from(child.stdout_read);
@@ -306,9 +327,11 @@ mod tests {
 
     #[test]
     fn non_executable_binary_reports_eacces() {
-        let tmp = std::env::temp_dir().join(format!("agent-claude-non-exec-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("agent-claude-non-exec-{}", std::process::id()));
         std::fs::write(&tmp, b"#!/bin/sh\necho nope\n").expect("write non-executable fixture");
-        std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644)).expect("chmod 644");
+        std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+            .expect("chmod 644");
         let path = tmp.to_str().expect("utf8 path").to_string();
         let err = spawn(&SpawnConfig {
             command: &path,
@@ -318,7 +341,10 @@ mod tests {
         })
         .expect_err("non-executable binary must fail to spawn");
         let _ = std::fs::remove_file(&tmp);
-        assert!(matches!(err, SpawnError::Spawn(nix::Error::EACCES)), "unexpected error: {err}");
+        assert!(
+            matches!(err, SpawnError::Spawn(nix::Error::EACCES)),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -329,7 +355,10 @@ mod tests {
         // rationale for pgroup-scoped cleanup.
         let child = spawn_probe(&SpawnConfig {
             command: "/bin/sh",
-            arguments: &["-c".to_string(), "sleep 30 >/dev/null 2>&1 & echo $! ; exit 0".to_string()],
+            arguments: &[
+                "-c".to_string(),
+                "sleep 30 >/dev/null 2>&1 & echo $! ; exit 0".to_string(),
+            ],
             environment: &[],
             working_directory: None,
         });
@@ -339,10 +368,14 @@ mod tests {
         let grandchild_pid: i32 = buf.trim().parse().expect("grandchild pid");
         let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
         // Root has exited; the grandchild should still be alive and in the same process group.
-        let grandchild_pgid = nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(grandchild_pid)))
-            .expect("grandchild must still be alive and queryable");
+        let grandchild_pgid =
+            nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(grandchild_pid)))
+                .expect("grandchild must still be alive and queryable");
         assert_eq!(grandchild_pgid.as_raw(), child.process_group_id);
-        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(child.process_group_id), nix::sys::signal::Signal::SIGKILL);
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(child.process_group_id),
+            nix::sys::signal::Signal::SIGKILL,
+        );
         let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(grandchild_pid), None);
     }
 

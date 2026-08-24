@@ -144,16 +144,13 @@ def main() -> int:
             "the P6-1-pinned set the spawner/reaper need, no more"
         )
 
-    # P6-4/P6-5: exactly three `#[allow(unsafe_code)]` sites are confirmed prerequisites --
+    # P6-4: exactly two `#[allow(unsafe_code)]` sites are confirmed prerequisites --
     # `agent_claude::process::addchdir` (the `posix_spawn_file_actions_addchdir_np` extern "C"
-    # binding), `agent_claude::process::reaper::waitid_probe` (a second Apple-specific `nix` gap
-    # found during P6-2, wrapping the already-declared `libc::waitid`), and (P6-5)
-    # `agent_claude::debug_shadow_ffi` (the raw, DEBUG-only, per-line `extern "C"` symbol
-    # `agent_claude_decode_line_debug_v1` -- the sole per-line export this vertical ever carries,
-    # INV-P6-1 §3.3; see that module's own doc for why it cannot be a `#[uniffi::export]`). A
-    # fourth site anywhere in `agentry-runtime`'s `src/` would be an unreviewed expansion of the
-    # crate's `unsafe_code` exception, which this crate declined `[lints] workspace = true`
-    # specifically to keep narrow (see `rust/crates/runtime/Cargo.toml`'s own comment).
+    # binding) and `agent_claude::process::reaper::waitid_probe` (a second Apple-specific `nix`
+    # gap found during P6-2, wrapping the already-declared `libc::waitid`). A third site anywhere
+    # in `agentry-runtime`'s `src/` would be an unreviewed expansion of the crate's `unsafe_code`
+    # exception, which this crate declined `[lints] workspace = true` specifically to keep narrow
+    # (see `rust/crates/runtime/Cargo.toml`'s own comment).
     unsafe_allow_sites: list[str] = []
     for path in sorted((RUST / "crates/runtime/src").rglob("*.rs")):
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -167,12 +164,11 @@ def main() -> int:
     expected_unsafe_allow_sites = {
         "rust/crates/runtime/src/agent_claude/process/addchdir.rs",
         "rust/crates/runtime/src/agent_claude/process/reaper.rs",
-        "rust/crates/runtime/src/agent_claude/debug_shadow_ffi.rs",
     }
     actual_files = {site.split(":", 1)[0] for site in unsafe_allow_sites}
-    if len(unsafe_allow_sites) != 3 or actual_files != expected_unsafe_allow_sites:
+    if len(unsafe_allow_sites) != 2 or actual_files != expected_unsafe_allow_sites:
         failures.append(
-            "agentry-runtime's src/ must contain exactly three #[allow(unsafe_code)] sites "
+            "agentry-runtime's src/ must contain exactly two #[allow(unsafe_code)] sites "
             f"({sorted(expected_unsafe_allow_sites)}); found {unsafe_allow_sites}"
         )
     lib_rs_text = (RUST / "crates/runtime/src/lib.rs").read_text(encoding="utf-8", errors="replace")
@@ -181,33 +177,6 @@ def main() -> int:
             "rust/crates/runtime/src/lib.rs must carry #![deny(unsafe_code)] (not forbid) -- "
             "P6-4's two scoped #[allow(unsafe_code)] exceptions require deny, not forbid"
         )
-
-    # P6-5 (design §3.3 INV-P6-1, contract §14, `docs/architecture/rust-agent-claude-v1.md`):
-    # mechanical, offline stand-in for "a release-build guardrail test asserts that symbol's
-    # absence from the release binary" -- the same class of source-text check this repo already
-    # uses for equivalent invariants (e.g. P4-5's Swift-side
-    # `testShadowArmParameterIsAbsentFromTheReleaseInitializer`) rather than requiring an actual
-    # `cargo build --release` inside a guardrail run. Asserts the module declaration in `mod.rs` is
-    # gated by `#[cfg(debug_assertions)]` and that the module itself carries the same gate as an
-    # inner attribute, so the sole per-line export can never silently lose its DEBUG-only fencing.
-    agent_claude_mod_rs = RUST / "crates/runtime/src/agent_claude/mod.rs"
-    mod_rs_text = agent_claude_mod_rs.read_text(encoding="utf-8", errors="replace")
-    if "#[cfg(debug_assertions)]\npub mod debug_shadow_ffi;" not in mod_rs_text:
-        failures.append(
-            "agent_claude::debug_shadow_ffi's module declaration in mod.rs must be immediately "
-            "preceded by #[cfg(debug_assertions)] -- INV-P6-1's sole per-line export must never "
-            "reach a release build"
-        )
-    debug_shadow_ffi_rs = RUST / "crates/runtime/src/agent_claude/debug_shadow_ffi.rs"
-    if debug_shadow_ffi_rs.is_file():
-        debug_shadow_ffi_text = debug_shadow_ffi_rs.read_text(encoding="utf-8", errors="replace")
-        if "agent_claude_decode_line_debug_v1" not in debug_shadow_ffi_text:
-            failures.append(
-                "agent_claude/debug_shadow_ffi.rs must declare agent_claude_decode_line_debug_v1 "
-                "-- the frozen symbol name INV-P6-1 names as the sole sanctioned per-line export"
-            )
-    else:
-        failures.append("agent_claude/debug_shadow_ffi.rs is missing -- the P6-5 DEBUG shadow export module")
 
     xtask = load_toml(RUST / "tools/xtask/Cargo.toml", failures)
     xtask_dependencies = dependency_names(xtask)

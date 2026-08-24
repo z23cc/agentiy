@@ -62,6 +62,122 @@ final class FileSystemContentLoadingConcurrencyTests: XCTestCase {
         XCTAssertNil(standardizedNestedEncoding)
     }
 
+    func testLargeUTF16ContentUsesRustDecoderAndCachesExplicitEndian() async throws {
+        let root = try temporaryRoots.makeRoot(suiteName: "FileSystemContentLoadingRustUTF16")
+        let service = try await makeService(root: root)
+        let fileURL = root.appendingPathComponent("Large.swift")
+        let body = String(repeating: "a", count: 1_100_000) + " end\n"
+        var data = Data([0xFF, 0xFE])
+        try data.append(XCTUnwrap(body.data(using: .utf16LittleEndian)))
+        try data.write(to: fileURL)
+
+        let content = try await service.loadContent(ofRelativePath: "Large.swift")
+        let encoding = await service.cachedEncodingForTesting(relativePath: "Large.swift")
+
+        XCTAssertEqual(content, "\u{FEFF}" + body)
+        XCTAssertEqual(encoding, .utf16LittleEndian)
+    }
+
+    func testBOMUnicodeContentBypassesBinaryProbeForSmallAndStreamedNeutralExtensions() async throws {
+        let root = try temporaryRoots.makeRoot(suiteName: "FileSystemBOMUnicodeNeutralExtensions")
+        let service = try await makeService(root: root)
+        let fixtures: [(String, [UInt8], String.Encoding, String)] = [
+            ("Small16.neutral", [0xFF, 0xFE], .utf16LittleEndian, "small 😀 text"),
+            ("Small32.neutral", [0x00, 0x00, 0xFE, 0xFF], .utf32BigEndian, "small 😀 text"),
+            ("Stream16.neutral", [0xFE, 0xFF], .utf16BigEndian, String(repeating: "界", count: 1_050_000)),
+            ("Stream32.neutral", [0xFF, 0xFE, 0x00, 0x00], .utf32LittleEndian, String(repeating: "界", count: 525_000))
+        ]
+
+        for (relativePath, bom, encoding, body) in fixtures {
+            var data = Data(bom)
+            try data.append(XCTUnwrap(body.data(using: encoding)))
+            try data.write(to: root.appendingPathComponent(relativePath))
+
+            let content = try await service.loadContent(ofRelativePath: relativePath)
+            let cachedEncoding = await service.cachedEncodingForTesting(relativePath: relativePath)
+
+            XCTAssertEqual(content, "\u{FEFF}" + body, relativePath)
+            XCTAssertEqual(cachedEncoding, encoding, relativePath)
+        }
+    }
+
+    func testContentPrefixTrimsEveryIncompleteUTF8ScalarBoundary() async throws {
+        let root = try temporaryRoots.makeRoot(suiteName: "FileSystemContentPrefixUTF8Boundary")
+        let service = try await makeService(root: root)
+        let leadingText = "prefix-"
+        let scalars = ["€", "😀"]
+
+        for (index, scalar) in scalars.enumerated() {
+            let relativePath = "Boundary-\(index).txt"
+            let fileURL = root.appendingPathComponent(relativePath)
+            let scalarBytes = Array(scalar.utf8)
+            try Data((leadingText + scalar + "-suffix").utf8).write(to: fileURL)
+
+            for includedScalarBytes in 1 ..< scalarBytes.count {
+                let prefix = try await service.loadContentPrefix(
+                    ofRelativePath: relativePath,
+                    maximumBytes: leadingText.utf8.count + includedScalarBytes
+                )
+                XCTAssertEqual(prefix?.content, leadingText)
+                XCTAssertEqual(prefix?.truncated, true)
+            }
+        }
+    }
+
+    func testContentPrefixTrimsBOMUnicodeScalarBoundariesInBothEndiannesses() async throws {
+        let root = try temporaryRoots.makeRoot(suiteName: "FileSystemContentPrefixBOMBoundaries")
+        let service = try await makeService(root: root)
+        let body = "A😀Z"
+        let fixtures: [(String, [UInt8], String.Encoding, Bool)] = [
+            ("UTF16LE", [0xFF, 0xFE], .utf16LittleEndian, true),
+            ("UTF16BE", [0xFE, 0xFF], .utf16BigEndian, true),
+            ("UTF32LE", [0xFF, 0xFE, 0x00, 0x00], .utf32LittleEndian, false),
+            ("UTF32BE", [0x00, 0x00, 0xFE, 0xFF], .utf32BigEndian, false)
+        ]
+
+        for (name, bom, encoding, isUTF16) in fixtures {
+            let relativePath = "\(name).txt"
+            var data = Data(bom)
+            try data.append(XCTUnwrap(body.data(using: encoding)))
+            try data.write(to: root.appendingPathComponent(relativePath))
+
+            for bomByteCount in 1 ..< bom.count {
+                let prefix = try await service.loadContentPrefix(
+                    ofRelativePath: relativePath,
+                    maximumBytes: bomByteCount
+                )
+                XCTAssertEqual(prefix?.content, "", "\(name) partial BOM \(bomByteCount)")
+                XCTAssertEqual(prefix?.truncated, true)
+            }
+
+            let cuts: [(payloadByteCount: Int, expected: String)] = if isUTF16 {
+                [
+                    (1, "\u{FEFF}"),
+                    (3, "\u{FEFF}A"),
+                    (4, "\u{FEFF}A"),
+                    (5, "\u{FEFF}A")
+                ]
+            } else {
+                [
+                    (1, "\u{FEFF}"),
+                    (2, "\u{FEFF}"),
+                    (3, "\u{FEFF}"),
+                    (5, "\u{FEFF}A"),
+                    (6, "\u{FEFF}A"),
+                    (7, "\u{FEFF}A")
+                ]
+            }
+            for cut in cuts {
+                let prefix = try await service.loadContentPrefix(
+                    ofRelativePath: relativePath,
+                    maximumBytes: bom.count + cut.payloadByteCount
+                )
+                XCTAssertEqual(prefix?.content, cut.expected, "\(name) cut \(cut.payloadByteCount)")
+                XCTAssertEqual(prefix?.truncated, true)
+            }
+        }
+    }
+
     func testContentLoadingRejectsTraversalAndSymlinkTargets() async throws {
         let root = try temporaryRoots.makeRoot(suiteName: "FileSystemContentLoadingContainment")
         let outside = try temporaryRoots.makeRoot(suiteName: "FileSystemContentLoadingOutside")

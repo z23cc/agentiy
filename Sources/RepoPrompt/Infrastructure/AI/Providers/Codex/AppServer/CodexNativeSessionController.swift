@@ -3199,7 +3199,6 @@ final class CodexNativeSessionController {
     /// Related:
     /// - CodexAppServerClient.terminateTransport (finishes subscriber continuations)
     /// - CodexAgentModeCoordinator.ensureCodexNativeSession (consumes events stream)
-    /// - ClaudeNativeProcessSessionController.handleStdoutEOF (reference termination)
     private static func turnScope(threadID: String?, turnID: String?) -> TurnScope? {
         guard let threadID = nonEmptyString(threadID),
               let turnID = nonEmptyString(turnID)

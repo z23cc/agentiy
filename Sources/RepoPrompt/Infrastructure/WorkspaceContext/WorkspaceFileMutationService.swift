@@ -80,6 +80,13 @@ struct WorkspaceFileMutationService {
         try await store.readContent(rootID: file.rootID, relativePath: file.standardizedRelativePath)
     }
 
+    func readRawContentForTextMutation(file: WorkspaceFileRecord) async throws -> ValidatedRawFileContentSnapshot {
+        try await store.readValidatedRawContentForTextMutation(
+            rootID: file.rootID,
+            relativePath: file.standardizedRelativePath
+        )
+    }
+
     @discardableResult
     func overwrite(
         file: WorkspaceFileRecord,
@@ -113,6 +120,31 @@ struct WorkspaceFileMutationService {
             relativePath: file.standardizedRelativePath,
             newContent: content,
             expectedOriginalContent: expectedOriginalContent
+        )
+        if let result {
+            return .fromCatalogMaterialization(result)
+        }
+        return WorkspaceFileMutationWriteResult(diskSucceeded: true, materializedFile: nil, catalogIneligibility: nil)
+    }
+
+    @discardableResult
+    func overwriteIfUnchanged(
+        file: WorkspaceFileRecord,
+        content: String,
+        expectedOriginalFingerprint: FileContentFingerprint,
+        preservationEncodingRawValue: UInt,
+        mutationRootMappings: [DomainMutationPhysicalRootMapping] = []
+    ) async throws -> WorkspaceFileMutationWriteResult {
+        try await MCPDomainMutationCommitContext.admitPhysicalTargets(
+            [file.standardizedFullPath],
+            rootMappings: mutationRootMappings
+        )
+        let result = try await store.editFile(
+            rootID: file.rootID,
+            relativePath: file.standardizedRelativePath,
+            newContent: content,
+            expectedOriginalFingerprint: expectedOriginalFingerprint,
+            preservationEncodingRawValue: preservationEncodingRawValue
         )
         if let result {
             return .fromCatalogMaterialization(result)

@@ -66,19 +66,6 @@ pub fn decode_line(line_data: &[u8]) -> Result<Option<InboundMessage>, CodecErro
     decode_line_with(line_data, parse_json_object)
 }
 
-/// Primary-parse-only variant: skips §2.1's second-attempt JSON-string-control-character
-/// sanitize-and-retry pass, succeeding only when the very first `decode_object` attempt does.
-/// Used by the P6-5 debug shadow arm (`debug_shadow.rs`) to gate its live per-line comparison on
-/// exactly the same "does this decode on the first attempt" condition the Swift-side comparator
-/// evaluates independently (a plain `JSONSerialization.jsonObject` call) -- lines that only decode
-/// via the repair pass, or that need a D-1 recovery heuristic, are out of the live shadow arm's
-/// scope by construction (design §3.4: covered instead by the corpus differential, the fuzz target,
-/// and the synthetic-CLI matrix) rather than silently miscompared against a Swift arm that took a
-/// different repair path.
-pub fn decode_line_primary_only(line_data: &[u8]) -> Result<Option<InboundMessage>, CodecError> {
-    decode_line_with(line_data, decode_object)
-}
-
 fn decode_line_with(
     line_data: &[u8],
     parse: impl FnOnce(&[u8]) -> Result<Map<String, Value>, CodecError>,
@@ -94,21 +81,27 @@ fn decode_line_with(
     let message_type = object.get("type").and_then(Value::as_str).unwrap_or("");
     match message_type {
         "control_request" => {
-            let (Some(request_id), Some(request)) =
-                (string_value(&object, "request_id"), object_value(&object, "request"))
-            else {
+            let (Some(request_id), Some(request)) = (
+                string_value(&object, "request_id"),
+                object_value(&object, "request"),
+            ) else {
                 return Err(CodecError::UnsupportedPayload);
             };
             let subtype = string_value(&request, "subtype").unwrap_or_default();
-            Ok(Some(InboundMessage::ControlRequest(ControlRequest { request_id, request, subtype })))
+            Ok(Some(InboundMessage::ControlRequest(ControlRequest {
+                request_id,
+                request,
+                subtype,
+            })))
         }
         "control_response" => {
             let Some(envelope) = object_value(&object, "response") else {
                 return Err(CodecError::UnsupportedPayload);
             };
-            let (Some(request_id), Some(subtype)) =
-                (string_value(&envelope, "request_id"), string_value(&envelope, "subtype"))
-            else {
+            let (Some(request_id), Some(subtype)) = (
+                string_value(&envelope, "request_id"),
+                string_value(&envelope, "subtype"),
+            ) else {
                 return Err(CodecError::UnsupportedPayload);
             };
             let response_object = object_value(&envelope, "response");
@@ -116,7 +109,13 @@ fn decode_line_with(
             let pending_permission_requests = envelope
                 .get("pending_permission_requests")
                 .and_then(Value::as_array)
-                .map(|values| values.iter().filter_map(Value::as_object).cloned().collect())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_object)
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_default();
             Ok(Some(InboundMessage::ControlResponse(ControlResponse {
                 request_id,
@@ -239,7 +238,10 @@ pub fn encode_control_request(request_id: &str, request: &Map<String, Value>) ->
 }
 
 /// Port of `encodeControlResponseSuccess(requestID:response:)`.
-pub fn encode_control_response_success(request_id: &str, response: Option<&Map<String, Value>>) -> Vec<u8> {
+pub fn encode_control_response_success(
+    request_id: &str,
+    response: Option<&Map<String, Value>>,
+) -> Vec<u8> {
     let mut envelope = serde_json::json!({
         "subtype": "success",
         "request_id": request_id,
@@ -282,7 +284,10 @@ mod tests {
     #[test]
     fn control_request_round_trips_through_own_encoder() {
         let mut request = Map::new();
-        request.insert("subtype".to_string(), Value::String("can_use_tool".to_string()));
+        request.insert(
+            "subtype".to_string(),
+            Value::String("can_use_tool".to_string()),
+        );
         request.insert("tool_name".to_string(), Value::String("Bash".to_string()));
         let encoded = encode_control_request("req-1", &request);
         let decoded = decode_line(&encoded).unwrap().unwrap();
@@ -290,7 +295,10 @@ mod tests {
             InboundMessage::ControlRequest(req) => {
                 assert_eq!(req.request_id, "req-1");
                 assert_eq!(req.subtype, "can_use_tool");
-                assert_eq!(req.request.get("tool_name").and_then(Value::as_str), Some("Bash"));
+                assert_eq!(
+                    req.request.get("tool_name").and_then(Value::as_str),
+                    Some("Bash")
+                );
             }
             other => panic!("expected ControlRequest, got {other:?}"),
         }
@@ -304,16 +312,23 @@ mod tests {
 
     #[test]
     fn keep_alive_and_control_cancel_decode() {
-        assert_eq!(decode_line(br#"{"type":"keep_alive"}"#).unwrap(), Some(InboundMessage::KeepAlive));
+        assert_eq!(
+            decode_line(br#"{"type":"keep_alive"}"#).unwrap(),
+            Some(InboundMessage::KeepAlive)
+        );
         assert_eq!(
             decode_line(br#"{"type":"control_cancel_request","request_id":"req-9"}"#).unwrap(),
-            Some(InboundMessage::ControlCancelRequest { request_id: "req-9".to_string() })
+            Some(InboundMessage::ControlCancelRequest {
+                request_id: "req-9".to_string()
+            })
         );
     }
 
     #[test]
     fn unknown_type_is_a_stream_payload() {
-        let decoded = decode_line(br#"{"type":"assistant","message":{}}"#).unwrap().unwrap();
+        let decoded = decode_line(br#"{"type":"assistant","message":{}}"#)
+            .unwrap()
+            .unwrap();
         assert!(matches!(decoded, InboundMessage::StreamPayload(_)));
     }
 
@@ -326,11 +341,15 @@ mod tests {
 
     #[test]
     fn embedded_raw_lf_inside_a_string_is_repaired_by_the_codecs_own_sanitize_pass() {
-        let line = b"{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"line one\nline two\"}";
+        let line =
+            b"{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"line one\nline two\"}";
         let decoded = decode_line(line).unwrap().unwrap();
         match decoded {
             InboundMessage::StreamPayload(payload) => {
-                assert_eq!(payload.get("status").and_then(Value::as_str), Some("line one\nline two"));
+                assert_eq!(
+                    payload.get("status").and_then(Value::as_str),
+                    Some("line one\nline two")
+                );
             }
             other => panic!("expected StreamPayload, got {other:?}"),
         }

@@ -6,8 +6,6 @@ import Foundation
     import os
 #endif
 import CoreFoundation
-import Cuchardet
-import UniversalCharsetDetection
 #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
     import Darwin
 #else

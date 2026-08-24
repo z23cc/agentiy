@@ -51,6 +51,11 @@ pub enum AgentClaudeEventKind {
     FramerOverflow,
     ProtocolDrift,
     TranscriptTruncated,
+    /// P6-8 real-binary soak: the current supervised process reached stdout EOF and can no
+    /// longer accept commands. This is a lossless terminal lifecycle fact so the Swift adapter
+    /// can invalidate `hasActiveSession` before the next turn and rebuild the scope instead of
+    /// writing to a dead stdin.
+    ProcessExited,
     Error,
 }
 
@@ -74,6 +79,7 @@ impl AgentClaudeEventKind {
             Self::FramerOverflow => "framerOverflow",
             Self::ProtocolDrift => "protocolDrift",
             Self::TranscriptTruncated => "transcriptTruncated",
+            Self::ProcessExited => "processExited",
             Self::Error => "error",
         }
     }
@@ -92,7 +98,11 @@ pub struct AgentClaudeEvent {
 impl AgentClaudeEvent {
     #[must_use]
     pub fn new(kind: AgentClaudeEventKind) -> Self {
-        Self { kind, turn_id: None, fields: Map::new() }
+        Self {
+            kind,
+            turn_id: None,
+            fields: Map::new(),
+        }
     }
 
     #[must_use]
@@ -124,7 +134,9 @@ impl AgentClaudeEvent {
     /// than a best-effort partial decode.
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let Value::Object(mut object) = serde_json::from_slice(bytes).ok()? else { return None };
+        let Value::Object(mut object) = serde_json::from_slice(bytes).ok()? else {
+            return None;
+        };
         let version = object.remove("v")?.as_u64()?;
         if version != AGENT_CLAUDE_EVENT_WIRE_VERSION {
             return None;
@@ -148,11 +160,16 @@ impl AgentClaudeEvent {
             "framerOverflow" => AgentClaudeEventKind::FramerOverflow,
             "protocolDrift" => AgentClaudeEventKind::ProtocolDrift,
             "transcriptTruncated" => AgentClaudeEventKind::TranscriptTruncated,
+            "processExited" => AgentClaudeEventKind::ProcessExited,
             "error" => AgentClaudeEventKind::Error,
             _ => return None,
         };
         let turn_id = object.remove("turn_id").and_then(|v| v.as_u64());
-        Some(Self { kind, turn_id, fields: object })
+        Some(Self {
+            kind,
+            turn_id,
+            fields: object,
+        })
     }
 
     /// Contract §7.1's event catalog, mapped to `(EventClass, coalesce_key, terminal_reserve)`.
@@ -163,29 +180,39 @@ impl AgentClaudeEvent {
     #[must_use]
     pub fn classification(&self) -> (EventClass, Option<String>, bool) {
         use AgentClaudeEventKind::{
-            ApprovalCancelled, ApprovalRequest, AssistantDelta, Error, FlagSettingsApplied, FramerOverflow, InterruptOutcome,
-            ProtocolDrift, ReasoningDelta, RuntimeInit, SessionStateChanged, StderrTail, TaskProgress, ToolResult,
-            ToolUseStarted, TranscriptTruncated, TurnCompleted,
+            ApprovalCancelled, ApprovalRequest, AssistantDelta, Error, FlagSettingsApplied,
+            FramerOverflow, InterruptOutcome, ProcessExited, ProtocolDrift, ReasoningDelta,
+            RuntimeInit, SessionStateChanged, StderrTail, TaskProgress, ToolResult, ToolUseStarted,
+            TranscriptTruncated, TurnCompleted,
         };
         match self.kind {
-            AssistantDelta | ReasoningDelta | ToolUseStarted | ToolResult | Error | TranscriptTruncated => {
-                (EventClass::Lossless, None, false)
-            }
-            ApprovalRequest | ApprovalCancelled | TurnCompleted | InterruptOutcome | FlagSettingsApplied => {
-                (EventClass::Lossless, None, true)
-            }
-            RuntimeInit => (EventClass::Coalescible, Some("runtimeInit".to_string()), false),
+            AssistantDelta | ReasoningDelta | ToolUseStarted | ToolResult | Error
+            | TranscriptTruncated => (EventClass::Lossless, None, false),
+            ApprovalRequest | ApprovalCancelled | TurnCompleted | InterruptOutcome
+            | FlagSettingsApplied | ProcessExited => (EventClass::Lossless, None, true),
+            RuntimeInit => (
+                EventClass::Coalescible,
+                Some("runtimeInit".to_string()),
+                false,
+            ),
             TaskProgress => (EventClass::Coalescible, Some("progress".to_string()), false),
             SessionStateChanged => {
-                if self.fields.get("is_idle").and_then(Value::as_bool).unwrap_or(false) {
+                if self
+                    .fields
+                    .get("is_idle")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     (EventClass::Lossless, None, false)
                 } else {
                     (EventClass::Coalescible, Some("progress".to_string()), false)
                 }
             }
-            StderrTail | FramerOverflow | ProtocolDrift => {
-                (EventClass::Droppable, Some(format!("diag:{}", self.kind.wire_name())), false)
-            }
+            StderrTail | FramerOverflow | ProtocolDrift => (
+                EventClass::Droppable,
+                Some(format!("diag:{}", self.kind.wire_name())),
+                false,
+            ),
         }
     }
 }
@@ -223,6 +250,7 @@ pub fn interrupt_outcome(
 pub fn approval_request(request: &CanUseToolRequest) -> AgentClaudeEvent {
     let mut event = AgentClaudeEvent::new(AgentClaudeEventKind::ApprovalRequest)
         .with_field("request_id", request.request_id.as_str())
+        .with_field("request_payload", Value::Object(request.request.clone()))
         .with_field("tool_name", request.tool_name.as_str())
         .with_field("input", Value::Object(request.input.clone()));
     if let Some(blocked_path) = &request.blocked_path {
@@ -250,15 +278,25 @@ mod tests {
         let decoded = AgentClaudeEvent::decode(&event.encode()).expect("decode");
         assert_eq!(decoded.kind, AgentClaudeEventKind::TurnCompleted);
         assert_eq!(decoded.turn_id, Some(7));
-        assert_eq!(decoded.fields.get("status").and_then(Value::as_str), Some("cancelled"));
+        assert_eq!(
+            decoded.fields.get("status").and_then(Value::as_str),
+            Some("cancelled")
+        );
     }
 
     #[test]
-    fn turn_completed_and_interrupt_outcome_use_the_reserved_terminal_slot() {
+    fn turn_completed_interrupt_outcome_and_process_exit_use_the_reserved_terminal_slot() {
         let (_, _, terminal) = turn_completed(1, TurnStatus::Completed).classification();
         assert!(terminal);
         let (_, _, terminal) = interrupt_outcome("r1", "acknowledged", 1, None).classification();
         assert!(terminal);
+        let process_exited = AgentClaudeEvent::new(AgentClaudeEventKind::ProcessExited);
+        let (_, _, terminal) = process_exited.classification();
+        assert!(terminal);
+        assert_eq!(
+            AgentClaudeEvent::decode(&process_exited.encode()).map(|event| event.kind),
+            Some(AgentClaudeEventKind::ProcessExited)
+        );
     }
 
     #[test]
@@ -275,14 +313,19 @@ mod tests {
             .with_field("text", "idle")
             .with_field("is_idle", true);
         let (class, key, terminal) = idle.classification();
-        assert_eq!(class, EventClass::Lossless, "idle is the turn-boundary trap -- must never be droppable/coalescible");
+        assert_eq!(
+            class,
+            EventClass::Lossless,
+            "idle is the turn-boundary trap -- must never be droppable/coalescible"
+        );
         assert_eq!(key, None);
         assert!(!terminal);
     }
 
     #[test]
     fn diagnostics_are_droppable_with_a_per_kind_coalesce_key() {
-        let (class, key, _) = AgentClaudeEvent::new(AgentClaudeEventKind::FramerOverflow).classification();
+        let (class, key, _) =
+            AgentClaudeEvent::new(AgentClaudeEventKind::FramerOverflow).classification();
         assert_eq!(class, EventClass::Droppable);
         assert_eq!(key.as_deref(), Some("diag:framerOverflow"));
     }
@@ -307,17 +350,37 @@ mod tests {
 
     #[test]
     fn approval_request_carries_every_optional_field_when_present() {
+        let mut raw_request = Map::new();
+        raw_request.insert("tool_name".to_string(), json!("Bash"));
         let request = CanUseToolRequest {
             request_id: "req-1".to_string(),
+            request: raw_request,
             tool_name: "Bash".to_string(),
             input: Map::new(),
             blocked_path: Some("/etc/shadow".to_string()),
             decision_reason: Some("blocked".to_string()),
             description: Some("list files".to_string()),
             tool_use_id: Some("toolu_1".to_string()),
+            permission_suggestions: vec![],
         };
-        let decoded = AgentClaudeEvent::decode(&approval_request(&request).encode()).expect("decode");
-        assert_eq!(decoded.fields.get("blocked_path").and_then(Value::as_str), Some("/etc/shadow"));
-        assert_eq!(decoded.fields.get("tool_use_id").and_then(Value::as_str), Some("toolu_1"));
+        let decoded =
+            AgentClaudeEvent::decode(&approval_request(&request).encode()).expect("decode");
+        assert_eq!(
+            decoded
+                .fields
+                .get("request_payload")
+                .and_then(Value::as_object)
+                .and_then(|payload| payload.get("tool_name"))
+                .and_then(Value::as_str),
+            Some("Bash")
+        );
+        assert_eq!(
+            decoded.fields.get("blocked_path").and_then(Value::as_str),
+            Some("/etc/shadow")
+        );
+        assert_eq!(
+            decoded.fields.get("tool_use_id").and_then(Value::as_str),
+            Some("toolu_1")
+        );
     }
 }

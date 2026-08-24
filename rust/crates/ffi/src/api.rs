@@ -4,29 +4,28 @@ use crate::generated::contract_identity::{
 };
 use crate::panic_guard::PanicGuard;
 use crate::types::{
-    AdmissionDisposition, AdmissionReceipt, BulkChunkReceiptV1, CancelReceipt, CommandEnvelope,
-    CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1, CompactQueryV1,
-    CompactRecordBlockV1, CompactRegexBatchResult, CoreApplyEditsBatchRequestV1,
-    CoreCodeMapBatchRequestV1, CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1,
-    CoreConfig, CoreHandshake, CoreInventoryScopeConfigV1, CorePathMatchResolveRequestV1,
-    CorePathMatchResolveResultV1,
-    CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
-    CorePathSearchFindResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
-    DrainBatch, FolderSuffixRequest, HostResponse,
-    BulkChunkDiscoveryReceiptV1, InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1,
-    InventoryDeltaDiscoveryReceiptV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
-    InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
-    InventoryProjectedShardRequestV1, InventoryPublishModeV1,
+    AdmissionDisposition, AdmissionReceipt, BulkChunkDiscoveryReceiptV1, BulkChunkReceiptV1,
+    CancelReceipt, CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1,
+    CompactQueryResultV1, CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult,
+    CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCompactApplyEditsBatchResultV1,
+    CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake, CoreInventoryScopeConfigV1,
+    CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1,
+    CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
+    CoreTextDecodeRequestV1, CoreTextDecodeResultV1, CoreTokenAccountingRequestV1,
+    CoreTokenAccountingResultV1, DrainBatch, FolderSuffixRequest, HostResponse,
+    InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1, InventoryDeltaDiscoveryReceiptV1,
+    InventoryDeltaReceiptV1, InventoryDiagnosticsV1, InventoryGenerationReceiptV1,
+    InventoryHandleInvalidationReasonV1, InventoryProjectedShardRequestV1, InventoryPublishModeV1,
     InventoryResolveRequestV1, InventoryRootLifetimeV1, InventoryRootOpenV1,
     InventoryRootUnloadReceiptV1, InventoryScopeHandleV1, InventorySnapshotHandleV1,
-    InventorySnapshotRequestV1, OperationState, OversizeEvent,
-    PathFilterRequest, PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest,
-    RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt, SubscriptionBootstrap,
-    SubscriptionId, SubscriptionScope, parse_inventory_scope_id, parse_root_id,
-    parse_root_lifetime_id, wire_error,
+    InventorySnapshotRequestV1, OperationState, OversizeEvent, PathFilterRequest, PathFilterResult,
+    RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity,
+    ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
+    parse_inventory_scope_id, parse_root_id, parse_root_lifetime_id, wire_error,
 };
 use crate::types::{
-    AgentClaudeFlagSettingsReceiptV1, AgentClaudeInterruptReceiptV1, AgentClaudePermissionDecisionV1, AgentClaudeScopeHandleV1,
+    AgentClaudeFlagSettingsDispositionV1, AgentClaudeFlagSettingsReceiptV1,
+    AgentClaudeInterruptReceiptV1, AgentClaudePermissionDecisionV1, AgentClaudeScopeHandleV1,
     AgentClaudeStartReceiptV1, CoreAgentClaudeScopeConfigV1,
 };
 use agentry_proto::{Envelope, PayloadKind};
@@ -425,6 +424,20 @@ impl CoreRuntime {
         })
     }
 
+    pub fn text_decode_v1(
+        &self,
+        request: CoreTextDecodeRequestV1,
+    ) -> Result<CoreTextDecodeResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            if request.contract_version != runtime::textdecode::TEXT_DECODE_CONTRACT_VERSION_V1 {
+                return Err(CoreError::InvalidArgument);
+            }
+            Ok(runtime::textdecode::textdecode(&request.raw_bytes).into())
+        })
+    }
+
     pub fn code_map_extract_batch_compact_v1(
         &self,
         request: CoreCodeMapBatchRequestV1,
@@ -676,7 +689,12 @@ impl CoreRuntime {
             let identity = self.validate_identity(&request.runtime_identity)?;
             let scope = self.inventory_scope(&request.scope_id)?;
             let root_id = parse_root_id(&request.root_id)?;
-            let lifetime = scope.open_root(&identity, root_id, request.name, request.standardized_full_path)?;
+            let lifetime = scope.open_root(
+                &identity,
+                root_id,
+                request.name,
+                request.standardized_full_path,
+            )?;
             Ok(InventoryRootLifetimeV1 {
                 root_id: request.root_id,
                 root_lifetime_id: lifetime.to_string(),
@@ -792,7 +810,8 @@ impl CoreRuntime {
             let identity = self.validate_identity(&identity)?;
             let scope = self.inventory_scope(&scope_id)?;
             let root_id = parse_root_id(&root_id)?;
-            let (files, folders) = runtime::inventory_scope::decode_bulk_chunk(&bytes).map_err(wire_error)?;
+            let (files, folders) =
+                runtime::inventory_scope::decode_bulk_chunk(&bytes).map_err(wire_error)?;
             let files_staged = files.len() as u64;
             let folders_staged = folders.len() as u64;
             scope.push_bulk_chunk(
@@ -827,8 +846,8 @@ impl CoreRuntime {
             let identity = self.validate_identity(&identity)?;
             let scope = self.inventory_scope(&scope_id)?;
             let root_id = parse_root_id(&root_id)?;
-            let (files, folders) =
-                runtime::inventory_scope::decode_discovery_bulk_chunk(&bytes).map_err(wire_error)?;
+            let (files, folders) = runtime::inventory_scope::decode_discovery_bulk_chunk(&bytes)
+                .map_err(wire_error)?;
             let files_staged = files.len() as u64;
             let folders_staged = folders.len() as u64;
             let receipt = scope.push_bulk_chunk_discovery(
@@ -841,8 +860,16 @@ impl CoreRuntime {
             Ok(BulkChunkDiscoveryReceiptV1 {
                 files_staged,
                 folders_staged,
-                minted_file_ids: receipt.minted_file_ids.iter().map(|id| id.to_vec()).collect(),
-                minted_folder_ids: receipt.minted_folder_ids.iter().map(|id| id.to_vec()).collect(),
+                minted_file_ids: receipt
+                    .minted_file_ids
+                    .iter()
+                    .map(|id| id.to_vec())
+                    .collect(),
+                minted_folder_ids: receipt
+                    .minted_folder_ids
+                    .iter()
+                    .map(|id| id.to_vec())
+                    .collect(),
             })
         })
     }
@@ -931,8 +958,9 @@ impl CoreRuntime {
             let scope = self.inventory_scope(&command.scope_id)?;
             let root_id = parse_root_id(&command.root_id)?;
             let root_lifetime_id = parse_root_lifetime_id(&command.root_lifetime_id)?;
-            let event = runtime::inventory_scope::decode_discovery_delta_event(&command.event_bytes)
-                .map_err(wire_error)?;
+            let event =
+                runtime::inventory_scope::decode_discovery_delta_event(&command.event_bytes)
+                    .map_err(wire_error)?;
             let runtime_command = runtime::inventory_scope::InventoryDeltaDiscoveryCommand {
                 scope_id: scope.scope_id(),
                 root_id,
@@ -943,7 +971,9 @@ impl CoreRuntime {
                 source: command.source,
                 event,
             };
-            Ok(scope.apply_delta_discovery(&identity, runtime_command).into())
+            Ok(scope
+                .apply_delta_discovery(&identity, runtime_command)
+                .into())
         })
     }
 
@@ -1002,7 +1032,10 @@ impl CoreRuntime {
                     let returned_count = page.files.len() as u64;
                     let has_more = page.files.len() == limit && limit > 0;
                     Ok(CompactInventoryPageV1 {
-                        bytes: runtime::inventory_scope::encode_bulk_chunk(&page.files, &page.folders),
+                        bytes: runtime::inventory_scope::encode_bulk_chunk(
+                            &page.files,
+                            &page.folders,
+                        ),
                         returned_count,
                         has_more,
                     })
@@ -1020,7 +1053,9 @@ impl CoreRuntime {
         self.guard(|| {
             self.require_running()?;
             let scope = self.inventory_scope(&scope_id)?;
-            scope.close_snapshot(runtime::inventory_scope::SnapshotHandleId::from_raw(handle_id));
+            scope.close_snapshot(runtime::inventory_scope::SnapshotHandleId::from_raw(
+                handle_id,
+            ));
             Ok(())
         })
     }
@@ -1036,7 +1071,8 @@ impl CoreRuntime {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let scope = self.inventory_scope(&scope_id)?;
-            let paths = runtime::inventory_scope::decode_lookup_request(&bytes).map_err(wire_error)?;
+            let paths =
+                runtime::inventory_scope::decode_lookup_request(&bytes).map_err(wire_error)?;
             let handle_id = runtime::inventory_scope::SnapshotHandleId::from_raw(handle_id);
             match scope.lookup_paths(&identity, handle_id, &paths)? {
                 runtime::inventory_scope::LookupPathsOutcome::Facts {
@@ -1064,12 +1100,16 @@ impl CoreRuntime {
         })
     }
 
-    pub fn inventory_query(&self, request: CompactQueryV1) -> Result<CompactQueryResultV1, CoreError> {
+    pub fn inventory_query(
+        &self,
+        request: CompactQueryV1,
+    ) -> Result<CompactQueryResultV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             let scope = self.inventory_scope(&request.scope_id)?;
-            let decoded = runtime::inventory_scope::decode_query_request(&request.bytes).map_err(wire_error)?;
+            let decoded = runtime::inventory_scope::decode_query_request(&request.bytes)
+                .map_err(wire_error)?;
             let haystack_variant =
                 runtime::inventory_scope::QueryHaystackVariant::from_wire(decoded.haystack_variant)
                     .ok_or_else(|| CoreError::InventoryScopeInvalidRequest {
@@ -1086,12 +1126,14 @@ impl CoreRuntime {
                 // P4-7a phase a3: the wire's `logical_prefix` presence flag disambiguates "no
                 // binding projection" from "a projection whose non-empty-relative prefix is
                 // legitimately empty" -- see wire.rs's decode doc comment.
-                logical_prefix: decoded.logical_prefix.map(|(non_empty_relative_prefix, empty_relative_path_value)| {
-                    runtime::inventory_scope::QueryPrefix {
-                        non_empty_relative_prefix,
-                        empty_relative_path_value,
-                    }
-                }),
+                logical_prefix: decoded.logical_prefix.map(
+                    |(non_empty_relative_prefix, empty_relative_path_value)| {
+                        runtime::inventory_scope::QueryPrefix {
+                            non_empty_relative_prefix,
+                            empty_relative_path_value,
+                        }
+                    },
+                ),
             };
             let handle_id = runtime::inventory_scope::SnapshotHandleId::from_raw(request.handle_id);
             match scope.query(&identity, handle_id, query_request)? {
@@ -1136,7 +1178,8 @@ impl CoreRuntime {
             let scope = self.inventory_scope(&request.scope_id)?;
             let root_id = parse_root_id(&request.root_id)?;
             let (file_ids, folder_ids) =
-                runtime::inventory_scope::decode_resolve_request(&request.bytes).map_err(wire_error)?;
+                runtime::inventory_scope::decode_resolve_request(&request.bytes)
+                    .map_err(wire_error)?;
             let (generation, root_lifetime, rows) = scope.resolve_records(
                 &identity,
                 root_id,
@@ -1147,12 +1190,14 @@ impl CoreRuntime {
             let (root_lifetime_hi, root_lifetime_lo) =
                 runtime::inventory_scope::uuid_to_words(root_lifetime.as_bytes());
             Ok(CompactRecordBlockV1 {
-                bytes: runtime::inventory_scope::encode_fact_block(&runtime::inventory_scope::FactBlock {
-                    generation,
-                    root_lifetime_hi,
-                    root_lifetime_lo,
-                    rows,
-                }),
+                bytes: runtime::inventory_scope::encode_fact_block(
+                    &runtime::inventory_scope::FactBlock {
+                        generation,
+                        root_lifetime_hi,
+                        root_lifetime_lo,
+                        rows,
+                    },
+                ),
             })
         })
     }
@@ -1178,12 +1223,14 @@ impl CoreRuntime {
                 runtime::inventory_scope::decode_resolve_request(&bytes).map_err(wire_error)?;
             let rows = scope.resolve_records_scope_wide(&identity, &file_ids, &folder_ids)?;
             Ok(CompactRecordBlockV1 {
-                bytes: runtime::inventory_scope::encode_fact_block(&runtime::inventory_scope::FactBlock {
-                    generation: Some(0),
-                    root_lifetime_hi: 0,
-                    root_lifetime_lo: 0,
-                    rows,
-                }),
+                bytes: runtime::inventory_scope::encode_fact_block(
+                    &runtime::inventory_scope::FactBlock {
+                        generation: Some(0),
+                        root_lifetime_hi: 0,
+                        root_lifetime_lo: 0,
+                        rows,
+                    },
+                ),
             })
         })
     }
@@ -1197,7 +1244,8 @@ impl CoreRuntime {
             let identity = self.validate_identity(&request.runtime_identity)?;
             let scope = self.inventory_scope(&request.scope_id)?;
             let root_id = parse_root_id(&request.root_id)?;
-            let handle_id = scope.open_projected_shard(&identity, root_id, "ffi-projected-shard")?;
+            let handle_id =
+                scope.open_projected_shard(&identity, root_id, "ffi-projected-shard")?;
             match scope.read_snapshot(handle_id) {
                 runtime::inventory_scope::HandleReadOutcome::Open { generation } => {
                     Ok(InventorySnapshotHandleV1 {
@@ -1252,7 +1300,9 @@ impl CoreRuntime {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
-            let scope = self.agent_claude_scope_registry.open_scope(identity, config.runtime_config());
+            let scope = self
+                .agent_claude_scope_registry
+                .open_scope(identity, config.runtime_config());
             // Wires this scope's event-plane publication into the same `SubscriptionHub` every
             // other P0/P4 consumer already publishes into -- reused verbatim, not re-derived (see
             // `AgentClaudeScope::attach_event_sink`'s doc comment, mirroring
@@ -1276,18 +1326,29 @@ impl CoreRuntime {
         identity: RuntimeIdentity,
         scope_id: String,
         resume_session_id: Option<String>,
+        model: Option<String>,
+        effort_level: Option<String>,
     ) -> Result<AgentClaudeStartReceiptV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let scope = self.agent_claude_scope(&scope_id)?;
-            let receipt = scope.start_or_resume(&identity, resume_session_id)?;
-            Ok(AgentClaudeStartReceiptV1 { pid: receipt.pid, process_group_id: receipt.process_group_id })
+            let receipt =
+                scope.start_or_resume(&identity, resume_session_id, model, effort_level)?;
+            Ok(AgentClaudeStartReceiptV1 {
+                pid: receipt.pid,
+                process_group_id: receipt.process_group_id,
+            })
         })
     }
 
     /// Returns the newly minted `turn_generation` (contract §4's interrupt-fencing token).
-    pub fn agent_send_user_message(&self, identity: RuntimeIdentity, scope_id: String, text: String) -> Result<u64, CoreError> {
+    pub fn agent_send_user_message(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        text: String,
+    ) -> Result<u64, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
@@ -1346,12 +1407,14 @@ impl CoreRuntime {
         scope_id: String,
         model: Option<String>,
         effort: Option<String>,
+        disposition: AgentClaudeFlagSettingsDispositionV1,
     ) -> Result<AgentClaudeFlagSettingsReceiptV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let scope = self.agent_claude_scope(&scope_id)?;
-            let request_id = scope.apply_model_and_effort(&identity, model, effort)?;
+            let request_id =
+                scope.apply_model_and_effort(&identity, model, effort, disposition.into())?;
             Ok(AgentClaudeFlagSettingsReceiptV1 { request_id })
         })
     }
@@ -1361,12 +1424,17 @@ impl CoreRuntime {
     /// no separate `agent_close_scope` export -- shutdown and close are one terminal operation for
     /// this domain (design's seven-export enumeration), unlike `inventory-scope-v1`'s separate
     /// open/close pair.
-    pub fn agent_shutdown(&self, identity: RuntimeIdentity, scope_id: String) -> Result<(), CoreError> {
+    pub fn agent_shutdown(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<(), CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let parsed_scope_id = crate::types::parse_agent_claude_scope_id(&scope_id)?;
-            self.agent_claude_scope_registry.close_scope(&identity, parsed_scope_id)?;
+            self.agent_claude_scope_registry
+                .close_scope(&identity, parsed_scope_id)?;
             Ok(())
         })
     }
@@ -1607,6 +1675,27 @@ mod tests {
             .create_leaf_cancellation(identity.clone())
             .expect("leaf cancellation");
         (core, identity, cancellation)
+    }
+
+    #[test]
+    fn text_decode_export_preserves_bom_and_encoding_identity() {
+        let (core, identity, _) = initialized_core();
+        let result = core
+            .text_decode_v1(CoreTextDecodeRequestV1 {
+                runtime_identity: identity,
+                contract_version: runtime::textdecode::TEXT_DECODE_CONTRACT_VERSION_V1,
+                raw_bytes: vec![0xFF, 0xFE, b'a', 0x00],
+            })
+            .expect("text decode export");
+        assert_eq!(result.text, "\u{FEFF}a");
+        assert_eq!(
+            result.encoding,
+            crate::types::CoreTextEncodingV1::Utf16LittleEndian
+        );
+        assert!(result.bom_present);
+        assert!(!result.had_replacements);
+        assert_eq!(result.policy_id, "workspace-automatic-v2");
+        assert_eq!(result.legacy_encoding_name, None);
     }
 
     #[test]
@@ -1881,7 +1970,12 @@ mod tests {
     // caught before the Swift bridge exists to catch it a second time.
     // ============================================================================================
 
-    fn sample_file(seed: u8, root_id: [u8; 16], relative_path: &str, name: &str) -> runtime::inventory::InventoryFileRecord {
+    fn sample_file(
+        seed: u8,
+        root_id: [u8; 16],
+        relative_path: &str,
+        name: &str,
+    ) -> runtime::inventory::InventoryFileRecord {
         runtime::inventory::InventoryFileRecord {
             id: [seed; 16],
             root_id,
@@ -1968,7 +2062,13 @@ mod tests {
         assert_eq!(snapshot.generation, 0);
 
         let page = core
-            .inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), snapshot.handle_id, 0, 10)
+            .inventory_snapshot_page(
+                identity.clone(),
+                scope.scope_id.clone(),
+                snapshot.handle_id,
+                0,
+                10,
+            )
             .expect("snapshot page");
         let (paged_files, paged_folders) =
             runtime::inventory_scope::decode_bulk_chunk(&page.bytes).expect("decode page");
@@ -1983,10 +2083,15 @@ mod tests {
             "missing.swift".to_owned(),
         ]);
         let lookup_result = core
-            .inventory_lookup_paths(identity.clone(), scope.scope_id.clone(), snapshot.handle_id, lookup_bytes)
+            .inventory_lookup_paths(
+                identity.clone(),
+                scope.scope_id.clone(),
+                snapshot.handle_id,
+                lookup_bytes,
+            )
             .expect("lookup paths");
-        let lookup_block =
-            runtime::inventory_scope::decode_fact_block(&lookup_result.bytes).expect("decode lookup block");
+        let lookup_block = runtime::inventory_scope::decode_fact_block(&lookup_result.bytes)
+            .expect("decode lookup block");
         assert_eq!(lookup_block.generation, Some(0));
         assert!(lookup_block.rows[0].exists);
         assert_eq!(lookup_block.rows[0].name.as_deref(), Some("App.swift"));
@@ -1997,8 +2102,8 @@ mod tests {
         // (`path_search_index_key`), so a bare "App" prefix would only match a key that starts
         // with it -- our display path is prefixed with the root name ("root/App.swift..."). An
         // explicit `*App*` matches anywhere in the composed key regardless of anchoring.
-            let query_bytes =
-                runtime::inventory_scope::encode_query_request("*App*", 10, 0, "root/", "root", None);
+        let query_bytes =
+            runtime::inventory_scope::encode_query_request("*App*", 10, 0, "root/", "root", None);
         let query_result = core
             .inventory_query(CompactQueryV1 {
                 runtime_identity: identity.clone(),
@@ -2008,13 +2113,15 @@ mod tests {
             })
             .expect("query");
         let (query_generation, candidates) =
-            runtime::inventory_scope::decode_query_response(&query_result.bytes).expect("decode query response");
+            runtime::inventory_scope::decode_query_response(&query_result.bytes)
+                .expect("decode query response");
         assert_eq!(query_generation, Some(0));
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "App.swift");
 
         // inventoryResolveRecords (scope+root, live truth, not handle-based).
-        let resolve_bytes = runtime::inventory_scope::encode_resolve_request(&[[1u8; 16], [99u8; 16]], &[]);
+        let resolve_bytes =
+            runtime::inventory_scope::encode_resolve_request(&[[1u8; 16], [99u8; 16]], &[]);
         let resolve_result = core
             .inventory_resolve_records(InventoryResolveRequestV1 {
                 runtime_identity: identity.clone(),
@@ -2024,14 +2131,15 @@ mod tests {
                 bytes: resolve_bytes,
             })
             .expect("resolve records");
-        let resolve_block =
-            runtime::inventory_scope::decode_fact_block(&resolve_result.bytes).expect("decode resolve block");
+        let resolve_block = runtime::inventory_scope::decode_fact_block(&resolve_result.bytes)
+            .expect("decode resolve block");
         assert_eq!(resolve_block.generation, Some(0));
         assert!(resolve_block.rows[0].exists);
         assert!(!resolve_block.rows[1].exists);
 
         // A stale `expected_catalog_generation` produces a whole-block stale outcome, not an error.
-        let resolve_bytes_stale = runtime::inventory_scope::encode_resolve_request(&[[1u8; 16]], &[]);
+        let resolve_bytes_stale =
+            runtime::inventory_scope::encode_resolve_request(&[[1u8; 16]], &[]);
         let stale_result = core
             .inventory_resolve_records(InventoryResolveRequestV1 {
                 runtime_identity: identity.clone(),
@@ -2041,8 +2149,8 @@ mod tests {
                 bytes: resolve_bytes_stale,
             })
             .expect("resolve records (stale)");
-        let stale_block =
-            runtime::inventory_scope::decode_fact_block(&stale_result.bytes).expect("decode stale block");
+        let stale_block = runtime::inventory_scope::decode_fact_block(&stale_result.bytes)
+            .expect("decode stale block");
         assert_eq!(stale_block.generation, None);
         assert!(stale_block.rows.is_empty());
 
@@ -2055,9 +2163,16 @@ mod tests {
             })
             .expect("open projected shard");
         let shard_page = core
-            .inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), shard.handle_id, 0, 10)
+            .inventory_snapshot_page(
+                identity.clone(),
+                scope.scope_id.clone(),
+                shard.handle_id,
+                0,
+                10,
+            )
             .expect("shard page");
-        let (shard_files, _) = runtime::inventory_scope::decode_bulk_chunk(&shard_page.bytes).expect("decode shard page");
+        let (shard_files, _) = runtime::inventory_scope::decode_bulk_chunk(&shard_page.bytes)
+            .expect("decode shard page");
         assert_eq!(shard_files.len(), 1);
         assert_eq!(shard_files[0].name, "App.swift");
 
@@ -2107,10 +2222,21 @@ mod tests {
         // resolve -- open handles are never invalidated by a mutation, only by root/scope
         // close or identity change (§4 layer 2/3).
         let old_page = core
-            .inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), snapshot.handle_id, 0, 10)
+            .inventory_snapshot_page(
+                identity.clone(),
+                scope.scope_id.clone(),
+                snapshot.handle_id,
+                0,
+                10,
+            )
             .expect("old snapshot handle still readable");
-        let (old_files, _) = runtime::inventory_scope::decode_bulk_chunk(&old_page.bytes).expect("decode");
-        assert_eq!(old_files.len(), 2, "the old handle keeps seeing its own frozen generation");
+        let (old_files, _) =
+            runtime::inventory_scope::decode_bulk_chunk(&old_page.bytes).expect("decode");
+        assert_eq!(
+            old_files.len(),
+            2,
+            "the old handle keeps seeing its own frozen generation"
+        );
 
         // Close everything; every close is idempotent, and closing the root invalidates the
         // remaining open handles (a subsequent page read is a typed `HandleInvalidated` error,
@@ -2130,7 +2256,13 @@ mod tests {
             .expect("close root");
         assert_eq!(unload_receipt.final_generation, Some(1));
 
-        let after_close = core.inventory_snapshot_page(identity.clone(), scope.scope_id.clone(), shard.handle_id, 0, 10);
+        let after_close = core.inventory_snapshot_page(
+            identity.clone(),
+            scope.scope_id.clone(),
+            shard.handle_id,
+            0,
+            10,
+        );
         assert_eq!(
             after_close,
             Err(CoreError::InventoryHandleInvalidated {
@@ -2211,7 +2343,10 @@ mod tests {
                 event_bytes: runtime::inventory_scope::encode_delta_event(&event),
             })
             .expect("apply delta");
-        assert_eq!(delta_receipt.outcome, InventoryApplyOutcomeV1::RebuiltAuthoritative);
+        assert_eq!(
+            delta_receipt.outcome,
+            InventoryApplyOutcomeV1::RebuiltAuthoritative
+        );
 
         let DrainBatch { events, .. } = core
             .try_drain(subscription.clone(), 16, 65_536)
@@ -2219,11 +2354,18 @@ mod tests {
         // open_root -> RootPublished; apply_delta (fresh root, full resync) -> ShardFallback,
         // generationAdvanced, appliedIndexBatch.
         assert_eq!(events.len(), 4);
-        let generation_advanced = runtime::inventory_scope::decode_generation_advanced(&events[2].payload)
-            .expect("decode generationAdvanced");
+        let generation_advanced =
+            runtime::inventory_scope::decode_generation_advanced(&events[2].payload)
+                .expect("decode generationAdvanced");
         assert_eq!(generation_advanced.root_id, [4; 16]);
-        assert_eq!(generation_advanced.applied_index_generation, delta_receipt.applied_index_generation);
-        assert_eq!(generation_advanced.catalog_generation, delta_receipt.catalog_generation);
+        assert_eq!(
+            generation_advanced.applied_index_generation,
+            delta_receipt.applied_index_generation
+        );
+        assert_eq!(
+            generation_advanced.catalog_generation,
+            delta_receipt.catalog_generation
+        );
         assert!(generation_advanced.rebuilt_authoritative);
 
         let applied_index_batch = runtime::inventory_scope::decode_delta_event(&events[3].payload)
@@ -2231,7 +2373,8 @@ mod tests {
         assert_eq!(applied_index_batch.upserted_files.len(), 1);
         assert_eq!(applied_index_batch.upserted_files[0].name, "A.swift");
 
-        core.close_subscription(subscription).expect("close subscription");
+        core.close_subscription(subscription)
+            .expect("close subscription");
     }
 
     #[test]
@@ -2276,7 +2419,12 @@ mod tests {
                 .expect("open root");
             let event = runtime::inventory::InventoryAppliedIndexBatchEvent {
                 root_id: id_from_vec(&root_id),
-                upserted_files: vec![sample_file(byte, id_from_vec(&root_id), "f.swift", "f.swift")],
+                upserted_files: vec![sample_file(
+                    byte,
+                    id_from_vec(&root_id),
+                    "f.swift",
+                    "f.swift",
+                )],
                 upserted_folders: Vec::new(),
                 removed_file_ids: Vec::new(),
                 removed_folder_ids: Vec::new(),
@@ -2300,13 +2448,21 @@ mod tests {
             last_root_id = root_id;
         }
 
-        let DrainBatch { events, dropped_count, oversize, .. } = core
-            .try_drain(subscription, 64, 1_048_576)
-            .expect("drain");
+        let DrainBatch {
+            events,
+            dropped_count,
+            oversize,
+            ..
+        } = core.try_drain(subscription, 64, 1_048_576).expect("drain");
         assert!(oversize.is_none());
-        assert!(dropped_count > 0, "eight distinct roots through a 3-slot data-plane queue must drop something");
         assert!(
-            events.iter().any(|event| event.kind == crate::types::RuntimeEventKind::Gap),
+            dropped_count > 0,
+            "eight distinct roots through a 3-slot data-plane queue must drop something"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == crate::types::RuntimeEventKind::Gap),
             "a Gap-kind event with the dropped_count marker must be present"
         );
 
@@ -2352,11 +2508,14 @@ mod tests {
     fn inventory_apply_delta_rejects_a_stale_watermark_as_a_business_outcome_not_an_error() {
         let (core, identity, _cancellation) = initialized_core();
         let scope = core
-            .inventory_open_scope(identity.clone(), CoreInventoryScopeConfigV1 {
-                live_generation_cap: 8,
-                max_patch_logical_mutation_count: 1,
-                codemap_capable_extensions: Vec::new(),
-            })
+            .inventory_open_scope(
+                identity.clone(),
+                CoreInventoryScopeConfigV1 {
+                    live_generation_cap: 8,
+                    max_patch_logical_mutation_count: 1,
+                    codemap_capable_extensions: Vec::new(),
+                },
+            )
             .expect("open scope");
         let root_id = vec![5u8; 16];
         let lifetime = core
@@ -2394,7 +2553,10 @@ mod tests {
                 event_bytes: runtime::inventory_scope::encode_delta_event(&make_event(1)),
             })
             .expect("first delta admitted");
-        assert!(!matches!(first.outcome, InventoryApplyOutcomeV1::Rejected { .. }));
+        assert!(!matches!(
+            first.outcome,
+            InventoryApplyOutcomeV1::Rejected { .. }
+        ));
 
         let stale = core
             .inventory_apply_delta_v1(InventoryDeltaCommandV1 {
@@ -2461,13 +2623,25 @@ mod tests {
             system_prompt: None,
             idle_fallback_millis: 1_000,
             interrupt_ack_timeout_millis: 400,
+            raw_event_log_enabled: false,
+            raw_event_log_file_path: None,
+            raw_event_log_run_id: String::new(),
+            raw_event_log_tab_id: String::new(),
+            raw_event_log_window_id: 0,
+            raw_event_log_initial_session_id: String::new(),
         }
     }
 
-    fn agent_claude_open_subscription(core: &CoreRuntime, identity: &RuntimeIdentity, subscription_scope_id: &str) -> SubscriptionId {
+    fn agent_claude_open_subscription(
+        core: &CoreRuntime,
+        identity: &RuntimeIdentity,
+        subscription_scope_id: &str,
+    ) -> SubscriptionId {
         core.open_subscription(SubscriptionScope {
             runtime_identity: identity.clone(),
-            scope_id: crate::types::ScopeId { value: subscription_scope_id.to_owned() },
+            scope_id: crate::types::ScopeId {
+                value: subscription_scope_id.to_owned(),
+            },
             max_queued_events: 0,
             max_queued_bytes: 0,
         })
@@ -2484,28 +2658,48 @@ mod tests {
         // moves to `scripted` mode's equivalent -- see the cargo-only twin
         // (`agent_claude_scope.rs::well_behaved_session_completes_a_turn_end_to_end`)'s comment for
         // why `AWAITACKS 1`/`SLEEP 200` are load-bearing, not decorative.
-        let script = write_ffi_script("well-behaved-equivalent", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
+        let script = write_ffi_script(
+            "well-behaved-equivalent",
+            "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n",
+        );
         let scope = core
             .agent_open_scope(
                 identity.clone(),
-                agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]),
+                agent_claude_config_with_synthetic_mode(
+                    cli.to_str().expect("utf8 path"),
+                    &["scripted", &script.to_string_lossy()],
+                ),
             )
             .expect("open scope");
-        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+        let subscription =
+            agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
 
-        let receipt = core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
+        let receipt = core
+            .agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None, None, None)
+            .expect("start");
         assert!(receipt.pid > 0);
-        assert_eq!(receipt.pid, receipt.process_group_id, "the child is the leader of its own new process group");
+        assert_eq!(
+            receipt.pid, receipt.process_group_id,
+            "the child is the leader of its own new process group"
+        );
 
-        let generation = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send");
-        assert_eq!(generation, 1, "generation numbering starts at 1 (0 is the never-sent sentinel)");
+        let generation = core
+            .agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned())
+            .expect("send");
+        assert_eq!(
+            generation, 1,
+            "generation numbering starts at 1 (0 is the never-sent sentinel)"
+        );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut saw_turn_completed = false;
         while std::time::Instant::now() < deadline && !saw_turn_completed {
-            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
+            let batch = core
+                .try_drain(subscription.clone(), 16, 65_536)
+                .expect("drain");
             for event in batch.events {
-                if let Some(decoded) = runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
+                if let Some(decoded) =
+                    runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
                     && decoded.kind.wire_name() == "turnCompleted"
                 {
                     saw_turn_completed = true;
@@ -2515,11 +2709,17 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-        assert!(saw_turn_completed, "turnCompleted must flow through the real FFI subscription surface, decoded from the real batched event envelope");
+        assert!(
+            saw_turn_completed,
+            "turnCompleted must flow through the real FFI subscription surface, decoded from the real batched event envelope"
+        );
 
-        core.close_subscription(subscription).expect("close subscription");
-        core.agent_shutdown(identity.clone(), scope.scope_id.clone()).expect("shutdown");
-        core.agent_shutdown(identity, scope.scope_id).expect("shutdown is idempotent");
+        core.close_subscription(subscription)
+            .expect("close subscription");
+        core.agent_shutdown(identity.clone(), scope.scope_id.clone())
+            .expect("shutdown");
+        core.agent_shutdown(identity, scope.scope_id)
+            .expect("shutdown is idempotent");
         let _ = std::fs::remove_file(&script);
     }
 
@@ -2537,28 +2737,49 @@ mod tests {
         let scope = core
             .agent_open_scope(
                 identity.clone(),
-                agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]),
+                agent_claude_config_with_synthetic_mode(
+                    cli.to_str().expect("utf8 path"),
+                    &["scripted", &script.to_string_lossy()],
+                ),
             )
             .expect("open scope");
-        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
-        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
+        let subscription =
+            agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None, None, None)
+            .expect("start");
 
-        let generation_one = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "one".to_owned()).expect("send 1");
-        let generation_two = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "two".to_owned()).expect("send 2");
+        let generation_one = core
+            .agent_send_user_message(identity.clone(), scope.scope_id.clone(), "one".to_owned())
+            .expect("send 1");
+        let generation_two = core
+            .agent_send_user_message(identity.clone(), scope.scope_id.clone(), "two".to_owned())
+            .expect("send 2");
         assert_eq!(generation_two, generation_one + 1);
 
         let receipt = core
-            .agent_interrupt_turn(identity.clone(), scope.scope_id.clone(), generation_one, "stale test".to_owned())
+            .agent_interrupt_turn(
+                identity.clone(),
+                scope.scope_id.clone(),
+                generation_one,
+                "stale test".to_owned(),
+            )
             .expect("interrupt naming the superseded generation");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut outcome = None;
         while std::time::Instant::now() < deadline && outcome.is_none() {
-            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
+            let batch = core
+                .try_drain(subscription.clone(), 16, 65_536)
+                .expect("drain");
             for event in batch.events {
-                if let Some(decoded) = runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
+                if let Some(decoded) =
+                    runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
                     && decoded.kind.wire_name() == "interruptOutcome"
-                    && decoded.fields.get("request_id").and_then(|value| value.as_str()) == Some(receipt.request_id.as_str())
+                    && decoded
+                        .fields
+                        .get("request_id")
+                        .and_then(|value| value.as_str())
+                        == Some(receipt.request_id.as_str())
                 {
                     outcome = Some(decoded);
                 }
@@ -2567,13 +2788,34 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-        let outcome = outcome.expect("interruptOutcome must be published through the real FFI subscription surface");
-        assert_eq!(outcome.fields.get("outcome").and_then(|value| value.as_str()), Some("staleGeneration"));
-        assert_eq!(outcome.fields.get("current_generation").and_then(serde_json::Value::as_u64), Some(generation_two));
-        assert_eq!(outcome.fields.get("current_turn_in_flight").and_then(serde_json::Value::as_bool), Some(true));
+        let outcome = outcome
+            .expect("interruptOutcome must be published through the real FFI subscription surface");
+        assert_eq!(
+            outcome
+                .fields
+                .get("outcome")
+                .and_then(|value| value.as_str()),
+            Some("staleGeneration")
+        );
+        assert_eq!(
+            outcome
+                .fields
+                .get("current_generation")
+                .and_then(serde_json::Value::as_u64),
+            Some(generation_two)
+        );
+        assert_eq!(
+            outcome
+                .fields
+                .get("current_turn_in_flight")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
 
-        core.close_subscription(subscription).expect("close subscription");
-        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+        core.close_subscription(subscription)
+            .expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id)
+            .expect("shutdown");
         let _ = std::fs::remove_file(&script);
     }
 
@@ -2581,7 +2823,10 @@ mod tests {
     fn agent_claude_every_command_rejects_a_mismatched_runtime_identity() {
         let (core, identity, _cancellation) = initialized_core();
         let intruder_core = CoreRuntime::new(config()).expect("second runtime");
-        let intruder = intruder_core.initialize().expect("initialize intruder").runtime_identity;
+        let intruder = intruder_core
+            .initialize()
+            .expect("initialize intruder")
+            .runtime_identity;
 
         // P6-7 (§15.5): `/bin/sleep` cannot ACK the session-startup handshake the real-identity
         // `agent_start_or_resume` call below needs -- see the previous test's comment.
@@ -2590,35 +2835,61 @@ mod tests {
         let scope = core
             .agent_open_scope(
                 identity.clone(),
-                agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]),
+                agent_claude_config_with_synthetic_mode(
+                    cli.to_str().expect("utf8 path"),
+                    &["scripted", &script.to_string_lossy()],
+                ),
             )
             .expect("open scope");
 
         assert_eq!(
-            core.agent_start_or_resume(intruder.clone(), scope.scope_id.clone(), None).unwrap_err(),
-            CoreError::StaleRuntimeIdentity
-        );
-        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start under the real identity");
-        assert_eq!(
-            core.agent_send_user_message(intruder.clone(), scope.scope_id.clone(), "hi".to_owned()).unwrap_err(),
-            CoreError::StaleRuntimeIdentity
-        );
-        assert_eq!(
-            core.agent_interrupt_turn(intruder.clone(), scope.scope_id.clone(), 1, "x".to_owned()).unwrap_err(),
-            CoreError::StaleRuntimeIdentity
-        );
-        assert_eq!(
-            core.agent_apply_model_and_effort(intruder.clone(), scope.scope_id.clone(), None, None).unwrap_err(),
-            CoreError::StaleRuntimeIdentity
-        );
-        assert_eq!(
-            core.agent_respond_permission(intruder.clone(), scope.scope_id.clone(), "unknown".to_owned(), AgentClaudePermissionDecisionV1::Allow { include_updated_permissions: false })
+            core.agent_start_or_resume(intruder.clone(), scope.scope_id.clone(), None, None, None)
                 .unwrap_err(),
             CoreError::StaleRuntimeIdentity
         );
-        assert_eq!(core.agent_shutdown(intruder, scope.scope_id.clone()).unwrap_err(), CoreError::StaleRuntimeIdentity);
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None, None, None)
+            .expect("start under the real identity");
+        assert_eq!(
+            core.agent_send_user_message(intruder.clone(), scope.scope_id.clone(), "hi".to_owned())
+                .unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(
+            core.agent_interrupt_turn(intruder.clone(), scope.scope_id.clone(), 1, "x".to_owned())
+                .unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(
+            core.agent_apply_model_and_effort(
+                intruder.clone(),
+                scope.scope_id.clone(),
+                None,
+                None,
+                AgentClaudeFlagSettingsDispositionV1::Live,
+            )
+            .unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(
+            core.agent_respond_permission(
+                intruder.clone(),
+                scope.scope_id.clone(),
+                "unknown".to_owned(),
+                AgentClaudePermissionDecisionV1::Allow {
+                    include_updated_permissions: false
+                }
+            )
+            .unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
+        assert_eq!(
+            core.agent_shutdown(intruder, scope.scope_id.clone())
+                .unwrap_err(),
+            CoreError::StaleRuntimeIdentity
+        );
 
-        core.agent_shutdown(identity, scope.scope_id).expect("the real identity can still shut the scope down");
+        core.agent_shutdown(identity, scope.scope_id)
+            .expect("the real identity can still shut the scope down");
         let _ = std::fs::remove_file(&script);
     }
 
@@ -2627,7 +2898,8 @@ mod tests {
         let (core, identity, _cancellation) = initialized_core();
         let bogus_scope_id = runtime::agent_claude::AgentClaudeScopeId::mint().to_string();
         assert_eq!(
-            core.agent_start_or_resume(identity, bogus_scope_id, None).unwrap_err(),
+            core.agent_start_or_resume(identity, bogus_scope_id, None, None, None)
+                .unwrap_err(),
             CoreError::AgentClaudeUnknownScope
         );
     }
@@ -2640,17 +2912,25 @@ mod tests {
     /// positional argv (see `synthetic_cli.rs`'s own doc comment) -- a real per-KV-pair `environment`
     /// entry, the same mechanism contract §5.1 uses in production, not a protocol-line crossing
     /// (INV-P6-1 is about FFI exports, not test-only child-process environment).
-    fn agent_claude_config_with_synthetic_mode(cli: &str, mode_args: &[&str]) -> CoreAgentClaudeScopeConfigV1 {
+    fn agent_claude_config_with_synthetic_mode(
+        cli: &str,
+        mode_args: &[&str],
+    ) -> CoreAgentClaudeScopeConfigV1 {
         let mut config = agent_claude_config(cli, Vec::new());
-        config.environment.push(crate::types::CoreAgentClaudeEnvironmentEntryV1 {
-            key: "AGENT_CLAUDE_SYNTHETIC_CLI_ARGS".to_owned(),
-            value: mode_args.join("\n"),
-        });
+        config
+            .environment
+            .push(crate::types::CoreAgentClaudeEnvironmentEntryV1 {
+                key: "AGENT_CLAUDE_SYNTHETIC_CLI_ARGS".to_owned(),
+                value: mode_args.join("\n"),
+            });
         config
     }
 
     fn write_ffi_script(name: &str, contents: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("agent-claude-ffi-test-{name}-{}.script", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "agent-claude-ffi-test-{name}-{}.script",
+            std::process::id()
+        ));
         std::fs::write(&path, contents).expect("write script fixture");
         path
     }
@@ -2671,11 +2951,20 @@ mod tests {
         });
         let script = write_ffi_script("oversize", &format!("OUT {line}\nSLEEP 1500\n"));
         let scope = core
-            .agent_open_scope(identity.clone(), agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]))
+            .agent_open_scope(
+                identity.clone(),
+                agent_claude_config_with_synthetic_mode(
+                    cli.to_str().expect("utf8 path"),
+                    &["scripted", &script.to_string_lossy()],
+                ),
+            )
             .expect("open scope");
-        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
-        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
-        core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send"); // turn in flight, so resnapshot appends
+        let subscription =
+            agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None, None, None)
+            .expect("start");
+        core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned())
+            .expect("send"); // turn in flight, so resnapshot appends
 
         // `PayloadRejected` (a regular event kind published into a normal `DrainOutcome::Batch` at
         // *publish* time, once a single event's encoded payload exceeds the subscription's byte
@@ -2686,16 +2975,26 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut saw_payload_rejected = false;
         while std::time::Instant::now() < deadline && !saw_payload_rejected {
-            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
-            saw_payload_rejected = batch.events.iter().any(|event| event.kind == crate::types::RuntimeEventKind::PayloadRejected);
+            let batch = core
+                .try_drain(subscription.clone(), 16, 65_536)
+                .expect("drain");
+            saw_payload_rejected = batch
+                .events
+                .iter()
+                .any(|event| event.kind == crate::types::RuntimeEventKind::PayloadRejected);
             if !saw_payload_rejected {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-        assert!(saw_payload_rejected, "an over-cap single event payload must surface as a PayloadRejected event through the real FFI drain surface");
+        assert!(
+            saw_payload_rejected,
+            "an over-cap single event payload must surface as a PayloadRejected event through the real FFI drain surface"
+        );
 
-        core.close_subscription(subscription).expect("close subscription");
-        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+        core.close_subscription(subscription)
+            .expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id)
+            .expect("shutdown");
         let _ = std::fs::remove_file(&script);
     }
 
@@ -2710,21 +3009,34 @@ mod tests {
         let cli = agent_claude_synthetic_cli_path();
         let huge_line_one = "a".repeat(9 * 1024 * 1024);
         let huge_line_two = "b".repeat(9 * 1024 * 1024);
-        let script = write_ffi_script("gap", &format!("OUT {huge_line_one}\nOUT {huge_line_two}\nSLEEP 1500\n"));
+        let script = write_ffi_script(
+            "gap",
+            &format!("OUT {huge_line_one}\nOUT {huge_line_two}\nSLEEP 1500\n"),
+        );
         let scope = core
-            .agent_open_scope(identity.clone(), agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]))
+            .agent_open_scope(
+                identity.clone(),
+                agent_claude_config_with_synthetic_mode(
+                    cli.to_str().expect("utf8 path"),
+                    &["scripted", &script.to_string_lossy()],
+                ),
+            )
             .expect("open scope");
         let subscription = core
             .open_subscription(SubscriptionScope {
                 runtime_identity: identity.clone(),
-                scope_id: crate::types::ScopeId { value: scope.subscription_scope_id.clone() },
+                scope_id: crate::types::ScopeId {
+                    value: scope.subscription_scope_id.clone(),
+                },
                 max_queued_events: 2,
                 max_queued_bytes: 65_536,
             })
             .expect("open subscription against the derived subscription_scope_id")
             .subscription_id;
-        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
-        core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send");
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None, None, None)
+            .expect("start");
+        core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned())
+            .expect("send");
 
         // Deliberately not draining while the two huge lines stream through -- draining would
         // relieve the very pressure this test needs to hold both diagnostics resident at once so
@@ -2732,15 +3044,27 @@ mod tests {
         // Generous fixed margin, not a poll on a diagnostics field the FFI surface does not expose.
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        let batch = core.try_drain(subscription.clone(), 64, 262_144).expect("drain");
-        let saw_gap = batch.events.iter().any(|event| event.kind == crate::types::RuntimeEventKind::Gap) || batch.dropped_count > 0;
-        assert!(saw_gap, "the resident droppable diagnostic must be evicted into a Gap record when a lossless event needs its slot");
+        let batch = core
+            .try_drain(subscription.clone(), 64, 262_144)
+            .expect("drain");
+        let saw_gap = batch
+            .events
+            .iter()
+            .any(|event| event.kind == crate::types::RuntimeEventKind::Gap)
+            || batch.dropped_count > 0;
+        assert!(
+            saw_gap,
+            "the resident droppable diagnostic must be evicted into a Gap record when a lossless event needs its slot"
+        );
 
         // Recovery: the subscription is not wedged by the gap -- a further drain still succeeds.
-        core.try_drain(subscription.clone(), 64, 262_144).expect("drain must still succeed after a gap");
+        core.try_drain(subscription.clone(), 64, 262_144)
+            .expect("drain must still succeed after a gap");
 
-        core.close_subscription(subscription).expect("close subscription");
-        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+        core.close_subscription(subscription)
+            .expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id)
+            .expect("shutdown");
         let _ = std::fs::remove_file(&script);
     }
 
@@ -2755,27 +3079,49 @@ mod tests {
         let (core, identity, _cancellation) = initialized_core();
         let cli = agent_claude_synthetic_cli_path();
         let scope = core
-            .agent_open_scope(identity.clone(), agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["stdin-closed-after-delay", "200", "5000"]))
+            .agent_open_scope(
+                identity.clone(),
+                agent_claude_config_with_synthetic_mode(
+                    cli.to_str().expect("utf8 path"),
+                    &["stdin-closed-after-delay", "200", "5000"],
+                ),
+            )
             .expect("open scope");
-        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
-        let generation = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send");
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None, None, None)
+            .expect("start");
+        let generation = core
+            .agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned())
+            .expect("send");
         // Comfortably past the child's 200 ms delay before it closes stdin -- a fixed margin (10x
         // the delay), generous enough to absorb parallel `cargo test --workspace` contention.
         std::thread::sleep(std::time::Duration::from_millis(2_000));
 
-        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+        let subscription =
+            agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
         let receipt = core
-            .agent_interrupt_turn(identity.clone(), scope.scope_id.clone(), generation, "closed-pipe test".to_owned())
+            .agent_interrupt_turn(
+                identity.clone(),
+                scope.scope_id.clone(),
+                generation,
+                "closed-pipe test".to_owned(),
+            )
             .expect("interrupt");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut outcome = None;
         while std::time::Instant::now() < deadline && outcome.is_none() {
-            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
+            let batch = core
+                .try_drain(subscription.clone(), 16, 65_536)
+                .expect("drain");
             for event in batch.events {
-                if let Some(decoded) = runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
+                if let Some(decoded) =
+                    runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
                     && decoded.kind.wire_name() == "interruptOutcome"
-                    && decoded.fields.get("request_id").and_then(|value| value.as_str()) == Some(receipt.request_id.as_str())
+                    && decoded
+                        .fields
+                        .get("request_id")
+                        .and_then(|value| value.as_str())
+                        == Some(receipt.request_id.as_str())
                 {
                     outcome = Some(decoded);
                 }
@@ -2784,10 +3130,20 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-        let outcome = outcome.expect("interruptOutcome must be published even when the control-request write itself fails");
-        assert_eq!(outcome.fields.get("outcome").and_then(|value| value.as_str()), Some("failed"));
+        let outcome = outcome.expect(
+            "interruptOutcome must be published even when the control-request write itself fails",
+        );
+        assert_eq!(
+            outcome
+                .fields
+                .get("outcome")
+                .and_then(|value| value.as_str()),
+            Some("failed")
+        );
 
-        core.close_subscription(subscription).expect("close subscription");
-        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+        core.close_subscription(subscription)
+            .expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id)
+            .expect("shutdown");
     }
 }

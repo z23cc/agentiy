@@ -658,7 +658,7 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
      * `flagSettingsApplied` terminal-class event on the subscription, correlated by this same
      * `request_id` -- charter §8.2's command+event shape, mirroring `agent_interrupt_turn` exactly.
      */
-    func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?) throws  -> AgentClaudeFlagSettingsReceiptV1
+    func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?, disposition: AgentClaudeFlagSettingsDispositionV1) throws  -> AgentClaudeFlagSettingsReceiptV1
 
     /**
      * Contract §4: fenced by `turn_generation`, no pre-check (design §5.3 -- the pre-check is
@@ -696,7 +696,7 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
      * per-stream reader threads. Returns `pid`/`process_group_id` synchronously so the caller's
      * expected-agent-PID fence (design §4.6) can register immediately on return.
      */
-    func agentStartOrResume(identity: RuntimeIdentity, scopeId: String, resumeSessionId: String?) throws  -> AgentClaudeStartReceiptV1
+    func agentStartOrResume(identity: RuntimeIdentity, scopeId: String, resumeSessionId: String?, model: String?, effortLevel: String?) throws  -> AgentClaudeStartReceiptV1
 
     func applyEditsBatchCompactV1(request: CoreApplyEditsBatchRequestV1) throws  -> CoreCompactApplyEditsBatchResultV1
 
@@ -834,6 +834,8 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func searchRegexBatchCompactV1(request: RegexSearchBatchRequest) throws  -> CompactRegexBatchResult
 
+    func textDecodeV1(request: CoreTextDecodeRequestV1) throws  -> CoreTextDecodeResultV1
+
     /**
      * P3-4: DIFFERENTIAL-ONLY batch entry driving `TokenAccountingService`
      * (`agentry_runtime::tokenacct`) -- a batch of entry rows plus a batch of
@@ -915,7 +917,7 @@ public convenience init(config: CoreConfig)throws  {
      * `flagSettingsApplied` terminal-class event on the subscription, correlated by this same
      * `request_id` -- charter §8.2's command+event shape, mirroring `agent_interrupt_turn` exactly.
      */
-open func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?)throws  -> AgentClaudeFlagSettingsReceiptV1  {
+open func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?, disposition: AgentClaudeFlagSettingsDispositionV1)throws  -> AgentClaudeFlagSettingsReceiptV1  {
     return try  FfiConverterTypeAgentClaudeFlagSettingsReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_agent_apply_model_and_effort(
@@ -923,7 +925,8 @@ open func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, m
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterString.lower(scopeId),
         FfiConverterOptionString.lower(model),
-        FfiConverterOptionString.lower(effort),uniffiCallStatus
+        FfiConverterOptionString.lower(effort),
+        FfiConverterTypeAgentClaudeFlagSettingsDispositionV1_lower(disposition),uniffiCallStatus
     )
 })
 }
@@ -1012,14 +1015,16 @@ open func agentShutdown(identity: RuntimeIdentity, scopeId: String)throws   {try
      * per-stream reader threads. Returns `pid`/`process_group_id` synchronously so the caller's
      * expected-agent-PID fence (design §4.6) can register immediately on return.
      */
-open func agentStartOrResume(identity: RuntimeIdentity, scopeId: String, resumeSessionId: String?)throws  -> AgentClaudeStartReceiptV1  {
+open func agentStartOrResume(identity: RuntimeIdentity, scopeId: String, resumeSessionId: String?, model: String?, effortLevel: String?)throws  -> AgentClaudeStartReceiptV1  {
     return try  FfiConverterTypeAgentClaudeStartReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_agent_start_or_resume(
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterString.lower(scopeId),
-        FfiConverterOptionString.lower(resumeSessionId),uniffiCallStatus
+        FfiConverterOptionString.lower(resumeSessionId),
+        FfiConverterOptionString.lower(model),
+        FfiConverterOptionString.lower(effortLevel),uniffiCallStatus
     )
 })
 }
@@ -1536,6 +1541,16 @@ open func searchRegexBatchCompactV1(request: RegexSearchBatchRequest)throws  -> 
 })
 }
 
+open func textDecodeV1(request: CoreTextDecodeRequestV1)throws  -> CoreTextDecodeResultV1  {
+    return try  FfiConverterTypeCoreTextDecodeResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_text_decode_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreTextDecodeRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
     /**
      * P3-4: DIFFERENTIAL-ONLY batch entry driving `TokenAccountingService`
      * (`agentry_runtime::tokenacct`) -- a batch of entry rows plus a batch of
@@ -1804,10 +1819,10 @@ public func FfiConverterTypeAdmissionReceipt_lower(_ value: AdmissionReceipt) ->
 
 
 /**
- * P6-7: the fast-enqueue receipt for `agent_apply_model_and_effort`. The actual ACK (applied/
- * timedOut/failed) arrives later as a `flagSettingsApplied` terminal-class event on the
- * subscription, correlated by this same `request_id` -- charter §8.2's command+event shape,
- * mirroring `AgentClaudeInterruptReceiptV1` exactly.
+ * P6-7: the fast-enqueue receipt for `agent_apply_model_and_effort`. The actual outcome arrives
+ * later as a `flagSettingsApplied` terminal-class event on the subscription, correlated by this
+ * same `request_id` -- charter §8.2's command+event shape, mirroring
+ * `AgentClaudeInterruptReceiptV1` exactly.
  */
 public struct AgentClaudeFlagSettingsReceiptV1: Equatable, Hashable {
     public let requestId: String
@@ -2899,6 +2914,21 @@ public struct CoreAgentClaudeScopeConfigV1: Equatable, Hashable {
     public let systemPrompt: String?
     public let idleFallbackMillis: UInt64
     public let interruptAckTimeoutMillis: UInt64
+    /**
+     * P6-7 (D-9/R9, `docs/architecture/rust-agent-claude-v1.md` §15.6): whether the raw-event
+     * JSONL log is active, resolved by Swift from the same `app_settings` key
+     * (`agent_mode.claude_raw_event_logging_enabled`) its own writer reads.
+     */
+    public let rawEventLogEnabled: Bool
+    /**
+     * The already-resolved absolute log-file path (Swift's `makeRawEventLogFileURL`). `None`
+     * disables logging regardless of `raw_event_log_enabled`.
+     */
+    public let rawEventLogFilePath: String?
+    public let rawEventLogRunId: String
+    public let rawEventLogTabId: String
+    public let rawEventLogWindowId: Int64
+    public let rawEventLogInitialSessionId: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2911,7 +2941,16 @@ public struct CoreAgentClaudeScopeConfigV1: Equatable, Hashable {
          * P6-7 (§15.5): the `initialize` control request's `systemPrompt` override -- a protocol-
          * level field sent once during `agent_start_or_resume`'s session-startup handshake, distinct
          * from `append_system_prompt`'s CLI-argv mechanism. `None` omits the `systemPrompt` key.
-         */systemPrompt: String?, idleFallbackMillis: UInt64, interruptAckTimeoutMillis: UInt64) {
+         */systemPrompt: String?, idleFallbackMillis: UInt64, interruptAckTimeoutMillis: UInt64,
+        /**
+         * P6-7 (D-9/R9, `docs/architecture/rust-agent-claude-v1.md` §15.6): whether the raw-event
+         * JSONL log is active, resolved by Swift from the same `app_settings` key
+         * (`agent_mode.claude_raw_event_logging_enabled`) its own writer reads.
+         */rawEventLogEnabled: Bool,
+        /**
+         * The already-resolved absolute log-file path (Swift's `makeRawEventLogFileURL`). `None`
+         * disables logging regardless of `raw_event_log_enabled`.
+         */rawEventLogFilePath: String?, rawEventLogRunId: String, rawEventLogTabId: String, rawEventLogWindowId: Int64, rawEventLogInitialSessionId: String) {
         self.command = command
         self.arguments = arguments
         self.environment = environment
@@ -2924,6 +2963,12 @@ public struct CoreAgentClaudeScopeConfigV1: Equatable, Hashable {
         self.systemPrompt = systemPrompt
         self.idleFallbackMillis = idleFallbackMillis
         self.interruptAckTimeoutMillis = interruptAckTimeoutMillis
+        self.rawEventLogEnabled = rawEventLogEnabled
+        self.rawEventLogFilePath = rawEventLogFilePath
+        self.rawEventLogRunId = rawEventLogRunId
+        self.rawEventLogTabId = rawEventLogTabId
+        self.rawEventLogWindowId = rawEventLogWindowId
+        self.rawEventLogInitialSessionId = rawEventLogInitialSessionId
     }
 
 
@@ -2953,7 +2998,13 @@ public struct FfiConverterTypeCoreAgentClaudeScopeConfigV1: FfiConverterRustBuff
                 appendSystemPrompt: FfiConverterOptionString.read(from: &buf),
                 systemPrompt: FfiConverterOptionString.read(from: &buf),
                 idleFallbackMillis: FfiConverterUInt64.read(from: &buf),
-                interruptAckTimeoutMillis: FfiConverterUInt64.read(from: &buf)
+                interruptAckTimeoutMillis: FfiConverterUInt64.read(from: &buf),
+                rawEventLogEnabled: FfiConverterBool.read(from: &buf),
+                rawEventLogFilePath: FfiConverterOptionString.read(from: &buf),
+                rawEventLogRunId: FfiConverterString.read(from: &buf),
+                rawEventLogTabId: FfiConverterString.read(from: &buf),
+                rawEventLogWindowId: FfiConverterInt64.read(from: &buf),
+                rawEventLogInitialSessionId: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -2970,6 +3021,12 @@ public struct FfiConverterTypeCoreAgentClaudeScopeConfigV1: FfiConverterRustBuff
         FfiConverterOptionString.write(value.systemPrompt, into: &buf)
         FfiConverterUInt64.write(value.idleFallbackMillis, into: &buf)
         FfiConverterUInt64.write(value.interruptAckTimeoutMillis, into: &buf)
+        FfiConverterBool.write(value.rawEventLogEnabled, into: &buf)
+        FfiConverterOptionString.write(value.rawEventLogFilePath, into: &buf)
+        FfiConverterString.write(value.rawEventLogRunId, into: &buf)
+        FfiConverterString.write(value.rawEventLogTabId, into: &buf)
+        FfiConverterInt64.write(value.rawEventLogWindowId, into: &buf)
+        FfiConverterString.write(value.rawEventLogInitialSessionId, into: &buf)
     }
 }
 
@@ -4568,6 +4625,140 @@ public func FfiConverterTypeCorePathSearchFindResultV1_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeCorePathSearchFindResultV1_lower(_ value: CorePathSearchFindResultV1) -> RustBuffer {
     return FfiConverterTypeCorePathSearchFindResultV1.lower(value)
+}
+
+
+public struct CoreTextDecodeRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let rawBytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, rawBytes: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.rawBytes = rawBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreTextDecodeRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreTextDecodeRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreTextDecodeRequestV1 {
+        return
+            try CoreTextDecodeRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                rawBytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreTextDecodeRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterData.write(value.rawBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTextDecodeRequestV1_lift(_ buf: RustBuffer) throws -> CoreTextDecodeRequestV1 {
+    return try FfiConverterTypeCoreTextDecodeRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTextDecodeRequestV1_lower(_ value: CoreTextDecodeRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreTextDecodeRequestV1.lower(value)
+}
+
+
+public struct CoreTextDecodeResultV1: Equatable, Hashable {
+    public let text: String
+    public let encoding: CoreTextEncodingV1
+    /**
+     * Canonical `encoding_rs` label for `Legacy`; absent for Unicode encodings.
+     */
+    public let legacyEncodingName: String?
+    public let bomPresent: Bool
+    public let hadReplacements: Bool
+    public let policyId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(text: String, encoding: CoreTextEncodingV1,
+        /**
+         * Canonical `encoding_rs` label for `Legacy`; absent for Unicode encodings.
+         */legacyEncodingName: String?, bomPresent: Bool, hadReplacements: Bool, policyId: String) {
+        self.text = text
+        self.encoding = encoding
+        self.legacyEncodingName = legacyEncodingName
+        self.bomPresent = bomPresent
+        self.hadReplacements = hadReplacements
+        self.policyId = policyId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreTextDecodeResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreTextDecodeResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreTextDecodeResultV1 {
+        return
+            try CoreTextDecodeResultV1(
+                text: FfiConverterString.read(from: &buf),
+                encoding: FfiConverterTypeCoreTextEncodingV1.read(from: &buf),
+                legacyEncodingName: FfiConverterOptionString.read(from: &buf),
+                bomPresent: FfiConverterBool.read(from: &buf),
+                hadReplacements: FfiConverterBool.read(from: &buf),
+                policyId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreTextDecodeResultV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterTypeCoreTextEncodingV1.write(value.encoding, into: &buf)
+        FfiConverterOptionString.write(value.legacyEncodingName, into: &buf)
+        FfiConverterBool.write(value.bomPresent, into: &buf)
+        FfiConverterBool.write(value.hadReplacements, into: &buf)
+        FfiConverterString.write(value.policyId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTextDecodeResultV1_lift(_ buf: RustBuffer) throws -> CoreTextDecodeResultV1 {
+    return try FfiConverterTypeCoreTextDecodeResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTextDecodeResultV1_lower(_ value: CoreTextDecodeResultV1) -> RustBuffer {
+    return FfiConverterTypeCoreTextDecodeResultV1.lower(value)
 }
 
 
@@ -7315,6 +7506,91 @@ public func FfiConverterTypeAdmissionDisposition_lower(_ value: AdmissionDisposi
 
 
 /**
+ * The four host/runtime handshake states for a model/effort intent. Swift supplies the
+ * platform-specific launch-environment comparison fact; Rust owns logging, protocol dispatch,
+ * and the correlated outcome event.
+ */
+
+public enum AgentClaudeFlagSettingsDispositionV1: Equatable, Hashable {
+
+    case initial
+    case live
+    case pendingInitialHandshake
+    case restartRequired
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentClaudeFlagSettingsDispositionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentClaudeFlagSettingsDispositionV1: FfiConverterRustBuffer {
+    typealias SwiftType = AgentClaudeFlagSettingsDispositionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentClaudeFlagSettingsDispositionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .initial
+
+        case 2: return .live
+
+        case 3: return .pendingInitialHandshake
+
+        case 4: return .restartRequired
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentClaudeFlagSettingsDispositionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .initial:
+            writeInt(&buf, Int32(1))
+
+
+        case .live:
+            writeInt(&buf, Int32(2))
+
+
+        case .pendingInitialHandshake:
+            writeInt(&buf, Int32(3))
+
+
+        case .restartRequired:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeFlagSettingsDispositionV1_lift(_ buf: RustBuffer) throws -> AgentClaudeFlagSettingsDispositionV1 {
+    return try FfiConverterTypeAgentClaudeFlagSettingsDispositionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeFlagSettingsDispositionV1_lower(_ value: AgentClaudeFlagSettingsDispositionV1) -> RustBuffer {
+    return FfiConverterTypeAgentClaudeFlagSettingsDispositionV1.lower(value)
+}
+
+
+
+/**
  * Contract §7.1's permission **protocol** half: the two decision shapes
  * `agent_claude::permission::PermissionDecision` already defines, re-exposed at the FFI boundary
  * with the exact same two-case split (`agent_claude::scope::PermissionDecisionInput`'s doc comment
@@ -7326,6 +7602,9 @@ public enum AgentClaudePermissionDecisionV1: Equatable, Hashable {
 
     case allow(includeUpdatedPermissions: Bool
     )
+    case autoAllowRepoPrompt(matchSource: String, normalizedToolName: String?, serverIdentifier: String?
+    )
+    case autoAllowFallback
     case deny(message: String, interrupt: Bool
     )
 
@@ -7352,7 +7631,12 @@ public struct FfiConverterTypeAgentClaudePermissionDecisionV1: FfiConverterRustB
         case 1: return .allow(includeUpdatedPermissions: try FfiConverterBool.read(from: &buf)
         )
 
-        case 2: return .deny(message: try FfiConverterString.read(from: &buf), interrupt: try FfiConverterBool.read(from: &buf)
+        case 2: return .autoAllowRepoPrompt(matchSource: try FfiConverterString.read(from: &buf), normalizedToolName: try FfiConverterOptionString.read(from: &buf), serverIdentifier: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 3: return .autoAllowFallback
+
+        case 4: return .deny(message: try FfiConverterString.read(from: &buf), interrupt: try FfiConverterBool.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -7368,8 +7652,19 @@ public struct FfiConverterTypeAgentClaudePermissionDecisionV1: FfiConverterRustB
             FfiConverterBool.write(includeUpdatedPermissions, into: &buf)
 
 
-        case let .deny(message,interrupt):
+        case let .autoAllowRepoPrompt(matchSource,normalizedToolName,serverIdentifier):
             writeInt(&buf, Int32(2))
+            FfiConverterString.write(matchSource, into: &buf)
+            FfiConverterOptionString.write(normalizedToolName, into: &buf)
+            FfiConverterOptionString.write(serverIdentifier, into: &buf)
+
+
+        case .autoAllowFallback:
+            writeInt(&buf, Int32(3))
+
+
+        case let .deny(message,interrupt):
+            writeInt(&buf, Int32(4))
             FfiConverterString.write(message, into: &buf)
             FfiConverterBool.write(interrupt, into: &buf)
 
@@ -8141,6 +8436,103 @@ public func FfiConverterTypeCoreError_lift(_ buf: RustBuffer) throws -> CoreErro
 public func FfiConverterTypeCoreError_lower(_ value: CoreError) -> RustBuffer {
     return FfiConverterTypeCoreError.lower(value)
 }
+
+
+/**
+ * Stable encoding identity returned by the standalone TD-5 text decoder.
+ */
+
+public enum CoreTextEncodingV1: Equatable, Hashable {
+
+    case utf8
+    case utf16BigEndian
+    case utf16LittleEndian
+    case utf32BigEndian
+    case utf32LittleEndian
+    case legacy
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreTextEncodingV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreTextEncodingV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreTextEncodingV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreTextEncodingV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .utf8
+
+        case 2: return .utf16BigEndian
+
+        case 3: return .utf16LittleEndian
+
+        case 4: return .utf32BigEndian
+
+        case 5: return .utf32LittleEndian
+
+        case 6: return .legacy
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreTextEncodingV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .utf8:
+            writeInt(&buf, Int32(1))
+
+
+        case .utf16BigEndian:
+            writeInt(&buf, Int32(2))
+
+
+        case .utf16LittleEndian:
+            writeInt(&buf, Int32(3))
+
+
+        case .utf32BigEndian:
+            writeInt(&buf, Int32(4))
+
+
+        case .utf32LittleEndian:
+            writeInt(&buf, Int32(5))
+
+
+        case .legacy:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTextEncodingV1_lift(_ buf: RustBuffer) throws -> CoreTextEncodingV1 {
+    return try FfiConverterTypeCoreTextEncodingV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreTextEncodingV1_lower(_ value: CoreTextEncodingV1) -> RustBuffer {
+    return FfiConverterTypeCoreTextEncodingV1.lower(value)
+}
+
 
 
 
@@ -10045,7 +10437,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_func_core_panic_forensics() != 20183) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_apply_model_and_effort() != 25270) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_apply_model_and_effort() != 60825) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_interrupt_turn() != 14421) {
@@ -10063,7 +10455,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_shutdown() != 55087) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_start_or_resume() != 19319) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_start_or_resume() != 44915) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_apply_edits_batch_compact_v1() != 64411) {
@@ -10193,6 +10585,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_search_regex_batch_compact_v1() != 41042) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_text_decode_v1() != 10724) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_token_accounting_v1() != 43024) {

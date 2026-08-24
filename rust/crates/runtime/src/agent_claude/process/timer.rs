@@ -48,21 +48,29 @@ pub struct FakeClock {
 
 impl FakeClock {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { now: Mutex::new(Instant::now()) })
+        Arc::new(Self {
+            now: Mutex::new(Instant::now()),
+        })
     }
 
     /// Jumps the clock forward discontinuously -- no intermediate value is ever observable
     /// between the pre- and post-jump reads, modeling a suspend/resume rather than gradual
     /// wall-clock advance.
     pub fn jump_forward(&self, by: Duration) {
-        let mut guard = self.now.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .now
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard += by;
     }
 }
 
 impl Clock for FakeClock {
     fn now(&self) -> Instant {
-        *self.now.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .now
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -78,7 +86,11 @@ pub struct Deadline<C: Clock> {
 impl<C: Clock> Deadline<C> {
     pub fn arm(clock: Arc<C>, after: Duration) -> Self {
         let at = clock.now() + after;
-        Self { clock, at, fired: false }
+        Self {
+            clock,
+            at,
+            fired: false,
+        }
     }
 
     /// Returns `true` exactly once, the first time this is called with `clock.now() >= at`.
@@ -110,7 +122,10 @@ mod tests {
         let clock = FakeClock::new();
         let mut deadline = Deadline::arm(Arc::clone(&clock), duration);
 
-        assert!(!deadline.poll(), "must not fire before the deadline ({duration:?})");
+        assert!(
+            !deadline.poll(),
+            "must not fire before the deadline ({duration:?})"
+        );
 
         // Simulate a sleep-length discontinuity: jump straight past the deadline in one step,
         // with no intermediate poll -- there is no wall-clock wait here at all, which is the
@@ -118,8 +133,14 @@ mod tests {
         // not a real sleep).
         clock.jump_forward(duration + Duration::from_secs(600));
 
-        assert!(deadline.poll(), "must fire on the first poll at/after the deadline ({duration:?}) -- a spurious skip");
-        assert!(!deadline.poll(), "must not fire a second time -- a spurious double-fire ({duration:?})");
+        assert!(
+            deadline.poll(),
+            "must fire on the first poll at/after the deadline ({duration:?}) -- a spurious skip"
+        );
+        assert!(
+            !deadline.poll(),
+            "must not fire a second time -- a spurious double-fire ({duration:?})"
+        );
     }
 
     #[test]

@@ -29,7 +29,11 @@ fn assert_chunking_independent(name: &str, data: &[u8], split_points: &[usize]) 
     // strides are O(data.len()) `feed()` calls; skip them for the multi-megabyte fixture (the
     // dedicated escape-sequence/oversized tests below already cover it at meaningful strides)
     // so this sweep stays fast across the whole corpus.
-    let strides: &[usize] = if data.len() > 64 * 1024 { &[4096, 65537] } else { &[1, 2, 3, 7, 13, 31, 4096] };
+    let strides: &[usize] = if data.len() > 64 * 1024 {
+        &[4096, 65537]
+    } else {
+        &[1, 2, 3, 7, 13, 31, 4096]
+    };
     for &stride in strides {
         let chunks: Vec<&[u8]> = data.chunks(stride.max(1)).collect();
         let (lines, _) = framer_output(data, &chunks);
@@ -39,7 +43,11 @@ fn assert_chunking_independent(name: &str, data: &[u8], split_points: &[usize]) 
     // Explicit split points -- "splits placed inside a JSON string escape and inside a
     // multi-byte UTF-8 scalar" (design §3.4).
     for &split_at in split_points {
-        assert!(split_at <= data.len(), "{name}: split point {split_at} out of range ({} bytes)", data.len());
+        assert!(
+            split_at <= data.len(),
+            "{name}: split point {split_at} out of range ({} bytes)",
+            data.len()
+        );
         let chunks: Vec<&[u8]> = vec![&data[..split_at], &data[split_at..]];
         let (lines, _) = framer_output(data, &chunks);
         assert_eq!(lines, baseline_lines, "{name}: split_at={split_at}");
@@ -61,7 +69,10 @@ fn all_synthetic_corpus_fixtures_are_chunk_boundary_independent() {
         assert_chunking_independent(&name, &data, &[]);
         checked += 1;
     }
-    assert!(checked >= 10, "expected to have checked at least the original 10 synthetic fixtures, checked {checked}");
+    assert!(
+        checked >= 10,
+        "expected to have checked at least the original 10 synthetic fixtures, checked {checked}"
+    );
 }
 
 /// Splits placed inside a multi-byte UTF-8 scalar -- `café 🙂 strët` inside a JSON string value.
@@ -72,9 +83,16 @@ fn all_synthetic_corpus_fixtures_are_chunk_boundary_independent() {
 fn multibyte_utf8_scalar_split_at_every_byte_offset() {
     let data = super::read_fixture("rechunking-multibyte-utf8-scalar.ndjson");
     // Sanity: the fixture really does contain multi-byte UTF-8 (café = 0xC3 0xA9, emoji = 4 bytes).
-    assert!(data.iter().any(|&b| b >= 0x80), "fixture must contain real multi-byte UTF-8 bytes, not \\u escapes");
+    assert!(
+        data.iter().any(|&b| b >= 0x80),
+        "fixture must contain real multi-byte UTF-8 bytes, not \\u escapes"
+    );
     let all_offsets: Vec<usize> = (1..data.len()).collect();
-    assert_chunking_independent("rechunking-multibyte-utf8-scalar.ndjson", &data, &all_offsets);
+    assert_chunking_independent(
+        "rechunking-multibyte-utf8-scalar.ndjson",
+        &data,
+        &all_offsets,
+    );
 }
 
 /// A split placed inside a JSON string escape sequence (`\\\"` -- an escaped quote) in the
@@ -90,5 +108,9 @@ fn split_inside_a_json_string_escape_sequence() {
         .expect("fixture must contain an escaped-quote sequence to split inside of");
     // Split points at, before, and after the two-byte escape sequence.
     let split_points = vec![backslash_quote, backslash_quote + 1, backslash_quote + 2];
-    assert_chunking_independent("oversized-line-over-1mb.ndjson (escape split)", &data, &split_points);
+    assert_chunking_independent(
+        "oversized-line-over-1mb.ndjson (escape split)",
+        &data,
+        &split_points,
+    );
 }

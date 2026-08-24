@@ -33,11 +33,13 @@ mod wake_pipe;
 pub use config::RuntimeConfig;
 pub use identity::{ABI_EPOCH, IdentityError, RuntimeIdentity};
 pub use lifecycle::{CoreRuntime, LifecycleState, RuntimeError, ShutdownReceipt};
+pub use observability::{
+    DiagnosticRecord, DiagnosticSeverity, drain_diagnostics, record_diagnostic,
+};
 pub use operation::{
     AdmissionOutcome, AdmissionRequest, CancelOutcome, IdentifierError, OperationDiagnostics,
     OperationId, OperationSnapshot, OperationState, RequestFingerprint, ScopeId, TerminalOutcome,
 };
-pub use observability::{DiagnosticRecord, DiagnosticSeverity, drain_diagnostics, record_diagnostic};
 pub use panic_forensics::{PanicRecord, install_panic_hook, recent_panics};
 pub use registry::{OperationRegistry, RegistryError};
 pub use search::{

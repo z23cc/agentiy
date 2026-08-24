@@ -170,7 +170,10 @@ fn codemap_utf8_bom_prefixed_source_produces_the_same_symbols_as_the_non_bom_sou
         outcome => panic!("unexpected BOM outcome: {outcome:?}"),
     };
 
-    assert!(!plain.functions.is_empty(), "fixture must exercise at least one function");
+    assert!(
+        !plain.functions.is_empty(),
+        "fixture must exercise at least one function"
+    );
     // Characterized, not assumed: D-5 (design §9) mandates BOM preservation, so the raw text of
     // whatever token captures line 1 keeps its leading U+FEFF -- here, the first `import`. This
     // is the *only* place the BOM surfaces in the artifact; it is not a position shift or a
@@ -183,7 +186,10 @@ fn codemap_utf8_bom_prefixed_source_produces_the_same_symbols_as_the_non_bom_sou
     assert_eq!(plain.exports, bom.exports);
     assert_eq!(plain.classes, bom.classes);
     assert_eq!(plain.interfaces, bom.interfaces);
-    assert_eq!(plain.functions, bom.functions, "BOM must not shift function line numbers/signatures");
+    assert_eq!(
+        plain.functions, bom.functions,
+        "BOM must not shift function line numbers/signatures"
+    );
     assert_eq!(plain.enums, bom.enums);
     assert_eq!(plain.global_vars, bom.global_vars);
     assert_eq!(plain.aliases, bom.aliases);

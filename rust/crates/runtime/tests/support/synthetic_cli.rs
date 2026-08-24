@@ -71,7 +71,11 @@
 //! carry embedded NUL bytes, contract §5.1's spawn layer validates that; none of this binary's
 //! mode/argument tokens are ever expected to contain a literal newline) -- sidestepping flag
 //! injection without touching `build_arguments` or this binary's existing positional-argv
-//! contract at all. Test-support-only; never read by production.
+//! contract at all. `AGENT_CLAUDE_SYNTHETIC_CLI_RECORD_LAUNCH_PATH` optionally records the
+//! original production argv plus only the comma-delimited, explicitly named environment keys in
+//! `AGENT_CLAUDE_SYNTHETIC_CLI_RECORD_ENV_KEYS`; this lets Swift/Rust variant differentials prove
+//! launch parity without ever dumping the ambient environment or secrets. Test-support-only;
+//! never read by production.
 
 // Not part of `agentry-runtime`'s `src/` -- a separate binary crate root under this package's
 // `tests/support/`, outside `Scripts/rust_ffi_guardrails.py`'s two-site `agent_claude::process`
@@ -81,13 +85,41 @@
 // `SAFETY` comment at the call site.
 #![allow(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+fn record_launch_if_requested(args: &[String]) {
+    let Ok(path) = std::env::var("AGENT_CLAUDE_SYNTHETIC_CLI_RECORD_LAUNCH_PATH") else {
+        return;
+    };
+    let environment = std::env::var("AGENT_CLAUDE_SYNTHETIC_CLI_RECORD_ENV_KEYS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| (key.to_string(), value))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let record = serde_json::json!({
+        "argv": args.iter().skip(1).collect::<Vec<_>>(),
+        "environment": environment,
+    });
+    std::fs::write(
+        path,
+        serde_json::to_vec(&record).expect("serialize launch record"),
+    )
+    .expect("write synthetic launch record");
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
+    record_launch_if_requested(&args);
     if let Ok(raw) = std::env::var("AGENT_CLAUDE_SYNTHETIC_CLI_ARGS") {
         let mut overridden = vec![args[0].clone()];
         overridden.extend(raw.split('\n').map(str::to_owned));
@@ -118,7 +150,10 @@ fn main() {
             writeln!(stdout, r#"{{"type":"result","subtype":"success"}}"#).expect("write");
         }
         "huge-line" => {
-            let bytes: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(9 * 1024 * 1024);
+            let bytes: usize = args
+                .get(2)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(9 * 1024 * 1024);
             let chunk = vec![b'a'; 64 * 1024];
             let mut written = 0usize;
             while written < bytes {
@@ -205,8 +240,9 @@ fn main() {
         }
         "scripted" => {
             let script_path = args.get(2).cloned().unwrap_or_default();
-            let script = std::fs::read_to_string(&script_path)
-                .unwrap_or_else(|error| panic!("failed to read scripted-mode script {script_path:?}: {error}"));
+            let script = std::fs::read_to_string(&script_path).unwrap_or_else(|error| {
+                panic!("failed to read scripted-mode script {script_path:?}: {error}")
+            });
             let ack_enabled = Arc::new(AtomicBool::new(true));
             let ack_flag = Arc::clone(&ack_enabled);
             let ack_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -225,7 +261,8 @@ fn main() {
                 let (directive, rest) = line.split_once(' ').unwrap_or((line, ""));
                 (directive == "ACK_SESSION_ID").then(|| rest.trim().to_string())
             });
-            let ack_session_id: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(initial_ack_session_id));
+            let ack_session_id: Arc<std::sync::Mutex<Option<String>>> =
+                Arc::new(std::sync::Mutex::new(initial_ack_session_id));
             let ack_session_id_for_thread = Arc::clone(&ack_session_id);
             // Background stdin responder: ACKs every control_request as an immediate success
             // control_response naming the same request_id, unless the script has disabled it via
@@ -237,31 +274,43 @@ fn main() {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
                     if value.get("type").and_then(|v| v.as_str()) != Some("control_request") {
                         continue;
                     }
                     if !ack_flag.load(Ordering::SeqCst) {
                         continue;
                     }
-                    if ack_count_for_thread.load(Ordering::SeqCst) >= noack_after_for_thread.load(Ordering::SeqCst) {
+                    if ack_count_for_thread.load(Ordering::SeqCst)
+                        >= noack_after_for_thread.load(Ordering::SeqCst)
+                    {
                         // NOACK_AFTER's permanent cutoff: checked (and enforced) entirely inside
                         // this responder thread's own send decision, so it cannot lose a race
                         // against a script-side directive that has not been polled/executed yet.
                         continue;
                     }
-                    let Some(request_id) = value.get("request_id").and_then(|v| v.as_str()) else { continue };
-                    let mut response_body = serde_json::json!({"subtype": "success", "request_id": request_id});
+                    let Some(request_id) = value.get("request_id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let mut response_body =
+                        serde_json::json!({"subtype": "success", "request_id": request_id});
                     // `session_id` belongs in the *nested* `response.response` body (the real
                     // Claude Code SDK's own envelope shape, `codec::ControlResponse.response:
                     // Option<Map>`), not as a sibling of `subtype`/`request_id` at the outer
                     // `response` level -- `send_initialize_request` reads `response.get("session_id")`
                     // off exactly that inner map (`scope.rs:507-513`'s `send_startup_control_request`
                     // return value).
-                    if let Some(session_id) = ack_session_id_for_thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+                    if let Some(session_id) = ack_session_id_for_thread
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone()
+                    {
                         response_body["response"] = serde_json::json!({"session_id": session_id});
                     }
-                    let response = serde_json::json!({"type": "control_response", "response": response_body});
+                    let response =
+                        serde_json::json!({"type": "control_response", "response": response_body});
                     let mut out = std::io::stdout();
                     let _ = writeln!(out, "{response}");
                     let _ = out.flush();
@@ -290,7 +339,10 @@ fn main() {
                         noack_after.store(limit, Ordering::SeqCst);
                     }
                     "ACK_SESSION_ID" => {
-                        *ack_session_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rest.trim().to_string());
+                        *ack_session_id
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(rest.trim().to_string());
                     }
                     "AWAITACKS" => {
                         let target: u64 = rest.trim().parse().unwrap_or(0);

@@ -42,15 +42,26 @@ pub enum RecoveryDiagnostic {
     /// `protocol.decode.concatenatedRecoverySkipped`.
     ConcatenatedRecoverySkipped { byte_count: usize, threshold: usize },
     /// `protocol.decode.recoveredSegmentSkipped`.
-    RecoveredSegmentSkipped,
+    RecoveredSegmentSkipped { preview: String, error: String },
+    /// `protocol.inbound.recoveredSegment` (P6-7 D-9/R9): one per successfully-decoded segment,
+    /// distinct from the aggregate [`Self::Recovered`] summary below -- Swift logs the retained
+    /// line bytes for this record, then one aggregate summary record.
+    RecoveredSegment { bytes: Vec<u8> },
     /// `protocol.decode.recovered`.
-    Recovered { segments: usize, recovered_segments: usize },
+    Recovered {
+        segments: usize,
+        recovered_segments: usize,
+    },
     /// `protocol.inbound.recoveredTail`.
-    RecoveredTail { start_offset: usize, byte_count: usize },
+    RecoveredTail {
+        start_offset: usize,
+        byte_count: usize,
+        preview: String,
+    },
     /// `protocol.decode.recoveredJSONStringControlChars`.
-    RecoveredJsonStringControlChars,
+    RecoveredJsonStringControlChars { repaired: Vec<u8> },
     /// `protocol.decode.recoveredPlaintext`.
-    RecoveredPlaintext { length: usize },
+    RecoveredPlaintext { preview: String, length: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,7 +93,10 @@ pub fn recover_invalid_json_line(
     }
     if turn_in_flight {
         if let Some(text) = recoverable_plaintext_assistant_fragment(line_data) {
-            on_diagnostic(RecoveryDiagnostic::RecoveredPlaintext { length: text.chars().count() });
+            on_diagnostic(RecoveryDiagnostic::RecoveredPlaintext {
+                preview: text.chars().take(200).collect(),
+                length: text.chars().count(),
+            });
             return RecoveryOutcome::PlaintextSalvage(text);
         }
     }
@@ -110,15 +124,27 @@ fn try_concatenated_split(
     let mut recovered = Vec::new();
     for segment in &segments {
         match codec::decode_line(segment) {
-            Ok(Some(message)) => recovered.push(message),
+            Ok(Some(message)) => {
+                on_diagnostic(RecoveryDiagnostic::RecoveredSegment {
+                    bytes: segment.clone(),
+                });
+                recovered.push(message);
+            }
             Ok(None) => continue,
-            Err(_) => on_diagnostic(RecoveryDiagnostic::RecoveredSegmentSkipped),
+            Err(error) => on_diagnostic(RecoveryDiagnostic::RecoveredSegmentSkipped {
+                preview: String::from_utf8(segment.iter().copied().take(256).collect())
+                    .unwrap_or_else(|_| "<non-utf8>".to_string()),
+                error: error.to_string(),
+            }),
         }
     }
     if recovered.is_empty() {
         return None;
     }
-    on_diagnostic(RecoveryDiagnostic::Recovered { segments: segments.len(), recovered_segments: recovered.len() });
+    on_diagnostic(RecoveryDiagnostic::Recovered {
+        segments: segments.len(),
+        recovered_segments: recovered.len(),
+    });
     Some(RecoveryOutcome::Recovered(recovered))
 }
 
@@ -132,7 +158,10 @@ fn try_embedded_tail(
     }
 
     let (scan_offset, scan_window) = if line_data.len() > MAX_TAIL_RECOVERY_SCAN_BYTES {
-        (line_data.len() - MAX_TAIL_RECOVERY_SCAN_BYTES, &line_data[line_data.len() - MAX_TAIL_RECOVERY_SCAN_BYTES..])
+        (
+            line_data.len() - MAX_TAIL_RECOVERY_SCAN_BYTES,
+            &line_data[line_data.len() - MAX_TAIL_RECOVERY_SCAN_BYTES..],
+        )
     } else {
         (0usize, line_data)
     };
@@ -154,7 +183,12 @@ fn try_embedded_tail(
         let absolute_offset = scan_offset + offset;
         let suffix = &line_data[absolute_offset..];
         if let Ok(Some(message)) = codec::decode_line(suffix) {
-            on_diagnostic(RecoveryDiagnostic::RecoveredTail { start_offset: absolute_offset, byte_count: suffix.len() });
+            on_diagnostic(RecoveryDiagnostic::RecoveredTail {
+                start_offset: absolute_offset,
+                byte_count: suffix.len(),
+                preview: String::from_utf8(suffix.iter().copied().take(180).collect())
+                    .unwrap_or_else(|_| "<non-utf8>".to_string()),
+            });
             return Some(RecoveryOutcome::Recovered(vec![message]));
         }
     }
@@ -171,7 +205,7 @@ fn try_control_char_repair(
     let repaired = framer::repair_json_string_control_characters(line_data)?;
     match codec::decode_line(&repaired) {
         Ok(Some(message)) => {
-            on_diagnostic(RecoveryDiagnostic::RecoveredJsonStringControlChars);
+            on_diagnostic(RecoveryDiagnostic::RecoveredJsonStringControlChars { repaired });
             Some(RecoveryOutcome::Recovered(vec![message]))
         }
         _ => None,
@@ -230,7 +264,9 @@ pub fn recoverable_plaintext_assistant_fragment(line_data: &[u8]) -> Option<Stri
 /// every structurally significant byte here (`{`, `}`, `"`, `\`) is a single-scalar ASCII grapheme,
 /// so scalar-granularity iteration is behaviorally identical to Swift's grapheme-cluster iteration.
 fn split_concatenated_json_object_payloads(data: &[u8]) -> Vec<Vec<u8>> {
-    let Ok(text) = std::str::from_utf8(data) else { return Vec::new() };
+    let Ok(text) = std::str::from_utf8(data) else {
+        return Vec::new();
+    };
     if text.is_empty() {
         return Vec::new();
     }
@@ -301,11 +337,15 @@ mod tests {
     /// wrapper around it.
     #[test]
     fn try_control_char_repair_succeeds_in_isolation_when_called_directly() {
-        let line_data = b"{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"line one\nline two\"}";
+        let line_data =
+            b"{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"line one\nline two\"}";
 
         // Confirms the precondition that makes this heuristic unreachable via the real dispatch:
         // the codec's own inline sanitize already decodes this line successfully.
-        assert!(codec::decode_line(line_data).unwrap().is_some(), "codec's own sanitize must already succeed on this line");
+        assert!(
+            codec::decode_line(line_data).unwrap().is_some(),
+            "codec's own sanitize must already succeed on this line"
+        );
 
         let mut diagnostics = Vec::new();
         let outcome = try_control_char_repair(line_data, &mut |d| diagnostics.push(d));
@@ -313,7 +353,12 @@ mod tests {
             Some(RecoveryOutcome::Recovered(messages)) => assert_eq!(messages.len(), 1),
             other => panic!("expected Recovered(1 message) when called directly, got {other:?}"),
         }
-        assert_eq!(diagnostics, vec![RecoveryDiagnostic::RecoveredJsonStringControlChars]);
+        assert_eq!(
+            diagnostics,
+            vec![RecoveryDiagnostic::RecoveredJsonStringControlChars {
+                repaired: b"{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"line one\\nline two\"}".to_vec(),
+            }]
+        );
     }
 
     #[test]

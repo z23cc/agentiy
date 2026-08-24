@@ -10,6 +10,7 @@ final class RustApplyEditsComputerTests: XCTestCase {
             await probe.record(request)
             return CoreApplyEditsBatchResultV1(subjects: [
                 CoreApplyEditsSubjectResultV1(
+                    originalText: "let value = 1\n",
                     updatedText: "let value = 2\n",
                     byteEdits: [],
                     chunks: [],
@@ -50,6 +51,47 @@ final class RustApplyEditsComputerTests: XCTestCase {
             return XCTFail("Expected the production adapter to send a Rust single-edit subject")
         }
         XCTAssertEqual(operation, .init(search: "1", replacement: "2", replaceAll: false))
+    }
+
+    func testRawBytesComputationPreservesRustDecodedOriginalForApprovalCallers() async throws {
+        let probe = RustApplyEditsComputerProbe()
+        let computer = RustApplyEditsComputer { request in
+            await probe.record(request)
+            return CoreApplyEditsBatchResultV1(subjects: [
+                CoreApplyEditsSubjectResultV1(
+                    originalText: "あ",
+                    updatedText: "い",
+                    byteEdits: [],
+                    chunks: [],
+                    editsRequested: 1,
+                    editsApplied: 1,
+                    status: .success,
+                    outcomes: nil,
+                    stats: nil,
+                    note: nil,
+                    unifiedDiff: nil,
+                    toolCardUnifiedDiff: nil
+                )
+            ])
+        }
+        let rawBytes = Data([0x82, 0xA0])
+
+        let computation = try await computer.applyRawBytes(
+            request: .init(
+                path: "legacy.txt",
+                mode: .rewrite(newText: "い", onMissing: .error),
+                verbose: false
+            ),
+            rawBytes: rawBytes,
+            options: .default
+        )
+
+        XCTAssertEqual(computation.originalText, "あ")
+        XCTAssertEqual(computation.result.updatedText, "い")
+        let recordedRequest = await probe.request
+        let subject = try XCTUnwrap(recordedRequest?.subjects.first)
+        XCTAssertEqual(subject.sourceKind, .raw)
+        XCTAssertEqual(subject.originalUTF8, rawBytes)
     }
 }
 

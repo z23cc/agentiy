@@ -769,7 +769,6 @@ actor CodexAppServerClient {
     /// from tearing down a newly-started transport.
     ///
     /// Related:
-    /// - ClaudeNativeProcessSessionController.handleStdoutEOF / shutdown (reference implementation)
     /// - FileHandleChunkChannel (FIFO chunk ordering)
     /// - CodexNativeSessionController.startNotificationStreamIfNeeded (downstream subscriber)
     private func terminateTransport(
@@ -1663,7 +1662,6 @@ actor CodexAppServerClient {
     ///
     /// Related:
     /// - FileHandleChunkChannel (FIFO ordering primitive)
-    /// - ClaudeNativeProcessSessionController.startStdoutReader (reference implementation)
     private func startStdoutReader(_ handle: FileHandle, generation: UInt64) throws {
         try ReadSourceFDPreflight.validateOpenFD(handle.fileDescriptor, label: "Codex app-server stdout")
         stdoutConsumerTask?.cancel()
@@ -1762,11 +1760,6 @@ actor CodexAppServerClient {
     ///
     /// If direct decode fails, applies recovery heuristics (concatenated-object
     /// splitting and embedded-tail recovery) adapted from Claude's decode pipeline.
-    ///
-    /// Related:
-    /// - ClaudeNativeProcessSessionController.handleLine (reference decode + recovery)
-    /// - ClaudeNativeProcessSessionController.recoverConcatenatedInboundMessagesIfNeeded
-    /// - ClaudeNativeProcessSessionController.recoverEmbeddedInboundTailIfNeeded
     private func handleJSONLine(_ lineData: Data) {
         guard let trimmed = trimmedASCIIWhitespace(lineData) else { return }
         guard let json = try? JSONSerialization.jsonObject(with: trimmed) as? [String: Any] else {
@@ -1887,7 +1880,6 @@ actor CodexAppServerClient {
     /// using brace-depth scanning, then routes each successfully decoded object.
     ///
     /// Related:
-    /// - ClaudeNativeProcessSessionController.recoverConcatenatedInboundMessagesIfNeeded
     private func recoverConcatenatedJSONLines(from lineData: Data) -> Bool {
         guard lineData.count <= Self.maxConcatenatedRecoveryBytes else { return false }
         let segments = Self.splitConcatenatedJSONObjects(lineData)
@@ -1930,7 +1922,6 @@ actor CodexAppServerClient {
     /// Scans the tail of a corrupted line for an embedded valid JSON-RPC object.
     ///
     /// Related:
-    /// - ClaudeNativeProcessSessionController.recoverEmbeddedInboundTailIfNeeded
     private func recoverEmbeddedJSONTail(from lineData: Data) -> Bool {
         guard !lineData.isEmpty else { return false }
 
@@ -2095,7 +2086,6 @@ actor CodexAppServerClient {
     /// that could theoretically occur with two separate writes.
     ///
     /// Related:
-    /// - ClaudeNativeProcessSessionController.sendLine (reference atomic write pattern)
     private func sendJSONLine(_ payload: [String: Any], method: String?) throws {
         guard let activeTransport, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning

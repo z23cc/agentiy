@@ -13,7 +13,9 @@ use agentry_runtime::inventory_scope::{
     self, InventoryApplyOutcome, InventoryDeltaCommand, InventoryScope, InventoryScopeConfig,
     InventoryScopeId, RootId,
 };
-use agentry_runtime::{DrainOutcome, EventDetail, RuntimeIdentity, SubscriptionConfig, SubscriptionHub};
+use agentry_runtime::{
+    DrainOutcome, EventDetail, RuntimeIdentity, SubscriptionConfig, SubscriptionHub,
+};
 
 fn identity() -> RuntimeIdentity {
     RuntimeIdentity::new(1, "d".repeat(32), "a".repeat(64), "b".repeat(64)).expect("identity")
@@ -90,7 +92,10 @@ fn wired_scope(scope_id_byte: u8) -> (InventoryScope, Arc<SubscriptionHub>, Runt
         InventoryScopeConfig::default(),
     );
     let hub = Arc::new(SubscriptionHub::new(identity.clone()).expect("hub"));
-    scope.attach_event_sink(Arc::clone(&hub), scope.scope_id().to_subscription_scope_id());
+    scope.attach_event_sink(
+        Arc::clone(&hub),
+        scope.scope_id().to_subscription_scope_id(),
+    );
     (scope, hub, identity)
 }
 
@@ -141,7 +146,10 @@ fn emission_ordering_matches_the_sequence_of_mutations() {
     // FullResync fallback fires before the rebuild; generationAdvanced (8) then
     // appliedIndexBatch (the pre-existing DeltaEvent kind, 2) follow it, in that order --
     // `delta_success_events`'s push order.
-    assert_eq!(drain_kinds(&hub, &identity), vec![11 /* ShardFallback */, 8, 2]);
+    assert_eq!(
+        drain_kinds(&hub, &identity),
+        vec![11 /* ShardFallback */, 8, 2]
+    );
 
     let receipt = scope.apply_delta(
         &identity,
@@ -150,7 +158,9 @@ fn emission_ordering_matches_the_sequence_of_mutations() {
     assert_eq!(receipt.outcome, InventoryApplyOutcome::Patched);
     assert_eq!(drain_kinds(&hub, &identity), vec![8, 2]);
 
-    let unload = scope.close_root(&identity, root_a, lifetime).expect("close_root");
+    let unload = scope
+        .close_root(&identity, root_a, lifetime)
+        .expect("close_root");
     assert_eq!(unload.root_id, root_a);
     assert_eq!(drain_kinds(&hub, &identity), vec![10 /* RootUnloaded */]);
 
@@ -172,8 +182,9 @@ fn emission_ordering_matches_the_sequence_of_mutations() {
     };
     assert_eq!(batch.events.len(), 3); // fallback, generationAdvanced, appliedIndexBatch
     let generation_advanced_bytes = &batch.events[1].payload;
-    let decoded = agentry_runtime::inventory_scope::decode_generation_advanced(generation_advanced_bytes)
-        .expect("decode generationAdvanced");
+    let decoded =
+        agentry_runtime::inventory_scope::decode_generation_advanced(generation_advanced_bytes)
+            .expect("decode generationAdvanced");
     assert_eq!(decoded.root_id, root_a);
     assert_eq!(decoded.root_lifetime_id, *lifetime2.as_bytes());
     assert_eq!(decoded.catalog_generation, receipt.catalog_generation);
@@ -181,8 +192,9 @@ fn emission_ordering_matches_the_sequence_of_mutations() {
     assert_eq!(decoded.upserted_count, 1);
 
     let applied_index_batch_bytes = &batch.events[2].payload;
-    let decoded_event = agentry_runtime::inventory_scope::decode_delta_event(applied_index_batch_bytes)
-        .expect("decode appliedIndexBatch");
+    let decoded_event =
+        agentry_runtime::inventory_scope::decode_delta_event(applied_index_batch_bytes)
+            .expect("decode appliedIndexBatch");
     assert_eq!(decoded_event.root_id, root_a);
     assert_eq!(decoded_event.upserted_files.len(), 1);
     assert_eq!(decoded_event.upserted_files[0].name, "c.swift");
@@ -215,7 +227,12 @@ fn bounded_overflow_produces_a_gap_marker_and_a_fresh_snapshot_still_recovers() 
     for byte in 1..=8u8 {
         let root_id = root(byte);
         let lifetime = scope
-            .open_root(&identity, root_id, format!("Root{byte}"), format!("/root{byte}"))
+            .open_root(
+                &identity,
+                root_id,
+                format!("Root{byte}"),
+                format!("/root{byte}"),
+            )
             .expect("open_root");
         let receipt = scope.apply_delta(
             &identity,
@@ -236,7 +253,10 @@ fn bounded_overflow_produces_a_gap_marker_and_a_fresh_snapshot_still_recovers() 
     else {
         panic!("expected a batch, not oversize");
     };
-    assert!(batch.dropped_count > 0, "queue pressure across 8 distinct roots must have dropped something");
+    assert!(
+        batch.dropped_count > 0,
+        "queue pressure across 8 distinct roots must have dropped something"
+    );
     let gap = batch
         .events
         .iter()
@@ -255,7 +275,9 @@ fn bounded_overflow_produces_a_gap_marker_and_a_fresh_snapshot_still_recovers() 
     let handle = scope
         .open_snapshot(&identity, last_root, "post-gap-resnapshot")
         .expect("fresh snapshot handle must still open after a gap");
-    let page = scope.snapshot_page(handle, 0, 10).expect("fresh page must still read");
+    let page = scope
+        .snapshot_page(handle, 0, 10)
+        .expect("fresh page must still read");
     assert_eq!(page.files.len(), 1);
     assert_eq!(page.files[0].name, "f.swift");
     scope.close_snapshot(handle);

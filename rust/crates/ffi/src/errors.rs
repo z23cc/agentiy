@@ -1,6 +1,8 @@
 use agentry_proto::DecodeError;
+use agentry_runtime::agent_claude::{
+    AgentScopeError, ScopeRegistryError as AgentClaudeScopeRegistryError,
+};
 use agentry_runtime::inventory_scope::{BulkLoadError, ScopeError, ScopeRegistryError};
-use agentry_runtime::agent_claude::{AgentScopeError, ScopeRegistryError as AgentClaudeScopeRegistryError};
 use agentry_runtime::{
     IdentifierError, IdentityError, RegistryError, RuntimeError, SearchError, SubscriptionError,
 };
@@ -351,9 +353,15 @@ impl From<AgentScopeError> for CoreError {
             AgentScopeError::UnknownPermissionRequest => Self::AgentClaudeUnknownPermissionRequest,
             AgentScopeError::Spawn(message) => Self::AgentClaudeSpawnFailed { message },
             AgentScopeError::Reaper(message) => Self::AgentClaudeReaperFailed { message },
-            AgentScopeError::TransportWrite(message) => Self::AgentClaudeTransportWriteFailed { message },
-            AgentScopeError::InvalidArgument(what) => Self::AgentClaudeInvalidRequest { message: what.to_string() },
-            AgentScopeError::ControlResponseError(message) => Self::AgentClaudeControlResponseError { message },
+            AgentScopeError::TransportWrite(message) => {
+                Self::AgentClaudeTransportWriteFailed { message }
+            }
+            AgentScopeError::InvalidArgument(what) => Self::AgentClaudeInvalidRequest {
+                message: what.to_string(),
+            },
+            AgentScopeError::ControlResponseError(message) => {
+                Self::AgentClaudeControlResponseError { message }
+            }
         }
     }
 }

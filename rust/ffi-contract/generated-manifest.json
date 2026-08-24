@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "4641243e3dca44e837f4aea06eb9d86a942a909b003689c8d017241e07e76424",
-  "bindingChecksum": "703fe353fda11f44a5fb7f2d313197667193cbe7840dc4e0cff2bb731d462ee1",
+  "buildFingerprint": "acb77227ee1d8b67cb1ecb370f7765a8fb3910ae80ac988cd081d3de59db7d9f",
+  "bindingChecksum": "bb1db931bd5e7048b3aee83c1eba974d3fd7a6cb071f86ee91763be2d614421b",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:3e54e97fea17589563270329b82491e7a3b7edcaeaba8fa194cf5b35f5c927e9",
+    "rustSourceRevision": "tree:9beae49d5dca91319982282f72fc2bf37a9c67e607974420b8904fc9d60faa6e",
     "cargoLockDigest": "a948f98cd991ec153b96e957a507a52462b111019ef73e04b6a9f1d9930d9e6b",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "69d968b569de05f04ae948ff188341657edb07b1327293cd0636a69a47102325",
+  "archiveSha256": "4508872edae37daec27b36e35b7ad72e4f17c2e99e2c704b4531d2d8f9bb8691",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -60,17 +60,17 @@
     "CoreRuntime.inventoryResolveRecords(InventoryResolveRequestV1) throws -> CompactRecordBlockV1",
     "CoreRuntime.inventoryOpenProjectedShard(InventoryProjectedShardRequestV1) throws -> InventorySnapshotHandleV1",
     "CoreRuntime.agentOpenScope(RuntimeIdentity, CoreAgentClaudeScopeConfigV1) throws -> AgentClaudeScopeHandleV1",
-    "CoreRuntime.agentStartOrResume(RuntimeIdentity, string, string?) throws -> AgentClaudeStartReceiptV1",
+    "CoreRuntime.agentStartOrResume(RuntimeIdentity, string, string?, string?, string?) throws -> AgentClaudeStartReceiptV1",
     "CoreRuntime.agentSendUserMessage(RuntimeIdentity, string, string) throws -> u64",
     "CoreRuntime.agentInterruptTurn(RuntimeIdentity, string, u64, string) throws -> AgentClaudeInterruptReceiptV1",
     "CoreRuntime.agentRespondPermission(RuntimeIdentity, string, string, AgentClaudePermissionDecisionV1) throws",
-    "CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws -> AgentClaudeFlagSettingsReceiptV1",
+    "CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?, AgentClaudeFlagSettingsDispositionV1) throws -> AgentClaudeFlagSettingsReceiptV1",
     "CoreRuntime.agentShutdown(RuntimeIdentity, string) throws"
   ],
   "artifactSha256": {
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "49d14a7defb73b5e864991d89dac8e070fcb2c90fe1b1b66aabfaef53eda2c3e",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "489f266b2415f9b1556ebd7c85d318e768ee5503d2e5618591cf6cf9f3f3c0e8",
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "93c1aa83009754e86d97872fa34802c45fdc7aa7609f1134027e16d1dc8e3bf4",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "65b7e9699ebaf2579e7c8618066e13a8a8468457f3c0d2905dc083763bb9065f",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "883fff60e9f936173ebf0c8b94aee2d447e006b2393b880de5c676ff332f5599",
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "b84b9d0c613e37964f222b60e9fe1d9ab237c12a45c01b5a2a1904c19562a01c",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"
   }

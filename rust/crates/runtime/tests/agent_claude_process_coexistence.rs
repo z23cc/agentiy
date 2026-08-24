@@ -37,7 +37,11 @@ fn two_independent_reaper_instances_never_cross_attribute_pids() {
     // outcome or vice versa) would surface as a code mismatch, not just a missing entry.
     let mut handles = Vec::new();
     for i in 0..300 {
-        let (reaper, code) = if i % 2 == 0 { (Arc::clone(&reaper_a), 10) } else { (Arc::clone(&reaper_b), 20) };
+        let (reaper, code) = if i % 2 == 0 {
+            (Arc::clone(&reaper_a), 10)
+        } else {
+            (Arc::clone(&reaper_b), 20)
+        };
         handles.push(std::thread::spawn(move || {
             let child = spawn_sh(&format!("exit {code}"));
             let token = reaper.register(child.pid).expect("register");

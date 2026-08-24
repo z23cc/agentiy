@@ -172,7 +172,12 @@ fn waitid_probe(pid: i32) -> Result<bool, i32> {
 /// SIGTERM -> grace -> SIGKILL against the *group* (own children only), mirroring
 /// `ProcessTermination.swift:446-487`. Uses `killpg` because every spawned child is its own
 /// process-group leader (`spawn::spawn`'s `set_pgroup(0)`).
-pub fn terminate_and_reap(reaper: &Reaper, pid: i32, token: u64, grace: Duration) -> Option<ReapOutcome> {
+pub fn terminate_and_reap(
+    reaper: &Reaper,
+    pid: i32,
+    token: u64,
+    grace: Duration,
+) -> Option<ReapOutcome> {
     let target = Pid::from_raw(pid);
     let _ = killpg(target, Signal::SIGTERM);
     if let Some(outcome) = reaper.wait_for_exit(pid, token, grace) {
@@ -227,7 +232,12 @@ pub fn terminate_and_orphan(
 /// *already owned* registration whose scope dropped). Registers fresh as an orphan, signals the
 /// group, and polls for escalation; a registration collision here means some other owner
 /// genuinely has this PID, so this backstop steps back rather than fighting over it.
-pub fn terminate_orphan_backstop(reaper: &Reaper, pid: i32, poll_interval: Duration, grace: Duration) {
+pub fn terminate_orphan_backstop(
+    reaper: &Reaper,
+    pid: i32,
+    poll_interval: Duration,
+    grace: Duration,
+) {
     let target = Pid::from_raw(pid);
     let _ = killpg(target, Signal::SIGTERM);
     if reaper.register_orphan(pid).is_err() {
@@ -249,7 +259,10 @@ pub fn terminate_orphan_backstop(reaper: &Reaper, pid: i32, poll_interval: Durat
 
 fn reaper_probe_and_reap(shared: &Shared, pid: i32) {
     let slot = {
-        let entries = shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.get(&pid).cloned()
     };
     let Some(slot) = slot else {
@@ -285,7 +298,9 @@ fn reaper_probe_and_reap(shared: &Shared, pid: i32) {
 fn reaper_destructive_reap(shared: &Shared, pid: i32) {
     match waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
         Ok(WaitStatus::Exited(_, code)) => reaper_complete(shared, pid, ReapOutcome::Exited(code)),
-        Ok(WaitStatus::Signaled(_, sig, _)) => reaper_complete(shared, pid, ReapOutcome::Signaled(sig as i32)),
+        Ok(WaitStatus::Signaled(_, sig, _)) => {
+            reaper_complete(shared, pid, ReapOutcome::Signaled(sig as i32))
+        }
         Ok(WaitStatus::StillAlive) | Ok(_) => {}
         Err(nix::Error::ECHILD) => {
             shared.echild_count.fetch_add(1, Ordering::SeqCst);
@@ -304,13 +319,19 @@ fn reaper_destructive_reap(shared: &Shared, pid: i32) {
 /// than time-based).
 fn reaper_complete(shared: &Shared, pid: i32, outcome: ReapOutcome) {
     let slot = {
-        let entries = shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.get(&pid).cloned()
     };
     shared.reap_count.fetch_add(1, Ordering::SeqCst);
     let Some(slot) = slot else { return };
     {
-        let mut guard = slot.outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = slot
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Some(outcome);
         slot.condvar.notify_all();
     }
@@ -321,8 +342,15 @@ fn reaper_complete(shared: &Shared, pid: i32, outcome: ReapOutcome) {
         // observes `remove(&pid)` return `Some`, and only that side counts the reclaim -- the
         // `Arc::ptr_eq` check additionally guards against a pathological forget+re-register of the
         // same pid landing between the two locks (a different slot must never be reclaimed here).
-        let mut entries = shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if entries.get(&pid).is_some_and(|resident| Arc::ptr_eq(resident, &slot)) && entries.remove(&pid).is_some() {
+        let mut entries = shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries
+            .get(&pid)
+            .is_some_and(|resident| Arc::ptr_eq(resident, &slot))
+            && entries.remove(&pid).is_some()
+        {
             shared.orphan_reclaim_count.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -369,20 +397,32 @@ impl Reaper {
     }
 
     pub fn registered_count(&self) -> usize {
-        self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Whether `pid` still has a live entry -- true from registration until reaped (orphans) or
     /// until reaped **and** explicitly [`forget`](Self::forget)ten (owned). Requires no token, so
     /// it is safe for the orphan-backstop escalation loop, which never holds one.
     pub fn is_registered(&self, pid: i32) -> bool {
-        self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&pid)
+        self.shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&pid)
     }
 
     /// Count of entries still awaiting an outcome (`outcome.is_none()`). Unlike
     /// [`Self::registered_count`], excludes completed-but-not-yet-`forget`ten owned entries.
     pub fn pending_count(&self) -> usize {
-        let entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self
+            .shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries
             .values()
             .filter(|slot| {
@@ -397,7 +437,11 @@ impl Reaper {
     fn register_with(&self, pid: i32, orphan: bool) -> Result<u64, RegisterError> {
         let token = self.shared.next_token.fetch_add(1, Ordering::SeqCst);
         {
-            let mut entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut entries = self
+                .shared
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if entries.contains_key(&pid) {
                 return Err(RegisterError::AlreadyRegistered);
             }
@@ -420,9 +464,19 @@ impl Reaper {
             0,
             0,
         )];
-        let mut eventlist = [KEvent::new(0, EventFilter::EVFILT_READ, EvFlags::empty(), FilterFlag::empty(), 0, 0); 1];
+        let mut eventlist = [KEvent::new(
+            0,
+            EventFilter::EVFILT_READ,
+            EvFlags::empty(),
+            FilterFlag::empty(),
+            0,
+            0,
+        ); 1];
         // Registration-boundary probe point 1: submits the changelist, returns immediately.
-        let _ = self.shared.kq.kevent(&changelist, &mut eventlist[..0], Some(zero_timespec()));
+        let _ = self
+            .shared
+            .kq
+            .kevent(&changelist, &mut eventlist[..0], Some(zero_timespec()));
         // Registration-boundary probe point 2 (direct post-activate probe, contract §5.2's third
         // row) -- covers a child that exited between spawn and this `register` call.
         reaper_probe_and_reap(&self.shared, pid);
@@ -461,10 +515,16 @@ impl Reaper {
     /// paragraph names (see [`terminate_and_orphan`], the paired free function that does this).
     pub fn reassign_as_orphan(&self, pid: i32, token: u64) -> Result<bool, RegisterError> {
         let slot = {
-            let entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entries = self
+                .shared
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             entries.get(&pid).cloned()
         };
-        let Some(slot) = slot else { return Err(RegisterError::NotOwned) };
+        let Some(slot) = slot else {
+            return Err(RegisterError::NotOwned);
+        };
         if slot.token != token {
             return Err(RegisterError::NotOwned);
         }
@@ -478,9 +538,19 @@ impl Reaper {
             // See `reaper_complete`'s matching guard: identity-checked removal so a concurrent
             // completion (or a pathological forget+re-register racing between our two locks) can
             // never be double-reclaimed or misattributed.
-            let mut entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if entries.get(&pid).is_some_and(|resident| Arc::ptr_eq(resident, &slot)) && entries.remove(&pid).is_some() {
-                self.shared.orphan_reclaim_count.fetch_add(1, Ordering::SeqCst);
+            let mut entries = self
+                .shared
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if entries
+                .get(&pid)
+                .is_some_and(|resident| Arc::ptr_eq(resident, &slot))
+                && entries.remove(&pid).is_some()
+            {
+                self.shared
+                    .orphan_reclaim_count
+                    .fetch_add(1, Ordering::SeqCst);
             }
         }
         Ok(already_done)
@@ -493,7 +563,11 @@ impl Reaper {
     /// call here for one.
     pub fn wait_for_exit(&self, pid: i32, token: u64, timeout: Duration) -> Option<ReapOutcome> {
         let slot = {
-            let entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entries = self
+                .shared
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             entries.get(&pid).cloned()
         };
         if let Some(slot) = &slot {
@@ -502,7 +576,10 @@ impl Reaper {
             }
         }
         let slot = slot?;
-        let guard = slot.outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = slot
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (guard, _timeout_result) = slot
             .condvar
             .wait_timeout_while(guard, timeout, |o| o.is_none())
@@ -520,7 +597,11 @@ impl Reaper {
     #[cfg(test)]
     fn register_without_kevent_for_test(&self, pid: i32) -> u64 {
         let token = self.shared.next_token.fetch_add(1, Ordering::SeqCst);
-        let mut entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = self
+            .shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.insert(
             pid,
             Arc::new(Slot {
@@ -537,7 +618,11 @@ impl Reaper {
     /// Reclaims a completed **owned** entry after the caller has consumed its outcome via
     /// [`Self::wait_for_exit`]. No-op if `pid` is not registered or `token` does not match.
     pub fn forget(&self, pid: i32, token: u64) {
-        let mut entries = self.shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = self
+            .shared
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if entries.get(&pid).is_some_and(|slot| slot.token == token) {
             entries.remove(&pid);
         }
@@ -547,7 +632,12 @@ impl Reaper {
     /// Idempotent, matching `ProcessTermination.swift`'s `shutdown()`.
     pub fn shutdown(&self) {
         self.shared.shutdown.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(handle) = self
+            .thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = handle.join();
             AGENT_DOMAIN_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
         }
@@ -561,8 +651,14 @@ impl Reaper {
     /// equally valid future substrate change with no observable behavior difference).
     fn run_loop(shared: Arc<Shared>) {
         let tick = tick_timespec(500);
-        let mut eventlist =
-            [KEvent::new(0, EventFilter::EVFILT_READ, EvFlags::empty(), FilterFlag::empty(), 0, 0); 64];
+        let mut eventlist = [KEvent::new(
+            0,
+            EventFilter::EVFILT_READ,
+            EvFlags::empty(),
+            FilterFlag::empty(),
+            0,
+            0,
+        ); 64];
         // The §4.7-pinned 0.5 s fallback-probe interval, via the same deadline-based primitive
         // `agent_claude::process::timer` proves discontinuity-safe -- re-armed each time it fires,
         // rather than an ad hoc `Instant::elapsed()` comparison duplicating that logic here.
@@ -572,7 +668,10 @@ impl Reaper {
             if shared.shutdown.load(Ordering::SeqCst) {
                 break;
             }
-            let n = shared.kq.kevent(&[], &mut eventlist, Some(tick)).unwrap_or(0);
+            let n = shared
+                .kq
+                .kevent(&[], &mut eventlist, Some(tick))
+                .unwrap_or(0);
             for ev in &eventlist[..n] {
                 if ev.filter() == Ok(EventFilter::EVFILT_PROC) {
                     reaper_probe_and_reap(&shared, ev.ident() as i32);
@@ -580,7 +679,10 @@ impl Reaper {
             }
             if sweep_deadline.poll() {
                 let pending_pids: Vec<i32> = {
-                    let entries = shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let entries = shared
+                        .entries
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     entries
                         .iter()
                         .filter(|(_, slot)| {
@@ -595,7 +697,10 @@ impl Reaper {
                 for pid in pending_pids {
                     reaper_probe_and_reap(&shared, pid);
                     let now_done = {
-                        let entries = shared.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let entries = shared
+                            .entries
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         entries.get(&pid).is_some_and(|slot| {
                             slot.outcome
                                 .lock()
@@ -607,7 +712,9 @@ impl Reaper {
                         // Missed or delayed EVFILT_PROC delivery, self-healed by the periodic
                         // sweep -- "kevent exit delivery is not contractual under load"
                         // (ProcessTermination.swift:99-105).
-                        shared.missed_kevent_self_heals.fetch_add(1, Ordering::SeqCst);
+                        shared
+                            .missed_kevent_self_heals
+                            .fetch_add(1, Ordering::SeqCst);
                     }
                 }
                 sweep_deadline = Deadline::arm(Arc::clone(&clock), Duration::from_millis(500));
@@ -625,7 +732,10 @@ impl Drop for Reaper {
 }
 
 fn zero_timespec() -> libc::timespec {
-    libc::timespec { tv_sec: 0, tv_nsec: 0 }
+    libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    }
 }
 
 fn tick_timespec(millis: i64) -> libc::timespec {
@@ -660,7 +770,11 @@ mod tests {
             .expect("child must be reaped within 5s");
         assert_eq!(outcome, ReapOutcome::Exited(7));
         assert_eq!(reaper.pending_count(), 0);
-        assert_eq!(reaper.registered_count(), 1, "owned entry survives until explicit forget");
+        assert_eq!(
+            reaper.registered_count(),
+            1,
+            "owned entry survives until explicit forget"
+        );
         reaper.forget(child.pid, token);
         assert_eq!(reaper.registered_count(), 0);
         reaper.shutdown();
@@ -671,7 +785,10 @@ mod tests {
         let reaper = Reaper::new();
         let child = spawn_sh("sleep 5");
         let first = reaper.register(child.pid).expect("first register");
-        assert_eq!(reaper.register(child.pid), Err(RegisterError::AlreadyRegistered));
+        assert_eq!(
+            reaper.register(child.pid),
+            Err(RegisterError::AlreadyRegistered)
+        );
         let _ = terminate_and_reap(&reaper, child.pid, first, Duration::from_millis(200));
         reaper.shutdown();
     }
@@ -692,7 +809,8 @@ mod tests {
         let mut ready_byte = [0u8; 1];
         let mut line = Vec::new();
         loop {
-            out.read_exact(&mut ready_byte).expect("child must print a ready line before dying");
+            out.read_exact(&mut ready_byte)
+                .expect("child must print a ready line before dying");
             if ready_byte[0] == b'\n' {
                 break;
             }
@@ -701,7 +819,10 @@ mod tests {
         assert_eq!(line, b"ready");
         let outcome = terminate_and_reap(&reaper, child.pid, token, Duration::from_millis(300))
             .expect("escalation must eventually reap the child");
-        assert!(matches!(outcome, ReapOutcome::Signaled(sig) if sig == libc::SIGKILL), "expected SIGKILL, got {outcome:?}");
+        assert!(
+            matches!(outcome, ReapOutcome::Signaled(sig) if sig == libc::SIGKILL),
+            "expected SIGKILL, got {outcome:?}"
+        );
         reaper.forget(child.pid, token);
         reaper.shutdown();
     }
@@ -738,14 +859,25 @@ mod tests {
         // net for that: `terminate_and_orphan` must succeed via `reassign_as_orphan`.
         let reaper = Reaper::new();
         let child = spawn_sh("exit 0");
-        let token = reaper.register(child.pid).expect("owned registration at spawn time");
-        terminate_and_orphan(&reaper, child.pid, token, Duration::from_millis(20), Duration::from_secs(2))
-            .expect("the scope's own still-valid token must be accepted for reassignment");
+        let token = reaper
+            .register(child.pid)
+            .expect("owned registration at spawn time");
+        terminate_and_orphan(
+            &reaper,
+            child.pid,
+            token,
+            Duration::from_millis(20),
+            Duration::from_secs(2),
+        )
+        .expect("the scope's own still-valid token must be accepted for reassignment");
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while reaper.is_registered(child.pid) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(!reaper.is_registered(child.pid), "orphan entry must be reclaimed, not resident forever");
+        assert!(
+            !reaper.is_registered(child.pid),
+            "orphan entry must be reclaimed, not resident forever"
+        );
         assert_eq!(reaper.registered_count(), 0);
         assert!(reaper.orphan_reclaim_count() >= 1);
         reaper.shutdown();
@@ -760,16 +892,31 @@ mod tests {
         let reaper = Reaper::new();
         for i in 0..200 {
             let child = spawn_sh("exit 0");
-            let token = reaper.register(child.pid).expect("owned registration at spawn time");
-            terminate_and_orphan(&reaper, child.pid, token, Duration::from_millis(5), Duration::from_secs(2))
-                .unwrap_or_else(|err| panic!("cycle {i}: reassignment must succeed, got {err:?}"));
+            let token = reaper
+                .register(child.pid)
+                .expect("owned registration at spawn time");
+            terminate_and_orphan(
+                &reaper,
+                child.pid,
+                token,
+                Duration::from_millis(5),
+                Duration::from_secs(2),
+            )
+            .unwrap_or_else(|err| panic!("cycle {i}: reassignment must succeed, got {err:?}"));
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
             while reaper.is_registered(child.pid) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            assert!(!reaper.is_registered(child.pid), "cycle {i}: orphan entry outlived its reap");
+            assert!(
+                !reaper.is_registered(child.pid),
+                "cycle {i}: orphan entry outlived its reap"
+            );
         }
-        assert_eq!(reaper.registered_count(), 0, "zero residual entries after 200 scope-drop-without-wait cycles");
+        assert_eq!(
+            reaper.registered_count(),
+            0,
+            "zero residual entries after 200 scope-drop-without-wait cycles"
+        );
         assert_eq!(reaper.echild_count(), 0);
         reaper.shutdown();
     }
@@ -784,25 +931,37 @@ mod tests {
         use std::io::Read as _;
         let reaper = Reaper::new();
         let child = spawn_sh("trap '' TERM; echo ready; while true; do sleep 1; done");
-        let token = reaper.register(child.pid).expect("owned registration at spawn time");
+        let token = reaper
+            .register(child.pid)
+            .expect("owned registration at spawn time");
         let mut out = std::fs::File::from(child.stdout_read);
         let mut ready_byte = [0u8; 1];
         let mut line = Vec::new();
         loop {
-            out.read_exact(&mut ready_byte).expect("child must print a ready line before dying");
+            out.read_exact(&mut ready_byte)
+                .expect("child must print a ready line before dying");
             if ready_byte[0] == b'\n' {
                 break;
             }
             line.push(ready_byte[0]);
         }
         assert_eq!(line, b"ready");
-        terminate_and_orphan(&reaper, child.pid, token, Duration::from_millis(20), Duration::from_millis(300))
-            .expect("reassignment must succeed against the scope's own token");
+        terminate_and_orphan(
+            &reaper,
+            child.pid,
+            token,
+            Duration::from_millis(20),
+            Duration::from_millis(300),
+        )
+        .expect("reassignment must succeed against the scope's own token");
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while reaper.is_registered(child.pid) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(!reaper.is_registered(child.pid), "SIGTERM-ignoring child must still be escalated and reclaimed");
+        assert!(
+            !reaper.is_registered(child.pid),
+            "SIGTERM-ignoring child must still be escalated and reclaimed"
+        );
         reaper.shutdown();
     }
 
@@ -811,8 +970,15 @@ mod tests {
         let reaper = Reaper::new();
         let child = spawn_sh("sleep 5");
         let token = reaper.register(child.pid).expect("register");
-        assert_eq!(reaper.reassign_as_orphan(child.pid, token.wrapping_add(1)), Err(RegisterError::NotOwned));
-        assert_eq!(reaper.registered_count(), 1, "a rejected reassignment must not disturb the owned entry");
+        assert_eq!(
+            reaper.reassign_as_orphan(child.pid, token.wrapping_add(1)),
+            Err(RegisterError::NotOwned)
+        );
+        assert_eq!(
+            reaper.registered_count(),
+            1,
+            "a rejected reassignment must not disturb the owned entry"
+        );
         let _ = terminate_and_reap(&reaper, child.pid, token, Duration::from_millis(200));
         reaper.shutdown();
     }
@@ -830,8 +996,13 @@ mod tests {
             .wait_for_exit(child.pid, token, Duration::from_secs(5))
             .expect("child must be reaped within 5s");
         assert_eq!(outcome, ReapOutcome::Exited(0));
-        let already_reaped = reaper.reassign_as_orphan(child.pid, token).expect("token is still valid");
-        assert!(already_reaped, "reassigning an already-completed slot must report true, not silently succeed as false");
+        let already_reaped = reaper
+            .reassign_as_orphan(child.pid, token)
+            .expect("token is still valid");
+        assert!(
+            already_reaped,
+            "reassigning an already-completed slot must report true, not silently succeed as false"
+        );
         assert_eq!(
             reaper.registered_count(),
             0,
@@ -843,7 +1014,10 @@ mod tests {
     #[test]
     fn reassign_as_orphan_rejects_a_never_registered_pid() {
         let reaper = Reaper::new();
-        assert_eq!(reaper.reassign_as_orphan(i32::MAX, 1), Err(RegisterError::NotOwned));
+        assert_eq!(
+            reaper.reassign_as_orphan(i32::MAX, 1),
+            Err(RegisterError::NotOwned)
+        );
         reaper.shutdown();
     }
 

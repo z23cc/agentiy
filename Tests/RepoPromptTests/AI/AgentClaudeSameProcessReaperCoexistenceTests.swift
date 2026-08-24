@@ -16,8 +16,8 @@ import XCTest
 /// comment at its would-be call site below for the full reasoning).
 final class AgentClaudeSameProcessReaperCoexistenceTests: XCTestCase {
     func testRustSupervisedAndSwiftSupervisedChildrenReapConcurrentlyWithoutCrossAttribution() async throws {
-        // Swift side: a real child through the production `ProcessLauncher`/`ProcessTermination`
-        // path, exactly as `ClaudeNativeProcessSessionController`'s own children are reaped today.
+        // Swift side: a real child through the shared `ProcessLauncher`/`ProcessTermination` path,
+        // exercising coexistence with Rust's Claude child reaper in the same host process.
         let swiftChild = try ProcessLauncher.spawn(
             command: "/bin/sh",
             arguments: ["-c", "sleep 1; exit 0"],

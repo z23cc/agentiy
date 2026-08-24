@@ -33,13 +33,11 @@
 //!
 //! ## Scope reductions, named rather than silently taken
 //!
-//! - **`apply_model_and_effort`'s wire subtype is a placeholder.** The real Swift controller's
-//!   flag-settings handshake (`session.flagSettingsDeferred`/`Pending`/`Applied`,
-//!   `ClaudeNativeProcessSessionController.swift:425-443,717`) has launch-restart and pending-ack
-//!   states this slice does not reproduce; P6-6's job is the FFI/bridge surface, not the full
-//!   flag-settings state machine. This method sends a fire-and-forget `control_request` with
-//!   subtype `"set_model_and_effort"` and no ACK tracking. Full parity is P6-7's job, where the
-//!   turn-level differential is what actually needs live handshake state.
+//! - **Launch-environment comparison remains a Swift input fact.** Swift still resolves Keychain,
+//!   backend selection, and the launch environment. When that comparison says a live change needs
+//!   a restart, `apply_model_and_effort` receives the fact, records `session.flagSettingsDeferred`,
+//!   and publishes `restartRequired` without writing a control request. Rust still owns the command
+//!   state transition and raw record; Swift owns only the platform-specific comparison input.
 //! - **No dedicated resnapshot-fetch export.** The seven exports this step's done-when names do
 //!   not include one; [`AgentClaudeScope::diagnostics`] exposes the resnapshot buffer's retained
 //!   byte count and truncation counter so the machinery is testable end-to-end now, without
@@ -84,7 +82,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, SubscriptionHub};
 
-use super::codec::{self, CodecError, ControlRequest, InboundMessage};
+use super::codec::{self, CodecError, ControlRequest, ControlResponse, InboundMessage};
 use super::control::{self, ControlCorrelator, ControlOutcome};
 use super::event::{self, AgentClaudeEvent, AgentClaudeEventKind};
 use super::framer::LineFramer;
@@ -92,9 +90,9 @@ use super::permission::{self, CanUseToolRequest, PermissionDecision};
 use super::process::{self, reaper::Reaper, spawn::SpawnConfig, timer::SystemClock};
 use super::recovery::{self, RecoveryOutcome};
 use super::resnapshot::ResnapshotBuffer;
-use super::translator::{StreamResult, Translator, should_suppress_user_facing_stream_result};
 use super::tool_owned::is_repoprompt_tool_name;
-use super::turn_state::{TurnEvent, TurnState};
+use super::translator::{StreamResult, Translator, should_suppress_user_facing_stream_result};
+use super::turn_state::{TurnEvent, TurnState, TurnStatus};
 
 macro_rules! uuid_id {
     ($name:ident) => {
@@ -154,8 +152,10 @@ impl std::str::FromStr for AgentClaudeScopeId {
         }
         let mut bytes = [0u8; 16];
         for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-            let text = std::str::from_utf8(chunk).map_err(|_| AgentClaudeScopeIdParseError::InvalidHex)?;
-            bytes[index] = u8::from_str_radix(text, 16).map_err(|_| AgentClaudeScopeIdParseError::InvalidHex)?;
+            let text =
+                std::str::from_utf8(chunk).map_err(|_| AgentClaudeScopeIdParseError::InvalidHex)?;
+            bytes[index] = u8::from_str_radix(text, 16)
+                .map_err(|_| AgentClaudeScopeIdParseError::InvalidHex)?;
         }
         Ok(Self::from_bytes(bytes))
     }
@@ -207,17 +207,50 @@ impl std::error::Error for AgentScopeError {}
 /// module's type directly into the FFI surface.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PermissionDecisionInput {
-    Allow { include_updated_permissions: bool },
-    Deny { message: String, interrupt: bool },
+    Allow {
+        include_updated_permissions: bool,
+    },
+    /// Swift/core policy matched a RepoPrompt-owned MCP tool and chose the legacy automatic allow
+    /// path. Rust still owns the protocol write; the extra fields exist only so the Rust-owned raw
+    /// event log can preserve the legacy `approval.autoApprove.repoPrompt` record.
+    AutoAllowRepoPrompt {
+        match_source: String,
+        normalized_tool_name: Option<String>,
+        server_identifier: Option<String>,
+    },
+    /// The legacy controller's defensive fallback automatic allow path. Kept as a distinct policy
+    /// result even though current request modeling makes it unreachable, preserving the frozen raw
+    /// event kind without moving the policy decision into Rust.
+    AutoAllowFallback,
+    Deny {
+        message: String,
+        interrupt: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagSettingsDisposition {
+    Initial,
+    Live,
+    PendingInitialHandshake,
+    RestartRequired,
 }
 
 impl From<PermissionDecisionInput> for PermissionDecision {
     fn from(value: PermissionDecisionInput) -> Self {
         match value {
-            PermissionDecisionInput::Allow { include_updated_permissions } => {
-                PermissionDecision::Allow { include_updated_permissions }
+            PermissionDecisionInput::Allow {
+                include_updated_permissions,
+            } => PermissionDecision::Allow {
+                include_updated_permissions,
+            },
+            PermissionDecisionInput::AutoAllowRepoPrompt { .. }
+            | PermissionDecisionInput::AutoAllowFallback => PermissionDecision::Allow {
+                include_updated_permissions: false,
+            },
+            PermissionDecisionInput::Deny { message, interrupt } => {
+                PermissionDecision::Deny { message, interrupt }
             }
-            PermissionDecisionInput::Deny { message, interrupt } => PermissionDecision::Deny { message, interrupt },
         }
     }
 }
@@ -250,6 +283,18 @@ pub struct AgentClaudeScopeConfig {
     pub system_prompt: Option<String>,
     pub idle_fallback: Duration,
     pub interrupt_ack_timeout: Duration,
+    /// P6-7 (D-9/R9, `docs/architecture/rust-agent-claude-v1.md` §15.6): whether the raw-event
+    /// JSONL log is active for this session -- resolved by Swift from the SAME `app_settings` key
+    /// (`agent_mode.claude_raw_event_logging_enabled`) its own writer reads, never decided here.
+    pub raw_event_log_enabled: bool,
+    /// The already-resolved absolute log-file path (Swift's `makeRawEventLogFileURL`, widened for
+    /// this reuse) -- `None` means "no path could be resolved," which disables logging regardless
+    /// of [`Self::raw_event_log_enabled`] (`RawEventLogWriter::new`'s own guard).
+    pub raw_event_log_file_path: Option<String>,
+    pub raw_event_log_run_id: String,
+    pub raw_event_log_tab_id: String,
+    pub raw_event_log_window_id: i64,
+    pub raw_event_log_initial_session_id: String,
     /// Test-only escape hatch: see this module's doc comment. Never set outside a test scope.
     pub raw_argv_for_testing: bool,
 }
@@ -269,6 +314,12 @@ impl Default for AgentClaudeScopeConfig {
             system_prompt: None,
             idle_fallback: super::turn_state::DEFAULT_IDLE_FALLBACK,
             interrupt_ack_timeout: Duration::from_millis(1500),
+            raw_event_log_enabled: false,
+            raw_event_log_file_path: None,
+            raw_event_log_run_id: String::new(),
+            raw_event_log_tab_id: String::new(),
+            raw_event_log_window_id: 0,
+            raw_event_log_initial_session_id: String::new(),
             raw_argv_for_testing: false,
         }
     }
@@ -325,16 +376,39 @@ pub struct AgentClaudeScope {
     reaper: Arc<Reaper>,
     control: ControlCorrelator,
     state: Mutex<Inner>,
-    stdin: Mutex<Option<File>>,
+    // PID-owned so a late EOF from an old reader can never clear a replacement process's stdin.
+    stdin: Mutex<Option<(libc::pid_t, File)>>,
     reader_threads: Mutex<Vec<JoinHandle<()>>>,
     event_sink: Mutex<Option<EventSink>>,
     next_request_id: AtomicU64,
     publish_failure_count: AtomicU64,
+    scheduled_fallback_generation: AtomicU64,
+    /// P6-7 (D-9/R9, §15.6). Constructed once from `config.raw_event_log_enabled`/
+    /// `raw_event_log_file_path` and never reconfigured afterwards -- matching the fact that
+    /// Swift's own equivalent flags are read once per session too (`isRawEventFileLoggingEnabled()`
+    /// is consulted at session start, not polled continuously).
+    raw_log: super::raw_event_log::RawEventLogWriter,
 }
 
 impl AgentClaudeScope {
-    fn new(identity: RuntimeIdentity, scope_id: AgentClaudeScopeId, config: AgentClaudeScopeConfig, reaper: Arc<Reaper>) -> Self {
+    fn new(
+        identity: RuntimeIdentity,
+        scope_id: AgentClaudeScopeId,
+        config: AgentClaudeScopeConfig,
+        reaper: Arc<Reaper>,
+    ) -> Self {
         let idle_fallback = config.idle_fallback;
+        let raw_log = super::raw_event_log::RawEventLogWriter::new(
+            config.raw_event_log_enabled,
+            config.raw_event_log_file_path.clone(),
+            super::raw_event_log::RawEventLogContext {
+                run_id: config.raw_event_log_run_id.clone(),
+                tab_id: config.raw_event_log_tab_id.clone(),
+                window_id: config.raw_event_log_window_id,
+                workspace_path: config.working_directory.clone().unwrap_or_default(),
+                initial_session_id: config.raw_event_log_initial_session_id.clone(),
+            },
+        );
         Self {
             identity,
             scope_id,
@@ -358,6 +432,8 @@ impl AgentClaudeScope {
             event_sink: Mutex::new(None),
             next_request_id: AtomicU64::new(1),
             publish_failure_count: AtomicU64::new(0),
+            scheduled_fallback_generation: AtomicU64::new(0),
+            raw_log,
         }
     }
 
@@ -375,15 +451,24 @@ impl AgentClaudeScope {
     /// `InventoryScope::attach_event_sink` exactly (same doc rationale: called once by the FFI
     /// layer immediately after minting the scope; idempotent).
     pub fn attach_event_sink(&self, hub: Arc<SubscriptionHub>, scope_id: ScopeId) {
-        *self.event_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(EventSink { hub, scope_id });
+        *self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(EventSink { hub, scope_id });
     }
 
     fn check_identity(&self, identity: &RuntimeIdentity) -> Result<(), AgentScopeError> {
-        if &self.identity == identity { Ok(()) } else { Err(AgentScopeError::IdentityMismatch) }
+        if &self.identity == identity {
+            Ok(())
+        } else {
+            Err(AgentScopeError::IdentityMismatch)
+        }
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[must_use]
@@ -406,8 +491,23 @@ impl AgentClaudeScope {
     /// Contract §5.1: spawns the child, registers it with the shared reaper, and starts the
     /// per-stream reader threads. Returns `pid`/`process_group_id` synchronously so the caller's
     /// expected-agent-PID fence (design §4.6) can register immediately on return.
-    pub fn start_or_resume(self: &Arc<Self>, identity: &RuntimeIdentity, resume_session_id: Option<String>) -> Result<StartReceipt, AgentScopeError> {
+    pub fn start_or_resume(
+        self: &Arc<Self>,
+        identity: &RuntimeIdentity,
+        resume_session_id: Option<String>,
+        model: Option<String>,
+        effort_level: Option<String>,
+    ) -> Result<StartReceipt, AgentScopeError> {
         self.check_identity(identity)?;
+        self.raw_log.write(
+            "session.startOrResume",
+            Some(json!({
+                "existingSessionID": resume_session_id,
+                "model": model,
+                "effortLevel": effort_level,
+                "hasSystemPromptOverride": self.config.system_prompt.is_some(),
+            })),
+        );
         {
             let state = self.lock_state();
             if state.closed {
@@ -424,25 +524,58 @@ impl AgentClaudeScope {
             environment: &self.config.environment,
             working_directory: self.config.working_directory.as_deref(),
         };
-        let spawned = process::spawn::spawn(&spawn_config).map_err(|error| AgentScopeError::Spawn(error.to_string()))?;
+        let spawned = process::spawn::spawn(&spawn_config)
+            .map_err(|error| AgentScopeError::Spawn(error.to_string()))?;
+        // R8: command/arguments/working_directory only, never `self.config.environment` (module
+        // doc, `raw_event_log`'s own doc comment).
+        self.raw_log.write(
+            "process.spawned",
+            Some(json!({
+                "command": self.config.command,
+                "arguments": arguments,
+                "workingDirectory": self.config.working_directory,
+            })),
+        );
         let token = match self.reaper.register(spawned.pid) {
             Ok(token) => token,
             Err(error) => return Err(AgentScopeError::Reaper(format!("{error:?}"))),
         };
-        *self.stdin.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(File::from(spawned.stdin_write));
+        *self
+            .stdin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((spawned.pid, File::from(spawned.stdin_write)));
         {
             let mut state = self.lock_state();
-            state.process = Some(ProcessHandle { pid: spawned.pid, reaper_token: token });
+            state.process = Some(ProcessHandle {
+                pid: spawned.pid,
+                reaper_token: token,
+            });
         }
-        let stdout_handle = spawn_stdout_pipeline(Arc::downgrade(self), spawned.stdout_read);
+        let stdout_handle =
+            spawn_stdout_pipeline(Arc::downgrade(self), spawned.stdout_read, spawned.pid);
         // Stderr has no decode step (module doc): reused unmodified from P6-4, no thread-budget
         // risk since this pairing already *is* the one thread the stderr side needs. The tail's
         // `Arc<Mutex<StderrTail>>` lives only as long as this reader thread needs it -- this slice
         // does not surface a live `stderrTail` event (contract §7.1's droppable-diagnostic row is
         // satisfied by the tail simply existing for a future diagnostics read, not by streaming it).
-        let (stderr_handle, _stderr_stats) =
-            process::reader::spawn_stderr_reader(spawned.stderr_read, Arc::new(Mutex::new(process::stderr_tail::StderrTail::default())));
-        let mut threads = self.reader_threads.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stderr_scope = Arc::downgrade(self);
+        let stderr_observer: process::reader::StderrChunkObserver = Arc::new(move |chunk| {
+            if let Some(scope) = stderr_scope.upgrade() {
+                scope
+                    .raw_log
+                    .write("process.stderr", Some(raw_line_payload(chunk)));
+            }
+        });
+        let (stderr_handle, _stderr_stats) = process::reader::spawn_stderr_reader_with_observer(
+            spawned.stderr_read,
+            Arc::new(Mutex::new(process::stderr_tail::StderrTail::default())),
+            Some(stderr_observer),
+        );
+        let mut threads = self
+            .reader_threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         threads.push(stdout_handle);
         threads.push(stderr_handle);
         drop(threads);
@@ -459,7 +592,10 @@ impl AgentClaudeScope {
             let _ = self.shutdown(identity);
             return Err(handshake_error);
         }
-        Ok(StartReceipt { pid: spawned.pid, process_group_id: spawned.process_group_id })
+        Ok(StartReceipt {
+            pid: spawned.pid,
+            process_group_id: spawned.process_group_id,
+        })
     }
 
     /// Contract §2.5/design §4.5 gap closure (P6-7 §15.4/§15.5, `docs/architecture/
@@ -491,7 +627,10 @@ impl AgentClaudeScope {
     }
 
     fn next_control_request_id(&self, prefix: &str) -> String {
-        format!("{prefix}-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst))
+        format!(
+            "{prefix}-{}",
+            self.next_request_id.fetch_add(1, Ordering::SeqCst)
+        )
     }
 
     /// Port of `initializeIfNeeded`/`buildInitializeRequest` (`:701-720`, `:795-800`). On success,
@@ -509,8 +648,11 @@ impl AgentClaudeScope {
             let trimmed = session_id.trim();
             if !trimmed.is_empty() {
                 self.lock_state().translator.cli_session_id = Some(trimmed.to_string());
+                self.raw_log.set_session_id(trimmed);
             }
         }
+        self.raw_log
+            .write("session.initialized", Some(Value::Object(response)));
         Ok(())
     }
 
@@ -520,7 +662,9 @@ impl AgentClaudeScope {
     /// dangerously-skip-permissions` argv flag `build_arguments` already injects for the specific
     /// `"bypassPermissions"` value (contract §2.5 item 3).
     fn send_set_permission_mode_request_if_configured(&self) -> Result<(), AgentScopeError> {
-        let Some(mode) = self.config.permission_mode.as_deref() else { return Ok(()) };
+        let Some(mode) = self.config.permission_mode.as_deref() else {
+            return Ok(());
+        };
         let trimmed = mode.trim();
         if trimmed.is_empty() {
             return Ok(());
@@ -528,7 +672,11 @@ impl AgentClaudeScope {
         let mut request = Map::new();
         request.insert("subtype".to_string(), json!("set_permission_mode"));
         request.insert("mode".to_string(), json!(trimmed));
-        self.send_startup_control_request("permmode", &request)?;
+        let response = self.send_startup_control_request("permmode", &request)?;
+        self.raw_log.write(
+            "session.permissionModeInitialized",
+            Some(json!({"requestedMode": trimmed, "response": response})),
+        );
         Ok(())
     }
 
@@ -536,20 +684,36 @@ impl AgentClaudeScope {
     /// subtype dispatch (`:1959-1963`): `"success"` resolves with the response body, anything else
     /// (`"error"` in practice) fails with the CLI's own error message, matching Swift's
     /// `ControllerError.invalidControlResponse`. Used only by the two session-startup handshake
-    /// requests above -- `interrupt_turn`/`apply_model_and_effort` intentionally do not check
-    /// `subtype` (design predates this port; out of scope here, see this module's top-of-file
-    /// "scope reductions" note).
-    fn send_startup_control_request(&self, request_id_prefix: &str, request: &Map<String, Value>) -> Result<Map<String, Value>, AgentScopeError> {
+    /// requests above. Interrupt preserves Swift's ACK-on-any-response behavior; flag settings
+    /// validates the success subtype because its correlated outcome must not report a failed
+    /// control response as applied.
+    fn send_startup_control_request(
+        &self,
+        request_id_prefix: &str,
+        request: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, AgentScopeError> {
         let request_id = self.next_control_request_id(request_id_prefix);
+        self.raw_log.write(
+            "control.request.sent",
+            Some(json!({
+                "requestID": request_id,
+                "request": request,
+                "expectsResponse": true,
+            })),
+        );
         let write_request_id = request_id.clone();
         let outcome = control::send_control_request_blocking(&self.control, &request_id, || {
             let line = codec::encode_control_request(&write_request_id, request);
             self.write_line(line)
         });
         match outcome {
-            ControlOutcome::Response(response) if response.subtype == "success" => Ok(response.response.unwrap_or_default()),
+            ControlOutcome::Response(response) if response.subtype == "success" => {
+                Ok(response.response.unwrap_or_default())
+            }
             ControlOutcome::Response(response) => {
-                let message = response.error.unwrap_or_else(|| "Unknown Claude control error".to_string());
+                let message = response
+                    .error
+                    .unwrap_or_else(|| "Unknown Claude control error".to_string());
                 Err(AgentScopeError::ControlResponseError(message))
             }
             ControlOutcome::WriteFailed(reason) => Err(AgentScopeError::TransportWrite(reason)),
@@ -588,7 +752,12 @@ impl AgentClaudeScope {
                 args.push(id.to_string());
             }
         }
-        if self.config.permission_mode.as_deref().is_some_and(|mode| mode.eq_ignore_ascii_case("bypasspermissions")) {
+        if self
+            .config
+            .permission_mode
+            .as_deref()
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("bypasspermissions"))
+        {
             args.push("--allow-dangerously-skip-permissions".to_string());
         }
         if let Some(path) = &self.config.mcp_config_path {
@@ -606,7 +775,11 @@ impl AgentClaudeScope {
         args
     }
 
-    pub fn send_user_message(&self, identity: &RuntimeIdentity, text: &str) -> Result<u64, AgentScopeError> {
+    pub fn send_user_message(
+        &self,
+        identity: &RuntimeIdentity,
+        text: &str,
+    ) -> Result<u64, AgentScopeError> {
         self.check_identity(identity)?;
         let session_id = {
             let mut state = self.lock_state();
@@ -622,7 +795,8 @@ impl AgentClaudeScope {
             state.translator.cli_session_id.clone()
         };
         let line = codec::encode_user_message(text, session_id.as_deref());
-        self.write_line(line).map_err(AgentScopeError::TransportWrite)?;
+        self.write_line(line)
+            .map_err(AgentScopeError::TransportWrite)?;
         Ok(self.lock_state().last_turn_generation)
     }
 
@@ -630,34 +804,62 @@ impl AgentClaudeScope {
     /// *removed*, not made remote). The generation/in-flight classification below runs
     /// synchronously (no I/O) so `noTurnInFlight`/`staleGeneration` resolve and publish before this
     /// call returns; only the genuine ACK round trip is pushed onto a background thread.
-    pub fn interrupt_turn(self: &Arc<Self>, identity: &RuntimeIdentity, turn_generation: u64, reason: String) -> Result<String, AgentScopeError> {
+    pub fn interrupt_turn(
+        self: &Arc<Self>,
+        identity: &RuntimeIdentity,
+        turn_generation: u64,
+        reason: String,
+    ) -> Result<String, AgentScopeError> {
         self.check_identity(identity)?;
-        let request_id = format!("interrupt-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst));
+        let request_id = format!(
+            "interrupt-{}",
+            self.next_request_id.fetch_add(1, Ordering::SeqCst)
+        );
         let (current_generation, current_turn_in_flight) = {
             let state = self.lock_state();
             if state.closed {
                 return Err(AgentScopeError::ScopeClosed);
             }
-            (state.last_turn_generation, state.turns.has_pending_turn_ids())
+            (
+                state.last_turn_generation,
+                state.turns.has_pending_turn_ids(),
+            )
         };
         if turn_generation != current_generation {
-            self.publish(event::interrupt_outcome(&request_id, "staleGeneration", current_generation, Some(current_turn_in_flight)));
+            self.publish(event::interrupt_outcome(
+                &request_id,
+                "staleGeneration",
+                current_generation,
+                Some(current_turn_in_flight),
+            ));
             return Ok(request_id);
         }
         if !current_turn_in_flight {
-            self.publish(event::interrupt_outcome(&request_id, "noTurnInFlight", current_generation, None));
+            self.publish(event::interrupt_outcome(
+                &request_id,
+                "noTurnInFlight",
+                current_generation,
+                None,
+            ));
             return Ok(request_id);
         }
         let scope = Arc::clone(self);
         let thread_request_id = request_id.clone();
         let spawn_result = thread::Builder::new()
             .name("agent-claude-interrupt".to_string())
-            .spawn(move || scope.run_interrupt_roundtrip(thread_request_id, current_generation, reason));
+            .spawn(move || {
+                scope.run_interrupt_roundtrip(thread_request_id, current_generation, reason)
+            });
         if spawn_result.is_err() {
             // Thread-spawn failure is treated the same as a transport failure -- the caller still
             // gets a receipt (charter §8.2's fast-enqueue contract), and the outcome is reported
             // as `failed` rather than left forever unresolved.
-            self.publish(event::interrupt_outcome(&request_id, "failed", current_generation, None));
+            self.publish(event::interrupt_outcome(
+                &request_id,
+                "failed",
+                current_generation,
+                None,
+            ));
         }
         Ok(request_id)
     }
@@ -666,23 +868,59 @@ impl AgentClaudeScope {
         let mut request = Map::new();
         request.insert("subtype".to_string(), json!("interrupt"));
         request.insert("reason".to_string(), json!(reason));
+        self.raw_log.write(
+            "control.request.sent",
+            Some(json!({
+                "requestID": request_id,
+                "request": request,
+                "expectsResponse": true,
+            })),
+        );
         let write_request_id = request_id.clone();
-        let outcome = control::send_control_request(&self.control, &request_id, self.config.interrupt_ack_timeout, || {
-            let line = codec::encode_control_request(&write_request_id, &request);
-            self.write_line(line)
-        });
-        let outcome_name = match outcome {
+        let outcome = control::send_control_request(
+            &self.control,
+            &request_id,
+            self.config.interrupt_ack_timeout,
+            || {
+                let line = codec::encode_control_request(&write_request_id, &request);
+                self.write_line(line)
+            },
+        );
+        let (outcome_name, raw_kind, raw_payload) = match outcome {
             ControlOutcome::Response(_) => {
                 self.lock_state().turns.mark_interrupted();
-                "acknowledged"
+                (
+                    "acknowledged",
+                    "turn.interrupted",
+                    json!({"reason": reason}),
+                )
             }
-            ControlOutcome::Timeout => "timedOut",
-            ControlOutcome::WriteFailed(_) => "failed",
+            ControlOutcome::Timeout => (
+                "timedOut",
+                "turn.interrupt.timedOut",
+                json!({"reason": reason}),
+            ),
+            ControlOutcome::WriteFailed(error) => (
+                "failed",
+                "turn.interrupt.failed",
+                json!({"reason": reason, "error": error}),
+            ),
         };
-        self.publish(event::interrupt_outcome(&request_id, outcome_name, current_generation, None));
+        self.raw_log.write(raw_kind, Some(raw_payload));
+        self.publish(event::interrupt_outcome(
+            &request_id,
+            outcome_name,
+            current_generation,
+            None,
+        ));
     }
 
-    pub fn respond_permission(&self, identity: &RuntimeIdentity, request_id: &str, decision: PermissionDecisionInput) -> Result<(), AgentScopeError> {
+    pub fn respond_permission(
+        &self,
+        identity: &RuntimeIdentity,
+        request_id: &str,
+        decision: PermissionDecisionInput,
+    ) -> Result<(), AgentScopeError> {
         self.check_identity(identity)?;
         let pending = {
             let mut state = self.lock_state();
@@ -691,13 +929,88 @@ impl AgentClaudeScope {
             }
             state.pending_permissions.remove(request_id)
         };
-        let Some(pending) = pending else { return Err(AgentScopeError::UnknownPermissionRequest) };
+        let Some(pending) = pending else {
+            return Err(AgentScopeError::UnknownPermissionRequest);
+        };
+        let automatic_log = match &decision {
+            PermissionDecisionInput::AutoAllowRepoPrompt {
+                match_source,
+                normalized_tool_name,
+                server_identifier,
+            } => Some((
+                "approval.autoApprove.repoPrompt",
+                json!({
+                    "requestID": request_id,
+                    "toolName": pending.tool_name,
+                    "matchSource": match_source,
+                    "normalizedToolName": normalized_tool_name,
+                    "serverIdentifier": server_identifier,
+                }),
+            )),
+            PermissionDecisionInput::AutoAllowFallback => Some((
+                "approval.autoApprove.fallback",
+                json!({"requestID": request_id, "toolName": pending.tool_name}),
+            )),
+            PermissionDecisionInput::Allow { .. } | PermissionDecisionInput::Deny { .. } => None,
+        };
         let decision: PermissionDecision = decision.into();
-        let line = permission::encode_permission_decision(request_id, &decision, &pending.input, None, pending.tool_use_id.as_deref());
-        control::send_control_request_without_response(|| self.write_line(line)).map_err(AgentScopeError::TransportWrite)?;
-        if matches!(decision, PermissionDecision::Deny { interrupt: true, .. }) {
+        let suggestions = (!pending.permission_suggestions.is_empty())
+            .then_some(pending.permission_suggestions.as_slice());
+        let response = permission::permission_response_payload(
+            &decision,
+            &pending.input,
+            suggestions,
+            pending.tool_use_id.as_deref(),
+        );
+        let line = codec::encode_control_response_success(request_id, Some(&response));
+        if let Err(reason) =
+            control::send_control_request_without_response(|| self.write_line(line))
+        {
+            // Keep the request retryable/surfaceable when the automatic response did not leave the
+            // process. The adapter falls back to the normal UI request in this case; removing it
+            // permanently before a failed write would strand the CLI waiting on an unanswerable ID.
+            self.lock_state()
+                .pending_permissions
+                .insert(request_id.to_string(), pending);
+            // Mirrors Swift's `respondToPermission` catch block calling `failProtocolAndShutdown`
+            // (§15.6) -- raw-log observability only, not a forced shutdown; see the identical note on
+            // `handle_control_request`'s unsupported-subtype write-failure path.
+            self.raw_log.write(
+                "session.failProtocol",
+                Some(json!({"message": format!("Failed to submit Claude approval decision: {reason}")})),
+            );
+            return Err(AgentScopeError::TransportWrite(reason));
+        }
+        if let Some((kind, mut payload)) = automatic_log {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("response".to_string(), Value::Object(response));
+            }
+            self.raw_log.write(kind, Some(payload));
+        } else {
+            self.raw_log.write(
+                "approval.response.sent",
+                Some(json!({
+                    "requestID": request_id,
+                    "decision": match &decision {
+                        PermissionDecision::Allow { include_updated_permissions: false } => "accept",
+                        PermissionDecision::Allow { include_updated_permissions: true } => "acceptForSession",
+                        PermissionDecision::Deny { interrupt: false, .. } => "decline",
+                        PermissionDecision::Deny { interrupt: true, .. } => "cancel",
+                    },
+                    "response": response,
+                })),
+            );
+        }
+        if matches!(
+            decision,
+            PermissionDecision::Deny {
+                interrupt: true,
+                ..
+            }
+        ) {
             self.publish(
-                AgentClaudeEvent::new(AgentClaudeEventKind::ApprovalCancelled).with_field("request_id", request_id.to_string()),
+                AgentClaudeEvent::new(AgentClaudeEventKind::ApprovalCancelled)
+                    .with_field("request_id", request_id.to_string()),
             );
         }
         Ok(())
@@ -713,7 +1026,13 @@ impl AgentClaudeScope {
     /// §8.2's fast-enqueue contract); only the genuine ACK round trip is pushed onto a
     /// background thread, with the outcome published later as a `flagSettingsApplied` terminal-
     /// class event correlated by this same `request_id`.
-    pub fn apply_model_and_effort(self: &Arc<Self>, identity: &RuntimeIdentity, model: Option<String>, effort: Option<String>) -> Result<String, AgentScopeError> {
+    pub fn apply_model_and_effort(
+        self: &Arc<Self>,
+        identity: &RuntimeIdentity,
+        model: Option<String>,
+        effort: Option<String>,
+        disposition: FlagSettingsDisposition,
+    ) -> Result<String, AgentScopeError> {
         self.check_identity(identity)?;
         {
             let state = self.lock_state();
@@ -721,12 +1040,56 @@ impl AgentClaudeScope {
                 return Err(AgentScopeError::ScopeClosed);
             }
         }
-        let request_id = format!("flags-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst));
+        let request_id = format!(
+            "flags-{}",
+            self.next_request_id.fetch_add(1, Ordering::SeqCst)
+        );
+        let settings = flag_settings(model.as_deref(), effort.as_deref());
+        match disposition {
+            FlagSettingsDisposition::RestartRequired => {
+                self.raw_log.write(
+                    "session.flagSettingsDeferred",
+                    Some(json!({
+                        "reason": "launch_environment_changed",
+                        "model": model.as_deref(),
+                    })),
+                );
+                self.publish(
+                    AgentClaudeEvent::new(AgentClaudeEventKind::FlagSettingsApplied)
+                        .with_field("request_id", request_id.as_str())
+                        .with_field("outcome", "restartRequired"),
+                );
+                return Ok(request_id);
+            }
+            FlagSettingsDisposition::PendingInitialHandshake => {
+                self.raw_log.write(
+                    "session.flagSettingsPending",
+                    Some(json!({"settings": settings.as_ref().cloned().map(Value::Object)})),
+                );
+                self.publish(
+                    AgentClaudeEvent::new(AgentClaudeEventKind::FlagSettingsApplied)
+                        .with_field("request_id", request_id.as_str())
+                        .with_field("outcome", "pending"),
+                );
+                return Ok(request_id);
+            }
+            FlagSettingsDisposition::Initial | FlagSettingsDisposition::Live => {}
+        }
+        let Some(settings) = settings else {
+            self.publish(
+                AgentClaudeEvent::new(AgentClaudeEventKind::FlagSettingsApplied)
+                    .with_field("request_id", request_id.as_str())
+                    .with_field("outcome", "applied"),
+            );
+            return Ok(request_id);
+        };
         let scope = Arc::clone(self);
         let thread_request_id = request_id.clone();
         let spawn_result = thread::Builder::new()
             .name("agent-claude-flag-settings".to_string())
-            .spawn(move || scope.run_flag_settings_roundtrip(thread_request_id, model, effort));
+            .spawn(move || {
+                scope.run_flag_settings_roundtrip(thread_request_id, settings, disposition)
+            });
         if spawn_result.is_err() {
             // Thread-spawn failure is treated the same as a transport failure -- the caller
             // still gets a receipt (charter §8.2's fast-enqueue contract), and the outcome is
@@ -747,31 +1110,61 @@ impl AgentClaudeScope {
     /// entirely inside `start_or_resume`, contract §2.5).
     const FLAG_SETTINGS_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-    fn run_flag_settings_roundtrip(&self, request_id: String, model: Option<String>, effort: Option<String>) {
-        let mut request = Map::new();
-        request.insert("subtype".to_string(), json!("set_model_and_effort"));
-        if let Some(model) = &model {
-            request.insert("model".to_string(), json!(model));
-        }
-        if let Some(effort) = &effort {
-            request.insert("effort".to_string(), json!(effort));
-        }
+    fn run_flag_settings_roundtrip(
+        &self,
+        request_id: String,
+        settings: Map<String, Value>,
+        disposition: FlagSettingsDisposition,
+    ) {
+        let request = apply_flag_settings_request(&settings);
+        self.raw_log.write(
+            "control.request.sent",
+            Some(json!({
+                "requestID": request_id.as_str(),
+                "request": Value::Object(request.clone()),
+                "expectsResponse": true,
+            })),
+        );
         let write_request_id = request_id.clone();
-        let outcome = control::send_control_request(&self.control, &request_id, Self::FLAG_SETTINGS_ACK_TIMEOUT, || {
-            let line = codec::encode_control_request(&write_request_id, &request);
-            self.write_line(line)
-        });
-        let mut event = AgentClaudeEvent::new(AgentClaudeEventKind::FlagSettingsApplied).with_field("request_id", request_id.as_str());
+        let outcome = control::send_control_request(
+            &self.control,
+            &request_id,
+            Self::FLAG_SETTINGS_ACK_TIMEOUT,
+            || {
+                let line = codec::encode_control_request(&write_request_id, &request);
+                self.write_line(line)
+            },
+        );
+        let mut event = AgentClaudeEvent::new(AgentClaudeEventKind::FlagSettingsApplied)
+            .with_field("request_id", request_id.as_str());
         event = match outcome {
-            ControlOutcome::Response(response) => {
-                event = event.with_field("outcome", "applied");
-                if let Some(response_map) = response.response {
-                    event.fields.insert("response".to_string(), Value::Object(response_map));
+            ControlOutcome::Response(response) if response.subtype == "success" => {
+                let response_payload = response.response.unwrap_or_default();
+                let mut raw_payload = json!({
+                    "settings": Value::Object(settings.clone()),
+                    "response": Value::Object(response_payload.clone()),
+                });
+                if disposition == FlagSettingsDisposition::Live {
+                    raw_payload["source"] = json!("live_update");
                 }
+                self.raw_log
+                    .write("session.flagSettingsApplied", Some(raw_payload));
+                event = event.with_field("outcome", "applied");
+                event
+                    .fields
+                    .insert("response".to_string(), Value::Object(response_payload));
                 event
             }
+            ControlOutcome::Response(response) => event.with_field("outcome", "failed").with_field(
+                "error",
+                response.error.unwrap_or_else(|| {
+                    format!("Unexpected control response subtype: {}", response.subtype)
+                }),
+            ),
             ControlOutcome::Timeout => event.with_field("outcome", "timedOut"),
-            ControlOutcome::WriteFailed(reason) => event.with_field("outcome", "failed").with_field("error", reason),
+            ControlOutcome::WriteFailed(reason) => event
+                .with_field("outcome", "failed")
+                .with_field("error", reason),
         };
         self.publish(event);
     }
@@ -787,6 +1180,7 @@ impl AgentClaudeScope {
             if state.closed {
                 return Ok(());
             }
+            self.raw_log.write("session.shutdown", None);
             state.closed = true;
             let events = state.turns.on_shutdown();
             let process = state.process.take();
@@ -798,20 +1192,42 @@ impl AgentClaudeScope {
             }
         }
         self.control.fail_all("shutdown");
-        *self.stdin.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .stdin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         if let Some(handle) = process {
-            process::reaper::terminate_and_reap(&self.reaper, handle.pid, handle.reaper_token, Duration::from_secs(2));
+            process::reaper::terminate_and_reap(
+                &self.reaper,
+                handle.pid,
+                handle.reaper_token,
+                Duration::from_secs(2),
+            );
         }
-        for thread in self.reader_threads.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain(..) {
+        for thread in self
+            .reader_threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
             let _ = thread.join();
         }
         Ok(())
     }
 
     fn write_line(&self, mut bytes: Vec<u8>) -> Result<(), String> {
+        if self.raw_log.is_enabled() {
+            self.raw_log
+                .write("protocol.outbound.raw", Some(raw_line_payload(&bytes)));
+        }
         bytes.push(b'\n');
-        let mut guard = self.stdin.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(file) = guard.as_mut() else { return Err("stdin is not open".to_string()) };
+        let mut guard = self
+            .stdin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some((_owner_pid, file)) = guard.as_mut() else {
+            return Err("stdin is not open".to_string());
+        };
         file.write_all(&bytes).map_err(|error| error.to_string())
     }
 
@@ -819,6 +1235,10 @@ impl AgentClaudeScope {
 
     fn on_framer_overflow(&self, dropped_bytes: usize, retained_bytes: usize) {
         self.lock_state().framer_overflow_count += 1;
+        self.raw_log.write(
+            "framer.overflow",
+            Some(json!({"droppedBytes": dropped_bytes, "retainedBytes": retained_bytes})),
+        );
         self.publish(
             AgentClaudeEvent::new(AgentClaudeEventKind::FramerOverflow)
                 .with_field("dropped_bytes", dropped_bytes as u64)
@@ -826,61 +1246,177 @@ impl AgentClaudeScope {
         );
     }
 
-    fn on_protocol_drift(&self, site: &'static str) {
-        self.lock_state().protocol_drift_count += 1;
-        self.publish(AgentClaudeEvent::new(AgentClaudeEventKind::ProtocolDrift).with_field("site", site));
+    /// P6-7 (D-9/R9): `framer.nonJSONCandidateReset` -- the framer's own diagnostic hook
+    /// (`FramerDiagnostic::NonJsonCandidateQuoteStateReset`) has no counter/event twin (unlike
+    /// `Overflow`'s), so this is a raw-log-only observation, matching Swift's own treatment of the
+    /// equivalent kind (a raw-log record, no separate lossless/coalescible event).
+    fn on_framer_non_json_candidate_reset(&self) {
+        self.raw_log.write("framer.nonJSONCandidateReset", None);
     }
 
-    fn handle_line(&self, line: &[u8]) {
+    fn on_protocol_drift(&self, site: &'static str) {
+        self.lock_state().protocol_drift_count += 1;
+        self.publish(
+            AgentClaudeEvent::new(AgentClaudeEventKind::ProtocolDrift).with_field("site", site),
+        );
+    }
+
+    fn handle_line(self: &Arc<Self>, line: &[u8]) {
+        self.raw_log
+            .write("protocol.inbound.raw", Some(raw_line_payload(line)));
         match codec::decode_line(line) {
             Ok(Some(message)) => self.route_message(message),
             Ok(None) => {}
             Err(CodecError::InvalidJson) => {
                 let turn_in_flight = self.lock_state().turns.has_pending_turn_ids();
-                match recovery::recover_invalid_json_line(line, turn_in_flight, |_diag| {}) {
+                let raw_log = &self.raw_log;
+                let outcome = recovery::recover_invalid_json_line(line, turn_in_flight, |diag| {
+                    raw_log_recovery_diagnostic(raw_log, &diag)
+                });
+                match outcome {
                     RecoveryOutcome::Recovered(messages) => {
                         for message in messages {
                             self.route_message(message);
                         }
                     }
                     RecoveryOutcome::PlaintextSalvage(text) => {
-                        let result = StreamResult { kind: "content".to_string(), text: Some(text), ..Default::default() };
+                        let result = StreamResult {
+                            kind: "content".to_string(),
+                            text: Some(text),
+                            ..Default::default()
+                        };
                         self.emit_stream_result(result);
                     }
-                    RecoveryOutcome::Declined => {}
+                    RecoveryOutcome::Declined => self.raw_log.write(
+                        "protocol.decode.skipped",
+                        Some(json!({
+                            "preview": utf8_preview(line, 512),
+                            "codecError": CodecError::InvalidJson.to_string(),
+                        })),
+                    ),
                 }
             }
-            Err(CodecError::UnsupportedPayload) => self.on_protocol_drift("codec.unsupportedPayload"),
+            // `protocol.decode.failed` ('a non-`CodecError` decode failure') has no Rust equivalent:
+            // this codec's decode surface is total via two typed `CodecError` variants, so there is
+            // no third "unexpected exception" case to log (§15.6's named exclusion #5). This branch
+            // is `UnsupportedPayload`, an already-classified, non-fatal case with its own
+            // `protocolDrift` event -- not the kind this raw-log kind names.
+            Err(CodecError::UnsupportedPayload) => {
+                self.on_protocol_drift("codec.unsupportedPayload")
+            }
         }
     }
 
-    fn route_message(&self, message: InboundMessage) {
+    fn route_message(self: &Arc<Self>, message: InboundMessage) {
+        match &message {
+            InboundMessage::StreamPayload(payload) => {
+                self.raw_log.write(
+                    "protocol.inbound.streamPayload",
+                    Some(Value::Object(payload.clone())),
+                );
+            }
+            InboundMessage::ControlRequest(request) => {
+                self.raw_log.write(
+                    "protocol.inbound.controlRequest",
+                    Some(json!({
+                        "requestID": request.request_id,
+                        "subtype": request.subtype,
+                        "request": request.request,
+                    })),
+                );
+            }
+            InboundMessage::ControlResponse(response) => {
+                self.raw_log.write(
+                    "protocol.inbound.controlResponse",
+                    Some(control_response_inbound_log_payload(response)),
+                );
+            }
+            InboundMessage::ControlCancelRequest { request_id } => {
+                self.raw_log.write(
+                    "protocol.inbound.controlCancelRequest",
+                    Some(json!({"requestID": request_id})),
+                );
+            }
+            InboundMessage::KeepAlive => self.raw_log.write("protocol.inbound.keepAlive", None),
+        }
         match message {
             InboundMessage::StreamPayload(payload) => self.handle_stream_payload(&payload),
             InboundMessage::ControlRequest(request) => self.handle_control_request(&request),
             InboundMessage::ControlResponse(response) => {
+                self.raw_log.write(
+                    "control.response.received",
+                    Some(control_response_received_log_payload(&response)),
+                );
                 let request_id = response.request_id.clone();
                 self.control.resolve(&request_id, response);
             }
-            InboundMessage::ControlCancelRequest { .. } | InboundMessage::KeepAlive => {}
+            InboundMessage::ControlCancelRequest { request_id } => {
+                self.raw_log.write(
+                    "control.request.cancelled",
+                    Some(json!({"requestID": request_id})),
+                );
+            }
+            InboundMessage::KeepAlive => {}
         }
     }
 
     fn handle_control_request(&self, request: &ControlRequest) {
+        self.raw_log.write(
+            "control.request.received",
+            Some(json!({
+                "requestID": request.request_id,
+                "subtype": request.subtype,
+                "request": request.request,
+            })),
+        );
         if let Some(parsed) = permission::parse_can_use_tool_request(request) {
             let request_id = parsed.request_id.clone();
+            self.raw_log.write(
+                "approval.request.emitted",
+                Some(json!({"requestID": request_id, "toolName": parsed.tool_name})),
+            );
             let approval_event = event::approval_request(&parsed);
-            self.lock_state().pending_permissions.insert(request_id, parsed);
+            self.lock_state()
+                .pending_permissions
+                .insert(request_id, parsed);
             self.publish(approval_event);
             return;
         }
-        let line = permission::encode_unsupported_subtype_response(&request.request_id, &request.subtype);
-        let _ = self.write_line(line);
+        let line =
+            permission::encode_unsupported_subtype_response(&request.request_id, &request.subtype);
+        if self.write_line(line).is_err() {
+            // Mirrors Swift's `default:` branch in `handleControlRequest` catching a failed
+            // `sendLine` and calling `failProtocolAndShutdownSoon` (§15.6). The Rust port reproduces
+            // the raw-log observability only, not the forced shutdown -- D-4's own established
+            // pattern of downgrading a Swift crash/forced-teardown path to a counted diagnostic
+            // rather than adding a new forced-shutdown behavior this slice did not otherwise need.
+            self.raw_log.write(
+                "session.failProtocol",
+                Some(json!({"message": format!("Failed replying to unsupported Claude control request ({})", request.subtype)})),
+            );
+        }
     }
 
-    fn handle_stream_payload(&self, payload: &Map<String, Value>) {
+    fn handle_stream_payload(self: &Arc<Self>, payload: &Map<String, Value>) {
         let is_result_payload = payload.get("type").and_then(Value::as_str) == Some("result");
-        let results = self.lock_state().translator.parse_stream_payload(payload);
+        let (results, observed_session_id) = {
+            let mut state = self.lock_state();
+            let results = state.translator.parse_stream_payload(payload);
+            (results, state.translator.cli_session_id.clone())
+        };
+        if let Some(observed_session_id) = observed_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            self.raw_log.set_session_id(observed_session_id);
+        }
+        if let Some(runtime_init_payload) =
+            runtime_init_stream_log_payload(payload, observed_session_id.as_deref())
+        {
+            self.raw_log
+                .write("runtime.init.stream", Some(runtime_init_payload));
+        }
         for result in results {
             if is_result_payload && result.kind == "message_stop" {
                 self.handle_authoritative_result(payload, &result);
@@ -897,7 +1433,11 @@ impl AgentClaudeScope {
     /// a neutral, provider-shape-agnostic DTO), and the contract's `determine_status` signature
     /// deliberately keeps `stop_reason_hint` (the translator's own derived hint,
     /// `result.stop_reason`) separate from the envelope's top-level/nested fields.
-    fn handle_authoritative_result(&self, payload: &Map<String, Value>, result: &StreamResult) {
+    fn handle_authoritative_result(
+        self: &Arc<Self>,
+        payload: &Map<String, Value>,
+        result: &StreamResult,
+    ) {
         // Swift's `handleStreamPayload` always emits `.stream(result)` for the authoritative
         // message_stop result BEFORE its own turn-completion bookkeeping
         // (`ClaudeNativeProcessSessionController.swift:1358` precedes the `isResultPayload &&
@@ -911,9 +1451,22 @@ impl AgentClaudeScope {
         // kind rather than duplicated here.
         self.emit_stream_result(result.clone());
 
-        let is_error = payload.get("is_error").or_else(|| payload.get("isError")).and_then(Value::as_bool).unwrap_or(false);
-        let subtype = payload.get("subtype").and_then(Value::as_str).unwrap_or("").to_string();
-        let stop_reason = payload.get("stop_reason").or_else(|| payload.get("stopReason")).and_then(Value::as_str).unwrap_or("").to_string();
+        let is_error = payload
+            .get("is_error")
+            .or_else(|| payload.get("isError"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let subtype = payload
+            .get("subtype")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let stop_reason = payload
+            .get("stop_reason")
+            .or_else(|| payload.get("stopReason"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let nested_stop_reason = payload
             .get("event")
             .and_then(Value::as_object)
@@ -925,7 +1478,7 @@ impl AgentClaudeScope {
         let result_errors = extract_result_errors(payload);
 
         let mut diagnostics = 0usize;
-        let turn_event = {
+        let (turn_event, fallback_ticket) = {
             let mut state = self.lock_state();
             let status = state.turns.determine_status(
                 is_error,
@@ -935,7 +1488,10 @@ impl AgentClaudeScope {
                 nested_stop_reason.as_deref(),
                 &result_errors,
             );
-            state.turns.on_authoritative_result(status, |_diag| diagnostics += 1)
+            let event = state
+                .turns
+                .on_authoritative_result(status, |_diag| diagnostics += 1);
+            (event, state.turns.fallback_poll_ticket())
         };
         if diagnostics > 0 {
             self.on_protocol_drift("turnState.authoritativeResult");
@@ -943,19 +1499,29 @@ impl AgentClaudeScope {
         if let Some(TurnEvent::TurnCompleted { turn_id, status }) = turn_event {
             self.publish(event::turn_completed(turn_id, status).with_turn_id(turn_id));
         }
+        self.schedule_idle_fallback(fallback_ticket);
     }
 
-    fn emit_stream_result(&self, result: StreamResult) {
+    fn emit_stream_result(self: &Arc<Self>, result: StreamResult) {
+        let raw_payload = Value::Object(stream_result_log_payload(&result));
         if should_suppress_user_facing_stream_result(&result) {
+            self.raw_log
+                .write("translator.streamResultSuppressed", Some(raw_payload));
             return;
         }
+        self.raw_log
+            .write("translator.streamResult", Some(raw_payload));
         // Resnapshot append happens under the state lock; the truncation event (if any) is
         // published only after the lock is released -- "publish outside the scope-state lock"
         // (design §5.1's lock-order rule, ported verbatim from `inventory_scope::scope`).
         let truncation = {
             let mut state = self.lock_state();
             if state.turns.has_pending_turn_ids() {
-                let chunk = result.text.as_deref().or(result.reasoning.as_deref()).unwrap_or("");
+                let chunk = result
+                    .text
+                    .as_deref()
+                    .or(result.reasoning.as_deref())
+                    .unwrap_or("");
                 if chunk.is_empty() {
                     None
                 } else if let Some(truncated) = state.resnapshot.append(chunk.as_bytes()) {
@@ -981,12 +1547,22 @@ impl AgentClaudeScope {
                 self.handle_session_state_changed(&result);
                 return;
             }
-            "content" => self.publish_stream_result_event(AgentClaudeEventKind::AssistantDelta, &result),
-            "reasoning" => self.publish_stream_result_event(AgentClaudeEventKind::ReasoningDelta, &result),
-            "tool_call" => self.publish_stream_result_event(AgentClaudeEventKind::ToolUseStarted, &result),
-            "tool_result" => self.publish_stream_result_event(AgentClaudeEventKind::ToolResult, &result),
+            "content" => {
+                self.publish_stream_result_event(AgentClaudeEventKind::AssistantDelta, &result)
+            }
+            "reasoning" => {
+                self.publish_stream_result_event(AgentClaudeEventKind::ReasoningDelta, &result)
+            }
+            "tool_call" => {
+                self.publish_stream_result_event(AgentClaudeEventKind::ToolUseStarted, &result)
+            }
+            "tool_result" => {
+                self.publish_stream_result_event(AgentClaudeEventKind::ToolResult, &result)
+            }
             "error" => self.publish_stream_result_event(AgentClaudeEventKind::Error, &result),
-            "lifecycle" => self.publish_stream_result_event(AgentClaudeEventKind::RuntimeInit, &result),
+            "lifecycle" => {
+                self.publish_stream_result_event(AgentClaudeEventKind::RuntimeInit, &result)
+            }
             _ => {
                 // Every other translated kind ("usage", "task_progress", "system", "status",
                 // "final_content", "auth_status", a forwarded non-authoritative "message_stop", and
@@ -1013,7 +1589,7 @@ impl AgentClaudeScope {
         self.publish(event);
     }
 
-    fn handle_session_state_changed(&self, result: &StreamResult) {
+    fn handle_session_state_changed(self: &Arc<Self>, result: &StreamResult) {
         let text = result.text.clone().unwrap_or_default();
         let is_idle = text.trim().eq_ignore_ascii_case("idle");
         self.publish(
@@ -1022,9 +1598,12 @@ impl AgentClaudeScope {
                 .with_field("is_idle", is_idle),
         );
         let mut diagnostics = 0usize;
-        let turn_event = {
+        let (turn_event, fallback_ticket) = {
             let mut state = self.lock_state();
-            state.turns.on_session_state_changed(&text, |_diag| diagnostics += 1)
+            let event = state
+                .turns
+                .on_session_state_changed(&text, |_diag| diagnostics += 1);
+            (event, state.turns.fallback_poll_ticket())
         };
         if diagnostics > 0 {
             self.on_protocol_drift("turnState.sessionStateChanged");
@@ -1032,36 +1611,142 @@ impl AgentClaudeScope {
         if let Some(TurnEvent::TurnCompleted { turn_id, status }) = turn_event {
             self.publish(event::turn_completed(turn_id, status).with_turn_id(turn_id));
         }
+        self.schedule_idle_fallback(fallback_ticket);
     }
 
-    fn on_stdout_eof(&self) {
-        let events = self.lock_state().turns.on_stdout_eof();
+    fn schedule_idle_fallback(self: &Arc<Self>, ticket: Option<(u64, Duration)>) {
+        let Some((generation, delay)) = ticket else {
+            return;
+        };
+        if self
+            .scheduled_fallback_generation
+            .swap(generation, Ordering::SeqCst)
+            == generation
+        {
+            return;
+        }
+        let scope = Arc::downgrade(self);
+        let spawn_result = thread::Builder::new()
+            .name("agent-claude-idle-fallback".to_string())
+            .spawn(move || {
+                thread::sleep(delay);
+                if let Some(scope) = scope.upgrade() {
+                    scope.poll_idle_fallback(generation);
+                }
+            });
+        if spawn_result.is_err() {
+            let _ = self.scheduled_fallback_generation.compare_exchange(
+                generation,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            self.on_protocol_drift("turnState.idleFallbackThreadSpawn");
+        }
+    }
+
+    fn poll_idle_fallback(self: &Arc<Self>, generation: u64) {
+        let mut diagnostics = 0usize;
+        let (turn_event, next_ticket) = {
+            let mut state = self.lock_state();
+            let event = state
+                .turns
+                .poll_fallback_for_generation(generation, |_diag| diagnostics += 1);
+            (event, state.turns.fallback_poll_ticket())
+        };
+        // Release only this worker's reservation before rescheduling. An early monotonic wake can
+        // return the same generation ticket; leaving the reservation set would suppress its
+        // replacement forever. A newer worker's generation is never cleared.
+        let _ = self.scheduled_fallback_generation.compare_exchange(
+            generation,
+            0,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        if diagnostics > 0 {
+            self.on_protocol_drift("turnState.idleFallback");
+        }
+        if let Some(TurnEvent::TurnCompleted { turn_id, status }) = turn_event {
+            self.raw_log.write(
+                "lifecycle.idleFallback",
+                Some(json!({"turnID": turn_id.to_string(), "status": turn_status_name(status)})),
+            );
+            self.publish(event::turn_completed(turn_id, status).with_turn_id(turn_id));
+        }
+        self.schedule_idle_fallback(next_ticket);
+    }
+
+    fn on_stdout_eof(&self, pid: libc::pid_t) {
+        // The PID fence prevents a late EOF from an older child from clearing a replacement
+        // process's stdin/authority. Explicit shutdown takes `state.process` before closing the
+        // pipe, so its expected EOF is ignored here just like Swift's `guard !isShuttingDown`.
+        let (events, unexpected_exit) = {
+            let mut state = self.lock_state();
+            let is_current = state
+                .process
+                .as_ref()
+                .is_some_and(|handle| handle.pid == pid);
+            if !is_current {
+                return;
+            }
+            state.process = None;
+            (state.turns.on_stdout_eof(), !state.closed)
+        };
+        clear_stdin_if_owned(&self.stdin, pid);
+        self.raw_log.write("process.stdoutEOF", None);
         for turn_event in events {
             match turn_event {
                 TurnEvent::TurnCompleted { turn_id, status } => {
                     self.publish(event::turn_completed(turn_id, status).with_turn_id(turn_id));
                 }
                 TurnEvent::Error(message) => {
-                    // Same wire field name ("text") the D-6 stream-result lowering uses for the
+                    // The adapter reconstructs `.error` from the same `text` field as the ordinary
                     // `error` kind (`stream_result_wire_fields`) -- one consistent field for every
                     // `AgentClaudeEventKind::Error` event, regardless of whether it originated from
                     // a translated `StreamResult` or, as here, from the EOF-drain synthesized
                     // "Claude process exited unexpectedly." message (contract §3's "EOF beyond the
                     // deferred queue" rule).
-                    self.publish(AgentClaudeEvent::new(AgentClaudeEventKind::Error).with_field("text", message.as_str()));
+                    self.publish(
+                        AgentClaudeEvent::new(AgentClaudeEventKind::Error)
+                            .with_field("text", message.as_str()),
+                    );
                 }
             }
         }
         self.control.fail_all("stdout EOF");
+        if unexpected_exit {
+            self.publish(
+                AgentClaudeEvent::new(AgentClaudeEventKind::ProcessExited)
+                    .with_field("pid", i64::from(pid)),
+            );
+        }
     }
 
     fn publish(&self, event: AgentClaudeEvent) {
-        let sink = { self.event_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() };
+        let sink = {
+            self.event_sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        };
         let Some(sink) = sink else { return };
         let (class, coalesce_key, terminal_reserve) = event.classification();
-        let kind = if terminal_reserve { RuntimeEventKind::Terminal } else { RuntimeEventKind::Data };
-        let input = EventInput { kind, class, payload: event.encode(), coalesce_key };
-        if sink.hub.publish(&self.identity, &sink.scope_id, input).is_err() {
+        let kind = if terminal_reserve {
+            RuntimeEventKind::Terminal
+        } else {
+            RuntimeEventKind::Data
+        };
+        let input = EventInput {
+            kind,
+            class,
+            payload: event.encode(),
+            coalesce_key,
+        };
+        if sink
+            .hub
+            .publish(&self.identity, &sink.scope_id, input)
+            .is_err()
+        {
             self.publish_failure_count.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1072,18 +1757,282 @@ impl Drop for AgentClaudeScope {
     /// the shared reaper's orphan path on a fire-and-forget thread rather than blocking the drop,
     /// exactly mirroring the Swift controller's best-effort `deinit` cleanup.
     fn drop(&mut self) {
-        let process = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).process.take();
+        let process = self
+            .state
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .process
+            .take();
         if let Some(handle) = process {
             let reaper = Arc::clone(&self.reaper);
-            let _ = thread::Builder::new().name("agent-claude-orphan-backstop".to_string()).spawn(move || {
-                let _ = process::reaper::terminate_and_orphan(
-                    &reaper,
-                    handle.pid,
-                    handle.reaper_token,
-                    Duration::from_millis(50),
-                    Duration::from_secs(2),
-                );
-            });
+            let _ = thread::Builder::new()
+                .name("agent-claude-orphan-backstop".to_string())
+                .spawn(move || {
+                    let _ = process::reaper::terminate_and_orphan(
+                        &reaper,
+                        handle.pid,
+                        handle.reaper_token,
+                        Duration::from_millis(50),
+                        Duration::from_secs(2),
+                    );
+                });
+        }
+    }
+}
+
+fn turn_status_name(status: TurnStatus) -> &'static str {
+    match status {
+        TurnStatus::Completed => "completed",
+        TurnStatus::Cancelled => "cancelled",
+        TurnStatus::Failed => "failed",
+    }
+}
+
+/// Byte-for-byte port of Swift's `lineRecordPayload`: cap verbatim bytes at 64 KiB, preserve the
+/// original byte count, use UTF-8 only when the retained prefix is valid, otherwise base64-encode
+/// it, and mark truncation. Keeping this exact matters because D-9's corpus capture consumes these
+/// records as fixtures rather than treating them as presentation-only text.
+fn raw_line_payload(bytes: &[u8]) -> Value {
+    const MAX_LOG_RECORD_TEXT_BYTES: usize = 64 * 1024;
+    let retained = &bytes[..bytes.len().min(MAX_LOG_RECORD_TEXT_BYTES)];
+    let truncated = bytes.len() > MAX_LOG_RECORD_TEXT_BYTES;
+    let mut payload = Map::new();
+    payload.insert("byteCount".to_string(), json!(bytes.len()));
+    match std::str::from_utf8(retained) {
+        Ok(text) => {
+            payload.insert("encoding".to_string(), json!("utf8"));
+            payload.insert("text".to_string(), json!(text));
+            if truncated {
+                payload.insert("truncated".to_string(), Value::Bool(true));
+            }
+        }
+        Err(_) => {
+            payload.insert("encoding".to_string(), json!("base64"));
+            payload.insert("base64".to_string(), json!(base64_encode(retained)));
+            payload.insert("truncated".to_string(), Value::Bool(truncated));
+        }
+    }
+    Value::Object(payload)
+}
+
+fn control_response_inbound_log_payload(response: &ControlResponse) -> Value {
+    json!({
+        "requestID": response.request_id,
+        "subtype": response.subtype,
+        "response": response.response,
+        "error": response.error,
+        "pendingPermissionRequestsCount": response.pending_permission_requests.len(),
+    })
+}
+
+fn control_response_received_log_payload(response: &ControlResponse) -> Value {
+    json!({
+        "requestID": response.request_id,
+        "subtype": response.subtype,
+        "error": response.error,
+        "pendingPermissionRequestsCount": response.pending_permission_requests.len(),
+    })
+}
+
+fn runtime_init_stream_log_payload(
+    payload: &Map<String, Value>,
+    observed_session_id: Option<&str>,
+) -> Option<Value> {
+    if payload.get("type").and_then(Value::as_str) != Some("system")
+        || !payload
+            .get("subtype")
+            .and_then(Value::as_str)
+            .is_some_and(|subtype| subtype.eq_ignore_ascii_case("init"))
+    {
+        return None;
+    }
+    let tools: Vec<String> = payload
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut mcp_server_statuses = Map::new();
+    if let Some(servers) = payload.get("mcp_servers").and_then(Value::as_array) {
+        for server in servers.iter().filter_map(Value::as_object) {
+            let Some(name) = server.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if name.trim().is_empty() {
+                continue;
+            }
+            mcp_server_statuses.insert(
+                name.to_string(),
+                json!(server.get("status").and_then(Value::as_str).unwrap_or("")),
+            );
+        }
+    }
+    Some(json!({
+        "sessionID": observed_session_id.unwrap_or(""),
+        "tools": tools,
+        "mcpServerStatuses": mcp_server_statuses,
+    }))
+}
+
+fn clear_stdin_if_owned(stdin: &Mutex<Option<(libc::pid_t, File)>>, pid: libc::pid_t) {
+    let mut stdin = stdin
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if matches!(stdin.as_ref(), Some((owner_pid, _)) if *owner_pid == pid) {
+        *stdin = None;
+    }
+}
+
+fn stream_result_log_payload(result: &StreamResult) -> Map<String, Value> {
+    let mut payload = Map::new();
+    payload.insert("type".to_string(), json!(result.kind));
+    payload.insert("text".to_string(), json!(result.text));
+    payload.insert("reasoning".to_string(), json!(result.reasoning));
+    payload.insert("toolName".to_string(), json!(result.tool_name));
+    payload.insert(
+        "toolInvocationID".to_string(),
+        json!(
+            result
+                .tool_invocation_id
+                .map(|identifier| identifier.0.to_string())
+        ),
+    );
+    payload.insert("toolIsError".to_string(), json!(result.tool_is_error));
+    payload.insert("promptTokens".to_string(), json!(result.prompt_tokens));
+    payload.insert(
+        "completionTokens".to_string(),
+        json!(result.completion_tokens),
+    );
+    payload.insert(
+        "contextUsedTokens".to_string(),
+        json!(result.context_used_tokens),
+    );
+    payload.insert(
+        "providerSessionID".to_string(),
+        json!(result.provider_session_id),
+    );
+    payload.insert("stopReason".to_string(), json!(result.stop_reason));
+    if let Some(tool_args_json) = &result.tool_args_json {
+        payload.insert("toolArgsJSON".to_string(), json!(tool_args_json));
+    }
+    if let Some(tool_result_json) = &result.tool_result_json {
+        payload.insert("toolResultJSON".to_string(), json!(tool_result_json));
+    }
+    payload
+}
+
+fn apply_flag_settings_request(settings: &Map<String, Value>) -> Map<String, Value> {
+    let mut request = Map::new();
+    request.insert("subtype".to_string(), json!("apply_flag_settings"));
+    request.insert("settings".to_string(), Value::Object(settings.clone()));
+    request
+}
+
+fn flag_settings(model: Option<&str>, effort: Option<&str>) -> Option<Map<String, Value>> {
+    let mut settings = Map::new();
+    let model = model.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(model) = model.filter(|value| !value.eq_ignore_ascii_case("default")) {
+        settings.insert("model".to_string(), json!(model));
+    }
+    if let Some(effort) = effort {
+        settings.insert("effortLevel".to_string(), json!(effort));
+    }
+    (!settings.is_empty()).then_some(settings)
+}
+
+fn utf8_preview(bytes: &[u8], limit: usize) -> String {
+    String::from_utf8(bytes.iter().copied().take(limit).collect())
+        .unwrap_or_else(|_| "<non-utf8>".to_string())
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied().unwrap_or(0);
+        let c = chunk.get(2).copied().unwrap_or(0);
+        output.push(TABLE[(a >> 2) as usize] as char);
+        output.push(TABLE[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(c & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+/// P6-7 (D-9/R9): maps each [`RecoveryDiagnostic`] variant to its named raw-log kind
+/// (`recovery.rs`'s own doc comment on each variant is the authoritative mapping; this function
+/// only translates that mapping into an actual write call).
+fn raw_log_recovery_diagnostic(
+    raw_log: &super::raw_event_log::RawEventLogWriter,
+    diagnostic: &recovery::RecoveryDiagnostic,
+) {
+    use recovery::RecoveryDiagnostic;
+    match diagnostic {
+        RecoveryDiagnostic::ConcatenatedRecoverySkipped {
+            byte_count,
+            threshold,
+        } => {
+            raw_log.write(
+                "protocol.decode.concatenatedRecoverySkipped",
+                Some(json!({"byteCount": byte_count, "threshold": threshold})),
+            );
+        }
+        RecoveryDiagnostic::RecoveredSegmentSkipped { preview, error } => {
+            raw_log.write(
+                "protocol.decode.recoveredSegmentSkipped",
+                Some(json!({"preview": preview, "error": error})),
+            );
+        }
+        RecoveryDiagnostic::RecoveredSegment { bytes } => {
+            raw_log.write(
+                "protocol.inbound.recoveredSegment",
+                Some(raw_line_payload(bytes)),
+            );
+        }
+        RecoveryDiagnostic::Recovered {
+            segments,
+            recovered_segments,
+        } => {
+            raw_log.write(
+                "protocol.decode.recovered",
+                Some(json!({"segments": segments, "recoveredSegments": recovered_segments})),
+            );
+        }
+        RecoveryDiagnostic::RecoveredTail {
+            start_offset,
+            byte_count,
+            preview,
+        } => {
+            raw_log.write(
+                "protocol.inbound.recoveredTail",
+                Some(json!({"startOffset": start_offset, "byteCount": byte_count, "preview": preview})),
+            );
+        }
+        RecoveryDiagnostic::RecoveredJsonStringControlChars { repaired } => {
+            raw_log.write(
+                "protocol.decode.recoveredJSONStringControlChars",
+                Some(raw_line_payload(repaired)),
+            );
+        }
+        RecoveryDiagnostic::RecoveredPlaintext { preview, length } => {
+            raw_log.write(
+                "protocol.decode.recoveredPlaintext",
+                Some(json!({"preview": preview, "length": length})),
+            );
         }
     }
 }
@@ -1101,7 +2050,11 @@ impl Drop for AgentClaudeScope {
 /// never actually terminate its child process. Each iteration re-upgrades; a failed upgrade (every
 /// other strong reference is gone) stops the thread immediately rather than waiting for the
 /// process to exit on its own, since nothing is left to consume further events.
-fn spawn_stdout_pipeline(scope: std::sync::Weak<AgentClaudeScope>, fd: std::os::fd::OwnedFd) -> JoinHandle<()> {
+fn spawn_stdout_pipeline(
+    scope: std::sync::Weak<AgentClaudeScope>,
+    fd: std::os::fd::OwnedFd,
+    pid: libc::pid_t,
+) -> JoinHandle<()> {
     process::thread_budget::increment();
     thread::Builder::new()
         .name("agent-claude-stdout".to_string())
@@ -1117,20 +2070,30 @@ fn spawn_stdout_pipeline(scope: std::sync::Weak<AgentClaudeScope>, fd: std::os::
                     Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                let Some(strong_scope) = scope.upgrade() else { return };
+                let Some(strong_scope) = scope.upgrade() else {
+                    return;
+                };
                 framer.feed(
                     &buf[..n],
-                    |diagnostic| {
-                        if let super::framer::FramerDiagnostic::Overflow { dropped_bytes, retained_bytes } = diagnostic {
+                    |diagnostic| match diagnostic {
+                        super::framer::FramerDiagnostic::Overflow {
+                            dropped_bytes,
+                            retained_bytes,
+                        } => {
                             strong_scope.on_framer_overflow(dropped_bytes, retained_bytes);
+                        }
+                        super::framer::FramerDiagnostic::NonJsonCandidateQuoteStateReset => {
+                            strong_scope.on_framer_non_json_candidate_reset();
                         }
                     },
                     |line| strong_scope.handle_line(&line),
                 );
             }
-            let Some(strong_scope) = scope.upgrade() else { return };
+            let Some(strong_scope) = scope.upgrade() else {
+                return;
+            };
             framer.flush(|line| strong_scope.handle_line(&line));
-            strong_scope.on_stdout_eof();
+            strong_scope.on_stdout_eof(pid);
         })
         .expect("spawning the agent-claude stdout pipeline thread must succeed")
 }
@@ -1139,9 +2102,8 @@ fn spawn_stdout_pipeline(scope: std::sync::Weak<AgentClaudeScope>, fd: std::os::
 /// wire field set every published stream event carries, independent of which coarse
 /// `AgentClaudeEventKind` classifies it for pressure-policy purposes (§7.1's sixteen kinds are
 /// deliberately coarse -- a backpressure classification, not a payload shape). Field set and names
-/// mirror `ClaudeCodecShadowComparator.compareOneResult`'s already-reviewed exhaustive list
-/// (`Sources/RepoPrompt/.../ClaudeCodecShadowComparator.swift`, tightened by P6-5's follow-up
-/// `e0d4d290`) minus the same two structural exclusions that comparator documents:
+/// preserve P6-5's reviewed exhaustive stream-result inventory (tightened by follow-up `e0d4d290`)
+/// minus the same two structural exclusions frozen by that contract:
 /// `toolInvocationID` (a synthetic `InvocationId(u64)` can never structurally match Swift's
 /// `UUID` -- carried here as `invocation_id` for *within-arm* tool_call/tool_result correlation
 /// only, never compared cross-arm by value) and `cleanupHandle` (a Swift-only runtime handle with
@@ -1264,7 +2226,10 @@ pub struct ScopeRegistry {
 
 impl Default for ScopeRegistry {
     fn default() -> Self {
-        Self { scopes: Mutex::new(HashMap::new()), reaper: Reaper::new() }
+        Self {
+            scopes: Mutex::new(HashMap::new()),
+            reaper: Reaper::new(),
+        }
     }
 }
 
@@ -1274,24 +2239,51 @@ impl ScopeRegistry {
         Self::default()
     }
 
-    pub fn open_scope(&self, identity: RuntimeIdentity, config: AgentClaudeScopeConfig) -> Arc<AgentClaudeScope> {
+    pub fn open_scope(
+        &self,
+        identity: RuntimeIdentity,
+        config: AgentClaudeScopeConfig,
+    ) -> Arc<AgentClaudeScope> {
         let scope_id = AgentClaudeScopeId::mint();
-        let scope = Arc::new(AgentClaudeScope::new(identity, scope_id, config, Arc::clone(&self.reaper)));
-        self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(scope_id, Arc::clone(&scope));
+        let scope = Arc::new(AgentClaudeScope::new(
+            identity,
+            scope_id,
+            config,
+            Arc::clone(&self.reaper),
+        ));
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(scope_id, Arc::clone(&scope));
         scope
     }
 
     #[must_use]
     pub fn get(&self, scope_id: AgentClaudeScopeId) -> Option<Arc<AgentClaudeScope>> {
-        self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&scope_id).cloned()
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&scope_id)
+            .cloned()
     }
 
     /// Idempotent, matching `InventoryScope`'s `ScopeRegistry::close_scope` precedent.
-    pub fn close_scope(&self, identity: &RuntimeIdentity, scope_id: AgentClaudeScopeId) -> Result<(), ScopeRegistryError> {
-        let scope = self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&scope_id);
+    pub fn close_scope(
+        &self,
+        identity: &RuntimeIdentity,
+        scope_id: AgentClaudeScopeId,
+    ) -> Result<(), ScopeRegistryError> {
+        let scope = self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&scope_id);
         let Some(scope) = scope else { return Ok(()) };
         if scope.identity() != identity {
-            self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(scope_id, Arc::clone(&scope));
+            self.scopes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(scope_id, Arc::clone(&scope));
             return Err(ScopeRegistryError::IdentityMismatch);
         }
         let _ = scope.shutdown(identity);
@@ -1300,6 +2292,395 @@ impl ScopeRegistry {
 
     #[must_use]
     pub fn scope_count(&self) -> usize {
-        self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+}
+
+/// P6-7 (D-9/R9, `docs/architecture/rust-agent-claude-v1.md` §15.6): module-internal unit tests for
+/// the raw-log kind-mapping wiring on the handful of kinds `tests/agent_claude_scope.rs`'s
+/// live-pipeline completeness test cannot reach: `raw_log_recovery_diagnostic`/
+/// `on_framer_non_json_candidate_reset` are module-private (not re-exported, unlike
+/// `RecoveryDiagnostic`/`FramerDiagnostic` themselves), so only a same-module test can call them
+/// directly; and `RecoveredJsonStringControlChars` is -- per `recovery.rs`'s own closed-open-
+/// question analysis -- unreachable through the real `handle_line` dispatch at all (whenever the
+/// repair would succeed, the codec's own inline sanitize already succeeded first), so no live
+/// script can ever trigger it regardless of module boundaries. Each test below proves the *mapping*
+/// (diagnostic variant -> exact kind string -> written record) is correct in isolation, mirroring
+/// `recovery.rs::tests::try_control_char_repair_succeeds_in_isolation_when_called_directly`'s own
+/// precedent for testing this specific heuristic outside its unreachable real dispatch path.
+#[cfg(test)]
+mod raw_event_log_kind_mapping_tests {
+    use super::{
+        AgentClaudeScope, AgentClaudeScopeConfig, AgentClaudeScopeId, AgentScopeError,
+        ControlRequest, PermissionDecisionInput, RuntimeIdentity, StreamResult, TurnStatus,
+        apply_flag_settings_request, clear_stdin_if_owned, flag_settings, permission,
+        raw_log_recovery_diagnostic, recovery, stream_result_log_payload,
+    };
+    use crate::agent_claude::process::reaper::Reaper;
+    use crate::agent_claude::raw_event_log::RawEventLogWriter;
+    use crate::agent_claude::translator::InvocationId;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    fn writer_at(dir_name: &str) -> (std::path::PathBuf, RawEventLogWriter) {
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("events.jsonl");
+        let writer = RawEventLogWriter::new(
+            true,
+            Some(path.to_string_lossy().to_string()),
+            crate::agent_claude::raw_event_log::RawEventLogContext::default(),
+        );
+        (path, writer)
+    }
+
+    fn kinds_in(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|value| {
+                value
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn late_eof_cannot_clear_a_replacement_process_stdin() {
+        let path = std::env::temp_dir().join(format!("owned-stdin-{}", std::process::id()));
+        let replacement_pid = 202;
+        let stdin = Mutex::new(Some((
+            replacement_pid,
+            std::fs::File::create(&path).expect("temporary stdin stand-in"),
+        )));
+
+        clear_stdin_if_owned(&stdin, 101);
+        assert_eq!(
+            stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map(|(pid, _)| *pid),
+            Some(replacement_pid),
+            "an older stdout EOF must not clear the replacement process's stdin authority"
+        );
+        clear_stdin_if_owned(&stdin, replacement_pid);
+        assert!(
+            stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "the owning process EOF must still close its own stdin"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn translator_log_payload_preserves_the_exact_legacy_key_contract() {
+        let complete = StreamResult {
+            kind: "tool_call".to_string(),
+            text: Some("text".to_string()),
+            reasoning: Some("reasoning".to_string()),
+            prompt_tokens: Some(11),
+            completion_tokens: Some(22),
+            cost: Some(0.25),
+            tool_name: Some("Bash".to_string()),
+            tool_args: Some("legacy args".to_string()),
+            tool_output: Some("legacy output".to_string()),
+            tool_invocation_id: Some(InvocationId(7)),
+            tool_result_json: Some(r#"{"result":"ok"}"#.to_string()),
+            tool_args_json: Some(r#"{"command":"ls"}"#.to_string()),
+            tool_is_error: Some(false),
+            provider_session_id: Some("session-1".to_string()),
+            stop_reason: Some("end_turn".to_string()),
+            model_context_window: Some(200_000),
+            context_used_tokens: Some(33),
+            content_message_id: Some("message-1".to_string()),
+        };
+        let payload = stream_result_log_payload(&complete);
+        let mut keys = payload.keys().map(String::as_str).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "completionTokens",
+                "contextUsedTokens",
+                "promptTokens",
+                "providerSessionID",
+                "reasoning",
+                "stopReason",
+                "text",
+                "toolArgsJSON",
+                "toolInvocationID",
+                "toolIsError",
+                "toolName",
+                "toolResultJSON",
+                "type",
+            ]
+        );
+        assert_eq!(payload["toolInvocationID"], "7");
+        for nonlegacy_key in [
+            "cost",
+            "toolArgs",
+            "toolOutput",
+            "modelContextWindow",
+            "contentMessageID",
+        ] {
+            assert!(
+                payload.get(nonlegacy_key).is_none(),
+                "{nonlegacy_key} was never part of the legacy raw-log payload"
+            );
+        }
+
+        let sparse = stream_result_log_payload(&StreamResult {
+            kind: "text_delta".to_string(),
+            ..Default::default()
+        });
+        let mut sparse_keys = sparse.keys().map(String::as_str).collect::<Vec<_>>();
+        sparse_keys.sort_unstable();
+        assert_eq!(
+            sparse_keys,
+            vec![
+                "completionTokens",
+                "contextUsedTokens",
+                "promptTokens",
+                "providerSessionID",
+                "reasoning",
+                "stopReason",
+                "text",
+                "toolInvocationID",
+                "toolIsError",
+                "toolName",
+                "type",
+            ],
+            "the eleven fixed legacy keys stay present even when their values are JSON null"
+        );
+        assert!(sparse.get("toolArgsJSON").is_none());
+        assert!(sparse.get("toolResultJSON").is_none());
+        for nullable_key in [
+            "text",
+            "reasoning",
+            "toolName",
+            "toolInvocationID",
+            "toolIsError",
+            "promptTokens",
+            "completionTokens",
+            "contextUsedTokens",
+            "providerSessionID",
+            "stopReason",
+        ] {
+            assert_eq!(sparse.get(nullable_key), Some(&serde_json::Value::Null));
+        }
+    }
+
+    #[test]
+    fn flag_settings_request_matches_the_legacy_apply_flag_settings_wire_shape() {
+        assert_eq!(flag_settings(None, None), None);
+        assert_eq!(flag_settings(Some(" default "), None), None);
+        let settings = flag_settings(Some(" opus "), Some("high")).expect("non-empty settings");
+        assert_eq!(settings["model"], "opus");
+        assert_eq!(settings["effortLevel"], "high");
+        let request = apply_flag_settings_request(&settings);
+        assert_eq!(request["subtype"], "apply_flag_settings");
+        assert_eq!(request["settings"], serde_json::Value::Object(settings));
+        assert!(
+            request.get("model").is_none(),
+            "model belongs inside settings, never at top level"
+        );
+        assert!(
+            request.get("effort").is_none(),
+            "the legacy field is settings.effortLevel"
+        );
+    }
+
+    #[test]
+    fn every_recovery_diagnostic_variant_maps_to_its_named_kind() {
+        let (path, writer) = writer_at("raw-log-recovery-diagnostic-mapping");
+        raw_log_recovery_diagnostic(
+            &writer,
+            &recovery::RecoveryDiagnostic::ConcatenatedRecoverySkipped {
+                byte_count: 1,
+                threshold: 1,
+            },
+        );
+        raw_log_recovery_diagnostic(
+            &writer,
+            &recovery::RecoveryDiagnostic::RecoveredSegmentSkipped {
+                preview: "bad".to_string(),
+                error: "invalidJSON".to_string(),
+            },
+        );
+        raw_log_recovery_diagnostic(
+            &writer,
+            &recovery::RecoveryDiagnostic::RecoveredSegment {
+                bytes: b"{}".to_vec(),
+            },
+        );
+        raw_log_recovery_diagnostic(
+            &writer,
+            &recovery::RecoveryDiagnostic::Recovered {
+                segments: 2,
+                recovered_segments: 2,
+            },
+        );
+        raw_log_recovery_diagnostic(
+            &writer,
+            &recovery::RecoveryDiagnostic::RecoveredTail {
+                start_offset: 3,
+                byte_count: 10,
+                preview: "tail".to_string(),
+            },
+        );
+        raw_log_recovery_diagnostic(
+            &writer,
+            &recovery::RecoveryDiagnostic::RecoveredJsonStringControlChars {
+                repaired: b"{}".to_vec(),
+            },
+        );
+        raw_log_recovery_diagnostic(
+            &writer,
+            &recovery::RecoveryDiagnostic::RecoveredPlaintext {
+                preview: "plain".to_string(),
+                length: 40,
+            },
+        );
+
+        assert_eq!(
+            kinds_in(&path),
+            vec![
+                "session.header",
+                "protocol.decode.concatenatedRecoverySkipped",
+                "protocol.decode.recoveredSegmentSkipped",
+                "protocol.inbound.recoveredSegment",
+                "protocol.decode.recovered",
+                "protocol.inbound.recoveredTail",
+                "protocol.decode.recoveredJSONStringControlChars",
+                "protocol.decode.recoveredPlaintext",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_early_idle_fallback_poll_releases_its_reservation_and_reschedules_the_same_generation() {
+        let identity = RuntimeIdentity::new(1, "dd".repeat(16), "a".repeat(64), "b".repeat(64))
+            .expect("identity");
+        let config = AgentClaudeScopeConfig {
+            idle_fallback: Duration::from_millis(250),
+            ..AgentClaudeScopeConfig::default()
+        };
+        let scope = Arc::new(AgentClaudeScope::new(
+            identity,
+            AgentClaudeScopeId::mint(),
+            config,
+            Reaper::new(),
+        ));
+        let generation = {
+            let mut state = scope.lock_state();
+            state.turns.on_session_state_changed("running", |_| {});
+            let turn_id = state.turns.send_user_message();
+            state.last_turn_generation = turn_id;
+            assert_eq!(
+                state
+                    .turns
+                    .on_authoritative_result(TurnStatus::Completed, |_| {}),
+                None
+            );
+            state
+                .turns
+                .fallback_poll_ticket()
+                .expect("armed fallback")
+                .0
+        };
+
+        // Simulate this generation's worker waking before its monotonic deadline. The same ticket
+        // must be admitted again rather than being suppressed by its own stale reservation.
+        scope
+            .scheduled_fallback_generation
+            .store(generation, Ordering::SeqCst);
+        scope.poll_idle_fallback(generation);
+        assert_eq!(
+            scope.scheduled_fallback_generation.load(Ordering::SeqCst),
+            generation,
+            "the same-generation replacement worker must be scheduled"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !scope.lock_state().turns.has_pending_turn_ids(),
+            "the replacement worker must eventually release the deferred turn"
+        );
+    }
+
+    #[test]
+    fn failed_permission_write_reinserts_the_request_for_ui_or_retry() {
+        let identity = RuntimeIdentity::new(1, "ee".repeat(16), "a".repeat(64), "b".repeat(64))
+            .expect("identity");
+        let scope = AgentClaudeScope::new(
+            identity.clone(),
+            AgentClaudeScopeId::mint(),
+            AgentClaudeScopeConfig::default(),
+            Reaper::new(),
+        );
+        let request = ControlRequest {
+            request_id: "perm-retry".to_string(),
+            subtype: "can_use_tool".to_string(),
+            request: serde_json::from_value(json!({
+                "subtype": "can_use_tool",
+                "tool_name": "mcp__RepoPrompt__read_file",
+                "input": {"path": "README.md"},
+            }))
+            .expect("object"),
+        };
+        let pending = permission::parse_can_use_tool_request(&request).expect("permission request");
+        scope
+            .lock_state()
+            .pending_permissions
+            .insert(request.request_id.clone(), pending);
+
+        assert!(matches!(
+            scope.respond_permission(
+                &identity,
+                &request.request_id,
+                PermissionDecisionInput::AutoAllowRepoPrompt {
+                    match_source: "canonicalToolName".to_string(),
+                    normalized_tool_name: Some("read_file".to_string()),
+                    server_identifier: Some("RepoPromptCE".to_string()),
+                },
+            ),
+            Err(AgentScopeError::TransportWrite(_))
+        ));
+        assert_eq!(scope.diagnostics().pending_permission_count, 1);
+    }
+
+    #[test]
+    fn framer_diagnostics_map_to_their_named_kinds_through_the_real_scope_methods() {
+        let (path, _writer) = writer_at("raw-log-framer-diagnostic-mapping");
+        let config = AgentClaudeScopeConfig {
+            raw_event_log_enabled: true,
+            raw_event_log_file_path: Some(path.to_string_lossy().to_string()),
+            ..AgentClaudeScopeConfig::default()
+        };
+        let identity = RuntimeIdentity::new(1, "cc".repeat(16), "a".repeat(64), "b".repeat(64))
+            .expect("identity");
+        let scope =
+            AgentClaudeScope::new(identity, AgentClaudeScopeId::mint(), config, Reaper::new());
+        scope.on_framer_overflow(10, 5);
+        scope.on_framer_non_json_candidate_reset();
+
+        assert_eq!(
+            kinds_in(&path),
+            vec![
+                "session.header",
+                "framer.overflow",
+                "framer.nonJSONCandidateReset"
+            ]
+        );
     }
 }

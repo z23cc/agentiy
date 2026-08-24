@@ -34,7 +34,9 @@ final class ClaudeAgentModeCoordinator {
         }
 
         var allowsFreshStartRecovery: Bool {
-            if case .runAttempt = self { return true }
+            if case .runAttempt = self {
+                return true
+            }
             return false
         }
 
@@ -175,32 +177,18 @@ final class ClaudeAgentModeCoordinator {
             mcpStrictMode: launchSettings.mcpStrictMode
         )
         let runtimeConfig = ClaudeCompatiblePluginBridge.runtimeConfig(from: coreConfig, mode: .agentMode)
-        #if DEBUG
-            // P6-7 (docs/designs/p6-claude-vertical-2026-08-23.md §11 P6-7): the DEBUG-only Rust-
-            // backed arm selection point. `ClaudeRustBackedNativeSessionAdapterSelection`, the
-            // adapter type, and this branch are all `#if DEBUG`-gated, so a release build never
-            // references any of the three (verified by ClaudeRustBackedAdapterReleaseAbsenceTests).
-            // Still not authoritative -- see that adapter's doc comment for the known gaps this
-            // arm carries today.
-            if ClaudeRustBackedNativeSessionAdapterSelection.isEnabled {
-                return ClaudeRustBackedNativeSessionAdapter(
-                    runID: runID,
-                    tabID: tabID,
-                    workspacePath: launchSettings.workspacePath,
-                    config: coreConfig,
-                    runtimeConfig: runtimeConfig
-                )
-            }
-        #endif
-        return ClaudeCompatibleNativeSessionAdapter(runtimeConfig: runtimeConfig) {
-            ClaudeNativeProcessSessionController(
-                runID: runID,
-                tabID: tabID,
-                windowID: windowID,
-                workspacePath: launchSettings.workspacePath,
-                config: coreConfig
-            )
-        }
+        // P6-9 (`docs/architecture/rust-agent-claude-v1.md` §15.9): all four interactive
+        // Claude-compatible variants share the Rust authority. Swift still resolves each backend's
+        // host-owned credentials/environment and GLM prompt input, then passes those launch facts
+        // into the same scope; there is no variant-specific process-controller fallback.
+        return ClaudeRustBackedNativeSessionAdapter(
+            runID: runID,
+            tabID: tabID,
+            windowID: windowID,
+            workspacePath: launchSettings.workspacePath,
+            config: coreConfig,
+            runtimeConfig: runtimeConfig
+        )
     }
 
     @discardableResult
@@ -1105,9 +1093,6 @@ final class ClaudeAgentModeCoordinator {
         controller: any NativeAgentRuntimeControlling,
         handler: ClaudeAgentToolTrackingHandler
     ) async -> Bool {
-        let hadTurnInFlight = await controller.hasTurnInFlight
-        guard hadTurnInFlight else { return true }
-
         if let runID = session.runID {
             switch await awaitSteeringInterruptSafePoint(
                 session: session,
@@ -1130,9 +1115,8 @@ final class ClaudeAgentModeCoordinator {
         case .acknowledged, .noTurnInFlight:
             return true
         case .timedOut, .failed:
-            // Race tolerance: the active turn may have naturally completed after our
-            // initial hasTurnInFlight check but before the interrupt was acknowledged.
-            // Re-check and only proceed if the turn has already ended.
+            // Race tolerance: the active turn may have naturally completed before or while the
+            // interrupt was being acknowledged. Re-check and only proceed if the turn has ended.
             let stillInFlight = await controller.hasTurnInFlight
             return !stillInFlight
         }

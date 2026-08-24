@@ -47,10 +47,10 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use super::fallback::RootCatalogShardFallbackReason;
 use crate::inventory::{
     InventoryAppliedIndexBatchEvent, InventoryFileRecord, InventoryFolderRecord, InventoryUuid,
 };
-use super::fallback::RootCatalogShardFallbackReason;
 
 pub const INVENTORY_SCOPE_CONTRACT_VERSION_V1: u16 = 1;
 
@@ -176,7 +176,10 @@ impl fmt::Display for WireError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownContractVersion(version) => {
-                write!(formatter, "unknown inventory-scope-v1 contract version {version}")
+                write!(
+                    formatter,
+                    "unknown inventory-scope-v1 contract version {version}"
+                )
             }
             Self::UnknownMessageKind(kind) => {
                 write!(formatter, "unknown inventory-scope-v1 message kind {kind}")
@@ -188,7 +191,9 @@ impl fmt::Display for WireError {
             Self::Oversize(field) => write!(formatter, "oversize inventory-scope-v1 {field}"),
             Self::Malformed(field) => write!(formatter, "malformed inventory-scope-v1 {field}"),
             Self::OutOfRange(field) => write!(formatter, "out-of-range inventory-scope-v1 {field}"),
-            Self::InvalidUtf8 => formatter.write_str("invalid utf8 in inventory-scope-v1 string pool"),
+            Self::InvalidUtf8 => {
+                formatter.write_str("invalid utf8 in inventory-scope-v1 string pool")
+            }
         }
     }
 }
@@ -280,7 +285,10 @@ impl<'a> Reader<'a> {
             .pos
             .checked_add(len)
             .ok_or(WireError::Truncated(field))?;
-        let slice = self.bytes.get(self.pos..end).ok_or(WireError::Truncated(field))?;
+        let slice = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or(WireError::Truncated(field))?;
         self.pos = end;
         Ok(slice)
     }
@@ -296,8 +304,13 @@ impl<'a> Reader<'a> {
     }
 
     /// Reads a word-array section, rejecting a declared length over `max_words`.
-    pub fn read_words(&mut self, max_words: usize, field: &'static str) -> Result<Vec<u64>, WireError> {
-        let count = usize::try_from(self.read_u32(field)?).map_err(|_| WireError::Oversize(field))?;
+    pub fn read_words(
+        &mut self,
+        max_words: usize,
+        field: &'static str,
+    ) -> Result<Vec<u64>, WireError> {
+        let count =
+            usize::try_from(self.read_u32(field)?).map_err(|_| WireError::Oversize(field))?;
         if count > max_words.min(MAX_WORDS_PER_SECTION) {
             return Err(WireError::Oversize(field));
         }
@@ -312,7 +325,8 @@ impl<'a> Reader<'a> {
 
     /// Reads the trailing byte-blob section (the shared UTF-8 string pool).
     pub fn read_blob(&mut self, field: &'static str) -> Result<&'a [u8], WireError> {
-        let count = usize::try_from(self.read_u32(field)?).map_err(|_| WireError::Oversize(field))?;
+        let count =
+            usize::try_from(self.read_u32(field)?).map_err(|_| WireError::Oversize(field))?;
         if count > MAX_BLOB_BYTES {
             return Err(WireError::Oversize(field));
         }
@@ -455,7 +469,11 @@ fn optional_uuid_to_words(id: Option<InventoryUuid>) -> (u64, u64, u64) {
     }
 }
 
-fn optional_uuid_from_words(present: u64, hi: u64, lo: u64) -> Result<Option<InventoryUuid>, WireError> {
+fn optional_uuid_from_words(
+    present: u64,
+    hi: u64,
+    lo: u64,
+) -> Result<Option<InventoryUuid>, WireError> {
     match present {
         0 => Ok(None),
         1 => Ok(Some(uuid_from_words(hi, lo))),
@@ -518,9 +536,26 @@ struct DecodedRecordRow {
     modification_date: Option<f64>,
 }
 
-fn read_record_row(row: &[u64], pool: &InternPoolReader<'_>) -> Result<DecodedRecordRow, WireError> {
-    let &[id_hi, id_lo, root_hi, root_lo, name_idx, relative_path_idx, standardized_relative_path_idx, full_path_idx, standardized_full_path_idx, parent_present, parent_hi, parent_lo, mod_present, mod_bits] =
-        row
+fn read_record_row(
+    row: &[u64],
+    pool: &InternPoolReader<'_>,
+) -> Result<DecodedRecordRow, WireError> {
+    let &[
+        id_hi,
+        id_lo,
+        root_hi,
+        root_lo,
+        name_idx,
+        relative_path_idx,
+        standardized_relative_path_idx,
+        full_path_idx,
+        standardized_full_path_idx,
+        parent_present,
+        parent_hi,
+        parent_lo,
+        mod_present,
+        mod_bits,
+    ] = row
     else {
         return Err(WireError::Malformed("record row"));
     };
@@ -564,7 +599,11 @@ fn push_file_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, file: &Inve
     );
 }
 
-fn push_folder_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, folder: &InventoryFolderRecord) {
+fn push_folder_row(
+    words: &mut Vec<u64>,
+    pool: &mut InternPoolBuilder,
+    folder: &InventoryFolderRecord,
+) {
     push_record_row(
         words,
         pool,
@@ -580,7 +619,10 @@ fn push_folder_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, folder: &
     );
 }
 
-fn decode_file_rows(words: &[u64], pool: &InternPoolReader<'_>) -> Result<Vec<InventoryFileRecord>, WireError> {
+fn decode_file_rows(
+    words: &[u64],
+    pool: &InternPoolReader<'_>,
+) -> Result<Vec<InventoryFileRecord>, WireError> {
     if words.len() % RECORD_STRIDE != 0 {
         return Err(WireError::Malformed("file row stride"));
     }
@@ -772,8 +814,20 @@ fn read_discovery_record_row(
     row: &[u64],
     pool: &InternPoolReader<'_>,
 ) -> Result<DecodedDiscoveryRecordRow, WireError> {
-    let &[root_hi, root_lo, name_idx, relative_path_idx, standardized_relative_path_idx, full_path_idx, standardized_full_path_idx, parent_present, parent_hi, parent_lo, mod_present, mod_bits] =
-        row
+    let &[
+        root_hi,
+        root_lo,
+        name_idx,
+        relative_path_idx,
+        standardized_relative_path_idx,
+        full_path_idx,
+        standardized_full_path_idx,
+        parent_present,
+        parent_hi,
+        parent_lo,
+        mod_present,
+        mod_bits,
+    ] = row
     else {
         return Err(WireError::Malformed("discovery record row"));
     };
@@ -800,7 +854,11 @@ fn read_discovery_record_row(
     })
 }
 
-fn push_discovered_file_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, file: &DiscoveredFileRecord) {
+fn push_discovered_file_row(
+    words: &mut Vec<u64>,
+    pool: &mut InternPoolBuilder,
+    file: &DiscoveredFileRecord,
+) {
     push_discovery_record_row(
         words,
         pool,
@@ -815,7 +873,11 @@ fn push_discovered_file_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, 
     );
 }
 
-fn push_discovered_folder_row(words: &mut Vec<u64>, pool: &mut InternPoolBuilder, folder: &DiscoveredFolderRecord) {
+fn push_discovered_folder_row(
+    words: &mut Vec<u64>,
+    pool: &mut InternPoolBuilder,
+    folder: &DiscoveredFolderRecord,
+) {
     push_discovery_record_row(
         words,
         pool,
@@ -909,7 +971,9 @@ pub fn encode_discovery_bulk_chunk(
 
     let mut writer = Writer::header(MessageKind::DiscoveryBulkChunk);
     writer.write_words(&file_words).expect("bounded by caller");
-    writer.write_words(&folder_words).expect("bounded by caller");
+    writer
+        .write_words(&folder_words)
+        .expect("bounded by caller");
     writer.write_words(&range_words).expect("bounded by caller");
     writer.write_blob(&blob).expect("bounded by caller");
     writer.finish()
@@ -919,9 +983,14 @@ pub fn decode_discovery_bulk_chunk(
     bytes: &[u8],
 ) -> Result<(Vec<DiscoveredFileRecord>, Vec<DiscoveredFolderRecord>), WireError> {
     let mut reader = Reader::open(bytes, MessageKind::DiscoveryBulkChunk)?;
-    let file_words = reader.read_words(MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE, "discovered file rows")?;
-    let folder_words =
-        reader.read_words(MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE, "discovered folder rows")?;
+    let file_words = reader.read_words(
+        MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE,
+        "discovered file rows",
+    )?;
+    let folder_words = reader.read_words(
+        MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE,
+        "discovered folder rows",
+    )?;
     let range_words = reader.read_words(MAX_WORDS_PER_SECTION, "string_range_words")?;
     let blob = reader.read_blob("utf8_blob")?;
     reader.finish()?;
@@ -940,7 +1009,8 @@ pub fn decode_discovery_bulk_chunk(
 #[must_use]
 pub fn encode_discovery_delta_event(event: &InventoryDiscoveryAppliedIndexBatchEvent) -> Vec<u8> {
     let mut pool = InternPoolBuilder::new();
-    let mut upserted_file_words = Vec::with_capacity(event.upserted_files.len() * DISCOVERY_RECORD_STRIDE);
+    let mut upserted_file_words =
+        Vec::with_capacity(event.upserted_files.len() * DISCOVERY_RECORD_STRIDE);
     for file in &event.upserted_files {
         push_discovered_file_row(&mut upserted_file_words, &mut pool, file);
     }
@@ -954,9 +1024,17 @@ pub fn encode_discovery_delta_event(event: &InventoryDiscoveryAppliedIndexBatchE
     let mut removed_folder_ids = Vec::with_capacity(event.removed_folder_ids.len() * 2);
     push_uuid_list(&mut removed_folder_ids, &event.removed_folder_ids);
     let mut removed_file_paths = Vec::with_capacity(event.removed_file_paths.len());
-    push_string_list(&mut removed_file_paths, &mut pool, &event.removed_file_paths);
+    push_string_list(
+        &mut removed_file_paths,
+        &mut pool,
+        &event.removed_file_paths,
+    );
     let mut removed_folder_paths = Vec::with_capacity(event.removed_folder_paths.len());
-    push_string_list(&mut removed_folder_paths, &mut pool, &event.removed_folder_paths);
+    push_string_list(
+        &mut removed_folder_paths,
+        &mut pool,
+        &event.removed_folder_paths,
+    );
     let mut modified_file_ids = Vec::with_capacity(event.modified_file_ids.len() * 2);
     push_uuid_list(&mut modified_file_ids, &event.modified_file_ids);
     let mut modified_folder_ids = Vec::with_capacity(event.modified_folder_ids.len() * 2);
@@ -966,14 +1044,30 @@ pub fn encode_discovery_delta_event(event: &InventoryDiscoveryAppliedIndexBatchE
 
     let mut writer = Writer::header(MessageKind::DiscoveryDeltaEvent);
     writer.write_words(&[root_hi, root_lo]).expect("bounded");
-    writer.write_words(&upserted_file_words).expect("bounded by caller");
-    writer.write_words(&upserted_folder_words).expect("bounded by caller");
-    writer.write_words(&removed_file_ids).expect("bounded by caller");
-    writer.write_words(&removed_folder_ids).expect("bounded by caller");
-    writer.write_words(&removed_file_paths).expect("bounded by caller");
-    writer.write_words(&removed_folder_paths).expect("bounded by caller");
-    writer.write_words(&modified_file_ids).expect("bounded by caller");
-    writer.write_words(&modified_folder_ids).expect("bounded by caller");
+    writer
+        .write_words(&upserted_file_words)
+        .expect("bounded by caller");
+    writer
+        .write_words(&upserted_folder_words)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_file_ids)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_folder_ids)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_file_paths)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_folder_paths)
+        .expect("bounded by caller");
+    writer
+        .write_words(&modified_file_ids)
+        .expect("bounded by caller");
+    writer
+        .write_words(&modified_folder_ids)
+        .expect("bounded by caller");
     writer.write_words(&range_words).expect("bounded by caller");
     writer.write_blob(&blob).expect("bounded by caller");
     writer.finish()
@@ -987,8 +1081,10 @@ pub fn decode_discovery_delta_event(
     let &[root_hi, root_lo] = root_id_words.as_slice() else {
         return Err(WireError::Malformed("root_id"));
     };
-    let upserted_file_words =
-        reader.read_words(MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE, "upserted discovered file rows")?;
+    let upserted_file_words = reader.read_words(
+        MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE,
+        "upserted discovered file rows",
+    )?;
     let upserted_folder_words = reader.read_words(
         MAX_ROWS_PER_CALL * DISCOVERY_RECORD_STRIDE,
         "upserted discovered folder rows",
@@ -996,9 +1092,11 @@ pub fn decode_discovery_delta_event(
     let removed_file_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "removed_file_ids")?;
     let removed_folder_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "removed_folder_ids")?;
     let removed_file_path_words = reader.read_words(MAX_PATHS_PER_CALL, "removed_file_paths")?;
-    let removed_folder_path_words = reader.read_words(MAX_PATHS_PER_CALL, "removed_folder_paths")?;
+    let removed_folder_path_words =
+        reader.read_words(MAX_PATHS_PER_CALL, "removed_folder_paths")?;
     let modified_file_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "modified_file_ids")?;
-    let modified_folder_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "modified_folder_ids")?;
+    let modified_folder_id_words =
+        reader.read_words(MAX_IDS_PER_CALL * 2, "modified_folder_ids")?;
     let range_words = reader.read_words(MAX_WORDS_PER_SECTION, "string_range_words")?;
     let blob = reader.read_blob("utf8_blob")?;
     reader.finish()?;
@@ -1010,7 +1108,11 @@ pub fn decode_discovery_delta_event(
         upserted_folders: decode_discovered_folder_rows(&upserted_folder_words, &pool)?,
         removed_file_ids: decode_uuid_list(&removed_file_id_words, "removed_file_ids")?,
         removed_folder_ids: decode_uuid_list(&removed_folder_id_words, "removed_folder_ids")?,
-        removed_file_paths: decode_string_list(&removed_file_path_words, &pool, "removed_file_paths")?,
+        removed_file_paths: decode_string_list(
+            &removed_file_path_words,
+            &pool,
+            "removed_file_paths",
+        )?,
         removed_folder_paths: decode_string_list(
             &removed_folder_path_words,
             &pool,
@@ -1055,7 +1157,10 @@ fn decode_string_list(
     if words.len() > MAX_PATHS_PER_CALL {
         return Err(WireError::Oversize(field));
     }
-    words.iter().map(|&index| pool.resolve(index).map(str::to_owned)).collect()
+    words
+        .iter()
+        .map(|&index| pool.resolve(index).map(str::to_owned))
+        .collect()
 }
 
 // ================================================================================================
@@ -1063,7 +1168,10 @@ fn decode_string_list(
 // ================================================================================================
 
 #[must_use]
-pub fn encode_bulk_chunk(files: &[InventoryFileRecord], folders: &[InventoryFolderRecord]) -> Vec<u8> {
+pub fn encode_bulk_chunk(
+    files: &[InventoryFileRecord],
+    folders: &[InventoryFolderRecord],
+) -> Vec<u8> {
     let mut pool = InternPoolBuilder::new();
     let mut file_words = Vec::with_capacity(files.len() * RECORD_STRIDE);
     for file in files {
@@ -1077,7 +1185,9 @@ pub fn encode_bulk_chunk(files: &[InventoryFileRecord], folders: &[InventoryFold
 
     let mut writer = Writer::header(MessageKind::BulkChunk);
     writer.write_words(&file_words).expect("bounded by caller");
-    writer.write_words(&folder_words).expect("bounded by caller");
+    writer
+        .write_words(&folder_words)
+        .expect("bounded by caller");
     writer.write_words(&range_words).expect("bounded by caller");
     writer.write_blob(&blob).expect("bounded by caller");
     writer.finish()
@@ -1110,7 +1220,8 @@ pub fn encode_delta_event(event: &InventoryAppliedIndexBatchEvent) -> Vec<u8> {
     for file in &event.upserted_files {
         push_file_row(&mut upserted_file_words, &mut pool, file);
     }
-    let mut upserted_folder_words = Vec::with_capacity(event.upserted_folders.len() * RECORD_STRIDE);
+    let mut upserted_folder_words =
+        Vec::with_capacity(event.upserted_folders.len() * RECORD_STRIDE);
     for folder in &event.upserted_folders {
         push_folder_row(&mut upserted_folder_words, &mut pool, folder);
     }
@@ -1119,9 +1230,17 @@ pub fn encode_delta_event(event: &InventoryAppliedIndexBatchEvent) -> Vec<u8> {
     let mut removed_folder_ids = Vec::with_capacity(event.removed_folder_ids.len() * 2);
     push_uuid_list(&mut removed_folder_ids, &event.removed_folder_ids);
     let mut removed_file_paths = Vec::with_capacity(event.removed_file_paths.len());
-    push_string_list(&mut removed_file_paths, &mut pool, &event.removed_file_paths);
+    push_string_list(
+        &mut removed_file_paths,
+        &mut pool,
+        &event.removed_file_paths,
+    );
     let mut removed_folder_paths = Vec::with_capacity(event.removed_folder_paths.len());
-    push_string_list(&mut removed_folder_paths, &mut pool, &event.removed_folder_paths);
+    push_string_list(
+        &mut removed_folder_paths,
+        &mut pool,
+        &event.removed_folder_paths,
+    );
     let mut modified_file_ids = Vec::with_capacity(event.modified_file_ids.len() * 2);
     push_uuid_list(&mut modified_file_ids, &event.modified_file_ids);
     let mut modified_folder_ids = Vec::with_capacity(event.modified_folder_ids.len() * 2);
@@ -1131,14 +1250,30 @@ pub fn encode_delta_event(event: &InventoryAppliedIndexBatchEvent) -> Vec<u8> {
 
     let mut writer = Writer::header(MessageKind::DeltaEvent);
     writer.write_words(&[root_hi, root_lo]).expect("bounded");
-    writer.write_words(&upserted_file_words).expect("bounded by caller");
-    writer.write_words(&upserted_folder_words).expect("bounded by caller");
-    writer.write_words(&removed_file_ids).expect("bounded by caller");
-    writer.write_words(&removed_folder_ids).expect("bounded by caller");
-    writer.write_words(&removed_file_paths).expect("bounded by caller");
-    writer.write_words(&removed_folder_paths).expect("bounded by caller");
-    writer.write_words(&modified_file_ids).expect("bounded by caller");
-    writer.write_words(&modified_folder_ids).expect("bounded by caller");
+    writer
+        .write_words(&upserted_file_words)
+        .expect("bounded by caller");
+    writer
+        .write_words(&upserted_folder_words)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_file_ids)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_folder_ids)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_file_paths)
+        .expect("bounded by caller");
+    writer
+        .write_words(&removed_folder_paths)
+        .expect("bounded by caller");
+    writer
+        .write_words(&modified_file_ids)
+        .expect("bounded by caller");
+    writer
+        .write_words(&modified_folder_ids)
+        .expect("bounded by caller");
     writer.write_words(&range_words).expect("bounded by caller");
     writer.write_blob(&blob).expect("bounded by caller");
     writer.finish()
@@ -1150,15 +1285,18 @@ pub fn decode_delta_event(bytes: &[u8]) -> Result<InventoryAppliedIndexBatchEven
     let &[root_hi, root_lo] = root_id_words.as_slice() else {
         return Err(WireError::Malformed("root_id"));
     };
-    let upserted_file_words = reader.read_words(MAX_ROWS_PER_CALL * RECORD_STRIDE, "upserted file rows")?;
+    let upserted_file_words =
+        reader.read_words(MAX_ROWS_PER_CALL * RECORD_STRIDE, "upserted file rows")?;
     let upserted_folder_words =
         reader.read_words(MAX_ROWS_PER_CALL * RECORD_STRIDE, "upserted folder rows")?;
     let removed_file_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "removed_file_ids")?;
     let removed_folder_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "removed_folder_ids")?;
     let removed_file_path_words = reader.read_words(MAX_PATHS_PER_CALL, "removed_file_paths")?;
-    let removed_folder_path_words = reader.read_words(MAX_PATHS_PER_CALL, "removed_folder_paths")?;
+    let removed_folder_path_words =
+        reader.read_words(MAX_PATHS_PER_CALL, "removed_folder_paths")?;
     let modified_file_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "modified_file_ids")?;
-    let modified_folder_id_words = reader.read_words(MAX_IDS_PER_CALL * 2, "modified_folder_ids")?;
+    let modified_folder_id_words =
+        reader.read_words(MAX_IDS_PER_CALL * 2, "modified_folder_ids")?;
     let range_words = reader.read_words(MAX_WORDS_PER_SECTION, "string_range_words")?;
     let blob = reader.read_blob("utf8_blob")?;
     reader.finish()?;
@@ -1170,8 +1308,16 @@ pub fn decode_delta_event(bytes: &[u8]) -> Result<InventoryAppliedIndexBatchEven
         upserted_folders: decode_folder_rows(&upserted_folder_words, &pool)?,
         removed_file_ids: decode_uuid_list(&removed_file_id_words, "removed_file_ids")?,
         removed_folder_ids: decode_uuid_list(&removed_folder_id_words, "removed_folder_ids")?,
-        removed_file_paths: decode_string_list(&removed_file_path_words, &pool, "removed_file_paths")?,
-        removed_folder_paths: decode_string_list(&removed_folder_path_words, &pool, "removed_folder_paths")?,
+        removed_file_paths: decode_string_list(
+            &removed_file_path_words,
+            &pool,
+            "removed_file_paths",
+        )?,
+        removed_folder_paths: decode_string_list(
+            &removed_folder_path_words,
+            &pool,
+            "removed_folder_paths",
+        )?,
         modified_file_ids: decode_uuid_list(&modified_file_id_words, "modified_file_ids")?,
         modified_folder_ids: decode_uuid_list(&modified_folder_id_words, "modified_folder_ids")?,
     })
@@ -1191,7 +1337,9 @@ pub fn encode_resolve_request(file_ids: &[InventoryUuid], folder_ids: &[Inventor
 
     let mut writer = Writer::header(MessageKind::ResolveRequest);
     writer.write_words(&file_words).expect("bounded by caller");
-    writer.write_words(&folder_words).expect("bounded by caller");
+    writer
+        .write_words(&folder_words)
+        .expect("bounded by caller");
     writer.finish()
 }
 
@@ -1314,7 +1462,12 @@ pub fn encode_fact_block(block: &FactBlock) -> Vec<u8> {
 
     let mut writer = Writer::header(MessageKind::FactBlock);
     writer
-        .write_words(&[present, generation, block.root_lifetime_hi, block.root_lifetime_lo])
+        .write_words(&[
+            present,
+            generation,
+            block.root_lifetime_hi,
+            block.root_lifetime_lo,
+        ])
         .expect("bounded");
     writer.write_words(&rows).expect("bounded by caller");
     writer.write_words(&range_words).expect("bounded by caller");
@@ -1348,8 +1501,31 @@ pub fn decode_fact_block(bytes: &[u8]) -> Result<FactBlock, WireError> {
     let rows = rows_words
         .chunks_exact(FACT_ROW_STRIDE)
         .map(|row| {
-            let &[key_hi, key_lo, exists, file_present, file_hi, file_lo, folder_present, folder_hi, folder_lo, root_present, root_hi, root_lo, is_discoverable, path_round_trips_to_self, standardized_relative_path_idx, standardized_full_path_idx, name_idx, record_fingerprint, parent_present, parent_hi, parent_lo, mod_present, mod_bits] =
-                row
+            let &[
+                key_hi,
+                key_lo,
+                exists,
+                file_present,
+                file_hi,
+                file_lo,
+                folder_present,
+                folder_hi,
+                folder_lo,
+                root_present,
+                root_hi,
+                root_lo,
+                is_discoverable,
+                path_round_trips_to_self,
+                standardized_relative_path_idx,
+                standardized_full_path_idx,
+                name_idx,
+                record_fingerprint,
+                parent_present,
+                parent_hi,
+                parent_lo,
+                mod_present,
+                mod_bits,
+            ] = row
             else {
                 return Err(WireError::Malformed("fact row"));
             };
@@ -1362,7 +1538,11 @@ pub fn decode_fact_block(bytes: &[u8]) -> Result<FactBlock, WireError> {
                     }
                     Some(value)
                 }
-                _ => return Err(WireError::Malformed("fact row modification_date presence flag")),
+                _ => {
+                    return Err(WireError::Malformed(
+                        "fact row modification_date presence flag",
+                    ));
+                }
             };
             Ok(FactRow {
                 key_hi,
@@ -1373,8 +1553,12 @@ pub fn decode_fact_block(bytes: &[u8]) -> Result<FactBlock, WireError> {
                 root_id: optional_uuid_from_words(root_present, root_hi, root_lo)?,
                 is_discoverable: is_discoverable != 0,
                 path_round_trips_to_self: path_round_trips_to_self != 0,
-                standardized_relative_path: pool.resolve_optional(standardized_relative_path_idx)?.map(str::to_owned),
-                standardized_full_path: pool.resolve_optional(standardized_full_path_idx)?.map(str::to_owned),
+                standardized_relative_path: pool
+                    .resolve_optional(standardized_relative_path_idx)?
+                    .map(str::to_owned),
+                standardized_full_path: pool
+                    .resolve_optional(standardized_full_path_idx)?
+                    .map(str::to_owned),
                 name: pool.resolve_optional(name_idx)?.map(str::to_owned),
                 record_fingerprint,
                 parent_folder_id: optional_uuid_from_words(parent_present, parent_hi, parent_lo)?,
@@ -1415,7 +1599,8 @@ pub fn encode_query_request(
     let prefix_idx = pool.intern(non_empty_relative_prefix);
     let empty_override_idx = pool.intern(empty_relative_path_value);
     let logical_present = u64::from(logical_prefix.is_some());
-    let (logical_non_empty_relative_prefix, logical_empty_relative_path_value) = logical_prefix.unwrap_or(("", ""));
+    let (logical_non_empty_relative_prefix, logical_empty_relative_path_value) =
+        logical_prefix.unwrap_or(("", ""));
     let logical_prefix_idx = pool.intern(logical_non_empty_relative_prefix);
     let logical_empty_override_idx = pool.intern(logical_empty_relative_path_value);
     let (blob, range_words) = pool.finish();
@@ -1454,8 +1639,16 @@ pub struct DecodedQueryRequest {
 pub fn decode_query_request(bytes: &[u8]) -> Result<DecodedQueryRequest, WireError> {
     let mut reader = Reader::open(bytes, MessageKind::QueryRequest)?;
     let header_words = reader.read_words(8, "query request header")?;
-    let &[pattern_idx, limit, haystack_variant, prefix_idx, empty_override_idx, logical_present, logical_prefix_idx, logical_empty_override_idx] =
-        header_words.as_slice()
+    let &[
+        pattern_idx,
+        limit,
+        haystack_variant,
+        prefix_idx,
+        empty_override_idx,
+        logical_present,
+        logical_prefix_idx,
+        logical_empty_override_idx,
+    ] = header_words.as_slice()
     else {
         return Err(WireError::Malformed("query request header"));
     };
@@ -1469,7 +1662,11 @@ pub fn decode_query_request(bytes: &[u8]) -> Result<DecodedQueryRequest, WireErr
             pool.resolve(logical_prefix_idx)?.to_owned(),
             pool.resolve(logical_empty_override_idx)?.to_owned(),
         )),
-        _ => return Err(WireError::Malformed("query request logical prefix presence flag")),
+        _ => {
+            return Err(WireError::Malformed(
+                "query request logical prefix presence flag",
+            ));
+        }
     };
     Ok(DecodedQueryRequest {
         logical_prefix,
@@ -1535,7 +1732,9 @@ pub fn encode_query_response(generation: Option<u64>, candidates: &[QueryCandida
     writer.finish()
 }
 
-pub fn decode_query_response(bytes: &[u8]) -> Result<(Option<u64>, Vec<QueryCandidateRow>), WireError> {
+pub fn decode_query_response(
+    bytes: &[u8],
+) -> Result<(Option<u64>, Vec<QueryCandidateRow>), WireError> {
     let mut reader = Reader::open(bytes, MessageKind::QueryResponse)?;
     let header_words = reader.read_words(2, "query response header")?;
     let &[present, generation] = header_words.as_slice() else {
@@ -1544,9 +1743,14 @@ pub fn decode_query_response(bytes: &[u8]) -> Result<(Option<u64>, Vec<QueryCand
     let generation = match present {
         0 => None,
         1 => Some(generation),
-        _ => return Err(WireError::Malformed("query response generation presence flag")),
+        _ => {
+            return Err(WireError::Malformed(
+                "query response generation presence flag",
+            ));
+        }
     };
-    let rows_words = reader.read_words(MAX_ROWS_PER_CALL * CANDIDATE_ROW_STRIDE, "candidate rows")?;
+    let rows_words =
+        reader.read_words(MAX_ROWS_PER_CALL * CANDIDATE_ROW_STRIDE, "candidate rows")?;
     let range_words = reader.read_words(MAX_WORDS_PER_SECTION, "string_range_words")?;
     let blob = reader.read_blob("utf8_blob")?;
     reader.finish()?;
@@ -1561,8 +1765,20 @@ pub fn decode_query_response(bytes: &[u8]) -> Result<(Option<u64>, Vec<QueryCand
     let candidates = rows_words
         .chunks_exact(CANDIDATE_ROW_STRIDE)
         .map(|row| {
-            let &[id_hi, id_lo, root_hi, root_lo, name_idx, relative_path_idx, standardized_relative_path_idx, full_path_idx, standardized_full_path_idx, display_path_idx, tie_break_key_idx, score] =
-                row
+            let &[
+                id_hi,
+                id_lo,
+                root_hi,
+                root_lo,
+                name_idx,
+                relative_path_idx,
+                standardized_relative_path_idx,
+                full_path_idx,
+                standardized_full_path_idx,
+                display_path_idx,
+                tie_break_key_idx,
+                score,
+            ] = row
             else {
                 return Err(WireError::Malformed("candidate row"));
             };
@@ -1571,7 +1787,9 @@ pub fn decode_query_response(bytes: &[u8]) -> Result<(Option<u64>, Vec<QueryCand
                 root_id: uuid_from_words(root_hi, root_lo),
                 name: pool.resolve(name_idx)?.to_owned(),
                 relative_path: pool.resolve(relative_path_idx)?.to_owned(),
-                standardized_relative_path: pool.resolve(standardized_relative_path_idx)?.to_owned(),
+                standardized_relative_path: pool
+                    .resolve(standardized_relative_path_idx)?
+                    .to_owned(),
                 full_path: pool.resolve(full_path_idx)?.to_owned(),
                 standardized_full_path: pool.resolve(standardized_full_path_idx)?.to_owned(),
                 display_path: pool.resolve(display_path_idx)?.to_owned(),
@@ -1635,20 +1853,39 @@ pub fn decode_generation_advanced(bytes: &[u8]) -> Result<GenerationAdvancedEven
     let mut reader = Reader::open(bytes, MessageKind::GenerationAdvanced)?;
     let words = reader.read_words(11, "generation advanced event")?;
     reader.finish()?;
-    let &[root_hi, root_lo, lifetime_hi, lifetime_lo, applied_index_generation, generation_present, generation_value, rebuilt_authoritative, upserted_count, removed_count, modified_count] =
-        words.as_slice()
+    let &[
+        root_hi,
+        root_lo,
+        lifetime_hi,
+        lifetime_lo,
+        applied_index_generation,
+        generation_present,
+        generation_value,
+        rebuilt_authoritative,
+        upserted_count,
+        removed_count,
+        modified_count,
+    ] = words.as_slice()
     else {
         return Err(WireError::Malformed("generation advanced event"));
     };
     let catalog_generation = match generation_present {
         0 => None,
         1 => Some(generation_value),
-        _ => return Err(WireError::Malformed("generation advanced event presence flag")),
+        _ => {
+            return Err(WireError::Malformed(
+                "generation advanced event presence flag",
+            ));
+        }
     };
     let rebuilt_authoritative = match rebuilt_authoritative {
         0 => false,
         1 => true,
-        _ => return Err(WireError::Malformed("generation advanced event outcome flag")),
+        _ => {
+            return Err(WireError::Malformed(
+                "generation advanced event outcome flag",
+            ));
+        }
     };
     Ok(GenerationAdvancedEvent {
         root_id: uuid_from_words(root_hi, root_lo),
@@ -1772,10 +2009,18 @@ pub enum ResnapshotReason {
 }
 
 impl ResnapshotReason {
-    const ALL: [Self; 4] = [Self::Gap, Self::Overflow, Self::Backstop, Self::IdentityChanged];
+    const ALL: [Self; 4] = [
+        Self::Gap,
+        Self::Overflow,
+        Self::Backstop,
+        Self::IdentityChanged,
+    ];
 
     fn tag(self) -> u64 {
-        Self::ALL.iter().position(|candidate| *candidate == self).expect("in ALL") as u64
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .expect("in ALL") as u64
     }
 
     fn from_tag(tag: u64) -> Result<Self, WireError> {
@@ -1818,7 +2063,11 @@ pub fn decode_resnapshot_required(bytes: &[u8]) -> Result<ResnapshotRequiredEven
     let root_id = match root_present {
         0 => None,
         1 => Some(uuid_from_words(root_hi, root_lo)),
-        _ => return Err(WireError::Malformed("resnapshot required event presence flag")),
+        _ => {
+            return Err(WireError::Malformed(
+                "resnapshot required event presence flag",
+            ));
+        }
     };
     Ok(ResnapshotRequiredEvent {
         root_id,
@@ -1974,14 +2223,21 @@ mod tests {
         let mut pool = InternPoolBuilder::new();
         pool.intern(&files[0].name);
         pool.intern(&files[1].name);
-        assert_eq!(pool.range_words().len() / STRING_RANGE_STRIDE, 1, "identical names dedupe to one pooled range");
+        assert_eq!(
+            pool.range_words().len() / STRING_RANGE_STRIDE,
+            1,
+            "identical names dedupe to one pooled range"
+        );
     }
 
     #[test]
     fn bulk_chunk_rejects_truncated_input() {
         let bytes = encode_bulk_chunk(&[sample_file(1)], &[]);
         let truncated = &bytes[..bytes.len() - 1];
-        assert!(matches!(decode_bulk_chunk(truncated), Err(WireError::Truncated(_))));
+        assert!(matches!(
+            decode_bulk_chunk(truncated),
+            Err(WireError::Truncated(_))
+        ));
     }
 
     #[test]
@@ -2007,7 +2263,10 @@ mod tests {
             modified_file_ids: Vec::new(),
             modified_folder_ids: Vec::new(),
         });
-        assert_eq!(decode_bulk_chunk(&bytes), Err(WireError::MessageKindMismatch));
+        assert_eq!(
+            decode_bulk_chunk(&bytes),
+            Err(WireError::MessageKindMismatch)
+        );
     }
 
     #[test]
@@ -2019,7 +2278,10 @@ mod tests {
         // idx) starts at byte 8 + 4*8 = 40.
         let name_idx_offset = 4 + 4 + 4 * 8;
         bytes[name_idx_offset..name_idx_offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
-        assert!(matches!(decode_bulk_chunk(&bytes), Err(WireError::OutOfRange(_))));
+        assert!(matches!(
+            decode_bulk_chunk(&bytes),
+            Err(WireError::OutOfRange(_))
+        ));
     }
 
     #[test]
@@ -2052,7 +2314,10 @@ mod tests {
             modified_count: 2,
         };
         let bytes = encode_generation_advanced(&with_generation);
-        assert_eq!(decode_generation_advanced(&bytes).expect("decode"), with_generation);
+        assert_eq!(
+            decode_generation_advanced(&bytes).expect("decode"),
+            with_generation
+        );
 
         let rebuilt = GenerationAdvancedEvent {
             catalog_generation: None,
@@ -2070,14 +2335,20 @@ mod tests {
             root_lifetime_id: [4; 16],
         };
         let published_bytes = encode_root_published(&event);
-        assert_eq!(decode_root_published(&published_bytes).expect("decode"), event);
+        assert_eq!(
+            decode_root_published(&published_bytes).expect("decode"),
+            event
+        );
         assert_eq!(
             decode_root_unloaded(&published_bytes),
             Err(WireError::MessageKindMismatch)
         );
 
         let unloaded_bytes = encode_root_unloaded(&event);
-        assert_eq!(decode_root_unloaded(&unloaded_bytes).expect("decode"), event);
+        assert_eq!(
+            decode_root_unloaded(&unloaded_bytes).expect("decode"),
+            event
+        );
         assert_eq!(
             decode_root_published(&unloaded_bytes),
             Err(WireError::MessageKindMismatch)
@@ -2106,9 +2377,15 @@ mod tests {
             let bytes = encode_resnapshot_required(&scoped);
             assert_eq!(decode_resnapshot_required(&bytes).expect("decode"), scoped);
 
-            let scope_wide = ResnapshotRequiredEvent { root_id: None, reason };
+            let scope_wide = ResnapshotRequiredEvent {
+                root_id: None,
+                reason,
+            };
             let bytes = encode_resnapshot_required(&scope_wide);
-            assert_eq!(decode_resnapshot_required(&bytes).expect("decode"), scope_wide);
+            assert_eq!(
+                decode_resnapshot_required(&bytes).expect("decode"),
+                scope_wide
+            );
         }
     }
 
@@ -2125,7 +2402,10 @@ mod tests {
             modified_count: 0,
         });
         let truncated = &bytes[..bytes.len() - 1];
-        assert!(matches!(decode_generation_advanced(truncated), Err(WireError::Truncated(_))));
+        assert!(matches!(
+            decode_generation_advanced(truncated),
+            Err(WireError::Truncated(_))
+        ));
     }
 
     #[test]
@@ -2133,7 +2413,10 @@ mod tests {
         let file_ids = vec![[1; 16], [2; 16]];
         let folder_ids = vec![[3; 16]];
         let bytes = encode_resolve_request(&file_ids, &folder_ids);
-        assert_eq!(decode_resolve_request(&bytes).expect("decode"), (file_ids, folder_ids));
+        assert_eq!(
+            decode_resolve_request(&bytes).expect("decode"),
+            (file_ids, folder_ids)
+        );
 
         let paths = vec!["a/b.swift".to_owned(), "c/d.swift".to_owned()];
         let bytes = encode_lookup_request(&paths);
@@ -2216,14 +2499,20 @@ mod tests {
     fn query_request_round_trips_present_but_empty_logical_prefix() {
         let bytes = encode_query_request("App*", 20, 1, "root/", "root", Some(("", "App")));
         let decoded = decode_query_request(&bytes).expect("decode");
-        assert_eq!(decoded.logical_prefix, Some((String::new(), "App".to_owned())));
+        assert_eq!(
+            decoded.logical_prefix,
+            Some((String::new(), "App".to_owned()))
+        );
     }
 
     #[test]
     fn query_request_round_trips_non_empty_logical_prefix() {
         let bytes = encode_query_request("App*", 20, 1, "root/", "root", Some(("App/", "App")));
         let decoded = decode_query_request(&bytes).expect("decode");
-        assert_eq!(decoded.logical_prefix, Some(("App/".to_owned(), "App".to_owned())));
+        assert_eq!(
+            decoded.logical_prefix,
+            Some(("App/".to_owned(), "App".to_owned()))
+        );
     }
 
     /// Regression pin for P4-7a's a3 header widening (5 -> 8 words: `logicalPresent`,
@@ -2241,7 +2530,9 @@ mod tests {
         let empty_override_idx = pool.intern("root");
         let (blob, range_words) = pool.finish();
         let mut writer = Writer::header(MessageKind::QueryRequest);
-        writer.write_words(&[pattern_idx, 20, 1, prefix_idx, empty_override_idx]).expect("bounded");
+        writer
+            .write_words(&[pattern_idx, 20, 1, prefix_idx, empty_override_idx])
+            .expect("bounded");
         writer.write_words(&range_words).expect("bounded by caller");
         writer.write_blob(&blob).expect("bounded by caller");
         let bytes = writer.finish();
@@ -2270,7 +2561,10 @@ mod tests {
         assert_eq!(generation, Some(3));
         assert_eq!(decoded[0].id, candidates[0].id);
         assert_eq!(decoded[0].display_path, "root/src/App.swift");
-        assert_eq!(decoded[0].tie_break_key, "root/src/App.swift\n/repo/src/App.swift");
+        assert_eq!(
+            decoded[0].tie_break_key,
+            "root/src/App.swift\n/repo/src/App.swift"
+        );
         assert_eq!(decoded[0].score, 42);
 
         let bytes = encode_query_response(None, &[]);
@@ -2287,7 +2581,9 @@ mod tests {
         // differently-shaped row list.
         let mut writer = Writer::header(MessageKind::QueryResponse);
         writer.write_words(&[0, 0]).expect("header words"); // present=0, generation=0
-        writer.write_words(&vec![0u64; 11]).expect("legacy-stride row words");
+        writer
+            .write_words(&vec![0u64; 11])
+            .expect("legacy-stride row words");
         writer.write_words(&[]).expect("string_range_words");
         writer.write_blob(&[]).expect("utf8_blob");
         let bytes = writer.finish();
@@ -2306,7 +2602,10 @@ mod tests {
         // at 4 + 4 + 8 = 16.
         let range_len_offset = 4 + 4 + 8;
         bytes[range_len_offset..range_len_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(matches!(decode_lookup_request(&bytes), Err(WireError::Oversize(_))));
+        assert!(matches!(
+            decode_lookup_request(&bytes),
+            Err(WireError::Oversize(_))
+        ));
     }
 
     #[test]
@@ -2321,10 +2620,7 @@ mod tests {
             "82e2e432dc51dd3c2cb7bae38f50219ef4522f2d14b5ea82678fb1d8a3d1418a"
         );
     }
-
 }
-
-
 
 /// P4-4's E-2 re-run (design §11 P4-2/P4-4; contract doc §8): P4-2 could not measure real wire
 /// bytes because no bridge existed yet ("BLOCKED (partial evidence only)", P4-2 results doc §5).

@@ -954,35 +954,32 @@ print_matches \
   grep -R -n -E 'path_search_create\(|path_search_find\(|path_search_projected_find|path_search_destroy\(|path_search_cancellation_create\(' \
     Sources/RepoPrompt Sources/RepoPromptC
 
-# 11. P6-1 §1.2 headless-isolation guardrail (docs/architecture/rust-agent-claude-v1.md,
-# design doc docs/designs/p6-claude-vertical-2026-08-23.md §1.2): the interactive Claude native
-# runtime is a GUI-scope-only capability today, verified rather than assumed, by exactly one
-# reachability chain -- ClaudeNativeProcessSessionController is constructed only inside
-# ClaudeAgentModeCoordinator.makeDefaultController, ClaudeAgentModeCoordinator is constructed
-# only inside AgentModeViewModel (a @MainActor GUI view model), and the headless direct-MCP
-# composition (Sources/RepoPromptMCP) never constructs either symbol -- so charter §15.3 gate 5
-# (topology parity) is satisfied by a drift guard rather than a parallel headless cutover. This
-# check pins that chain structurally; it deliberately does not assert "Sources/RepoPromptMCP
-# contains zero occurrences of Claude/claude" (unlike the design doc's prose, the tree today has
-# a few benign ones -- an example client name in a doc comment and an external MCP client-name
-# classifier in DirectHeadlessMCPService.swift -- neither constructs either symbol). It also
-# cannot yet assert anything about the post-cutover Rust agent scope, which does not exist at
-# P6-1; a later slice must extend this guard once that scope lands.
-claude_native_controller_construction_sites="$(grep -R -n -F 'ClaudeNativeProcessSessionController(' \
-  Sources/RepoPrompt 2>/dev/null || true)"
-unexpected_claude_native_controller_construction_sites="$(printf '%s\n' "$claude_native_controller_construction_sites" \
-  | grep -v -F 'Sources/RepoPrompt/Features/AgentMode/Runtime/Claude/ClaudeAgentModeCoordinator.swift:' || true)"
-if [[ -n "$unexpected_claude_native_controller_construction_sites" ]]; then
-  fail "ClaudeNativeProcessSessionController must be constructed only inside ClaudeAgentModeCoordinator.makeDefaultController"
-  printf '%s\n' "$unexpected_claude_native_controller_construction_sites" >&2
-fi
+# 11. P6-10 production-topology guardrail (docs/architecture/rust-agent-claude-v1.md §1.2,
+# §15.9-§15.10): the interactive Claude native runtime remains a GUI-scope-only capability with one
+# composition root. Standard Claude Code, GLM, Kimi, and custom-compatible variants all construct
+# ClaudeRustBackedNativeSessionAdapter there. The obsolete Swift controller/codec/shadow stack and
+# the temporary DEBUG selection/shadow bridge were deleted after the final caller audit and must not
+# return. The coordinator is constructed only inside AgentModeViewModel, and Sources/RepoPromptMCP
+# must construct none of these interactive-runtime symbols. Benign Claude text/classifier references
+# in RepoPromptMCP remain allowed.
+for retired_claude_runtime_file in \
+  "Sources/RepoPrompt/Features/AgentMode/Providers/ClaudeCompatible/ClaudeCompatibleNativeSessionAdapter.swift" \
+  "Sources/RepoPrompt/Features/AgentMode/Providers/ClaudeCompatible/ClaudeRustBackedNativeSessionAdapterSelection.swift" \
+  "Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeCode/SDK/ClaudeCodecShadowComparator.swift" \
+  "Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeCode/SDK/ClaudeNativeProcessSessionController.swift" \
+  "Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeCode/SDK/ClaudeSDKNDJSONTranslator.swift" \
+  "Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeCode/SDK/ClaudeSDKProtocolCodec.swift" \
+  "Sources/AgentryCoreBridge/ClaudeCodecDebugShadowBridge.swift" \
+  "rust/crates/runtime/src/agent_claude/debug_shadow.rs" \
+  "rust/crates/runtime/src/agent_claude/debug_shadow_ffi.rs"; do
+  if [[ -e "$retired_claude_runtime_file" ]]; then
+    fail "retired at P6-10, must not be reintroduced: $retired_claude_runtime_file"
+  fi
+done
 
-# P6-7 (docs/architecture/rust-agent-claude-v1.md §1.1/§1.2, design §11 P6-7): the post-cutover
-# Rust agent scope this section's own comment named as not-yet-extendable at P6-1 now exists as
-# the DEBUG-only ClaudeRustBackedNativeSessionAdapter -- still not authoritative (design's own
-# "still not authoritative" step-list line), selectable only behind a DEBUG-only flag, but a
-# second construction site that the same reachability-chain argument must now cover. Extended
-# rather than left for a later slice, since the adapter/flag landed in this same change.
+# P6-9: the Rust-backed adapter is the production authority for all four interactive variants,
+# with no DEBUG-only selection flag or runtime rollback switch. Its single construction site remains
+# the coordinator.
 claude_rust_backed_adapter_construction_sites="$(grep -R -n -F 'ClaudeRustBackedNativeSessionAdapter(' \
   Sources/RepoPrompt 2>/dev/null || true)"
 unexpected_claude_rust_backed_adapter_construction_sites="$(printf '%s\n' "$claude_rust_backed_adapter_construction_sites" \
@@ -991,6 +988,11 @@ if [[ -n "$unexpected_claude_rust_backed_adapter_construction_sites" ]]; then
   fail "ClaudeRustBackedNativeSessionAdapter must be constructed only inside ClaudeAgentModeCoordinator.makeDefaultController"
   printf '%s\n' "$unexpected_claude_rust_backed_adapter_construction_sites" >&2
 fi
+
+print_matches \
+  "P6-9 removed Claude Rust adapter DEBUG selection flag must not return" \
+  grep -R -n -E 'ClaudeRustBackedNativeSessionAdapterSelection|AGENTRY_CLAUDE_RUST_BACKED_ADAPTER' \
+    Sources/RepoPrompt
 
 claude_coordinator_construction_sites="$(grep -R -n -F 'ClaudeAgentModeCoordinator(' \
   Sources/RepoPrompt 2>/dev/null || true)"

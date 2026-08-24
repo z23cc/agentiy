@@ -21,7 +21,11 @@ extension CoreRuntimeTransport {
     }
 
     func agentStartOrResume(
-        identity: CoreRuntimeIdentity, scopeID: String, resumeSessionID: String?
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        resumeSessionID: String?,
+        model: String?,
+        effortLevel: String?
     ) throws -> AgentryUniFFIRaw.AgentClaudeStartReceiptV1 {
         throw CoreTransportError.unexpected("agent-claude-v1 transport is unavailable")
     }
@@ -43,7 +47,11 @@ extension CoreRuntimeTransport {
     }
 
     func agentApplyModelAndEffort(
-        identity: CoreRuntimeIdentity, scopeID: String, model: String?, effort: String?
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        model: String?,
+        effort: String?,
+        disposition: AgentryUniFFIRaw.AgentClaudeFlagSettingsDispositionV1
     ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1 {
         throw CoreTransportError.unexpected("agent-claude-v1 transport is unavailable")
     }
@@ -63,10 +71,21 @@ extension AgentryCoreBridge {
         }
     }
 
-    func agentStartOrResume(scopeID: String, resumeSessionID: String?) throws -> AgentryUniFFIRaw.AgentClaudeStartReceiptV1 {
+    func agentStartOrResume(
+        scopeID: String,
+        resumeSessionID: String?,
+        model: String?,
+        effortLevel: String?
+    ) throws -> AgentryUniFFIRaw.AgentClaudeStartReceiptV1 {
         let identity = try requireIdentity()
         do {
-            return try transport.agentStartOrResume(identity: identity, scopeID: scopeID, resumeSessionID: resumeSessionID)
+            return try transport.agentStartOrResume(
+                identity: identity,
+                scopeID: scopeID,
+                resumeSessionID: resumeSessionID,
+                model: model,
+                effortLevel: effortLevel
+            )
         } catch {
             throw mapTransportError(error)
         }
@@ -99,10 +118,21 @@ extension AgentryCoreBridge {
         }
     }
 
-    func agentApplyModelAndEffort(scopeID: String, model: String?, effort: String?) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1 {
+    func agentApplyModelAndEffort(
+        scopeID: String,
+        model: String?,
+        effort: String?,
+        disposition: AgentryUniFFIRaw.AgentClaudeFlagSettingsDispositionV1
+    ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1 {
         let identity = try requireIdentity()
         do {
-            return try transport.agentApplyModelAndEffort(identity: identity, scopeID: scopeID, model: model, effort: effort)
+            return try transport.agentApplyModelAndEffort(
+                identity: identity,
+                scopeID: scopeID,
+                model: model,
+                effort: effort,
+                disposition: disposition
+            )
         } catch {
             throw mapTransportError(error)
         }
@@ -139,6 +169,18 @@ public struct CoreAgentSessionConfig: Sendable {
     public var systemPromptOverride: String?
     public var idleFallbackMillis: UInt64
     public var interruptAckTimeoutMillis: UInt64
+    /// P6-7 D-9/R9 (`docs/architecture/rust-agent-claude-v1.md` §15.6): whether the Rust-side
+    /// raw-event JSONL log is active for this session, resolved by the caller from the SAME
+    /// `app_settings` key Swift's own writer reads (`agent_mode.claude_raw_event_logging_enabled` /
+    /// `claudeRawEventLoggingEnabled`) -- never decided by this bridge.
+    public var rawEventLogEnabled: Bool
+    /// The already-resolved absolute log-file path. `nil` disables logging regardless of
+    /// `rawEventLogEnabled`.
+    public var rawEventLogFilePath: String?
+    public var rawEventLogRunID: String
+    public var rawEventLogTabID: String
+    public var rawEventLogWindowID: Int64
+    public var rawEventLogInitialSessionID: String
 
     public init(
         command: String,
@@ -152,7 +194,13 @@ public struct CoreAgentSessionConfig: Sendable {
         appendSystemPrompt: String? = nil,
         systemPromptOverride: String? = nil,
         idleFallbackMillis: UInt64 = 1_000,
-        interruptAckTimeoutMillis: UInt64 = 1_500
+        interruptAckTimeoutMillis: UInt64 = 1_500,
+        rawEventLogEnabled: Bool = false,
+        rawEventLogFilePath: String? = nil,
+        rawEventLogRunID: String = "",
+        rawEventLogTabID: String = "",
+        rawEventLogWindowID: Int64 = 0,
+        rawEventLogInitialSessionID: String = ""
     ) {
         self.command = command
         self.arguments = arguments
@@ -166,6 +214,12 @@ public struct CoreAgentSessionConfig: Sendable {
         self.systemPromptOverride = systemPromptOverride
         self.idleFallbackMillis = idleFallbackMillis
         self.interruptAckTimeoutMillis = interruptAckTimeoutMillis
+        self.rawEventLogEnabled = rawEventLogEnabled
+        self.rawEventLogFilePath = rawEventLogFilePath
+        self.rawEventLogRunID = rawEventLogRunID
+        self.rawEventLogTabID = rawEventLogTabID
+        self.rawEventLogWindowID = rawEventLogWindowID
+        self.rawEventLogInitialSessionID = rawEventLogInitialSessionID
     }
 }
 
@@ -182,6 +236,13 @@ public struct CoreAgentInterruptReceipt: Sendable, Equatable {
     public let requestID: String
 }
 
+public enum CoreAgentFlagSettingsDisposition: Sendable, Equatable {
+    case initial
+    case live
+    case pendingInitialHandshake
+    case restartRequired
+}
+
 /// P6-7: the fast-enqueue receipt for `applyModelAndEffort`. The actual ACK (contract §2.2's
 /// applied/timedOut/failed outcomes) arrives later as a `flagSettingsApplied` event on the
 /// session's event stream, correlated by this same `requestID` -- mirrors
@@ -194,6 +255,12 @@ public struct CoreAgentFlagSettingsReceipt: Sendable, Equatable {
 /// store decisions) is caller-owned per `docs/architecture/provider-plugins.md`'s ownership table.
 public enum CoreAgentPermissionDecision: Sendable, Equatable {
     case allow(includeUpdatedPermissions: Bool)
+    case autoAllowRepoPrompt(
+        matchSource: String,
+        normalizedToolName: String?,
+        serverIdentifier: String?
+    )
+    case autoAllowFallback
     case deny(message: String, interrupt: Bool)
 }
 
@@ -325,7 +392,13 @@ public final class CoreAgentSession: @unchecked Sendable {
             appendSystemPrompt: config.appendSystemPrompt,
             systemPrompt: config.systemPromptOverride,
             idleFallbackMillis: config.idleFallbackMillis,
-            interruptAckTimeoutMillis: config.interruptAckTimeoutMillis
+            interruptAckTimeoutMillis: config.interruptAckTimeoutMillis,
+            rawEventLogEnabled: config.rawEventLogEnabled,
+            rawEventLogFilePath: config.rawEventLogFilePath,
+            rawEventLogRunId: config.rawEventLogRunID,
+            rawEventLogTabId: config.rawEventLogTabID,
+            rawEventLogWindowId: config.rawEventLogWindowID,
+            rawEventLogInitialSessionId: config.rawEventLogInitialSessionID
         ))
         return CoreAgentSession(bridge: bridge, scopeID: handle.scopeId, subscriptionScopeID: handle.subscriptionScopeId)
     }
@@ -344,8 +417,17 @@ public final class CoreAgentSession: @unchecked Sendable {
     /// Contract §5.1: spawns the child and starts the reader threads. Returns `pid`/
     /// `processGroupID` synchronously so the caller's expected-agent-PID fence (design §4.6) can
     /// register immediately on return.
-    public func startOrResume(resumeSessionID: String? = nil) async throws -> CoreAgentStartReceipt {
-        let receipt = try await bridge.agentStartOrResume(scopeID: scopeID, resumeSessionID: resumeSessionID)
+    public func startOrResume(
+        resumeSessionID: String? = nil,
+        model: String? = nil,
+        effortLevel: String? = nil
+    ) async throws -> CoreAgentStartReceipt {
+        let receipt = try await bridge.agentStartOrResume(
+            scopeID: scopeID,
+            resumeSessionID: resumeSessionID,
+            model: model,
+            effortLevel: effortLevel
+        )
         return CoreAgentStartReceipt(pid: receipt.pid, processGroupID: receipt.processGroupId)
     }
 
@@ -366,6 +448,14 @@ public final class CoreAgentSession: @unchecked Sendable {
         switch decision {
         case let .allow(includeUpdatedPermissions):
             rawDecision = .allow(includeUpdatedPermissions: includeUpdatedPermissions)
+        case let .autoAllowRepoPrompt(matchSource, normalizedToolName, serverIdentifier):
+            rawDecision = .autoAllowRepoPrompt(
+                matchSource: matchSource,
+                normalizedToolName: normalizedToolName,
+                serverIdentifier: serverIdentifier
+            )
+        case .autoAllowFallback:
+            rawDecision = .autoAllowFallback
         case let .deny(message, interrupt):
             rawDecision = .deny(message: message, interrupt: interrupt)
         }
@@ -377,8 +467,23 @@ public final class CoreAgentSession: @unchecked Sendable {
     /// correlates the later `flagSettingsApplied` event on `events()` against `requestID` to observe
     /// applied/timedOut/failed, mirroring `interruptTurn`'s command+event shape.
     @discardableResult
-    public func applyModelAndEffort(model: String? = nil, effort: String? = nil) async throws -> CoreAgentFlagSettingsReceipt {
-        let receipt = try await bridge.agentApplyModelAndEffort(scopeID: scopeID, model: model, effort: effort)
+    public func applyModelAndEffort(
+        model: String? = nil,
+        effort: String? = nil,
+        disposition: CoreAgentFlagSettingsDisposition = .live
+    ) async throws -> CoreAgentFlagSettingsReceipt {
+        let rawDisposition: AgentryUniFFIRaw.AgentClaudeFlagSettingsDispositionV1 = switch disposition {
+        case .initial: .initial
+        case .live: .live
+        case .pendingInitialHandshake: .pendingInitialHandshake
+        case .restartRequired: .restartRequired
+        }
+        let receipt = try await bridge.agentApplyModelAndEffort(
+            scopeID: scopeID,
+            model: model,
+            effort: effort,
+            disposition: rawDisposition
+        )
         return CoreAgentFlagSettingsReceipt(requestID: receipt.requestId)
     }
 

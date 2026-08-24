@@ -658,6 +658,8 @@ extension FileSystemService {
             atRelativePath: relativePath,
             newContent: newContent,
             expectedOriginalContent: nil,
+            expectedOriginalFingerprint: nil,
+            preservationEncoding: nil,
             modificationPublicationPolicy: modificationPublicationPolicy
         )
     }
@@ -672,6 +674,25 @@ extension FileSystemService {
             atRelativePath: relativePath,
             newContent: newContent,
             expectedOriginalContent: expectedOriginalContent,
+            expectedOriginalFingerprint: nil,
+            preservationEncoding: nil,
+            modificationPublicationPolicy: modificationPublicationPolicy
+        )
+    }
+
+    func editFileIfUnchanged(
+        atRelativePath relativePath: String,
+        newContent: String,
+        expectedOriginalFingerprint: FileContentFingerprint,
+        preservationEncoding: String.Encoding?,
+        modificationPublicationPolicy: FileSystemEditModificationPublicationPolicy
+    ) async throws -> FileSystemDeferredEditPublicationToken? {
+        try await editFile(
+            atRelativePath: relativePath,
+            newContent: newContent,
+            expectedOriginalContent: nil,
+            expectedOriginalFingerprint: expectedOriginalFingerprint,
+            preservationEncoding: preservationEncoding,
             modificationPublicationPolicy: modificationPublicationPolicy
         )
     }
@@ -680,6 +701,8 @@ extension FileSystemService {
         atRelativePath relativePath: String,
         newContent: String,
         expectedOriginalContent: String?,
+        expectedOriginalFingerprint: FileContentFingerprint?,
+        preservationEncoding: String.Encoding?,
         modificationPublicationPolicy: FileSystemEditModificationPublicationPolicy
     ) async throws -> FileSystemDeferredEditPublicationToken? {
         try Task.checkCancellation()
@@ -699,7 +722,7 @@ extension FileSystemService {
         }
         try Task.checkCancellation()
 
-        let encoding = encodingMap[target.relativePath] ?? .utf8
+        let encoding = preservationEncoding ?? encodingMap[target.relativePath] ?? .utf8
         guard let data = newContent.data(using: encoding) else {
             throw FileSystemError.failedToEditFile(
                 NSError(
@@ -714,7 +737,11 @@ extension FileSystemService {
             relativePaths: [target.relativePath]
         ) { executor in
             try await executor {
-                if let expectedOriginalContent {
+                if let expectedOriginalFingerprint {
+                    guard try FileContentFingerprintReader.fingerprint(atPath: fullPath) == expectedOriginalFingerprint else {
+                        throw FileSystemError.fileContentChanged
+                    }
+                } else if let expectedOriginalContent {
                     let currentData = try Data(contentsOf: fullURL)
                     guard String(data: currentData, encoding: encoding) == expectedOriginalContent else {
                         throw FileSystemError.fileContentChanged

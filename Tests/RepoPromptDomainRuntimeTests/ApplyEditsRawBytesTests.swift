@@ -23,7 +23,9 @@ final class ApplyEditsRawBytesTests: XCTestCase {
             self.bytes = bytes
         }
 
-        func fileExists(path: String) async -> Bool { path == self.path }
+        func fileExists(path: String) async -> Bool {
+            path == self.path
+        }
 
         func readText(path: String) async throws -> String {
             readTextCallCount += 1
@@ -56,7 +58,9 @@ final class ApplyEditsRawBytesTests: XCTestCase {
             self.text = text
         }
 
-        func fileExists(path: String) async -> Bool { path == self.path }
+        func fileExists(path: String) async -> Bool {
+            path == self.path
+        }
 
         func readText(path: String) async throws -> String {
             readTextCallCount += 1
@@ -66,13 +70,15 @@ final class ApplyEditsRawBytesTests: XCTestCase {
         func writeText(path: String, content: String, overwrite: Bool) async throws {}
     }
 
-    private actor RecordingComputer: ApplyEditsComputing {
+    private actor RecordingComputer: ApplyEditsComputing, RawBytesApplyEditsComputing {
         private(set) var stringCalls: [String] = []
         private(set) var rawBytesCalls: [Data] = []
         private let rawResult: Result<ApplyEditsResult, Error>
+        private let rawOriginalText: String
 
-        init(rawResult: Result<ApplyEditsResult, Error>) {
+        init(rawResult: Result<ApplyEditsResult, Error>, rawOriginalText: String = "decoded original") {
             self.rawResult = rawResult
+            self.rawOriginalText = rawOriginalText
         }
 
         func apply(
@@ -102,10 +108,20 @@ final class ApplyEditsRawBytesTests: XCTestCase {
             toRawBytes rawBytes: Data,
             options: ApplyEditsExecutionOptions
         ) async throws -> ApplyEditsResult {
+            try await applyRawBytes(request: request, rawBytes: rawBytes, options: options).result
+        }
+
+        func applyRawBytes(
+            request _: ApplyEditsRequest,
+            rawBytes: Data,
+            options _: ApplyEditsExecutionOptions
+        ) async throws -> ApplyEditsRawBytesComputation {
             rawBytesCalls.append(rawBytes)
             switch rawResult {
-            case let .success(result): return result
-            case let .failure(error): throw error
+            case let .success(result):
+                return ApplyEditsRawBytesComputation(originalText: rawOriginalText, result: result)
+            case let .failure(error):
+                throw error
             }
         }
     }
@@ -156,9 +172,31 @@ final class ApplyEditsRawBytesTests: XCTestCase {
         XCTAssertEqual(written, "updated")
     }
 
-    /// GUI apply-edits (`WorkspaceFileEditHost`) does not conform to `RawBytesFileEditHost` --
-    /// confirms that path is unaffected: `ApplyEditsService` falls back to `readText`/the
-    /// existing `String`-based computer overload exactly as before TD-3.
+    func testPreviewReturnsTheExactRustDecodedOriginalForApprovedWrites() async throws {
+        let path = "/root/legacy.txt"
+        let rawBytes = Data([0x82, 0xA0])
+        let host = FakeRawBytesHost(path: path, bytes: rawBytes)
+        let computer = RecordingComputer(
+            rawResult: .success(Self.successResult(text: "updated")),
+            rawOriginalText: "あ"
+        )
+        let service = ApplyEditsService(computer: computer, host: host)
+
+        let preview = try await service.preview(
+            .init(path: path, mode: .rewrite(newText: "updated", onMissing: .error), verbose: false)
+        )
+
+        XCTAssertTrue(preview.exists)
+        XCTAssertEqual(preview.originalText, "あ")
+        XCTAssertEqual(preview.result.updatedText, "updated")
+        let rawCalls = await computer.rawBytesCalls
+        XCTAssertEqual(rawCalls, [rawBytes])
+        let written = await host.writtenContent
+        XCTAssertNil(written)
+    }
+
+    /// A custom host that does not conform to `RawBytesFileEditHost` retains the compatibility
+    /// path: `ApplyEditsService` falls back to `readText` and the String-based computer overload.
     func testServiceFallsBackToReadTextForAHostWithoutRawBytesSupport() async throws {
         let path = "/root/plain.swift"
         let host = StringOnlyHost(path: path, text: "let x = 1\n")

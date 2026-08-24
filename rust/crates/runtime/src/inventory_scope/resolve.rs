@@ -89,9 +89,17 @@ pub(super) fn absent_row(key_hi: u64, key_lo: u64) -> FactRow {
     }
 }
 
-fn file_row(key_hi: u64, key_lo: u64, maps: &IdentityMaps, id: InventoryUuid, record: &InventoryFileRecord) -> FactRow {
-    let path_round_trips_to_self =
-        maps.file_id_by_relative_path.get(&record.standardized_relative_path) == Some(&id);
+fn file_row(
+    key_hi: u64,
+    key_lo: u64,
+    maps: &IdentityMaps,
+    id: InventoryUuid,
+    record: &InventoryFileRecord,
+) -> FactRow {
+    let path_round_trips_to_self = maps
+        .file_id_by_relative_path
+        .get(&record.standardized_relative_path)
+        == Some(&id);
     FactRow {
         key_hi,
         key_lo,
@@ -117,8 +125,10 @@ fn folder_row(
     id: InventoryUuid,
     record: &InventoryFolderRecord,
 ) -> FactRow {
-    let path_round_trips_to_self =
-        maps.folder_id_by_relative_path.get(&record.standardized_relative_path) == Some(&id);
+    let path_round_trips_to_self = maps
+        .folder_id_by_relative_path
+        .get(&record.standardized_relative_path)
+        == Some(&id);
     FactRow {
         key_hi,
         key_lo,
@@ -141,7 +151,11 @@ fn folder_row(
 /// `appliedIndexRecordLookup`. `key_hi`/`key_lo` echo the requested id back (the pooled uuid
 /// words) so a caller can zip results to its request order without a second lookup.
 #[must_use]
-pub fn resolve_by_ids(root: &RootState, file_ids: &[InventoryUuid], folder_ids: &[InventoryUuid]) -> Vec<FactRow> {
+pub fn resolve_by_ids(
+    root: &RootState,
+    file_ids: &[InventoryUuid],
+    folder_ids: &[InventoryUuid],
+) -> Vec<FactRow> {
     let mut rows = Vec::with_capacity(file_ids.len() + folder_ids.len());
     for &id in file_ids {
         let (hi, lo) = uuid_to_words(&id);
@@ -238,7 +252,8 @@ pub fn build_projected_shard(
 }
 
 fn extension_of(name: &str) -> Option<String> {
-    name.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase())
+    name.rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -283,7 +298,10 @@ mod tests {
     fn lookup_by_paths_echoes_ordinal_and_reports_facts_in_request_order() {
         let mut root = new_root();
         root.maps.upsert_file(file(1, "App.swift", "src/App.swift"));
-        let rows = lookup_by_paths(&root, &["missing.swift".to_owned(), "src/App.swift".to_owned()]);
+        let rows = lookup_by_paths(
+            &root,
+            &["missing.swift".to_owned(), "src/App.swift".to_owned()],
+        );
         assert_eq!(rows[0].key_lo, 0);
         assert!(!rows[0].exists);
         assert_eq!(rows[1].key_lo, 1);

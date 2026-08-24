@@ -788,6 +788,66 @@ impl FolderSuffixRequest {
     }
 }
 
+/// Stable encoding identity returned by the standalone TD-5 text decoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreTextEncodingV1 {
+    Utf8,
+    Utf16BigEndian,
+    Utf16LittleEndian,
+    Utf32BigEndian,
+    Utf32LittleEndian,
+    Legacy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreTextDecodeRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub raw_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreTextDecodeResultV1 {
+    pub text: String,
+    pub encoding: CoreTextEncodingV1,
+    /// Canonical `encoding_rs` label for `Legacy`; absent for Unicode encodings.
+    pub legacy_encoding_name: Option<String>,
+    pub bom_present: bool,
+    pub had_replacements: bool,
+    pub policy_id: String,
+}
+
+impl From<runtime::textdecode::TextDecodeOutcome> for CoreTextDecodeResultV1 {
+    fn from(value: runtime::textdecode::TextDecodeOutcome) -> Self {
+        let (encoding, legacy_encoding_name) = match value.detected_encoding {
+            runtime::textdecode::DetectedEncoding::Utf8 => (CoreTextEncodingV1::Utf8, None),
+            runtime::textdecode::DetectedEncoding::Utf16 {
+                endian: runtime::textdecode::Endian::Big,
+            } => (CoreTextEncodingV1::Utf16BigEndian, None),
+            runtime::textdecode::DetectedEncoding::Utf16 {
+                endian: runtime::textdecode::Endian::Little,
+            } => (CoreTextEncodingV1::Utf16LittleEndian, None),
+            runtime::textdecode::DetectedEncoding::Utf32 {
+                endian: runtime::textdecode::Endian::Big,
+            } => (CoreTextEncodingV1::Utf32BigEndian, None),
+            runtime::textdecode::DetectedEncoding::Utf32 {
+                endian: runtime::textdecode::Endian::Little,
+            } => (CoreTextEncodingV1::Utf32LittleEndian, None),
+            runtime::textdecode::DetectedEncoding::Legacy(encoding) => {
+                (CoreTextEncodingV1::Legacy, Some(encoding.name().to_owned()))
+            }
+        };
+        Self {
+            text: value.text,
+            encoding,
+            legacy_encoding_name,
+            bom_present: matches!(value.bom, runtime::textdecode::BomDisposition::Present(_)),
+            had_replacements: value.had_replacements,
+            policy_id: value.policy_version.canonical_id().to_owned(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum CoreCodeMapSourceKindV1 {
     Decoded,
@@ -1447,7 +1507,6 @@ impl From<runtime::tokenacct::TokenAccountingResponseV1> for CoreTokenAccounting
     }
 }
 
-
 // ================================================================================================
 // P4-4: `inventory-scope-v1` FFI surface (contract doc §5.3; design §11 P4-4). `RootId` is
 // `agentry_runtime::inventory::InventoryUuid` (`[u8; 16]`), exposed here as `Vec<u8>` (matching
@@ -1467,7 +1526,11 @@ pub(crate) fn parse_root_id(bytes: &[u8]) -> Result<runtime::inventory_scope::Ro
     })
 }
 
-fn parse_hex16<T>(value: &str, from_bytes: impl FnOnce([u8; 16]) -> T, field: &'static str) -> Result<T, CoreError> {
+fn parse_hex16<T>(
+    value: &str,
+    from_bytes: impl FnOnce([u8; 16]) -> T,
+    field: &'static str,
+) -> Result<T, CoreError> {
     if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(CoreError::InventoryScopeInvalidRequest {
             message: format!("{field} must be 32 lowercase hex characters"),
@@ -1476,9 +1539,10 @@ fn parse_hex16<T>(value: &str, from_bytes: impl FnOnce([u8; 16]) -> T, field: &'
     let mut bytes = [0u8; 16];
     for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
         let text = std::str::from_utf8(chunk).expect("ascii hexdigit checked above");
-        bytes[index] = u8::from_str_radix(text, 16).map_err(|_| CoreError::InventoryScopeInvalidRequest {
-            message: format!("{field} contains invalid hex"),
-        })?;
+        bytes[index] =
+            u8::from_str_radix(text, 16).map_err(|_| CoreError::InventoryScopeInvalidRequest {
+                message: format!("{field} contains invalid hex"),
+            })?;
     }
     Ok(from_bytes(bytes))
 }
@@ -1486,13 +1550,21 @@ fn parse_hex16<T>(value: &str, from_bytes: impl FnOnce([u8; 16]) -> T, field: &'
 pub(crate) fn parse_inventory_scope_id(
     value: &str,
 ) -> Result<runtime::inventory_scope::InventoryScopeId, CoreError> {
-    parse_hex16(value, runtime::inventory_scope::InventoryScopeId::from_bytes, "scope_id")
+    parse_hex16(
+        value,
+        runtime::inventory_scope::InventoryScopeId::from_bytes,
+        "scope_id",
+    )
 }
 
 pub(crate) fn parse_root_lifetime_id(
     value: &str,
 ) -> Result<runtime::inventory_scope::RootLifetimeId, CoreError> {
-    parse_hex16(value, runtime::inventory_scope::RootLifetimeId::from_bytes, "root_lifetime_id")
+    parse_hex16(
+        value,
+        runtime::inventory_scope::RootLifetimeId::from_bytes,
+        "root_lifetime_id",
+    )
 }
 
 pub(crate) fn wire_error(error: runtime::inventory_scope::WireError) -> CoreError {
@@ -1540,6 +1612,17 @@ pub struct CoreAgentClaudeScopeConfigV1 {
     pub system_prompt: Option<String>,
     pub idle_fallback_millis: u64,
     pub interrupt_ack_timeout_millis: u64,
+    /// P6-7 (D-9/R9, `docs/architecture/rust-agent-claude-v1.md` §15.6): whether the raw-event
+    /// JSONL log is active, resolved by Swift from the same `app_settings` key
+    /// (`agent_mode.claude_raw_event_logging_enabled`) its own writer reads.
+    pub raw_event_log_enabled: bool,
+    /// The already-resolved absolute log-file path (Swift's `makeRawEventLogFileURL`). `None`
+    /// disables logging regardless of `raw_event_log_enabled`.
+    pub raw_event_log_file_path: Option<String>,
+    pub raw_event_log_run_id: String,
+    pub raw_event_log_tab_id: String,
+    pub raw_event_log_window_id: i64,
+    pub raw_event_log_initial_session_id: String,
 }
 
 impl CoreAgentClaudeScopeConfigV1 {
@@ -1547,7 +1630,11 @@ impl CoreAgentClaudeScopeConfigV1 {
         runtime::agent_claude::AgentClaudeScopeConfig {
             command: self.command.clone(),
             arguments: self.arguments.clone(),
-            environment: self.environment.iter().map(|entry| (entry.key.clone(), entry.value.clone())).collect(),
+            environment: self
+                .environment
+                .iter()
+                .map(|entry| (entry.key.clone(), entry.value.clone()))
+                .collect(),
             working_directory: self.working_directory.clone(),
             permission_mode: self.permission_mode.clone(),
             mcp_config_path: self.mcp_config_path.clone(),
@@ -1556,7 +1643,15 @@ impl CoreAgentClaudeScopeConfigV1 {
             append_system_prompt: self.append_system_prompt.clone(),
             system_prompt: self.system_prompt.clone(),
             idle_fallback: std::time::Duration::from_millis(self.idle_fallback_millis),
-            interrupt_ack_timeout: std::time::Duration::from_millis(self.interrupt_ack_timeout_millis),
+            interrupt_ack_timeout: std::time::Duration::from_millis(
+                self.interrupt_ack_timeout_millis,
+            ),
+            raw_event_log_enabled: self.raw_event_log_enabled,
+            raw_event_log_file_path: self.raw_event_log_file_path.clone(),
+            raw_event_log_run_id: self.raw_event_log_run_id.clone(),
+            raw_event_log_tab_id: self.raw_event_log_tab_id.clone(),
+            raw_event_log_window_id: self.raw_event_log_window_id,
+            raw_event_log_initial_session_id: self.raw_event_log_initial_session_id.clone(),
             raw_argv_for_testing: false,
         }
     }
@@ -1587,10 +1682,34 @@ pub struct AgentClaudeInterruptReceiptV1 {
     pub request_id: String,
 }
 
-/// P6-7: the fast-enqueue receipt for `agent_apply_model_and_effort`. The actual ACK (applied/
-/// timedOut/failed) arrives later as a `flagSettingsApplied` terminal-class event on the
-/// subscription, correlated by this same `request_id` -- charter §8.2's command+event shape,
-/// mirroring `AgentClaudeInterruptReceiptV1` exactly.
+/// The four host/runtime handshake states for a model/effort intent. Swift supplies the
+/// platform-specific launch-environment comparison fact; Rust owns logging, protocol dispatch,
+/// and the correlated outcome event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum AgentClaudeFlagSettingsDispositionV1 {
+    Initial,
+    Live,
+    PendingInitialHandshake,
+    RestartRequired,
+}
+
+impl From<AgentClaudeFlagSettingsDispositionV1> for runtime::agent_claude::FlagSettingsDisposition {
+    fn from(value: AgentClaudeFlagSettingsDispositionV1) -> Self {
+        match value {
+            AgentClaudeFlagSettingsDispositionV1::Initial => Self::Initial,
+            AgentClaudeFlagSettingsDispositionV1::Live => Self::Live,
+            AgentClaudeFlagSettingsDispositionV1::PendingInitialHandshake => {
+                Self::PendingInitialHandshake
+            }
+            AgentClaudeFlagSettingsDispositionV1::RestartRequired => Self::RestartRequired,
+        }
+    }
+}
+
+/// P6-7: the fast-enqueue receipt for `agent_apply_model_and_effort`. The actual outcome arrives
+/// later as a `flagSettingsApplied` terminal-class event on the subscription, correlated by this
+/// same `request_id` -- charter §8.2's command+event shape, mirroring
+/// `AgentClaudeInterruptReceiptV1` exactly.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct AgentClaudeFlagSettingsReceiptV1 {
     pub request_id: String,
@@ -1603,17 +1722,42 @@ pub struct AgentClaudeFlagSettingsReceiptV1 {
 /// directly).
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum AgentClaudePermissionDecisionV1 {
-    Allow { include_updated_permissions: bool },
-    Deny { message: String, interrupt: bool },
+    Allow {
+        include_updated_permissions: bool,
+    },
+    AutoAllowRepoPrompt {
+        match_source: String,
+        normalized_tool_name: Option<String>,
+        server_identifier: Option<String>,
+    },
+    AutoAllowFallback,
+    Deny {
+        message: String,
+        interrupt: bool,
+    },
 }
 
 impl From<AgentClaudePermissionDecisionV1> for runtime::agent_claude::PermissionDecisionInput {
     fn from(value: AgentClaudePermissionDecisionV1) -> Self {
         match value {
-            AgentClaudePermissionDecisionV1::Allow { include_updated_permissions } => {
-                Self::Allow { include_updated_permissions }
+            AgentClaudePermissionDecisionV1::Allow {
+                include_updated_permissions,
+            } => Self::Allow {
+                include_updated_permissions,
+            },
+            AgentClaudePermissionDecisionV1::AutoAllowRepoPrompt {
+                match_source,
+                normalized_tool_name,
+                server_identifier,
+            } => Self::AutoAllowRepoPrompt {
+                match_source,
+                normalized_tool_name,
+                server_identifier,
+            },
+            AgentClaudePermissionDecisionV1::AutoAllowFallback => Self::AutoAllowFallback,
+            AgentClaudePermissionDecisionV1::Deny { message, interrupt } => {
+                Self::Deny { message, interrupt }
             }
-            AgentClaudePermissionDecisionV1::Deny { message, interrupt } => Self::Deny { message, interrupt },
         }
     }
 }
@@ -1621,8 +1765,14 @@ impl From<AgentClaudePermissionDecisionV1> for runtime::agent_claude::Permission
 /// Routes a caller-supplied scope-id string to the typed `AgentClaudeScopeId` this crate's registry
 /// addresses scopes by (contract doc §1: "handles are explicit IDs, not proxy objects", the same
 /// discipline `parse_inventory_scope_id` enforces for the inventory-scope-v1 surface).
-pub(crate) fn parse_agent_claude_scope_id(value: &str) -> Result<runtime::agent_claude::AgentClaudeScopeId, CoreError> {
-    value.parse().map_err(|_| CoreError::AgentClaudeInvalidRequest { message: "invalid agent-claude scope id".to_string() })
+pub(crate) fn parse_agent_claude_scope_id(
+    value: &str,
+) -> Result<runtime::agent_claude::AgentClaudeScopeId, CoreError> {
+    value
+        .parse()
+        .map_err(|_| CoreError::AgentClaudeInvalidRequest {
+            message: "invalid agent-claude scope id".to_string(),
+        })
 }
 
 // `From<AgentScopeError>`/`From<ScopeRegistryError>` for `CoreError` live in `errors.rs`, matching
@@ -1638,11 +1788,14 @@ pub struct CoreInventoryScopeConfigV1 {
 }
 
 impl CoreInventoryScopeConfigV1 {
-    pub(crate) fn runtime_config(&self) -> Result<runtime::inventory_scope::InventoryScopeConfig, CoreError> {
+    pub(crate) fn runtime_config(
+        &self,
+    ) -> Result<runtime::inventory_scope::InventoryScopeConfig, CoreError> {
         let live_generation_cap =
             usize::try_from(self.live_generation_cap).map_err(|_| CoreError::InvalidArgument)?;
-        let max_patch_logical_mutation_count = usize::try_from(self.max_patch_logical_mutation_count)
-            .map_err(|_| CoreError::InvalidArgument)?;
+        let max_patch_logical_mutation_count =
+            usize::try_from(self.max_patch_logical_mutation_count)
+                .map_err(|_| CoreError::InvalidArgument)?;
         Ok(runtime::inventory_scope::InventoryScopeConfig {
             live_generation_cap,
             max_patch_logical_mutation_count,
@@ -1715,7 +1868,13 @@ impl From<runtime::inventory_scope::RootDiagnostics> for InventoryRootDiagnostic
     fn from(value: runtime::inventory_scope::RootDiagnostics) -> Self {
         let fallback_reason_counts = runtime::inventory_scope::RootCatalogShardFallbackReason::ALL
             .into_iter()
-            .map(|reason| value.fallback_reason_counts.get(&reason).copied().unwrap_or(0))
+            .map(|reason| {
+                value
+                    .fallback_reason_counts
+                    .get(&reason)
+                    .copied()
+                    .unwrap_or(0)
+            })
             .collect();
         Self {
             root_id: value.root_id.to_vec(),
@@ -1770,8 +1929,10 @@ impl From<runtime::inventory_scope::InventoryDiagnosticsV1> for InventoryDiagnos
             shadow_mismatch_count: value.shadow_mismatch_count,
             last_shadow_byte_count: value.last_shadow_byte_count,
             roots: value.roots.into_iter().map(Into::into).collect(),
-            longest_critical_section_nanos: u64::try_from(value.longest_critical_section.as_nanos())
-                .unwrap_or(u64::MAX),
+            longest_critical_section_nanos: u64::try_from(
+                value.longest_critical_section.as_nanos(),
+            )
+            .unwrap_or(u64::MAX),
             open_handle_count: value.handles.open_count as u64,
             oldest_open_handle_age_millis: value
                 .handles
@@ -1827,16 +1988,22 @@ pub enum InventoryRejectionReasonV1 {
 impl From<runtime::inventory_scope::InventoryRejectionReason> for InventoryRejectionReasonV1 {
     fn from(value: runtime::inventory_scope::InventoryRejectionReason) -> Self {
         match value {
-            runtime::inventory_scope::InventoryRejectionReason::StaleWatermark { expected, actual } => {
-                Self::StaleWatermark { expected, actual }
+            runtime::inventory_scope::InventoryRejectionReason::StaleWatermark {
+                expected,
+                actual,
+            } => Self::StaleWatermark { expected, actual },
+            runtime::inventory_scope::InventoryRejectionReason::LifetimeMismatch => {
+                Self::LifetimeMismatch
             }
-            runtime::inventory_scope::InventoryRejectionReason::LifetimeMismatch => Self::LifetimeMismatch,
-            runtime::inventory_scope::InventoryRejectionReason::GenerationGap { expected, actual } => {
-                Self::GenerationGap { expected, actual }
-            }
+            runtime::inventory_scope::InventoryRejectionReason::GenerationGap {
+                expected,
+                actual,
+            } => Self::GenerationGap { expected, actual },
             runtime::inventory_scope::InventoryRejectionReason::UnknownRoot => Self::UnknownRoot,
             runtime::inventory_scope::InventoryRejectionReason::ScopeClosed => Self::ScopeClosed,
-            runtime::inventory_scope::InventoryRejectionReason::IdentityMismatch => Self::IdentityMismatch,
+            runtime::inventory_scope::InventoryRejectionReason::IdentityMismatch => {
+                Self::IdentityMismatch
+            }
         }
     }
 }
@@ -1855,9 +2022,9 @@ impl From<runtime::inventory_scope::InventoryApplyOutcome> for InventoryApplyOut
             runtime::inventory_scope::InventoryApplyOutcome::RebuiltAuthoritative => {
                 Self::RebuiltAuthoritative
             }
-            runtime::inventory_scope::InventoryApplyOutcome::Rejected(reason) => {
-                Self::Rejected { reason: reason.into() }
-            }
+            runtime::inventory_scope::InventoryApplyOutcome::Rejected(reason) => Self::Rejected {
+                reason: reason.into(),
+            },
         }
     }
 }
@@ -1924,14 +2091,20 @@ pub struct InventoryDeltaDiscoveryReceiptV1 {
     pub minted_folder_ids: Vec<Vec<u8>>,
 }
 
-impl From<runtime::inventory_scope::InventoryDeltaDiscoveryReceipt> for InventoryDeltaDiscoveryReceiptV1 {
+impl From<runtime::inventory_scope::InventoryDeltaDiscoveryReceipt>
+    for InventoryDeltaDiscoveryReceiptV1
+{
     fn from(value: runtime::inventory_scope::InventoryDeltaDiscoveryReceipt) -> Self {
         Self {
             applied_index_generation: value.receipt.applied_index_generation,
             catalog_generation: value.receipt.catalog_generation,
             outcome: value.receipt.outcome.into(),
             minted_file_ids: value.minted_file_ids.iter().map(|id| id.to_vec()).collect(),
-            minted_folder_ids: value.minted_folder_ids.iter().map(|id| id.to_vec()).collect(),
+            minted_folder_ids: value
+                .minted_folder_ids
+                .iter()
+                .map(|id| id.to_vec())
+                .collect(),
         }
     }
 }

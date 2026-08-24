@@ -28,6 +28,10 @@ use super::codec::{self, ControlRequest};
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanUseToolRequest {
     pub request_id: String,
+    /// The complete original `request` object. The protocol layer preserves it so the Swift-owned
+    /// permission policy can evaluate the exact same nested labels/tool/server identifiers as the
+    /// legacy controller instead of reconstructing a lossy subset from projected fields.
+    pub request: Map<String, Value>,
     /// `payload["tool_name"]`, trimmed; `""` (not `"tool"`) when absent -- matches
     /// `buildApprovalRequest`'s local (`:2013`), which defaults to `"tool"` only at its own call
     /// site's `AgentApprovalRequest` construction, a policy-layer default this module does not
@@ -38,6 +42,9 @@ pub struct CanUseToolRequest {
     pub decision_reason: Option<String>,
     pub description: Option<String>,
     pub tool_use_id: Option<String>,
+    /// `payload["permission_suggestions"]`, preserved for `.acceptForSession` /
+    /// `.acceptWithExecpolicyAmendment` response parity.
+    pub permission_suggestions: Vec<Map<String, Value>>,
 }
 
 /// Recognizes a `can_use_tool` control request and extracts its protocol-level fields. Returns
@@ -52,12 +59,14 @@ pub fn parse_can_use_tool_request(request: &ControlRequest) -> Option<CanUseTool
     let payload = &request.request;
     Some(CanUseToolRequest {
         request_id: request.request_id.clone(),
+        request: payload.clone(),
         tool_name: trimmed_string(payload, "tool_name").unwrap_or_default(),
         input: object_field(payload, "input").unwrap_or_default(),
         blocked_path: string_field(payload, "blocked_path"),
         decision_reason: string_field(payload, "decision_reason"),
         description: string_field(payload, "description"),
         tool_use_id: trimmed_string(payload, "tool_use_id"),
+        permission_suggestions: object_array_field(payload, "permission_suggestions"),
     })
 }
 
@@ -95,10 +104,34 @@ pub fn encode_permission_decision(
     permission_suggestions: Option<&[Map<String, Value>]>,
     tool_use_id: Option<&str>,
 ) -> Vec<u8> {
-    let response = match decision {
-        PermissionDecision::Allow { include_updated_permissions } => {
-            allow_permission_response_payload(original_input, *include_updated_permissions, permission_suggestions, tool_use_id)
-        }
+    let response = permission_response_payload(
+        decision,
+        original_input,
+        permission_suggestions,
+        tool_use_id,
+    );
+    codec::encode_control_response_success(request_id, Some(&response))
+}
+
+/// Builds the exact response object before it is wrapped in the `control_response` envelope. This
+/// is shared with the scope's DEBUG raw-event logger so observability records the same bytes/fields
+/// that are actually sent rather than a separately reconstructed approximation.
+#[must_use]
+pub fn permission_response_payload(
+    decision: &PermissionDecision,
+    original_input: &Map<String, Value>,
+    permission_suggestions: Option<&[Map<String, Value>]>,
+    tool_use_id: Option<&str>,
+) -> Map<String, Value> {
+    match decision {
+        PermissionDecision::Allow {
+            include_updated_permissions,
+        } => allow_permission_response_payload(
+            original_input,
+            *include_updated_permissions,
+            permission_suggestions,
+            tool_use_id,
+        ),
         PermissionDecision::Deny { message, interrupt } => {
             let mut payload = Map::new();
             payload.insert("behavior".to_string(), Value::String("deny".to_string()));
@@ -108,8 +141,7 @@ pub fn encode_permission_decision(
             }
             payload
         }
-    };
-    codec::encode_control_response_success(request_id, Some(&response))
+    }
 }
 
 /// Port of `allowPermissionResponsePayload(pendingRequest:includeUpdatedPermissions:)`
@@ -122,7 +154,10 @@ fn allow_permission_response_payload(
 ) -> Map<String, Value> {
     let mut payload = Map::new();
     payload.insert("behavior".to_string(), Value::String("allow".to_string()));
-    payload.insert("updatedInput".to_string(), Value::Object(original_input.clone()));
+    payload.insert(
+        "updatedInput".to_string(),
+        Value::Object(original_input.clone()),
+    );
     if include_updated_permissions {
         if let Some(suggestions) = permission_suggestions {
             if !suggestions.is_empty() {
@@ -145,7 +180,10 @@ fn allow_permission_response_payload(
 /// Port of the `default` branch's protocol-error reply (`:1840-1852`) for any control-request
 /// subtype this module (and, at P6-6, the wider scope) does not recognize.
 pub fn encode_unsupported_subtype_response(request_id: &str, subtype: &str) -> Vec<u8> {
-    codec::encode_control_response_error(request_id, &format!("Unsupported control request subtype: {subtype}"))
+    codec::encode_control_response_error(
+        request_id,
+        &format!("Unsupported control request subtype: {subtype}"),
+    )
 }
 
 fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
@@ -158,6 +196,17 @@ fn trimmed_string(object: &Map<String, Value>, key: &str) -> Option<String> {
 
 fn object_field(object: &Map<String, Value>, key: &str) -> Option<Map<String, Value>> {
     object.get(key).and_then(Value::as_object).cloned()
+}
+
+fn object_array_field(object: &Map<String, Value>, key: &str) -> Vec<Map<String, Value>> {
+    object
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -181,16 +230,34 @@ mod tests {
             "blocked_path": "/etc/shadow",
             "decision_reason": "matched a blocked pattern",
             "description": "list files",
-            "tool_use_id": " toolu_1 "
+            "tool_use_id": " toolu_1 ",
+            "permission_suggestions": [{"type": "addRules", "rules": ["Bash(ls:*)"]}]
         }));
         let parsed = parse_can_use_tool_request(&request).expect("must recognize can_use_tool");
         assert_eq!(parsed.request_id, "req-perm-1");
         assert_eq!(parsed.tool_name, "Bash");
-        assert_eq!(parsed.input.get("command").and_then(Value::as_str), Some("ls"));
+        assert_eq!(
+            parsed.input.get("command").and_then(Value::as_str),
+            Some("ls")
+        );
         assert_eq!(parsed.blocked_path.as_deref(), Some("/etc/shadow"));
-        assert_eq!(parsed.decision_reason.as_deref(), Some("matched a blocked pattern"));
+        assert_eq!(
+            parsed.decision_reason.as_deref(),
+            Some("matched a blocked pattern")
+        );
         assert_eq!(parsed.description.as_deref(), Some("list files"));
         assert_eq!(parsed.tool_use_id.as_deref(), Some("toolu_1"));
+        assert_eq!(
+            parsed.request.get("tool_name").and_then(Value::as_str),
+            Some("  Bash  ")
+        );
+        assert_eq!(parsed.permission_suggestions.len(), 1);
+        assert_eq!(
+            parsed.permission_suggestions[0]
+                .get("type")
+                .and_then(Value::as_str),
+            Some("addRules")
+        );
     }
 
     #[test]
@@ -208,15 +275,22 @@ mod tests {
         assert!(parsed.input.is_empty());
         assert_eq!(parsed.blocked_path, None);
         assert_eq!(parsed.tool_use_id, None);
+        assert!(parsed.request.is_empty());
+        assert!(parsed.permission_suggestions.is_empty());
     }
 
     #[test]
     fn allow_response_echoes_the_original_input_and_wraps_as_control_response_success() {
         let mut original_input = Map::new();
-        original_input.insert("path".to_string(), Value::String("Sources/App.swift".to_string()));
+        original_input.insert(
+            "path".to_string(),
+            Value::String("Sources/App.swift".to_string()),
+        );
         let encoded = encode_permission_decision(
             "req-perm-1",
-            &PermissionDecision::Allow { include_updated_permissions: false },
+            &PermissionDecision::Allow {
+                include_updated_permissions: false,
+            },
             &original_input,
             None,
             Some("toolu_1"),
@@ -226,9 +300,16 @@ mod tests {
         assert_eq!(decoded["response"]["subtype"], "success");
         assert_eq!(decoded["response"]["request_id"], "req-perm-1");
         assert_eq!(decoded["response"]["response"]["behavior"], "allow");
-        assert_eq!(decoded["response"]["response"]["updatedInput"]["path"], "Sources/App.swift");
+        assert_eq!(
+            decoded["response"]["response"]["updatedInput"]["path"],
+            "Sources/App.swift"
+        );
         assert_eq!(decoded["response"]["response"]["toolUseID"], "toolu_1");
-        assert!(decoded["response"]["response"].get("updatedPermissions").is_none());
+        assert!(
+            decoded["response"]["response"]
+                .get("updatedPermissions")
+                .is_none()
+        );
     }
 
     #[test]
@@ -240,23 +321,34 @@ mod tests {
 
         let without_flag = encode_permission_decision(
             "req-1",
-            &PermissionDecision::Allow { include_updated_permissions: false },
+            &PermissionDecision::Allow {
+                include_updated_permissions: false,
+            },
             &original_input,
             Some(&suggestions),
             None,
         );
         let decoded: Value = serde_json::from_slice(&without_flag).unwrap();
-        assert!(decoded["response"]["response"].get("updatedPermissions").is_none());
+        assert!(
+            decoded["response"]["response"]
+                .get("updatedPermissions")
+                .is_none()
+        );
 
         let with_flag = encode_permission_decision(
             "req-1",
-            &PermissionDecision::Allow { include_updated_permissions: true },
+            &PermissionDecision::Allow {
+                include_updated_permissions: true,
+            },
             &original_input,
             Some(&suggestions),
             None,
         );
         let decoded: Value = serde_json::from_slice(&with_flag).unwrap();
-        assert_eq!(decoded["response"]["response"]["updatedPermissions"][0]["type"], "addRules");
+        assert_eq!(
+            decoded["response"]["response"]["updatedPermissions"][0]["type"],
+            "addRules"
+        );
     }
 
     #[test]
@@ -264,20 +356,32 @@ mod tests {
         let original_input = Map::new();
         let encoded = encode_permission_decision(
             "req-2",
-            &PermissionDecision::Deny { message: "Permission denied by user.".to_string(), interrupt: false },
+            &PermissionDecision::Deny {
+                message: "Permission denied by user.".to_string(),
+                interrupt: false,
+            },
             &original_input,
             None,
             None,
         );
         let decoded: Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded["response"]["subtype"], "success", "deny is a valid decision, not a protocol error");
+        assert_eq!(
+            decoded["response"]["subtype"], "success",
+            "deny is a valid decision, not a protocol error"
+        );
         assert_eq!(decoded["response"]["response"]["behavior"], "deny");
-        assert_eq!(decoded["response"]["response"]["message"], "Permission denied by user.");
+        assert_eq!(
+            decoded["response"]["response"]["message"],
+            "Permission denied by user."
+        );
         assert!(decoded["response"]["response"].get("interrupt").is_none());
 
         let cancelled = encode_permission_decision(
             "req-3",
-            &PermissionDecision::Deny { message: "Permission cancelled by user.".to_string(), interrupt: true },
+            &PermissionDecision::Deny {
+                message: "Permission cancelled by user.".to_string(),
+                interrupt: true,
+            },
             &original_input,
             None,
             None,
@@ -291,6 +395,9 @@ mod tests {
         let encoded = encode_unsupported_subtype_response("req-4", "some_future_subtype");
         let decoded: Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded["response"]["subtype"], "error");
-        assert_eq!(decoded["response"]["error"], "Unsupported control request subtype: some_future_subtype");
+        assert_eq!(
+            decoded["response"]["error"],
+            "Unsupported control request subtype: some_future_subtype"
+        );
     }
 }

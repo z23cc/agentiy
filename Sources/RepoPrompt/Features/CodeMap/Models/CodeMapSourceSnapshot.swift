@@ -79,9 +79,8 @@ struct CodeMapSourceSnapshot {
         self.decoderPolicy = decoderPolicy
         // TD-3 §6.1: `RustCodeMapArtifactBuilder` ignores `decodeResult` entirely for
         // `.workspaceAutomaticV2` in favor of `rawBytes` -- Rust decodes via `textdecode()`
-        // instead. `decodeResult` is still populated identically to `.workspaceAutomaticV1`
-        // here (Cuchardet stays live until TD-6) so non-codemap-wire consumers of this type
-        // (e.g. any future encoding-label read) keep a real value rather than a placeholder.
+        // instead. `decodeResult` remains populated by the Foundation-only V1 compatibility
+        // adapter for legacy snapshot/test evidence; production codemap output never consumes it.
         decodeResult = switch decoderPolicy {
         case .workspaceAutomaticV1, .workspaceAutomaticV2:
             Self.decodeWorkspaceAutomatic(data)

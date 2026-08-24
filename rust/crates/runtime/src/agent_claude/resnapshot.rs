@@ -63,7 +63,10 @@ impl ResnapshotBuffer {
         if self.buf.len() > RESNAPSHOT_BUFFER_CAP_BYTES {
             let dropped_bytes = self.buf.len() - RESNAPSHOT_BUFFER_CAP_BYTES;
             self.buf.drain(..dropped_bytes);
-            Some(ResnapshotTruncated { dropped_bytes, retained_bytes: self.buf.len() })
+            Some(ResnapshotTruncated {
+                dropped_bytes,
+                retained_bytes: self.buf.len(),
+            })
         } else {
             None
         }
@@ -98,12 +101,21 @@ mod tests {
     #[test]
     fn retains_only_the_trailing_cap_and_reports_the_drop() {
         let mut buffer = ResnapshotBuffer::new();
-        assert_eq!(buffer.append(&vec![b'a'; RESNAPSHOT_BUFFER_CAP_BYTES]), None, "filling exactly to the cap must not truncate");
-        let truncated = buffer.append(b"tail-marker").expect("appending past the cap must report truncation");
+        assert_eq!(
+            buffer.append(&vec![b'a'; RESNAPSHOT_BUFFER_CAP_BYTES]),
+            None,
+            "filling exactly to the cap must not truncate"
+        );
+        let truncated = buffer
+            .append(b"tail-marker")
+            .expect("appending past the cap must report truncation");
         assert_eq!(truncated.dropped_bytes, b"tail-marker".len());
         assert_eq!(truncated.retained_bytes, RESNAPSHOT_BUFFER_CAP_BYTES);
         assert_eq!(buffer.len(), RESNAPSHOT_BUFFER_CAP_BYTES);
-        assert!(buffer.snapshot().ends_with(b"tail-marker"), "overflow must drop from the head, retaining the most recent bytes");
+        assert!(
+            buffer.snapshot().ends_with(b"tail-marker"),
+            "overflow must drop from the head, retaining the most recent bytes"
+        );
     }
 
     #[test]
@@ -127,6 +139,10 @@ mod tests {
 
     #[test]
     fn no_fifth_structure_the_cap_is_named_and_matches_the_contract() {
-        assert_eq!(RESNAPSHOT_BUFFER_CAP_BYTES, 8 * 1024 * 1024, "D-8's cap is a named constant, not a magic number restated ad hoc");
+        assert_eq!(
+            RESNAPSHOT_BUFFER_CAP_BYTES,
+            8 * 1024 * 1024,
+            "D-8's cap is a named constant, not a magic number restated ad hoc"
+        );
     }
 }

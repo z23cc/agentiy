@@ -4,9 +4,9 @@ import XCTest
 
 /// E-P6-1(c) differential (`docs/designs/p6-claude-vertical-2026-08-23.md` section 8,
 /// `docs/architecture/rust-agent-claude-v1.md` section 8): asserts the real
-/// `MCPIntegrationHelper.isRepoPromptToolName(_:)` -- the predicate
-/// `ClaudeSDKNDJSONTranslator.swift:53-56`'s `treatsToolResultErrorsAsHostOwned` closure is wired
-/// to today -- agrees with a curated, hand-verified case table over the full 27-entry alias table
+/// `MCPIntegrationHelper.isRepoPromptToolName(_:)` -- the host policy predicate frozen by the
+/// P6-1 contract and ported into Rust translation -- agrees with a curated, hand-verified case
+/// table over the full 27-entry alias table
 /// plus adversarial prefixed/normalized/`functions.`-prefixed forms.
 ///
 /// This is the **Swift arm** of the differential. The **Rust arm**

@@ -7,7 +7,10 @@
 //! is *not* PID-targeted: `waitpid(-1)`/`wait()` in a loop, or a SIGCHLD handler doing the same.
 //! This file is that hostile owner, isolated in its own process (its own binary target) because
 //! `waitpid(-1)` reaps *any* of this process's children process-wide and would otherwise
-//! contaminate every other concurrently-running test in a shared test binary.
+//! contaminate every other concurrently-running test in a shared test binary. Its two tests also
+//! acquire one process-wide mutex: libtest runs test functions in the same binary concurrently by
+//! default, and letting the hostile test steal the SIGCHLD-measurement test's child would test the
+//! harness against itself rather than either production contract.
 //!
 //! **What this proves, precisely.** Our reaper is PID-targeted and races a genuinely
 //! non-PID-targeted thief for the same children. The pass bar is not "our reaper always wins the
@@ -26,12 +29,20 @@
 //! `src/`-only two-site count.
 #![allow(unsafe_code)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use agentry_runtime::agent_claude::process::reaper::{ReapOutcome, Reaper};
 use agentry_runtime::agent_claude::process::spawn::{SpawnConfig, spawn};
+
+static PROCESS_WIDE_WAITPID_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_process_wide_waitpid_test() -> MutexGuard<'static, ()> {
+    PROCESS_WIDE_WAITPID_TEST_LOCK
+        .lock()
+        .expect("a previous process-wide waitpid test must not panic while holding the lock")
+}
 
 fn spawn_sh(script: &str) -> agentry_runtime::agent_claude::process::spawn::SpawnedProcess {
     spawn(&SpawnConfig {
@@ -45,6 +56,7 @@ fn spawn_sh(script: &str) -> agentry_runtime::agent_claude::process::spawn::Spaw
 
 #[test]
 fn survives_a_waitpid_minus_one_hostile_foreign_owner() {
+    let _process_wide_guard = lock_process_wide_waitpid_test();
     let reaper = Reaper::new();
     let stop = Arc::new(AtomicBool::new(false));
     let hostile_reaps = Arc::new(AtomicUsize::new(0));
@@ -56,8 +68,14 @@ fn survives_a_waitpid_minus_one_hostile_foreign_owner() {
     let hostile_reaps_counter = Arc::clone(&hostile_reaps);
     let hostile = std::thread::spawn(move || {
         while !hostile_stop.load(Ordering::SeqCst) {
-            match nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(-1), Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
-                Ok(nix::sys::wait::WaitStatus::Exited(_, _) | nix::sys::wait::WaitStatus::Signaled(_, _, _)) => {
+            match nix::sys::wait::waitpid(
+                nix::unistd::Pid::from_raw(-1),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+            ) {
+                Ok(
+                    nix::sys::wait::WaitStatus::Exited(_, _)
+                    | nix::sys::wait::WaitStatus::Signaled(_, _, _),
+                ) => {
                     hostile_reaps_counter.fetch_add(1, Ordering::SeqCst);
                 }
                 _ => std::thread::sleep(Duration::from_micros(200)),
@@ -84,7 +102,9 @@ fn survives_a_waitpid_minus_one_hostile_foreign_owner() {
         match outcome {
             ReapOutcome::Exited(0) => won += 1,
             ReapOutcome::Lost => lost += 1,
-            other => panic!("cycle {i} pid {pid}: unexpected outcome {other:?} -- possible cross-attribution"),
+            other => panic!(
+                "cycle {i} pid {pid}: unexpected outcome {other:?} -- possible cross-attribution"
+            ),
         }
         reaper.forget(pid, token);
     }
@@ -94,7 +114,11 @@ fn survives_a_waitpid_minus_one_hostile_foreign_owner() {
 
     // The property under test: no hang, no misattribution, every loss typed and counted.
     assert_eq!(won + lost, 150);
-    assert_eq!(reaper.echild_count(), lost, "every hostile-won race must be counted, not silently dropped");
+    assert_eq!(
+        reaper.echild_count(),
+        lost,
+        "every hostile-won race must be counted, not silently dropped"
+    );
     eprintln!(
         "hostile-coexistence: {won} won by our reaper, {lost} stolen by the hostile waitpid(-1) \
          thief and correctly surfaced as Lost, {} total hostile reaps observed",
@@ -106,6 +130,7 @@ fn survives_a_waitpid_minus_one_hostile_foreign_owner() {
 
 #[test]
 fn no_sigchld_handler_is_installed_by_this_process() {
+    let _process_wide_guard = lock_process_wide_waitpid_test();
     // Direct measurement, not inspection -- and, since libtest sorts by name and this file's other
     // test ('s') sorts after this one ('n'), this test cannot rely on that other test's `Reaper`
     // having already run (a filtered `cargo test -- no_sigchld` run proves it does not). Construct

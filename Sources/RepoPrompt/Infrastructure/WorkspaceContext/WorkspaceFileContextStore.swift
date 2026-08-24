@@ -11605,6 +11605,22 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    func readValidatedRawContentForTextMutation(
+        rootID: UUID,
+        relativePath: String,
+        maximumBytes: Int64 = 10_000_000
+    ) async throws -> ValidatedRawFileContentSnapshot {
+        try await requirePublishedSeededAuthorityFresh(rootID: rootID)
+        let state = try state(for: rootID)
+        let result = try await state.service.loadValidatedRawContentForTextMutation(
+            ofRelativePath: StandardizedPath.relative(relativePath),
+            maximumBytes: maximumBytes,
+            workloadClass: .interactiveRead
+        )
+        try await requirePublishedSeededAuthorityFresh(rootID: rootID)
+        return result
+    }
+
     func readValidatedContentSnapshot(
         rootID: UUID,
         relativePath: String,
@@ -16836,7 +16852,9 @@ actor WorkspaceFileContextStore {
         rootID: UUID,
         relativePath: String,
         newContent: String,
-        expectedOriginalContent: String? = nil
+        expectedOriginalContent: String? = nil,
+        expectedOriginalFingerprint: FileContentFingerprint? = nil,
+        preservationEncodingRawValue: UInt? = nil
     ) async throws -> WorkspaceFileCatalogMaterializationResult? {
         let state = try state(for: rootID)
         let expectedLifetimeID = state.lifetimeID
@@ -16857,7 +16875,15 @@ actor WorkspaceFileContextStore {
         }
         let deferredPublicationToken: FileSystemDeferredEditPublicationToken
         do {
-            let token = if let expectedOriginalContent {
+            let token = if let expectedOriginalFingerprint {
+                try await state.service.editFileIfUnchanged(
+                    atRelativePath: standardizedRelativePath,
+                    newContent: newContent,
+                    expectedOriginalFingerprint: expectedOriginalFingerprint,
+                    preservationEncoding: preservationEncodingRawValue.map(String.Encoding.init(rawValue:)),
+                    modificationPublicationPolicy: .deferSyntheticModificationToSuccessfulCaller
+                )
+            } else if let expectedOriginalContent {
                 try await state.service.editFileIfUnchanged(
                     atRelativePath: standardizedRelativePath,
                     newContent: newContent,

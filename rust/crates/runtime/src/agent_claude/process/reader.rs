@@ -63,7 +63,10 @@ impl Default for ReaderStats {
 
 /// Spawns the stdout reader thread: blocking `read()` -> real `LineFramer` -> non-blocking
 /// `queue.push` per line (and per overflow diagnostic). Returns when the pipe reaches EOF.
-pub fn spawn_stdout_reader(fd: OwnedFd, queue: Arc<BoundedEventQueue>) -> (JoinHandle<()>, Arc<ReaderStats>) {
+pub fn spawn_stdout_reader(
+    fd: OwnedFd,
+    queue: Arc<BoundedEventQueue>,
+) -> (JoinHandle<()>, Arc<ReaderStats>) {
     let stats = Arc::new(ReaderStats::default());
     let thread_stats = Arc::clone(&stats);
     // Incremented synchronously here, in the spawning thread, before the new thread starts -- see
@@ -86,7 +89,9 @@ pub fn spawn_stdout_reader(fd: OwnedFd, queue: Arc<BoundedEventQueue>) -> (JoinH
                     Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                thread_stats.bytes_read.fetch_add(n as u64, Ordering::SeqCst);
+                thread_stats
+                    .bytes_read
+                    .fetch_add(n as u64, Ordering::SeqCst);
                 framer.feed(
                     &buf[..n],
                     |diagnostic| {
@@ -118,7 +123,24 @@ pub fn spawn_stdout_reader(fd: OwnedFd, queue: Arc<BoundedEventQueue>) -> (JoinH
 /// Spawns the stderr reader thread: blocking `read()` -> [`StderrTail`] append (256 KiB cap, no
 /// framing/decode -- stderr is a diagnostic tail, not a protocol stream). Returns when the pipe
 /// reaches EOF.
-pub fn spawn_stderr_reader(fd: OwnedFd, tail: Arc<std::sync::Mutex<StderrTail>>) -> (JoinHandle<()>, Arc<ReaderStats>) {
+pub type StderrChunkObserver = Arc<dyn Fn(&[u8]) + Send + Sync + 'static>;
+
+pub fn spawn_stderr_reader(
+    fd: OwnedFd,
+    tail: Arc<std::sync::Mutex<StderrTail>>,
+) -> (JoinHandle<()>, Arc<ReaderStats>) {
+    spawn_stderr_reader_with_observer(fd, tail, None)
+}
+
+/// Variant used by the integrated scope to mirror the DEBUG `process.stderr` raw-event record
+/// without inserting another byte queue or changing INV-P6-2. The observer runs inline after the
+/// bounded tail append and must remain non-blocking; the raw logger performs one serialized file
+/// append, matching the legacy Swift diagnostic path.
+pub fn spawn_stderr_reader_with_observer(
+    fd: OwnedFd,
+    tail: Arc<std::sync::Mutex<StderrTail>>,
+    observer: Option<StderrChunkObserver>,
+) -> (JoinHandle<()>, Arc<ReaderStats>) {
     let stats = Arc::new(ReaderStats::default());
     let thread_stats = Arc::clone(&stats);
     thread_budget::increment();
@@ -136,8 +158,15 @@ pub fn spawn_stderr_reader(fd: OwnedFd, tail: Arc<std::sync::Mutex<StderrTail>>)
                     Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                thread_stats.bytes_read.fetch_add(n as u64, Ordering::SeqCst);
-                tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).append(&buf[..n]);
+                thread_stats
+                    .bytes_read
+                    .fetch_add(n as u64, Ordering::SeqCst);
+                tail.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .append(&buf[..n]);
+                if let Some(observer) = &observer {
+                    observer(&buf[..n]);
+                }
             }
         })
         .expect("spawning the stderr reader thread must succeed");

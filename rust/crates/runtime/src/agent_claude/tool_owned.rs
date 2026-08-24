@@ -50,7 +50,11 @@ pub const REPO_PROMPT_TOOL_NAMES: &[&str] = &[
 /// Mirrors `MCPIntegrationHelper.trimmedLowercasedToolName` (`:159-164`).
 fn trimmed_lowercased(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_lowercase()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_lowercase())
+    }
 }
 
 /// Mirrors `MCPIntegrationHelper.stripFunctionsPrefix` (`:166-172`). Note this is a `while` loop
@@ -67,7 +71,12 @@ fn strip_functions_prefix(mut s: String) -> String {
 /// two nested explicit prefixes only has the outer one removed, by design/port fidelity.
 fn strip_explicit_repoprompt_prefix(raw: &str) -> (String, bool) {
     let server = REPO_PROMPT_MCP_SERVER_NAME.to_lowercase();
-    let prefixes = [format!("mcp__{server}__"), format!("mcp_{server}__"), format!("{server}__"), format!("{server}_")];
+    let prefixes = [
+        format!("mcp__{server}__"),
+        format!("mcp_{server}__"),
+        format!("{server}__"),
+        format!("{server}_"),
+    ];
     for prefix in &prefixes {
         if let Some(stripped) = raw.strip_prefix(prefix.as_str()) {
             return (stripped.to_string(), true);
@@ -103,7 +112,11 @@ pub fn resolve_repoprompt_tool_name(raw_name: Option<&str>) -> Option<ToolNameRe
     let (normalized_name, explicit) = strip_explicit_repoprompt_prefix(&without_functions);
     let canonical_name = canonical_repoprompt_tool_alias(&normalized_name);
     let has_explicit_server_prefix = explicit && canonical_name.is_some();
-    Some(ToolNameResolution { normalized_name, canonical_name, has_explicit_server_prefix })
+    Some(ToolNameResolution {
+        normalized_name,
+        canonical_name,
+        has_explicit_server_prefix,
+    })
 }
 
 /// Mirrors `MCPIntegrationHelper.isRepoPromptToolName(_ rawName: String) -> Bool` (`:229-231`) --
@@ -111,7 +124,9 @@ pub fn resolve_repoprompt_tool_name(raw_name: Option<&str>) -> Option<ToolNameRe
 /// closure is wired to today, and the predicate contract §8 / design §2.1 decide becomes Rust-side
 /// data with no FFI crossing.
 pub fn is_repoprompt_tool_name(raw_name: &str) -> bool {
-    resolve_repoprompt_tool_name(Some(raw_name)).and_then(|r| r.canonical_name).is_some()
+    resolve_repoprompt_tool_name(Some(raw_name))
+        .and_then(|r| r.canonical_name)
+        .is_some()
 }
 
 #[cfg(test)]
@@ -164,16 +179,24 @@ mod tests {
                 ));
             }
         }
-        assert!(mismatches.is_empty(), "E-P6-1(c) mismatch(es) against curated fixture:\n{}", mismatches.join("\n"));
+        assert!(
+            mismatches.is_empty(),
+            "E-P6-1(c) mismatch(es) against curated fixture:\n{}",
+            mismatches.join("\n")
+        );
     }
 
     #[test]
     fn fixture_covers_full_alias_table() {
         let raw = std::fs::read_to_string(fixture_path()).unwrap();
         let fixture: Fixture = serde_json::from_str(&raw).unwrap();
-        let inputs: std::collections::HashSet<&str> = fixture.cases.iter().map(|c| c.input.as_str()).collect();
+        let inputs: std::collections::HashSet<&str> =
+            fixture.cases.iter().map(|c| c.input.as_str()).collect();
         for name in REPO_PROMPT_TOOL_NAMES {
-            assert!(inputs.contains(name), "fixture is missing exact-canonical coverage for {name:?}");
+            assert!(
+                inputs.contains(name),
+                "fixture is missing exact-canonical coverage for {name:?}"
+            );
         }
     }
 }

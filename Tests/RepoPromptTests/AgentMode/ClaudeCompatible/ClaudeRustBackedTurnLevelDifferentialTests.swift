@@ -2,36 +2,23 @@ import Foundation
 @testable import RepoPromptApp
 import XCTest
 
-/// P6-7 (`docs/designs/p6-claude-vertical-2026-08-23.md` §3.4/§11 P6-7): the turn-level
-/// differential -- "identical input stream => identical ordered `AIStreamResult`s, turn IDs,
-/// statuses, approval requests, `providerSessionID`". Drives **both** arms
-/// (`ClaudeNativeProcessSessionController`, the still-authoritative Swift arm, and
-/// `ClaudeRustBackedNativeSessionAdapter`, the DEBUG-only Rust-backed arm) against the **same**
-/// real child process -- `agent-claude-synthetic-cli`'s `scripted` mode
-/// (`rust/crates/runtime/tests/support/synthetic_cli.rs`) -- through the identical
-/// `NativeAgentRuntimeControlling` contract: real spawn, real EOF/shutdown, no in-process
-/// parsing shortcut. This is the harness this session's task brief names explicitly: "drive BOTH
-/// arms via the synthetic CLI's scripted/OUT mechanism (real process, real EOF/shutdown), NOT
-/// in-process parsing".
+/// P6-7...P6-10 (`docs/architecture/rust-agent-claude-v1.md` §15): post-cutover adapter
+/// regressions over the real `agent-claude-synthetic-cli` child process. The class keeps its
+/// historical differential name so existing focused filters remain stable, but P6-10 removed the
+/// retired Swift runtime arm after its frozen corpus was transferred to Rust/golden assertions.
+/// Every test still uses real spawn, EOF, shutdown, framing, bridge transport, and the production
+/// `NativeAgentRuntimeControlling` façade; there is no in-process parsing shortcut.
 ///
-/// **How the same synthetic-CLI binary is driven identically by two different `buildArguments`
-/// implementations.** Neither `ClaudeNativeProcessSessionController.buildArguments` (Swift) nor
-/// `agent_claude::scope::build_arguments` (Rust) has a raw-argv escape hatch in production, and
-/// this test does not want one -- both must exercise their real, unmodified argv-construction
-/// path. `synthetic_cli.rs` is built for exactly this: `AGENT_CLAUDE_SYNTHETIC_CLI_ARGS`, when
-/// set, overrides the binary's mode/args from an environment variable instead of positional argv,
-/// entirely independent of what argv it actually received. `ScriptedSyntheticCLIEnvironmentResolver`
-/// (below) injects that one environment variable through each arm's existing
-/// `ClaudeCodeLaunchEnvironmentResolving` seam -- the same injection point production code uses
-/// for Keychain/backend-config resolution -- so both arms launch through their real, unmodified
-/// spawn path pointed at the same script.
+/// `AGENT_CLAUDE_SYNTHETIC_CLI_ARGS` overrides only the synthetic binary's fixture mode while the
+/// production Rust authority still builds its real argv. The launch recorder exposes only argv and
+/// explicitly allowlisted environment keys, allowing stable post-oracle contract assertions without
+/// logging ambient credentials.
 final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
     // MARK: - Canonical, arm-agnostic event representation
 
-    /// `AIStreamResult` minus `toolInvocationID` (an arm-local `UUID`, never comparable by value
-    /// across arms -- normalized to a first-appearance ordinal instead, mirroring
-    /// `ClaudeCodecShadowComparator`'s and the P6-7 adapter's own documented structural exclusion)
-    /// and `cleanupHandle` (always nil on both arms here, never set by either).
+    /// Canonical event representation retained from the original two-arm differential. Invocation
+    /// IDs are normalized to first-appearance ordinals so correlation is asserted without pinning
+    /// runtime-generated UUID values; `cleanupHandle` remains outside the wire contract.
     private struct CanonicalStreamResult: Equatable {
         let type: String
         let text: String?
@@ -96,7 +83,23 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         }
 
         var hasCompletedATurn: Bool {
-            events.contains { if case .turnCompleted = $0 { true } else { false } }
+            events.contains {
+                if case .turnCompleted = $0 {
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+
+        var completedTurnCount: Int {
+            events.count {
+                if case .turnCompleted = $0 {
+                    true
+                } else {
+                    false
+                }
+            }
         }
 
         private func canonicalize(_ result: AIStreamResult) -> CanonicalStreamResult {
@@ -123,7 +126,9 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         }
 
         private func ordinal(for id: UUID, in map: inout [UUID: Int]) -> Int {
-            if let existing = map[id] { return existing }
+            if let existing = map[id] {
+                return existing
+            }
             let next = map.count
             map[id] = next
             return next
@@ -138,8 +143,63 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         }
     }
 
-    /// Injects `AGENT_CLAUDE_SYNTHETIC_CLI_ARGS` through the real `ClaudeCodeLaunchEnvironmentResolving`
-    /// seam both arms already accept as a constructor dependency -- see this file's top doc comment.
+    private struct PermissionFailureSnapshot {
+        let requestID: String?
+        let errors: [String]
+    }
+
+    private actor PermissionFailureCollector {
+        private var requestID: String?
+        private var errors: [String] = []
+
+        func consume(_ event: NativeAgentRuntimeEvent) {
+            switch event {
+            case let .approvalRequest(request):
+                if case let .claudeControl(identifier) = request.requestID {
+                    requestID = identifier
+                }
+            case let .error(message):
+                errors.append(message)
+            default:
+                break
+            }
+        }
+
+        func snapshot() -> PermissionFailureSnapshot {
+            PermissionFailureSnapshot(requestID: requestID, errors: errors)
+        }
+    }
+
+    private enum ExpectedPIDEvent: Equatable {
+        case registered(pid: pid_t, clientName: String, runID: UUID)
+        case cleared(pid: pid_t, clientName: String, runID: UUID)
+    }
+
+    private actor ExpectedPIDRecorder {
+        private var events: [ExpectedPIDEvent] = []
+
+        nonisolated var registrar: ClaudeRustBackedNativeSessionAdapter.ExpectedAgentPIDRegistrar {
+            .init(
+                register: { [weak self] pid, clientName, runID in
+                    await self?.record(.registered(pid: pid, clientName: clientName, runID: runID))
+                },
+                clear: { [weak self] pid, clientName, runID in
+                    await self?.record(.cleared(pid: pid, clientName: clientName, runID: runID))
+                }
+            )
+        }
+
+        func snapshot() -> [ExpectedPIDEvent] {
+            events
+        }
+
+        private func record(_ event: ExpectedPIDEvent) {
+            events.append(event)
+        }
+    }
+
+    /// Injects synthetic fixture facts through the production
+    /// `ClaudeCodeLaunchEnvironmentResolving` constructor seam.
     private struct ScriptedSyntheticCLIEnvironmentResolver: ClaudeCodeLaunchEnvironmentResolving {
         let overrides: [String: String]
 
@@ -148,7 +208,31 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         }
     }
 
+    private struct SwitchingSyntheticCLIEnvironmentResolver: ClaudeCodeLaunchEnvironmentResolving {
+        let syntheticCLIArguments: String
+
+        func resolve(
+            variant _: ClaudeCodeRuntimeVariant,
+            requestedModel: String?
+        ) async throws -> ClaudeCodeLaunchEnvironment {
+            var overrides = ["AGENT_CLAUDE_SYNTHETIC_CLI_ARGS": syntheticCLIArguments]
+            if requestedModel == "alternate-model" {
+                overrides["AGENTRY_TEST_BACKEND"] = "alternate"
+            }
+            return ClaudeCodeLaunchEnvironment(
+                effectiveModel: requestedModel,
+                environmentOverrides: overrides,
+                backend: .defaultClaude
+            )
+        }
+    }
+
     // MARK: - Fixtures
+
+    private struct SyntheticLaunchRecord: Decodable, Equatable {
+        let argv: [String]
+        let environment: [String: String]
+    }
 
     private func syntheticCLIPath() throws -> String {
         let repoRoot = try RepoRoot.url()
@@ -171,15 +255,49 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         return url
     }
 
-    private func makeConfig(commandPath: String) -> ClaudeCodeAgentConfig {
+    private func makeConfig(
+        commandPath: String,
+        runtimeVariant: ClaudeCodeRuntimeVariant = .standard
+    ) -> ClaudeCodeAgentConfig {
         .agentMode(
             commandName: commandPath,
+            runtimeVariant: runtimeVariant,
             permissionMode: "default",
             allowNativeBashTool: false,
             disallowedBuiltInTools: [],
             mcpStrictMode: false,
             toolSearchEnabled: false
         )
+    }
+
+    private func readLaunchRecord(at url: URL) throws -> SyntheticLaunchRecord {
+        try JSONDecoder().decode(SyntheticLaunchRecord.self, from: Data(contentsOf: url))
+    }
+
+    private func normalizedLaunchArguments(_ arguments: [String]) -> [String] {
+        var normalized = arguments
+        if let index = normalized.firstIndex(of: "--mcp-config"), normalized.indices.contains(index + 1) {
+            normalized[index + 1] = "<host-owned-mcp-config>"
+        }
+        return normalized
+    }
+
+    private func expectedLaunchArguments(for variant: ClaudeCodeRuntimeVariant) -> [String] {
+        var arguments = [
+            "-p",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--permission-prompt-tool",
+            "stdio"
+        ]
+        if variant == .glm {
+            arguments += ["--append-system-prompt", "Running within this desktop app."]
+        }
+        arguments += ["--mcp-config", "<host-owned-mcp-config>"]
+        return arguments
     }
 
     /// Drives one arm through a full session lifecycle against the scripted synthetic CLI: start,
@@ -218,10 +336,316 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
 
     // MARK: - Tests
 
-    func testIdenticalScriptedTurnProducesAnIdenticalCanonicalEventSequenceAcrossBothArms() async throws {
-        // Both arms' `startOrResume` require the embedded MCP server to be reachable before
-        // spawning (Swift's `prepareRuntimeIfNeeded` hard-requires it; the Rust adapter's own MCP
-        // config lease acquisition is best-effort but still calls into the same service). Other
+    func testLiveModelSwitchThatChangesLaunchEnvironmentRequiresRestart() async throws {
+        _ = await ServerNetworkManager.shared.start()
+        let cliPath = try syntheticCLIPath()
+        let scriptURL = try writeScript(["SLEEP 5000"])
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let resolver = SwitchingSyntheticCLIEnvironmentResolver(
+            syntheticCLIArguments: "scripted\n\(scriptURL.path)"
+        )
+        let config = makeConfig(commandPath: cliPath)
+        let controller = ClaudeRustBackedNativeSessionAdapter(
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePath: FileManager.default.temporaryDirectory.path,
+            config: config,
+            runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .agentMode),
+            environmentResolver: resolver
+        )
+
+        _ = try await controller.startOrResume(
+            existingSessionID: nil,
+            model: nil,
+            effortLevel: nil,
+            systemPromptOverride: nil
+        )
+        do {
+            try await controller.applyModelAndEffort(model: "alternate-model", effortLevel: nil)
+            XCTFail("a launch-environment-changing live model switch must require restart")
+        } catch NativeAgentRuntimeControllerError.liveModelSwitchRequiresRestart {
+            // Expected.
+        } catch {
+            XCTFail("expected liveModelSwitchRequiresRestart, got \(error)")
+        }
+        await controller.shutdown()
+    }
+
+    func testCompatibleVariantsPreserveFrozenLaunchAndTurnContract() async throws {
+        _ = await ServerNetworkManager.shared.start()
+        let cliPath = try syntheticCLIPath()
+        let variants: [ClaudeCodeRuntimeVariant] = [.glm, .kimi, .customCompatible]
+
+        for variant in variants {
+            let sessionID = "p6-9-\(variant.rawValue)-\(UUID().uuidString.prefix(8))"
+            let scriptURL = try writeScript([
+                "SLEEP 500",
+                #"OUT {"type":"system","subtype":"init","session_id":"\#(sessionID)"}"#,
+                #"OUT {"type":"assistant","message":{"content":[{"type":"text","text":"variant parity"}]}}"#,
+                #"OUT {"type":"system","subtype":"session_state_changed","session_state":"running"}"#,
+                // Non-idle session state is intentionally coalescible under pressure (§7.1). Pace
+                // the next progress-class event so this launch/translation differential compares
+                // both observable sequences rather than testing the separately frozen loss policy.
+                "SLEEP 500",
+                #"OUT {"type":"result","subtype":"success","session_id":"\#(sessionID)"}"#,
+                #"OUT {"type":"system","subtype":"session_state_changed","session_state":"idle"}"#
+            ])
+            let launchURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("p6-9-rust-\(variant.rawValue)-\(UUID().uuidString).json")
+            defer {
+                try? FileManager.default.removeItem(at: scriptURL)
+                try? FileManager.default.removeItem(at: launchURL)
+            }
+
+            let resolver = ScriptedSyntheticCLIEnvironmentResolver(overrides: [
+                "AGENT_CLAUDE_SYNTHETIC_CLI_ARGS": "scripted\n\(scriptURL.path)",
+                "AGENT_CLAUDE_SYNTHETIC_CLI_RECORD_LAUNCH_PATH": launchURL.path,
+                "AGENT_CLAUDE_SYNTHETIC_CLI_RECORD_ENV_KEYS": "AGENTRY_VARIANT_SENTINEL,CLAUDE_CODE_ENTRYPOINT",
+                "AGENTRY_VARIANT_SENTINEL": variant.rawValue
+            ])
+            let config = makeConfig(commandPath: cliPath, runtimeVariant: variant)
+            let controller = ClaudeRustBackedNativeSessionAdapter(
+                runID: UUID(),
+                tabID: UUID(),
+                windowID: 1,
+                workspacePath: FileManager.default.temporaryDirectory.path,
+                config: config,
+                runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .agentMode),
+                environmentResolver: resolver
+            )
+
+            let collector = try await drive(controller: controller)
+            let events = await collector.events
+            XCTAssertTrue(events.contains {
+                if case let .turnCompleted(_, status) = $0 { return status == "completed" }
+                return false
+            }, "\(variant.rawValue) must complete its scripted turn")
+            XCTAssertFalse(events.contains {
+                if case .error = $0 { return true }
+                return false
+            })
+
+            let launch = try readLaunchRecord(at: launchURL)
+            XCTAssertEqual(
+                normalizedLaunchArguments(launch.argv),
+                expectedLaunchArguments(for: variant),
+                "\(variant.rawValue) production argv drifted from the frozen P6-9 contract"
+            )
+            XCTAssertEqual(launch.environment["AGENTRY_VARIANT_SENTINEL"], variant.rawValue)
+            XCTAssertEqual(launch.environment["CLAUDE_CODE_ENTRYPOINT"], "sdk-ts")
+        }
+    }
+
+    func testRustArmRebuildsItsScopeAfterTheSupervisedProcessExits() async throws {
+        _ = await ServerNetworkManager.shared.start()
+        let cliPath = try syntheticCLIPath()
+        let providerSessionID = "p6-8-restart-\(UUID().uuidString.prefix(8))"
+        let scriptURL = try writeScript([
+            "SLEEP 500",
+            #"OUT {"type":"system","subtype":"init","session_id":"\#(providerSessionID)"}"#,
+            #"OUT {"type":"assistant","message":{"content":[{"type":"text","text":"restart fixture"}]}}"#,
+            #"OUT {"type":"result","subtype":"success","session_id":"\#(providerSessionID)"}"#
+        ])
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let resolver = ScriptedSyntheticCLIEnvironmentResolver(
+            overrides: ["AGENT_CLAUDE_SYNTHETIC_CLI_ARGS": "scripted\n\(scriptURL.path)"]
+        )
+        let config = makeConfig(commandPath: cliPath)
+        let runID = UUID()
+        let expectedPIDRecorder = ExpectedPIDRecorder()
+        let controller = ClaudeRustBackedNativeSessionAdapter(
+            runID: runID,
+            tabID: UUID(),
+            windowID: 1,
+            workspacePath: FileManager.default.temporaryDirectory.path,
+            config: config,
+            runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .agentMode),
+            environmentResolver: resolver,
+            expectedAgentPIDRegistrar: expectedPIDRecorder.registrar
+        )
+        let collector = DifferentialCollector()
+        await controller.ensureEventsStreamReady()
+        let stream = await controller.events
+        let pump = Task {
+            for await event in stream {
+                await collector.consume(event)
+            }
+        }
+        defer { pump.cancel() }
+
+        for expectedCount in 1 ... 2 {
+            _ = try await controller.startOrResume(
+                existingSessionID: expectedCount == 1 ? nil : providerSessionID,
+                model: nil,
+                effortLevel: nil,
+                systemPromptOverride: nil
+            )
+            _ = try await controller.sendUserMessage("restart turn \(expectedCount)")
+
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline {
+                let completedTurnCount = await collector.completedTurnCount
+                let hasActiveSession = await controller.hasActiveSession
+                if completedTurnCount >= expectedCount, !hasActiveSession {
+                    break
+                }
+                try await Task.sleep(nanoseconds: 25_000_000)
+            }
+            let completedTurnCount = await collector.completedTurnCount
+            let hasActiveSession = await controller.hasActiveSession
+            XCTAssertEqual(completedTurnCount, expectedCount)
+            XCTAssertFalse(hasActiveSession, "processExited must invalidate the dead Rust process before the next turn")
+
+            let pidDeadline = Date().addingTimeInterval(3)
+            var pidEvents = await expectedPIDRecorder.snapshot()
+            while pidEvents.count < expectedCount * 2, Date() < pidDeadline {
+                try await Task.sleep(nanoseconds: 25_000_000)
+                pidEvents = await expectedPIDRecorder.snapshot()
+            }
+            XCTAssertEqual(pidEvents.count, expectedCount * 2)
+        }
+
+        await controller.shutdown()
+        let pidEvents = await expectedPIDRecorder.snapshot()
+        XCTAssertEqual(pidEvents.count, 4)
+        for pairStart in stride(from: 0, to: pidEvents.count, by: 2) {
+            guard case let .registered(pid, clientName, registeredRunID) = pidEvents[pairStart],
+                  case let .cleared(clearedPID, clearedClientName, clearedRunID) = pidEvents[pairStart + 1]
+            else {
+                return XCTFail("each supervised child must register then clear one expected-PID fence")
+            }
+            XCTAssertGreaterThan(pid, 0)
+            XCTAssertEqual(clearedPID, pid)
+            XCTAssertEqual(clientName, AgentProviderKind.claudeMCPClientID)
+            XCTAssertEqual(clearedClientName, clientName)
+            XCTAssertEqual(registeredRunID, runID)
+            XCTAssertEqual(clearedRunID, runID)
+        }
+    }
+
+    func testInterruptOutcomeArrivingBeforeReceiptRegistrationIsRetained() async throws {
+        _ = await ServerNetworkManager.shared.start()
+        let cliPath = try syntheticCLIPath()
+        let scriptURL = try writeScript([
+            "AWAITACKS 2",
+            "SLEEP 5000"
+        ])
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let resolver = ScriptedSyntheticCLIEnvironmentResolver(
+            overrides: ["AGENT_CLAUDE_SYNTHETIC_CLI_ARGS": "scripted\n\(scriptURL.path)"]
+        )
+        let config = makeConfig(commandPath: cliPath)
+        let controller = ClaudeRustBackedNativeSessionAdapter(
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePath: FileManager.default.temporaryDirectory.path,
+            config: config,
+            runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .agentMode),
+            environmentResolver: resolver,
+            interruptReceiptRegistrationHookForTesting: {
+                // Rust's authoritative ACK deadline is 1.5 s. Holding registration for longer
+                // guarantees the correlated event reaches the actor before the continuation exists;
+                // without the early-outcome cache this call falls through to the 4 s outer timeout.
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        )
+
+        await controller.ensureEventsStreamReady()
+        _ = try await controller.startOrResume(
+            existingSessionID: nil,
+            model: nil,
+            effortLevel: nil,
+            systemPromptOverride: nil
+        )
+        _ = try await controller.sendUserMessage("interrupt the early-outcome fixture")
+        let startedAt = Date()
+        let outcome = await controller.interruptTurn(reason: "early-outcome regression")
+        let elapsed = Date().timeIntervalSince(startedAt)
+        XCTAssertEqual(outcome, .acknowledged)
+        XCTAssertLessThan(elapsed, 4, "the cached outcome must win before the adapter's outer timeout")
+        await controller.shutdown()
+    }
+
+    func testFailedUserPermissionWriteEmitsTerminalErrorAndClosesScope() async throws {
+        _ = await ServerNetworkManager.shared.start()
+        let cliPath = try syntheticCLIPath()
+        let scriptURL = try writeScript([
+            "AWAITACKS 2",
+            #"OUT {"type":"control_request","request_id":"perm-write-failure","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}"#,
+            "SLEEP 100"
+        ])
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let resolver = ScriptedSyntheticCLIEnvironmentResolver(
+            overrides: ["AGENT_CLAUDE_SYNTHETIC_CLI_ARGS": "scripted\n\(scriptURL.path)"]
+        )
+        let config = makeConfig(commandPath: cliPath)
+        let controller = ClaudeRustBackedNativeSessionAdapter(
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePath: FileManager.default.temporaryDirectory.path,
+            config: config,
+            runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .agentMode),
+            environmentResolver: resolver
+        )
+        let collector = PermissionFailureCollector()
+        await controller.ensureEventsStreamReady()
+        let stream = await controller.events
+        let pump = Task {
+            for await event in stream {
+                await collector.consume(event)
+            }
+        }
+        defer { pump.cancel() }
+
+        _ = try await controller.startOrResume(
+            existingSessionID: nil,
+            model: nil,
+            effortLevel: nil,
+            systemPromptOverride: nil
+        )
+        let exitDeadline = Date().addingTimeInterval(5)
+        var snapshot = await collector.snapshot()
+        while Date() < exitDeadline {
+            let hasActiveSession = await controller.hasActiveSession
+            if snapshot.requestID != nil, !hasActiveSession {
+                break
+            }
+            try await Task.sleep(nanoseconds: 25_000_000)
+            snapshot = await collector.snapshot()
+        }
+        guard let requestID = snapshot.requestID else {
+            await controller.shutdown()
+            return XCTFail("expected the synthetic permission request before process exit")
+        }
+        let hasActiveSessionAfterEOF = await controller.hasActiveSession
+        XCTAssertFalse(hasActiveSessionAfterEOF, "the fixture must close stdout before the user responds")
+
+        await controller.respondToPermissionRequest(id: requestID, decision: .accept)
+        let errorDeadline = Date().addingTimeInterval(5)
+        snapshot = await collector.snapshot()
+        while snapshot.errors.isEmpty, Date() < errorDeadline {
+            try await Task.sleep(nanoseconds: 25_000_000)
+            snapshot = await collector.snapshot()
+        }
+        XCTAssertTrue(
+            snapshot.errors.contains { $0.contains("Failed to submit Claude approval decision") },
+            "a failed user-selected response must surface the same terminal protocol error as the legacy controller"
+        )
+        let hasActiveSessionAfterFailure = await controller.hasActiveSession
+        XCTAssertFalse(hasActiveSessionAfterFailure)
+        await controller.shutdown()
+    }
+
+    func testScriptedTurnProducesTheFrozenCanonicalEventSequence() async throws {
+        // `startOrResume` requires the embedded MCP server to be reachable before spawning; the
+        // Rust adapter's MCP config lease acquisition calls into the same service. Other
         // suites already start it and leave it running for the rest of the process
         // (`CodexMCPRoutingReadinessTests`'s convention); starting it here as well makes this test
         // independent of run order/filtering.
@@ -229,20 +653,18 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         let cliPath = try syntheticCLIPath()
         let sessionID = "p6-7-diff-session-\(UUID().uuidString.prefix(8))"
         let scriptURL = try writeScript([
-            // P6-7 (§15.5): both arms now perform a real session-startup control-request round
-            // trip before `startOrResume` returns (Swift always did; the Rust arm's `initialize`
-            // handshake -- plus `set_permission_mode`, since `makeConfig` below sets a non-empty
+            // P6-7 (§15.5): the Rust authority performs a real session-startup control-request
+            // round trip before `startOrResume` returns. Its `initialize` handshake plus
+            // `set_permission_mode`, since `makeConfig` below sets a non-empty
             // `permissionMode` -- closed the gap this margin needs to outlast). 500 ms is the
             // margin `ClaudeRustBackedNativeSessionAdapter`'s own outer-deadline comments and this
             // suite's other cross-process synchronization already use as "comfortably generous
             // under parallel-test-run contention"; 200 ms measured flaky under `--filter Claude`'s
-            // full concurrent load. This is a mitigation, not a root-cause fix: the observed flake
-            // was an *ordering* inversion (approvalRequest/sessionStateChanged), and a cargo-only
-            // follow-up (`approval_request_and_session_state_changed_drain_in_publish_order`,
-            // `agent_claude_scope.rs`) proved the Rust scope/SubscriptionHub pipeline preserves that
-            // order with no Swift hop at all -- so whatever raced here is downstream of Rust's own
-            // publish order (this suite's Swift-side event pump, or plain wall-clock contention),
-            // per §15.5's "Differential margin bump, and what was actually located" note.
+            // full concurrent load. The old ordering inversion is no longer sleep-mitigated:
+            // §15.7 root-caused it to overlapping, actor-reentrant bridge drainers and made wake
+            // draining single-flight. This delay now serves only as a startup/handshake scheduling
+            // margin; the Rust scope order test, gated bridge regression, and this differential pin
+            // event ordering independently of wall-clock spacing.
             "SLEEP 500",
             #"OUT {"type":"system","subtype":"init","session_id":"\#(sessionID)"}"#,
             #"OUT {"type":"assistant","message":{"content":[{"type":"text","text":"Hello from the differential"}]}}"#,
@@ -264,53 +686,49 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         let tabID = UUID()
         let workspacePath = FileManager.default.temporaryDirectory.path
 
-        let swiftConfig = makeConfig(commandPath: cliPath)
-        let swiftController = ClaudeNativeProcessSessionController(
+        let config = makeConfig(commandPath: cliPath)
+        let controller = ClaudeRustBackedNativeSessionAdapter(
             runID: runID,
             tabID: tabID,
             windowID: 1,
             workspacePath: workspacePath,
-            config: swiftConfig,
+            config: config,
+            runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .agentMode),
             environmentResolver: resolver
         )
 
-        let rustConfig = makeConfig(commandPath: cliPath)
-        let rustController = ClaudeRustBackedNativeSessionAdapter(
-            runID: runID,
-            tabID: tabID,
-            workspacePath: workspacePath,
-            config: rustConfig,
-            runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: rustConfig, mode: .agentMode),
-            environmentResolver: resolver
-        )
+        let collector = try await drive(controller: controller)
+        let events = await collector.events
 
-        let swiftCollector = try await drive(controller: swiftController)
-        let rustCollector = try await drive(controller: rustController)
+        XCTAssertFalse(events.isEmpty, "the Rust authority must produce events for a well-formed scripted turn")
+        XCTAssertFalse(events.contains {
+            if case .error = $0 { return true }
+            return false
+        })
 
-        let swiftEvents = await swiftCollector.events
-        let rustEvents = await rustCollector.events
-
-        XCTAssertFalse(swiftEvents.isEmpty, "Swift arm must have produced events for a well-formed scripted turn")
-        XCTAssertFalse(rustEvents.isEmpty, "Rust arm must have produced events for a well-formed scripted turn")
-        XCTAssertEqual(
-            swiftEvents,
-            rustEvents,
-            "Rust-backed arm must produce an identical canonical event sequence to the Swift arm for the same scripted turn"
-        )
-
-        XCTAssertEqual(swiftEvents.count(where: { if case .turnCompleted = $0 { true } else { false } }), 1)
-        guard case let .turnCompleted(_, status) = swiftEvents.first(where: {
-            if case .turnCompleted = $0 { true } else { false }
+        XCTAssertEqual(events.count(where: {
+            if case .turnCompleted = $0 {
+                true
+            } else {
+                false
+            }
+        }), 1)
+        guard case let .turnCompleted(_, status) = events.first(where: {
+            if case .turnCompleted = $0 {
+                true
+            } else {
+                false
+            }
         }) else {
             return XCTFail("expected exactly one turnCompleted event")
         }
         XCTAssertEqual(status, "completed", "the idle-released turn must complete with .completed, not fall back to timedOut")
 
-        // design's "identical providerSessionID" requirement, checked explicitly (not merely
-        // implied by cross-arm event equality): the message_stop result on both arms must carry
-        // the literal session id the script declared.
-        let messageStopEvents = swiftEvents.compactMap { event -> String?? in
-            if case let .stream(result) = event, result.type == "message_stop" { return result.providerSessionID }
+        // The message_stop result must carry the literal provider session id the script declared.
+        let messageStopEvents = events.compactMap { event -> String?? in
+            if case let .stream(result) = event, result.type == "message_stop" {
+                return result.providerSessionID
+            }
             return nil
         }
         XCTAssertEqual(messageStopEvents.count, 1)

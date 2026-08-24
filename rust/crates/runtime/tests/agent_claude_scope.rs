@@ -10,19 +10,33 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use agentry_runtime::agent_claude::event::AgentClaudeEvent;
-use agentry_runtime::agent_claude::scope::{AgentClaudeScope, AgentClaudeScopeConfig, PermissionDecisionInput, ScopeRegistry};
-use agentry_runtime::{RuntimeEvent, RuntimeEventKind, RuntimeIdentity, SubscriptionConfig, SubscriptionHub};
+use agentry_runtime::agent_claude::scope::{
+    AgentClaudeScope, AgentClaudeScopeConfig, AgentScopeError, FlagSettingsDisposition,
+    PermissionDecisionInput, ScopeRegistry,
+};
+use agentry_runtime::{
+    RuntimeEvent, RuntimeEventKind, RuntimeIdentity, SubscriptionConfig, SubscriptionHub,
+};
 
 fn synthetic_cli() -> &'static str {
     env!("CARGO_BIN_EXE_agent-claude-synthetic-cli")
 }
 
 fn identity(nonce: u8) -> RuntimeIdentity {
-    RuntimeIdentity::new(1, format!("{nonce:02x}").repeat(16), "a".repeat(64), "b".repeat(64)).expect("identity")
+    RuntimeIdentity::new(
+        1,
+        format!("{nonce:02x}").repeat(16),
+        "a".repeat(64),
+        "b".repeat(64),
+    )
+    .expect("identity")
 }
 
 fn write_script(name: &str, contents: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("agent-claude-scope-test-{name}-{}.script", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "agent-claude-scope-test-{name}-{}.script",
+        std::process::id()
+    ));
     std::fs::write(&path, contents).expect("write script fixture");
     path
 }
@@ -47,14 +61,23 @@ struct Harness {
 }
 
 impl Harness {
-    fn open(identity: RuntimeIdentity, config: AgentClaudeScopeConfig, subscription_config: SubscriptionConfig) -> Self {
+    fn open(
+        identity: RuntimeIdentity,
+        config: AgentClaudeScopeConfig,
+        subscription_config: SubscriptionConfig,
+    ) -> Self {
         let hub = Arc::new(SubscriptionHub::new(identity.clone()).expect("hub"));
         let registry = ScopeRegistry::new();
         let scope = registry.open_scope(identity.clone(), config);
         let subscription_scope_id = scope.scope_id().to_subscription_scope_id();
         scope.attach_event_sink(Arc::clone(&hub), subscription_scope_id.clone());
         let bootstrap = hub
-            .open_subscription(&identity, subscription_scope_id, subscription_config, Vec::new)
+            .open_subscription(
+                &identity,
+                subscription_scope_id,
+                subscription_config,
+                Vec::new,
+            )
             .expect("open subscription");
         // `registry` drops here at the end of this function -- harmless: `scope` (an `Arc` this
         // `Harness` keeps alive independently) is the *other* strong owner `ScopeRegistry::
@@ -64,18 +87,31 @@ impl Harness {
         // permanent extra strong reference to `scope` forever and silently defeated the orphan-
         // backstop test below (`AgentClaudeScope::drop` never ran because the registry's own map
         // entry -- never released -- kept the strong count above zero indefinitely).
-        Self { hub, scope, identity, subscription_id: bootstrap.subscription_id }
+        Self {
+            hub,
+            scope,
+            identity,
+            subscription_id: bootstrap.subscription_id,
+        }
     }
 
     fn drain(&self) -> Vec<RuntimeEvent> {
-        match self.hub.try_drain(&self.identity, self.subscription_id, 64, 262_144).expect("try_drain") {
+        match self
+            .hub
+            .try_drain(&self.identity, self.subscription_id, 64, 262_144)
+            .expect("try_drain")
+        {
             agentry_runtime::DrainOutcome::Batch(batch) => batch.events,
             agentry_runtime::DrainOutcome::Oversize(_) => Vec::new(),
         }
     }
 
     /// Drains repeatedly, decoding every event, until `predicate` matches one or `timeout` elapses.
-    fn wait_for(&self, timeout: Duration, mut predicate: impl FnMut(&AgentClaudeEvent) -> bool) -> Option<AgentClaudeEvent> {
+    fn wait_for(
+        &self,
+        timeout: Duration,
+        mut predicate: impl FnMut(&AgentClaudeEvent) -> bool,
+    ) -> Option<AgentClaudeEvent> {
         let deadline = Instant::now() + timeout;
         loop {
             for event in self.drain() {
@@ -95,7 +131,10 @@ impl Harness {
     fn wait_until_not_in_flight(&self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         while self.scope.diagnostics().turn_in_flight {
-            assert!(Instant::now() < deadline, "turn never left in-flight state within {timeout:?}");
+            assert!(
+                Instant::now() < deadline,
+                "turn never left in-flight state within {timeout:?}"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -126,18 +165,35 @@ fn well_behaved_session_completes_a_turn_end_to_end() {
     // margin every other scripted test in this file relies on for content-ordering, not a
     // response to a specific event -- there is no signal for "the parent called
     // send_user_message"), and the `OUT` line replays exactly what `well-behaved` mode wrote.
-    let script = write_script("well-behaved-equivalent", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
+    let script = write_script(
+        "well-behaved-equivalent",
+        "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n",
+    );
     let harness = Harness::open(
         identity(1),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    let turn_id = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
-    assert_eq!(turn_id, 1, "generation numbering starts at 1 (0 is the never-sent sentinel)");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let turn_id = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
+    assert_eq!(
+        turn_id, 1,
+        "generation numbering starts at 1 (0 is the never-sent sentinel)"
+    );
 
     let completed = harness
-        .wait_for(Duration::from_secs(5), |event| event.kind.wire_name() == "turnCompleted")
+        .wait_for(Duration::from_secs(5), |event| {
+            event.kind.wire_name() == "turnCompleted"
+        })
         .expect("turnCompleted must be published");
     assert_eq!(completed.turn_id, Some(1));
     assert_eq!(field_str(&completed, "status"), Some("completed"));
@@ -147,18 +203,136 @@ fn well_behaved_session_completes_a_turn_end_to_end() {
 }
 
 #[test]
+fn stdout_eof_publishes_process_exit_and_allows_a_fenced_restart() {
+    let script = write_script("restart-after-eof", "AWAITACKS 1\nSLEEP 100\n");
+    let harness = Harness::open(
+        identity(31),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
+        SubscriptionConfig::default(),
+    );
+
+    let first = harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("first start");
+    let first_exit = harness
+        .wait_for(Duration::from_secs(3), |event| {
+            event.kind.wire_name() == "processExited"
+        })
+        .expect("unexpected stdout EOF must publish the terminal processExited fact");
+    assert_eq!(
+        field_u64(&first_exit, "pid"),
+        Some(first.pid as u64),
+        "the PID-crossing receipt must identify the exact registration to clear"
+    );
+    assert!(matches!(
+        harness
+            .scope
+            .send_user_message(&harness.identity, "dead stdin must not be reused"),
+        Err(AgentScopeError::NotRunning)
+    ));
+
+    let second = harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("restart after EOF");
+    assert_ne!(
+        first.pid, second.pid,
+        "restart must mint a new supervised process"
+    );
+    let second_exit = harness
+        .wait_for(Duration::from_secs(3), |event| {
+            event.kind.wire_name() == "processExited"
+        })
+        .expect("replacement process must retain the same EOF lifecycle contract");
+    assert_eq!(field_u64(&second_exit, "pid"), Some(second.pid as u64));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+}
+
+#[test]
+fn result_without_idle_is_completed_by_the_production_fallback_worker() {
+    let script = write_script(
+        "result-without-idle",
+        concat!(
+            "AWAITACKS 1\nSLEEP 200\n",
+            "OUT {\"type\":\"system\",\"subtype\":\"session_state_changed\",\"session_state\":\"running\"}\n",
+            "OUT {\"type\":\"result\",\"subtype\":\"success\"}\n",
+            "SLEEP 2000\n",
+        ),
+    );
+    let log_path = std::env::temp_dir().join(format!(
+        "agent-claude-result-without-idle-{}.jsonl",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&log_path);
+    let mut config = test_config(vec![
+        "scripted".to_string(),
+        script.to_string_lossy().to_string(),
+    ]);
+    config.idle_fallback = Duration::from_millis(100);
+    config.raw_event_log_enabled = true;
+    config.raw_event_log_file_path = Some(log_path.to_string_lossy().to_string());
+    let harness = Harness::open(identity(23), config, SubscriptionConfig::default());
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let generation = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
+
+    let completed = harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "turnCompleted"
+        })
+        .expect("the production fallback worker must release result-without-idle");
+    assert_eq!(completed.turn_id, Some(generation));
+    assert_eq!(field_str(&completed, "status"), Some("completed"));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let log = std::fs::read_to_string(&log_path).expect("fallback must be raw-logged");
+    assert!(
+        log.lines()
+            .any(|line| line.contains("\"kind\":\"lifecycle.idleFallback\""))
+    );
+    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_file(&log_path);
+}
+
+#[test]
 fn interrupt_stale_generation_is_reachable_naming_n_while_n_plus_1_is_live() {
     let script = write_script("stale-generation", "SLEEP 3000\n");
     let harness = Harness::open(
         identity(2),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    let generation_one = harness.scope.send_user_message(&harness.identity, "first").expect("send 1");
-    let generation_two = harness.scope.send_user_message(&harness.identity, "second").expect("send 2");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let generation_one = harness
+        .scope
+        .send_user_message(&harness.identity, "first")
+        .expect("send 1");
+    let generation_two = harness
+        .scope
+        .send_user_message(&harness.identity, "second")
+        .expect("send 2");
     assert_eq!(generation_two, generation_one + 1);
-    assert!(harness.scope.diagnostics().turn_in_flight, "both turns are still pending -- neither ever resulted");
+    assert!(
+        harness.scope.diagnostics().turn_in_flight,
+        "both turns are still pending -- neither ever resulted"
+    );
 
     let request_id = harness
         .scope
@@ -166,11 +340,15 @@ fn interrupt_stale_generation_is_reachable_naming_n_while_n_plus_1_is_live() {
         .expect("interrupt naming the superseded generation");
     let outcome = harness
         .wait_for(Duration::from_secs(2), |event| {
-            event.kind.wire_name() == "interruptOutcome" && field_str(event, "request_id") == Some(request_id.as_str())
+            event.kind.wire_name() == "interruptOutcome"
+                && field_str(event, "request_id") == Some(request_id.as_str())
         })
         .expect("interruptOutcome must be published");
     assert_eq!(field_str(&outcome, "outcome"), Some("staleGeneration"));
-    assert_eq!(field_u64(&outcome, "current_generation"), Some(generation_two));
+    assert_eq!(
+        field_u64(&outcome, "current_generation"),
+        Some(generation_two)
+    );
     assert_eq!(
         field_bool(&outcome, "current_turn_in_flight"),
         Some(true),
@@ -185,20 +363,36 @@ fn interrupt_stale_generation_is_reachable_naming_n_while_n_plus_1_is_live() {
 fn interrupt_no_turn_in_flight_when_the_named_generation_is_current_and_already_settled() {
     // See well_behaved_session_completes_a_turn_end_to_end's comment: `well-behaved` mode cannot
     // ACK the session-startup handshake, so this is the same `scripted` equivalent.
-    let script = write_script("well-behaved-equivalent-2", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
+    let script = write_script(
+        "well-behaved-equivalent-2",
+        "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n",
+    );
     let harness = Harness::open(
         identity(3),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    let generation = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let generation = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
     harness.wait_until_not_in_flight(Duration::from_secs(5));
 
-    let request_id = harness.scope.interrupt_turn(&harness.identity, generation, "noop".to_string()).expect("interrupt");
+    let request_id = harness
+        .scope
+        .interrupt_turn(&harness.identity, generation, "noop".to_string())
+        .expect("interrupt");
     let outcome = harness
         .wait_for(Duration::from_secs(2), |event| {
-            event.kind.wire_name() == "interruptOutcome" && field_str(event, "request_id") == Some(request_id.as_str())
+            event.kind.wire_name() == "interruptOutcome"
+                && field_str(event, "request_id") == Some(request_id.as_str())
         })
         .expect("interruptOutcome must be published");
     assert_eq!(field_str(&outcome, "outcome"), Some("noTurnInFlight"));
@@ -213,16 +407,29 @@ fn interrupt_is_acknowledged_when_the_synthetic_cli_acks_the_control_request() {
     let script = write_script("acknowledged", "SLEEP 3000\n");
     let harness = Harness::open(
         identity(4),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    let generation = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let generation = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
 
-    let request_id = harness.scope.interrupt_turn(&harness.identity, generation, "ack test".to_string()).expect("interrupt");
+    let request_id = harness
+        .scope
+        .interrupt_turn(&harness.identity, generation, "ack test".to_string())
+        .expect("interrupt");
     let outcome = harness
         .wait_for(Duration::from_secs(2), |event| {
-            event.kind.wire_name() == "interruptOutcome" && field_str(event, "request_id") == Some(request_id.as_str())
+            event.kind.wire_name() == "interruptOutcome"
+                && field_str(event, "request_id") == Some(request_id.as_str())
         })
         .expect("interruptOutcome must be published");
     assert_eq!(field_str(&outcome, "outcome"), Some("acknowledged"));
@@ -244,16 +451,29 @@ fn interrupt_times_out_when_the_synthetic_cli_never_acks() {
     let script = write_script("timed-out", "NOACK_AFTER 1\nSLEEP 3000\n");
     let harness = Harness::open(
         identity(5),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    let generation = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let generation = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
 
-    let request_id = harness.scope.interrupt_turn(&harness.identity, generation, "timeout test".to_string()).expect("interrupt");
+    let request_id = harness
+        .scope
+        .interrupt_turn(&harness.identity, generation, "timeout test".to_string())
+        .expect("interrupt");
     let outcome = harness
         .wait_for(Duration::from_secs(3), |event| {
-            event.kind.wire_name() == "interruptOutcome" && field_str(event, "request_id") == Some(request_id.as_str())
+            event.kind.wire_name() == "interruptOutcome"
+                && field_str(event, "request_id") == Some(request_id.as_str())
         })
         .expect("interruptOutcome must be published");
     assert_eq!(field_str(&outcome, "outcome"), Some("timedOut"));
@@ -273,22 +493,42 @@ fn interrupt_failed_when_the_control_request_write_hits_a_closed_stdin_pipe() {
     // hits `EPIPE` once the parent-side sleep below has cleared the child's 50 ms delay.
     let harness = Harness::open(
         identity(13),
-        test_config(vec!["stdin-closed-after-delay".to_string(), "200".to_string(), "5000".to_string()]),
+        test_config(vec![
+            "stdin-closed-after-delay".to_string(),
+            "200".to_string(),
+            "5000".to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    let generation = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let generation = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
     // Comfortably past the child's 200 ms delay before it closes stdin -- not a race, a fixed
     // margin (10x the delay, generous enough to absorb parallel `cargo test --workspace`
     // contention, which the FFI-level twin's own margin tuning showed matters here).
     std::thread::sleep(Duration::from_millis(2_000));
 
-    let request_id = harness.scope.interrupt_turn(&harness.identity, generation, "closed-pipe test".to_string()).expect("interrupt");
+    let request_id = harness
+        .scope
+        .interrupt_turn(
+            &harness.identity,
+            generation,
+            "closed-pipe test".to_string(),
+        )
+        .expect("interrupt");
     let outcome = harness
         .wait_for(Duration::from_secs(2), |event| {
-            event.kind.wire_name() == "interruptOutcome" && field_str(event, "request_id") == Some(request_id.as_str())
+            event.kind.wire_name() == "interruptOutcome"
+                && field_str(event, "request_id") == Some(request_id.as_str())
         })
-        .expect("interruptOutcome must be published even when the control-request write itself fails");
+        .expect(
+            "interruptOutcome must be published even when the control-request write itself fails",
+        );
     assert_eq!(field_str(&outcome, "outcome"), Some("failed"));
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
@@ -303,24 +543,104 @@ fn apply_model_and_effort_publishes_flag_settings_applied_when_the_synthetic_cli
     let script = write_script("flag-settings-applied", "SLEEP 3000\n");
     let harness = Harness::open(
         identity(14),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
     let request_id = harness
         .scope
-        .apply_model_and_effort(&harness.identity, Some("opus".to_string()), Some("high".to_string()))
+        .apply_model_and_effort(
+            &harness.identity,
+            Some("opus".to_string()),
+            Some("high".to_string()),
+            FlagSettingsDisposition::Live,
+        )
         .expect("apply_model_and_effort must return a receipt immediately");
 
     let outcome = harness
         .wait_for(Duration::from_secs(2), |event| {
-            event.kind.wire_name() == "flagSettingsApplied" && field_str(event, "request_id") == Some(request_id.as_str())
+            event.kind.wire_name() == "flagSettingsApplied"
+                && field_str(event, "request_id") == Some(request_id.as_str())
         })
         .expect("flagSettingsApplied must be published");
     assert_eq!(field_str(&outcome, "outcome"), Some("applied"));
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
     let _ = std::fs::remove_file(&script);
+}
+
+#[test]
+fn apply_model_and_effort_records_pending_and_restart_without_writing_control_requests() {
+    let script = write_script("flag-settings-restart-required", "SLEEP 3000\n");
+    let log_path = std::env::temp_dir().join(format!(
+        "agent-claude-flag-settings-restart-required-{}.jsonl",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&log_path);
+    let mut config = test_config(vec![
+        "scripted".to_string(),
+        script.to_string_lossy().to_string(),
+    ]);
+    config.raw_event_log_enabled = true;
+    config.raw_event_log_file_path = Some(log_path.to_string_lossy().to_string());
+    let harness = Harness::open(identity(22), config, SubscriptionConfig::default());
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+
+    let pending_request_id = harness
+        .scope
+        .apply_model_and_effort(
+            &harness.identity,
+            Some("sonnet".to_string()),
+            Some("high".to_string()),
+            FlagSettingsDisposition::PendingInitialHandshake,
+        )
+        .expect("pending initial settings still return a correlated receipt");
+    let pending_outcome = harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "flagSettingsApplied"
+                && field_str(event, "request_id") == Some(pending_request_id.as_str())
+        })
+        .expect("pending outcome must be published without a control round trip");
+    assert_eq!(field_str(&pending_outcome, "outcome"), Some("pending"));
+
+    let request_id = harness
+        .scope
+        .apply_model_and_effort(
+            &harness.identity,
+            Some("glm-5".to_string()),
+            None,
+            FlagSettingsDisposition::RestartRequired,
+        )
+        .expect("restart-required decision still returns a correlated receipt");
+    let outcome = harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "flagSettingsApplied"
+                && field_str(event, "request_id") == Some(request_id.as_str())
+        })
+        .expect("restartRequired outcome must be published without a control round trip");
+    assert_eq!(field_str(&outcome, "outcome"), Some("restartRequired"));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let log = std::fs::read_to_string(&log_path).expect("deferred decision must be raw-logged");
+    assert!(
+        log.lines()
+            .any(|line| line.contains("\"kind\":\"session.flagSettingsPending\""))
+    );
+    assert!(
+        log.lines()
+            .any(|line| line.contains("\"kind\":\"session.flagSettingsDeferred\""))
+    );
+    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_file(&log_path);
 }
 
 #[test]
@@ -338,15 +658,30 @@ fn apply_model_and_effort_times_out_when_the_synthetic_cli_never_acks() {
     let script = write_script("flag-settings-timeout", "NOACK_AFTER 1\nSLEEP 6000\n");
     let harness = Harness::open(
         identity(15),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    let request_id = harness.scope.apply_model_and_effort(&harness.identity, Some("sonnet".to_string()), None).expect("apply_model_and_effort");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let request_id = harness
+        .scope
+        .apply_model_and_effort(
+            &harness.identity,
+            Some("sonnet".to_string()),
+            None,
+            FlagSettingsDisposition::Live,
+        )
+        .expect("apply_model_and_effort");
 
     let outcome = harness
         .wait_for(Duration::from_secs(7), |event| {
-            event.kind.wire_name() == "flagSettingsApplied" && field_str(event, "request_id") == Some(request_id.as_str())
+            event.kind.wire_name() == "flagSettingsApplied"
+                && field_str(event, "request_id") == Some(request_id.as_str())
         })
         .expect("flagSettingsApplied must still be published on timeout");
     assert_eq!(field_str(&outcome, "outcome"), Some("timedOut"));
@@ -361,13 +696,28 @@ fn apply_model_and_effort_fails_when_the_control_request_write_hits_a_closed_std
     // mechanism and margin tuning (module doc there).
     let harness = Harness::open(
         identity(16),
-        test_config(vec!["stdin-closed-after-delay".to_string(), "200".to_string(), "5000".to_string()]),
+        test_config(vec![
+            "stdin-closed-after-delay".to_string(),
+            "200".to_string(),
+            "5000".to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
     std::thread::sleep(Duration::from_millis(2_000));
 
-    let request_id = harness.scope.apply_model_and_effort(&harness.identity, Some("opus".to_string()), None).expect("apply_model_and_effort");
+    let request_id = harness
+        .scope
+        .apply_model_and_effort(
+            &harness.identity,
+            Some("opus".to_string()),
+            None,
+            FlagSettingsDisposition::Live,
+        )
+        .expect("apply_model_and_effort");
     let outcome = harness
         .wait_for(Duration::from_secs(2), |event| {
             event.kind.wire_name() == "flagSettingsApplied" && field_str(event, "request_id") == Some(request_id.as_str())
@@ -387,24 +737,48 @@ fn permission_round_trip_allow_then_a_second_response_is_rejected_as_unknown() {
     );
     let harness = Harness::open(
         identity(6),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
 
     let approval = harness
-        .wait_for(Duration::from_secs(2), |event| event.kind.wire_name() == "approvalRequest")
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "approvalRequest"
+        })
         .expect("approvalRequest must be published");
     assert_eq!(field_str(&approval, "request_id"), Some("perm-1"));
     assert_eq!(field_str(&approval, "tool_name"), Some("Bash"));
 
     harness
         .scope
-        .respond_permission(&harness.identity, "perm-1", PermissionDecisionInput::Allow { include_updated_permissions: false })
+        .respond_permission(
+            &harness.identity,
+            "perm-1",
+            PermissionDecisionInput::Allow {
+                include_updated_permissions: false,
+            },
+        )
         .expect("respond to a known pending permission request");
-    assert_eq!(harness.scope.diagnostics().pending_permission_count, 0, "the pending entry must be consumed on response");
+    assert_eq!(
+        harness.scope.diagnostics().pending_permission_count,
+        0,
+        "the pending entry must be consumed on response"
+    );
 
-    let second = harness.scope.respond_permission(&harness.identity, "perm-1", PermissionDecisionInput::Allow { include_updated_permissions: false });
+    let second = harness.scope.respond_permission(
+        &harness.identity,
+        "perm-1",
+        PermissionDecisionInput::Allow {
+            include_updated_permissions: false,
+        },
+    );
     assert_eq!(
         second,
         Err(agentry_runtime::agent_claude::scope::AgentScopeError::UnknownPermissionRequest),
@@ -430,11 +804,20 @@ fn an_oversize_single_event_payload_is_rejected_not_silently_truncated_or_wedged
     let script = write_script("oversize", &format!("OUT {line}\nSLEEP 1500\n"));
     let harness = Harness::open(
         identity(7),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    harness.scope.send_user_message(&harness.identity, "hello").expect("send"); // turn in flight, so resnapshot appends
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send"); // turn in flight, so resnapshot appends
 
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut saw_payload_rejected = false;
@@ -446,11 +829,17 @@ fn an_oversize_single_event_payload_is_rejected_not_silently_truncated_or_wedged
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(saw_payload_rejected, "an over-cap single event payload must surface as PayloadRejected, not silently drop or crash the pipeline");
+    assert!(
+        saw_payload_rejected,
+        "an over-cap single event payload must surface as PayloadRejected, not silently drop or crash the pipeline"
+    );
 
     // The resnapshot buffer retained the (truncated-to-cap) text regardless of the event-lane
     // rejection -- the byte lane and the event lane are independent (contract §5.4).
-    assert!(harness.scope.diagnostics().resnapshot_bytes_retained > 0, "the resnapshot buffer must still have retained the turn's text");
+    assert!(
+        harness.scope.diagnostics().resnapshot_bytes_retained > 0,
+        "the resnapshot buffer must still have retained the turn's text"
+    );
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
     let _ = std::fs::remove_file(&script);
@@ -468,14 +857,31 @@ fn a_lossless_event_evicts_a_resident_droppable_diagnostic_into_a_gap_record() {
     // slot is full) -- proving this scope's diagnostic-publish wiring composes correctly with it.
     let huge_line_one = "a".repeat(9 * 1024 * 1024); // over the framer's 8 MiB line cap
     let huge_line_two = "b".repeat(9 * 1024 * 1024);
-    let script = write_script("gap", &format!("OUT {huge_line_one}\nOUT {huge_line_two}\nSLEEP 1500\n"));
+    let script = write_script(
+        "gap",
+        &format!("OUT {huge_line_one}\nOUT {huge_line_two}\nSLEEP 1500\n"),
+    );
     let harness = Harness::open(
         identity(8),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
-        SubscriptionConfig { max_queued_events: 2, max_queued_bytes: 65_536, reserved_terminal_slots: 1, reserved_terminal_control_bytes: 4_096 },
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
+        SubscriptionConfig {
+            max_queued_events: 2,
+            max_queued_bytes: 65_536,
+            reserved_terminal_slots: 1,
+            reserved_terminal_control_bytes: 4_096,
+        },
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
 
     // Deliberately does NOT drain while the two overflow diagnostics are being published --
     // draining relieves the very pressure this test needs to hold both entries in the queue at
@@ -488,19 +894,28 @@ fn a_lossless_event_evicts_a_resident_droppable_diagnostic_into_a_gap_record() {
     // itself is measuring.
     let deadline = Instant::now() + Duration::from_secs(30);
     while harness.scope.diagnostics().turn_in_flight {
-        assert!(Instant::now() < deadline, "the scripted child never reached EOF within the timeout");
+        assert!(
+            Instant::now() < deadline,
+            "the scripted child never reached EOF within the timeout"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 
     let mut saw_gap = false;
     let mut seen_kinds: Vec<(RuntimeEventKind, Option<String>)> = Vec::new();
     for event in harness.drain() {
-        seen_kinds.push((event.kind, AgentClaudeEvent::decode(&event.payload).map(|e| e.kind.wire_name().to_string())));
+        seen_kinds.push((
+            event.kind,
+            AgentClaudeEvent::decode(&event.payload).map(|e| e.kind.wire_name().to_string()),
+        ));
         if event.kind == RuntimeEventKind::Gap {
             saw_gap = true;
         }
     }
-    assert!(saw_gap, "the resident droppable diagnostic must be evicted into a Gap record when a lossless event needs its slot: seen {seen_kinds:?}");
+    assert!(
+        saw_gap,
+        "the resident droppable diagnostic must be evicted into a Gap record when a lossless event needs its slot: seen {seen_kinds:?}"
+    );
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
     let _ = std::fs::remove_file(&script);
@@ -520,18 +935,35 @@ fn resnapshot_buffer_truncates_from_the_head_and_emits_a_marker_once_the_turn_ex
     let script = write_script("resnapshot", &script_body);
     let harness = Harness::open(
         identity(9),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
 
     let truncated = harness
-        .wait_for(Duration::from_secs(5), |event| event.kind.wire_name() == "transcriptTruncated")
-        .expect("transcriptTruncated must be published once the per-turn buffer exceeds its 8 MiB cap");
+        .wait_for(Duration::from_secs(5), |event| {
+            event.kind.wire_name() == "transcriptTruncated"
+        })
+        .expect(
+            "transcriptTruncated must be published once the per-turn buffer exceeds its 8 MiB cap",
+        );
     assert!(field_u64(&truncated, "dropped_bytes").unwrap_or(0) > 0);
     let diagnostics = harness.scope.diagnostics();
-    assert_eq!(diagnostics.resnapshot_bytes_retained, 8 * 1024 * 1024, "the buffer must be pinned at exactly its cap after truncating");
+    assert_eq!(
+        diagnostics.resnapshot_bytes_retained,
+        8 * 1024 * 1024,
+        "the buffer must be pinned at exactly its cap after truncating"
+    );
     assert!(diagnostics.resnapshot_truncation_count > 0);
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
@@ -545,33 +977,60 @@ fn every_command_rejects_a_mismatched_runtime_identity_identity_swap_fencing() {
     let script = write_script("identity-swap", "AWAITACKS 1\nSLEEP 500\n");
     let harness = Harness::open(
         identity(10),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
     let intruder = identity(11);
     let scope = Arc::clone(&harness.scope);
 
-    assert_eq!(scope.start_or_resume(&intruder, None).unwrap_err(), agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch);
-    scope.start_or_resume(&harness.identity, None).expect("start under the real identity");
+    assert_eq!(
+        scope
+            .start_or_resume(&intruder, None, None, None)
+            .unwrap_err(),
+        agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch
+    );
+    scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start under the real identity");
     assert_eq!(
         scope.send_user_message(&intruder, "hi").unwrap_err(),
         agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch
     );
     assert_eq!(
-        scope.interrupt_turn(&intruder, 1, "x".to_string()).unwrap_err(),
+        scope
+            .interrupt_turn(&intruder, 1, "x".to_string())
+            .unwrap_err(),
         agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch
     );
     assert_eq!(
-        scope.apply_model_and_effort(&intruder, None, None).unwrap_err(),
+        scope
+            .apply_model_and_effort(&intruder, None, None, FlagSettingsDisposition::Live)
+            .unwrap_err(),
         agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch
     );
     assert_eq!(
-        scope.respond_permission(&intruder, "unknown", PermissionDecisionInput::Allow { include_updated_permissions: false }).unwrap_err(),
+        scope
+            .respond_permission(
+                &intruder,
+                "unknown",
+                PermissionDecisionInput::Allow {
+                    include_updated_permissions: false
+                }
+            )
+            .unwrap_err(),
         agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch
     );
-    assert_eq!(scope.shutdown(&intruder).unwrap_err(), agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch);
+    assert_eq!(
+        scope.shutdown(&intruder).unwrap_err(),
+        agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch
+    );
 
-    scope.shutdown(&harness.identity).expect("the real identity can still shut the scope down");
+    scope
+        .shutdown(&harness.identity)
+        .expect("the real identity can still shut the scope down");
     let _ = std::fs::remove_file(&script);
 }
 
@@ -586,10 +1045,16 @@ fn a_scope_dropped_without_shutdown_is_reaped_by_the_orphan_backstop_not_left_a_
     let script = write_script("orphan", "SLEEP 5000\n");
     let harness = Harness::open(
         identity(12),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
     let pid = harness.scope.diagnostics(); // touch to make sure the scope is alive first
     let _ = pid;
     drop(harness); // no shutdown() call -- exercises the orphan backstop in `Drop`
@@ -614,7 +1079,9 @@ fn a_scope_dropped_without_shutdown_is_reaped_by_the_orphan_backstop_not_left_a_
     // before the process exits, for the sanitizer runs (`--test-threads=1`, per this crate's
     // established TSan/ASan protocol) where that ordering guarantee does hold.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while agentry_runtime::agent_claude::process::thread_budget::AGENT_DOMAIN_THREAD_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0
+    while agentry_runtime::agent_claude::process::thread_budget::AGENT_DOMAIN_THREAD_COUNT
+        .load(std::sync::atomic::Ordering::SeqCst)
+        > 0
         && Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(20));
@@ -647,11 +1114,20 @@ fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
     );
     let harness = Harness::open(
         identity(17),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
 
     // `Harness::wait_for` drains a whole batch and returns on its first predicate match, silently
     // discarding any other already-drained events in that same batch -- fine for the single-event
@@ -660,13 +1136,19 @@ fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
     // Collect everything up through turnCompleted instead, then assert against the accumulated set.
     let mut collected: Vec<AgentClaudeEvent> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !collected.iter().any(|event| event.kind.wire_name() == "turnCompleted") {
+    while !collected
+        .iter()
+        .any(|event| event.kind.wire_name() == "turnCompleted")
+    {
         for event in harness.drain() {
             if let Some(decoded) = AgentClaudeEvent::decode(&event.payload) {
                 collected.push(decoded);
             }
         }
-        assert!(Instant::now() < deadline, "turnCompleted never arrived within the deadline; collected so far: {collected:?}");
+        assert!(
+            Instant::now() < deadline,
+            "turnCompleted never arrived within the deadline; collected so far: {collected:?}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -674,37 +1156,309 @@ fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
         .iter()
         .find(|event| event.kind.wire_name() == "toolUseStarted")
         .expect("toolUseStarted must be published");
-    assert_eq!(field_str(tool_started, "type"), Some("tool_call"), "the original translator kind must ride as an explicit field");
+    assert_eq!(
+        field_str(tool_started, "type"),
+        Some("tool_call"),
+        "the original translator kind must ride as an explicit field"
+    );
     assert_eq!(field_str(tool_started, "tool_name"), Some("Bash"));
-    assert!(field_u64(tool_started, "invocation_id").is_some(), "tool_call/tool_result correlation id must be present");
-    assert!(field_str(tool_started, "tool_args_json").is_some(), "tool_call must carry the serialized input");
+    assert!(
+        field_u64(tool_started, "invocation_id").is_some(),
+        "tool_call/tool_result correlation id must be present"
+    );
+    assert!(
+        field_str(tool_started, "tool_args_json").is_some(),
+        "tool_call must carry the serialized input"
+    );
 
     let tool_result = collected
         .iter()
         .find(|event| event.kind.wire_name() == "toolResult")
         .expect("toolResult must be published");
     assert_eq!(field_str(tool_result, "type"), Some("tool_result"));
-    assert_eq!(field_str(tool_result, "tool_name"), Some("Bash"), "tool_result resolves its name from the matching tool_call");
+    assert_eq!(
+        field_str(tool_result, "tool_name"),
+        Some("Bash"),
+        "tool_result resolves its name from the matching tool_call"
+    );
     assert_eq!(field_str(tool_result, "tool_output"), Some("file1\nfile2"));
 
-    let message_stop = collected.iter().find(|event| field_str(event, "type") == Some("message_stop")).expect(
-        "the authoritative message_stop result must ride the wire as its own stream event, \
+    let message_stop = collected
+        .iter()
+        .find(|event| field_str(event, "type") == Some("message_stop"))
+        .expect(
+            "the authoritative message_stop result must ride the wire as its own stream event, \
              not only as turnCompleted's minimal status payload",
-    );
+        );
     assert_eq!(field_u64(message_stop, "prompt_tokens"), Some(120));
     assert_eq!(field_u64(message_stop, "completion_tokens"), Some(45));
     assert_eq!(field_f64(message_stop, "cost"), Some(0.0421));
-    assert_eq!(field_str(message_stop, "provider_session_id"), Some("claude-session-d6"));
+    assert_eq!(
+        field_str(message_stop, "provider_session_id"),
+        Some("claude-session-d6")
+    );
     assert_eq!(field_str(message_stop, "stop_reason"), Some("end_turn"));
 
     let completed = collected
         .iter()
         .find(|event| event.kind.wire_name() == "turnCompleted")
-        .expect("turnCompleted must still be published, separately from the message_stop stream event");
+        .expect(
+            "turnCompleted must still be published, separately from the message_stop stream event",
+        );
     assert_eq!(field_str(completed, "status"), Some("completed"));
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
     let _ = std::fs::remove_file(&script);
+}
+
+/// P6-7 D-9/R9 (`docs/architecture/rust-agent-claude-v1.md` §15.6): the live-synthetic-CLI-driven
+/// half of D-9's kind-set completeness gate -- drives one representative session (handshake with a
+/// non-empty `permission_mode`, a keep-alive, a control-cancel-request, an undecodable line, a
+/// concatenated-two-objects line, a `system/init` line, a full tool_use/tool_result/can_use_tool/
+/// result turn, then `apply_model_and_effort` and `respond_permission`) through the real scope with
+/// raw-event logging enabled, and asserts every kind naturally reachable from that one session is
+/// present in the written JSONL file. The kinds this test does not reach (`turn.interrupted`/
+/// `timedOut`/`failed`, and every kind `scope.rs::raw_event_log_kind_mapping_tests` covers instead)
+/// are named in `rust-agent-claude-v1.md` §15.6's own accounting table, not silently unaccounted
+/// for.
+#[test]
+fn raw_event_log_completeness_a_representative_session_produces_every_naturally_reachable_kind() {
+    let log_dir =
+        std::env::temp_dir().join(format!("raw-event-log-completeness-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&log_dir);
+    let log_path = log_dir.join("events.jsonl");
+    let script = write_script(
+        "raw-log-completeness",
+        concat!(
+            // Two handshake requests (init + permmode, since permission_mode is non-empty below).
+            "AWAITACKS 2\nSLEEP 200\n",
+            "OUT {\"type\":\"keep_alive\"}\n",
+            "OUT {\"type\":\"control_cancel_request\",\"request_id\":\"cancel-1\"}\n",
+            // Short and brace-free: fails every D-1 recovery heuristic (too short for plaintext
+            // salvage's >=40-char threshold, no `{` for concatenated-split/embedded-tail, no
+            // control characters to repair) -- the genuine `Declined` -> `protocol.decode.skipped`
+            // case, not an accidental plaintext-salvage success.
+            "OUT nope\n",
+            "OUT {\"type\":\"system\",\"subtype\":\"status\",\"status\":\"a\"}{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"b\"}\n",
+            "OUT {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"raw-log-session\",\"tools\":[\"Read\",\"Bash\"],\"mcp_servers\":[{\"name\":\"RepoPromptCE\",\"status\":\"connected\"}]}\n",
+            "OUT {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}\n",
+            "OUT {\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"file1\"}]}}\n",
+            "OUT {\"type\":\"control_request\",\"request_id\":\"perm-1\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{\"command\":\"ls\"}}}\n",
+            "SLEEP 100\n",
+            "OUT {\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"raw-log-session\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n",
+            "SLEEP 3000\n",
+        ),
+    );
+    let config = AgentClaudeScopeConfig {
+        command: synthetic_cli().to_string(),
+        arguments: vec!["scripted".to_string(), script.to_string_lossy().to_string()],
+        raw_argv_for_testing: true,
+        interrupt_ack_timeout: Duration::from_millis(400),
+        permission_mode: Some("acceptEdits".to_string()),
+        raw_event_log_enabled: true,
+        raw_event_log_file_path: Some(log_path.to_string_lossy().to_string()),
+        ..AgentClaudeScopeConfig::default()
+    };
+    let harness = Harness::open(identity(21), config, SubscriptionConfig::default());
+    harness
+        .scope
+        .start_or_resume(
+            &harness.identity,
+            None,
+            Some("opus".to_string()),
+            Some("high".to_string()),
+        )
+        .expect("start");
+    harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
+
+    harness
+        .wait_for(Duration::from_secs(5), |event| {
+            event.kind.wire_name() == "turnCompleted"
+        })
+        .expect("turnCompleted must be published once the scripted result line lands");
+
+    let flags_request_id = harness
+        .scope
+        .apply_model_and_effort(
+            &harness.identity,
+            Some("opus".to_string()),
+            None,
+            FlagSettingsDisposition::Live,
+        )
+        .expect("apply_model_and_effort");
+    harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "flagSettingsApplied"
+                && field_str(event, "request_id") == Some(flags_request_id.as_str())
+        })
+        .expect("flagSettingsApplied must be published");
+
+    harness
+        .scope
+        .respond_permission(
+            &harness.identity,
+            "perm-1",
+            PermissionDecisionInput::Allow {
+                include_updated_permissions: false,
+            },
+        )
+        .expect("respond_permission");
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+
+    let contents = std::fs::read_to_string(&log_path)
+        .expect("raw event log file must exist after an enabled session");
+    let records: Vec<serde_json::Value> = contents
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect();
+    let kinds: std::collections::HashSet<String> = records
+        .iter()
+        .filter_map(|value| {
+            value
+                .get("kind")
+                .and_then(|kind| kind.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+
+    let expected = [
+        "session.startOrResume",
+        "process.spawned",
+        "protocol.outbound.raw",
+        "protocol.inbound.raw",
+        "control.request.sent",
+        "session.initialized",
+        "session.permissionModeInitialized",
+        "protocol.inbound.keepAlive",
+        "protocol.inbound.controlCancelRequest",
+        "control.request.cancelled",
+        "protocol.decode.skipped",
+        "protocol.inbound.recoveredSegment",
+        "protocol.decode.recovered",
+        "protocol.inbound.streamPayload",
+        "runtime.init.stream",
+        "translator.streamResult",
+        "protocol.inbound.controlRequest",
+        "control.request.received",
+        "approval.request.emitted",
+        "protocol.inbound.controlResponse",
+        "control.response.received",
+        "session.flagSettingsApplied",
+        "approval.response.sent",
+        "session.shutdown",
+    ];
+    let missing: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|kind| !kinds.contains(*kind))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "raw event log missing expected kinds: {missing:?}; present: {kinds:?}"
+    );
+
+    let record = |kind: &str| {
+        records
+            .iter()
+            .find(|record| record.get("kind").and_then(serde_json::Value::as_str) == Some(kind))
+            .unwrap_or_else(|| panic!("missing raw record {kind}"))
+    };
+    let start = &record("session.startOrResume")["payload"];
+    assert_eq!(start["existingSessionID"], serde_json::Value::Null);
+    assert_eq!(start["model"], "opus");
+    assert_eq!(start["effortLevel"], "high");
+    assert_eq!(start["hasSystemPromptOverride"], false);
+    let spawned = &record("process.spawned")["payload"];
+    assert!(spawned.get("pid").is_none() && spawned.get("processGroupID").is_none());
+    let sent = &record("control.request.sent")["payload"];
+    assert_eq!(sent["expectsResponse"], true);
+    assert!(sent["request"].is_object());
+    let permission_mode = &record("session.permissionModeInitialized")["payload"];
+    assert_eq!(permission_mode["requestedMode"], "acceptEdits");
+    assert!(permission_mode["response"].is_object());
+    let init_record = record("runtime.init.stream");
+    assert_eq!(init_record["sessionID"], "raw-log-session");
+    let init = &init_record["payload"];
+    assert_eq!(init["sessionID"], "raw-log-session");
+    assert_eq!(init["tools"], serde_json::json!(["Read", "Bash"]));
+    assert_eq!(init["mcpServerStatuses"]["RepoPromptCE"], "connected");
+    assert!(
+        records.iter().any(|record| {
+            record["kind"] == "session.header" && record["sessionID"] == "raw-log-session"
+        }),
+        "the stream-observed session ID must start a new envelope/header epoch"
+    );
+    let skipped = &record("protocol.decode.skipped")["payload"];
+    assert_eq!(skipped["preview"], "nope");
+    assert_eq!(skipped["codecError"], "invalidJSON");
+    let translated = &record("translator.streamResult")["payload"];
+    assert!(translated.get("type").is_some());
+    assert!(
+        translated.get("text").is_some(),
+        "nil legacy fields must remain explicit JSON nulls"
+    );
+
+    let _ = std::fs::remove_dir_all(&log_dir);
+}
+
+/// P6-7 D-9/R9: the one live-reachable interrupt outcome the completeness test above cannot also
+/// reach (its own turn is already completed by the time it would interrupt). `NOACK_AFTER` is
+/// deliberately not used here -- this proves the *ACKed* (`turn.interrupted`) branch, the timeout/
+/// failure branches' kind strings are covered by direct inspection against §15.6's table (see that
+/// section's own note).
+#[test]
+fn raw_event_log_records_turn_interrupted_on_the_acknowledged_outcome() {
+    let log_dir =
+        std::env::temp_dir().join(format!("raw-event-log-interrupt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&log_dir);
+    let log_path = log_dir.join("events.jsonl");
+    let script = write_script("raw-log-interrupt", "AWAITACKS 1\nSLEEP 3000\n");
+    let config = AgentClaudeScopeConfig {
+        command: synthetic_cli().to_string(),
+        arguments: vec!["scripted".to_string(), script.to_string_lossy().to_string()],
+        raw_argv_for_testing: true,
+        interrupt_ack_timeout: Duration::from_millis(400),
+        raw_event_log_enabled: true,
+        raw_event_log_file_path: Some(log_path.to_string_lossy().to_string()),
+        ..AgentClaudeScopeConfig::default()
+    };
+    let harness = Harness::open(identity(22), config, SubscriptionConfig::default());
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    let generation = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
+    let request_id = harness
+        .scope
+        .interrupt_turn(&harness.identity, generation, "test".to_string())
+        .expect("interrupt");
+    harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "interruptOutcome"
+                && field_str(event, "request_id") == Some(request_id.as_str())
+        })
+        .expect("interruptOutcome must be published");
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+
+    let contents = std::fs::read_to_string(&log_path).expect("raw event log file must exist");
+    assert!(
+        contents
+            .lines()
+            .any(|line| line.contains("\"kind\":\"turn.interrupted\"")),
+        "expected a turn.interrupted record; file contents: {contents}"
+    );
+
+    let _ = std::fs::remove_dir_all(&log_dir);
 }
 
 /// P6-7 (advisor follow-up to §15.5): the positive half of "resume-vs-start variants per what
@@ -715,21 +1469,37 @@ fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
 /// post-handshake turn still runs to completion -- when a resume id is supplied.
 #[test]
 fn start_or_resume_runs_the_full_handshake_on_a_resume_not_just_a_fresh_start() {
-    let script = write_script("resume-handshake", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
+    let script = write_script(
+        "resume-handshake",
+        "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n",
+    );
     let harness = Harness::open(
         identity(18),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
     harness
         .scope
-        .start_or_resume(&harness.identity, Some("prior-session-id".to_string()))
+        .start_or_resume(
+            &harness.identity,
+            Some("prior-session-id".to_string()),
+            None,
+            None,
+        )
         .expect("a resumed start must also complete the initialize handshake and return");
-    let turn_id = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    let turn_id = harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
     assert_eq!(turn_id, 1);
 
     let completed = harness
-        .wait_for(Duration::from_secs(5), |event| event.kind.wire_name() == "turnCompleted")
+        .wait_for(Duration::from_secs(5), |event| {
+            event.kind.wire_name() == "turnCompleted"
+        })
         .expect("turnCompleted must be published after a resumed start's handshake");
     assert_eq!(field_str(&completed, "status"), Some("completed"));
 
@@ -757,14 +1527,25 @@ fn initialize_response_session_id_is_captured_and_rides_a_later_message_stop() {
     );
     let harness = Harness::open(
         identity(19),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
-    harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+    harness
+        .scope
+        .send_user_message(&harness.identity, "hello")
+        .expect("send");
 
     let message_stop = harness
-        .wait_for(Duration::from_secs(5), |event| field_str(event, "provider_session_id").is_some())
+        .wait_for(Duration::from_secs(5), |event| {
+            field_str(event, "provider_session_id").is_some()
+        })
         .expect("a stream result carrying provider_session_id must be published");
     assert_eq!(
         field_str(&message_stop, "provider_session_id"),
@@ -799,20 +1580,32 @@ fn approval_request_and_session_state_changed_drain_in_publish_order() {
     );
     let harness = Harness::open(
         identity(20),
-        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
         SubscriptionConfig::default(),
     );
-    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
 
     let mut collected: Vec<AgentClaudeEvent> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !collected.iter().any(|event| event.kind.wire_name() == "sessionStateChanged") {
+    while !collected
+        .iter()
+        .any(|event| event.kind.wire_name() == "sessionStateChanged")
+    {
         for event in harness.drain() {
             if let Some(decoded) = AgentClaudeEvent::decode(&event.payload) {
                 collected.push(decoded);
             }
         }
-        assert!(Instant::now() < deadline, "sessionStateChanged never arrived within the deadline; collected so far: {collected:?}");
+        assert!(
+            Instant::now() < deadline,
+            "sessionStateChanged never arrived within the deadline; collected so far: {collected:?}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -828,6 +1621,66 @@ fn approval_request_and_session_state_changed_drain_in_publish_order() {
         approval_index < session_state_index,
         "the can_use_tool line was written strictly before the session_state_changed line, so a \
          same-pipeline drain must preserve that order; collected: {collected:?}"
+    );
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+}
+
+#[test]
+fn tool_result_and_following_approval_request_drain_in_stdout_order() {
+    let script = write_script(
+        "tool-result-then-approval-order",
+        concat!(
+            "AWAITACKS 1\nSLEEP 200\n",
+            "OUT {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-order-1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}\n",
+            "OUT {\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-order-1\",\"content\":\"done\"}]}}\n",
+            "OUT {\"type\":\"control_request\",\"request_id\":\"perm-order-2\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{\"command\":\"rm -rf /tmp/x\"}}}\n",
+            "SLEEP 2000\n",
+        ),
+    );
+    let harness = Harness::open(
+        identity(21),
+        test_config(vec![
+            "scripted".to_string(),
+            script.to_string_lossy().to_string(),
+        ]),
+        SubscriptionConfig::default(),
+    );
+    harness
+        .scope
+        .start_or_resume(&harness.identity, None, None, None)
+        .expect("start");
+
+    let mut collected: Vec<AgentClaudeEvent> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !collected
+        .iter()
+        .any(|event| event.kind.wire_name() == "approvalRequest")
+    {
+        for event in harness.drain() {
+            if let Some(decoded) = AgentClaudeEvent::decode(&event.payload) {
+                collected.push(decoded);
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "approvalRequest never arrived within the deadline; collected so far: {collected:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let tool_result_index = collected
+        .iter()
+        .position(|event| event.kind.wire_name() == "toolResult")
+        .expect("toolResult must be published");
+    let approval_index = collected
+        .iter()
+        .position(|event| event.kind.wire_name() == "approvalRequest")
+        .expect("approvalRequest must be published");
+    assert!(
+        tool_result_index < approval_index,
+        "the stdout pipeline and SubscriptionHub must preserve tool_result before the following approval; collected: {collected:?}"
     );
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");

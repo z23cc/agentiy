@@ -21,3 +21,6 @@ pub use contract::{
     BomDisposition, DetectedEncoding, Endian, TextDecodeOutcome, TextDecodePolicyVersion,
 };
 pub use decode::textdecode;
+
+/// Stable contract version for the standalone TD-5 decode boundary.
+pub const TEXT_DECODE_CONTRACT_VERSION_V1: u16 = 1;

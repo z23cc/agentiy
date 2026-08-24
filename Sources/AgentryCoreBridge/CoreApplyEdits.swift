@@ -180,6 +180,10 @@ public struct CoreApplyEditsStats: Sendable, Equatable, Hashable {
 }
 
 public struct CoreApplyEditsSubjectResultV1: Sendable, Equatable {
+    /// The exact decoded text Rust diffed against. For raw-byte subjects this is the
+    /// `textdecode` output echoed by the compact response; callers must not attempt to
+    /// reconstruct it from the original byte buffer independently.
+    public let originalText: String
     public let updatedText: String
     public let byteEdits: [CoreApplyEditsByteEdit]
     public let chunks: [CoreApplyEditsChunk]
@@ -193,6 +197,7 @@ public struct CoreApplyEditsSubjectResultV1: Sendable, Equatable {
     public let toolCardUnifiedDiff: String?
 
     public init(
+        originalText: String,
         updatedText: String,
         byteEdits: [CoreApplyEditsByteEdit],
         chunks: [CoreApplyEditsChunk],
@@ -205,6 +210,7 @@ public struct CoreApplyEditsSubjectResultV1: Sendable, Equatable {
         unifiedDiff: String?,
         toolCardUnifiedDiff: String?
     ) {
+        self.originalText = originalText
         self.updatedText = updatedText
         self.byteEdits = byteEdits
         self.chunks = chunks
@@ -265,7 +271,9 @@ extension CoreComputeClient {
             } onCancel: {
                 try? context.transport.cancelLeafCancellation(context.cancellation, identity: context.identity)
             }
-            if Task.isCancelled { throw CancellationError() }
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             let validated = try CoreApplyEditsCompactValidator.validate(compact, request: request)
             try context.transport.closeLeafCancellation(context.cancellation, identity: context.identity)
             try await bridge.validateComputeCompletion(identity: context.identity)
@@ -436,6 +444,7 @@ private enum CoreApplyEditsCompactValidator {
                 ? CoreApplyEditsStats(linesChanged: integer(summary.linesChanged), chunkCount: integer(summary.statsChunkCount))
                 : nil
             try validated.append(.init(materialized: .init(
+                originalText: original,
                 updatedText: updated,
                 byteEdits: edits,
                 chunks: chunks,
@@ -648,13 +657,17 @@ private enum CoreApplyEditsCompactValidator {
                 lines.append(String(decoding: bytes[start ... index], as: UTF8.self))
                 start = index + 1
             } else if bytes[index] == 13 {
-                if index + 1 < bytes.count, bytes[index + 1] == 10 { index += 1 }
+                if index + 1 < bytes.count, bytes[index + 1] == 10 {
+                    index += 1
+                }
                 lines.append(String(decoding: bytes[start ... index], as: UTF8.self))
                 start = index + 1
             }
             index += 1
         }
-        if start < bytes.count { lines.append(String(decoding: bytes[start...], as: UTF8.self)) }
+        if start < bytes.count {
+            lines.append(String(decoding: bytes[start...], as: UTF8.self))
+        }
         return lines
     }
 }

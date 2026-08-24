@@ -1,26 +1,34 @@
-import Cuchardet
+import AgentryCoreBridge
+import CoreFoundation
 import Foundation
 import RepoPromptDomainRuntime
-import UniversalCharsetDetection
 
 private extension String.Encoding {
-    init(ianaCharsetName name: String) {
-        let cfEnc = CFStringConvertIANACharSetNameToEncoding(name as CFString)
-        self.init(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEnc))
+    init?(ianaCharsetName name: String) {
+        let cfEncoding = CFStringConvertIANACharSetNameToEncoding(name as CFString)
+        guard cfEncoding != kCFStringEncodingInvalidId else { return nil }
+        self.init(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))
     }
 }
 
 // MARK: - Encoding detection helpers & priority tables
 
-/// Run a streaming detector (Cuchardet) over the entire byte sequence.
-/// Falls back to Foundation’s heuristic if the detector is unavailable.
-private func detectEncodingFull(_ data: Data) -> String.Encoding {
-    // 1) Primary - Cuchardet
-    if let label = data.detectedCharacterEncoding { // DataProtocol extension from Cuchardet
-        return .init(ianaCharsetName: label)
+/// Synchronous V1 compatibility decoder retained for legacy snapshot/test evidence only.
+/// Production workspace reads use Rust textdecode-v1 below.
+private func explicitLegacyV1BOM(_ data: Data) -> (encoding: String.Encoding, byteCount: Int)? {
+    if data.starts(with: [0x00, 0x00, 0xFE, 0xFF]) { return (.utf32BigEndian, 4) }
+    if data.starts(with: [0xFF, 0xFE, 0x00, 0x00]) { return (.utf32LittleEndian, 4) }
+    if data.starts(with: [0xEF, 0xBB, 0xBF]) { return (.utf8, 3) }
+    if data.starts(with: [0xFE, 0xFF]) { return (.utf16BigEndian, 2) }
+    if data.starts(with: [0xFF, 0xFE]) { return (.utf16LittleEndian, 2) }
+    return nil
+}
+
+private func detectLegacyV1Encoding(_ data: Data) -> String.Encoding {
+    if let bom = explicitLegacyV1BOM(data) {
+        return bom.encoding
     }
 
-    // 2) Fallback - Foundation heuristic
     var lossy = ObjCBool(false)
     let guess = NSString.stringEncoding(
         for: data,
@@ -31,17 +39,22 @@ private func detectEncodingFull(_ data: Data) -> String.Encoding {
     return guess != 0 ? .init(rawValue: guess) : .utf8
 }
 
-/// The workspace's versioned automatic source decoder policy. Both legacy
-/// content loading and content-addressed source envelopes use this exact pure
-/// transformation so they cannot drift on byte-to-text interpretation.
+/// Legacy workspace-automatic-v1 adapter. New production consumers must use Rust V2.
 func decodeWorkspaceAutomaticV1(_ data: Data) -> DetectedText? {
     if data.isEmpty {
         return DetectedText(string: "", encoding: .utf8)
     }
+    if let bom = explicitLegacyV1BOM(data) {
+        let payload = Data(data.dropFirst(bom.byteCount))
+        guard let string = String(data: payload, encoding: bom.encoding) else {
+            return nil
+        }
+        return DetectedText(string: string, encoding: bom.encoding)
+    }
     if let utf8String = String(data: data, encoding: .utf8) {
         return DetectedText(string: utf8String, encoding: .utf8)
     }
-    let encoding = detectEncodingFull(data)
+    let encoding = detectLegacyV1Encoding(data)
     guard let string = String(data: data, encoding: encoding) else {
         return nil
     }
@@ -939,6 +952,28 @@ extension FileSystemService {
         )
     }
 
+    /// TD-5 write-capable raw-byte seam. Rust decodes the exact validated bytes; the resulting
+    /// preservation encoding travels with the same fingerprint instead of entering the path cache.
+    /// Unsupported legacy labels fall back to canonical UTF-8 without blocking the mutation preview.
+    func loadValidatedRawContentForTextMutation(
+        ofRelativePath relativePath: String,
+        maximumBytes: Int64 = 10_000_000,
+        workloadClass: ContentReadWorkloadClass = .interactiveRead
+    ) async throws -> ValidatedRawFileContentSnapshot {
+        let snapshot = try await loadValidatedRawContent(
+            ofRelativePath: relativePath,
+            maximumBytes: maximumBytes,
+            workloadClass: workloadClass
+        )
+        let decoded = try await Self.decodeTextWithRust(snapshot.data)
+        return ValidatedRawFileContentSnapshot(
+            data: snapshot.data,
+            modificationDate: snapshot.modificationDate,
+            fingerprint: snapshot.fingerprint,
+            detectedEncodingRawValue: Self.foundationEncoding(for: decoded.encoding).rawValue
+        )
+    }
+
     func loadContentPrefix(
         ofRelativePath relativePath: String,
         maximumBytes: Int,
@@ -1077,12 +1112,7 @@ extension FileSystemService {
         return try await (content, modDate)
     }
 
-    /// Loads large files in chunks, detecting encoding on-the-fly.
-    ///
-    /// Order of precedence:
-    ///   1. BOM (cheap, deterministic)
-    ///   2. Cuchardet’s streaming detector
-    ///   3. Default to UTF-8          ← no further fall-backs
+    /// Loads large files in chunks and delegates complete-buffer decoding to Rust textdecode-v1.
     func loadEntireFileContentOptimized(
         ofRelativePath relativePath: String,
         chunkSize: Int = 1_048_576, // 1 MB
@@ -1455,6 +1485,151 @@ extension FileSystemService {
         }
     }
 
+    private enum BOMUnicodeEncoding {
+        case utf16(littleEndian: Bool)
+        case utf32(littleEndian: Bool)
+
+        var bomByteCount: Int {
+            switch self {
+            case .utf16: 2
+            case .utf32: 4
+            }
+        }
+
+        var foundationEncoding: String.Encoding {
+            switch self {
+            case let .utf16(littleEndian):
+                littleEndian ? .utf16LittleEndian : .utf16BigEndian
+            case let .utf32(littleEndian):
+                littleEndian ? .utf32LittleEndian : .utf32BigEndian
+            }
+        }
+    }
+
+    private nonisolated static func bomUnicodeEncoding(in bytes: [UInt8]) -> BOMUnicodeEncoding? {
+        if bytes.starts(with: [0x00, 0x00, 0xFE, 0xFF]) { return .utf32(littleEndian: false) }
+        if bytes.starts(with: [0xFF, 0xFE, 0x00, 0x00]) { return .utf32(littleEndian: true) }
+        if bytes.starts(with: [0xFE, 0xFF]) { return .utf16(littleEndian: false) }
+        if bytes.starts(with: [0xFF, 0xFE]) { return .utf16(littleEndian: true) }
+        return nil
+    }
+
+    private nonisolated static func isProbablyBinaryWithoutExplicitUnicodeBOM(_ data: Data) -> Bool {
+        bomUnicodeEncoding(in: Array(data.prefix(4))) == nil && isProbablyBinary(data)
+    }
+
+    private nonisolated static func utf16CodeUnit(_ bytes: ArraySlice<UInt8>, littleEndian: Bool) -> UInt16 {
+        let first = UInt16(bytes[bytes.startIndex])
+        let second = UInt16(bytes[bytes.index(after: bytes.startIndex)])
+        return littleEndian ? first | second << 8 : first << 8 | second
+    }
+
+    private nonisolated static func startsWithValidUTF16Scalar(_ bytes: [UInt8], littleEndian: Bool) -> Bool {
+        guard bytes.count >= 2 else { return false }
+        let first = utf16CodeUnit(bytes[0 ..< 2], littleEndian: littleEndian)
+        if (0xD800 ... 0xDBFF).contains(first) {
+            guard bytes.count >= 4 else { return false }
+            let second = utf16CodeUnit(bytes[2 ..< 4], littleEndian: littleEndian)
+            return (0xDC00 ... 0xDFFF).contains(second)
+        }
+        return !(0xDC00 ... 0xDFFF).contains(first)
+    }
+
+    private nonisolated static func startsWithValidUTF32Scalar(_ bytes: [UInt8], littleEndian: Bool) -> Bool {
+        guard bytes.count >= 4 else { return false }
+        let value = if littleEndian {
+            UInt32(bytes[0])
+                | UInt32(bytes[1]) << 8
+                | UInt32(bytes[2]) << 16
+                | UInt32(bytes[3]) << 24
+        } else {
+            UInt32(bytes[0]) << 24
+                | UInt32(bytes[1]) << 16
+                | UInt32(bytes[2]) << 8
+                | UInt32(bytes[3])
+        }
+        return value <= 0x10FFFF && !(0xD800 ... 0xDFFF).contains(value)
+    }
+
+    /// Repairs only a trailing scalar split proven by a BOM and bounded lookahead.
+    private nonisolated static func trimmingIncompleteTrailingBOMUnicodeScalar(
+        from prefix: Data,
+        lookahead: Data
+    ) -> Data? {
+        let prefixBytes = [UInt8](prefix)
+        let lookaheadBytes = [UInt8](lookahead)
+        let combinedStart = prefixBytes + lookaheadBytes.prefix(4)
+        guard let encoding = bomUnicodeEncoding(in: combinedStart) else { return nil }
+        guard prefixBytes.count >= encoding.bomByteCount else { return Data() }
+
+        let payload = Array(prefixBytes.dropFirst(encoding.bomByteCount))
+        let unitByteCount = switch encoding {
+        case .utf16: 2
+        case .utf32: 4
+        }
+        if payload.count.isMultiple(of: unitByteCount),
+           String(data: Data(payload), encoding: encoding.foundationEncoding) != nil
+        {
+            return nil
+        }
+        guard !payload.isEmpty else { return nil }
+
+        for trimCount in 1 ... min(3, payload.count) {
+            let completePayload = Array(payload.dropLast(trimCount))
+            guard completePayload.count.isMultiple(of: unitByteCount),
+                  String(data: Data(completePayload), encoding: encoding.foundationEncoding) != nil
+            else { continue }
+
+            let boundaryBytes = Array(payload.suffix(trimCount)) + lookaheadBytes
+            let boundaryIsValid = switch encoding {
+            case let .utf16(littleEndian):
+                startsWithValidUTF16Scalar(boundaryBytes, littleEndian: littleEndian)
+            case let .utf32(littleEndian):
+                startsWithValidUTF32Scalar(boundaryBytes, littleEndian: littleEndian)
+            }
+            guard boundaryIsValid else { continue }
+            return Data(prefixBytes.prefix(encoding.bomByteCount + completePayload.count))
+        }
+        return nil
+    }
+
+    /// Returns a strict UTF-8 prefix with only an incomplete trailing scalar removed.
+    /// Lookahead proves the omitted bytes are the beginning of a valid scalar; legacy data and
+    /// malformed interior bytes remain untouched for Rust textdecode policy to classify.
+    private nonisolated static func trimmingIncompleteTrailingUTF8Scalar(
+        from prefix: Data,
+        lookahead: Data
+    ) -> Data? {
+        let prefixBytes = [UInt8](prefix)
+        let lookaheadBytes = [UInt8](lookahead)
+        guard !prefixBytes.isEmpty, !lookaheadBytes.isEmpty else { return nil }
+
+        let earliestCandidate = max(0, prefixBytes.count - 3)
+        for start in stride(from: prefixBytes.count - 1, through: earliestCandidate, by: -1) {
+            let expectedByteCount = switch prefixBytes[start] {
+            case 0xC2 ... 0xDF: 2
+            case 0xE0 ... 0xEF: 3
+            case 0xF0 ... 0xF4: 4
+            default: 0
+            }
+            guard expectedByteCount > 0 else { continue }
+
+            let presentByteCount = prefixBytes.count - start
+            guard presentByteCount < expectedByteCount else { continue }
+            guard prefixBytes[(start + 1)...].allSatisfy({ $0 & 0xC0 == 0x80 }) else { continue }
+
+            let missingByteCount = expectedByteCount - presentByteCount
+            guard lookaheadBytes.count >= missingByteCount else { continue }
+            let scalarBytes = Data(prefixBytes[start...] + lookaheadBytes.prefix(missingByteCount))
+            guard String(data: scalarBytes, encoding: .utf8) != nil else { continue }
+
+            let completePrefix = Data(prefixBytes[..<start])
+            guard String(data: completePrefix, encoding: .utf8) != nil else { continue }
+            return completePrefix
+        }
+        return nil
+    }
+
     private nonisolated static func readContentPrefixFromDisk(
         _ request: ContentReadRequest,
         maximumBytes: Int
@@ -1482,27 +1657,29 @@ extension FileSystemService {
         defer { try? handle.close() }
 
         try await runContentReadChunkHook(request)
-        let data = try handle.read(upToCount: requestedByteCount + 1) ?? Data()
+        let readByteCount = requestedByteCount > Int.max - 4 ? Int.max : requestedByteCount + 4
+        let data = try handle.read(upToCount: readByteCount) ?? Data()
         try Task.checkCancellation()
         guard !data.isEmpty else {
             return FileContentPrefix(content: "", truncated: false)
         }
 
-        let probe = data.prefix(min(data.count, 8192))
-        if isProbablyBinary(probe) {
+        let probe = Data(data.prefix(min(data.count, 8192)))
+        if isProbablyBinaryWithoutExplicitUnicodeBOM(probe) {
             return nil
         }
 
         let wasTruncated = data.count > requestedByteCount || validated.fileSize > Int64(requestedByteCount)
-        var prefixData = Data(data.prefix(requestedByteCount))
-        let encoding: String.Encoding = detectBOMEncoding(in: prefixData) ?? detectEncodingFull(prefixData)
-        while !prefixData.isEmpty {
-            if let decoded = String(data: prefixData, encoding: encoding) {
-                return FileContentPrefix(content: decoded, truncated: wasTruncated)
-            }
-            prefixData.removeLast()
+        let prefixData = Data(data.prefix(requestedByteCount))
+        let lookahead = Data(data.dropFirst(min(requestedByteCount, data.count)))
+        let repairedPrefix: Data? = if wasTruncated {
+            trimmingIncompleteTrailingBOMUnicodeScalar(from: prefixData, lookahead: lookahead)
+                ?? trimmingIncompleteTrailingUTF8Scalar(from: prefixData, lookahead: lookahead)
+        } else {
+            nil
         }
-        return FileContentPrefix(content: "", truncated: wasTruncated)
+        let decoded = try await decodeTextWithRust(repairedPrefix ?? prefixData)
+        return FileContentPrefix(content: decoded.text, truncated: wasTruncated)
     }
 
     private nonisolated static func readContentFromDisk(
@@ -1654,7 +1831,7 @@ extension FileSystemService {
             try await runContentReadChunkHook(request)
             let probe = try handle.read(upToCount: 8192) ?? Data()
             try Task.checkCancellation()
-            if isProbablyBinary(probe) {
+            if isProbablyBinaryWithoutExplicitUnicodeBOM(probe) {
                 return try validateOpenContentHandle(
                     handle,
                     validated: validated,
@@ -1679,7 +1856,7 @@ extension FileSystemService {
                 )
             }
             let decodeStart = DispatchTime.now().uptimeNanoseconds
-            let detected = try decodeSmallFileData(data)
+            let detected = try await decodeTextWithRust(data)
             let decodeEnd = DispatchTime.now().uptimeNanoseconds
             MCPToolWorkCountDiagnostics.recordReadFileDiskRead(
                 bytes: 0,
@@ -1691,8 +1868,8 @@ extension FileSystemService {
                 validated: validated,
                 result: ContentReadResult(
                     absolutePath: request.absolutePath,
-                    content: detected.string,
-                    detectedEncodingRawValue: detected.encoding.rawValue,
+                    content: detected.text,
+                    detectedEncodingRawValue: foundationEncoding(for: detected.encoding).rawValue,
                     modificationDate: validated.modificationDate,
                     fingerprint: validated.fingerprint,
                     telemetryOutcome: .loaded
@@ -1745,12 +1922,10 @@ extension FileSystemService {
         let skipProbe = shouldSkipBinaryProbe(url: validated.url)
         var fullData = Data()
         fullData.reserveCapacity(Int(validated.fileSize))
-        let detector = CharacterEncodingDetector()
-
         try await runContentReadChunkHook(request)
         let initialData = try handle.read(upToCount: request.chunkSize) ?? Data()
         try Task.checkCancellation()
-        if !skipProbe, isProbablyBinary(initialData) {
+        if !skipProbe, isProbablyBinaryWithoutExplicitUnicodeBOM(initialData) {
             return try validateOpenContentHandle(
                 handle,
                 validated: validated,
@@ -1767,7 +1942,6 @@ extension FileSystemService {
             )
         }
         fullData.append(initialData)
-        _ = detector.analyzeNextChunk(initialData)
 
         while true {
             try await runContentReadChunkHook(request)
@@ -1784,7 +1958,6 @@ extension FileSystemService {
                 )
             }
             fullData.append(next)
-            _ = detector.analyzeNextChunk(next)
 
             if fullData.count > 100_000_000 {
                 fullData.append("\n[Truncated large file...]\n".data(using: .utf8)!)
@@ -1792,15 +1965,9 @@ extension FileSystemService {
             }
         }
 
-        let encoding: String.Encoding = if let bom = detectBOMEncoding(in: initialData) {
-            bom
-        } else if let label = detector.finish() {
-            .init(ianaCharsetName: label)
-        } else {
-            .utf8
-        }
         let decodeStart = DispatchTime.now().uptimeNanoseconds
-        let decodedContent = String(data: fullData, encoding: encoding) ?? "[Binary data or unknown encoding]"
+        let decoded = try await decodeTextWithRust(fullData)
+        let encoding = foundationEncoding(for: decoded.encoding)
         let decodeEnd = DispatchTime.now().uptimeNanoseconds
         MCPToolWorkCountDiagnostics.recordReadFileDiskRead(
             bytes: 0,
@@ -1811,7 +1978,7 @@ extension FileSystemService {
             validated: validated,
             result: ContentReadResult(
                 absolutePath: request.absolutePath,
-                content: decodedContent,
+                content: decoded.text,
                 detectedEncodingRawValue: encoding.rawValue,
                 modificationDate: validated.modificationDate,
                 fingerprint: validated.fingerprint,
@@ -1958,11 +2125,32 @@ extension FileSystemService {
         return false
     }
 
-    private nonisolated static func decodeSmallFileData(_ data: Data) throws -> DetectedText {
-        guard let detected = decodeWorkspaceAutomaticV1(data) else {
+    private nonisolated static func decodeTextWithRust(_ data: Data) async throws -> CoreTextDecodeResultV1 {
+        do {
+            let client = try await AgentryCoreService.shared.computeClient()
+            return try await client.decodeTextV1(data)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
             throw FileSystemError.failedToReadFile
         }
-        return detected
+    }
+
+    private nonisolated static func foundationEncoding(for encoding: CoreTextEncodingV1) -> String.Encoding {
+        switch encoding {
+        case .utf8:
+            .utf8
+        case .utf16BigEndian:
+            .utf16BigEndian
+        case .utf16LittleEndian:
+            .utf16LittleEndian
+        case .utf32BigEndian:
+            .utf32BigEndian
+        case .utf32LittleEndian:
+            .utf32LittleEndian
+        case let .legacy(ianaName):
+            .init(ianaCharsetName: ianaName) ?? .utf8
+        }
     }
 
     private nonisolated static func runContentReadChunkHook(_ request: ContentReadRequest) async throws {
@@ -1995,10 +2183,10 @@ extension FileSystemService {
             if !skipProbe, let handle = try? FileHandle(forReadingFrom: url) {
                 let probe = try handle.read(upToCount: 8192) ?? Data()
                 try? handle.close()
-                if Self.isProbablyBinary(probe) { return nil }
+                if Self.isProbablyBinaryWithoutExplicitUnicodeBOM(probe) { return nil }
             }
             if fileSize < 2_000_000 {
-                let detected = try readDataAndDetectEncoding(request.absolutePath)
+                let detected = try await readDataAndDetectEncoding(request.absolutePath)
                 encodingMap[request.cacheKey] = detected.encoding
                 return detected.string
             }
@@ -2026,18 +2214,15 @@ extension FileSystemService {
 
             var fullData = Data()
             fullData.reserveCapacity(Int(fileSize))
-            let detector = CharacterEncodingDetector()
             let initialData = try handle.read(upToCount: request.chunkSize) ?? Data()
-            if !skipProbe, Self.isProbablyBinary(initialData) { return nil }
+            if !skipProbe, Self.isProbablyBinaryWithoutExplicitUnicodeBOM(initialData) { return nil }
             fullData.append(initialData)
-            _ = detector.analyzeNextChunk(initialData)
             try Task.checkCancellation()
 
             while true {
                 let next = try handle.read(upToCount: request.chunkSize) ?? Data()
                 if next.isEmpty { break }
                 fullData.append(next)
-                _ = detector.analyzeNextChunk(next)
                 if fullData.count > 100_000_000 {
                     fullData.append("\n[Truncated large file...]\n".data(using: .utf8)!)
                     break
@@ -2045,15 +2230,9 @@ extension FileSystemService {
                 try Task.checkCancellation()
             }
 
-            let encoding: String.Encoding = if let bom = Self.detectBOMEncoding(in: initialData) {
-                bom
-            } else if let label = detector.finish() {
-                .init(ianaCharsetName: label)
-            } else {
-                .utf8
-            }
-            encodingMap[request.cacheKey] = encoding
-            return String(data: fullData, encoding: encoding) ?? "[Binary data or unknown encoding]"
+            let decoded = try await Self.decodeTextWithRust(fullData)
+            encodingMap[request.cacheKey] = Self.foundationEncoding(for: decoded.encoding)
+            return decoded.text
         }
     #endif
 
@@ -2156,15 +2335,13 @@ extension FileSystemService {
         return nil
     }
 
-    /// Attempts to detect the file’s encoding and return the decoded text.
-    /// The fast-path now uses the length-aware `String(data:encoding:)`
-    /// instead of `String(validatingUTF8:)`, eliminating crashes caused by
-    /// missing NUL-termination in `Data` buffers.
-    func readDataAndDetectEncoding(_ fullPath: String) throws -> DetectedText {
+    /// Reads one complete file and delegates byte-to-text interpretation to Rust textdecode-v1.
+    func readDataAndDetectEncoding(_ fullPath: String) async throws -> DetectedText {
         let data = try Data(contentsOf: URL(fileURLWithPath: fullPath))
-        guard let detected = decodeWorkspaceAutomaticV1(data) else {
-            throw FileSystemError.failedToReadFile
-        }
-        return detected
+        let decoded = try await Self.decodeTextWithRust(data)
+        return DetectedText(
+            string: decoded.text,
+            encoding: Self.foundationEncoding(for: decoded.encoding)
+        )
     }
 }

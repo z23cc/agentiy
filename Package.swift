@@ -22,7 +22,6 @@ var packageDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/repoprompt/swift-sdk.git", revision: "85dec2fc7a27252bc33dc7728be6af6b3bd398c0"),
     .package(url: "https://github.com/jamesrochabrun/SwiftAnthropic", revision: "b7d030cd7453f314c780f5492385f73d704cbd5d"),
     .package(url: "https://github.com/repoprompt/SwiftOpenAI", revision: "1211782eb337e7968124448a20d9260df1952012"),
-    .package(path: "Vendor/UniversalCharsetDetection"),
     .package(url: "https://github.com/loopwork-ai/JSONSchema.git", exact: "1.3.0"),
     .package(url: "https://github.com/loopwork-ai/ontology.git", exact: "0.6.0"),
     .package(url: "https://github.com/getsentry/sentry-cocoa", exact: "9.17.1"),
@@ -45,8 +44,6 @@ var repoPromptAppDependencies: [Target.Dependency] = [
     .product(name: "MCP", package: "swift-sdk"),
     .product(name: "SwiftAnthropic", package: "SwiftAnthropic"),
     .product(name: "SwiftOpenAI", package: "SwiftOpenAI"),
-    .product(name: "UniversalCharsetDetection", package: "UniversalCharsetDetection"),
-    .product(name: "Cuchardet", package: "UniversalCharsetDetection"),
     .product(name: "JSONSchema", package: "JSONSchema"),
     .product(name: "Ontology", package: "ontology"),
     .product(name: "RepoPromptClaudeCompatibleProvider", package: "RepoPromptAgentProviders")

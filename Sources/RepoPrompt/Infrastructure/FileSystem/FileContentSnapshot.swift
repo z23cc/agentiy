@@ -26,6 +26,19 @@ struct ValidatedRawFileContentSnapshot {
     let data: Data
     let modificationDate: Date
     let fingerprint: FileContentFingerprint
+    let detectedEncodingRawValue: UInt?
+
+    init(
+        data: Data,
+        modificationDate: Date,
+        fingerprint: FileContentFingerprint,
+        detectedEncodingRawValue: UInt? = nil
+    ) {
+        self.data = data
+        self.modificationDate = modificationDate
+        self.fingerprint = fingerprint
+        self.detectedEncodingRawValue = detectedEncodingRawValue
+    }
 }
 
 struct ValidatedFileContentSnapshot {

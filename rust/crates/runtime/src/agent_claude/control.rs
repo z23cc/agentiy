@@ -99,7 +99,10 @@ impl ControlCorrelator {
     /// to fail every still-pending request rather than leave its waiter blocked forever.
     pub fn fail_all(&self, reason: &str) {
         let pending: HashMap<String, Sender<ControlOutcome>> = std::mem::take(
-            &mut *self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         for sender in pending.into_values() {
             let _ = sender.send(ControlOutcome::WriteFailed(reason.to_string()));
@@ -108,7 +111,10 @@ impl ControlCorrelator {
 
     #[cfg(test)]
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 }
 
@@ -172,7 +178,11 @@ where
 /// `control_response` or `failPendingControlRequests`. A caller that receives
 /// [`ControlOutcome::Timeout`] from this function has observed a contract violation of
 /// [`std::sync::mpsc::Receiver::recv`] itself, not a real protocol timeout.
-pub fn send_control_request_blocking<W>(correlator: &ControlCorrelator, request_id: &str, write: W) -> ControlOutcome
+pub fn send_control_request_blocking<W>(
+    correlator: &ControlCorrelator,
+    request_id: &str,
+    write: W,
+) -> ControlOutcome
 where
     W: FnOnce() -> Result<(), String>,
 {
@@ -197,8 +207,8 @@ where
 mod tests {
     use super::*;
     use serde_json::Map;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
     fn response(request_id: &str) -> ControlResponse {
@@ -234,14 +244,22 @@ mod tests {
         let outcome = send_control_request(&correlator, "req-2", Duration::from_secs(1), || {
             Err("pipe closed".to_string())
         });
-        assert_eq!(outcome, ControlOutcome::WriteFailed("pipe closed".to_string()));
-        assert_eq!(correlator.pending_count(), 0, "a failed write must not leak a pending entry");
+        assert_eq!(
+            outcome,
+            ControlOutcome::WriteFailed("pipe closed".to_string())
+        );
+        assert_eq!(
+            correlator.pending_count(),
+            0,
+            "a failed write must not leak a pending entry"
+        );
     }
 
     #[test]
     fn no_response_within_the_deadline_times_out_and_unregisters() {
         let correlator = ControlCorrelator::new();
-        let outcome = send_control_request(&correlator, "req-3", Duration::from_millis(20), || Ok(()));
+        let outcome =
+            send_control_request(&correlator, "req-3", Duration::from_millis(20), || Ok(()));
         assert_eq!(outcome, ControlOutcome::Timeout);
         assert_eq!(correlator.pending_count(), 0);
     }
@@ -252,14 +270,15 @@ mod tests {
         let writer_ran = Arc::new(AtomicBool::new(false));
         let correlator_for_thread = Arc::clone(&correlator);
         let writer_ran_for_thread = Arc::clone(&writer_ran);
-        let outcome = send_control_request(&correlator, "req-4", Duration::from_secs(2), move || {
-            writer_ran_for_thread.store(true, Ordering::SeqCst);
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(10));
-                correlator_for_thread.resolve("req-4", response("req-4"));
+        let outcome =
+            send_control_request(&correlator, "req-4", Duration::from_secs(2), move || {
+                writer_ran_for_thread.store(true, Ordering::SeqCst);
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(10));
+                    correlator_for_thread.resolve("req-4", response("req-4"));
+                });
+                Ok(())
             });
-            Ok(())
-        });
         assert!(writer_ran.load(Ordering::SeqCst));
         assert_eq!(outcome, ControlOutcome::Response(response("req-4")));
     }
@@ -277,7 +296,12 @@ mod tests {
         for i in 0..3 {
             let correlator = Arc::clone(&correlator);
             handles.push(thread::spawn(move || {
-                send_control_request(&correlator, &format!("req-fail-{i}"), Duration::from_secs(5), || Ok(()))
+                send_control_request(
+                    &correlator,
+                    &format!("req-fail-{i}"),
+                    Duration::from_secs(5),
+                    || Ok(()),
+                )
             }));
         }
         // Give the waiters a moment to register before failing them all.
@@ -286,7 +310,10 @@ mod tests {
         correlator.fail_all("stdout EOF");
         for handle in handles {
             let outcome = handle.join().unwrap();
-            assert_eq!(outcome, ControlOutcome::WriteFailed("stdout EOF".to_string()));
+            assert_eq!(
+                outcome,
+                ControlOutcome::WriteFailed("stdout EOF".to_string())
+            );
         }
         assert_eq!(correlator.pending_count(), 0);
     }
@@ -302,14 +329,22 @@ mod tests {
             });
             Ok(())
         });
-        assert_eq!(outcome, ControlOutcome::Response(response("req-blocking-1")));
+        assert_eq!(
+            outcome,
+            ControlOutcome::Response(response("req-blocking-1"))
+        );
     }
 
     #[test]
     fn blocking_variant_write_failure_does_not_leak_a_pending_entry() {
         let correlator = ControlCorrelator::new();
-        let outcome = send_control_request_blocking(&correlator, "req-blocking-2", || Err("pipe closed".to_string()));
-        assert_eq!(outcome, ControlOutcome::WriteFailed("pipe closed".to_string()));
+        let outcome = send_control_request_blocking(&correlator, "req-blocking-2", || {
+            Err("pipe closed".to_string())
+        });
+        assert_eq!(
+            outcome,
+            ControlOutcome::WriteFailed("pipe closed".to_string())
+        );
         assert_eq!(correlator.pending_count(), 0);
     }
 
@@ -327,7 +362,10 @@ mod tests {
         assert_eq!(correlator.pending_count(), 1);
         correlator.fail_all("stdout EOF");
         let outcome = waiter.join().expect("waiter thread must not panic");
-        assert_eq!(outcome, ControlOutcome::WriteFailed("stdout EOF".to_string()));
+        assert_eq!(
+            outcome,
+            ControlOutcome::WriteFailed("stdout EOF".to_string())
+        );
     }
 
     #[test]

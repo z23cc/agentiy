@@ -66,7 +66,6 @@ Contributor-visible license expectations before public distribution:
 | Component | Location | Current notice source | Follow-up |
 | --- | --- | --- | --- |
 | Sparkle | `Vendor/Sparkle/Sparkle.xcframework` | Sparkle 2.9.2 license, release asset provenance, downloaded-archive SHA-256, and a closed-world typed manifest for the installed framework and trusted tools are copied under `Vendor/Sparkle`; the license is also copied under `ThirdPartyLicenses/sparkle`. | Included in packaged legal files. |
-| UniversalCharsetDetection / uchardet | `Vendor/UniversalCharsetDetection` | License and author notices are copied under `ThirdPartyLicenses/universal-charset-detection`. | Included in packaged legal files. |
 | PCRE2 | `Sources/CSwiftPCRE2/src` | License header is copied to `ThirdPartyLicenses/pcre2/LICENSE.txt`. | Included in packaged legal files. |
 | SLJIT | `Sources/CSwiftPCRE2/deps/sljit` | License is copied to `ThirdPartyLicenses/sljit/LICENSE`. | Included in packaged legal files. |
 | wildmatch / OpenBSD-derived fnmatch material | `Sources/RepoPromptC/src/wildmatch/wildmatch.c`, `Sources/RepoPromptC/include/wildmatch.h` | Both checked-in files contain BSD-style notice blocks; `wildmatch.h` includes its existing advertising acknowledgement condition. | Source headers remain preserved. Their full checked-in notice text is reproduced in root `THIRD_PARTY_NOTICES.md` and bundled under `Contents/Resources/Legal` during app packaging. |

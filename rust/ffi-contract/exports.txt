@@ -54,12 +54,13 @@ CoreRuntime.inventoryOpenProjectedShard(InventoryProjectedShardRequestV1) throws
 # five-outcome interrupt contract §5.3, the §7.1 event catalog) cross on the existing, unchanged
 # generic subscription surface (openSubscription/tryDrain above) as a versioned batched payload --
 # no per-domain subscribe export. INV-P6-1 (design §3.3): none of the seven exports below accepts a
-# single protocol line -- the sole per-line export this vertical carries,
-# agent_claude_decode_line_debug_v1 (P6-5), is DEBUG-feature-gated and, by construction (not merely
-# omission -- see agent_claude::debug_shadow_ffi's module doc), never a UniFFI export at all, so it
-# is correctly absent below.
+# single protocol line; the retired P6-5 debug shadow export was deleted at P6-10 after Rust became
+# the sole authority for all four Claude-compatible variants.
 CoreRuntime.agentOpenScope(RuntimeIdentity, CoreAgentClaudeScopeConfigV1) throws -> AgentClaudeScopeHandleV1
-CoreRuntime.agentStartOrResume(RuntimeIdentity, string, string?) throws -> AgentClaudeStartReceiptV1
+# P6-7 D-9/R9: model/effort are observability-only inputs used to reproduce the legacy
+# session.startOrResume payload; they do not change spawn or flag-setting authority. Same atomic-
+# binding/no-epoch-bump rationale as agentApplyModelAndEffort below.
+CoreRuntime.agentStartOrResume(RuntimeIdentity, string, string?, string?, string?) throws -> AgentClaudeStartReceiptV1
 CoreRuntime.agentSendUserMessage(RuntimeIdentity, string, string) throws -> u64
 CoreRuntime.agentInterruptTurn(RuntimeIdentity, string, u64, string) throws -> AgentClaudeInterruptReceiptV1
 CoreRuntime.agentRespondPermission(RuntimeIdentity, string, string, AgentClaudePermissionDecisionV1) throws
@@ -73,5 +74,5 @@ CoreRuntime.agentRespondPermission(RuntimeIdentity, string, string, AgentClaudeP
 # on every raw call) already catch any binding/archive staleness at a finer grain than abiEpoch.
 # abiEpoch guards the coarse envelope/wire-format layer (header layout, payload kinds), which this
 # change does not touch. See abi-v1.json's agentClaudeV1.abiEpochDecision for the recorded decision.
-CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws -> AgentClaudeFlagSettingsReceiptV1
+CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?, AgentClaudeFlagSettingsDispositionV1) throws -> AgentClaudeFlagSettingsReceiptV1
 CoreRuntime.agentShutdown(RuntimeIdentity, string) throws

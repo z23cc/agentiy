@@ -267,10 +267,10 @@
   },
   "agentClaudeV1": {
     "additiveInAbiEpoch": 1,
-    "abiEpochDecision": "no bump at P6-6 landing (additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9/inventoryScopeV1). P6-7 amendment: agentApplyModelAndEffort's return type changed from throws-only (void) to -> AgentClaudeFlagSettingsReceiptV1, a genuine existing-export signature change, not additive -- still no bump, because Swift bindings and the Rust FFI archive are always regenerated and rebuilt together from the same commit (never independently versioned/shipped), and buildFingerprint/bindingChecksum (recomputed and validated via staleRuntimeIdentity on every raw call) already catch any binding/archive staleness at a finer grain than abiEpoch guards; abiEpoch protects the coarse envelope/wire-format layer (header layout, payload kinds), unchanged here. See rust/ffi-contract/exports.txt's matching comment.",
+    "abiEpochDecision": "no bump at P6-6 landing (additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9/inventoryScopeV1). P6-7 amendment: agentApplyModelAndEffort changed from throws-only (void) to -> AgentClaudeFlagSettingsReceiptV1 and gained AgentClaudeFlagSettingsDispositionV1, genuine existing-export signature changes, not additive -- still no bump, because Swift bindings and the Rust FFI archive are always regenerated and rebuilt together from the same commit (never independently versioned/shipped), and buildFingerprint/bindingChecksum (recomputed and validated via staleRuntimeIdentity on every raw call) already catch any binding/archive staleness at a finer grain than abiEpoch guards; abiEpoch protects the coarse envelope/wire-format layer (header layout, payload kinds), unchanged here. P6-7 D-9/R9 also adds optional model/effort observability inputs to agentStartOrResume so Rust can reproduce the legacy session.startOrResume payload; these inputs do not alter spawn or flag-setting authority and use the same atomic-binding/no-bump rationale. See rust/ffi-contract/exports.txt's matching comments.",
     "contractDoc": "docs/architecture/rust-agent-claude-v1.md",
     "designDoc": "docs/designs/p6-claude-vertical-2026-08-23.md",
-    "scope": "claudeCode provider kind only; GLM/Kimi/custom-Claude-compatible are P6-9",
+    "scope": "all four Claude-compatible runtime variants: standard Claude Code, GLM, Kimi, and custom backend",
     "exports": [
       "agentOpenScope", "agentStartOrResume", "agentSendUserMessage", "agentInterruptTurn",
       "agentRespondPermission", "agentApplyModelAndEffort", "agentShutdown"
@@ -281,7 +281,7 @@
       "lossClassification": "contract §7.1 -- lossless/coalescible/droppable per kind, with sessionStateChanged's is_idle field (not the kind alone) selecting lossless vs coalescible"
     },
     "interruptOutcomes": ["acknowledged", "noTurnInFlight", "staleGeneration", "timedOut", "failed"],
-    "inv_p6_1": "no export accepts a single protocol line; the sole per-line export (agent_claude_decode_line_debug_v1, P6-5) is DEBUG-feature-gated and never a UniFFI export by construction -- asserted against exports.txt by rust/crates/ffi/tests/agent_claude_exports_contract.rs",
+    "inv_p6_1": "no export accepts a single protocol line; the temporary P6-5 debug shadow export was deleted at P6-10 after Rust became the sole authority for all Claude-compatible variants",
     "sessionPersistence": "unchanged -- AgentSession/AgentSessionIndex stay Swift-owned for the whole vertical (design §6); Rust holds live-run state in memory only",
     "runtimeIdentityRequired": true,
     "productFallback": "none"

@@ -118,7 +118,11 @@ fn now_millis() -> u64 {
 /// rejections, ...) is deliberately left as a follow-up so this change
 /// stays additive and reviewable on its own; see the observability handoff
 /// report for the specific recommended call sites.
-pub fn record_diagnostic(severity: DiagnosticSeverity, target: &'static str, message: impl Into<String>) {
+pub fn record_diagnostic(
+    severity: DiagnosticSeverity,
+    target: &'static str,
+    message: impl Into<String>,
+) {
     let record = DiagnosticRecord {
         severity,
         target,
@@ -174,12 +178,22 @@ mod tests {
         assert!(drain_diagnostics().is_empty());
 
         for index in 0..CAPACITY + 5 {
-            record_diagnostic(DiagnosticSeverity::Warn, "inventory", format!("bulk #{index}"));
+            record_diagnostic(
+                DiagnosticSeverity::Warn,
+                "inventory",
+                format!("bulk #{index}"),
+            );
         }
         let capped = drain_diagnostics();
         assert_eq!(capped.len(), CAPACITY);
         // The ring evicts oldest-first, so only the most recent `CAPACITY`
         // pushes should survive.
-        assert!(capped.last().unwrap().message.contains(&format!("#{}", CAPACITY + 4)));
+        assert!(
+            capped
+                .last()
+                .unwrap()
+                .message
+                .contains(&format!("#{}", CAPACITY + 4))
+        );
     }
 }

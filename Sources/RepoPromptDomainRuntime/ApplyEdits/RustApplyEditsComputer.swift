@@ -5,7 +5,7 @@ import Foundation
 /// `MCPApplyEditsToolProvider` and the standalone headless `agentry-mcp`
 /// binary's `DirectHeadlessCapabilityBackends` -- both processes reach the
 /// same Rust core through `AgentryCoreService`.
-package struct RustApplyEditsComputer: ApplyEditsComputing {
+package struct RustApplyEditsComputer: ApplyEditsComputing, RawBytesApplyEditsComputing {
     package typealias ApplyOperation = @Sendable (CoreApplyEditsBatchRequestV1) async throws -> CoreApplyEditsBatchResultV1
 
     private let applyOperation: ApplyOperation
@@ -29,19 +29,26 @@ package struct RustApplyEditsComputer: ApplyEditsComputing {
             verbose: request.verbose,
             includeToolCardUnifiedDiff: options.includeToolCardUnifiedDiff
         )
-        return try await Self.run(subject, applyOperation: applyOperation)
+        return try await Self.materialize(Self.run(subject, applyOperation: applyOperation))
     }
 
-    /// TD-3 §6.1/round-2 Finding F2: additive raw-bytes path used only by hosts conforming to
-    /// `RawBytesFileEditHost` (ladder 6, `DirectHeadlessFileEditHost`). `rawBytes` is genuinely
-    /// raw, possibly-non-UTF-8 disk bytes; Rust's apply-edits handler calls `textdecode()`
-    /// internally as its first step -- the existing `original: String`-based path above (which
-    /// GUI apply-edits depends on) is untouched.
+    /// TD-3/TD-5 raw-bytes path used by hosts conforming to `RawBytesFileEditHost`.
+    /// `rawBytes` is genuinely raw, possibly-non-UTF-8 disk bytes; Rust's apply-edits handler
+    /// calls `textdecode()` internally as its first step. String-only hosts retain the existing
+    /// `original: String` compatibility path above.
     package func apply(
         request: ApplyEditsRequest,
         toRawBytes rawBytes: Data,
         options: ApplyEditsExecutionOptions
     ) async throws -> ApplyEditsResult {
+        try await applyRawBytes(request: request, rawBytes: rawBytes, options: options).result
+    }
+
+    package func applyRawBytes(
+        request: ApplyEditsRequest,
+        rawBytes: Data,
+        options: ApplyEditsExecutionOptions
+    ) async throws -> ApplyEditsRawBytesComputation {
         let subject = CoreApplyEditsSubjectRequestV1(
             pathLabel: request.path,
             rawBytes: rawBytes,
@@ -49,19 +56,23 @@ package struct RustApplyEditsComputer: ApplyEditsComputing {
             verbose: request.verbose,
             includeToolCardUnifiedDiff: options.includeToolCardUnifiedDiff
         )
-        return try await Self.run(subject, applyOperation: applyOperation)
+        let result = try await Self.run(subject, applyOperation: applyOperation)
+        return ApplyEditsRawBytesComputation(
+            originalText: result.originalText,
+            result: Self.materialize(result)
+        )
     }
 
     private static func run(
         _ subject: CoreApplyEditsSubjectRequestV1,
         applyOperation: ApplyOperation
-    ) async throws -> ApplyEditsResult {
+    ) async throws -> CoreApplyEditsSubjectResultV1 {
         do {
             let result = try await applyOperation(.init(subjects: [subject]))
             guard result.subjects.count == 1, let subject = result.subjects.first else {
                 throw ApplyEditsError.internalError("The Rust core returned an invalid apply_edits result.")
             }
-            return Self.materialize(subject)
+            return subject
         } catch let error as ApplyEditsError {
             throw error
         } catch let error as CoreApplyEditsLossyDecodeBlocksWriteBackError {

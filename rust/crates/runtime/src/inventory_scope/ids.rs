@@ -288,8 +288,16 @@ mod tests {
         let minter = UuidMinter::seeded(99);
         for _ in 0..64 {
             let bytes = minter.next_v4_bytes();
-            assert_eq!(bytes[6] & 0xF0, 0x40, "version nibble must be 4: {bytes:02x?}");
-            assert_eq!(bytes[8] & 0xC0, 0x80, "variant bits must be RFC4122 (10): {bytes:02x?}");
+            assert_eq!(
+                bytes[6] & 0xF0,
+                0x40,
+                "version nibble must be 4: {bytes:02x?}"
+            );
+            assert_eq!(
+                bytes[8] & 0xC0,
+                0x80,
+                "variant bits must be RFC4122 (10): {bytes:02x?}"
+            );
         }
     }
 

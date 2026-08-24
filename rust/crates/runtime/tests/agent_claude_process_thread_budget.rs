@@ -13,9 +13,9 @@ use std::time::Duration;
 use agentry_runtime::agent_claude::process::queue::BoundedEventQueue;
 use agentry_runtime::agent_claude::process::reader::{spawn_stderr_reader, spawn_stdout_reader};
 use agentry_runtime::agent_claude::process::reaper::Reaper;
-use agentry_runtime::agent_claude::process::thread_budget::AGENT_DOMAIN_THREAD_COUNT;
 use agentry_runtime::agent_claude::process::spawn::{SpawnConfig, spawn};
 use agentry_runtime::agent_claude::process::stderr_tail::StderrTail;
+use agentry_runtime::agent_claude::process::thread_budget::AGENT_DOMAIN_THREAD_COUNT;
 
 fn spawn_sh(script: &str) -> agentry_runtime::agent_claude::process::spawn::SpawnedProcess {
     spawn(&SpawnConfig {
@@ -59,7 +59,11 @@ fn run_n_real_sessions(n: usize) {
     // Two reader threads per session must be live concurrently with the reaper -- assert the
     // full `2N + 1` budget while sessions are still in flight, not just at quiesce.
     let during = AGENT_DOMAIN_THREAD_COUNT.load(Ordering::SeqCst);
-    assert_eq!(during, before + 1 + 2 * n, "expected exactly 2N + 1 threads (N={n}) while sessions are live");
+    assert_eq!(
+        during,
+        before + 1 + 2 * n,
+        "expected exactly 2N + 1 threads (N={n}) while sessions are live"
+    );
 
     for h in stdout_handles {
         h.join().expect("stdout reader must not panic");
@@ -71,7 +75,10 @@ fn run_n_real_sessions(n: usize) {
         let outcome = reaper
             .wait_for_exit(pid, token, Duration::from_secs(5))
             .unwrap_or_else(|| panic!("pid {pid} must be reaped"));
-        assert!(matches!(outcome, agentry_runtime::agent_claude::process::reaper::ReapOutcome::Exited(0)));
+        assert!(matches!(
+            outcome,
+            agentry_runtime::agent_claude::process::reaper::ReapOutcome::Exited(0)
+        ));
         reaper.forget(pid, token);
     }
 
@@ -80,7 +87,10 @@ fn run_n_real_sessions(n: usize) {
     reaper.shutdown();
 
     let after = AGENT_DOMAIN_THREAD_COUNT.load(Ordering::SeqCst);
-    assert_eq!(after, before, "thread count must return to exactly the pre-N baseline -- zero leak at N={n}");
+    assert_eq!(
+        after, before,
+        "thread count must return to exactly the pre-N baseline -- zero leak at N={n}"
+    );
 }
 
 // A single test function, not two: `AGENT_DOMAIN_THREAD_COUNT` is a process-global counter, and

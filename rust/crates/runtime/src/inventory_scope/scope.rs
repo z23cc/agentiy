@@ -28,7 +28,6 @@ use crate::{EventClass, EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, 
 
 use super::bulk_load::{BulkLoadError, BulkLoadTable};
 use super::delta::{InventoryDeltaCommand, InventoryDeltaReceipt};
-use super::wire::{DiscoveredFileRecord, DiscoveredFolderRecord, InventoryDiscoveryAppliedIndexBatchEvent};
 use super::diagnostics::{HandleDiagnostics, InventoryDiagnosticsV1, RootDiagnostics};
 use super::fallback::{
     InventoryApplyOutcome, InventoryRejectionReason, RootCatalogShardFallbackReason,
@@ -41,6 +40,9 @@ use super::ids::{
 };
 use super::ingress_gate;
 use super::state_machine::{self, PatchAttempt, RootState};
+use super::wire::{
+    DiscoveredFileRecord, DiscoveredFolderRecord, InventoryDiscoveryAppliedIndexBatchEvent,
+};
 
 const MAX_REBUILD_INSTALL_ATTEMPTS: u32 = 4;
 
@@ -216,7 +218,13 @@ impl InventoryScope {
         scope_id: InventoryScopeId,
         config: InventoryScopeConfig,
     ) -> Self {
-        Self::with_minters(identity, scope_id, config, UuidMinter::fresh(), UuidMinter::fresh())
+        Self::with_minters(
+            identity,
+            scope_id,
+            config,
+            UuidMinter::fresh(),
+            UuidMinter::fresh(),
+        )
     }
 
     /// Deterministic construction for tests: `RootLifetimeId`s and record ids are each minted
@@ -279,7 +287,8 @@ impl InventoryScope {
         *self
             .event_sink
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(InventoryEventSink { hub, scope_id });
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(InventoryEventSink { hub, scope_id });
     }
 
     #[must_use]
@@ -434,10 +443,11 @@ impl InventoryScope {
         // the hub has typically already moved on -- `SubscriptionHub::publish(&self.identity, ..)`
         // returns `StaleRuntimeIdentity` and the failure counter absorbs it. Still emitted,
         // scope-wide (`root_id: None`), for the window before that swap lands.
-        let payload = super::wire::encode_resnapshot_required(&super::wire::ResnapshotRequiredEvent {
-            root_id: None,
-            reason: super::wire::ResnapshotReason::IdentityChanged,
-        });
+        let payload =
+            super::wire::encode_resnapshot_required(&super::wire::ResnapshotRequiredEvent {
+                root_id: None,
+                reason: super::wire::ResnapshotReason::IdentityChanged,
+            });
         self.publish_events(vec![(EventClass::Lossless, None, payload)]);
     }
 
@@ -565,7 +575,10 @@ impl InventoryScope {
                 }
                 receipt
             }
-            Phase1::NeedsRebuild { base_generation, reason } => {
+            Phase1::NeedsRebuild {
+                base_generation,
+                reason,
+            } => {
                 self.publish_events(vec![Self::shard_fallback_event(command.root_id, reason)]);
                 let receipt = self.rebuild_and_install(command.root_id, base_generation);
                 if matches!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative) {
@@ -698,7 +711,8 @@ impl InventoryScope {
             .into_iter()
             .map(|discovered| discovered.into_minted(self.mint_folder_id()))
             .collect();
-        let minted_file_ids: Vec<InventoryUuid> = upserted_files.iter().map(|file| file.id).collect();
+        let minted_file_ids: Vec<InventoryUuid> =
+            upserted_files.iter().map(|file| file.id).collect();
         let minted_folder_ids: Vec<InventoryUuid> =
             upserted_folders.iter().map(|folder| folder.id).collect();
         let full_command = InventoryDeltaCommand {
@@ -808,7 +822,8 @@ impl InventoryScope {
             .map(|discovered| discovered.into_minted(self.mint_folder_id()))
             .collect();
         let minted_file_ids: Vec<InventoryUuid> = files.iter().map(|file| file.id).collect();
-        let minted_folder_ids: Vec<InventoryUuid> = folders.iter().map(|folder| folder.id).collect();
+        let minted_folder_ids: Vec<InventoryUuid> =
+            folders.iter().map(|folder| folder.id).collect();
         self.push_bulk_chunk(identity, bulk_load_id, root_id, files, folders)?;
         Ok(BulkChunkDiscoveryReceipt {
             minted_file_ids,
@@ -885,16 +900,18 @@ impl InventoryScope {
                 // `inventoryGenerationAdvanced` is emitted here (contract doc §5b's "generations +
                 // change summary counts" -- removed/modified are meaningless for a wholesale
                 // replacement, so both are 0; `upserted_count` covers every staged record).
-                let payload = super::wire::encode_generation_advanced(&super::wire::GenerationAdvancedEvent {
-                    root_id: receipt.root_id,
-                    root_lifetime_id: *receipt.token.root_lifetime().as_bytes(),
-                    applied_index_generation: receipt.generation,
-                    catalog_generation: Some(receipt.generation),
-                    rebuilt_authoritative: true,
-                    upserted_count,
-                    removed_count: 0,
-                    modified_count: 0,
-                });
+                let payload = super::wire::encode_generation_advanced(
+                    &super::wire::GenerationAdvancedEvent {
+                        root_id: receipt.root_id,
+                        root_lifetime_id: *receipt.token.root_lifetime().as_bytes(),
+                        applied_index_generation: receipt.generation,
+                        catalog_generation: Some(receipt.generation),
+                        rebuilt_authoritative: true,
+                        upserted_count,
+                        removed_count: 0,
+                        modified_count: 0,
+                    },
+                );
                 self.publish_events(vec![(
                     EventClass::Coalescible,
                     Some(root_coalesce_key("genAdvanced", receipt.root_id)),
@@ -952,8 +969,20 @@ impl InventoryScope {
     ) -> Result<SnapshotPage, InvalidationReason> {
         match self.with_state(|state| state.handles.read(handle_id)) {
             HandleReadOutcome::Open { generation } => Ok(SnapshotPage {
-                files: generation.files.iter().skip(offset).take(limit).cloned().collect(),
-                folders: generation.folders.iter().skip(offset).take(limit).cloned().collect(),
+                files: generation
+                    .files
+                    .iter()
+                    .skip(offset)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+                folders: generation
+                    .folders
+                    .iter()
+                    .skip(offset)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
             }),
             HandleReadOutcome::HandleInvalidated { reason } => Err(reason),
         }
@@ -1038,7 +1067,8 @@ impl InventoryScope {
         {
             self.parked_on_publish_barrier.store(true, Ordering::SeqCst);
             barrier.wait();
-            self.parked_on_publish_barrier.store(false, Ordering::SeqCst);
+            self.parked_on_publish_barrier
+                .store(false, Ordering::SeqCst);
         }
 
         for (class, coalesce_key, payload) in events {
@@ -1048,7 +1078,11 @@ impl InventoryScope {
                 payload,
                 coalesce_key,
             };
-            if sink.hub.publish(&self.identity, &sink.scope_id, input).is_err() {
+            if sink
+                .hub
+                .publish(&self.identity, &sink.scope_id, input)
+                .is_err()
+            {
                 self.publish_failure_count.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -1070,20 +1104,23 @@ impl InventoryScope {
         receipt: &InventoryDeltaReceipt,
         event: &crate::inventory::InventoryAppliedIndexBatchEvent,
     ) -> Vec<(EventClass, Option<String>, Vec<u8>)> {
-        let rebuilt_authoritative = matches!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative);
-        let generation_advanced = super::wire::encode_generation_advanced(&super::wire::GenerationAdvancedEvent {
-            root_id,
-            root_lifetime_id: *root_lifetime_id.as_bytes(),
-            applied_index_generation: receipt.applied_index_generation,
-            catalog_generation: receipt.catalog_generation,
-            rebuilt_authoritative,
-            upserted_count: (event.upserted_files.len() + event.upserted_folders.len()) as u64,
-            removed_count: (event.removed_file_ids.len()
-                + event.removed_folder_ids.len()
-                + event.removed_file_paths.len()
-                + event.removed_folder_paths.len()) as u64,
-            modified_count: (event.modified_file_ids.len() + event.modified_folder_ids.len()) as u64,
-        });
+        let rebuilt_authoritative =
+            matches!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative);
+        let generation_advanced =
+            super::wire::encode_generation_advanced(&super::wire::GenerationAdvancedEvent {
+                root_id,
+                root_lifetime_id: *root_lifetime_id.as_bytes(),
+                applied_index_generation: receipt.applied_index_generation,
+                catalog_generation: receipt.catalog_generation,
+                rebuilt_authoritative,
+                upserted_count: (event.upserted_files.len() + event.upserted_folders.len()) as u64,
+                removed_count: (event.removed_file_ids.len()
+                    + event.removed_folder_ids.len()
+                    + event.removed_file_paths.len()
+                    + event.removed_folder_paths.len()) as u64,
+                modified_count: (event.modified_file_ids.len() + event.modified_folder_ids.len())
+                    as u64,
+            });
         let applied_index_batch = super::wire::encode_delta_event(event);
         vec![
             (
@@ -1104,7 +1141,10 @@ impl InventoryScope {
         root_id: RootId,
         reason: RootCatalogShardFallbackReason,
     ) -> (EventClass, Option<String>, Vec<u8>) {
-        let payload = super::wire::encode_shard_fallback(&super::wire::ShardFallbackEvent { root_id, reason });
+        let payload = super::wire::encode_shard_fallback(&super::wire::ShardFallbackEvent {
+            root_id,
+            reason,
+        });
         let reason_tag = RootCatalogShardFallbackReason::ALL
             .iter()
             .position(|candidate| *candidate == reason)
@@ -1142,7 +1182,10 @@ impl InventoryScope {
                 return Err(ScopeError::ScopeClosed);
             }
             let root = state.roots.get(&root_id).ok_or(ScopeError::UnknownRoot)?;
-            let generation = root.published.as_ref().map(|generation| generation.generation);
+            let generation = root
+                .published
+                .as_ref()
+                .map(|generation| generation.generation);
             if let Some(expected) = expected_catalog_generation {
                 if Some(expected) != generation {
                     return Ok((None, root.root_lifetime, Vec::new()));
@@ -1205,11 +1248,19 @@ impl InventoryScope {
             let mut rows = Vec::with_capacity(file_ids.len() + folder_ids.len());
             for (index, &id) in file_ids.iter().enumerate() {
                 let (hi, lo) = super::wire::uuid_to_words(&id);
-                rows.push(file_rows[index].take().unwrap_or_else(|| super::resolve::absent_row(hi, lo)));
+                rows.push(
+                    file_rows[index]
+                        .take()
+                        .unwrap_or_else(|| super::resolve::absent_row(hi, lo)),
+                );
             }
             for (index, &id) in folder_ids.iter().enumerate() {
                 let (hi, lo) = super::wire::uuid_to_words(&id);
-                rows.push(folder_rows[index].take().unwrap_or_else(|| super::resolve::absent_row(hi, lo)));
+                rows.push(
+                    folder_rows[index]
+                        .take()
+                        .unwrap_or_else(|| super::resolve::absent_row(hi, lo)),
+                );
             }
             Ok(rows)
         })
@@ -1240,7 +1291,10 @@ impl InventoryScope {
                         reason: InvalidationReason::RootClosed,
                     });
                 };
-                let live_generation = root.published.as_ref().map(|generation| generation.generation);
+                let live_generation = root
+                    .published
+                    .as_ref()
+                    .map(|generation| generation.generation);
                 Ok(super::resolve::LookupPathsOutcome::Facts {
                     generation: live_generation,
                     root_lifetime: root.root_lifetime,
@@ -1289,7 +1343,10 @@ impl InventoryScope {
             if state.closed {
                 return Err(ScopeError::ScopeClosed);
             }
-            let root = state.roots.get_mut(&root_id).ok_or(ScopeError::UnknownRoot)?;
+            let root = state
+                .roots
+                .get_mut(&root_id)
+                .ok_or(ScopeError::UnknownRoot)?;
             let synthetic_generation = root.mint_projected_shard_generation();
             let shard = super::resolve::build_projected_shard(
                 root,
@@ -1491,7 +1548,10 @@ impl InventoryScope {
             if state.closed {
                 return Err(ScopeError::ScopeClosed);
             }
-            let root = state.roots.get_mut(&root_id).ok_or(ScopeError::UnknownRoot)?;
+            let root = state
+                .roots
+                .get_mut(&root_id)
+                .ok_or(ScopeError::UnknownRoot)?;
             root.maps.set_file_managed_only(id, managed_only);
             Ok(())
         })
@@ -1512,7 +1572,10 @@ impl InventoryScope {
             if state.closed {
                 return Err(ScopeError::ScopeClosed);
             }
-            let root = state.roots.get_mut(&root_id).ok_or(ScopeError::UnknownRoot)?;
+            let root = state
+                .roots
+                .get_mut(&root_id)
+                .ok_or(ScopeError::UnknownRoot)?;
             root.maps.set_folder_managed_only(id, managed_only);
             Ok(())
         })

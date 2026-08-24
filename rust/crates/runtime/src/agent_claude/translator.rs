@@ -45,7 +45,10 @@ pub struct StreamResult {
 
 impl StreamResult {
     fn new(kind: impl Into<String>) -> Self {
-        Self { kind: kind.into(), ..Default::default() }
+        Self {
+            kind: kind.into(),
+            ..Default::default()
+        }
     }
 }
 
@@ -126,7 +129,10 @@ impl Translator {
             "error" => {
                 if let Some(message) = first_string(json, &["error", "message"]) {
                     if !message.is_empty() {
-                        return vec![StreamResult { text: Some(message), ..StreamResult::new("error") }];
+                        return vec![StreamResult {
+                            text: Some(message),
+                            ..StreamResult::new("error")
+                        }];
                     }
                 }
                 Vec::new()
@@ -136,14 +142,20 @@ impl Translator {
     }
 
     fn parse_system_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
-        let subtype = json.get("subtype").and_then(Value::as_str).map(str::to_lowercase);
+        let subtype = json
+            .get("subtype")
+            .and_then(Value::as_str)
+            .map(str::to_lowercase);
         let subtype = subtype.as_deref();
 
         if subtype == Some("init") {
             if let Some(session_id) = first_string(json, &["session_id", "sessionId"]) {
                 self.cli_session_id = Some(session_id);
             }
-            return vec![StreamResult { text: Some("initialized".to_string()), ..StreamResult::new(LIFECYCLE_TYPE) }];
+            return vec![StreamResult {
+                text: Some("initialized".to_string()),
+                ..StreamResult::new(LIFECYCLE_TYPE)
+            }];
         }
 
         if subtype == Some("status") {
@@ -161,7 +173,10 @@ impl Translator {
             if fragments.is_empty() {
                 return Vec::new();
             }
-            return vec![StreamResult { text: Some(fragments.join(" — ")), ..StreamResult::new("status") }];
+            return vec![StreamResult {
+                text: Some(fragments.join(" — ")),
+                ..StreamResult::new("status")
+            }];
         }
 
         if subtype == Some("task_started") {
@@ -172,7 +187,10 @@ impl Translator {
                 " — ",
             );
             return match fragments {
-                Some(text) => vec![StreamResult { text: Some(text), ..StreamResult::new("system") }],
+                Some(text) => vec![StreamResult {
+                    text: Some(text),
+                    ..StreamResult::new("system")
+                }],
                 None => Vec::new(),
             };
         }
@@ -186,13 +204,20 @@ impl Translator {
                 " — ",
             );
             return match fragments {
-                Some(text) => vec![StreamResult { text: Some(text), ..StreamResult::new("system") }],
+                Some(text) => vec![StreamResult {
+                    text: Some(text),
+                    ..StreamResult::new("system")
+                }],
                 None => Vec::new(),
             };
         }
 
         if subtype == Some("compact_boundary") {
-            let metadata = json.get("compact_metadata").and_then(Value::as_object).cloned().unwrap_or_default();
+            let metadata = json
+                .get("compact_metadata")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let trigger = first_string(&metadata, &["trigger"]);
             let pre_tokens = number_to_int(metadata.get("pre_tokens"));
             let mut fragments = vec!["Context compacted".to_string()];
@@ -206,18 +231,30 @@ impl Translator {
                     fragments.push(format!("at ~{pre_tokens} tokens"));
                 }
             }
-            return vec![StreamResult { text: Some(fragments.join(" — ")), ..StreamResult::new("system") }];
+            return vec![StreamResult {
+                text: Some(fragments.join(" — ")),
+                ..StreamResult::new("system")
+            }];
         }
 
         if subtype == Some("session_state_changed") {
             let state = first_string(
                 json,
-                &["session_state", "sessionState", "state", "current_state", "currentState"],
+                &[
+                    "session_state",
+                    "sessionState",
+                    "state",
+                    "current_state",
+                    "currentState",
+                ],
             )
             .map(|s| s.trim().to_lowercase());
             return match state {
                 Some(state) if !state.is_empty() => {
-                    vec![StreamResult { text: Some(state), ..StreamResult::new("session_state_changed") }]
+                    vec![StreamResult {
+                        text: Some(state),
+                        ..StreamResult::new("session_state_changed")
+                    }]
                 }
                 _ => Vec::new(),
             };
@@ -241,25 +278,37 @@ impl Translator {
                 }
                 return Vec::new();
             }
-            return vec![StreamResult { text: Some(fragments.join(" — ")), ..StreamResult::new("task_progress") }];
+            return vec![StreamResult {
+                text: Some(fragments.join(" — ")),
+                ..StreamResult::new("task_progress")
+            }];
         }
 
         if let Some(message) = first_string(json, &["message"]) {
             if !message.is_empty() {
-                return vec![StreamResult { text: Some(message), ..StreamResult::new("system") }];
+                return vec![StreamResult {
+                    text: Some(message),
+                    ..StreamResult::new("system")
+                }];
             }
         }
         Vec::new()
     }
 
     fn parse_assistant_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
-        let payload = json.get("message").and_then(Value::as_object).unwrap_or(json);
-        let usage_result = parse_usage(payload.get("usage").and_then(Value::as_object)).map(|usage| StreamResult {
-            prompt_tokens: Some(usage.input_tokens),
-            completion_tokens: Some(usage.output_tokens),
-            context_used_tokens: usage.context_used_tokens,
-            ..StreamResult::new("usage")
-        });
+        let payload = json
+            .get("message")
+            .and_then(Value::as_object)
+            .unwrap_or(json);
+        let usage_result =
+            parse_usage(payload.get("usage").and_then(Value::as_object)).map(|usage| {
+                StreamResult {
+                    prompt_tokens: Some(usage.input_tokens),
+                    completion_tokens: Some(usage.output_tokens),
+                    context_used_tokens: usage.context_used_tokens,
+                    ..StreamResult::new("usage")
+                }
+            });
 
         let Some(content) = payload.get("content").and_then(Value::as_array) else {
             let mut results = Vec::new();
@@ -268,7 +317,10 @@ impl Translator {
                     if let Some(usage_result) = usage_result {
                         results.push(usage_result);
                     }
-                    results.push(StreamResult { text: Some(fallback), ..StreamResult::new("content") });
+                    results.push(StreamResult {
+                        text: Some(fallback),
+                        ..StreamResult::new("content")
+                    });
                     return results;
                 }
             }
@@ -283,13 +335,20 @@ impl Translator {
             results.push(usage_result);
         }
         for item in content {
-            let Some(block) = item.as_object() else { continue };
-            let Some(block_type) = block.get("type").and_then(Value::as_str) else { continue };
+            let Some(block) = item.as_object() else {
+                continue;
+            };
+            let Some(block_type) = block.get("type").and_then(Value::as_str) else {
+                continue;
+            };
             match block_type {
                 "text" => {
                     if let Some(text) = block.get("text").and_then(Value::as_str) {
                         if !text.is_empty() {
-                            results.push(StreamResult { text: Some(text.to_string()), ..StreamResult::new("content") });
+                            results.push(StreamResult {
+                                text: Some(text.to_string()),
+                                ..StreamResult::new("content")
+                            });
                         }
                     }
                 }
@@ -307,15 +366,24 @@ impl Translator {
                     }
                 }
                 "tool_use" => {
-                    let tool_name = block.get("name").and_then(Value::as_str).unwrap_or("tool").to_string();
+                    let tool_name = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
                     let tool_use_id = tool_use_id(block);
                     if let Some(id) = &tool_use_id {
                         if !id.is_empty() {
-                            self.tool_name_by_tool_use_id.insert(id.clone(), tool_name.clone());
+                            self.tool_name_by_tool_use_id
+                                .insert(id.clone(), tool_name.clone());
                         }
                     }
                     let invocation_id = self.resolve_invocation_id(tool_use_id.as_deref());
-                    let input = block.get("input").and_then(Value::as_object).cloned().unwrap_or_default();
+                    let input = block
+                        .get("input")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
                     let input_json = serialize_json_object_string(&input);
                     results.push(StreamResult {
                         tool_name: Some(tool_name),
@@ -327,10 +395,11 @@ impl Translator {
                 }
                 "tool_result" => {
                     let tool_use_id = tool_use_id(block);
-                    let tool_name =
-                        self.resolve_tool_name(block.get("name").and_then(Value::as_str), tool_use_id.as_deref());
-                    let is_error =
-                        self.infer_tool_result_error(block, &tool_name, None);
+                    let tool_name = self.resolve_tool_name(
+                        block.get("name").and_then(Value::as_str),
+                        tool_use_id.as_deref(),
+                    );
+                    let is_error = self.infer_tool_result_error(block, &tool_name, None);
                     let output = serialize_tool_result_content(block.get("content"));
                     let invocation_id = self.resolve_invocation_id(tool_use_id.as_deref());
                     results.push(StreamResult {
@@ -349,18 +418,26 @@ impl Translator {
     }
 
     fn parse_user_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
-        let payload = json.get("message").and_then(Value::as_object).unwrap_or(json);
+        let payload = json
+            .get("message")
+            .and_then(Value::as_object)
+            .unwrap_or(json);
         let Some(content) = payload.get("content").and_then(Value::as_array) else {
             return Vec::new();
         };
         let mut results = Vec::new();
         for item in content {
-            let Some(block) = item.as_object() else { continue };
+            let Some(block) = item.as_object() else {
+                continue;
+            };
             if block.get("type").and_then(Value::as_str) != Some("tool_result") {
                 continue;
             }
             let tool_use_id = tool_use_id(block);
-            let tool_name = self.resolve_tool_name(block.get("name").and_then(Value::as_str), tool_use_id.as_deref());
+            let tool_name = self.resolve_tool_name(
+                block.get("name").and_then(Value::as_str),
+                tool_use_id.as_deref(),
+            );
             let is_error = self.infer_tool_result_error(block, &tool_name, None);
             let output = serialize_tool_result_content(block.get("content"));
             let invocation_id = self.resolve_invocation_id(tool_use_id.as_deref());
@@ -396,7 +473,10 @@ impl Translator {
                     "text_delta" => {
                         if let Some(text) = delta.get("text").and_then(Value::as_str) {
                             if !text.is_empty() {
-                                return vec![StreamResult { text: Some(text.to_string()), ..StreamResult::new("content") }];
+                                return vec![StreamResult {
+                                    text: Some(text.to_string()),
+                                    ..StreamResult::new("content")
+                                }];
                             }
                         }
                         Vec::new()
@@ -422,7 +502,8 @@ impl Translator {
                 let Some(message) = event.get("message").and_then(Value::as_object) else {
                     return Vec::new();
                 };
-                let Some(usage) = parse_usage(message.get("usage").and_then(Value::as_object)) else {
+                let Some(usage) = parse_usage(message.get("usage").and_then(Value::as_object))
+                else {
                     return Vec::new();
                 };
                 vec![StreamResult {
@@ -460,11 +541,13 @@ impl Translator {
     }
 
     fn parse_top_level_tool_use(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
-        let tool_name = first_string(json, &["tool_name", "toolName", "name"]).unwrap_or_else(|| "tool".to_string());
+        let tool_name = first_string(json, &["tool_name", "toolName", "name"])
+            .unwrap_or_else(|| "tool".to_string());
         let tool_use_id = tool_use_id(json);
         if let Some(id) = &tool_use_id {
             if !id.is_empty() {
-                self.tool_name_by_tool_use_id.insert(id.clone(), tool_name.clone());
+                self.tool_name_by_tool_use_id
+                    .insert(id.clone(), tool_name.clone());
             }
         }
         let invocation_id = self.resolve_invocation_id(tool_use_id.as_deref());
@@ -514,11 +597,11 @@ impl Translator {
 
     fn parse_result_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
         let usage = parse_usage(json.get("usage").and_then(Value::as_object));
-        let model_context_window = parse_model_context_window(json.get("modelUsage").and_then(Value::as_object));
+        let model_context_window =
+            parse_model_context_window(json.get("modelUsage").and_then(Value::as_object));
         let cost = json.get("total_cost_usd").and_then(Value::as_f64);
         let stop_reason = first_string(json, &["stop_reason", "stopReason"]);
-        let result_subtype =
-            first_string(json, &["subtype"]).map(|s| s.trim().to_lowercase());
+        let result_subtype = first_string(json, &["subtype"]).map(|s| s.trim().to_lowercase());
         let is_error = bool_value(json, &["is_error", "isError"]) == Some(true);
         if let Some(result_session_id) = first_string(json, &["session_id", "sessionId"]) {
             self.cli_session_id = Some(result_session_id);
@@ -526,20 +609,32 @@ impl Translator {
 
         let mut results = Vec::new();
         let result_errors = extract_result_error_messages(json);
-        let should_emit_result_error =
-            is_error || result_subtype.as_deref().is_some_and(|s| s.contains("error")) || !result_errors.is_empty();
-        let should_suppress_result_error =
-            should_suppress_result_error_emission(result_subtype.as_deref(), stop_reason.as_deref(), &result_errors);
+        let should_emit_result_error = is_error
+            || result_subtype
+                .as_deref()
+                .is_some_and(|s| s.contains("error"))
+            || !result_errors.is_empty();
+        let should_suppress_result_error = should_suppress_result_error_emission(
+            result_subtype.as_deref(),
+            stop_reason.as_deref(),
+            &result_errors,
+        );
         if should_emit_result_error && !should_suppress_result_error {
             if let Some(error_message) = result_errors.first() {
                 if !error_message.is_empty() {
-                    results.push(StreamResult { text: Some(error_message.clone()), ..StreamResult::new("error") });
+                    results.push(StreamResult {
+                        text: Some(error_message.clone()),
+                        ..StreamResult::new("error")
+                    });
                 }
             }
         }
         if let Some(Value::String(final_text)) = json.get("result") {
             if !final_text.is_empty() {
-                results.push(StreamResult { text: Some(final_text.clone()), ..StreamResult::new("final_content") });
+                results.push(StreamResult {
+                    text: Some(final_text.clone()),
+                    ..StreamResult::new("final_content")
+                });
             }
         }
         // Note: contextUsedTokens is intentionally nil here (contract §2.3): `result.usage` is an
@@ -568,28 +663,40 @@ impl Translator {
         if fragments.is_empty() {
             return Vec::new();
         }
-        vec![StreamResult { text: Some(fragments.join(" — ")), tool_name, ..StreamResult::new("tool_progress") }]
+        vec![StreamResult {
+            text: Some(fragments.join(" — ")),
+            tool_name,
+            ..StreamResult::new("tool_progress")
+        }]
     }
 
     fn parse_auth_status_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
         if let Some(is_authenticating) = json.get("isAuthenticating").and_then(Value::as_bool) {
             // Mirrors Swift's `(json["output"] as? [String])?` -- an all-or-nothing cast: `None`
             // for the whole thing if any element isn't a string, not "skip the non-string ones".
-            let output = json.get("output").and_then(Value::as_array).and_then(|values| {
-                values
-                    .iter()
-                    .map(Value::as_str)
-                    .collect::<Option<Vec<&str>>>()
-            }).map(|values| {
-                values
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            });
+            let output = json
+                .get("output")
+                .and_then(Value::as_array)
+                .and_then(|values| {
+                    values
+                        .iter()
+                        .map(Value::as_str)
+                        .collect::<Option<Vec<&str>>>()
+                })
+                .map(|values| {
+                    values
+                        .into_iter()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
             let error = first_string(json, &["error"]);
-            let mut fragments = vec![if is_authenticating { "Authenticating".to_string() } else { "Authenticated".to_string() }];
+            let mut fragments = vec![if is_authenticating {
+                "Authenticating".to_string()
+            } else {
+                "Authenticated".to_string()
+            }];
             if let Some(output) = output {
                 if !output.is_empty() {
                     fragments.push(output);
@@ -600,7 +707,10 @@ impl Translator {
                     fragments.push(error);
                 }
             }
-            return vec![StreamResult { text: Some(fragments.join(" — ")), ..StreamResult::new("auth_status") }];
+            return vec![StreamResult {
+                text: Some(fragments.join(" — ")),
+                ..StreamResult::new("auth_status")
+            }];
         }
 
         let status = first_string(json, &["status", "auth_status", "authStatus"]);
@@ -613,15 +723,23 @@ impl Translator {
         if parts.is_empty() {
             return Vec::new();
         }
-        vec![StreamResult { text: Some(parts.join(" — ")), ..StreamResult::new("auth_status") }]
+        vec![StreamResult {
+            text: Some(parts.join(" — ")),
+            ..StreamResult::new("auth_status")
+        }]
     }
 
     fn parse_tool_use_summary_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
-        let Some(summary) = first_string(json, &["summary"]) else { return Vec::new() };
+        let Some(summary) = first_string(json, &["summary"]) else {
+            return Vec::new();
+        };
         if summary.is_empty() {
             return Vec::new();
         }
-        vec![StreamResult { text: Some(format!("Tool summary — {summary}")), ..StreamResult::new("system") }]
+        vec![StreamResult {
+            text: Some(format!("Tool summary — {summary}")),
+            ..StreamResult::new("system")
+        }]
     }
 
     fn parse_rate_limit_event_message(&mut self, json: &Map<String, Value>) -> Vec<StreamResult> {
@@ -634,15 +752,23 @@ impl Translator {
         }
         let rate_limit_type = first_string(info, &["rateLimitType", "rate_limit_type"]);
         let overage_status = first_string(info, &["overageStatus", "overage_status"]);
-        let fragments: Vec<String> = [Some("Rate limit".to_string()), status, rate_limit_type, overage_status]
-            .into_iter()
-            .filter_map(|v| v.map(|s| s.trim().to_string()))
-            .filter(|s| !s.is_empty())
-            .collect();
+        let fragments: Vec<String> = [
+            Some("Rate limit".to_string()),
+            status,
+            rate_limit_type,
+            overage_status,
+        ]
+        .into_iter()
+        .filter_map(|v| v.map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .collect();
         if fragments.is_empty() {
             return Vec::new();
         }
-        vec![StreamResult { text: Some(fragments.join(" — ")), ..StreamResult::new("system") }]
+        vec![StreamResult {
+            text: Some(fragments.join(" — ")),
+            ..StreamResult::new("system")
+        }]
     }
 
     fn resolve_tool_name(&mut self, raw_name: Option<&str>, tool_use_id: Option<&str>) -> String {
@@ -654,7 +780,8 @@ impl Translator {
         };
         if let Some(id) = tool_use_id {
             if !id.is_empty() && !resolved.is_empty() && resolved != "tool" {
-                self.tool_name_by_tool_use_id.insert(id.to_string(), resolved.clone());
+                self.tool_name_by_tool_use_id
+                    .insert(id.to_string(), resolved.clone());
             }
         }
         resolved
@@ -670,7 +797,8 @@ impl Translator {
         }
         let generated = InvocationId(self.next_invocation_id);
         self.next_invocation_id += 1;
-        self.invocation_id_by_tool_use_id.insert(tool_use_id.to_string(), generated);
+        self.invocation_id_by_tool_use_id
+            .insert(tool_use_id.to_string(), generated);
         Some(generated)
     }
 
@@ -704,7 +832,11 @@ fn joined_non_empty_fragments(candidates: &[Option<String>], separator: &str) ->
         .filter_map(|v| v.as_ref().map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
         .collect();
-    if fragments.is_empty() { None } else { Some(fragments.join(separator)) }
+    if fragments.is_empty() {
+        None
+    } else {
+        Some(fragments.join(separator))
+    }
 }
 
 fn first_string(json: &Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -785,7 +917,9 @@ pub fn should_suppress_user_facing_stream_result(result: &StreamResult) -> bool 
     if result.kind != "error" {
         return false;
     }
-    let Some(text) = &result.text else { return false };
+    let Some(text) = &result.text else {
+        return false;
+    };
     if text.trim().is_empty() {
         return false;
     }
@@ -823,7 +957,11 @@ pub fn should_suppress_user_facing_error(message: &str) -> bool {
     false
 }
 
-fn should_suppress_result_error_emission(subtype: Option<&str>, stop_reason: Option<&str>, errors: &[String]) -> bool {
+fn should_suppress_result_error_emission(
+    subtype: Option<&str>,
+    stop_reason: Option<&str>,
+    errors: &[String],
+) -> bool {
     if errors.is_empty() {
         return false;
     }
@@ -838,14 +976,16 @@ fn should_suppress_result_error_emission(subtype: Option<&str>, stop_reason: Opt
     if normalized_errors.is_empty() {
         return false;
     }
-    normalized_errors
-        .iter()
-        .all(|message| is_interrupted_turn_signal(Some(message)) || should_suppress_user_facing_error(message))
+    normalized_errors.iter().all(|message| {
+        is_interrupted_turn_signal(Some(message)) || should_suppress_user_facing_error(message)
+    })
 }
 
 fn bool_value(object: &Map<String, Value>, keys: &[&str]) -> Option<bool> {
     for key in keys {
-        let Some(value) = object.get(*key) else { continue };
+        let Some(value) = object.get(*key) else {
+            continue;
+        };
         match value {
             Value::Bool(b) => return Some(*b),
             Value::Number(n) => return Some(n.as_f64().is_some_and(|f| f != 0.0)),
@@ -862,7 +1002,9 @@ fn bool_value(object: &Map<String, Value>, keys: &[&str]) -> Option<bool> {
 
 fn int_value(object: &Map<String, Value>, keys: &[&str]) -> Option<i64> {
     for key in keys {
-        let Some(value) = object.get(*key) else { continue };
+        let Some(value) = object.get(*key) else {
+            continue;
+        };
         match value {
             Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
@@ -896,7 +1038,11 @@ fn infer_tool_result_error_signal(value: &Value) -> Option<bool> {
                     saw_success_signal = true;
                 }
             }
-            if saw_success_signal { Some(false) } else { None }
+            if saw_success_signal {
+                Some(false)
+            } else {
+                None
+            }
         }
         Value::String(text) => {
             let trimmed = text.trim();
@@ -921,7 +1067,8 @@ fn infer_tool_result_error_signal_from_object(object: &Map<String, Value>) -> Op
         return Some(explicit);
     }
 
-    if let Some(status) = first_string(object, &["status", "result", "outcome", "state", "subtype"]) {
+    if let Some(status) = first_string(object, &["status", "result", "outcome", "state", "subtype"])
+    {
         if let Some(inference) = infer_status_error(&status) {
             return Some(inference);
         }
@@ -951,8 +1098,17 @@ fn infer_tool_result_error_signal_from_object(object: &Map<String, Value>) -> Op
     }
 
     let nested_keys = [
-        "tool_result", "toolResult", "result", "output", "response", "content", "payload", "data",
-        "value", "tool_use_result", "toolUseResult",
+        "tool_result",
+        "toolResult",
+        "result",
+        "output",
+        "response",
+        "content",
+        "payload",
+        "data",
+        "value",
+        "tool_use_result",
+        "toolUseResult",
     ];
     for key in nested_keys {
         if let Some(nested) = object.get(key) {
@@ -973,7 +1129,9 @@ fn infer_tool_result_error_signal_from_object(object: &Map<String, Value>) -> Op
 fn infer_status_error(value: &str) -> Option<bool> {
     match value.trim().to_lowercase().as_str() {
         "ok" | "success" | "succeeded" | "complete" | "completed" => Some(false),
-        "error" | "failed" | "failure" | "rejected" | "denied" | "cancelled" | "canceled" => Some(true),
+        "error" | "failed" | "failure" | "rejected" | "denied" | "cancelled" | "canceled" => {
+            Some(true)
+        }
         _ => None,
     }
 }
@@ -982,7 +1140,9 @@ fn serialize_json_object_string(value: &Map<String, Value>) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    Some(foundation_pretty_printed_json(&Value::Object(value.clone())))
+    Some(foundation_pretty_printed_json(&Value::Object(
+        value.clone(),
+    )))
 }
 
 /// Byte-exact port of `JSONSerialization.data(withJSONObject:options: [.prettyPrinted, .sortedKeys])`'s
@@ -1012,7 +1172,9 @@ fn foundation_pretty_printed_json(value: &Value) -> String {
                 out.push_str("{\n");
                 for (i, key) in keys.iter().enumerate() {
                     out.push_str(&" ".repeat(inner_indent));
-                    out.push_str(&serde_json::to_string(key.as_str()).unwrap_or_else(|_| format!("{key:?}")));
+                    out.push_str(
+                        &serde_json::to_string(key.as_str()).unwrap_or_else(|_| format!("{key:?}")),
+                    );
                     out.push_str(" : ");
                     write(&map[*key], inner_indent, out);
                     if i + 1 < keys.len() {
@@ -1057,7 +1219,9 @@ fn foundation_pretty_printed_json(value: &Value) -> String {
 /// generic path rather than silently skipping the non-dictionary element. A `filter_map` here
 /// would silently keep the dictionary elements and change behavior for a mixed array.
 fn serialize_tool_result_content(value: Option<&Value>) -> String {
-    let Some(value) = value else { return String::new() };
+    let Some(value) = value else {
+        return String::new();
+    };
     if let Some(text) = value.as_str() {
         return text.to_string();
     }
@@ -1067,9 +1231,17 @@ fn serialize_tool_result_content(value: Option<&Value>) -> String {
                 .iter()
                 .filter_map(|block| {
                     let block = block.as_object()?;
-                    let block_type = block.get("type").and_then(Value::as_str).map(str::to_lowercase);
-                    if block_type.as_deref() == Some("text") || block_type.as_deref() == Some("output_text") {
-                        block.get("text").and_then(Value::as_str).map(str::to_string)
+                    let block_type = block
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(str::to_lowercase);
+                    if block_type.as_deref() == Some("text")
+                        || block_type.as_deref() == Some("output_text")
+                    {
+                        block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
                     } else {
                         None
                     }
@@ -1102,8 +1274,17 @@ fn swift_description(value: &Value) -> String {
 fn extract_string(value: Option<&Value>) -> Option<String> {
     match value {
         Some(Value::String(s)) => Some(s.clone()),
-        Some(Value::Object(object)) => object.get("text").and_then(Value::as_str).map(str::to_string),
-        Some(Value::Array(array)) => Some(array.iter().filter_map(|v| extract_string(Some(v))).collect::<Vec<_>>().join("")),
+        Some(Value::Object(object)) => object
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        Some(Value::Array(array)) => Some(
+            array
+                .iter()
+                .filter_map(|v| extract_string(Some(v)))
+                .collect::<Vec<_>>()
+                .join(""),
+        ),
         _ => None,
     }
 }
@@ -1111,7 +1292,9 @@ fn extract_string(value: Option<&Value>) -> Option<String> {
 fn parse_model_context_window(value: Option<&Map<String, Value>>) -> Option<i64> {
     let value = value?;
     for usage_any in value.values() {
-        let Some(usage) = usage_any.as_object() else { continue };
+        let Some(usage) = usage_any.as_object() else {
+            continue;
+        };
         if let Some(context_window) = number_to_int(usage.get("contextWindow")) {
             if context_window > 0 {
                 return Some(context_window);
@@ -1124,14 +1307,17 @@ fn parse_model_context_window(value: Option<&Map<String, Value>>) -> Option<i64>
 fn parse_usage(value: Option<&Map<String, Value>>) -> Option<TokenUsage> {
     let value = value?;
 
-    let input = number_to_int(value.get("input_tokens")).or_else(|| number_to_int(value.get("inputTokens")));
-    let output = number_to_int(value.get("output_tokens")).or_else(|| number_to_int(value.get("outputTokens")));
+    let input = number_to_int(value.get("input_tokens"))
+        .or_else(|| number_to_int(value.get("inputTokens")));
+    let output = number_to_int(value.get("output_tokens"))
+        .or_else(|| number_to_int(value.get("outputTokens")));
     let cache_read = number_to_int(value.get("cache_read_input_tokens"))
         .or_else(|| number_to_int(value.get("cacheReadInputTokens")));
     let cache_creation = number_to_int(value.get("cache_creation_input_tokens"))
         .or_else(|| number_to_int(value.get("cacheCreationInputTokens")));
 
-    let has_any_usage_field = input.is_some() || output.is_some() || cache_read.is_some() || cache_creation.is_some();
+    let has_any_usage_field =
+        input.is_some() || output.is_some() || cache_read.is_some() || cache_creation.is_some();
     if !has_any_usage_field {
         return None;
     }
@@ -1140,7 +1326,11 @@ fn parse_usage(value: Option<&Map<String, Value>>) -> Option<TokenUsage> {
     let normalized_output = output.unwrap_or(0).max(0);
     let has_context_breakdown = input.is_some() || cache_read.is_some() || cache_creation.is_some();
     let context_used_tokens = if has_context_breakdown {
-        Some(saturated_non_negative_sum(&[normalized_input, cache_read.unwrap_or(0).max(0), cache_creation.unwrap_or(0).max(0)]))
+        Some(saturated_non_negative_sum(&[
+            normalized_input,
+            cache_read.unwrap_or(0).max(0),
+            cache_creation.unwrap_or(0).max(0),
+        ]))
     } else {
         None
     };
@@ -1219,7 +1409,8 @@ mod tests {
     /// asserting suites checked against the same contract semantics, not a shared-file read).
     #[test]
     fn assistant_tool_and_result_smoke_preserves_usage_args_and_stable_invocation_id() {
-        let mut translator = Translator::new(Box::new(|name| name == "mcp__RepoPromptCE__read_file"));
+        let mut translator =
+            Translator::new(Box::new(|name| name == "mcp__RepoPromptCE__read_file"));
         let results = translator.parse_ndjson_line(&line(json!({
             "type": "assistant",
             "message": {
@@ -1236,14 +1427,23 @@ mod tests {
             }
         })));
 
-        assert_eq!(results.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["usage", "content", "tool_call"]);
+        assert_eq!(
+            results.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
+            ["usage", "content", "tool_call"]
+        );
         assert_eq!(results[0].prompt_tokens, Some(7));
         assert_eq!(results[0].completion_tokens, Some(3));
         assert_eq!(results[0].context_used_tokens, Some(14));
         assert_eq!(results[1].text.as_deref(), Some("Hello"));
-        assert_eq!(results[2].tool_name.as_deref(), Some("mcp__RepoPromptCE__read_file"));
-        let invocation_id = results[2].tool_invocation_id.expect("tool_call must carry an invocation id");
-        let args: Value = serde_json::from_str(results[2].tool_args_json.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            results[2].tool_name.as_deref(),
+            Some("mcp__RepoPromptCE__read_file")
+        );
+        let invocation_id = results[2]
+            .tool_invocation_id
+            .expect("tool_call must carry an invocation id");
+        let args: Value =
+            serde_json::from_str(results[2].tool_args_json.as_deref().unwrap()).unwrap();
         assert_eq!(args, json!({"path": "Sources/App.swift"}));
 
         let tool_result = translator
@@ -1259,7 +1459,10 @@ mod tests {
             })))
             .remove(0);
         assert_eq!(tool_result.kind, "tool_result");
-        assert_eq!(tool_result.tool_name.as_deref(), Some("mcp__RepoPromptCE__read_file"));
+        assert_eq!(
+            tool_result.tool_name.as_deref(),
+            Some("mcp__RepoPromptCE__read_file")
+        );
         assert_eq!(tool_result.tool_output.as_deref(), Some("contents"));
         assert_eq!(tool_result.tool_invocation_id, Some(invocation_id));
         assert_eq!(
@@ -1277,8 +1480,17 @@ mod tests {
         let init_results = translator.parse_ndjson_line(&line(json!({
             "type": "system", "subtype": "init", "session_id": "claude-session-1"
         })));
-        assert_eq!(init_results.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), [LIFECYCLE_TYPE]);
-        assert_eq!(translator.cli_session_id.as_deref(), Some("claude-session-1"));
+        assert_eq!(
+            init_results
+                .iter()
+                .map(|r| r.kind.as_str())
+                .collect::<Vec<_>>(),
+            [LIFECYCLE_TYPE]
+        );
+        assert_eq!(
+            translator.cli_session_id.as_deref(),
+            Some("claude-session-1")
+        );
 
         let usage = translator.parse_ndjson_line(&line(json!({
             "type": "stream_event",
@@ -1302,8 +1514,14 @@ mod tests {
                 "usage": {"input_tokens": 4, "output_tokens": 9}
             }
         })));
-        assert_eq!(stop.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["usage", "message_stop"]);
-        assert_eq!(stop.last().unwrap().stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(
+            stop.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
+            ["usage", "message_stop"]
+        );
+        assert_eq!(
+            stop.last().unwrap().stop_reason.as_deref(),
+            Some("end_turn")
+        );
 
         let cancelled = translator.parse_ndjson_line(&line(json!({
             "type": "result",
@@ -1315,19 +1533,34 @@ mod tests {
             "usage": {"input_tokens": 11, "output_tokens": 0},
             "total_cost_usd": 0.12
         })));
-        assert_eq!(cancelled.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["message_stop"]);
+        assert_eq!(
+            cancelled
+                .iter()
+                .map(|r| r.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["message_stop"]
+        );
         let cancelled_stop = &cancelled[0];
-        assert_eq!(cancelled_stop.provider_session_id.as_deref(), Some("claude-session-2"));
+        assert_eq!(
+            cancelled_stop.provider_session_id.as_deref(),
+            Some("claude-session-2")
+        );
         assert_eq!(cancelled_stop.prompt_tokens, Some(11));
         assert_eq!(cancelled_stop.completion_tokens, Some(0));
         assert_eq!(cancelled_stop.cost, Some(0.12));
         assert_eq!(cancelled_stop.stop_reason.as_deref(), Some("cancelled"));
-        assert_eq!(translator.cli_session_id.as_deref(), Some("claude-session-2"));
+        assert_eq!(
+            translator.cli_session_id.as_deref(),
+            Some("claude-session-2")
+        );
     }
 
     #[test]
     fn thinking_blocks_and_deltas_are_dropped_while_reasoning_feature_disabled() {
-        assert!(!REASONING_EXTRACTION_ENABLED, "flip this test's expectations if the upstream feature flag ever flips");
+        assert!(
+            !REASONING_EXTRACTION_ENABLED,
+            "flip this test's expectations if the upstream feature flag ever flips"
+        );
         let mut translator = Translator::default();
         let assistant = translator.parse_ndjson_line(&line(json!({
             "type": "assistant",
@@ -1336,7 +1569,13 @@ mod tests {
                 {"type": "text", "text": "Here is the answer."}
             ]}
         })));
-        assert_eq!(assistant.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["content"]);
+        assert_eq!(
+            assistant
+                .iter()
+                .map(|r| r.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["content"]
+        );
         assert_eq!(assistant[0].text.as_deref(), Some("Here is the answer."));
 
         let delta = translator.parse_ndjson_line(&line(json!({
@@ -1358,13 +1597,19 @@ mod tests {
             "usage": {"input_tokens": 120, "output_tokens": 45},
             "stop_reason": "end_turn"
         })));
-        assert_eq!(results.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["final_content", "message_stop"]);
+        assert_eq!(
+            results.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
+            ["final_content", "message_stop"]
+        );
         assert_eq!(results[0].text.as_deref(), Some("All done."));
         let stop = &results[1];
         assert_eq!(stop.prompt_tokens, Some(120));
         assert_eq!(stop.completion_tokens, Some(45));
         assert_eq!(stop.cost, Some(0.0421));
-        assert_eq!(stop.provider_session_id.as_deref(), Some("claude-session-realcapture-1"));
+        assert_eq!(
+            stop.provider_session_id.as_deref(),
+            Some("claude-session-realcapture-1")
+        );
         assert_eq!(stop.stop_reason.as_deref(), Some("end_turn"));
         assert_eq!(stop.context_used_tokens, None);
     }
@@ -1380,9 +1625,18 @@ mod tests {
             "session_id": "claude-session-realcapture-2",
             "usage": {"input_tokens": 50, "output_tokens": 10}
         })));
-        assert_eq!(results.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["error", "message_stop"]);
-        assert_eq!(results[0].text.as_deref(), Some("Maximum turns exceeded for this task"));
-        assert_eq!(results[1].provider_session_id.as_deref(), Some("claude-session-realcapture-2"));
+        assert_eq!(
+            results.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
+            ["error", "message_stop"]
+        );
+        assert_eq!(
+            results[0].text.as_deref(),
+            Some("Maximum turns exceeded for this task")
+        );
+        assert_eq!(
+            results[1].provider_session_id.as_deref(),
+            Some("claude-session-realcapture-2")
+        );
     }
 
     #[test]
@@ -1405,19 +1659,30 @@ mod tests {
 
     #[test]
     fn suppression_rules_match_d2() {
-        let suppressed_task = StreamResult { text: Some("Task started — build".to_string()), ..StreamResult::new("system") };
+        let suppressed_task = StreamResult {
+            text: Some("Task started — build".to_string()),
+            ..StreamResult::new("system")
+        };
         assert!(should_suppress_user_facing_stream_result(&suppressed_task));
 
-        let passthrough_system =
-            StreamResult { text: Some("Compacting context".to_string()), ..StreamResult::new("system") };
-        assert!(!should_suppress_user_facing_stream_result(&passthrough_system));
+        let passthrough_system = StreamResult {
+            text: Some("Compacting context".to_string()),
+            ..StreamResult::new("system")
+        };
+        assert!(!should_suppress_user_facing_stream_result(
+            &passthrough_system
+        ));
 
-        let suppressed_error =
-            StreamResult { text: Some("Request was aborted".to_string()), ..StreamResult::new("error") };
+        let suppressed_error = StreamResult {
+            text: Some("Request was aborted".to_string()),
+            ..StreamResult::new("error")
+        };
         assert!(should_suppress_user_facing_stream_result(&suppressed_error));
 
-        let genuine_error =
-            StreamResult { text: Some("Maximum turns exceeded".to_string()), ..StreamResult::new("error") };
+        let genuine_error = StreamResult {
+            text: Some("Maximum turns exceeded".to_string()),
+            ..StreamResult::new("error")
+        };
         assert!(!should_suppress_user_facing_stream_result(&genuine_error));
     }
 
@@ -1432,7 +1697,11 @@ mod tests {
             "output": ["fine", 42],
             "error": "boom"
         })));
-        assert_eq!(results[0].text.as_deref(), Some("Authenticating — boom"), "the mixed-type output array must be dropped entirely, not partially joined");
+        assert_eq!(
+            results[0].text.as_deref(),
+            Some("Authenticating — boom"),
+            "the mixed-type output array must be dropped entirely, not partially joined"
+        );
     }
 
     #[test]
@@ -1446,7 +1715,10 @@ mod tests {
             "summary": "halfway there"
         })));
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].text.as_deref(), Some("Task update — t-1 — running — halfway there"));
+        assert_eq!(
+            results[0].text.as_deref(),
+            Some("Task update — t-1 — running — halfway there")
+        );
     }
 
     /// Byte-exact against a real macOS Foundation run: `JSONSerialization.data(withJSONObject:
@@ -1465,7 +1737,10 @@ mod tests {
     #[test]
     fn foundation_pretty_printed_json_matches_foundations_empty_container_quirk() {
         let value = json!({"a": []});
-        assert_eq!(foundation_pretty_printed_json(&value), "{\n  \"a\" : [\n\n  ]\n}");
+        assert_eq!(
+            foundation_pretty_printed_json(&value),
+            "{\n  \"a\" : [\n\n  ]\n}"
+        );
         assert_eq!(foundation_pretty_printed_json(&json!({})), "{\n\n}");
     }
 
@@ -1477,7 +1752,10 @@ mod tests {
         let value = json!([{"type": "text", "text": "a"}, "raw-string-not-a-block"]);
         let output = serialize_tool_result_content(Some(&value));
         assert_eq!(output, foundation_pretty_printed_json(&value));
-        assert_ne!(output, "a", "must not silently drop the non-dictionary element");
+        assert_ne!(
+            output, "a",
+            "must not silently drop the non-dictionary element"
+        );
     }
 
     #[test]

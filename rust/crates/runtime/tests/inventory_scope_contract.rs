@@ -119,13 +119,23 @@ fn resolve_records_scope_wide_finds_ids_across_multiple_open_roots_and_reports_a
     let (scope, identity) = seeded_scope(1, InventoryScopeConfig::default());
     let root_a = root_id(1);
     let root_b = root_id(2);
-    let lifetime_a = scope.open_root(&identity, root_a, "a".to_owned(), "/a".to_owned()).expect("open a");
-    let lifetime_b = scope.open_root(&identity, root_b, "b".to_owned(), "/b".to_owned()).expect("open b");
+    let lifetime_a = scope
+        .open_root(&identity, root_a, "a".to_owned(), "/a".to_owned())
+        .expect("open a");
+    let lifetime_b = scope
+        .open_root(&identity, root_b, "b".to_owned(), "/b".to_owned())
+        .expect("open b");
 
     let file_in_a = file(1, root_a, "src/A.swift");
     let file_in_b = file(2, root_b, "src/B.swift");
-    scope.apply_delta(&identity, upsert_files_command(&scope, root_a, lifetime_a, vec![file_in_a.clone()], false));
-    scope.apply_delta(&identity, upsert_files_command(&scope, root_b, lifetime_b, vec![file_in_b.clone()], false));
+    scope.apply_delta(
+        &identity,
+        upsert_files_command(&scope, root_a, lifetime_a, vec![file_in_a.clone()], false),
+    );
+    scope.apply_delta(
+        &identity,
+        upsert_files_command(&scope, root_b, lifetime_b, vec![file_in_b.clone()], false),
+    );
 
     let missing_id = {
         let mut id = [0u8; 16];

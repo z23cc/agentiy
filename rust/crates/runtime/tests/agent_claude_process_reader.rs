@@ -45,7 +45,10 @@ fn well_behaved_single_line_is_framed_and_queued() {
         .collect();
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0], br#"{"type":"result","subtype":"success"}"#);
-    assert_eq!(stats.lines_read.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        stats.lines_read.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
     let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
 }
 
@@ -60,7 +63,12 @@ fn huge_line_triggers_framer_overflow_and_reader_does_not_hang() {
     // own, and the bounded queue's own admit-anyway-and-evict-everything policy for an oversized
     // single item (contract §5.4) can legitimately evict the earlier diagnostic entry -- that is
     // correct pressure-relief behavior, not something this test should fight.
-    assert!(stats.framer_overflows.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    assert!(
+        stats
+            .framer_overflows
+            .load(std::sync::atomic::Ordering::SeqCst)
+            >= 1
+    );
     let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
 }
 
@@ -69,8 +77,13 @@ fn mid_line_stall_completes_without_deadlock() {
     let child = spawn_synthetic(&["mid-line-stall", "300"]);
     let queue = Arc::new(BoundedEventQueue::default());
     let (handle, stats) = spawn_stdout_reader(child.stdout_read, Arc::clone(&queue));
-    handle.join().expect("reader thread must complete once the stall resolves");
-    assert_eq!(stats.lines_read.load(std::sync::atomic::Ordering::SeqCst), 1);
+    handle
+        .join()
+        .expect("reader thread must complete once the stall resolves");
+    assert_eq!(
+        stats.lines_read.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
     let lines: Vec<_> = queue
         .drain()
         .into_iter()
@@ -80,7 +93,10 @@ fn mid_line_stall_completes_without_deadlock() {
         })
         .collect();
     assert_eq!(lines.len(), 1);
-    assert_eq!(std::str::from_utf8(&lines[0]).unwrap(), r#"{"type":"stream_event","seq":0}"#);
+    assert_eq!(
+        std::str::from_utf8(&lines[0]).unwrap(),
+        r#"{"type":"stream_event","seq":0}"#
+    );
     let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
 }
 
@@ -89,7 +105,9 @@ fn silent_then_well_behaved_reader_does_not_falsely_terminate() {
     let child = spawn_synthetic(&["silent", "1"]);
     let queue = Arc::new(BoundedEventQueue::default());
     let (handle, _stats) = spawn_stdout_reader(child.stdout_read, Arc::clone(&queue));
-    handle.join().expect("reader must wait out the silence and still frame the eventual line");
+    handle
+        .join()
+        .expect("reader must wait out the silence and still frame the eventual line");
     let lines: Vec<_> = queue
         .drain()
         .into_iter()
@@ -111,7 +129,9 @@ fn flood_bounded_memory_and_zero_terminal_loss() {
     // eviction regardless of how much flood volume follows.
     std::thread::sleep(Duration::from_millis(100));
     queue.push_terminal(QueueEvent::Terminal("turnCompleted".to_string()));
-    handle.join().expect("reader must drain the whole flood without blocking");
+    handle
+        .join()
+        .expect("reader must drain the whole flood without blocking");
     assert!(stats.lines_read.load(std::sync::atomic::Ordering::SeqCst) > 0);
     let terminal = queue.take_terminal(Duration::from_millis(10));
     assert!(matches!(terminal, Some(QueueEvent::Terminal(s)) if s == "turnCompleted"));
@@ -154,12 +174,21 @@ fn deadlock_probe_stdin_starved_flood_reader_never_stalls() {
         let _ = stdin.write_all(&payload);
     });
 
-    let first = stats.loop_iterations.load(std::sync::atomic::Ordering::SeqCst);
+    let first = stats
+        .loop_iterations
+        .load(std::sync::atomic::Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(400));
-    let second = stats.loop_iterations.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(second > first, "reader thread's loop-iteration heartbeat must advance while the stdin writer is stalled");
+    let second = stats
+        .loop_iterations
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        second > first,
+        "reader thread's loop-iteration heartbeat must advance while the stdin writer is stalled"
+    );
 
-    handle.join().expect("reader must drain to EOF once the child exits");
+    handle
+        .join()
+        .expect("reader must drain to EOF once the child exits");
     let _ = writer.join();
     let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child.pid), None);
 }
@@ -169,7 +198,9 @@ fn crash_on_signal_reader_reaches_clean_eof() {
     let child = spawn_synthetic(&["crash-on-signal"]);
     let queue = Arc::new(BoundedEventQueue::default());
     let (handle, _stats) = spawn_stdout_reader(child.stdout_read, Arc::clone(&queue));
-    handle.join().expect("reader must reach EOF cleanly when the child dies by signal, not hang");
+    handle
+        .join()
+        .expect("reader must reach EOF cleanly when the child dies by signal, not hang");
     let lines: Vec<_> = queue
         .drain()
         .into_iter()

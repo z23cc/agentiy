@@ -431,6 +431,33 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             XCTAssertFalse(recorder.contains(prefix: "commit:"))
             assertOrderedEvents(["idle", "claude:interrupt:interrupt", "claude:send", "draft:restore me"], in: recorder)
         }
+
+        do {
+            let recorder = LifecycleRecorder()
+            let claudeController = LifecycleFakeNativeController(
+                recorder: recorder,
+                hasTurnInFlight: false,
+                failSend: false
+            )
+            let harness = makeHarness(
+                recorder: recorder,
+                idleWaiter: { _ in recorder.record("idle") },
+                claudeController: claudeController
+            )
+            let session = makeRunningClaudeSession(controller: claudeController, host: harness.host)
+            session.pendingClaudeSteeringInstructions = [makeClaudeSteeringInstruction(session: session, text: "race-safe steer")]
+
+            let queueStarted = await harness.service.submitQueuedClaudeSteeringIfSupported(session: session)
+            XCTAssertTrue(queueStarted)
+            await session.claudeSteeringFlushTask?.value
+
+            XCTAssertTrue(session.pendingClaudeSteeringInstructions.isEmpty)
+            XCTAssertTrue(recorder.contains("delivered"))
+            assertOrderedEvents(
+                ["idle", "claude:interrupt:interrupt", "claude:send", "delivered"],
+                in: recorder
+            )
+        }
     }
 
     func testQueuedACPSteeringWaitsForMCPIdleThenInterruptsPromptsOrRestoresFollowUp() async throws {
@@ -2315,7 +2342,9 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         condition: @escaping @MainActor () -> Bool
     ) async throws {
         for _ in 0 ..< 500 {
-            if condition() { return }
+            if condition() {
+                return
+            }
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
         throw LifecycleTimeoutError(operation: message, timeoutSeconds: 0.5)

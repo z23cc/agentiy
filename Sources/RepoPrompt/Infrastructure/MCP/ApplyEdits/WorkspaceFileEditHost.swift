@@ -1,7 +1,28 @@
 import Foundation
 import RepoPromptDomainRuntime
 
-struct WorkspaceFileEditHost: FileEditHost {
+private actor WorkspaceFileEditRawReadState {
+    struct PendingWrite {
+        let fingerprint: FileContentFingerprint
+        let preservationEncodingRawValue: UInt
+    }
+
+    private var pendingWrite: PendingWrite?
+
+    func record(_ snapshot: ValidatedRawFileContentSnapshot) {
+        pendingWrite = PendingWrite(
+            fingerprint: snapshot.fingerprint,
+            preservationEncodingRawValue: snapshot.detectedEncodingRawValue ?? String.Encoding.utf8.rawValue
+        )
+    }
+
+    func takePendingWrite() -> PendingWrite? {
+        defer { pendingWrite = nil }
+        return pendingWrite
+    }
+}
+
+struct WorkspaceFileEditHost: FileEditHost, RawBytesFileEditHost {
     enum Target {
         case existing(WorkspaceFileRecord)
         case create(path: String)
@@ -14,6 +35,7 @@ struct WorkspaceFileEditHost: FileEditHost {
     let createPathResolutionPolicy: WorkspaceFileCreatePathResolutionPolicy
     let selectCreatedFiles: Bool
     let mutationRootMappings: [DomainMutationPhysicalRootMapping]
+    private let rawReadState = WorkspaceFileEditRawReadState()
 
     init(
         store: WorkspaceFileContextStore,
@@ -50,17 +72,36 @@ struct WorkspaceFileEditHost: FileEditHost {
         return content
     }
 
+    func readRawBytes(path _: String) async throws -> Data {
+        guard case let .existing(file) = target else {
+            throw FileManagerError.fileSystemServiceNotFoundWithContext("Cannot read a missing file before creation.")
+        }
+        let snapshot = try await mutationService.readRawContentForTextMutation(file: file)
+        await rawReadState.record(snapshot)
+        return snapshot.data
+    }
+
     func writeTextIfUnchanged(path _: String, content: String, expectedOriginalText: String) async throws {
         guard case let .existing(file) = target else {
             throw FileManagerError.fileSystemServiceNotFoundWithContext("Approved writes require an existing file.")
         }
         try Task.checkCancellation()
-        try await mutationService.overwriteIfUnchanged(
-            file: file,
-            content: content,
-            expectedOriginalContent: expectedOriginalText,
-            mutationRootMappings: mutationRootMappings
-        )
+        if let pendingWrite = await rawReadState.takePendingWrite() {
+            try await mutationService.overwriteIfUnchanged(
+                file: file,
+                content: content,
+                expectedOriginalFingerprint: pendingWrite.fingerprint,
+                preservationEncodingRawValue: pendingWrite.preservationEncodingRawValue,
+                mutationRootMappings: mutationRootMappings
+            )
+        } else {
+            try await mutationService.overwriteIfUnchanged(
+                file: file,
+                content: content,
+                expectedOriginalContent: expectedOriginalText,
+                mutationRootMappings: mutationRootMappings
+            )
+        }
     }
 
     func writeText(path _: String, content: String, overwrite: Bool) async throws {

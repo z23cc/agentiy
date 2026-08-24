@@ -10,10 +10,7 @@ import Foundation
 ///
 /// A single consumer task iterates `stream` to process chunks in the exact order they arrived.
 ///
-/// Related:
-/// - Producer:  ClaudeNativeProcessSessionController.startStdoutReader / startStderrReader
-/// - Consumer:  ClaudeNativeProcessSessionController.handleStdoutChunk / handleStderrChunk
-/// - Tests:     RepoPromptTests/Process/ProcessCoreTests.swift
+/// Covered by `RepoPromptTests/Process/ProcessCoreTests.swift`.
 final class FileHandleChunkChannel: @unchecked Sendable {
     let stream: AsyncStream<Data>
     private let continuation: AsyncStream<Data>.Continuation

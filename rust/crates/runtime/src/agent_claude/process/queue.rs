@@ -37,7 +37,10 @@ pub enum QueueEvent {
     /// earlier draft settled for).
     ///
     /// [`push`]: BoundedEventQueue::push
-    Gap { first_dropped_seq: u64, dropped_count: u64 },
+    Gap {
+        first_dropped_seq: u64,
+        dropped_count: u64,
+    },
 }
 
 fn event_byte_cost(event: &QueueEvent) -> usize {
@@ -117,11 +120,14 @@ impl BoundedEventQueue {
     /// ever be observed per drain, regardless of how many `push` calls evicted content in between.
     pub fn push(&self, event: QueueEvent) {
         let cost = event_byte_cost(&event);
-        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while guard.ring.len() >= self.max_events || guard.current_bytes + cost > self.max_bytes {
             let Some(evicted) = guard.ring.pop_front() else {
                 break; // ring already empty but the incoming event alone exceeds the byte cap --
-                       // admitted anyway below.
+                // admitted anyway below.
             };
             guard.current_bytes -= event_byte_cost(&evicted);
             self.dropped_count.fetch_add(1, Ordering::SeqCst);
@@ -139,14 +145,18 @@ impl BoundedEventQueue {
         }
         guard.current_bytes += cost;
         guard.ring.push_back(event);
-        self.peak_bytes.fetch_max(guard.current_bytes, Ordering::SeqCst);
+        self.peak_bytes
+            .fetch_max(guard.current_bytes, Ordering::SeqCst);
         drop(guard);
         self.condvar.notify_all();
     }
 
     /// Terminal events use the reserved slot and are never evicted by ring pressure.
     pub fn push_terminal(&self, event: QueueEvent) {
-        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.terminal = Some(event);
         drop(guard);
         self.condvar.notify_all();
@@ -172,7 +182,10 @@ impl BoundedEventQueue {
     /// drained items' cost) is correct: `terminal` and the gap accumulator never contribute to
     /// `current_bytes` in the first place.
     pub fn drain(&self) -> Vec<QueueEvent> {
-        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let gap = guard.gap.take().map(|g| QueueEvent::Gap {
             first_dropped_seq: g.first_dropped_seq,
             dropped_count: g.dropped_count,
@@ -185,7 +198,10 @@ impl BoundedEventQueue {
     }
 
     pub fn take_terminal(&self, timeout: std::time::Duration) -> Option<QueueEvent> {
-        let guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut guard, _) = self
             .condvar
             .wait_timeout_while(guard, timeout, |g| g.terminal.is_none())
@@ -206,21 +222,41 @@ mod tests {
         // must absorb all twenty, not spawn twenty ring entries.
         let queue = BoundedEventQueue::with_limits(64, 100);
         for seq in 0..20u64 {
-            queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 2] });
+            queue.push(QueueEvent::Line {
+                seq,
+                bytes: vec![b'x'; 2],
+            });
         }
         // 20 * 2 = 40 resident bytes; admitting a 100-byte event needs current_bytes back to 0
         // (40 + 100 > 100 at every count down to zero, 0 + 100 == 100 stops it there) -- evicts
         // exactly all twenty in this one call.
-        queue.push(QueueEvent::Line { seq: 999, bytes: vec![b'y'; 100] });
+        queue.push(QueueEvent::Line {
+            seq: 999,
+            bytes: vec![b'y'; 100],
+        });
         let drained = queue.drain();
-        let gap_count = drained.iter().filter(|e| matches!(e, QueueEvent::Gap { .. })).count();
-        assert_eq!(gap_count, 1, "twenty evicted Lines must coalesce into exactly one Gap, got {drained:?}");
+        let gap_count = drained
+            .iter()
+            .filter(|e| matches!(e, QueueEvent::Gap { .. }))
+            .count();
+        assert_eq!(
+            gap_count, 1,
+            "twenty evicted Lines must coalesce into exactly one Gap, got {drained:?}"
+        );
         assert!(
-            matches!(drained.first(), Some(QueueEvent::Gap { dropped_count: 20, .. })),
+            matches!(
+                drained.first(),
+                Some(QueueEvent::Gap {
+                    dropped_count: 20,
+                    ..
+                })
+            ),
             "the coalesced Gap must report all 20 evicted Lines: {drained:?}"
         );
         assert!(
-            drained.iter().any(|e| matches!(e, QueueEvent::Line { seq: 999, .. })),
+            drained
+                .iter()
+                .any(|e| matches!(e, QueueEvent::Line { seq: 999, .. })),
             "the newly admitted event must be present: {drained:?}"
         );
     }
@@ -235,14 +271,32 @@ mod tests {
         // ever be observed at drain time.
         let queue = BoundedEventQueue::with_limits(8, 1_048_576);
         for seq in 0..64u64 {
-            queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 8] });
+            queue.push(QueueEvent::Line {
+                seq,
+                bytes: vec![b'x'; 8],
+            });
         }
         let drained = queue.drain();
-        assert!(drained.len() <= 9, "ring must never exceed its configured event cap plus the one gap slot: {drained:?}");
-        let gap_count = drained.iter().filter(|e| matches!(e, QueueEvent::Gap { .. })).count();
-        assert!(gap_count <= 1, "sustained pressure across many pushes must still yield at most one Gap: {drained:?}");
-        let line_count = drained.iter().filter(|e| matches!(e, QueueEvent::Line { .. })).count();
-        assert_eq!(line_count, 8, "every non-gap ring slot must be real retained Line content, not further gap residue: {drained:?}");
+        assert!(
+            drained.len() <= 9,
+            "ring must never exceed its configured event cap plus the one gap slot: {drained:?}"
+        );
+        let gap_count = drained
+            .iter()
+            .filter(|e| matches!(e, QueueEvent::Gap { .. }))
+            .count();
+        assert!(
+            gap_count <= 1,
+            "sustained pressure across many pushes must still yield at most one Gap: {drained:?}"
+        );
+        let line_count = drained
+            .iter()
+            .filter(|e| matches!(e, QueueEvent::Line { .. }))
+            .count();
+        assert_eq!(
+            line_count, 8,
+            "every non-gap ring slot must be real retained Line content, not further gap residue: {drained:?}"
+        );
     }
 
     #[test]
@@ -256,25 +310,42 @@ mod tests {
         // a Gap); with it, all 8 land clean.
         let queue = BoundedEventQueue::with_limits(8, 100);
         for seq in 0..8u64 {
-            queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 10] });
+            queue.push(QueueEvent::Line {
+                seq,
+                bytes: vec![b'x'; 10],
+            });
         }
         assert_eq!(queue.drain().len(), 8, "first batch must land in full");
         for seq in 8..16u64 {
-            queue.push(QueueEvent::Line { seq, bytes: vec![b'x'; 10] });
+            queue.push(QueueEvent::Line {
+                seq,
+                bytes: vec![b'x'; 10],
+            });
         }
         let refilled = queue.drain();
         assert!(
             !refilled.iter().any(|e| matches!(e, QueueEvent::Gap { .. })),
             "a drained queue must start from a clean byte budget, not a stale carried-over one: {refilled:?}"
         );
-        assert_eq!(refilled.len(), 8, "the second batch must also land in full: {refilled:?}");
+        assert_eq!(
+            refilled.len(),
+            8,
+            "the second batch must also land in full: {refilled:?}"
+        );
     }
 
     #[test]
     fn a_single_oversized_event_is_admitted_anyway() {
         let queue = BoundedEventQueue::with_limits(8, 64);
-        queue.push(QueueEvent::Line { seq: 1, bytes: vec![b'x'; 200] });
+        queue.push(QueueEvent::Line {
+            seq: 1,
+            bytes: vec![b'x'; 200],
+        });
         let drained = queue.drain();
-        assert_eq!(drained.len(), 1, "the oversized item is admitted alone despite exceeding the byte cap: {drained:?}");
+        assert_eq!(
+            drained.len(),
+            1,
+            "the oversized item is admitted alone despite exceeding the byte cap: {drained:?}"
+        );
     }
 }

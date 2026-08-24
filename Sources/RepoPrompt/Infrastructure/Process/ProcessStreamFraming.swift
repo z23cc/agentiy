@@ -37,10 +37,8 @@ func makeUTF8Sample(from data: Data, limit: Int) -> (String, Bool)? {
 /// Performance: uses `withUnsafeBytes` + slice appends to avoid per-byte Data.append
 /// overhead on large chunks.
 ///
-/// Related:
-/// - Consumer: ClaudeNativeProcessSessionController.handleStdoutChunk
-/// - Codec:    ClaudeSDKProtocolCodec.decodeLine
-/// - Tests:    RepoPromptTests/Process/ProcessCoreTests.swift (LineFramer section)
+/// Shared by ACP, Codex, and headless Claude process readers; covered by the `LineFramer`
+/// section of `RepoPromptTests/Process/ProcessCoreTests.swift`.
 struct LineFramer {
     struct Limits {
         /// Maximum bytes allowed in a single logical line before overflow handling.
