@@ -28,12 +28,25 @@ final class AgentClaudeSameProcessReaperCoexistenceTests: XCTestCase {
         let swiftObserver = ChildProcessExitObserver(pid: swiftChild.pid)
 
         // Rust side: a real agent-claude scope through the actual FFI bridge (not a fake
-        // transport) -- `/bin/sleep`'s own argv parsing is irrelevant here (contract §2.5's flag
-        // injection makes it exit immediately with an argument error either way); what this test
-        // needs is a real `posix_spawn` + a real Rust-side reap happening concurrently with the
-        // Swift side above, in this one process.
+        // transport) -- what this test needs is a real `posix_spawn` + a real Rust-side reap
+        // happening concurrently with the Swift side above, in this one process. `/bin/sleep` was
+        // an inert stand-in pre-P6-7-§15.5: `start_or_resume` did not yet send anything requiring a
+        // response, so any real child sufficed. It now blocks on the session-startup `initialize`
+        // handshake (contract §2.5) before returning, and `/bin/sleep` cannot answer it (it exits
+        // almost immediately on the injected `-p --verbose ...` flags it does not understand) --
+        // this needs the real synthetic CLI in `scripted` mode instead, matching the Rust-side
+        // fix for the same gap (`rust/crates/ffi/src/api.rs`'s agent-claude tests).
+        let cliPath = try syntheticCLIPath()
+        let script = try writeScript("SLEEP 3000\n")
         let bridge = try await AgentryCoreBridge.start()
-        let session = try await CoreAgentSession.open(bridge: bridge, config: CoreAgentSessionConfig(command: "/bin/sleep"))
+        let session = try await CoreAgentSession.open(
+            bridge: bridge,
+            config: CoreAgentSessionConfig(
+                command: cliPath,
+                environment: ["AGENT_CLAUDE_SYNTHETIC_CLI_ARGS": "scripted\n\(script.path)"]
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: script) }
         let rustReceipt = try await session.startOrResume()
         XCTAssertGreaterThan(rustReceipt.pid, 0)
 
@@ -55,5 +68,29 @@ final class AgentClaudeSameProcessReaperCoexistenceTests: XCTestCase {
         // load-bearing proof this test exists for -- neither reaper starves, blocks, or
         // cross-attributes the other's PID when both run in one process concurrently -- is the
         // assertion above.
+    }
+
+    // MARK: - Fixtures
+
+    /// Mirrors `ClaudeRustBackedTurnLevelDifferentialTests`'s identically named helper.
+    private func syntheticCLIPath() throws -> String {
+        let repoRoot = try RepoRoot.url()
+        let path = repoRoot
+            .appendingPathComponent(".build/cargo/aarch64-apple-darwin/debug/agent-claude-synthetic-cli")
+            .path
+        guard FileManager.default.isExecutableFile(atPath: path) else {
+            throw XCTSkip(
+                "agent-claude-synthetic-cli not found at \(path) -- run `make dev-cargo-build` or "
+                    + "`make dev-cargo-test CARGO_PACKAGE=all` first"
+            )
+        }
+        return path
+    }
+
+    private func writeScript(_ contents: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("p6-7-reaper-coexistence-\(UUID().uuidString).script")
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        return url
     }
 }

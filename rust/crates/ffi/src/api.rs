@@ -2458,6 +2458,7 @@ mod tests {
             mcp_strict_mode: false,
             disallowed_built_in_tools: Vec::new(),
             append_system_prompt: None,
+            system_prompt: None,
             idle_fallback_millis: 1_000,
             interrupt_ack_timeout_millis: 400,
         }
@@ -2478,8 +2479,17 @@ mod tests {
     fn agent_claude_full_lifecycle_round_trips_through_the_ffi_surface() {
         let (core, identity, _cancellation) = initialized_core();
         let cli = agent_claude_synthetic_cli_path();
+        // P6-7 (§15.5): `well-behaved` mode has no responder and cannot ACK the session-startup
+        // `initialize` handshake `agent_start_or_resume` now blocks on (contract §2.5), so this
+        // moves to `scripted` mode's equivalent -- see the cargo-only twin
+        // (`agent_claude_scope.rs::well_behaved_session_completes_a_turn_end_to_end`)'s comment for
+        // why `AWAITACKS 1`/`SLEEP 200` are load-bearing, not decorative.
+        let script = write_ffi_script("well-behaved-equivalent", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
         let scope = core
-            .agent_open_scope(identity.clone(), agent_claude_config(cli.to_str().expect("utf8 path"), vec!["well-behaved".to_owned()]))
+            .agent_open_scope(
+                identity.clone(),
+                agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]),
+            )
             .expect("open scope");
         let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
 
@@ -2510,6 +2520,7 @@ mod tests {
         core.close_subscription(subscription).expect("close subscription");
         core.agent_shutdown(identity.clone(), scope.scope_id.clone()).expect("shutdown");
         core.agent_shutdown(identity, scope.scope_id).expect("shutdown is idempotent");
+        let _ = std::fs::remove_file(&script);
     }
 
     #[test]
@@ -2517,7 +2528,18 @@ mod tests {
         // P6-6 done-when: "a test proving staleGeneration is reachable" -- through the real bridge,
         // not just the runtime crate directly (see `agent_claude_scope.rs`'s cargo-only twin).
         let (core, identity, _cancellation) = initialized_core();
-        let scope = core.agent_open_scope(identity.clone(), agent_claude_config("/bin/sleep", vec!["5".to_owned()])).expect("open scope");
+        // P6-7 (§15.5): `/bin/sleep` cannot ACK the session-startup `initialize` handshake
+        // `agent_start_or_resume` now blocks on -- this needs the real synthetic CLI in `scripted`
+        // mode instead, matching the cargo-only twin's `interrupt_stale_generation_is_reachable_
+        // naming_n_while_n_plus_1_is_live`.
+        let cli = agent_claude_synthetic_cli_path();
+        let script = write_ffi_script("stale-generation", "SLEEP 3000\n");
+        let scope = core
+            .agent_open_scope(
+                identity.clone(),
+                agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]),
+            )
+            .expect("open scope");
         let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
         core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
 
@@ -2552,6 +2574,7 @@ mod tests {
 
         core.close_subscription(subscription).expect("close subscription");
         core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+        let _ = std::fs::remove_file(&script);
     }
 
     #[test]
@@ -2560,7 +2583,16 @@ mod tests {
         let intruder_core = CoreRuntime::new(config()).expect("second runtime");
         let intruder = intruder_core.initialize().expect("initialize intruder").runtime_identity;
 
-        let scope = core.agent_open_scope(identity.clone(), agent_claude_config("/bin/sleep", vec!["2".to_owned()])).expect("open scope");
+        // P6-7 (§15.5): `/bin/sleep` cannot ACK the session-startup handshake the real-identity
+        // `agent_start_or_resume` call below needs -- see the previous test's comment.
+        let cli = agent_claude_synthetic_cli_path();
+        let script = write_ffi_script("identity-swap", "AWAITACKS 1\nSLEEP 500\n");
+        let scope = core
+            .agent_open_scope(
+                identity.clone(),
+                agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]),
+            )
+            .expect("open scope");
 
         assert_eq!(
             core.agent_start_or_resume(intruder.clone(), scope.scope_id.clone(), None).unwrap_err(),
@@ -2587,6 +2619,7 @@ mod tests {
         assert_eq!(core.agent_shutdown(intruder, scope.scope_id.clone()).unwrap_err(), CoreError::StaleRuntimeIdentity);
 
         core.agent_shutdown(identity, scope.scope_id).expect("the real identity can still shut the scope down");
+        let _ = std::fs::remove_file(&script);
     }
 
     #[test]

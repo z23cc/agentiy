@@ -35,14 +35,27 @@
 //!   real interrupt round trip without hand-rolling the protocol. The main thread executes the
 //!   script file line by line: `OUT <raw json>` writes that line verbatim to stdout (flushed);
 //!   `SLEEP <ms>` sleeps; `NOACK`/`ACK` toggle the background ACK responder (`NOACK` before an
-//!   interrupt drives the 1.5 s ACK-timeout outcome). Exiting the script (EOF) exits the process,
-//!   producing a normal stdout EOF.
-//! - `stdin-closed-after-delay <delay-ms> <idle-ms>` -- P6-6: sleeps `<delay-ms>`, closes fd 0
-//!   (single-threaded, no background reader -- unlike `scripted`, so there is no close-vs-
-//!   blocked-read race), then sleeps `<idle-ms>` before exiting, keeping stdout/the process alive
-//!   throughout. Deterministically breaks the parent's *next* stdin write (`EPIPE`) once
-//!   `<delay-ms>` has elapsed, without ever EOF-ing stdout -- drives the interrupt `failed`
-//!   outcome (`ControlOutcome::WriteFailed`) without racing `on_stdout_eof`'s own turn-flush.
+//!   interrupt drives the 1.5 s ACK-timeout outcome); `AWAITACKS <n>` (P6-7, §15.5) blocks the
+//!   main thread until the responder has sent at least `<n>` ACKs, a race-free way to sequence a
+//!   script's own `OUT` directives *after* `agent_claude::scope::AgentClaudeScope::
+//!   start_or_resume`'s session-startup handshake (`initialize`, plus `set_permission_mode` when
+//!   configured) has completed, rather than guessing a `SLEEP` long enough to outlast it;
+//!   `NOACK_AFTER <n>` (P6-7, §15.5) is the race-free complement for the opposite need -- ACK the
+//!   handshake's own `<n>` request(s) normally, then permanently stop ACKing every request after
+//!   that, enforced inside the responder thread's own send decision (not a script-side poll), so a
+//!   script that wants to starve a *specific* post-handshake control request (interrupt/
+//!   apply_model_and_effort ACK-timeout tests) cannot lose a race against `NOACK`'s main-thread-
+//!   polled toggle taking effect too late. Exiting the script (EOF) exits the process, producing a
+//!   normal stdout EOF.
+//! - `stdin-closed-after-delay <delay-ms> <idle-ms>` -- P6-6: reads and ACKs exactly one control
+//!   request first (P6-7, §15.5 -- the session-startup `initialize` handshake `start_or_resume`
+//!   now sends and blocks on), then sleeps `<delay-ms>`, closes fd 0 (single-threaded, no
+//!   background reader for *this* step -- unlike `scripted`, so there is no close-vs-blocked-read
+//!   race), then sleeps `<idle-ms>` before exiting, keeping stdout/the process alive throughout.
+//!   Deterministically breaks the parent's *next* stdin write after the handshake (`EPIPE`) once
+//!   `<delay-ms>` has elapsed, without ever EOF-ing stdout -- drives the interrupt/
+//!   apply-model-and-effort `failed` outcome (`ControlOutcome::WriteFailed`) without racing
+//!   `on_stdout_eof`'s own turn-flush.
 //!
 //! Mode resolution normally reads the first argv entry (`raw_argv_for_testing: true`, the
 //! runtime-crate-level tests' escape hatch -- see `agent_claude::scope::AgentClaudeScopeConfig`).
@@ -139,6 +152,27 @@ fn main() {
         "stdin-closed-after-delay" => {
             let delay_ms: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(50);
             let idle_ms: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3_000);
+            // P6-7 (§15.5): `AgentClaudeScope::start_or_resume` now blocks on a session-startup
+            // control-request handshake (`initialize`, contract §2.5) before returning, so this
+            // mode -- whose whole point is driving the *next* control request (interrupt/
+            // apply_model_and_effort) into a closed pipe -- must ACK exactly that first request
+            // before starting its delay/close/idle sequence, or `start_or_resume` would never
+            // return. One blocking read, one write, still no background responder -- so there is
+            // still no close-vs-blocked-read race for the request this mode exists to fail.
+            let stdin = std::io::stdin();
+            let mut line = String::new();
+            if stdin.lock().read_line(&mut line).unwrap_or(0) > 0 {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                    if let Some(request_id) = value.get("request_id").and_then(|v| v.as_str()) {
+                        let response = serde_json::json!({
+                            "type": "control_response",
+                            "response": {"subtype": "success", "request_id": request_id},
+                        });
+                        let _ = writeln!(stdout, "{response}");
+                        let _ = stdout.flush();
+                    }
+                }
+            }
             std::thread::sleep(Duration::from_millis(delay_ms));
             // SAFETY: `close(0)` on this process's own stdin fd. No other thread in this
             // single-threaded mode ever reads fd 0, so this is not racing a blocked read() the
@@ -171,6 +205,11 @@ fn main() {
                 .unwrap_or_else(|error| panic!("failed to read scripted-mode script {script_path:?}: {error}"));
             let ack_enabled = Arc::new(AtomicBool::new(true));
             let ack_flag = Arc::clone(&ack_enabled);
+            let ack_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let ack_count_for_thread = Arc::clone(&ack_count);
+            // u64::MAX ("never limit") until a script sets a lower bound via `NOACK_AFTER <n>`.
+            let noack_after = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+            let noack_after_for_thread = Arc::clone(&noack_after);
             // Background stdin responder: ACKs every control_request as an immediate success
             // control_response naming the same request_id, unless the script has disabled it via
             // `NOACK` (used to drive the 1.5 s interrupt-ACK-timeout outcome from the real scope).
@@ -188,6 +227,12 @@ fn main() {
                     if !ack_flag.load(Ordering::SeqCst) {
                         continue;
                     }
+                    if ack_count_for_thread.load(Ordering::SeqCst) >= noack_after_for_thread.load(Ordering::SeqCst) {
+                        // NOACK_AFTER's permanent cutoff: checked (and enforced) entirely inside
+                        // this responder thread's own send decision, so it cannot lose a race
+                        // against a script-side directive that has not been polled/executed yet.
+                        continue;
+                    }
                     let Some(request_id) = value.get("request_id").and_then(|v| v.as_str()) else { continue };
                     let response = serde_json::json!({
                         "type": "control_response",
@@ -196,6 +241,7 @@ fn main() {
                     let mut out = std::io::stdout();
                     let _ = writeln!(out, "{response}");
                     let _ = out.flush();
+                    ack_count_for_thread.fetch_add(1, Ordering::SeqCst);
                 }
             });
             for raw_line in script.lines() {
@@ -215,6 +261,16 @@ fn main() {
                     }
                     "NOACK" => ack_enabled.store(false, Ordering::SeqCst),
                     "ACK" => ack_enabled.store(true, Ordering::SeqCst),
+                    "NOACK_AFTER" => {
+                        let limit: u64 = rest.trim().parse().unwrap_or(0);
+                        noack_after.store(limit, Ordering::SeqCst);
+                    }
+                    "AWAITACKS" => {
+                        let target: u64 = rest.trim().parse().unwrap_or(0);
+                        while ack_count.load(Ordering::SeqCst) < target {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
                     other => eprintln!("scripted: ignoring unknown directive {other:?}"),
                 }
             }

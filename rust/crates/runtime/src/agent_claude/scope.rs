@@ -173,6 +173,10 @@ pub enum AgentScopeError {
     Reaper(String),
     TransportWrite(String),
     InvalidArgument(&'static str),
+    /// Port of `ControllerError.invalidControlResponse` (`ClaudeNativeProcessSessionController.
+    /// swift:1962-1963`): the CLI answered a control request with `subtype: "error"` (or any
+    /// subtype other than `"success"`), carrying its own error message.
+    ControlResponseError(String),
 }
 
 impl std::fmt::Display for AgentScopeError {
@@ -188,6 +192,7 @@ impl std::fmt::Display for AgentScopeError {
             Self::Reaper(message) => write!(f, "reaper registration failed: {message}"),
             Self::TransportWrite(message) => write!(f, "transport write failed: {message}"),
             Self::InvalidArgument(what) => write!(f, "invalid argument: {what}"),
+            Self::ControlResponseError(message) => write!(f, "control response error: {message}"),
         }
     }
 }
@@ -237,6 +242,12 @@ pub struct AgentClaudeScopeConfig {
     /// GLM's `--append-system-prompt` workaround (contract §2.5 item 1) -- carried but inert for
     /// `claudeCode` (`None` in every production `claudeCode` configuration).
     pub append_system_prompt: Option<String>,
+    /// P6-7 (§15.5): the `initialize` control request's `systemPrompt` override (contract §2.5,
+    /// `buildInitializeRequest(systemPromptOverride:)`) -- a *protocol-level* field sent once at
+    /// session start, distinct from `append_system_prompt`'s CLI-argv `--append-system-prompt`
+    /// mechanism. `None` omits the `systemPrompt` key entirely, matching Swift's `if let
+    /// systemPromptOverride { request["systemPrompt"] = ... }`.
+    pub system_prompt: Option<String>,
     pub idle_fallback: Duration,
     pub interrupt_ack_timeout: Duration,
     /// Test-only escape hatch: see this module's doc comment. Never set outside a test scope.
@@ -255,6 +266,7 @@ impl Default for AgentClaudeScopeConfig {
             mcp_strict_mode: false,
             disallowed_built_in_tools: Vec::new(),
             append_system_prompt: None,
+            system_prompt: None,
             idle_fallback: super::turn_state::DEFAULT_IDLE_FALLBACK,
             interrupt_ack_timeout: Duration::from_millis(1500),
             raw_argv_for_testing: false,
@@ -434,7 +446,122 @@ impl AgentClaudeScope {
         threads.push(stdout_handle);
         threads.push(stderr_handle);
         drop(threads);
+        // P6-7 (§15.5): the session-startup control-request handshake -- `initialize` then
+        // (if configured) `set_permission_mode` -- runs synchronously here, blocking this call
+        // until both ACK or the transport dies, exactly mirroring Swift's `startOrResume` awaiting
+        // `initializeIfNeeded` before returning a `SessionRef` (`:445-447`). `--resume` does not
+        // skip or reorder this: Swift's `initializeIfNeeded` never branches on
+        // `existingSessionID`, and neither does this call. On failure, tear the process down the
+        // same way Swift's `startOrResume` does on any post-spawn throw (`:450-453`: `if process
+        // != nil ... { await shutdown() }; throw error`) rather than leaving a half-initialized
+        // scope the caller believes is running.
+        if let Err(handshake_error) = self.perform_startup_handshake() {
+            let _ = self.shutdown(identity);
+            return Err(handshake_error);
+        }
         Ok(StartReceipt { pid: spawned.pid, process_group_id: spawned.process_group_id })
+    }
+
+    /// Contract §2.5/design §4.5 gap closure (P6-7 §15.4/§15.5, `docs/architecture/
+    /// rust-agent-claude-v1.md` §15.5): ports `initializeIfNeeded`/`buildInitializeRequest`
+    /// (`ClaudeNativeProcessSessionController.swift:701-720`, `:795-800`) and
+    /// `applyInitialPermissionModeIfNeeded`/`buildSetPermissionModeRequest` (`:730-736`,
+    /// `:812-819`) verbatim in sequence: `initialize` (optionally carrying `systemPrompt`), then
+    /// `set_permission_mode` (only if `config.permission_mode` is non-empty after trim) -- both
+    /// with **no** bounded timeout, matching Swift's `sendControlRequest(request:)` default
+    /// (`timeoutSeconds: TimeInterval? = nil`, `:838`). The only thing that ever unblocks a stuck
+    /// handshake is `on_stdout_eof`'s `control.fail_all("stdout EOF")`, exactly as Swift's
+    /// `failPendingControlRequests(with: .processNotRunning)` does from `handleStdoutEOF` (`:1994,
+    /// 2010`).
+    ///
+    /// **Deliberately out of scope here, named rather than silently absorbed:** the third leg of
+    /// Swift's `initializeIfNeeded`, `applyInitialFlagSettingsIfNeeded` (`:775-789`, the initial
+    /// `apply_flag_settings` control request for model/effort), is not ported into this handshake.
+    /// On the Rust arm that role is already filled by a *different* call site --
+    /// `ClaudeRustBackedNativeSessionAdapter.startOrResume`'s post-`startOrResume` best-effort
+    /// `applyModelAndEffort` call (P6-7, landed at `dcc09247`) -- which fires the equivalent
+    /// `set_model_and_effort` request without blocking session start-up on its ACK. Porting a
+    /// second, blocking copy into this handshake would race that adapter call and double-send the
+    /// settings request; the adapter's non-blocking placement is the documented intentional design
+    /// (its own doc comment: "mirrors the fast-enqueue contract"), not an oversight this closes.
+    fn perform_startup_handshake(&self) -> Result<(), AgentScopeError> {
+        self.send_initialize_request()?;
+        self.send_set_permission_mode_request_if_configured()?;
+        Ok(())
+    }
+
+    fn next_control_request_id(&self, prefix: &str) -> String {
+        format!("{prefix}-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Port of `initializeIfNeeded`/`buildInitializeRequest` (`:701-720`, `:795-800`). On success,
+    /// records an observed `session_id` from the response exactly as `recordObservedSessionID`
+    /// does (`:706-709`) -- the same `cli_session_id` field `send_user_message` already reads for
+    /// `--resume` continuity.
+    fn send_initialize_request(&self) -> Result<(), AgentScopeError> {
+        let mut request = Map::new();
+        request.insert("subtype".to_string(), json!("initialize"));
+        if let Some(system_prompt) = &self.config.system_prompt {
+            request.insert("systemPrompt".to_string(), json!(system_prompt));
+        }
+        let response = self.send_startup_control_request("init", &request)?;
+        if let Some(session_id) = response.get("session_id").and_then(Value::as_str) {
+            let trimmed = session_id.trim();
+            if !trimmed.is_empty() {
+                self.lock_state().translator.cli_session_id = Some(trimmed.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Port of `applyInitialPermissionModeIfNeeded`/`buildSetPermissionModeRequest` (`:730-736`,
+    /// `:812-819`): sent whenever `config.permission_mode` is non-empty after trimming, regardless
+    /// of value -- this is independent of, and in addition to, the `--allow-
+    /// dangerously-skip-permissions` argv flag `build_arguments` already injects for the specific
+    /// `"bypassPermissions"` value (contract §2.5 item 3).
+    fn send_set_permission_mode_request_if_configured(&self) -> Result<(), AgentScopeError> {
+        let Some(mode) = self.config.permission_mode.as_deref() else { return Ok(()) };
+        let trimmed = mode.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let mut request = Map::new();
+        request.insert("subtype".to_string(), json!("set_permission_mode"));
+        request.insert("mode".to_string(), json!(trimmed));
+        self.send_startup_control_request("permmode", &request)?;
+        Ok(())
+    }
+
+    /// Port of `sendControlRequest(request:)`'s no-timeout default plus `handleControlResponse`'s
+    /// subtype dispatch (`:1959-1963`): `"success"` resolves with the response body, anything else
+    /// (`"error"` in practice) fails with the CLI's own error message, matching Swift's
+    /// `ControllerError.invalidControlResponse`. Used only by the two session-startup handshake
+    /// requests above -- `interrupt_turn`/`apply_model_and_effort` intentionally do not check
+    /// `subtype` (design predates this port; out of scope here, see this module's top-of-file
+    /// "scope reductions" note).
+    fn send_startup_control_request(&self, request_id_prefix: &str, request: &Map<String, Value>) -> Result<Map<String, Value>, AgentScopeError> {
+        let request_id = self.next_control_request_id(request_id_prefix);
+        let write_request_id = request_id.clone();
+        let outcome = control::send_control_request_blocking(&self.control, &request_id, || {
+            let line = codec::encode_control_request(&write_request_id, request);
+            self.write_line(line)
+        });
+        match outcome {
+            ControlOutcome::Response(response) if response.subtype == "success" => Ok(response.response.unwrap_or_default()),
+            ControlOutcome::Response(response) => {
+                let message = response.error.unwrap_or_else(|| "Unknown Claude control error".to_string());
+                Err(AgentScopeError::ControlResponseError(message))
+            }
+            ControlOutcome::WriteFailed(reason) => Err(AgentScopeError::TransportWrite(reason)),
+            ControlOutcome::Timeout => {
+                // `send_control_request_blocking` never produces this variant (module doc); treated
+                // as a control-response error rather than `unreachable!()` per charter §14.1's
+                // panic-avoidance policy for authority code.
+                Err(AgentScopeError::ControlResponseError(
+                    "unexpected timeout outcome from a blocking control request".to_string(),
+                ))
+            }
+        }
     }
 
     fn build_arguments(&self, resume_session_id: Option<&str>) -> Vec<String> {

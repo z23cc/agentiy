@@ -229,7 +229,15 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         let cliPath = try syntheticCLIPath()
         let sessionID = "p6-7-diff-session-\(UUID().uuidString.prefix(8))"
         let scriptURL = try writeScript([
-            "SLEEP 200",
+            // P6-7 (§15.5): both arms now perform a real session-startup control-request round
+            // trip before `startOrResume` returns (Swift always did; the Rust arm's `initialize`
+            // handshake -- plus `set_permission_mode`, since `makeConfig` below sets a non-empty
+            // `permissionMode` -- closed the gap this margin needs to outlast). 500 ms is the
+            // margin `ClaudeRustBackedNativeSessionAdapter`'s own outer-deadline comments and this
+            // suite's other cross-process synchronization already use as "comfortably generous
+            // under parallel-test-run contention"; 200 ms measured flaky under `--filter Claude`'s
+            // full concurrent load (both arms' handshakes racing the script's own OUT lines).
+            "SLEEP 500",
             #"OUT {"type":"system","subtype":"init","session_id":"\#(sessionID)"}"#,
             #"OUT {"type":"assistant","message":{"content":[{"type":"text","text":"Hello from the differential"}]}}"#,
             #"OUT {"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}]}}"#,

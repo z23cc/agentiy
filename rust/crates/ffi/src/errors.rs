@@ -145,6 +145,11 @@ pub enum CoreError {
     AgentClaudeTransportWriteFailed { message: String },
     #[error("{message}")]
     AgentClaudeInvalidRequest { message: String },
+    /// P6-7 (§15.5): the CLI answered a session-startup handshake control request (`initialize`/
+    /// `set_permission_mode`, contract §2.5) with `subtype: "error"`, carrying its own message --
+    /// port of `ControllerError.invalidControlResponse`.
+    #[error("agent-claude control response error: {message}")]
+    AgentClaudeControlResponseError { message: String },
 }
 
 impl From<IdentifierError> for CoreError {
@@ -348,6 +353,7 @@ impl From<AgentScopeError> for CoreError {
             AgentScopeError::Reaper(message) => Self::AgentClaudeReaperFailed { message },
             AgentScopeError::TransportWrite(message) => Self::AgentClaudeTransportWriteFailed { message },
             AgentScopeError::InvalidArgument(what) => Self::AgentClaudeInvalidRequest { message: what.to_string() },
+            AgentScopeError::ControlResponseError(message) => Self::AgentClaudeControlResponseError { message },
         }
     }
 }

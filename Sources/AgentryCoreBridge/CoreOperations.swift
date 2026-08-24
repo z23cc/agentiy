@@ -165,6 +165,9 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case agentClaudeReaperFailed(String)
     case agentClaudeTransportWriteFailed(String)
     case agentClaudeInvalidRequest(String)
+    /// P6-7 (§15.5): the CLI answered a session-startup handshake control request (`initialize`/
+    /// `set_permission_mode`) with `subtype: "error"`.
+    case agentClaudeControlResponseError(String)
     case transportFailure(String)
 }
 
@@ -204,6 +207,7 @@ extension CoreBridgeError: LocalizedError {
         case let .agentClaudeReaperFailed(message): "Agent-claude reaper registration failed: \(message)"
         case let .agentClaudeTransportWriteFailed(message): "Agent-claude transport write failed: \(message)"
         case let .agentClaudeInvalidRequest(message): "Invalid agent-claude request: \(message)"
+        case let .agentClaudeControlResponseError(message): "Agent-claude control response error: \(message)"
         case let .transportFailure(message): "Rust FFI transport failure: \(message)"
         }
     }

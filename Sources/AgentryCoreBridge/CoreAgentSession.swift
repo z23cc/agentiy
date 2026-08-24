@@ -132,6 +132,11 @@ public struct CoreAgentSessionConfig: Sendable {
     public var mcpStrictMode: Bool
     public var disallowedBuiltInTools: [String]
     public var appendSystemPrompt: String?
+    /// P6-7 (`docs/architecture/rust-agent-claude-v1.md` §15.5): the `initialize` control
+    /// request's `systemPrompt` override (contract §2.5) -- sent once during
+    /// `CoreAgentSession.startOrResume`'s session-startup handshake. Distinct from
+    /// `appendSystemPrompt`'s CLI-argv `--append-system-prompt` mechanism (GLM-only).
+    public var systemPromptOverride: String?
     public var idleFallbackMillis: UInt64
     public var interruptAckTimeoutMillis: UInt64
 
@@ -145,6 +150,7 @@ public struct CoreAgentSessionConfig: Sendable {
         mcpStrictMode: Bool = false,
         disallowedBuiltInTools: [String] = [],
         appendSystemPrompt: String? = nil,
+        systemPromptOverride: String? = nil,
         idleFallbackMillis: UInt64 = 1_000,
         interruptAckTimeoutMillis: UInt64 = 1_500
     ) {
@@ -157,6 +163,7 @@ public struct CoreAgentSessionConfig: Sendable {
         self.mcpStrictMode = mcpStrictMode
         self.disallowedBuiltInTools = disallowedBuiltInTools
         self.appendSystemPrompt = appendSystemPrompt
+        self.systemPromptOverride = systemPromptOverride
         self.idleFallbackMillis = idleFallbackMillis
         self.interruptAckTimeoutMillis = interruptAckTimeoutMillis
     }
@@ -316,6 +323,7 @@ public final class CoreAgentSession: @unchecked Sendable {
             mcpStrictMode: config.mcpStrictMode,
             disallowedBuiltInTools: config.disallowedBuiltInTools,
             appendSystemPrompt: config.appendSystemPrompt,
+            systemPrompt: config.systemPromptOverride,
             idleFallbackMillis: config.idleFallbackMillis,
             interruptAckTimeoutMillis: config.interruptAckTimeoutMillis
         ))

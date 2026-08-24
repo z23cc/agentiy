@@ -36,20 +36,16 @@
     ///    §7's not-drift list pins today's four meanings; `ClaudeNativeProcessSessionController`
     ///    shares the same typealias, so widening it would ripple into the still-authoritative arm).
     ///
-    /// **Known gap, discovered while building this adapter (not fixed here -- see P6-7 session
-    /// report).** `agent_claude::scope::AgentClaudeScope::start_or_resume` never sends the CLI's
-    /// SDK `initialize` control request (`ClaudeNativeProcessSessionController.
-    /// initializeIfNeeded`/`buildInitializeRequest`, `systemPrompt` override) before accepting user
-    /// messages -- confirmed by reading `agent_claude::permission`/`scope.rs` end to end; the only
-    /// `"initialize"` reference in `rust/crates/runtime/src/agent_claude/` is an unrelated negative
-    /// test fixture. This adapter's `systemPromptOverride` parameter is therefore accepted for
-    /// protocol conformance but has **no effect** through the Rust arm today. It does not affect
-    /// this session's turn-level differential (driven by the synthetic CLI's `scripted` mode, whose
-    /// background responder ACKs *any* control request regardless of subtype, so both arms complete
-    /// their respective handshakes against it) or the corpus/cargo-only differentials, but it is a
-    /// real, confirmed blocker for the P6-8 real-CLI soak (item 8, separately blocked pending
-    /// E-P6-1 user approval) and must be closed before that soak has any chance of passing against
-    /// the actual `claude` CLI.
+    /// **Closed (P6-7 §15.5, `docs/architecture/rust-agent-claude-v1.md` §15.5).**
+    /// `agent_claude::scope::AgentClaudeScope::start_or_resume` previously never sent the CLI's SDK
+    /// `initialize` control request before accepting user messages -- confirmed by reading
+    /// `agent_claude::permission`/`scope.rs` end to end at the time. `start_or_resume` now performs
+    /// the full session-startup handshake (`initialize`, optionally carrying `systemPrompt`, then
+    /// `set_permission_mode` when `config.permission_mode` is non-empty) synchronously before
+    /// returning, mirroring `ClaudeNativeProcessSessionController.initializeIfNeeded`/
+    /// `buildInitializeRequest`/`applyInitialPermissionModeIfNeeded`. This adapter's
+    /// `systemPromptOverride` parameter is threaded through `CoreAgentSessionConfig.
+    /// systemPromptOverride` and now has real effect through the Rust arm.
     ///
     /// **What this arm does not yet reconstruct.** `RuntimeInitStatus`'s tool list / MCP server
     /// status map / `InitializeResponseSnapshot` (account, commands, agents, output style) are not
@@ -178,7 +174,7 @@
             existingSessionID: String?,
             model: String?,
             effortLevel: NativeAgentRuntimeEffortLevel?,
-            systemPromptOverride _: String?
+            systemPromptOverride: String?
         ) async throws -> NativeAgentRuntimeSessionRef {
             if session != nil, isInitialized {
                 return NativeAgentRuntimeSessionRef(sessionID: providerSessionID ?? existingSessionID)
@@ -259,7 +255,8 @@
                 mcpConfigPath: mcpConfigPath,
                 mcpStrictMode: config.mcpStrictMode,
                 disallowedBuiltInTools: config.disallowedBuiltInTools,
-                appendSystemPrompt: appendSystemPrompt
+                appendSystemPrompt: appendSystemPrompt,
+                systemPromptOverride: systemPromptOverride
             )
 
             let newSession = try await CoreAgentSession.open(bridge: bridge, config: sessionConfig)

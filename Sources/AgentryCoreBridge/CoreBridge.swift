@@ -87,6 +87,9 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case agentClaudeReaperFailed(String)
     case agentClaudeTransportWriteFailed(String)
     case agentClaudeInvalidRequest(String)
+    /// P6-7 (§15.5): the CLI answered a session-startup handshake control request (`initialize`/
+    /// `set_permission_mode`) with `subtype: "error"`.
+    case agentClaudeControlResponseError(String)
     case unexpected(String)
 }
 
@@ -1751,6 +1754,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .AgentClaudeSpawnFailed(message): .agentClaudeSpawnFailed(message)
         case let .AgentClaudeReaperFailed(message): .agentClaudeReaperFailed(message)
         case let .AgentClaudeTransportWriteFailed(message): .agentClaudeTransportWriteFailed(message)
+        case let .AgentClaudeControlResponseError(message): .agentClaudeControlResponseError(message)
         case let .AgentClaudeInvalidRequest(message): .agentClaudeInvalidRequest(message)
         }
     }
@@ -2410,6 +2414,7 @@ public actor AgentryCoreBridge {
         case let .agentClaudeSpawnFailed(message): return .agentClaudeSpawnFailed(message)
         case let .agentClaudeReaperFailed(message): return .agentClaudeReaperFailed(message)
         case let .agentClaudeTransportWriteFailed(message): return .agentClaudeTransportWriteFailed(message)
+        case let .agentClaudeControlResponseError(message): return .agentClaudeControlResponseError(message)
         case let .agentClaudeInvalidRequest(message): return .agentClaudeInvalidRequest(message)
         case let .unexpected(message): return .transportFailure(message)
         }

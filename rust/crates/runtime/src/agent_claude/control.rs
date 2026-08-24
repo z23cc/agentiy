@@ -158,6 +158,41 @@ where
     write()
 }
 
+/// P6-7 (`docs/architecture/rust-agent-claude-v1.md` §15.5, §2.5): blocking port of
+/// `sendControlRequest(request:)`'s **default** shape -- `timeoutSeconds: TimeInterval? = nil`,
+/// which arms no timeout task at all (`ClaudeNativeProcessSessionController.swift:859-861`: `if
+/// let timeoutSeconds, timeoutSeconds > 0 { ... }`). Used only by the session-startup handshake
+/// (`initialize`/`set_permission_mode`, contract §2.5), which today has "no Rust FFI-crossing
+/// counterpart at all" per this module's sibling doc comment in `scope.rs`'s
+/// `FLAG_SETTINGS_ACK_TIMEOUT` -- this closes that gap.
+///
+/// **There is no `Timeout` outcome from this entry point.** The only thing that ever unblocks an
+/// unanswered request is [`ControlCorrelator::fail_all`] (stdout EOF or shutdown), matching
+/// Swift exactly: a request registered with no timeout task can only resolve via a real
+/// `control_response` or `failPendingControlRequests`. A caller that receives
+/// [`ControlOutcome::Timeout`] from this function has observed a contract violation of
+/// [`std::sync::mpsc::Receiver::recv`] itself, not a real protocol timeout.
+pub fn send_control_request_blocking<W>(correlator: &ControlCorrelator, request_id: &str, write: W) -> ControlOutcome
+where
+    W: FnOnce() -> Result<(), String>,
+{
+    let receiver = correlator.register(request_id);
+    if let Err(write_error) = write() {
+        correlator.unregister(request_id);
+        return ControlOutcome::WriteFailed(write_error);
+    }
+    match receiver.recv() {
+        Ok(outcome) => outcome,
+        Err(_disconnected) => {
+            // Mirrors `send_control_request`'s `RecvTimeoutError::Disconnected` branch: the sender
+            // was dropped without sending. `unregister` is a no-op here (the entry is already gone
+            // -- whatever dropped the sender already removed it) but is harmless/idempotent.
+            correlator.unregister(request_id);
+            ControlOutcome::WriteFailed("control correlator dropped without a response".to_string())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +289,45 @@ mod tests {
             assert_eq!(outcome, ControlOutcome::WriteFailed("stdout EOF".to_string()));
         }
         assert_eq!(correlator.pending_count(), 0);
+    }
+
+    #[test]
+    fn blocking_variant_resolves_on_a_real_response_with_no_timeout_task_involved() {
+        let correlator = Arc::new(ControlCorrelator::new());
+        let correlator_for_thread = Arc::clone(&correlator);
+        let outcome = send_control_request_blocking(&correlator, "req-blocking-1", move || {
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(10));
+                correlator_for_thread.resolve("req-blocking-1", response("req-blocking-1"));
+            });
+            Ok(())
+        });
+        assert_eq!(outcome, ControlOutcome::Response(response("req-blocking-1")));
+    }
+
+    #[test]
+    fn blocking_variant_write_failure_does_not_leak_a_pending_entry() {
+        let correlator = ControlCorrelator::new();
+        let outcome = send_control_request_blocking(&correlator, "req-blocking-2", || Err("pipe closed".to_string()));
+        assert_eq!(outcome, ControlOutcome::WriteFailed("pipe closed".to_string()));
+        assert_eq!(correlator.pending_count(), 0);
+    }
+
+    #[test]
+    fn blocking_variant_is_unblocked_by_fail_all_matching_stdout_eof_and_shutdown() {
+        let correlator = Arc::new(ControlCorrelator::new());
+        let correlator_for_thread = Arc::clone(&correlator);
+        let waiter = thread::spawn(move || {
+            send_control_request_blocking(&correlator_for_thread, "req-blocking-3", || Ok(()))
+        });
+        // Give the waiter a moment to register before failing it -- otherwise `fail_all` could run
+        // before `register`, which would leave the waiter blocked on `recv()` forever (this test's
+        // own bounded `join` below is what would then time the test out, not this sleep).
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(correlator.pending_count(), 1);
+        correlator.fail_all("stdout EOF");
+        let outcome = waiter.join().expect("waiter thread must not panic");
+        assert_eq!(outcome, ControlOutcome::WriteFailed("stdout EOF".to_string()));
     }
 
     #[test]

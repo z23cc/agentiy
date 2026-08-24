@@ -2891,6 +2891,12 @@ public struct CoreAgentClaudeScopeConfigV1: Equatable, Hashable {
      * production `claudeCode` configuration this vertical's scope covers.
      */
     public let appendSystemPrompt: String?
+    /**
+     * P6-7 (§15.5): the `initialize` control request's `systemPrompt` override -- a protocol-
+     * level field sent once during `agent_start_or_resume`'s session-startup handshake, distinct
+     * from `append_system_prompt`'s CLI-argv mechanism. `None` omits the `systemPrompt` key.
+     */
+    public let systemPrompt: String?
     public let idleFallbackMillis: UInt64
     public let interruptAckTimeoutMillis: UInt64
 
@@ -2900,7 +2906,12 @@ public struct CoreAgentClaudeScopeConfigV1: Equatable, Hashable {
         /**
          * GLM's `--append-system-prompt` workaround (contract §2.5 item 1) -- inert (`None`) for every
          * production `claudeCode` configuration this vertical's scope covers.
-         */appendSystemPrompt: String?, idleFallbackMillis: UInt64, interruptAckTimeoutMillis: UInt64) {
+         */appendSystemPrompt: String?,
+        /**
+         * P6-7 (§15.5): the `initialize` control request's `systemPrompt` override -- a protocol-
+         * level field sent once during `agent_start_or_resume`'s session-startup handshake, distinct
+         * from `append_system_prompt`'s CLI-argv mechanism. `None` omits the `systemPrompt` key.
+         */systemPrompt: String?, idleFallbackMillis: UInt64, interruptAckTimeoutMillis: UInt64) {
         self.command = command
         self.arguments = arguments
         self.environment = environment
@@ -2910,6 +2921,7 @@ public struct CoreAgentClaudeScopeConfigV1: Equatable, Hashable {
         self.mcpStrictMode = mcpStrictMode
         self.disallowedBuiltInTools = disallowedBuiltInTools
         self.appendSystemPrompt = appendSystemPrompt
+        self.systemPrompt = systemPrompt
         self.idleFallbackMillis = idleFallbackMillis
         self.interruptAckTimeoutMillis = interruptAckTimeoutMillis
     }
@@ -2939,6 +2951,7 @@ public struct FfiConverterTypeCoreAgentClaudeScopeConfigV1: FfiConverterRustBuff
                 mcpStrictMode: FfiConverterBool.read(from: &buf),
                 disallowedBuiltInTools: FfiConverterSequenceString.read(from: &buf),
                 appendSystemPrompt: FfiConverterOptionString.read(from: &buf),
+                systemPrompt: FfiConverterOptionString.read(from: &buf),
                 idleFallbackMillis: FfiConverterUInt64.read(from: &buf),
                 interruptAckTimeoutMillis: FfiConverterUInt64.read(from: &buf)
         )
@@ -2954,6 +2967,7 @@ public struct FfiConverterTypeCoreAgentClaudeScopeConfigV1: FfiConverterRustBuff
         FfiConverterBool.write(value.mcpStrictMode, into: &buf)
         FfiConverterSequenceString.write(value.disallowedBuiltInTools, into: &buf)
         FfiConverterOptionString.write(value.appendSystemPrompt, into: &buf)
+        FfiConverterOptionString.write(value.systemPrompt, into: &buf)
         FfiConverterUInt64.write(value.idleFallbackMillis, into: &buf)
         FfiConverterUInt64.write(value.interruptAckTimeoutMillis, into: &buf)
     }
@@ -7705,6 +7719,13 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case AgentClaudeInvalidRequest(message: String
     )
+    /**
+     * P6-7 (§15.5): the CLI answered a session-startup handshake control request (`initialize`/
+     * `set_permission_mode`, contract §2.5) with `subtype: "error"`, carrying its own message --
+     * port of `ControllerError.invalidControlResponse`.
+     */
+    case AgentClaudeControlResponseError(message: String
+    )
 
 
 
@@ -7820,6 +7841,9 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
             )
         case 62: return .AgentClaudeInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 63: return .AgentClaudeControlResponseError(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -8092,6 +8116,11 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case let .AgentClaudeInvalidRequest(message):
             writeInt(&buf, Int32(62))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentClaudeControlResponseError(message):
+            writeInt(&buf, Int32(63))
             FfiConverterString.write(message, into: &buf)
 
         }

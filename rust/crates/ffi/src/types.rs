@@ -1534,6 +1534,10 @@ pub struct CoreAgentClaudeScopeConfigV1 {
     /// GLM's `--append-system-prompt` workaround (contract §2.5 item 1) -- inert (`None`) for every
     /// production `claudeCode` configuration this vertical's scope covers.
     pub append_system_prompt: Option<String>,
+    /// P6-7 (§15.5): the `initialize` control request's `systemPrompt` override -- a protocol-
+    /// level field sent once during `agent_start_or_resume`'s session-startup handshake, distinct
+    /// from `append_system_prompt`'s CLI-argv mechanism. `None` omits the `systemPrompt` key.
+    pub system_prompt: Option<String>,
     pub idle_fallback_millis: u64,
     pub interrupt_ack_timeout_millis: u64,
 }
@@ -1550,6 +1554,7 @@ impl CoreAgentClaudeScopeConfigV1 {
             mcp_strict_mode: self.mcp_strict_mode,
             disallowed_built_in_tools: self.disallowed_built_in_tools.clone(),
             append_system_prompt: self.append_system_prompt.clone(),
+            system_prompt: self.system_prompt.clone(),
             idle_fallback: std::time::Duration::from_millis(self.idle_fallback_millis),
             interrupt_ack_timeout: std::time::Duration::from_millis(self.interrupt_ack_timeout_millis),
             raw_argv_for_testing: false,

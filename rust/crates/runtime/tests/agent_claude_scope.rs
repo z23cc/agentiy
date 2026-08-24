@@ -119,7 +119,19 @@ fn field_f64(event: &AgentClaudeEvent, key: &str) -> Option<f64> {
 
 #[test]
 fn well_behaved_session_completes_a_turn_end_to_end() {
-    let harness = Harness::open(identity(1), test_config(vec!["well-behaved".to_string()]), SubscriptionConfig::default());
+    // P6-7 (§15.5): `well-behaved` mode has no responder thread and can never ACK the session-
+    // startup `initialize` handshake `start_or_resume` now blocks on, so this moves to `scripted`
+    // mode: `AWAITACKS 1` proves the handshake completed, `SLEEP 200` is a generous margin past
+    // it for the parent's own `send_user_message` call to land before the result line does (the
+    // margin every other scripted test in this file relies on for content-ordering, not a
+    // response to a specific event -- there is no signal for "the parent called
+    // send_user_message"), and the `OUT` line replays exactly what `well-behaved` mode wrote.
+    let script = write_script("well-behaved-equivalent", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
+    let harness = Harness::open(
+        identity(1),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
     harness.scope.start_or_resume(&harness.identity, None).expect("start");
     let turn_id = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
     assert_eq!(turn_id, 1, "generation numbering starts at 1 (0 is the never-sent sentinel)");
@@ -131,6 +143,7 @@ fn well_behaved_session_completes_a_turn_end_to_end() {
     assert_eq!(field_str(&completed, "status"), Some("completed"));
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
 }
 
 #[test]
@@ -170,7 +183,14 @@ fn interrupt_stale_generation_is_reachable_naming_n_while_n_plus_1_is_live() {
 
 #[test]
 fn interrupt_no_turn_in_flight_when_the_named_generation_is_current_and_already_settled() {
-    let harness = Harness::open(identity(3), test_config(vec!["well-behaved".to_string()]), SubscriptionConfig::default());
+    // See well_behaved_session_completes_a_turn_end_to_end's comment: `well-behaved` mode cannot
+    // ACK the session-startup handshake, so this is the same `scripted` equivalent.
+    let script = write_script("well-behaved-equivalent-2", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
+    let harness = Harness::open(
+        identity(3),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
     harness.scope.start_or_resume(&harness.identity, None).expect("start");
     let generation = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
     harness.wait_until_not_in_flight(Duration::from_secs(5));
@@ -185,6 +205,7 @@ fn interrupt_no_turn_in_flight_when_the_named_generation_is_current_and_already_
     assert_eq!(field_u64(&outcome, "current_generation"), Some(generation));
 
     harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
 }
 
 #[test]
@@ -212,7 +233,15 @@ fn interrupt_is_acknowledged_when_the_synthetic_cli_acks_the_control_request() {
 
 #[test]
 fn interrupt_times_out_when_the_synthetic_cli_never_acks() {
-    let script = write_script("timed-out", "NOACK\nSLEEP 3000\n");
+    // NOACK_AFTER 1 lets the session-startup `initialize` handshake ACK normally (it is the
+    // first control request this scope ever sends), then permanently starves every request after
+    // it -- including the interrupt this test means to time out. Race-free by construction (the
+    // cutoff is enforced inside the responder thread's own send decision against the actual ACK
+    // count, not a main-thread poll of a toggle): an earlier `AWAITACKS 1\nNOACK\n...` version of
+    // this script raced the parent's send_user_message+interrupt_turn round trip against the main
+    // script thread's own NOACK-poll latency and flaked under load (observed acknowledged/applied
+    // instead of timedOut).
+    let script = write_script("timed-out", "NOACK_AFTER 1\nSLEEP 3000\n");
     let harness = Harness::open(
         identity(5),
         test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
@@ -302,8 +331,11 @@ fn apply_model_and_effort_times_out_when_the_synthetic_cli_never_acks() {
     // override (it is not part of AgentClaudeScopeConfig, matching Swift's hardcoded 5.0 s literal
     // at the live-update call site). A shorter sleep lets the script -- and with it the child
     // process -- finish first, EOFing stdout and resolving the round trip via fail_all ("failed")
-    // before the real timeout ever has a chance to fire.
-    let script = write_script("flag-settings-timeout", "NOACK\nSLEEP 6000\n");
+    // before the real timeout ever has a chance to fire. NOACK_AFTER 1 lets the session-startup
+    // `initialize` handshake ACK normally, then permanently starves every request after it --
+    // race-free by construction, see interrupt_times_out_when_the_synthetic_cli_never_acks's
+    // comment for why the AWAITACKS+NOACK combination this replaced was not.
+    let script = write_script("flag-settings-timeout", "NOACK_AFTER 1\nSLEEP 6000\n");
     let harness = Harness::open(
         identity(15),
         test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
@@ -508,7 +540,14 @@ fn resnapshot_buffer_truncates_from_the_head_and_emits_a_marker_once_the_turn_ex
 
 #[test]
 fn every_command_rejects_a_mismatched_runtime_identity_identity_swap_fencing() {
-    let harness = Harness::open(identity(10), test_config(vec!["well-behaved".to_string()]), SubscriptionConfig::default());
+    // See well_behaved_session_completes_a_turn_end_to_end's comment: `well-behaved` mode cannot
+    // ACK the session-startup handshake the real-identity `start_or_resume` call below needs.
+    let script = write_script("identity-swap", "AWAITACKS 1\nSLEEP 500\n");
+    let harness = Harness::open(
+        identity(10),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
     let intruder = identity(11);
     let scope = Arc::clone(&harness.scope);
 
@@ -533,6 +572,7 @@ fn every_command_rejects_a_mismatched_runtime_identity_identity_swap_fencing() {
     assert_eq!(scope.shutdown(&intruder).unwrap_err(), agentry_runtime::agent_claude::scope::AgentScopeError::IdentityMismatch);
 
     scope.shutdown(&harness.identity).expect("the real identity can still shut the scope down");
+    let _ = std::fs::remove_file(&script);
 }
 
 #[test]
@@ -595,6 +635,11 @@ fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
     let script = write_script(
         "field-complete",
         concat!(
+            // AWAITACKS 1 gates every OUT line behind the session-startup `initialize` handshake
+            // completing; SLEEP 200 is the same generous parent-call-ordering margin
+            // well_behaved_session_completes_a_turn_end_to_end's comment explains (the send_user_
+            // message call below must land before these OUT lines, and there is no signal for it).
+            "AWAITACKS 1\nSLEEP 200\n",
             "OUT {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}\n",
             "OUT {\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"file1\\nfile2\"}]}}\n",
             "OUT {\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"claude-session-d6\",\"result\":\"All done.\",\"total_cost_usd\":0.0421,\"usage\":{\"input_tokens\":120,\"output_tokens\":45},\"stop_reason\":\"end_turn\"}\n",
