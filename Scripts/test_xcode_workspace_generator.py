@@ -258,7 +258,8 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
                     generator.MCP_SCHEME,
                     generator.TEST_SCHEME,
                     generator.RUST_BRIDGE_TEST_SCHEME,
-                    "RepoPrompt",
+                    generator.NATIVE_APP_SCHEME,
+                    generator.NATIVE_MCP_SCHEME,
                 ],
             },
         }

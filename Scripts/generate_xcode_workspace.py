@@ -36,6 +36,8 @@ APP_SCHEME = "Agentry App"
 MCP_SCHEME = "Agentry MCP"
 TEST_SCHEME = "Agentry Tests"
 RUST_BRIDGE_TEST_SCHEME = "AgentryCoreBridgeTests"
+NATIVE_APP_SCHEME = "Agentry"
+NATIVE_MCP_SCHEME = "agentry-mcp"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DESTINATION = REPO_ROOT / ".build/xcode"
 CUSTOM_DESTINATION_ROOT = REPO_ROOT / ".build/xcode-custom"
@@ -1047,7 +1049,14 @@ def validate_xcodebuild_list(destination: Path) -> None:
     except json.JSONDecodeError as error:
         raise GeneratorError(f"xcodebuild -list returned invalid JSON: {error}") from error
     schemes = set(payload.get("workspace", {}).get("schemes", []))
-    required = {APP_SCHEME, MCP_SCHEME, TEST_SCHEME, RUST_BRIDGE_TEST_SCHEME, "RepoPrompt"}
+    required = {
+        APP_SCHEME,
+        MCP_SCHEME,
+        TEST_SCHEME,
+        RUST_BRIDGE_TEST_SCHEME,
+        NATIVE_APP_SCHEME,
+        NATIVE_MCP_SCHEME,
+    }
     missing = sorted(required - schemes)
     if missing:
         available = ", ".join(sorted(schemes)) or "none"
