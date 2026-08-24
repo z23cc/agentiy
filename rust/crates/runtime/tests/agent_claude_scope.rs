@@ -56,9 +56,14 @@ impl Harness {
         let bootstrap = hub
             .open_subscription(&identity, subscription_scope_id, subscription_config, Vec::new)
             .expect("open subscription");
-        // Leak the registry -- test-only, keeps `scope` (an `Arc`) alive without threading an
-        // extra field through every helper; the process this test runs in exits shortly after.
-        std::mem::forget(registry);
+        // `registry` drops here at the end of this function -- harmless: `scope` (an `Arc` this
+        // `Harness` keeps alive independently) is the *other* strong owner `ScopeRegistry::
+        // open_scope` hands back, so dropping the registry's own map entry only decrements the
+        // count by one, exactly like any other `Arc` clone going out of scope. Explicitly NOT
+        // leaked/forgotten: an earlier draft did `std::mem::forget(registry)` here, which pinned a
+        // permanent extra strong reference to `scope` forever and silently defeated the orphan-
+        // backstop test below (`AgentClaudeScope::drop` never ran because the registry's own map
+        // entry -- never released -- kept the strong count above zero indefinitely).
         Self { hub, scope, identity, subscription_id: bootstrap.subscription_id }
     }
 
@@ -328,7 +333,10 @@ fn a_lossless_event_evicts_a_resident_droppable_diagnostic_into_a_gap_record() {
     // child to reach EOF (turn_in_flight flips false once `on_stdout_eof` flushes the never-
     // resulted turn), by which point both overflow diagnostics have long since been published, and
     // only then drain once to inspect the queue's final resident state.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Generous: streaming two 9 MiB lines through the framer is dominated by per-byte
+    // instrumentation overhead under `--sanitize thread`/`address`, not by anything this test
+    // itself is measuring.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while harness.scope.diagnostics().turn_in_flight {
         assert!(Instant::now() < deadline, "the scripted child never reached EOF within the timeout");
         std::thread::sleep(Duration::from_millis(20));
@@ -428,11 +436,30 @@ fn a_scope_dropped_without_shutdown_is_reaped_by_the_orphan_backstop_not_left_a_
     let _ = pid;
     drop(harness); // no shutdown() call -- exercises the orphan backstop in `Drop`
 
-    // Give the backstop's SIGTERM a moment, then confirm no zombie/child survives at this pid range
-    // by asserting the process table settles (best-effort: a hard assertion here would need the raw
-    // pid, which `Harness` does not expose -- the P6-4 coexistence soak already hard-asserts zero
+    // Confirm no zombie/child survives (best-effort: a hard assertion here would need the raw pid,
+    // which `Harness` does not expose -- the P6-4 coexistence soak already hard-asserts zero
     // zombies at quiesce across thousands of cycles; this test's job is only to prove `Drop` does
-    // not hang or panic when a live child is still registered).
-    std::thread::sleep(Duration::from_millis(200));
+    // not hang or panic when a live child is still registered) -- and, distinctly, wait for every
+    // agent-domain thread (this scope's two readers plus its now-orphaned reaper, once the
+    // backstop thread's own `Arc<Reaper>` reference drops) to actually finish before this test
+    // process exits. TSan flags a still-running-or-unjoined-at-process-exit thread as a "thread
+    // leak" even though a detached thread finishing after its owning scope drops is intentional,
+    // correct production behavior (module doc: readers are never joined outside `shutdown()`) --
+    // this poll exists only to give this *short-lived test binary* time to observe that natural
+    // completion, not because production code needs to. The deadline is generous because
+    // `--sanitize thread` instrumentation slows every syscall/lock substantially, stacked on top
+    // of the backstop's own up-to-2s grace window.
+    // Best-effort, not a hard assertion: `AGENT_DOMAIN_THREAD_COUNT` is a process-wide counter, and
+    // this crate's own test binaries do not force `--test-threads=1` for ordinary runs, so a
+    // concurrently-running test's threads can keep the count above zero for reasons unrelated to
+    // this one. The wait exists only to give this scope's own threads a real chance to finish
+    // before the process exits, for the sanitizer runs (`--test-threads=1`, per this crate's
+    // established TSan/ASan protocol) where that ordering guarantee does hold.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while agentry_runtime::agent_claude::process::thread_budget::AGENT_DOMAIN_THREAD_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let _ = std::fs::remove_file(&script);
 }

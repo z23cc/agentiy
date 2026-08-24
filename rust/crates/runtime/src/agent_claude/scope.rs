@@ -401,7 +401,7 @@ impl AgentClaudeScope {
             let mut state = self.lock_state();
             state.process = Some(ProcessHandle { pid: spawned.pid, reaper_token: token });
         }
-        let stdout_handle = spawn_stdout_pipeline(Arc::clone(self), spawned.stdout_read);
+        let stdout_handle = spawn_stdout_pipeline(Arc::downgrade(self), spawned.stdout_read);
         // Stderr has no decode step (module doc): reused unmodified from P6-4, no thread-budget
         // risk since this pairing already *is* the one thread the stderr side needs. The tail's
         // `Arc<Mutex<StderrTail>>` lives only as long as this reader thread needs it -- this slice
@@ -895,7 +895,18 @@ impl Drop for AgentClaudeScope {
 
 /// The inline stdout pipeline INV-P6-2 requires: one thread, `read()` -> [`LineFramer::feed`] ->
 /// [`AgentClaudeScope::handle_line`] -> ... -> non-blocking publish, with no intermediate queue.
-fn spawn_stdout_pipeline(scope: Arc<AgentClaudeScope>, fd: std::os::fd::OwnedFd) -> JoinHandle<()> {
+///
+/// Takes a **`Weak`** reference, not `Arc` -- deliberately, to avoid a retain cycle a first version
+/// of this function had: `start_or_resume` spawns this thread from inside a method whose receiver
+/// is `Arc<Self>`, so an `Arc` capture here would keep the scope's strong count above zero for as
+/// long as this thread is blocked in `read()`, which is exactly the orphan-backstop's own trigger
+/// condition (design §4.2/§4.7, contract §5.2's "backstop signals the group and hands the PID to
+/// the shared reaper") -- `AgentClaudeScope::drop` would never run while its own reader thread
+/// still held a strong reference to it, so a scope dropped without an explicit `shutdown()` would
+/// never actually terminate its child process. Each iteration re-upgrades; a failed upgrade (every
+/// other strong reference is gone) stops the thread immediately rather than waiting for the
+/// process to exit on its own, since nothing is left to consume further events.
+fn spawn_stdout_pipeline(scope: std::sync::Weak<AgentClaudeScope>, fd: std::os::fd::OwnedFd) -> JoinHandle<()> {
     process::thread_budget::increment();
     thread::Builder::new()
         .name("agent-claude-stdout".to_string())
@@ -911,18 +922,20 @@ fn spawn_stdout_pipeline(scope: Arc<AgentClaudeScope>, fd: std::os::fd::OwnedFd)
                     Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
+                let Some(strong_scope) = scope.upgrade() else { return };
                 framer.feed(
                     &buf[..n],
                     |diagnostic| {
                         if let super::framer::FramerDiagnostic::Overflow { dropped_bytes, retained_bytes } = diagnostic {
-                            scope.on_framer_overflow(dropped_bytes, retained_bytes);
+                            strong_scope.on_framer_overflow(dropped_bytes, retained_bytes);
                         }
                     },
-                    |line| scope.handle_line(&line),
+                    |line| strong_scope.handle_line(&line),
                 );
             }
-            framer.flush(|line| scope.handle_line(&line));
-            scope.on_stdout_eof();
+            let Some(strong_scope) = scope.upgrade() else { return };
+            framer.flush(|line| strong_scope.handle_line(&line));
+            strong_scope.on_stdout_eof();
         })
         .expect("spawning the agent-claude stdout pipeline thread must succeed")
 }
