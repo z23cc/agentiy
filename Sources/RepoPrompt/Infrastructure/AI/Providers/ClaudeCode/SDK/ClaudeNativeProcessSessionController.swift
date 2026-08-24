@@ -565,8 +565,23 @@ final actor ClaudeNativeProcessSessionController {
 
         failPendingControlRequests(with: ControllerError.processNotRunning)
         pendingPermissionRequests.removeAll()
-        clearTurnIDQueue()
+        // D-10 fix (P6-7): cancelAuthoritativeLifecycleState() must run BEFORE
+        // clearTurnIDQueue(). It flushes deferred (result-observed-but-not-yet-
+        // idle-confirmed) turn completions with their original status, and each
+        // flush dequeues its own turn ID via dequeueTurnID() guarded by
+        // hasPendingTurnIDs. Clearing the queue first emptied it out from under
+        // that guard, so the flush loop broke on its first iteration and shutdown()
+        // silently dropped every deferred completion -- contradicting contract
+        // §4.5 ("any --shutdown--> flush deferred with original status") and
+        // diverging from Rust's turn_state::on_shutdown, which already implements
+        // the contractual behavior (found and documented in P6-5's turn_state.rs;
+        // see docs/architecture/rust-agent-claude-v1.md D-10). Any turn IDs left
+        // in the queue after the flush (pure TurnInFlight, no result observed yet)
+        // are still cleared by clearTurnIDQueue() below without emitting a
+        // completion -- shutdown, unlike stdout EOF, does not fail non-resulted
+        // in-flight turns (contract §4.5's shutdown arrow has no Failed edge).
         cancelAuthoritativeLifecycleState()
+        clearTurnIDQueue()
 
         closeOutputChannelsAndInput()
 
