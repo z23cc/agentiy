@@ -266,6 +266,88 @@ fn interrupt_failed_when_the_control_request_write_hits_a_closed_stdin_pipe() {
 }
 
 #[test]
+fn apply_model_and_effort_publishes_flag_settings_applied_when_the_synthetic_cli_acks() {
+    // P6-7 (§15.3): apply_model_and_effort's real ACK tracking, mirroring the interrupt outcome
+    // tests' shape exactly -- the synthetic CLI's "scripted" mode background responder ACKs any
+    // control_request generically, regardless of subtype, so this exercises the same round trip
+    // production traffic would.
+    let script = write_script("flag-settings-applied", "SLEEP 3000\n");
+    let harness = Harness::open(
+        identity(14),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    let request_id = harness
+        .scope
+        .apply_model_and_effort(&harness.identity, Some("opus".to_string()), Some("high".to_string()))
+        .expect("apply_model_and_effort must return a receipt immediately");
+
+    let outcome = harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "flagSettingsApplied" && field_str(event, "request_id") == Some(request_id.as_str())
+        })
+        .expect("flagSettingsApplied must be published");
+    assert_eq!(field_str(&outcome, "outcome"), Some("applied"));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+}
+
+#[test]
+fn apply_model_and_effort_times_out_when_the_synthetic_cli_never_acks() {
+    // The script's SLEEP must outlast apply_model_and_effort's 5 s ACK deadline (scope.rs's
+    // FLAG_SETTINGS_ACK_TIMEOUT) -- unlike the interrupt timeout tests above, which override
+    // interrupt_ack_timeout down to 400 ms via test_config, this ACK timeout has no test-facing
+    // override (it is not part of AgentClaudeScopeConfig, matching Swift's hardcoded 5.0 s literal
+    // at the live-update call site). A shorter sleep lets the script -- and with it the child
+    // process -- finish first, EOFing stdout and resolving the round trip via fail_all ("failed")
+    // before the real timeout ever has a chance to fire.
+    let script = write_script("flag-settings-timeout", "NOACK\nSLEEP 6000\n");
+    let harness = Harness::open(
+        identity(15),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    let request_id = harness.scope.apply_model_and_effort(&harness.identity, Some("sonnet".to_string()), None).expect("apply_model_and_effort");
+
+    let outcome = harness
+        .wait_for(Duration::from_secs(7), |event| {
+            event.kind.wire_name() == "flagSettingsApplied" && field_str(event, "request_id") == Some(request_id.as_str())
+        })
+        .expect("flagSettingsApplied must still be published on timeout");
+    assert_eq!(field_str(&outcome, "outcome"), Some("timedOut"));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+}
+
+#[test]
+fn apply_model_and_effort_fails_when_the_control_request_write_hits_a_closed_stdin_pipe() {
+    // Mirrors interrupt_failed_when_the_control_request_write_hits_a_closed_stdin_pipe's exact
+    // mechanism and margin tuning (module doc there).
+    let harness = Harness::open(
+        identity(16),
+        test_config(vec!["stdin-closed-after-delay".to_string(), "200".to_string(), "5000".to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    std::thread::sleep(Duration::from_millis(2_000));
+
+    let request_id = harness.scope.apply_model_and_effort(&harness.identity, Some("opus".to_string()), None).expect("apply_model_and_effort");
+    let outcome = harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "flagSettingsApplied" && field_str(event, "request_id") == Some(request_id.as_str())
+        })
+        .expect("flagSettingsApplied must be published even when the control-request write itself fails");
+    assert_eq!(field_str(&outcome, "outcome"), Some("failed"));
+    assert!(field_str(&outcome, "error").is_some());
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+}
+
+#[test]
 fn permission_round_trip_allow_then_a_second_response_is_rejected_as_unknown() {
     let script = write_script(
         "permission",
@@ -519,7 +601,7 @@ fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
         ),
     );
     let harness = Harness::open(
-        identity(13),
+        identity(17),
         test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
         SubscriptionConfig::default(),
     );

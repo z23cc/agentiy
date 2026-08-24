@@ -63,5 +63,15 @@ CoreRuntime.agentStartOrResume(RuntimeIdentity, string, string?) throws -> Agent
 CoreRuntime.agentSendUserMessage(RuntimeIdentity, string, string) throws -> u64
 CoreRuntime.agentInterruptTurn(RuntimeIdentity, string, u64, string) throws -> AgentClaudeInterruptReceiptV1
 CoreRuntime.agentRespondPermission(RuntimeIdentity, string, string, AgentClaudePermissionDecisionV1) throws
-CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws
+# P6-7: agentApplyModelAndEffort's return type changed from throws-only (void) to
+# -> AgentClaudeFlagSettingsReceiptV1, closing the ACK-tracking gap the P6-6 fire-and-forget
+# placeholder's own doc comment named as "P6-7's job" -- mirrors agentInterruptTurn's fast-
+# receipt/later-terminal-event shape exactly. ABI epoch unchanged at 1: this is a genuine existing-
+# export signature change (not additive), but Swift bindings and the Rust FFI archive are always
+# regenerated and rebuilt together from the same commit -- never independently versioned or
+# shipped -- and buildFingerprint/bindingChecksum (recomputed and validated via staleRuntimeIdentity
+# on every raw call) already catch any binding/archive staleness at a finer grain than abiEpoch.
+# abiEpoch guards the coarse envelope/wire-format layer (header layout, payload kinds), which this
+# change does not touch. See abi-v1.json's agentClaudeV1.abiEpochDecision for the recorded decision.
+CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws -> AgentClaudeFlagSettingsReceiptV1
 CoreRuntime.agentShutdown(RuntimeIdentity, string) throws

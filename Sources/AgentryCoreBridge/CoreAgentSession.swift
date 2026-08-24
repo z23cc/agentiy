@@ -42,7 +42,9 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("agent-claude-v1 transport is unavailable")
     }
 
-    func agentApplyModelAndEffort(identity: CoreRuntimeIdentity, scopeID: String, model: String?, effort: String?) throws {
+    func agentApplyModelAndEffort(
+        identity: CoreRuntimeIdentity, scopeID: String, model: String?, effort: String?
+    ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1 {
         throw CoreTransportError.unexpected("agent-claude-v1 transport is unavailable")
     }
 
@@ -97,10 +99,10 @@ extension AgentryCoreBridge {
         }
     }
 
-    func agentApplyModelAndEffort(scopeID: String, model: String?, effort: String?) throws {
+    func agentApplyModelAndEffort(scopeID: String, model: String?, effort: String?) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1 {
         let identity = try requireIdentity()
         do {
-            try transport.agentApplyModelAndEffort(identity: identity, scopeID: scopeID, model: model, effort: effort)
+            return try transport.agentApplyModelAndEffort(identity: identity, scopeID: scopeID, model: model, effort: effort)
         } catch {
             throw mapTransportError(error)
         }
@@ -170,6 +172,14 @@ public struct CoreAgentStartReceipt: Sendable, Equatable {
 /// later as an `interruptOutcome` event on the session's event stream, correlated by this same
 /// `requestID`.
 public struct CoreAgentInterruptReceipt: Sendable, Equatable {
+    public let requestID: String
+}
+
+/// P6-7: the fast-enqueue receipt for `applyModelAndEffort`. The actual ACK (contract §2.2's
+/// applied/timedOut/failed outcomes) arrives later as a `flagSettingsApplied` event on the
+/// session's event stream, correlated by this same `requestID` -- mirrors
+/// `CoreAgentInterruptReceipt`'s shape and doc comment exactly.
+public struct CoreAgentFlagSettingsReceipt: Sendable, Equatable {
     public let requestID: String
 }
 
@@ -354,10 +364,14 @@ public final class CoreAgentSession: @unchecked Sendable {
         try await bridge.agentRespondPermission(scopeID: scopeID, requestID: requestID, decision: rawDecision)
     }
 
-    /// See `AgentryCoreBridge.agentApplyModelAndEffort`'s Rust-side doc comment: a scope-reduced,
-    /// fire-and-forget placeholder for this slice -- no ACK tracking. Full parity is P6-7's job.
-    public func applyModelAndEffort(model: String? = nil, effort: String? = nil) async throws {
-        try await bridge.agentApplyModelAndEffort(scopeID: scopeID, model: model, effort: effort)
+    /// P6-7: real ACK tracking (`docs/architecture/rust-agent-claude-v1.md` §15.3), replacing the
+    /// P6-6 fire-and-forget placeholder. Returns immediately with a request-id receipt; the caller
+    /// correlates the later `flagSettingsApplied` event on `events()` against `requestID` to observe
+    /// applied/timedOut/failed, mirroring `interruptTurn`'s command+event shape.
+    @discardableResult
+    public func applyModelAndEffort(model: String? = nil, effort: String? = nil) async throws -> CoreAgentFlagSettingsReceipt {
+        let receipt = try await bridge.agentApplyModelAndEffort(scopeID: scopeID, model: model, effort: effort)
+        return CoreAgentFlagSettingsReceipt(requestID: receipt.requestId)
     }
 
     /// Idempotent, product-facing shutdown/close. Flushes deferred turn completions, escalates

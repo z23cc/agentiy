@@ -576,10 +576,17 @@ impl AgentClaudeScope {
         Ok(())
     }
 
-    /// See this module's doc comment: a scope-reduced, fire-and-forget placeholder. `model`/
-    /// `effort` are sent verbatim; there is no ACK tracking or deferred/pending state at this
-    /// slice.
-    pub fn apply_model_and_effort(&self, identity: &RuntimeIdentity, model: Option<String>, effort: Option<String>) -> Result<(), AgentScopeError> {
+    /// P6-7 (design D-6/D-9, `docs/architecture/rust-agent-claude-v1.md` §2.2): real ACK
+    /// tracking, closing the gap the P6-6 placeholder's doc comment named as "P6-7's job". Ports
+    /// the live-update half of `applyModelAndEffort(model:effortLevel:)`
+    /// (`ClaudeNativeProcessSessionController.swift:460-491`), which `await`s
+    /// `sendControlRequest(request:timeoutSeconds: 5.0)` and throws on timeout/failure --
+    /// mirroring `interrupt_turn`'s shape exactly: the fast, synchronous half (identity/closed
+    /// checks, request construction) runs inline and returns a receipt immediately (charter
+    /// §8.2's fast-enqueue contract); only the genuine ACK round trip is pushed onto a
+    /// background thread, with the outcome published later as a `flagSettingsApplied` terminal-
+    /// class event correlated by this same `request_id`.
+    pub fn apply_model_and_effort(self: &Arc<Self>, identity: &RuntimeIdentity, model: Option<String>, effort: Option<String>) -> Result<String, AgentScopeError> {
         self.check_identity(identity)?;
         {
             let state = self.lock_state();
@@ -587,6 +594,33 @@ impl AgentClaudeScope {
                 return Err(AgentScopeError::ScopeClosed);
             }
         }
+        let request_id = format!("flags-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst));
+        let scope = Arc::clone(self);
+        let thread_request_id = request_id.clone();
+        let spawn_result = thread::Builder::new()
+            .name("agent-claude-flag-settings".to_string())
+            .spawn(move || scope.run_flag_settings_roundtrip(thread_request_id, model, effort));
+        if spawn_result.is_err() {
+            // Thread-spawn failure is treated the same as a transport failure -- the caller
+            // still gets a receipt (charter §8.2's fast-enqueue contract), and the outcome is
+            // reported as `failed` rather than left forever unresolved, mirroring
+            // `interrupt_turn`'s identical fallback.
+            self.publish(
+                AgentClaudeEvent::new(AgentClaudeEventKind::FlagSettingsApplied)
+                    .with_field("request_id", request_id.as_str())
+                    .with_field("outcome", "failed"),
+            );
+        }
+        Ok(request_id)
+    }
+
+    /// Contract-anchor: Swift's live-update timeout (`:485`, `timeoutSeconds: 5.0`). The initial-
+    /// handshake call site (`:774`) uses `sendControlRequest(request:)`'s own default instead --
+    /// out of scope here, since that path has no Rust FFI-crossing counterpart at all (it runs
+    /// entirely inside `start_or_resume`, contract §2.5).
+    const FLAG_SETTINGS_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn run_flag_settings_roundtrip(&self, request_id: String, model: Option<String>, effort: Option<String>) {
         let mut request = Map::new();
         request.insert("subtype".to_string(), json!("set_model_and_effort"));
         if let Some(model) = &model {
@@ -595,9 +629,24 @@ impl AgentClaudeScope {
         if let Some(effort) = &effort {
             request.insert("effort".to_string(), json!(effort));
         }
-        let request_id = format!("flags-{}", self.next_request_id.fetch_add(1, Ordering::SeqCst));
-        let line = codec::encode_control_request(&request_id, &request);
-        control::send_control_request_without_response(|| self.write_line(line)).map_err(AgentScopeError::TransportWrite)
+        let write_request_id = request_id.clone();
+        let outcome = control::send_control_request(&self.control, &request_id, Self::FLAG_SETTINGS_ACK_TIMEOUT, || {
+            let line = codec::encode_control_request(&write_request_id, &request);
+            self.write_line(line)
+        });
+        let mut event = AgentClaudeEvent::new(AgentClaudeEventKind::FlagSettingsApplied).with_field("request_id", request_id.as_str());
+        event = match outcome {
+            ControlOutcome::Response(response) => {
+                event = event.with_field("outcome", "applied");
+                if let Some(response_map) = response.response {
+                    event.fields.insert("response".to_string(), Value::Object(response_map));
+                }
+                event
+            }
+            ControlOutcome::Timeout => event.with_field("outcome", "timedOut"),
+            ControlOutcome::WriteFailed(reason) => event.with_field("outcome", "failed").with_field("error", reason),
+        };
+        self.publish(event);
     }
 
     /// Idempotent. Flushes deferred turn completions with their original status (turn_state's

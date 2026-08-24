@@ -354,7 +354,7 @@ protocol CoreRuntimeTransport: Sendable {
         scopeID: String,
         model: String?,
         effort: String?
-    ) throws
+    ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1
     func agentShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
     /// Forensic strings for the most recent panic(s) recorded by the Rust
@@ -1669,9 +1669,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         scopeID: String,
         model: String?,
         effort: String?
-    ) throws {
+    ) throws -> AgentryUniFFIRaw.AgentClaudeFlagSettingsReceiptV1 {
         do {
-            try runtime.agentApplyModelAndEffort(identity: Self.rawIdentity(identity), scopeId: scopeID, model: model, effort: effort)
+            return try runtime.agentApplyModelAndEffort(identity: Self.rawIdentity(identity), scopeId: scopeID, model: model, effort: effort)
         } catch {
             throw Self.map(error)
         }

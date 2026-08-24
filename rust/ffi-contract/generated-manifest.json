@@ -3,14 +3,14 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "959656b7f71406323540d02a72d4be9160d598158ab5f19c2095bf3a2a593b57",
-  "bindingChecksum": "46e6691e90431f84a8b366af9a1ecd247a1d871e4c0b22aa7b0f7db1d6c4165b",
+  "buildFingerprint": "57cc0e8cf1c977a2bc9c4f978fb6b9335152ed291203a757e43734c67505c7c4",
+  "bindingChecksum": "703fe353fda11f44a5fb7f2d313197667193cbe7840dc4e0cff2bb731d462ee1",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:7e8b381c0a23dc7c95621472b7280e66e2980eaa8e79824b4b96f74e141bb93f",
+    "rustSourceRevision": "tree:dbab50287e4ab8c693d77bc635b271bd2c013555ff3323ef0e1afca91e0e7852",
     "cargoLockDigest": "a948f98cd991ec153b96e957a507a52462b111019ef73e04b6a9f1d9930d9e6b",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
@@ -19,7 +19,7 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "4ee44ae8231e928799fb0ee2290040658d9cd5ab53adfe2128154a5a7b7b99f0",
+  "archiveSha256": "d0057063382b19fb77651a7ba4e6d8c4a156677f7f8ff276114160d71573fe1a",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
@@ -64,13 +64,13 @@
     "CoreRuntime.agentSendUserMessage(RuntimeIdentity, string, string) throws -> u64",
     "CoreRuntime.agentInterruptTurn(RuntimeIdentity, string, u64, string) throws -> AgentClaudeInterruptReceiptV1",
     "CoreRuntime.agentRespondPermission(RuntimeIdentity, string, string, AgentClaudePermissionDecisionV1) throws",
-    "CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws",
+    "CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws -> AgentClaudeFlagSettingsReceiptV1",
     "CoreRuntime.agentShutdown(RuntimeIdentity, string) throws"
   ],
   "artifactSha256": {
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "ce84ae5177094732313653bd5dec7b70db17f33691ea3f1f1ee663a1459302b0",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "77a4c7f76834328b45f08ee7ed125fd92c6f7aca7d0ffb3bc416f16e1700c1e8",
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "ba80bcf9235adf748b3e52dd2b6f3022fe52e51b24ea7fae2301f3a96af359b6",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "bf6484691e91b4bb539e50afa19fa711b8a5be035884658fb337dff190f129e9",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "768528eb7fe8648f720b69871b00bbaf8aa3f9f18f45d6e5d9b6a14fd8b33ba0",
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "93c1aa83009754e86d97872fa34802c45fdc7aa7609f1134027e16d1dc8e3bf4",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"
   }

@@ -10,7 +10,7 @@ const EXPECTED_AGENT_CLAUDE_EXPORTS: &[&str] = &[
     "CoreRuntime.agentSendUserMessage(RuntimeIdentity, string, string) throws -> u64",
     "CoreRuntime.agentInterruptTurn(RuntimeIdentity, string, u64, string) throws -> AgentClaudeInterruptReceiptV1",
     "CoreRuntime.agentRespondPermission(RuntimeIdentity, string, string, AgentClaudePermissionDecisionV1) throws",
-    "CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws",
+    "CoreRuntime.agentApplyModelAndEffort(RuntimeIdentity, string, string?, string?) throws -> AgentClaudeFlagSettingsReceiptV1",
     "CoreRuntime.agentShutdown(RuntimeIdentity, string) throws",
 ];
 

@@ -1582,6 +1582,15 @@ pub struct AgentClaudeInterruptReceiptV1 {
     pub request_id: String,
 }
 
+/// P6-7: the fast-enqueue receipt for `agent_apply_model_and_effort`. The actual ACK (applied/
+/// timedOut/failed) arrives later as a `flagSettingsApplied` terminal-class event on the
+/// subscription, correlated by this same `request_id` -- charter §8.2's command+event shape,
+/// mirroring `AgentClaudeInterruptReceiptV1` exactly.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct AgentClaudeFlagSettingsReceiptV1 {
+    pub request_id: String,
+}
+
 /// Contract §7.1's permission **protocol** half: the two decision shapes
 /// `agent_claude::permission::PermissionDecision` already defines, re-exposed at the FFI boundary
 /// with the exact same two-case split (`agent_claude::scope::PermissionDecisionInput`'s doc comment

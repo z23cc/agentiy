@@ -652,11 +652,13 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     /**
-     * See `agent_claude::scope`'s module doc comment: a scope-reduced, fire-and-forget
-     * placeholder for this slice -- no ACK tracking or deferred/pending flag-settings state. Full
-     * parity is P6-7's job.
+     * P6-7: real ACK tracking, replacing the P6-6 fire-and-forget placeholder. Fast: identity/
+     * closed checks and request construction run synchronously; only the genuine ACK round trip
+     * is pushed onto a background thread inside the scope. The outcome arrives later as a
+     * `flagSettingsApplied` terminal-class event on the subscription, correlated by this same
+     * `request_id` -- charter §8.2's command+event shape, mirroring `agent_interrupt_turn` exactly.
      */
-    func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?) throws
+    func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?) throws  -> AgentClaudeFlagSettingsReceiptV1
 
     /**
      * Contract §4: fenced by `turn_generation`, no pre-check (design §5.3 -- the pre-check is
@@ -907,11 +909,14 @@ public convenience init(config: CoreConfig)throws  {
 
 
     /**
-     * See `agent_claude::scope`'s module doc comment: a scope-reduced, fire-and-forget
-     * placeholder for this slice -- no ACK tracking or deferred/pending flag-settings state. Full
-     * parity is P6-7's job.
+     * P6-7: real ACK tracking, replacing the P6-6 fire-and-forget placeholder. Fast: identity/
+     * closed checks and request construction run synchronously; only the genuine ACK round trip
+     * is pushed onto a background thread inside the scope. The outcome arrives later as a
+     * `flagSettingsApplied` terminal-class event on the subscription, correlated by this same
+     * `request_id` -- charter §8.2's command+event shape, mirroring `agent_interrupt_turn` exactly.
      */
-open func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+open func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, model: String?, effort: String?)throws  -> AgentClaudeFlagSettingsReceiptV1  {
+    return try  FfiConverterTypeAgentClaudeFlagSettingsReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_agent_apply_model_and_effort(
             self.uniffiCloneHandle(),
@@ -920,7 +925,7 @@ open func agentApplyModelAndEffort(identity: RuntimeIdentity, scopeId: String, m
         FfiConverterOptionString.lower(model),
         FfiConverterOptionString.lower(effort),uniffiCallStatus
     )
-}
+})
 }
 
     /**
@@ -1795,6 +1800,62 @@ public func FfiConverterTypeAdmissionReceipt_lift(_ buf: RustBuffer) throws -> A
 #endif
 public func FfiConverterTypeAdmissionReceipt_lower(_ value: AdmissionReceipt) -> RustBuffer {
     return FfiConverterTypeAdmissionReceipt.lower(value)
+}
+
+
+/**
+ * P6-7: the fast-enqueue receipt for `agent_apply_model_and_effort`. The actual ACK (applied/
+ * timedOut/failed) arrives later as a `flagSettingsApplied` terminal-class event on the
+ * subscription, correlated by this same `request_id` -- charter §8.2's command+event shape,
+ * mirroring `AgentClaudeInterruptReceiptV1` exactly.
+ */
+public struct AgentClaudeFlagSettingsReceiptV1: Equatable, Hashable {
+    public let requestId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(requestId: String) {
+        self.requestId = requestId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentClaudeFlagSettingsReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentClaudeFlagSettingsReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentClaudeFlagSettingsReceiptV1 {
+        return
+            try AgentClaudeFlagSettingsReceiptV1(
+                requestId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentClaudeFlagSettingsReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.requestId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeFlagSettingsReceiptV1_lift(_ buf: RustBuffer) throws -> AgentClaudeFlagSettingsReceiptV1 {
+    return try FfiConverterTypeAgentClaudeFlagSettingsReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentClaudeFlagSettingsReceiptV1_lower(_ value: AgentClaudeFlagSettingsReceiptV1) -> RustBuffer {
+    return FfiConverterTypeAgentClaudeFlagSettingsReceiptV1.lower(value)
 }
 
 
@@ -9955,7 +10016,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_func_core_panic_forensics() != 20183) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_apply_model_and_effort() != 25113) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_apply_model_and_effort() != 25270) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_interrupt_turn() != 14421) {

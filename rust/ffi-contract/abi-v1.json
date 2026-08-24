@@ -267,7 +267,7 @@
   },
   "agentClaudeV1": {
     "additiveInAbiEpoch": 1,
-    "abiEpochDecision": "no bump: additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9/inventoryScopeV1 (P3-3/P3-4/P4-4), each of which added CoreRuntime exports without bumping abiEpoch",
+    "abiEpochDecision": "no bump at P6-6 landing (additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9/inventoryScopeV1). P6-7 amendment: agentApplyModelAndEffort's return type changed from throws-only (void) to -> AgentClaudeFlagSettingsReceiptV1, a genuine existing-export signature change, not additive -- still no bump, because Swift bindings and the Rust FFI archive are always regenerated and rebuilt together from the same commit (never independently versioned/shipped), and buildFingerprint/bindingChecksum (recomputed and validated via staleRuntimeIdentity on every raw call) already catch any binding/archive staleness at a finer grain than abiEpoch guards; abiEpoch protects the coarse envelope/wire-format layer (header layout, payload kinds), unchanged here. See rust/ffi-contract/exports.txt's matching comment.",
     "contractDoc": "docs/architecture/rust-agent-claude-v1.md",
     "designDoc": "docs/designs/p6-claude-vertical-2026-08-23.md",
     "scope": "claudeCode provider kind only; GLM/Kimi/custom-Claude-compatible are P6-9",

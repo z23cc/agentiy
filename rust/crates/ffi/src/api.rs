@@ -26,8 +26,8 @@ use crate::types::{
     parse_root_lifetime_id, wire_error,
 };
 use crate::types::{
-    AgentClaudeInterruptReceiptV1, AgentClaudePermissionDecisionV1, AgentClaudeScopeHandleV1, AgentClaudeStartReceiptV1,
-    CoreAgentClaudeScopeConfigV1,
+    AgentClaudeFlagSettingsReceiptV1, AgentClaudeInterruptReceiptV1, AgentClaudePermissionDecisionV1, AgentClaudeScopeHandleV1,
+    AgentClaudeStartReceiptV1, CoreAgentClaudeScopeConfigV1,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -1335,22 +1335,24 @@ impl CoreRuntime {
         })
     }
 
-    /// See `agent_claude::scope`'s module doc comment: a scope-reduced, fire-and-forget
-    /// placeholder for this slice -- no ACK tracking or deferred/pending flag-settings state. Full
-    /// parity is P6-7's job.
+    /// P6-7: real ACK tracking, replacing the P6-6 fire-and-forget placeholder. Fast: identity/
+    /// closed checks and request construction run synchronously; only the genuine ACK round trip
+    /// is pushed onto a background thread inside the scope. The outcome arrives later as a
+    /// `flagSettingsApplied` terminal-class event on the subscription, correlated by this same
+    /// `request_id` -- charter §8.2's command+event shape, mirroring `agent_interrupt_turn` exactly.
     pub fn agent_apply_model_and_effort(
         &self,
         identity: RuntimeIdentity,
         scope_id: String,
         model: Option<String>,
         effort: Option<String>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<AgentClaudeFlagSettingsReceiptV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let scope = self.agent_claude_scope(&scope_id)?;
-            scope.apply_model_and_effort(&identity, model, effort)?;
-            Ok(())
+            let request_id = scope.apply_model_and_effort(&identity, model, effort)?;
+            Ok(AgentClaudeFlagSettingsReceiptV1 { request_id })
         })
     }
 

@@ -260,7 +260,7 @@ uint64_t uniffi_agentry_ffi_fn_constructor_coreruntime_new(RustBuffer config, Ru
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_FN_METHOD_CORERUNTIME_AGENT_APPLY_MODEL_AND_EFFORT
 #define UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_FN_METHOD_CORERUNTIME_AGENT_APPLY_MODEL_AND_EFFORT
-void uniffi_agentry_ffi_fn_method_coreruntime_agent_apply_model_and_effort(uint64_t ptr, RustBuffer identity, RustBuffer scope_id, RustBuffer model, RustBuffer effort, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_agentry_ffi_fn_method_coreruntime_agent_apply_model_and_effort(uint64_t ptr, RustBuffer identity, RustBuffer scope_id, RustBuffer model, RustBuffer effort, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_AGENTRY_FFI_FN_METHOD_CORERUNTIME_AGENT_INTERRUPT_TURN

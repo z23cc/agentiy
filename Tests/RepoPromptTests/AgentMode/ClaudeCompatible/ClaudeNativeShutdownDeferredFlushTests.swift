@@ -33,7 +33,7 @@ final class ClaudeNativeShutdownDeferredFlushTests: XCTestCase {
     /// arrives -- the turn is now `ResultObserved`, deferred pending `idle`, never dequeued
     /// (`turnInFlight` stays true). `idle` never arrives. `shutdown()` is called directly, as a
     /// product-driven shutdown (not stdout EOF) -- exactly the path the bug lived in.
-    func testShutdownFlushesADeferredResultObservedTurnWithItsOriginalStatusInsteadOfDroppingIt() async throws {
+    func testShutdownFlushesADeferredResultObservedTurnWithItsOriginalStatusInsteadOfDroppingIt() async {
         let controller = makeController()
         let turnID = await controller.test_beginTurnTracking()
 
@@ -73,7 +73,7 @@ final class ClaudeNativeShutdownDeferredFlushTests: XCTestCase {
     /// NOT flushed as a completion on `shutdown()` -- contract §4.5's shutdown arrow has no Failed
     /// edge; only stdout EOF fails un-resulted in-flight turns. This pins the boundary of the D-10
     /// fix so a future change doesn't overcorrect into flushing everything.
-    func testShutdownDoesNotSynthesizeACompletionForATurnThatNeverReceivedAResult() async throws {
+    func testShutdownDoesNotSynthesizeACompletionForATurnThatNeverReceivedAResult() async {
         let controller = makeController()
         _ = await controller.test_beginTurnTracking()
 

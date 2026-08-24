@@ -39,6 +39,11 @@ pub enum AgentClaudeEventKind {
     ApprovalCancelled,
     TurnCompleted,
     InterruptOutcome,
+    /// P6-7: the real ACK for `apply_model_and_effort`, replacing the P6-6 fire-and-forget
+    /// placeholder (`docs/architecture/rust-agent-claude-v1.md` §2.2, design D-9 -- an additive,
+    /// Rust-only kind; no contract §7.1 row loses meaning). Correlated by `request_id`, mirroring
+    /// `interruptOutcome`'s command+event shape exactly (charter §8.2).
+    FlagSettingsApplied,
     RuntimeInit,
     TaskProgress,
     SessionStateChanged,
@@ -61,6 +66,7 @@ impl AgentClaudeEventKind {
             Self::ApprovalCancelled => "approvalCancelled",
             Self::TurnCompleted => "turnCompleted",
             Self::InterruptOutcome => "interruptOutcome",
+            Self::FlagSettingsApplied => "flagSettingsApplied",
             Self::RuntimeInit => "runtimeInit",
             Self::TaskProgress => "taskProgress",
             Self::SessionStateChanged => "sessionStateChanged",
@@ -134,6 +140,7 @@ impl AgentClaudeEvent {
             "approvalCancelled" => AgentClaudeEventKind::ApprovalCancelled,
             "turnCompleted" => AgentClaudeEventKind::TurnCompleted,
             "interruptOutcome" => AgentClaudeEventKind::InterruptOutcome,
+            "flagSettingsApplied" => AgentClaudeEventKind::FlagSettingsApplied,
             "runtimeInit" => AgentClaudeEventKind::RuntimeInit,
             "taskProgress" => AgentClaudeEventKind::TaskProgress,
             "sessionStateChanged" => AgentClaudeEventKind::SessionStateChanged,
@@ -156,15 +163,17 @@ impl AgentClaudeEvent {
     #[must_use]
     pub fn classification(&self) -> (EventClass, Option<String>, bool) {
         use AgentClaudeEventKind::{
-            ApprovalCancelled, ApprovalRequest, AssistantDelta, Error, FramerOverflow, InterruptOutcome, ProtocolDrift,
-            ReasoningDelta, RuntimeInit, SessionStateChanged, StderrTail, TaskProgress, ToolResult, ToolUseStarted,
-            TranscriptTruncated, TurnCompleted,
+            ApprovalCancelled, ApprovalRequest, AssistantDelta, Error, FlagSettingsApplied, FramerOverflow, InterruptOutcome,
+            ProtocolDrift, ReasoningDelta, RuntimeInit, SessionStateChanged, StderrTail, TaskProgress, ToolResult,
+            ToolUseStarted, TranscriptTruncated, TurnCompleted,
         };
         match self.kind {
             AssistantDelta | ReasoningDelta | ToolUseStarted | ToolResult | Error | TranscriptTruncated => {
                 (EventClass::Lossless, None, false)
             }
-            ApprovalRequest | ApprovalCancelled | TurnCompleted | InterruptOutcome => (EventClass::Lossless, None, true),
+            ApprovalRequest | ApprovalCancelled | TurnCompleted | InterruptOutcome | FlagSettingsApplied => {
+                (EventClass::Lossless, None, true)
+            }
             RuntimeInit => (EventClass::Coalescible, Some("runtimeInit".to_string()), false),
             TaskProgress => (EventClass::Coalescible, Some("progress".to_string()), false),
             SessionStateChanged => {
