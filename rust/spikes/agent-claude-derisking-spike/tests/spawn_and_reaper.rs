@@ -275,6 +275,43 @@ fn part_a_config_9_ignores_sigterm_requires_sigkill_escalation() {
     reaper.shutdown();
 }
 
+#[test]
+fn part_a_config_10_with_cwd() {
+    let _guard = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reaper = Reaper::new();
+    let tmp = std::env::temp_dir()
+        .canonicalize()
+        .expect("temp dir must resolve to a canonical path");
+    let command = probe_binary_path().to_string_lossy().into_owned();
+    let config = SpawnConfig {
+        command: &command,
+        arguments: &[],
+        environment: &[],
+        working_directory: Some(tmp.to_str().expect("utf8 tmp path")),
+    };
+    let spawned = spawn(&config).expect("probe spawn with a working directory must succeed");
+    let token = reaper.register(spawned.pid).expect("fresh pid must register cleanly");
+
+    use std::io::Read;
+    let mut stdout = std::fs::File::from(spawned.stdout_read);
+    let mut buf = String::new();
+    stdout.read_to_string(&mut buf).expect("reading the probe's stdout must succeed");
+
+    let outcome = reaper
+        .wait_for_exit(spawned.pid, token, Duration::from_secs(5))
+        .expect("probe must exit and be reaped within 5s");
+    assert_eq!(outcome, ReapOutcome::Exited(0), "probe must exit 0");
+    reaper.forget(spawned.pid, token);
+
+    let report: ProbeReport = serde_json::from_str(buf.trim()).expect("probe stdout must be one JSON report line");
+    assert_eq!(
+        report.cwd.as_deref(),
+        Ok(tmp.to_str().expect("utf8 tmp path")),
+        "child's getcwd() must reflect the requested working directory"
+    );
+    reaper.shutdown();
+}
+
 // ---------------------------------------------------------------------------------------------
 // E-P6-2 Part B: coexistence soak (reduced cycle count -- see results doc for the reduction
 // rationale) + R2b thread scaling

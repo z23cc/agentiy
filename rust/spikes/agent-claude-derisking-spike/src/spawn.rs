@@ -9,15 +9,19 @@
 //! reading the pinned crate source (`~/.cargo/registry/.../nix-0.30.1/src/spawn.rs`), matching
 //! contract section 5.2/section 12's verified-coverage claim.
 //!
-//! **Confirmed, not attempted: working-directory (`chdir`) support.** `posix_spawn_file_actions_addchdir_np`
+//! **Working-directory (`chdir`) support, closed at P6-7.** `posix_spawn_file_actions_addchdir_np`
 //! has no `nix` wrapper in 0.30.1 and is declared in `libc` 0.2.189 only for
 //! linux-gnu/linux-musl/cygwin/hurd/solarish -- absent from every Apple target
 //! (`libc-0.2.189/src/unix/bsd/apple/mod.rs` has no such symbol; confirmed by direct source read
-//! during this spike). Per this task's binding carry-forward ("addchdir_np extern is a P6-4, not
-//! P6-2, prerequisite"), this spawner intentionally does **not** implement `chdir` and returns
-//! [`SpawnError::WorkingDirectoryUnsupported`] if asked to. E-P6-2 Part A's "with cwd" configuration
-//! row is consequently a named partial in the P6-2 results doc, not a landed `unsafe_code`
-//! exception taken early to force it green.
+//! during this spike). P6-4 landed the production hand-declared `extern "C"` binding for this
+//! symbol at `rust/crates/runtime/src/agent_claude/process/addchdir.rs`, gated by a scoped
+//! `#[allow(unsafe_code)]` exception the production crate's `unsafe_code = "deny"` posture
+//! permits. This spike is not subject to that crate's `deny`/guardrail posture (own workspace, own
+//! `Cargo.toml`, no `#![forbid(unsafe_code)]` anywhere in this crate -- confirmed by grep), so it
+//! carries the identical binding directly rather than depending on `agentry-runtime` (this spike is
+//! deliberately isolated from the parent `rust/` workspace, module doc above). E-P6-2 Part A's
+//! "with cwd" configuration row, previously a named partial in the P6-2 results doc, is closed by
+//! P6-7's `part_a_config_10_with_cwd` (Rust arm) and `testConfig10WithCwd` (Swift arm).
 //!
 //! **`POSIX_SPAWN_CLOEXEC_DEFAULT` resolved, in the spawner's favor.** Contract section 5.1/section 12
 //! named this an open question: whether `nix`'s generated `PosixSpawnFlags` bitflags type exposes a
@@ -38,16 +42,50 @@ use nix::sys::signal::{SigSet, Signal};
 use nix::spawn::{posix_spawnp, PosixSpawnAttr, PosixSpawnFileActions, PosixSpawnFlags};
 use nix::unistd::{pipe, Pid};
 
+// Hand-declared `extern "C"` binding for a Darwin libc symbol `nix` 0.30.1 does not wrap and
+// `libc` 0.2.189 does not declare on Apple targets (module doc). Identical in shape to the
+// production binding at `rust/crates/runtime/src/agent_claude/process/addchdir.rs` -- duplicated
+// here rather than shared because this spike is intentionally isolated from the `rust/` workspace
+// (own `Cargo.toml`, own `Cargo.lock`, not a dependency of `agentry-runtime`).
+unsafe extern "C" {
+    fn posix_spawn_file_actions_addchdir_np(
+        file_actions: *mut libc::posix_spawn_file_actions_t,
+        path: *const libc::c_char,
+    ) -> libc::c_int;
+}
+
+/// Adds a chdir action to `actions`. Mirrors the production `addchdir::add_chdir`'s pointer-cast
+/// approach: `PosixSpawnFileActions` is `#[repr(transparent)]` over `libc::posix_spawn_file_actions_t`
+/// (verified by direct source read of the pinned `nix = "=0.30.1"`), so a `*mut PosixSpawnFileActions`
+/// and a `*mut libc::posix_spawn_file_actions_t` share address and layout -- the same pattern `nix`'s
+/// own `add_dup2`/`add_close` use internally, just from outside the type since its field is private.
+fn add_chdir(actions: &mut PosixSpawnFileActions, path: &CString) -> Result<(), i32> {
+    debug_assert_eq!(
+        std::mem::size_of::<PosixSpawnFileActions>(),
+        std::mem::size_of::<libc::posix_spawn_file_actions_t>(),
+        "nix::spawn::PosixSpawnFileActions layout assumption no longer holds -- re-verify before proceeding"
+    );
+    // SAFETY: `actions` is a valid, exclusively-borrowed `PosixSpawnFileActions` for the duration of
+    // this call (enforced by the `&mut` borrow), verified `#[repr(transparent)]`-compatible above;
+    // `path` is a valid NUL-terminated `CString` reference whose pointer remains valid for the
+    // duration of this synchronous call, which does not retain it past return (POSIX).
+    let fa_ptr = std::ptr::from_mut(actions).cast::<libc::posix_spawn_file_actions_t>();
+    let rc = unsafe { posix_spawn_file_actions_addchdir_np(fa_ptr, path.as_ptr()) };
+    if rc == 0 { Ok(()) } else { Err(rc) }
+}
+
 #[derive(Debug)]
 pub enum SpawnError {
     Pipe(nix::Error),
     CloseOnExec(nix::Error),
     FileActions(&'static str, nix::Error),
+    /// `posix_spawn_file_actions_addchdir_np` failed; payload is the raw `errno` value it returned
+    /// (this family returns the error code directly rather than setting the global `errno`).
+    Chdir(i32),
     Attributes(&'static str, nix::Error),
     Spawn(nix::Error),
-    /// Confirmed P6-4 prerequisite: `posix_spawn_file_actions_addchdir_np` has no safe `nix`
-    /// wrapper and no `libc` declaration on Apple targets. Not attempted in this spike.
-    WorkingDirectoryUnsupported,
+    /// Invalid working-directory path (contains an interior NUL).
+    InvalidArgument(&'static str),
 }
 
 pub struct SpawnConfig<'a> {
@@ -76,14 +114,9 @@ fn set_cloexec(fd: &OwnedFd) -> Result<(), nix::Error> {
     Ok(())
 }
 
-/// Mirrors `ProcessLauncher.spawn` (`ProcessLauncher.swift:85-335`) attribute-for-attribute, minus
-/// `chdir` (see module doc). Returns [`SpawnError::WorkingDirectoryUnsupported`] rather than
-/// silently ignoring a requested working directory.
+/// Mirrors `ProcessLauncher.spawn` (`ProcessLauncher.swift:85-335`) attribute-for-attribute,
+/// including the working directory (`addchdir_np`, closed at P6-7 -- see module doc).
 pub fn spawn(config: &SpawnConfig) -> Result<SpawnedProcess, SpawnError> {
-    if config.working_directory.is_some() {
-        return Err(SpawnError::WorkingDirectoryUnsupported);
-    }
-
     // Three pipes, close-on-exec on every fd -- ProcessLauncher.swift:92-156.
     let (stdin_read, stdin_write) = pipe().map_err(SpawnError::Pipe)?;
     let (stdout_read, stdout_write) = pipe().map_err(SpawnError::Pipe)?;
@@ -120,6 +153,13 @@ pub fn spawn(config: &SpawnConfig) -> Result<SpawnedProcess, SpawnError> {
     file_actions
         .add_close(stderr_read.as_raw_fd())
         .map_err(|e| SpawnError::FileActions("addclose(stderr read)", e))?;
+
+    // chdir, if requested -- order matches production `agent_claude::process::spawn`: dup2/close
+    // before chdir, since chdir only affects the child's subsequent relative-path resolution.
+    if let Some(dir) = config.working_directory {
+        let dir_c = CString::new(dir).map_err(|_| SpawnError::InvalidArgument("working_directory"))?;
+        add_chdir(&mut file_actions, &dir_c).map_err(SpawnError::Chdir)?;
+    }
 
     // Attributes: sigdefault(SIGPIPE), empty sigmask, new pgroup, CLOEXEC_DEFAULT --
     // ProcessLauncher.swift:213-275.

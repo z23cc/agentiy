@@ -18,16 +18,31 @@ import XCTest
 /// harness diffs the two runners' raw output directly (no shared harness links `swift test` and
 /// `cargo test` together in this repo).
 ///
-/// **Configuration 1 of 9 ("with cwd") is intentionally absent.** `ProcessLauncher.spawn` supports
-/// `workingDirectory` today (via `posix_spawn_file_actions_addchdir_np`); the Rust arm does not
-/// yet, because that symbol has no `nix` wrapper and no `libc` declaration on Apple targets --
-/// confirmed absent during this spike, and named a P6-4 (not P6-2) prerequisite by this task's
-/// binding carry-forward. Testing `workingDirectory` only on the Swift side would not be a parity
-/// check, so it is omitted here too and recorded as a deferred row in the results doc.
+/// **Configuration 10 ("with cwd"), closed at P6-7.** `ProcessLauncher.spawn` has always supported
+/// `workingDirectory` (via `posix_spawn_file_actions_addchdir_np`); the Rust arm did not until P6-4
+/// landed the production hand-declared `extern "C"` binding for that symbol
+/// (`rust/crates/runtime/src/agent_claude/process/addchdir.rs`), confirmed absent from both `nix`
+/// 0.30.1 and `libc` 0.2.189 on every Apple target during the P6-2 spike. `testConfig10WithCwd`
+/// pairs with the spike's own `part_a_config_10_with_cwd` (`rust/spikes/agent-claude-derisking-spike/`
+/// `src/spawn.rs` carries an identical binding, duplicated rather than shared since the spike is
+/// intentionally isolated from the `rust/` workspace) against the same probe binary.
 final class SpawnAttributeParityTests: XCTestCase {
     private struct FdReport: Decodable {
         let fd: Int32
         let cloexec: Bool
+    }
+
+    /// Mirrors Rust's `Result<String, String>` serde default (externally tagged: `{"Ok": ...}` /
+    /// `{"Err": ...}`), matching `rust/spikes/agent-claude-derisking-spike/bin/probe.rs`'s
+    /// `ProbeReport.cwd` field and its Rust-test-arm counterpart's identical decode.
+    private struct ProbeCwdResult: Decodable {
+        let ok: String?
+        let err: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok = "Ok"
+            case err = "Err"
+        }
     }
 
     private struct ProbeReport: Decodable {
@@ -35,6 +50,7 @@ final class SpawnAttributeParityTests: XCTestCase {
         let pgid: Int32
         let sigpipe_disposition: String
         let blocked_signals: [Int32]
+        let cwd: ProbeCwdResult
         let open_fds: [FdReport]
         let env_keys: [String]
         let argv: [String]
@@ -73,13 +89,14 @@ final class SpawnAttributeParityTests: XCTestCase {
     /// B/Rust-reaper territory, not Part A's attribute-parity concern), and returns the report.
     private func spawnProbeAndCapture(
         arguments: [String] = [],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        workingDirectory: String? = nil
     ) throws -> ProbeReport {
         let spawned = try ProcessLauncher.spawn(
             command: probeBinaryPath(),
             arguments: arguments,
             environment: environment,
-            workingDirectory: nil
+            workingDirectory: workingDirectory
         )
         let data = spawned.stdout.readDataToEndOfFile()
         var status: Int32 = 0
@@ -156,6 +173,23 @@ final class SpawnAttributeParityTests: XCTestCase {
             }
             XCTAssertEqual(errnoValue, EACCES)
         }
+    }
+
+    func testConfig10WithCwd() throws {
+        // Canonicalize via POSIX `realpath(3)` directly, not `URL.resolvingSymlinksInPath()`: the
+        // latter deliberately leaves macOS's `/tmp`, `/var`, `/etc` top-level symlinks unresolved
+        // (Foundation's long-documented `standardizingPath` special case), so it would still report
+        // `/var/folders/...` while a spawned child's `getcwd()` -- and Rust's `.canonicalize()` in
+        // `part_a_config_10_with_cwd` -- both report the fully-resolved `/private/var/folders/...`.
+        // `realpath(3)` has no such special case, so it matches both arms.
+        var resolved = [Int8](repeating: 0, count: Int(PATH_MAX))
+        guard Darwin.realpath(NSTemporaryDirectory(), &resolved) != nil else {
+            throw XCTSkip("realpath() on the temp directory failed unexpectedly")
+        }
+        let tmp = String(cString: resolved)
+        let report = try spawnProbeAndCapture(workingDirectory: tmp)
+        XCTAssertEqual(report.cwd.ok, tmp, "child's getcwd() must reflect the requested working directory")
+        XCTAssertNil(report.cwd.err)
     }
 
     func testConfig8ShellForksGrandchildSameGroup() throws {
