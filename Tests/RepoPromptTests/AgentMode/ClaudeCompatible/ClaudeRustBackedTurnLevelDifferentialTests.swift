@@ -284,7 +284,7 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
             "Rust-backed arm must produce an identical canonical event sequence to the Swift arm for the same scripted turn"
         )
 
-        XCTAssertEqual(swiftEvents.filter { if case .turnCompleted = $0 { true } else { false } }.count, 1)
+        XCTAssertEqual(swiftEvents.count(where: { if case .turnCompleted = $0 { true } else { false } }), 1)
         guard case let .turnCompleted(_, status) = swiftEvents.first(where: {
             if case .turnCompleted = $0 { true } else { false }
         }) else {

@@ -368,16 +368,15 @@
 
         func respondToPermissionRequest(id: String, decision: AgentApprovalDecision) async {
             guard let session else { return }
-            let rustDecision: CoreAgentPermissionDecision
-            switch decision {
+            let rustDecision: CoreAgentPermissionDecision = switch decision {
             case .accept:
-                rustDecision = .allow(includeUpdatedPermissions: false)
+                .allow(includeUpdatedPermissions: false)
             case .acceptForSession, .acceptWithExecpolicyAmendment:
-                rustDecision = .allow(includeUpdatedPermissions: true)
+                .allow(includeUpdatedPermissions: true)
             case .decline:
-                rustDecision = .deny(message: "Permission denied by user.", interrupt: false)
+                .deny(message: "Permission denied by user.", interrupt: false)
             case .cancel:
-                rustDecision = .deny(message: "Permission cancelled by user.", interrupt: true)
+                .deny(message: "Permission cancelled by user.", interrupt: true)
             }
             try? await session.respondPermission(requestID: id, decision: rustDecision)
         }
@@ -411,7 +410,7 @@
                 do {
                     for try await envelope in stream {
                         guard let self else { return }
-                        await self.handle(envelope: envelope)
+                        await handle(envelope: envelope)
                     }
                 } catch {
                     // Subscription-level failure (e.g. the bridge tearing down): nothing further to
