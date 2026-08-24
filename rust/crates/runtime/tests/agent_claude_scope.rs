@@ -706,3 +706,130 @@ fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
     harness.scope.shutdown(&harness.identity).expect("shutdown");
     let _ = std::fs::remove_file(&script);
 }
+
+/// P6-7 (advisor follow-up to §15.5): the positive half of "resume-vs-start variants per what
+/// Swift actually does" -- `initializeIfNeeded` has no `existingSessionID` branch in
+/// `ClaudeNativeProcessSessionController.swift` (`:701-724`), so `start_or_resume`'s handshake must
+/// run identically whether `resume_session_id` is `None` (the negative half every other scripted
+/// test above exercises) or `Some(...)` (a resume). Proves the handshake still completes -- and a
+/// post-handshake turn still runs to completion -- when a resume id is supplied.
+#[test]
+fn start_or_resume_runs_the_full_handshake_on_a_resume_not_just_a_fresh_start() {
+    let script = write_script("resume-handshake", "AWAITACKS 1\nSLEEP 200\nOUT {\"type\":\"result\",\"subtype\":\"success\"}\n");
+    let harness = Harness::open(
+        identity(18),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness
+        .scope
+        .start_or_resume(&harness.identity, Some("prior-session-id".to_string()))
+        .expect("a resumed start must also complete the initialize handshake and return");
+    let turn_id = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    assert_eq!(turn_id, 1);
+
+    let completed = harness
+        .wait_for(Duration::from_secs(5), |event| event.kind.wire_name() == "turnCompleted")
+        .expect("turnCompleted must be published after a resumed start's handshake");
+    assert_eq!(field_str(&completed, "status"), Some("completed"));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+}
+
+/// P6-7 (advisor follow-up to §15.5): `send_initialize_request` records the `initialize` control
+/// response's own `session_id` into `translator.cli_session_id` (`scope.rs:507-513`), the same field
+/// `send_user_message` reads for `--resume` continuity and `parse_result_message` writes into every
+/// `message_stop`'s `provider_session_id` (`translator.rs:523-524,551`). This id is captured *only*
+/// from the initialize handshake response here -- no `OUT` stream line ever carries `session_id` --
+/// isolating this capture path from the pre-existing stream-message one
+/// (`session_state_changed_sequence_including_idle_emits_lowercased_trimmed_text` and friends in
+/// `translator.rs` already cover that one).
+#[test]
+fn initialize_response_session_id_is_captured_and_rides_a_later_message_stop() {
+    let script = write_script(
+        "initialize-session-id",
+        concat!(
+            "ACK_SESSION_ID claude-session-from-initialize\n",
+            "AWAITACKS 1\nSLEEP 200\n",
+            "OUT {\"type\":\"result\",\"subtype\":\"success\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n",
+        ),
+    );
+    let harness = Harness::open(
+        identity(19),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+
+    let message_stop = harness
+        .wait_for(Duration::from_secs(5), |event| field_str(event, "provider_session_id").is_some())
+        .expect("a stream result carrying provider_session_id must be published");
+    assert_eq!(
+        field_str(&message_stop, "provider_session_id"),
+        Some("claude-session-from-initialize"),
+        "the id observed only from the initialize handshake's own response must ride a later message_stop, \
+         proving send_initialize_request's cli_session_id write took effect"
+    );
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+}
+
+/// P6-7 (advisor follow-up to §15.5, diagnosing the differential test's `SLEEP 200`->`SLEEP 500`
+/// margin bump rather than just papering over it): reproduces the differential test's exact two
+/// adjacent `OUT` lines -- a `can_use_tool` control_request (-> `approvalRequest`, `EventClass::
+/// Lossless`, `terminal_reserve: true`) immediately followed by a `session_state_changed(running)`
+/// stream line (-> `sessionStateChanged`, `EventClass::Coalescible`, coalesce key `"progress"`,
+/// `event.rs:174-185`) -- through the real scope/`SubscriptionHub` pipeline (no Swift hop at all),
+/// to locate whether a same-thread, same-order `publish` pair can still drain out of order. If this
+/// is stable, the inversion the differential test's `SLEEP` margin was covering for is downstream of
+/// this pipeline (the Swift adapter's own event pump/stream hop), not a Rust-side ordering bug.
+#[test]
+fn approval_request_and_session_state_changed_drain_in_publish_order() {
+    let script = write_script(
+        "approval-then-session-state-order",
+        concat!(
+            "AWAITACKS 1\nSLEEP 200\n",
+            "OUT {\"type\":\"control_request\",\"request_id\":\"perm-order-1\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{\"command\":\"ls\"}}}\n",
+            "OUT {\"type\":\"system\",\"subtype\":\"session_state_changed\",\"session_state\":\"running\"}\n",
+            "SLEEP 2000\n",
+        ),
+    );
+    let harness = Harness::open(
+        identity(20),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+
+    let mut collected: Vec<AgentClaudeEvent> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !collected.iter().any(|event| event.kind.wire_name() == "sessionStateChanged") {
+        for event in harness.drain() {
+            if let Some(decoded) = AgentClaudeEvent::decode(&event.payload) {
+                collected.push(decoded);
+            }
+        }
+        assert!(Instant::now() < deadline, "sessionStateChanged never arrived within the deadline; collected so far: {collected:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let approval_index = collected
+        .iter()
+        .position(|event| event.kind.wire_name() == "approvalRequest")
+        .expect("approvalRequest must be published");
+    let session_state_index = collected
+        .iter()
+        .position(|event| event.kind.wire_name() == "sessionStateChanged")
+        .expect("sessionStateChanged must be published");
+    assert!(
+        approval_index < session_state_index,
+        "the can_use_tool line was written strictly before the session_state_changed line, so a \
+         same-pipeline drain must preserve that order; collected: {collected:?}"
+    );
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+    let _ = std::fs::remove_file(&script);
+}

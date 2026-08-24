@@ -236,7 +236,13 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
             // margin `ClaudeRustBackedNativeSessionAdapter`'s own outer-deadline comments and this
             // suite's other cross-process synchronization already use as "comfortably generous
             // under parallel-test-run contention"; 200 ms measured flaky under `--filter Claude`'s
-            // full concurrent load (both arms' handshakes racing the script's own OUT lines).
+            // full concurrent load. This is a mitigation, not a root-cause fix: the observed flake
+            // was an *ordering* inversion (approvalRequest/sessionStateChanged), and a cargo-only
+            // follow-up (`approval_request_and_session_state_changed_drain_in_publish_order`,
+            // `agent_claude_scope.rs`) proved the Rust scope/SubscriptionHub pipeline preserves that
+            // order with no Swift hop at all -- so whatever raced here is downstream of Rust's own
+            // publish order (this suite's Swift-side event pump, or plain wall-clock contention),
+            // per §15.5's "Differential margin bump, and what was actually located" note.
             "SLEEP 500",
             #"OUT {"type":"system","subtype":"init","session_id":"\#(sessionID)"}"#,
             #"OUT {"type":"assistant","message":{"content":[{"type":"text","text":"Hello from the differential"}]}}"#,

@@ -45,8 +45,12 @@
 //!   that, enforced inside the responder thread's own send decision (not a script-side poll), so a
 //!   script that wants to starve a *specific* post-handshake control request (interrupt/
 //!   apply_model_and_effort ACK-timeout tests) cannot lose a race against `NOACK`'s main-thread-
-//!   polled toggle taking effect too late. Exiting the script (EOF) exits the process, producing a
-//!   normal stdout EOF.
+//!   polled toggle taking effect too late; `ACK_SESSION_ID <id>` (P6-7 D-9/R9 follow-up) sets the
+//!   `session_id` the responder embeds in every subsequent ACK's `response` body -- lets a test
+//!   prove `send_initialize_request`'s `recordObservedSessionID`-mirroring `session_id` capture
+//!   (`scope.rs:508-513`) without any `OUT` stream line ever carrying `session_id` itself, isolating
+//!   that capture path from the pre-existing stream-message one (`translator.rs:110-111,143-145`).
+//!   Exiting the script (EOF) exits the process, producing a normal stdout EOF.
 //! - `stdin-closed-after-delay <delay-ms> <idle-ms>` -- P6-6: reads and ACKs exactly one control
 //!   request first (P6-7, §15.5 -- the session-startup `initialize` handshake `start_or_resume`
 //!   now sends and blocks on), then sleeps `<delay-ms>`, closes fd 0 (single-threaded, no
@@ -210,6 +214,19 @@ fn main() {
             // u64::MAX ("never limit") until a script sets a lower bound via `NOACK_AFTER <n>`.
             let noack_after = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
             let noack_after_for_thread = Arc::clone(&noack_after);
+            // Pre-scanned from the script (rather than left to the main thread's line-by-line
+            // execution) so a leading `ACK_SESSION_ID <id>` is guaranteed to be in place before the
+            // responder thread below is even spawned -- the responder starts reading stdin
+            // immediately and can ACK the session-startup `initialize` handshake before the main
+            // thread would otherwise reach a mid-script `ACK_SESSION_ID` line, which would silently
+            // lose the race and ACK that first request with no `session_id` at all.
+            let initial_ack_session_id = script.lines().find_map(|raw_line| {
+                let line = raw_line.trim();
+                let (directive, rest) = line.split_once(' ').unwrap_or((line, ""));
+                (directive == "ACK_SESSION_ID").then(|| rest.trim().to_string())
+            });
+            let ack_session_id: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(initial_ack_session_id));
+            let ack_session_id_for_thread = Arc::clone(&ack_session_id);
             // Background stdin responder: ACKs every control_request as an immediate success
             // control_response naming the same request_id, unless the script has disabled it via
             // `NOACK` (used to drive the 1.5 s interrupt-ACK-timeout outcome from the real scope).
@@ -234,10 +251,17 @@ fn main() {
                         continue;
                     }
                     let Some(request_id) = value.get("request_id").and_then(|v| v.as_str()) else { continue };
-                    let response = serde_json::json!({
-                        "type": "control_response",
-                        "response": {"subtype": "success", "request_id": request_id},
-                    });
+                    let mut response_body = serde_json::json!({"subtype": "success", "request_id": request_id});
+                    // `session_id` belongs in the *nested* `response.response` body (the real
+                    // Claude Code SDK's own envelope shape, `codec::ControlResponse.response:
+                    // Option<Map>`), not as a sibling of `subtype`/`request_id` at the outer
+                    // `response` level -- `send_initialize_request` reads `response.get("session_id")`
+                    // off exactly that inner map (`scope.rs:507-513`'s `send_startup_control_request`
+                    // return value).
+                    if let Some(session_id) = ack_session_id_for_thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+                        response_body["response"] = serde_json::json!({"session_id": session_id});
+                    }
+                    let response = serde_json::json!({"type": "control_response", "response": response_body});
                     let mut out = std::io::stdout();
                     let _ = writeln!(out, "{response}");
                     let _ = out.flush();
@@ -264,6 +288,9 @@ fn main() {
                     "NOACK_AFTER" => {
                         let limit: u64 = rest.trim().parse().unwrap_or(0);
                         noack_after.store(limit, Ordering::SeqCst);
+                    }
+                    "ACK_SESSION_ID" => {
+                        *ack_session_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rest.trim().to_string());
                     }
                     "AWAITACKS" => {
                         let target: u64 = rest.trim().parse().unwrap_or(0);
