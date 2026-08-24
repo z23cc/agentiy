@@ -175,6 +175,23 @@ final class ClaudeAgentModeCoordinator {
             mcpStrictMode: launchSettings.mcpStrictMode
         )
         let runtimeConfig = ClaudeCompatiblePluginBridge.runtimeConfig(from: coreConfig, mode: .agentMode)
+        #if DEBUG
+            // P6-7 (docs/designs/p6-claude-vertical-2026-08-23.md §11 P6-7): the DEBUG-only Rust-
+            // backed arm selection point. `ClaudeRustBackedNativeSessionAdapterSelection`, the
+            // adapter type, and this branch are all `#if DEBUG`-gated, so a release build never
+            // references any of the three (verified by ClaudeRustBackedAdapterReleaseAbsenceTests).
+            // Still not authoritative -- see that adapter's doc comment for the known gaps this
+            // arm carries today.
+            if ClaudeRustBackedNativeSessionAdapterSelection.isEnabled {
+                return ClaudeRustBackedNativeSessionAdapter(
+                    runID: runID,
+                    tabID: tabID,
+                    workspacePath: launchSettings.workspacePath,
+                    config: coreConfig,
+                    runtimeConfig: runtimeConfig
+                )
+            }
+        #endif
         return ClaudeCompatibleNativeSessionAdapter(runtimeConfig: runtimeConfig) {
             ClaudeNativeProcessSessionController(
                 runID: runID,

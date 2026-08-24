@@ -977,6 +977,21 @@ if [[ -n "$unexpected_claude_native_controller_construction_sites" ]]; then
   printf '%s\n' "$unexpected_claude_native_controller_construction_sites" >&2
 fi
 
+# P6-7 (docs/architecture/rust-agent-claude-v1.md §1.1/§1.2, design §11 P6-7): the post-cutover
+# Rust agent scope this section's own comment named as not-yet-extendable at P6-1 now exists as
+# the DEBUG-only ClaudeRustBackedNativeSessionAdapter -- still not authoritative (design's own
+# "still not authoritative" step-list line), selectable only behind a DEBUG-only flag, but a
+# second construction site that the same reachability-chain argument must now cover. Extended
+# rather than left for a later slice, since the adapter/flag landed in this same change.
+claude_rust_backed_adapter_construction_sites="$(grep -R -n -F 'ClaudeRustBackedNativeSessionAdapter(' \
+  Sources/RepoPrompt 2>/dev/null || true)"
+unexpected_claude_rust_backed_adapter_construction_sites="$(printf '%s\n' "$claude_rust_backed_adapter_construction_sites" \
+  | grep -v -F 'Sources/RepoPrompt/Features/AgentMode/Runtime/Claude/ClaudeAgentModeCoordinator.swift:' || true)"
+if [[ -n "$unexpected_claude_rust_backed_adapter_construction_sites" ]]; then
+  fail "ClaudeRustBackedNativeSessionAdapter must be constructed only inside ClaudeAgentModeCoordinator.makeDefaultController"
+  printf '%s\n' "$unexpected_claude_rust_backed_adapter_construction_sites" >&2
+fi
+
 claude_coordinator_construction_sites="$(grep -R -n -F 'ClaudeAgentModeCoordinator(' \
   Sources/RepoPrompt 2>/dev/null || true)"
 unexpected_claude_coordinator_construction_sites="$(printf '%s\n' "$claude_coordinator_construction_sites" \
@@ -987,8 +1002,8 @@ if [[ -n "$unexpected_claude_coordinator_construction_sites" ]]; then
 fi
 
 print_matches \
-  "headless RepoPromptMCP must not construct the interactive Claude native runtime (ClaudeAgentModeCoordinator/ClaudeNativeProcessSessionController)" \
-  grep -R -n -E 'ClaudeAgentModeCoordinator\(|ClaudeNativeProcessSessionController\(' \
+  "headless RepoPromptMCP must not construct the interactive Claude native runtime (ClaudeAgentModeCoordinator/ClaudeNativeProcessSessionController/ClaudeRustBackedNativeSessionAdapter)" \
+  grep -R -n -E 'ClaudeAgentModeCoordinator\(|ClaudeNativeProcessSessionController\(|ClaudeRustBackedNativeSessionAdapter\(' \
     Sources/RepoPromptMCP
 
 if [[ "$failures" -ne 0 ]]; then
