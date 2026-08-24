@@ -113,6 +113,10 @@ fn field_bool(event: &AgentClaudeEvent, key: &str) -> Option<bool> {
     event.fields.get(key).and_then(serde_json::Value::as_bool)
 }
 
+fn field_f64(event: &AgentClaudeEvent, key: &str) -> Option<f64> {
+    event.fields.get(key).and_then(serde_json::Value::as_f64)
+}
+
 #[test]
 fn well_behaved_session_completes_a_turn_end_to_end() {
     let harness = Harness::open(identity(1), test_config(vec!["well-behaved".to_string()]), SubscriptionConfig::default());
@@ -493,5 +497,85 @@ fn a_scope_dropped_without_shutdown_is_reaped_by_the_orphan_backstop_not_left_a_
     {
         std::thread::sleep(Duration::from_millis(20));
     }
+    let _ = std::fs::remove_file(&script);
+}
+
+/// D-6 (design + contract §9, contract §7.1): every non-nil `StreamResult` field must ride the
+/// wire, not just the one field per kind `emit_stream_result`'s match arms carried pre-P6-7 --
+/// including the authoritative `message_stop` result's usage/cost/providerSessionID/stopReason
+/// fields, which `handle_authoritative_result` previously discarded entirely, publishing only the
+/// `turnCompleted` event's minimal `status` payload. Drives a real synthetic-CLI child through a
+/// tool_call/tool_result/result sequence -- the real spawn/read/frame/decode/translate/publish
+/// pipeline, not an in-process `StreamResult` construction -- and asserts every field
+/// `stream_result_wire_fields` is documented to carry is actually present on the wire.
+#[test]
+fn every_stream_result_field_rides_the_wire_not_just_one_field_per_kind() {
+    let script = write_script(
+        "field-complete",
+        concat!(
+            "OUT {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}\n",
+            "OUT {\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"file1\\nfile2\"}]}}\n",
+            "OUT {\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"claude-session-d6\",\"result\":\"All done.\",\"total_cost_usd\":0.0421,\"usage\":{\"input_tokens\":120,\"output_tokens\":45},\"stop_reason\":\"end_turn\"}\n",
+        ),
+    );
+    let harness = Harness::open(
+        identity(13),
+        test_config(vec!["scripted".to_string(), script.to_string_lossy().to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+
+    // `Harness::wait_for` drains a whole batch and returns on its first predicate match, silently
+    // discarding any other already-drained events in that same batch -- fine for the single-event
+    // waits every other test in this file does, wrong here where three distinct events (all
+    // written by the synthetic CLI almost simultaneously) can legitimately land in one batch.
+    // Collect everything up through turnCompleted instead, then assert against the accumulated set.
+    let mut collected: Vec<AgentClaudeEvent> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !collected.iter().any(|event| event.kind.wire_name() == "turnCompleted") {
+        for event in harness.drain() {
+            if let Some(decoded) = AgentClaudeEvent::decode(&event.payload) {
+                collected.push(decoded);
+            }
+        }
+        assert!(Instant::now() < deadline, "turnCompleted never arrived within the deadline; collected so far: {collected:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let tool_started = collected
+        .iter()
+        .find(|event| event.kind.wire_name() == "toolUseStarted")
+        .expect("toolUseStarted must be published");
+    assert_eq!(field_str(tool_started, "type"), Some("tool_call"), "the original translator kind must ride as an explicit field");
+    assert_eq!(field_str(tool_started, "tool_name"), Some("Bash"));
+    assert!(field_u64(tool_started, "invocation_id").is_some(), "tool_call/tool_result correlation id must be present");
+    assert!(field_str(tool_started, "tool_args_json").is_some(), "tool_call must carry the serialized input");
+
+    let tool_result = collected
+        .iter()
+        .find(|event| event.kind.wire_name() == "toolResult")
+        .expect("toolResult must be published");
+    assert_eq!(field_str(tool_result, "type"), Some("tool_result"));
+    assert_eq!(field_str(tool_result, "tool_name"), Some("Bash"), "tool_result resolves its name from the matching tool_call");
+    assert_eq!(field_str(tool_result, "tool_output"), Some("file1\nfile2"));
+
+    let message_stop = collected.iter().find(|event| field_str(event, "type") == Some("message_stop")).expect(
+        "the authoritative message_stop result must ride the wire as its own stream event, \
+             not only as turnCompleted's minimal status payload",
+    );
+    assert_eq!(field_u64(message_stop, "prompt_tokens"), Some(120));
+    assert_eq!(field_u64(message_stop, "completion_tokens"), Some(45));
+    assert_eq!(field_f64(message_stop, "cost"), Some(0.0421));
+    assert_eq!(field_str(message_stop, "provider_session_id"), Some("claude-session-d6"));
+    assert_eq!(field_str(message_stop, "stop_reason"), Some("end_turn"));
+
+    let completed = collected
+        .iter()
+        .find(|event| event.kind.wire_name() == "turnCompleted")
+        .expect("turnCompleted must still be published, separately from the message_stop stream event");
+    assert_eq!(field_str(completed, "status"), Some("completed"));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
     let _ = std::fs::remove_file(&script);
 }

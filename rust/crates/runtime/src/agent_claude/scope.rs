@@ -722,6 +722,19 @@ impl AgentClaudeScope {
     /// deliberately keeps `stop_reason_hint` (the translator's own derived hint,
     /// `result.stop_reason`) separate from the envelope's top-level/nested fields.
     fn handle_authoritative_result(&self, payload: &Map<String, Value>, result: &StreamResult) {
+        // Swift's `handleStreamPayload` always emits `.stream(result)` for the authoritative
+        // message_stop result BEFORE its own turn-completion bookkeeping
+        // (`ClaudeNativeProcessSessionController.swift:1358` precedes the `isResultPayload &&
+        // message_stop` branch at `:1370`) -- the result's usage/cost/providerSessionID/
+        // stopReason/modelContextWindow fields are real `AIStreamResult` payload the P6-7
+        // differential must see, distinct from the `turnCompleted` event's own minimal `status`
+        // payload published below. Routed through the same `emit_stream_result` every other
+        // translated kind uses (falls to the "message_stop" isn't its own match arm -> `_`
+        // TaskProgress bucket, §7.1's coalescible catch-all -- it is not itself a turn boundary;
+        // `turnCompleted` is), so suppression and resnapshot-append stay uniform with every other
+        // kind rather than duplicated here.
+        self.emit_stream_result(result.clone());
+
         let is_error = payload.get("is_error").or_else(|| payload.get("isError")).and_then(Value::as_bool).unwrap_or(false);
         let subtype = payload.get("subtype").and_then(Value::as_str).unwrap_or("").to_string();
         let stop_reason = payload.get("stop_reason").or_else(|| payload.get("stopReason")).and_then(Value::as_str).unwrap_or("").to_string();
@@ -792,57 +805,36 @@ impl AgentClaudeScope {
                 self.handle_session_state_changed(&result);
                 return;
             }
-            "content" => {
-                self.publish_field_event(AgentClaudeEventKind::AssistantDelta, "text", result.text.as_deref().unwrap_or(""));
-            }
-            "reasoning" => {
-                self.publish_field_event(AgentClaudeEventKind::ReasoningDelta, "text", result.reasoning.as_deref().unwrap_or(""));
-            }
-            "tool_call" => {
-                let mut ev = AgentClaudeEvent::new(AgentClaudeEventKind::ToolUseStarted)
-                    .with_field("tool_name", result.tool_name.clone().unwrap_or_default());
-                if let Some(id) = result.tool_invocation_id {
-                    ev = ev.with_field("invocation_id", id.0);
-                }
-                if let Some(args) = &result.tool_args_json {
-                    ev = ev.with_field("args_json", args.as_str());
-                }
-                self.publish(ev);
-            }
-            "tool_result" => {
-                let mut ev = AgentClaudeEvent::new(AgentClaudeEventKind::ToolResult)
-                    .with_field("tool_name", result.tool_name.clone().unwrap_or_default())
-                    .with_field("output", result.tool_output.clone().unwrap_or_default());
-                if let Some(id) = result.tool_invocation_id {
-                    ev = ev.with_field("invocation_id", id.0);
-                }
-                if let Some(is_error) = result.tool_is_error {
-                    ev = ev.with_field("is_error", is_error);
-                }
-                self.publish(ev);
-            }
-            "error" => {
-                self.publish_field_event(AgentClaudeEventKind::Error, "message", result.text.as_deref().unwrap_or(""));
-            }
-            "lifecycle" => {
-                self.publish(AgentClaudeEvent::new(AgentClaudeEventKind::RuntimeInit));
-            }
+            "content" => self.publish_stream_result_event(AgentClaudeEventKind::AssistantDelta, &result),
+            "reasoning" => self.publish_stream_result_event(AgentClaudeEventKind::ReasoningDelta, &result),
+            "tool_call" => self.publish_stream_result_event(AgentClaudeEventKind::ToolUseStarted, &result),
+            "tool_result" => self.publish_stream_result_event(AgentClaudeEventKind::ToolResult, &result),
+            "error" => self.publish_stream_result_event(AgentClaudeEventKind::Error, &result),
+            "lifecycle" => self.publish_stream_result_event(AgentClaudeEventKind::RuntimeInit, &result),
             _ => {
-                // "usage", "task_progress", "system", "status", "final_content", "auth_status" and
-                // any other non-authoritative kind: a routine progress fact, coalescible (contract
-                // §7.1's `taskProgress` row). Full per-kind fidelity is P6-7's turn-level
-                // differential's job; this slice's event catalog focuses on the lossless/terminal
-                // rows the done-when's gap/oversize/resnapshot paths actually exercise.
-                self.publish_field_event(AgentClaudeEventKind::TaskProgress, "text", result.text.as_deref().unwrap_or(&result.kind));
+                // Every other translated kind ("usage", "task_progress", "system", "status",
+                // "final_content", "auth_status", a forwarded non-authoritative "message_stop", and
+                // any future kind) is contract §7.1's `taskProgress` row: a routine, coalescible
+                // progress fact, never a turn boundary. That classification only governs pressure
+                // policy -- `stream_result_wire_fields` still carries the full field set (including
+                // `type`, so the true translator kind survives the coarse wire `kind`) so the P6-7
+                // turn-level differential can reconstruct an equivalent `AIStreamResult` regardless
+                // of which wire kind carried it. This closes the fidelity gap this branch
+                // previously (pre-P6-7) left as a single `text`-only field.
+                self.publish_stream_result_event(AgentClaudeEventKind::TaskProgress, &result);
             }
         }
     }
 
-    fn publish_field_event(&self, kind: AgentClaudeEventKind, field: &str, value: &str) {
-        if value.is_empty() {
-            return;
-        }
-        self.publish(AgentClaudeEvent::new(kind).with_field(field, value));
+    /// D-6 (design + contract §9): lowers `result` into `AgentClaudeEvent`'s wire fields via
+    /// `stream_result_wire_fields` and publishes under `kind`. `kind` selects only the coarse
+    /// pressure-policy classification (§7.1); the payload itself is always the full field set, not
+    /// a single field -- see `stream_result_wire_fields`'s doc comment for the field list's
+    /// provenance and the two structural exclusions.
+    fn publish_stream_result_event(&self, kind: AgentClaudeEventKind, result: &StreamResult) {
+        let mut event = AgentClaudeEvent::new(kind);
+        event.fields = stream_result_wire_fields(result);
+        self.publish(event);
     }
 
     fn handle_session_state_changed(&self, result: &StreamResult) {
@@ -874,7 +866,13 @@ impl AgentClaudeScope {
                     self.publish(event::turn_completed(turn_id, status).with_turn_id(turn_id));
                 }
                 TurnEvent::Error(message) => {
-                    self.publish_field_event(AgentClaudeEventKind::Error, "message", &message);
+                    // Same wire field name ("text") the D-6 stream-result lowering uses for the
+                    // `error` kind (`stream_result_wire_fields`) -- one consistent field for every
+                    // `AgentClaudeEventKind::Error` event, regardless of whether it originated from
+                    // a translated `StreamResult` or, as here, from the EOF-drain synthesized
+                    // "Claude process exited unexpectedly." message (contract §3's "EOF beyond the
+                    // deferred queue" rule).
+                    self.publish(AgentClaudeEvent::new(AgentClaudeEventKind::Error).with_field("text", message.as_str()));
                 }
             }
         }
@@ -959,6 +957,77 @@ fn spawn_stdout_pipeline(scope: std::sync::Weak<AgentClaudeScope>, fd: std::os::
             strong_scope.on_stdout_eof();
         })
         .expect("spawning the agent-claude stdout pipeline thread must succeed")
+}
+
+/// D-6 (design + contract §9, contract §7.1): lowers a translated `StreamResult` into the full
+/// wire field set every published stream event carries, independent of which coarse
+/// `AgentClaudeEventKind` classifies it for pressure-policy purposes (§7.1's sixteen kinds are
+/// deliberately coarse -- a backpressure classification, not a payload shape). Field set and names
+/// mirror `ClaudeCodecShadowComparator.compareOneResult`'s already-reviewed exhaustive list
+/// (`Sources/RepoPrompt/.../ClaudeCodecShadowComparator.swift`, tightened by P6-5's follow-up
+/// `e0d4d290`) minus the same two structural exclusions that comparator documents:
+/// `toolInvocationID` (a synthetic `InvocationId(u64)` can never structurally match Swift's
+/// `UUID` -- carried here as `invocation_id` for *within-arm* tool_call/tool_result correlation
+/// only, never compared cross-arm by value) and `cleanupHandle` (a Swift-only runtime handle with
+/// no wire representation at all). `type` carries the original translator kind string
+/// (`StreamResult.kind`) since the coarse `AgentClaudeEventKind` alone cannot reconstruct it --
+/// this is what lets the P6-7 turn-level differential rebuild an equivalent `AIStreamResult`
+/// regardless of which wire `kind` a given translated result was published under.
+fn stream_result_wire_fields(result: &StreamResult) -> Map<String, Value> {
+    let mut fields = Map::new();
+    fields.insert("type".to_string(), json!(result.kind));
+    if let Some(v) = &result.text {
+        fields.insert("text".to_string(), json!(v));
+    }
+    if let Some(v) = &result.reasoning {
+        fields.insert("reasoning".to_string(), json!(v));
+    }
+    if let Some(v) = result.prompt_tokens {
+        fields.insert("prompt_tokens".to_string(), json!(v));
+    }
+    if let Some(v) = result.completion_tokens {
+        fields.insert("completion_tokens".to_string(), json!(v));
+    }
+    if let Some(v) = result.cost {
+        fields.insert("cost".to_string(), json!(v));
+    }
+    if let Some(v) = &result.tool_name {
+        fields.insert("tool_name".to_string(), json!(v));
+    }
+    if let Some(v) = &result.tool_args {
+        fields.insert("tool_args".to_string(), json!(v));
+    }
+    if let Some(v) = &result.tool_output {
+        fields.insert("tool_output".to_string(), json!(v));
+    }
+    if let Some(id) = result.tool_invocation_id {
+        fields.insert("invocation_id".to_string(), json!(id.0));
+    }
+    if let Some(v) = &result.tool_result_json {
+        fields.insert("tool_result_json".to_string(), json!(v));
+    }
+    if let Some(v) = &result.tool_args_json {
+        fields.insert("tool_args_json".to_string(), json!(v));
+    }
+    if let Some(v) = result.tool_is_error {
+        fields.insert("tool_is_error".to_string(), json!(v));
+    }
+    if let Some(v) = &result.provider_session_id {
+        fields.insert("provider_session_id".to_string(), json!(v));
+    }
+    if let Some(v) = &result.stop_reason {
+        fields.insert("stop_reason".to_string(), json!(v));
+    }
+    if let Some(v) = result.model_context_window {
+        fields.insert("model_context_window".to_string(), json!(v));
+    }
+    if let Some(v) = result.context_used_tokens {
+        fields.insert("context_used_tokens".to_string(), json!(v));
+    }
+    if let Some(v) = &result.content_message_id {
+        fields.insert("content_message_id".to_string(), json!(v));
+    }
+    fields
 }
 
 /// Port of `extractResultErrorMessages` (contract §2.3): an `errors` array of strings or
