@@ -37,6 +37,24 @@
 //!   `SLEEP <ms>` sleeps; `NOACK`/`ACK` toggle the background ACK responder (`NOACK` before an
 //!   interrupt drives the 1.5 s ACK-timeout outcome). Exiting the script (EOF) exits the process,
 //!   producing a normal stdout EOF.
+//! - `stdin-closed-after-delay <delay-ms> <idle-ms>` -- P6-6: sleeps `<delay-ms>`, closes fd 0
+//!   (single-threaded, no background reader -- unlike `scripted`, so there is no close-vs-
+//!   blocked-read race), then sleeps `<idle-ms>` before exiting, keeping stdout/the process alive
+//!   throughout. Deterministically breaks the parent's *next* stdin write (`EPIPE`) once
+//!   `<delay-ms>` has elapsed, without ever EOF-ing stdout -- drives the interrupt `failed`
+//!   outcome (`ControlOutcome::WriteFailed`) without racing `on_stdout_eof`'s own turn-flush.
+//!
+//! Mode resolution normally reads the first argv entry (`raw_argv_for_testing: true`, the
+//! runtime-crate-level tests' escape hatch -- see `agent_claude::scope::AgentClaudeScopeConfig`).
+//! `CoreAgentClaudeScopeConfigV1`, the FFI-crossing config, has no such escape hatch (contract
+//! §2.5's real flag injection is unconditional there), which would permanently pin this binary's
+//! `args[1]` to `"-p"` for any FFI-layer test driving a real scope through the production
+//! `build_arguments` path. `AGENT_CLAUDE_SYNTHETIC_CLI_ARGS`, when set, overrides the mode/args
+//! entirely from an env var instead of positional argv (newline-joined -- env var *values* cannot
+//! carry embedded NUL bytes, contract §5.1's spawn layer validates that; none of this binary's
+//! mode/argument tokens are ever expected to contain a literal newline) -- sidestepping flag
+//! injection without touching `build_arguments` or this binary's existing positional-argv
+//! contract at all. Test-support-only; never read by production.
 
 // Not part of `agentry-runtime`'s `src/` -- a separate binary crate root under this package's
 // `tests/support/`, outside `Scripts/rust_ffi_guardrails.py`'s two-site `agent_claude::process`
@@ -52,7 +70,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    if let Ok(raw) = std::env::var("AGENT_CLAUDE_SYNTHETIC_CLI_ARGS") {
+        let mut overridden = vec![args[0].clone()];
+        overridden.extend(raw.split('\n').map(str::to_owned));
+        args = overridden;
+    }
     let mode = args.get(1).map(String::as_str).unwrap_or("well-behaved");
     let mut stdout = std::io::stdout();
     match mode {
@@ -112,6 +135,19 @@ fn main() {
                 writeln!(stdout, r#"{{"type":"stream_event","seq":{i}}}"#).expect("write");
                 i += 1;
             }
+        }
+        "stdin-closed-after-delay" => {
+            let delay_ms: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(50);
+            let idle_ms: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3_000);
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            // SAFETY: `close(0)` on this process's own stdin fd. No other thread in this
+            // single-threaded mode ever reads fd 0, so this is not racing a blocked read() the
+            // way `scripted`'s background ACK responder would -- the pipe's read side is fully
+            // gone the instant this returns, and the parent's next write reliably gets `EPIPE`.
+            unsafe {
+                libc::close(0);
+            }
+            std::thread::sleep(Duration::from_millis(idle_ms));
         }
         "mid-line-stall" => {
             let ms: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(300);

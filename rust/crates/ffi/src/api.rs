@@ -2596,4 +2596,163 @@ mod tests {
             CoreError::AgentClaudeUnknownScope
         );
     }
+
+    /// `CoreAgentClaudeScopeConfigV1` (the FFI-crossing config) has no `raw_argv_for_testing`
+    /// escape hatch -- `runtime_config()` always hardcodes it `false`, so contract §2.5's real flag
+    /// injection is unconditional here and would permanently occupy the synthetic CLI's `args[1]`
+    /// mode slot with `"-p"`. Driving the synthetic CLI's `scripted`/other test-only modes through
+    /// the real FFI surface therefore goes through `AGENT_CLAUDE_SYNTHETIC_CLI_ARGS` instead of
+    /// positional argv (see `synthetic_cli.rs`'s own doc comment) -- a real per-KV-pair `environment`
+    /// entry, the same mechanism contract §5.1 uses in production, not a protocol-line crossing
+    /// (INV-P6-1 is about FFI exports, not test-only child-process environment).
+    fn agent_claude_config_with_synthetic_mode(cli: &str, mode_args: &[&str]) -> CoreAgentClaudeScopeConfigV1 {
+        let mut config = agent_claude_config(cli, Vec::new());
+        config.environment.push(crate::types::CoreAgentClaudeEnvironmentEntryV1 {
+            key: "AGENT_CLAUDE_SYNTHETIC_CLI_ARGS".to_owned(),
+            value: mode_args.join("\n"),
+        });
+        config
+    }
+
+    fn write_ffi_script(name: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("agent-claude-ffi-test-{name}-{}.script", std::process::id()));
+        std::fs::write(&path, contents).expect("write script fixture");
+        path
+    }
+
+    #[test]
+    fn agent_claude_oversize_single_event_payload_is_rejected_through_the_ffi_drain_surface() {
+        // P6-6 done-when: the oversize path "tested end-to-end through the real bridge" -- the
+        // cargo-only twin (`agent_claude_scope.rs`'s `an_oversize_single_event_payload_is_rejected_
+        // not_silently_truncated_or_wedged`) drives `SubscriptionHub` directly; this drives the same
+        // scenario through `CoreRuntime::agent_open_scope`/`try_drain`, the actual UniFFI-crossing
+        // surface.
+        let (core, identity, _cancellation) = initialized_core();
+        let cli = agent_claude_synthetic_cli_path();
+        let huge_text = "x".repeat(2 * 1024 * 1024);
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": huge_text}]},
+        });
+        let script = write_ffi_script("oversize", &format!("OUT {line}\nSLEEP 1500\n"));
+        let scope = core
+            .agent_open_scope(identity.clone(), agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]))
+            .expect("open scope");
+        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
+        core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send"); // turn in flight, so resnapshot appends
+
+        // `PayloadRejected` (a regular event kind published into a normal `DrainOutcome::Batch` at
+        // *publish* time, once a single event's encoded payload exceeds the subscription's byte
+        // cap) is the mechanism this drives -- distinct from `DrainBatch::oversize`, which reports
+        // a *drain-call*-level constraint (an already-queued event too large for this call's own
+        // `max_bytes`), not exercised here. Mirrors the cargo-only twin's own `RuntimeEventKind::
+        // PayloadRejected` check exactly.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut saw_payload_rejected = false;
+        while std::time::Instant::now() < deadline && !saw_payload_rejected {
+            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
+            saw_payload_rejected = batch.events.iter().any(|event| event.kind == crate::types::RuntimeEventKind::PayloadRejected);
+            if !saw_payload_rejected {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        assert!(saw_payload_rejected, "an over-cap single event payload must surface as a PayloadRejected event through the real FFI drain surface");
+
+        core.close_subscription(subscription).expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+        let _ = std::fs::remove_file(&script);
+    }
+
+    #[test]
+    fn agent_claude_gap_pressure_and_recovery_surfaces_through_the_ffi_drain_surface() {
+        // P6-6 done-when: gap/resnapshot "tested end-to-end through the real bridge" -- mirrors
+        // `agent_claude_scope.rs`'s `a_lossless_event_evicts_a_resident_droppable_diagnostic_into_
+        // a_gap_record` (two over-cap lines against a 1-usable-data-slot subscription), but through
+        // the real FFI `open_subscription`/`try_drain` surface, and proves the subscription
+        // recovers (a further drain still succeeds, not wedged) once the pressure clears.
+        let (core, identity, _cancellation) = initialized_core();
+        let cli = agent_claude_synthetic_cli_path();
+        let huge_line_one = "a".repeat(9 * 1024 * 1024);
+        let huge_line_two = "b".repeat(9 * 1024 * 1024);
+        let script = write_ffi_script("gap", &format!("OUT {huge_line_one}\nOUT {huge_line_two}\nSLEEP 1500\n"));
+        let scope = core
+            .agent_open_scope(identity.clone(), agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["scripted", &script.to_string_lossy()]))
+            .expect("open scope");
+        let subscription = core
+            .open_subscription(SubscriptionScope {
+                runtime_identity: identity.clone(),
+                scope_id: crate::types::ScopeId { value: scope.subscription_scope_id.clone() },
+                max_queued_events: 2,
+                max_queued_bytes: 65_536,
+            })
+            .expect("open subscription against the derived subscription_scope_id")
+            .subscription_id;
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
+        core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send");
+
+        // Deliberately not draining while the two huge lines stream through -- draining would
+        // relieve the very pressure this test needs to hold both diagnostics resident at once so
+        // the second eviction has something to evict (same reasoning as the cargo-only twin).
+        // Generous fixed margin, not a poll on a diagnostics field the FFI surface does not expose.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        let batch = core.try_drain(subscription.clone(), 64, 262_144).expect("drain");
+        let saw_gap = batch.events.iter().any(|event| event.kind == crate::types::RuntimeEventKind::Gap) || batch.dropped_count > 0;
+        assert!(saw_gap, "the resident droppable diagnostic must be evicted into a Gap record when a lossless event needs its slot");
+
+        // Recovery: the subscription is not wedged by the gap -- a further drain still succeeds.
+        core.try_drain(subscription.clone(), 64, 262_144).expect("drain must still succeed after a gap");
+
+        core.close_subscription(subscription).expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+        let _ = std::fs::remove_file(&script);
+    }
+
+    #[test]
+    fn agent_claude_interrupt_failed_is_reachable_through_the_ffi_surface() {
+        // P6-6 done-when: the interrupt outcome enum's fifth variant, `failed`
+        // (`ControlOutcome::WriteFailed`), reachable through the real FFI surface -- the cargo-only
+        // twin is `agent_claude_scope.rs`'s `interrupt_failed_when_the_control_request_write_hits_
+        // a_closed_stdin_pipe`, using the same deterministic single-threaded `stdin-closed-after-
+        // delay` synthetic CLI mode (no background reader thread racing the close, so no need to
+        // race `on_stdout_eof`'s own turn-flush against the parent's write).
+        let (core, identity, _cancellation) = initialized_core();
+        let cli = agent_claude_synthetic_cli_path();
+        let scope = core
+            .agent_open_scope(identity.clone(), agent_claude_config_with_synthetic_mode(cli.to_str().expect("utf8 path"), &["stdin-closed-after-delay", "200", "5000"]))
+            .expect("open scope");
+        core.agent_start_or_resume(identity.clone(), scope.scope_id.clone(), None).expect("start");
+        let generation = core.agent_send_user_message(identity.clone(), scope.scope_id.clone(), "hello".to_owned()).expect("send");
+        // Comfortably past the child's 200 ms delay before it closes stdin -- a fixed margin (10x
+        // the delay), generous enough to absorb parallel `cargo test --workspace` contention.
+        std::thread::sleep(std::time::Duration::from_millis(2_000));
+
+        let subscription = agent_claude_open_subscription(&core, &identity, &scope.subscription_scope_id);
+        let receipt = core
+            .agent_interrupt_turn(identity.clone(), scope.scope_id.clone(), generation, "closed-pipe test".to_owned())
+            .expect("interrupt");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut outcome = None;
+        while std::time::Instant::now() < deadline && outcome.is_none() {
+            let batch = core.try_drain(subscription.clone(), 16, 65_536).expect("drain");
+            for event in batch.events {
+                if let Some(decoded) = runtime::agent_claude::event::AgentClaudeEvent::decode(&event.payload)
+                    && decoded.kind.wire_name() == "interruptOutcome"
+                    && decoded.fields.get("request_id").and_then(|value| value.as_str()) == Some(receipt.request_id.as_str())
+                {
+                    outcome = Some(decoded);
+                }
+            }
+            if outcome.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        let outcome = outcome.expect("interruptOutcome must be published even when the control-request write itself fails");
+        assert_eq!(outcome.fields.get("outcome").and_then(|value| value.as_str()), Some("failed"));
+
+        core.close_subscription(subscription).expect("close subscription");
+        core.agent_shutdown(identity, scope.scope_id).expect("shutdown");
+    }
 }

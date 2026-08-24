@@ -33,7 +33,7 @@ final class CoreAgentSessionTests: XCTestCase {
         // runtime-crate twin (`agent_claude_scope.rs`) or the FFI-level `agentry-ffi` twin
         // (`api.rs`'s `agent_claude_interrupt_stale_generation_is_reachable_through_the_ffi_surface`).
         let (_, session) = try await openLongRunningSession()
-        defer { Task { await session.close() } }
+        addTeardownBlock { await session.close() } // XCTest awaits teardown blocks; a bare `Task` in `defer` would not be.
 
         let generationOne = try await session.sendUserMessage("one")
         let generationTwo = try await session.sendUserMessage("two")
@@ -65,15 +65,57 @@ final class CoreAgentSessionTests: XCTestCase {
     func testClosingTheEventStreamClosesTheSubscriptionNotTheRun() async throws {
         // Design §4.7 / P6-6 done-when: "a test asserting no subscription outlives its drainer" --
         // closing the last presentation consumer's stream must close the subscription without
-        // stopping the run. Proven here by sending a message *after* closing the stream and
-        // observing no error: the scope/process is still alive.
-        let (_, session) = try await openLongRunningSession()
-        defer { Task { await session.close() } }
+        // stopping the run. Two halves: the run survives (sending a message after close succeeds),
+        // and the subscription itself is genuinely gone Rust-side, not just locally -- proven by
+        // draining the closed subscription ID directly through `bridge.transport` (bypassing the
+        // Swift-side facade's own local-dict guard, which would otherwise short-circuit before ever
+        // reaching the real transport and prove nothing). Without this second half, the test would
+        // pass identically if `close()` were a no-op.
+        let (bridge, session) = try await openLongRunningSession()
+        addTeardownBlock { await session.close() } // XCTest awaits teardown blocks; a bare `Task` in `defer` would not be.
 
         let stream = try await session.events()
         try await stream.close()
 
         let generation = try await session.sendUserMessage("still alive after the stream closed")
         XCTAssertGreaterThan(generation, 0, "the run must survive its last subscriber's stream closing")
+
+        do {
+            _ = try await bridge.transport.tryDrain(subscriptionID: stream.subscription.subscriptionID, identity: stream.subscription.runtimeIdentity)
+            XCTFail("draining the closed subscription's real ID must fail once it has genuinely been removed Rust-side")
+        } catch {
+            XCTAssertEqual(error as? CoreTransportError, .subscriptionNotFound)
+        }
+    }
+
+    /// `CoreAgentSessionEventEnvelope.isGap`/`.isPayloadRejected` are new public API this slice
+    /// adds (contract §5.4's pressure-policy outcomes surfaced Swift-side) with no prior coverage.
+    /// A live-process gap/oversize production run (the FFI-layer twins in `api.rs` -- `agent_claude
+    /// _gap_pressure_and_recovery_surfaces_through_the_ffi_drain_surface` and `agent_claude_oversize
+    /// _single_event_payload_is_rejected_through_the_ffi_drain_surface`, both driving a real
+    /// synthetic CLI subprocess) is not reproduced here: `CoreAgentClaudeScopeConfigV1` has no way
+    /// to reach the test-only synthetic CLI's `AGENT_CLAUDE_SYNTHETIC_CLI_ARGS` env-var escape hatch
+    /// from a SwiftPM test target (there is no build-time wiring handing a Rust `cargo`-built test
+    /// binary's path to a Swift XCTest bundle). This instead proves the decode/flag logic those two
+    /// raw `CoreEvent` kinds drive once they reach the Swift facade -- `CoreEvent`'s memberwise
+    /// init is internal, reachable via `@testable import` without a live subscription.
+    func testEventEnvelopeSurfacesGapAndPayloadRejectedWithoutADecodedEvent() {
+        let gapEvent = CoreEvent(kind: .gap, authoritySequence: 0, deliveryCursor: 1, payload: .gap(droppedCount: 3), payloadOmitted: false)
+        let gapEnvelope = CoreAgentSessionEventEnvelope(raw: gapEvent, decoded: CoreAgentSessionEventDecoder.decode(gapEvent))
+        XCTAssertTrue(gapEnvelope.isGap)
+        XCTAssertFalse(gapEnvelope.isPayloadRejected)
+        XCTAssertNil(gapEnvelope.decoded, "a gap payload carries no agent-claude-shaped event to decode")
+
+        let rejectedEvent = CoreEvent(
+            kind: .payloadRejected,
+            authoritySequence: 0,
+            deliveryCursor: 2,
+            payload: .rejected(actualBytes: 2_000_000, maximumBytes: 1_048_576, resnapshotRequired: true),
+            payloadOmitted: true
+        )
+        let rejectedEnvelope = CoreAgentSessionEventEnvelope(raw: rejectedEvent, decoded: CoreAgentSessionEventDecoder.decode(rejectedEvent))
+        XCTAssertTrue(rejectedEnvelope.isPayloadRejected)
+        XCTAssertFalse(rejectedEnvelope.isGap)
+        XCTAssertNil(rejectedEnvelope.decoded, "a rejected payload carries no agent-claude-shaped event to decode")
     }
 }

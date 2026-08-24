@@ -50,6 +50,27 @@
 //!   passes `Vec::new`) -- no per-domain snapshot-provider hook exists yet in the generic
 //!   subscription surface. A reattaching subscriber can read [`AgentClaudeScope::diagnostics`] for
 //!   the terminal facts it needs today.
+//! - **The interrupt round-trip thread (`interrupt_turn`'s background thread) and the orphan-
+//!   backstop thread (`Drop`'s detached `terminate_and_orphan` call) do not call
+//!   `process::thread_budget::increment()`.** The frozen `2N + 1` steady-state budget (contract
+//!   §5.2, this module's own top-of-file doc comment) is a *steady-state* measurement across the
+//!   two permanent per-session reader threads plus the one process-wide reaper thread; both of
+//!   these are transient and bounded (the round trip resolves within `interrupt_ack_timeout`, the
+//!   backstop thread exits once `terminate_and_orphan` returns), so leaving them uncounted does not
+//!   break that existing assertion. Named explicitly rather than left for the next reader to
+//!   discover by grep: an uncounted-but-unbounded thread class is exactly the blind spot R2b exists
+//!   to catch, and these two are deliberately in the "transient and bounded" exception, not an
+//!   oversight.
+//! - **The five contract §5.3 interrupt outcomes (`acknowledged`/`noTurnInFlight`/`staleGeneration`/
+//!   `timedOut`/`failed`) cross the wire as a plain string field inside the batched event envelope
+//!   (see [`event::interrupt_outcome`]), not a typed enum on either side of the FFI boundary.** This
+//!   slice freezes that string-field shape rather than adding a typed Swift enum: all five string
+//!   literals are exhaustively produced here, listed in `abi-v1.json`'s `agentClaudeV1` section, and
+//!   each is reachable by a dedicated test at every layer (`agent_claude_scope.rs`, `api.rs`'s FFI
+//!   twins, and -- for `staleGeneration` -- `CoreAgentSessionTests` through the real Swift bridge).
+//!   A typed `CoreAgentInterruptOutcome` Swift enum (exhaustive-switch safety for a real UI
+//!   consumer) is deferred until a consumer actually needs it; adding one speculatively now would
+//!   be shape churn against a surface this step's own done-when says should freeze.
 
 use std::collections::HashMap;
 use std::fs::File;

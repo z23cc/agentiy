@@ -230,6 +230,38 @@ fn interrupt_times_out_when_the_synthetic_cli_never_acks() {
 }
 
 #[test]
+fn interrupt_failed_when_the_control_request_write_hits_a_closed_stdin_pipe() {
+    // The fifth and last contract §5.3 outcome, `ControlOutcome::WriteFailed` -> `"failed"` --
+    // reached deterministically via the synthetic CLI's dedicated single-threaded
+    // `stdin-closed-after-delay` mode (closes the child's own fd 0 after a fixed 50 ms delay,
+    // with no background reader thread racing that close). Closing stdin alone never EOFs
+    // stdout, so `turn_in_flight` stays true and the interrupt's synchronous precondition check
+    // reaches the background round-trip thread every time, and the round trip's write reliably
+    // hits `EPIPE` once the parent-side sleep below has cleared the child's 50 ms delay.
+    let harness = Harness::open(
+        identity(13),
+        test_config(vec!["stdin-closed-after-delay".to_string(), "200".to_string(), "5000".to_string()]),
+        SubscriptionConfig::default(),
+    );
+    harness.scope.start_or_resume(&harness.identity, None).expect("start");
+    let generation = harness.scope.send_user_message(&harness.identity, "hello").expect("send");
+    // Comfortably past the child's 200 ms delay before it closes stdin -- not a race, a fixed
+    // margin (10x the delay, generous enough to absorb parallel `cargo test --workspace`
+    // contention, which the FFI-level twin's own margin tuning showed matters here).
+    std::thread::sleep(Duration::from_millis(2_000));
+
+    let request_id = harness.scope.interrupt_turn(&harness.identity, generation, "closed-pipe test".to_string()).expect("interrupt");
+    let outcome = harness
+        .wait_for(Duration::from_secs(2), |event| {
+            event.kind.wire_name() == "interruptOutcome" && field_str(event, "request_id") == Some(request_id.as_str())
+        })
+        .expect("interruptOutcome must be published even when the control-request write itself fails");
+    assert_eq!(field_str(&outcome, "outcome"), Some("failed"));
+
+    harness.scope.shutdown(&harness.identity).expect("shutdown");
+}
+
+#[test]
 fn permission_round_trip_allow_then_a_second_response_is_rejected_as_unknown() {
     let script = write_script(
         "permission",
