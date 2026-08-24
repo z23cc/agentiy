@@ -1040,7 +1040,7 @@ extension AgentModeRunServiceLifecycleTests {
         XCTAssertNil(session.runID)
     }
 
-    private func resolvedClaudeLaunchPolicy(
+    func resolvedClaudeLaunchPolicy(
         profile: AgentProviderPermissionProfile,
         harness: LifecycleHarness
     ) -> ClaudeControllerLaunchPolicy? {
@@ -1058,7 +1058,7 @@ extension AgentModeRunServiceLifecycleTests {
         )
     }
 
-    private func setClaudeControllerLaunchSettings(
+    func setClaudeControllerLaunchSettings(
         for session: AgentModeViewModel.TabSession,
         coordinator: ClaudeAgentModeCoordinator,
         workspacePath: String? = URL(
@@ -1134,6 +1134,10 @@ actor LifecycleFakeNativeController: NativeAgentRuntimeControlling {
     private let shutdownGate: LifecycleAsyncGate?
     private let repeatsStartOrResumeFailure: Bool
     private var pendingStartOrResumeFailure: Error?
+    /// D-7 (docs/architecture/rust-agent-claude-v1.md §9): lets a test simulate `sendUserMessage`
+    /// failing with a specific typed error (e.g. `.processNotRunning`) while `hasActiveSession`
+    /// still (staleness-tolerantly) reports `true` -- distinct from `failSend`'s fixed generic error.
+    private let sendUserMessageFailure: Error?
     private let turnStatusOnSend: NativeAgentRuntimeTurnStatus?
     private let runtimeInitStatusOnSend: NativeAgentRuntimeRuntimeInitStatus?
     private let finishEventsAfterSend: Bool
@@ -1155,12 +1159,14 @@ actor LifecycleFakeNativeController: NativeAgentRuntimeControlling {
         repeatsStartOrResumeFailure: Bool = false,
         turnStatusOnSend: NativeAgentRuntimeTurnStatus? = nil,
         runtimeInitStatusOnSend: NativeAgentRuntimeRuntimeInitStatus? = nil,
-        finishEventsAfterSend: Bool = false
+        finishEventsAfterSend: Bool = false,
+        sendUserMessageFailure: Error? = nil
     ) {
         self.recorder = recorder
         self.label = label
         turnInFlight = hasTurnInFlight
         self.failSend = failSend
+        self.sendUserMessageFailure = sendUserMessageFailure
         self.currentSessionRefGate = currentSessionRefGate
         self.eventsStreamReadyGate = eventsStreamReadyGate
         self.startOrResumeGate = startOrResumeGate
@@ -1232,6 +1238,10 @@ actor LifecycleFakeNativeController: NativeAgentRuntimeControlling {
         recorder.record("\(label):send")
         if let sendUserMessageGate {
             await sendUserMessageGate.arriveAndWait()
+        }
+        if let sendUserMessageFailure {
+            recorder.record("\(label):send-failed")
+            throw sendUserMessageFailure
         }
         if failSend {
             throw LifecycleTestError.expectedClaudeSendFailure
