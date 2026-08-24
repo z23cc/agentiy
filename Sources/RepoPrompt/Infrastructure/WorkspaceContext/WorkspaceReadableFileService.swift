@@ -1,7 +1,6 @@
 import Foundation
 #if os(macOS)
     import Darwin
-    import RepoPromptC
 #endif
 
 enum WorkspaceReadableFileResolution {
@@ -376,8 +375,9 @@ struct WorkspaceReadableFileService {
     private static func openedFilePath(fileDescriptor: Int32) throws -> String {
         #if os(macOS)
             var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-            let result = buffer.withUnsafeMutableBufferPointer { buffer in
-                repo_get_file_descriptor_path(fileDescriptor, buffer.baseAddress, buffer.count)
+            let result = buffer.withUnsafeMutableBufferPointer { buffer -> CInt in
+                guard let baseAddress = buffer.baseAddress else { return -1 }
+                return Darwin.fcntl(fileDescriptor, F_GETPATH, UnsafeMutableRawPointer(baseAddress))
             }
             guard result == 0 else {
                 throw FileSystemError.failedToReadFile
@@ -387,6 +387,12 @@ struct WorkspaceReadableFileService {
             throw FileSystemError.failedToReadFile
         #endif
     }
+
+    #if DEBUG
+        static func openedFilePathForTesting(fileDescriptor: Int32) throws -> String {
+            try openedFilePath(fileDescriptor: fileDescriptor)
+        }
+    #endif
 
     private func normalizedAlwaysReadableAbsolutePath(for path: String) -> String {
         let normalized = AgentSupportDirectoryCatalog.normalizedPath(for: path)

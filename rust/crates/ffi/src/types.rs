@@ -788,6 +788,36 @@ impl FolderSuffixRequest {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreSearchScoreCandidateV1 {
+    pub name: Vec<u8>,
+    pub path: Vec<u8>,
+    pub name_lower: Vec<u8>,
+    pub path_lower: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreSearchScoreQueryV1 {
+    pub raw: Vec<u8>,
+    pub lowered: Vec<u8>,
+    pub has_slash: bool,
+    pub is_wildcard: bool,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CoreSearchScoreBatchRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub candidates: Vec<CoreSearchScoreCandidateV1>,
+    pub query: CoreSearchScoreQueryV1,
+    pub fuzzy_threshold: f64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreSearchScoreBatchResultV1 {
+    pub scores: Vec<i32>,
+}
+
 /// Stable encoding identity returned by the standalone TD-5 text decoder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum CoreTextEncodingV1 {

@@ -137,6 +137,20 @@
     "malformedRangeBehavior": "searchInvariant",
     "productFallback": "none"
   },
+  "searchScoreV1": {
+    "additiveInAbiEpoch": 1,
+    "abiEpochDecision": "no bump: additive-only, no existing export signature changed",
+    "contractVersion": 1,
+    "export": "searchScoreBatchV1",
+    "candidateAlignment": "input-index",
+    "stringRepresentation": "utf8-bytes-truncated-at-first-nul-by-runtime",
+    "lowercaseInputs": "caller-authoritative",
+    "wildcardCompatibility": "live-c-private-flags-case-sensitive-no-wildstar-leading-double-star-suffix-loop",
+    "runtimeIdentityRequired": true,
+    "requestScopedCancellation": "none-synchronous-scorer-v1",
+    "resultCount": "zero-for-empty-input-otherwise-candidate-count",
+    "productFallback": "existing-caller-error-boundary-only"
+  },
   "codeMapCompactV1": {
     "additiveInAbiEpoch": 1,
     "contractVersion": 1,

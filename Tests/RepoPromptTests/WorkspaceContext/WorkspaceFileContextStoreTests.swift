@@ -6911,6 +6911,35 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     }
 
+    func testWorkspaceReadableFileServiceOpenedDescriptorPathAndFailureMapping() throws {
+        #if os(macOS) && DEBUG
+            let root = try makeTemporaryRoot(name: "ReadableDescriptorPath")
+            let fileURL = root.appendingPathComponent("example.txt")
+            try write("descriptor-bound", to: fileURL)
+
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? handle.close() }
+            let openedPath = try WorkspaceReadableFileService.openedFilePathForTesting(
+                fileDescriptor: handle.fileDescriptor
+            )
+            XCTAssertEqual(
+                URL(fileURLWithPath: openedPath).resolvingSymlinksInPath().standardizedFileURL.path,
+                fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+            )
+
+            do {
+                _ = try WorkspaceReadableFileService.openedFilePathForTesting(fileDescriptor: -1)
+                XCTFail("An invalid descriptor must fail path lookup")
+            } catch let error as FileSystemError {
+                guard case .failedToReadFile = error else {
+                    return XCTFail("Unexpected descriptor lookup error: \(error)")
+                }
+            } catch {
+                XCTFail("Unexpected descriptor lookup error: \(error)")
+            }
+        #endif
+    }
+
     func testWorkspaceReadableFileServiceResolvesSymlinkedAlwaysReadableExternalFilesAndRejectsEscapes() async throws {
         let home = try makeTemporaryRoot(name: "ReadableSymlinkHome")
         let realSkillsRoot = try makeTemporaryRoot(name: "ReadableSymlinkSkills")

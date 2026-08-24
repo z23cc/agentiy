@@ -356,7 +356,7 @@ actor AgentContextFileBrowseService {
         let records = await revalidatedRecords(for: candidates, allowedRootIDs: allowedRootIDs)
         try Task.checkCancellation()
         let physicalRoots = allowedRoots.map(Self.makePhysicalRootRef)
-        var ranked = score(
+        var ranked = try await score(
             records: records,
             query: query,
             physicalRoots: physicalRoots,
@@ -613,7 +613,7 @@ actor AgentContextFileBrowseService {
         query: RepoSearchQuery,
         physicalRoots: [WorkspaceRootRef],
         lookupContext: WorkspaceLookupContext
-    ) -> [RankedRecord] {
+    ) async throws -> [RankedRecord] {
         let projected = records.compactMap { revalidated -> (RevalidatedRecord, AgentContextFileBrowseFile)? in
             guard let file = makeFile(
                 record: revalidated.record,
@@ -631,11 +631,12 @@ actor AgentContextFileBrowseService {
                 pathLower: $0.1.projectedDisplayPath.lowercased()
             )
         }
-        let scores = RepoSearchBatchScorer.scores(
+        let scores = await RepoSearchBatchScorer.scores(
             for: candidates,
             query: query,
             fuzzyThreshold: Self.fuzzyThreshold
         )
+        try Task.checkCancellation()
         var ranked: [RankedRecord] = []
         for index in projected.indices where scores[index] > 0 {
             ranked.append(RankedRecord(

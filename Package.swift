@@ -35,7 +35,6 @@ var repoPromptAppDependencies: [Target.Dependency] = [
     "RepoPromptSearchCore",
     "RepoPromptWorkspaceCore",
     "RepoPromptShared",
-    "RepoPromptC",
     "Sparkle",
     .product(name: "Logging", package: "swift-log"),
     .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
@@ -51,11 +50,7 @@ var repoPromptAppDependencies: [Target.Dependency] = [
 
 var repoPromptAppSwiftSettings: [SwiftSetting] = [
     .define("DEBUG", .when(configuration: .debug)),
-    .enableUpcomingFeature("BareSlashRegexLiterals"),
-    .unsafeFlags([
-        "-import-objc-header", "\(packageRoot)/Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h",
-        "-disable-bridging-pch"
-    ])
+    .enableUpcomingFeature("BareSlashRegexLiterals")
 ]
 
 var repoPromptTestDependencies: [Target.Dependency] = [
@@ -142,7 +137,6 @@ let package = Package(
             name: "RepoPromptDomainRuntime",
             dependencies: [
                 "RepoPromptShared",
-                "RepoPromptC",
                 "RepoPromptCodeMapCore",
                 "AgentryCoreBridge",
                 .product(name: "Logging", package: "swift-log"),
@@ -180,7 +174,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "RepoPromptMCP",
-            dependencies: ["RepoPromptShared", "RepoPromptDomainRuntime", "RepoPromptCodeMapCore", "RepoPromptC", .product(name: "Logging", package: "swift-log"), .product(name: "MCP", package: "swift-sdk"), .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"), .product(name: "SystemPackage", package: "swift-system")],
+            dependencies: ["RepoPromptShared", "RepoPromptDomainRuntime", "RepoPromptCodeMapCore", .product(name: "Logging", package: "swift-log"), .product(name: "MCP", package: "swift-sdk"), .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"), .product(name: "SystemPackage", package: "swift-system")],
             path: "Sources/RepoPromptMCP",
             swiftSettings: [.define("DEBUG", .when(configuration: .debug))]
         ),
@@ -191,7 +185,6 @@ let package = Package(
                 .define("DEBUG", .when(configuration: .debug))
             ]
         ),
-        .target(name: "RepoPromptC", path: "Sources/RepoPromptC", publicHeadersPath: "include", cSettings: [.headerSearchPath("include")]),
         .binaryTarget(name: "Sparkle", path: "Vendor/Sparkle/Sparkle.xcframework"),
         .testTarget(
             name: "AgentryCoreBridgeTests",

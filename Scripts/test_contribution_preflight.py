@@ -733,5 +733,101 @@ class ContributionPreflightTests(unittest.TestCase):
             self.assertEqual(self.gitleaks_lines(env), [])
 
 
+class NativeSourceGuardrailTests(unittest.TestCase):
+    def copy_guardrail_fixture(self, destination: Path) -> Path:
+        fixture = destination / "repo"
+        shutil.copytree(
+            REPO_ROOT,
+            fixture,
+            ignore=shutil.ignore_patterns(
+                ".build",
+                ".git",
+                "__pycache__",
+                "prompt-exports",
+                "target",
+                "ThirdPartyLicenses",
+                "Vendor",
+            ),
+        )
+        return fixture
+
+    def run_source_layout_guardrail(self, fixture: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "Scripts/source_layout_guardrails.sh"],
+            cwd=fixture,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+
+    def test_first_party_native_source_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.copy_guardrail_fixture(Path(tmp))
+
+            allowed_paths = (
+                "Sources/CAgentryRustCore/shim.c",
+                "Sources/CAgentryRustCore/include/AgentryCoreFFI.h",
+                "Tests/RepoPromptCodeMapCoreTests/Fixtures/c/guardrail_fixture.c",
+                "Tests/RepoPromptCodeMapCoreTests/Fixtures/cpp/guardrail_fixture.mm",
+                "ThirdPartyLicenses/guardrail_fixture.c",
+                "Vendor/guardrail_fixture.mm",
+            )
+            for relative_path in allowed_paths[2:]:
+                path = fixture / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("/* guardrail fixture */\n", encoding="utf-8")
+            for relative_path in allowed_paths[:2]:
+                self.assertTrue((fixture / relative_path).is_file(), relative_path)
+
+            allowed = self.run_source_layout_guardrail(fixture)
+            self.assertEqual(allowed.returncode, 0, allowed.stderr + allowed.stdout)
+            self.assertIn("OK: source layout guardrails passed.", allowed.stdout)
+
+            forbidden_product_paths = (
+                "Sources/RepoPrompt/GuardrailFixture.c",
+                "Sources/RepoPrompt/GuardrailFixture.mm",
+            )
+            for relative_path in forbidden_product_paths:
+                (fixture / relative_path).write_text("/* forbidden product source */\n", encoding="utf-8")
+
+            forbidden_products = self.run_source_layout_guardrail(fixture)
+            forbidden_output = forbidden_products.stderr + forbidden_products.stdout
+            self.assertNotEqual(forbidden_products.returncode, 0, forbidden_output)
+            self.assertIn("unexpected first-party C/C++/Objective-C source", forbidden_output)
+            for relative_path in forbidden_product_paths:
+                self.assertIn(relative_path, forbidden_output)
+                (fixture / relative_path).unlink()
+
+            native_target_dir = fixture / "Sources/NativeGuardrailFixture"
+            native_target_dir.mkdir()
+            (native_target_dir / "fixture.c").write_text("void guardrail_fixture(void) {}\n", encoding="utf-8")
+            package_path = fixture / "Package.swift"
+            package_text = package_path.read_text(encoding="utf-8")
+            insertion_point = "        .testTarget(\n            name: \"RepoPromptTests\","
+            self.assertIn(insertion_point, package_text)
+            package_path.write_text(
+                package_text.replace(
+                    insertion_point,
+                    "        .target(\n"
+                    "            name: \"NativeGuardrailFixture\",\n"
+                    "            path: \"Sources/NativeGuardrailFixture\",\n"
+                    "            sources: [\"fixture.c\"]\n"
+                    "        ),\n"
+                    + insertion_point,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            native_target = self.run_source_layout_guardrail(fixture)
+            native_target_output = native_target.stderr + native_target.stdout
+            self.assertNotEqual(native_target.returncode, 0, native_target_output)
+            self.assertIn(
+                "first-party SwiftPM target must not compile C-family sources: "
+                "NativeGuardrailFixture: ['fixture.c']",
+                native_target_output,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

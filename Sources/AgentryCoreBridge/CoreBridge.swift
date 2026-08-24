@@ -144,6 +144,10 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         rawBytes: Data
     ) throws -> CoreTextDecodeResultV1
+    func searchScoreBatchV1(
+        identity: CoreRuntimeIdentity,
+        request: CoreSearchScoreBatchRequestV1
+    ) throws -> [Int32]
     func pathMatchScoreBatchV1(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,
@@ -815,6 +819,37 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             hadReplacements: value.hadReplacements,
             policyID: value.policyId
         )
+    }
+
+    func searchScoreBatchV1(
+        identity: CoreRuntimeIdentity,
+        request: CoreSearchScoreBatchRequestV1
+    ) throws -> [Int32] {
+        let value: AgentryUniFFIRaw.CoreSearchScoreBatchResultV1
+        do {
+            value = try runtime.searchScoreBatchV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreSearchScoreBatchRequestV1.contractVersion,
+                candidates: request.candidates.map { candidate in
+                    .init(
+                        name: Data(candidate.name.utf8),
+                        path: Data(candidate.path.utf8),
+                        nameLower: Data(candidate.nameLower.utf8),
+                        pathLower: Data(candidate.pathLower.utf8)
+                    )
+                },
+                query: .init(
+                    raw: Data(request.query.raw.utf8),
+                    lowered: Data(request.query.lowered.utf8),
+                    hasSlash: request.query.hasSlash,
+                    isWildcard: request.query.isWildcard
+                ),
+                fuzzyThreshold: request.fuzzyThreshold
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+        return value.scores
     }
 
     func applyEditsBatchCompactV1(

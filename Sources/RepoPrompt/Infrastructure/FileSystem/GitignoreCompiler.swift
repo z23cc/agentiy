@@ -1,24 +1,5 @@
 import Foundation
-
-// Wildmatch bit-flags (duplicated from wildmatch.h)
-private let WM_NOESCAPE: UInt32 = 0x01
-private let WM_PATHNAME: UInt32 = 0x02
-private let WM_PERIOD: UInt32 = 0x04
-private let WM_LEADING_DIR: UInt32 = 0x08
-private let WM_CASEFOLD: UInt32 = 0x10
-private let WM_PREFIX_DIRS: UInt32 = 0x20
-private let WM_WILDSTAR: UInt32 = 0x40
-
-private let WM_MATCH: Int32 = 0 // Success (same as C macro)
-
-/// Flags we always use for Git-style ignores
-private let WM_DEFAULT_FLAGS: UInt32 = WM_PATHNAME | WM_NOESCAPE | WM_WILDSTAR
-
-/// Check if a gitignore match function returned WM_MATCH
-@inline(__always)
-private func isMatch(_ result: Int32) -> Bool {
-    result == WM_MATCH
-}
+import RepoPromptDomainRuntime
 
 /// Represents a single line of a `.gitignore`-style file, parsed and
 /// normalized for matching logic.
@@ -102,14 +83,9 @@ struct NegationTraversalPattern: Hashable {
     }
 
     private func matchesPattern(_ pattern: String, directoryPath: String) -> Bool {
-        pattern.withCString { patC in
-            directoryPath.withCString { pathC in
-                let result = absolute
-                    ? repo_gitignore_match_anchored(patC, pathC)
-                    : repo_gitignore_match_anywhere(patC, pathC)
-                return isMatch(result)
-            }
-        }
+        absolute
+            ? RepoWildmatch.gitignoreMatchesAnchored(pattern: pattern, path: directoryPath)
+            : RepoWildmatch.gitignoreMatchesAnywhere(pattern: pattern, path: directoryPath)
     }
 }
 
@@ -347,25 +323,12 @@ public struct CompiledIgnoreRules: Sendable {
     }
 
     private func matchesPathAnchored(_ path: String, _ pattern: String) -> Bool {
-        pattern.withCString { patC in
-            path.withCString { pathC in
-                isMatch(repo_gitignore_match_anchored(patC, pathC))
-            }
-        }
+        RepoWildmatch.gitignoreMatchesAnchored(pattern: pattern, path: path)
     }
 
-    /// For non-absolute patterns, we use the C implementation
     private func matchesPathAnywhere(_ path: String, _ pattern: String) -> Bool {
-        pattern.withCString { patC in
-            path.withCString { pathC in
-                isMatch(repo_gitignore_match_anywhere(patC, pathC))
-            }
-        }
+        RepoWildmatch.gitignoreMatchesAnywhere(pattern: pattern, path: path)
     }
-
-    // All low-level pattern matching (globMatch, matchComponent, findClosingBracket,
-    // matchCharacterClass, matchPatternCompsInPath, matchCompsIterative)
-    // is now handled by the C wildmatch implementation.
 }
 
 // MARK: - The Compiler
@@ -381,49 +344,40 @@ public enum GitignoreCompiler {
         var basenameOnlyNegationCount = 0
 
         for line in lines {
-            line.withCString { lineC in
-                var parsedPattern = repo_gitignore_pattern()
+            guard let parsedPattern = GitignoreLineParser.parse(line) else {
+                continue
+            }
 
-                // Parse the line using C function
-                if repo_parse_gitignore_line(lineC, &parsedPattern) {
-                    // Convert C array to Swift String
-                    let patternStr = withUnsafeBytes(of: parsedPattern.pattern) { bytes in
-                        let cString = bytes.bindMemory(to: CChar.self).baseAddress!
-                        return String(cString: cString)
-                    }
-
-                    let anchoredToIgnoreFileDirectory = parsedPattern.absolute || patternStr.contains("/")
-                    var adjustedPattern = patternStr
-                    if anchoredToIgnoreFileDirectory, !directoryPath.isEmpty {
-                        let prefix = directoryPath.hasSuffix("/") ? String(directoryPath.dropLast()) : directoryPath
-                        if !prefix.isEmpty {
-                            adjustedPattern = "\(prefix)/\(adjustedPattern)"
-                        }
-                    }
-
-                    let interned = PatternPool.shared.intern(adjustedPattern)
-                    let prefilter = makePrefilter(
-                        pattern: interned,
-                        directoryOnly: parsedPattern.directory_only,
-                        absolute: anchoredToIgnoreFileDirectory
-                    )
-
-                    let pat = GitPattern(
-                        pattern: interned,
-                        isNegation: parsedPattern.is_negation,
-                        directoryOnly: parsedPattern.directory_only,
-                        absolute: anchoredToIgnoreFileDirectory,
-                        prefilter: prefilter
-                    )
-                    patterns.append(pat)
-
-                    if pat.isNegation {
-                        let hints = traversalHints(for: pat)
-                        traversalPrefixes.formUnion(hints.prefixes)
-                        traversalPatterns.formUnion(hints.patterns)
-                        basenameOnlyNegationCount += hints.basenameOnlyNegationCount
-                    }
+            let anchoredToIgnoreFileDirectory = parsedPattern.absolute || parsedPattern.pattern.contains("/")
+            var adjustedPattern = parsedPattern.pattern
+            if anchoredToIgnoreFileDirectory, !directoryPath.isEmpty {
+                let prefix = directoryPath.hasSuffix("/") ? String(directoryPath.dropLast()) : directoryPath
+                if !prefix.isEmpty {
+                    adjustedPattern = "\(prefix)/\(adjustedPattern)"
                 }
+            }
+
+            let interned = PatternPool.shared.intern(adjustedPattern)
+            let prefilter = makePrefilter(
+                pattern: interned,
+                directoryOnly: parsedPattern.directoryOnly,
+                absolute: anchoredToIgnoreFileDirectory
+            )
+
+            let pat = GitPattern(
+                pattern: interned,
+                isNegation: parsedPattern.isNegation,
+                directoryOnly: parsedPattern.directoryOnly,
+                absolute: anchoredToIgnoreFileDirectory,
+                prefilter: prefilter
+            )
+            patterns.append(pat)
+
+            if pat.isNegation {
+                let hints = traversalHints(for: pat)
+                traversalPrefixes.formUnion(hints.prefixes)
+                traversalPatterns.formUnion(hints.patterns)
+                basenameOnlyNegationCount += hints.basenameOnlyNegationCount
             }
         }
 

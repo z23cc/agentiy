@@ -117,12 +117,10 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "RepoPromptApp",
         "RepoPromptMCP",
         "RepoPromptShared",
-        "RepoPromptC",
         "RepoPromptWorkspaceCore",
         "RepoPromptSearchCore",
         "RepoPromptDomainRuntime",
         "RepoPromptCodeMapCore",
-        "TreeSitterScannerSupport",
         "RepoPromptWorkspaceCoreTests",
         "RepoPromptSearchCoreTests",
         "RepoPromptDomainRuntimeTests",
@@ -139,6 +137,8 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     for name in ("RepoPromptRegexCore", "CSwiftPCRE2", "RepoPromptRegexCoreTests"):
         if name in targets:
             raise GeneratorError(f"Removed legacy regex target must not return: '{name}'")
+    if "RepoPromptC" in targets:
+        raise GeneratorError("Retired first-party C target must not return: 'RepoPromptC'")
 
     repo_prompt = targets["RepoPrompt"]
     if repo_prompt.get("type") != "executable":
@@ -183,6 +183,18 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         if _by_name_dependencies(target) != dependencies:
             dependency_text = " → ".join([name, *dependencies]) if dependencies else f"{name} (none)"
             raise GeneratorError(f"Rust FFI dependency chain drifted at {dependency_text}")
+
+    c_agentry = targets["CAgentryRustCore"]
+    if c_agentry.get("sources") != ["shim.c"]:
+        raise GeneratorError("CAgentryRustCore must compile only the generated Rust ABI shim")
+    if c_agentry.get("publicHeadersPath") != "include":
+        raise GeneratorError("CAgentryRustCore must retain its generated public-header directory")
+    c_agentry_settings = [
+        setting.get("kind", {}).get("unsafeFlags", {}).get("_0", [])
+        for setting in c_agentry.get("settings", [])
+    ]
+    if not any(any(flag.endswith("/libagentry_ffi.a") for flag in flags) for flags in c_agentry_settings):
+        raise GeneratorError("CAgentryRustCore must retain Rust static-library linkage")
 
     if _by_name_dependencies(repo_prompt_app).count("AgentryCoreBridge") != 1:
         raise GeneratorError("RepoPromptApp must depend exactly once on AgentryCoreBridge")
@@ -234,6 +246,7 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
             raise GeneratorError("RepoPromptSearchCore must not be exposed as a package product")
 
     expected_test_dependencies = {
+        "AgentryCoreBridge",
         "RepoPromptApp",
         "RepoPromptCodeMapCore",
         "RepoPromptDomainRuntime",
@@ -243,7 +256,7 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     repo_prompt_tests = targets["RepoPromptTests"]
     if set(_by_name_dependencies(repo_prompt_tests)) != expected_test_dependencies:
         raise GeneratorError(
-            "RepoPromptTests must depend on RepoPromptApp, RepoPromptCodeMapCore, "
+            "RepoPromptTests must depend on AgentryCoreBridge, RepoPromptApp, RepoPromptCodeMapCore, "
             "RepoPromptDomainRuntime, RepoPromptMCP, and RepoPromptShared"
         )
 
@@ -259,14 +272,17 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     }
     if (
         _by_name_dependencies(domain_runtime)
-        != ["RepoPromptShared", "RepoPromptC", "RepoPromptCodeMapCore"]
+        != ["RepoPromptShared", "RepoPromptCodeMapCore", "AgentryCoreBridge"]
         or domain_runtime_products != {("Logging", "swift-log"), ("MCP", "swift-sdk")}
         or len(domain_runtime.get("dependencies", [])) != 5
     ):
         raise GeneratorError(
-            "RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptC, "
-            "RepoPromptCodeMapCore, Logging, and pinned MCP"
+            "RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptCodeMapCore, "
+            "AgentryCoreBridge, Logging, and pinned MCP"
         )
+    for consumer_name in ("RepoPromptApp", "RepoPromptDomainRuntime", "RepoPromptMCP"):
+        if "RepoPromptC" in _by_name_dependencies(targets[consumer_name]):
+            raise GeneratorError(f"{consumer_name} must not depend on retired RepoPromptC")
 
     domain_runtime_tests = targets["RepoPromptDomainRuntimeTests"]
     if domain_runtime_tests.get("type") != "test":
@@ -283,17 +299,13 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         value = setting.get("kind", {}).get("unsafeFlags", {}).get("_0")
         if isinstance(value, list):
             unsafe_flags.append(value)
-    expected_header = repo_root / "Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h"
-    if not any(
-        len(flags) == 3
-        and flags[0] == "-import-objc-header"
-        and Path(flags[1]) == expected_header
-        and flags[2] == "-disable-bridging-pch"
+    if any(
+        "-import-objc-header" in flags or "-disable-bridging-pch" in flags
         for flags in unsafe_flags
     ):
-        raise GeneratorError(
-            "RepoPromptApp must own the Objective-C bridging-header unsafe flags"
-        )
+        raise GeneratorError("RepoPromptApp must not restore Objective-C bridging-header flags")
+    if (repo_root / "Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h").exists():
+        raise GeneratorError("Retired RepoPromptApp bridging header must not return")
 
     expected_resources = {("Fixtures", True), ("Goldens", True)}
     test_targets_with_codemap_resources = []
@@ -312,20 +324,15 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
             "that copies Fixtures and Goldens"
         )
 
-    expected_scanners = ["src/javascript/scanner.c", "src/python/scanner.c"]
-    scanners = targets["TreeSitterScannerSupport"].get("sources")
-    if scanners != expected_scanners:
-        raise GeneratorError(
-            "TreeSitterScannerSupport must retain exactly the JavaScript and Python scanners"
-        )
-
     required_paths = (
         "Package.swift",
         "Package.resolved",
         "Scripts/package_app.sh",
         "Scripts/xcode_developer_workflow.sh",
         "Sources/RepoPromptExecutable/RepoPromptExecutable.swift",
+        "Sources/CAgentryRustCore/shim.c",
         "Sources/CAgentryRustCore/include/AgentryCoreFFI.h",
+        "Sources/CAgentryRustCore/include/module.modulemap",
         "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift",
         "Sources/AgentryCoreBridge/CoreBridge.swift",
         "rust/ffi-contract/generated-manifest.json",

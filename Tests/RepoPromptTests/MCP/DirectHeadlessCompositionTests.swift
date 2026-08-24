@@ -328,6 +328,7 @@ final class DirectHeadlessCompositionTests: XCTestCase {
             root.appendingPathComponent("outside.swift"),
             root.appendingPathComponent("root.log"),
             root.appendingPathComponent("nested/deep.log"),
+            root.appendingPathComponent("nested/UPPER.LOG"),
             root.appendingPathComponent("foo/*.log"),
             root.appendingPathComponent("foo/bar.log")
         ]
@@ -425,7 +426,7 @@ final class DirectHeadlessCompositionTests: XCTestCase {
         let escapedStarMatches = try XCTUnwrap(escapedStar["matches"] as? [[String: Any]])
         XCTAssertEqual(
             Set(escapedStarMatches.compactMap { $0["path"] as? String }),
-            Set(["root.log", "nested/deep.log", "foo/bar.log"])
+            Set(["root.log", "nested/deep.log", "nested/UPPER.LOG", "foo/bar.log"])
         )
 
         let pathAlias = try await search([

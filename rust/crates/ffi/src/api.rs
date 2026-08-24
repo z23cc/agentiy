@@ -11,17 +11,18 @@ use crate::types::{
     CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake, CoreInventoryScopeConfigV1,
     CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1,
     CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
-    CoreTextDecodeRequestV1, CoreTextDecodeResultV1, CoreTokenAccountingRequestV1,
-    CoreTokenAccountingResultV1, DrainBatch, FolderSuffixRequest, HostResponse,
-    InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1, InventoryDeltaDiscoveryReceiptV1,
-    InventoryDeltaReceiptV1, InventoryDiagnosticsV1, InventoryGenerationReceiptV1,
-    InventoryHandleInvalidationReasonV1, InventoryProjectedShardRequestV1, InventoryPublishModeV1,
-    InventoryResolveRequestV1, InventoryRootLifetimeV1, InventoryRootOpenV1,
-    InventoryRootUnloadReceiptV1, InventoryScopeHandleV1, InventorySnapshotHandleV1,
-    InventorySnapshotRequestV1, OperationState, OversizeEvent, PathFilterRequest, PathFilterResult,
-    RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity,
-    ShutdownReceipt, SubscriptionBootstrap, SubscriptionId, SubscriptionScope,
-    parse_inventory_scope_id, parse_root_id, parse_root_lifetime_id, wire_error,
+    CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
+    CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1, DrainBatch,
+    FolderSuffixRequest, HostResponse, InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1,
+    InventoryDeltaDiscoveryReceiptV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
+    InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
+    InventoryProjectedShardRequestV1, InventoryPublishModeV1, InventoryResolveRequestV1,
+    InventoryRootLifetimeV1, InventoryRootOpenV1, InventoryRootUnloadReceiptV1,
+    InventoryScopeHandleV1, InventorySnapshotHandleV1, InventorySnapshotRequestV1, OperationState,
+    OversizeEvent, PathFilterRequest, PathFilterResult, RegexSearchBatchRequest,
+    RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt,
+    SubscriptionBootstrap, SubscriptionId, SubscriptionScope, parse_inventory_scope_id,
+    parse_root_id, parse_root_lifetime_id, wire_error,
 };
 use crate::types::{
     AgentClaudeFlagSettingsDispositionV1, AgentClaudeFlagSettingsReceiptV1,
@@ -421,6 +422,42 @@ impl CoreRuntime {
                 .search_leaf
                 .search_regex_batch_compact(&requests)?
                 .into())
+        })
+    }
+
+    pub fn search_score_batch_v1(
+        &self,
+        request: CoreSearchScoreBatchRequestV1,
+    ) -> Result<CoreSearchScoreBatchResultV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            if request.contract_version != runtime::searchscore::SEARCH_SCORE_CONTRACT_VERSION_V1 {
+                return Err(CoreError::InvalidArgument);
+            }
+
+            let candidates: Vec<_> = request
+                .candidates
+                .iter()
+                .map(|candidate| runtime::searchscore::Candidate {
+                    name: &candidate.name,
+                    path: &candidate.path,
+                    name_lower: &candidate.name_lower,
+                    path_lower: &candidate.path_lower,
+                })
+                .collect();
+            let query = runtime::searchscore::Query {
+                raw: &request.query.raw,
+                lowered: &request.query.lowered,
+                has_slash: request.query.has_slash,
+                is_wildcard: request.query.is_wildcard,
+            };
+            let scores = runtime::searchscore::score_matches_batch(
+                &candidates,
+                query,
+                request.fuzzy_threshold,
+            );
+            Ok(CoreSearchScoreBatchResultV1 { scores })
         })
     }
 
@@ -1696,6 +1733,85 @@ mod tests {
         assert!(!result.had_replacements);
         assert_eq!(result.policy_id, "workspace-automatic-v2");
         assert_eq!(result.legacy_encoding_name, None);
+    }
+
+    fn search_score_request(
+        identity: RuntimeIdentity,
+        contract_version: u16,
+    ) -> CoreSearchScoreBatchRequestV1 {
+        CoreSearchScoreBatchRequestV1 {
+            runtime_identity: identity,
+            contract_version,
+            candidates: vec![
+                crate::types::CoreSearchScoreCandidateV1 {
+                    name: b"readme.md".to_vec(),
+                    path: b"docs/readme.md".to_vec(),
+                    name_lower: b"readme.md".to_vec(),
+                    path_lower: b"docs/readme.md".to_vec(),
+                },
+                crate::types::CoreSearchScoreCandidateV1 {
+                    name: b"reader.txt".to_vec(),
+                    path: b"docs/reader.txt".to_vec(),
+                    name_lower: b"reader.txt".to_vec(),
+                    path_lower: b"docs/reader.txt".to_vec(),
+                },
+            ],
+            query: crate::types::CoreSearchScoreQueryV1 {
+                raw: b"readme".to_vec(),
+                lowered: b"readme".to_vec(),
+                has_slash: false,
+                is_wildcard: false,
+            },
+            fuzzy_threshold: 0.8,
+        }
+    }
+
+    #[test]
+    fn search_score_batch_v1_preserves_count_order_and_embedded_nul() {
+        let (core, identity, _) = initialized_core();
+        let result = core
+            .search_score_batch_v1(search_score_request(
+                identity.clone(),
+                runtime::searchscore::SEARCH_SCORE_CONTRACT_VERSION_V1,
+            ))
+            .expect("search-score export");
+        assert_eq!(result.scores, vec![1000, 0]);
+
+        let mut nul_request = search_score_request(
+            identity,
+            runtime::searchscore::SEARCH_SCORE_CONTRACT_VERSION_V1,
+        );
+        nul_request.query.raw = b"read\0ignored".to_vec();
+        nul_request.query.lowered = b"read\0ignored".to_vec();
+        assert_eq!(
+            core.search_score_batch_v1(nul_request)
+                .expect("embedded-NUL search-score export")
+                .scores,
+            vec![900, 900]
+        );
+    }
+
+    #[test]
+    fn search_score_batch_v1_rejects_invalid_contract_and_stale_identity() {
+        let (core, identity, _) = initialized_core();
+        assert_eq!(
+            core.search_score_batch_v1(search_score_request(identity.clone(), 2)),
+            Err(CoreError::InvalidArgument)
+        );
+
+        let stale_runtime_identity = runtime::RuntimeIdentity::fresh(
+            &identity.build_fingerprint,
+            &identity.binding_checksum,
+        )
+        .expect("fresh stale identity");
+        let stale_identity = RuntimeIdentity::from(&stale_runtime_identity);
+        assert_eq!(
+            core.search_score_batch_v1(search_score_request(
+                stale_identity,
+                runtime::searchscore::SEARCH_SCORE_CONTRACT_VERSION_V1,
+            )),
+            Err(CoreError::StaleRuntimeIdentity)
+        );
     }
 
     #[test]

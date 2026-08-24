@@ -119,7 +119,7 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertEqual(targets["RepoPromptApp"]["path"], "Sources/RepoPrompt")
         self.assertEqual(
             set(generator._by_name_dependencies(targets["RepoPromptTests"])),
-            {"RepoPromptApp", "RepoPromptCodeMapCore", "RepoPromptDomainRuntime", "RepoPromptMCP", "RepoPromptShared"},
+            {"AgentryCoreBridge", "RepoPromptApp", "RepoPromptCodeMapCore", "RepoPromptDomainRuntime", "RepoPromptMCP", "RepoPromptShared"},
         )
         self.assertNotIn("RepoPrompt", generator._by_name_dependencies(targets["RepoPromptTests"]))
 
@@ -127,8 +127,11 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertEqual(targets["RepoPromptDomainRuntime"]["path"], "Sources/RepoPromptDomainRuntime")
         self.assertEqual(
             generator._by_name_dependencies(targets["RepoPromptDomainRuntime"]),
-            ["RepoPromptShared", "RepoPromptC", "RepoPromptCodeMapCore"],
+            ["RepoPromptShared", "RepoPromptCodeMapCore", "AgentryCoreBridge"],
         )
+        self.assertNotIn("RepoPromptC", targets)
+        for name in ("RepoPromptApp", "RepoPromptDomainRuntime", "RepoPromptMCP"):
+            self.assertNotIn("RepoPromptC", generator._by_name_dependencies(targets[name]))
         self.assertEqual(targets["RepoPromptDomainRuntimeTests"]["type"], "test")
         self.assertEqual(targets["RepoPromptDomainRuntimeTests"]["path"], "Tests/RepoPromptDomainRuntimeTests")
         self.assertEqual(
@@ -146,10 +149,30 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertIn("AgentryUniFFIRaw", metadata["package"]["targets"])
         self.assertIn("AgentryCoreBridge", metadata["package"]["targets"])
         self.assertIn("AgentryCoreBridgeTests", metadata["package"]["targets"])
+        self.assertNotIn("RepoPromptC", metadata["package"]["targets"])
+
+    def test_generated_outputs_omit_retired_c_target_and_bridging_header(self) -> None:
+        rendered = b"\n".join(self.outputs.values())
+        self.assertNotIn(b'"RepoPromptC"', rendered)
+        self.assertNotIn(b"RepoPrompt-Bridging-Header.h", rendered)
+        self.assertNotIn(b"SWIFT_OBJC_BRIDGING_HEADER", rendered)
+        self.assertNotIn(b"-import-objc-header", rendered)
 
     def test_manifest_preserves_private_rust_ffi_target_chain(self) -> None:
         targets = {target["name"]: target for target in self.manifest["targets"]}
         self.assertEqual(targets["CAgentryRustCore"]["path"], "Sources/CAgentryRustCore")
+        self.assertEqual(targets["CAgentryRustCore"]["sources"], ["shim.c"])
+        self.assertEqual(targets["CAgentryRustCore"]["publicHeadersPath"], "include")
+        self.assertTrue((generator.REPO_ROOT / "Sources/CAgentryRustCore/shim.c").is_file())
+        self.assertTrue((generator.REPO_ROOT / "Sources/CAgentryRustCore/include/AgentryCoreFFI.h").is_file())
+        self.assertTrue((generator.REPO_ROOT / "Sources/CAgentryRustCore/include/module.modulemap").is_file())
+        c_settings = [
+            setting.get("kind", {}).get("unsafeFlags", {}).get("_0", [])
+            for setting in targets["CAgentryRustCore"].get("settings", [])
+        ]
+        self.assertTrue(
+            any(any(flag.endswith("/libagentry_ffi.a") for flag in flags) for flags in c_settings)
+        )
         self.assertEqual(generator._by_name_dependencies(targets["CAgentryRustCore"]), [])
         self.assertEqual(
             generator._by_name_dependencies(targets["AgentryUniFFIRaw"]),
@@ -361,21 +384,27 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptTests must depend"):
             generator.validate_manifest(old_test_dependency, generator.REPO_ROOT)
 
-        duplicate_bridging_header_owner = deepcopy(self.manifest)
-        target_map = {
-            target["name"]: target for target in duplicate_bridging_header_owner["targets"]
-        }
-        target_map["RepoPrompt"]["settings"] = target_map["RepoPromptApp"]["settings"]
-        with self.assertRaisesRegex(generator.GeneratorError, "must not own"):
-            generator.validate_manifest(duplicate_bridging_header_owner, generator.REPO_ROOT)
+        restored_c_target = deepcopy(self.manifest)
+        restored_c_target["targets"].append({
+            "name": "RepoPromptC",
+            "type": "regular",
+            "path": "Sources/RepoPromptC",
+        })
+        with self.assertRaisesRegex(generator.GeneratorError, "Retired first-party C target"):
+            generator.validate_manifest(restored_c_target, generator.REPO_ROOT)
 
-        missing_bridging_header_owner = deepcopy(self.manifest)
-        target_map = {
-            target["name"]: target for target in missing_bridging_header_owner["targets"]
-        }
-        target_map["RepoPromptApp"]["settings"] = []
-        with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptApp must own"):
-            generator.validate_manifest(missing_bridging_header_owner, generator.REPO_ROOT)
+        restored_bridging_flags = deepcopy(self.manifest)
+        target_map = {target["name"]: target for target in restored_bridging_flags["targets"]}
+        target_map["RepoPromptApp"]["settings"].append({
+            "kind": {"unsafeFlags": {"_0": [
+                "-import-objc-header",
+                "Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h",
+                "-disable-bridging-pch",
+            ]}},
+            "tool": "swift",
+        })
+        with self.assertRaisesRegex(generator.GeneratorError, "must not restore"):
+            generator.validate_manifest(restored_bridging_flags, generator.REPO_ROOT)
 
         bad_resources = deepcopy(self.manifest)
         for target in bad_resources["targets"]:

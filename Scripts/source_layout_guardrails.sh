@@ -145,6 +145,8 @@ repo_prompt_app_products = {
     for dependency in repo_prompt_app_dependencies
     if "product" in dependency
 }
+repo_prompt_mcp = targets.get("RepoPromptMCP", {})
+repo_prompt_mcp_dependencies = repo_prompt_mcp.get("dependencies", [])
 repo_prompt_code_map_core = targets.get("RepoPromptCodeMapCore", {})
 repo_prompt_code_map_core_dependencies = repo_prompt_code_map_core.get("dependencies", [])
 repo_prompt_code_map_core_products = {
@@ -224,6 +226,39 @@ for name, (target_type, path, expected_dependencies) in ffi_expected.items():
     if target.get("path") != path: errors.append(f"{name} target path drifted")
     if dependencies != expected_dependencies or len(target.get("dependencies", [])) != len(expected_dependencies):
         errors.append(f"{name} dependency boundary drifted: expected {expected_dependencies}, got {dependencies}")
+c_agentry = targets.get("CAgentryRustCore", {})
+if c_agentry.get("sources") != ["shim.c"]:
+    errors.append("CAgentryRustCore must compile only shim.c")
+if c_agentry.get("publicHeadersPath") != "include":
+    errors.append("CAgentryRustCore must retain include as its public-header directory")
+c_agentry_flags = [
+    setting.get("kind", {}).get("unsafeFlags", {}).get("_0", [])
+    for setting in c_agentry.get("settings", [])
+]
+if not any(any(flag.endswith("/libagentry_ffi.a") for flag in flags) for flags in c_agentry_flags):
+    errors.append("CAgentryRustCore must retain Rust static-library linkage")
+native_suffixes = (".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".h", ".hh", ".hpp", ".hxx")
+for name, target in targets.items():
+    native_sources = [
+        source for source in (target.get("sources") or [])
+        if source.lower().endswith(native_suffixes)
+    ]
+    if name == "CAgentryRustCore":
+        if native_sources != ["shim.c"]:
+            errors.append(f"CAgentryRustCore native source list drifted: {native_sources}")
+    elif native_sources:
+        errors.append(f"first-party SwiftPM target must not compile C-family sources: {name}: {native_sources}")
+fixture_roots = (
+    "Tests/RepoPromptCodeMapCoreTests/Fixtures/c",
+    "Tests/RepoPromptCodeMapCoreTests/Fixtures/cpp",
+)
+for name, target in targets.items():
+    if name == "RepoPromptCodeMapCoreTests":
+        continue
+    target_path = target.get("path") or ""
+    for fixture_root in fixture_roots:
+        if target_path == fixture_root or target_path.startswith(fixture_root + "/") or fixture_root.startswith(target_path + "/"):
+            errors.append(f"data-only parser fixture root must not be owned by target {name}: {fixture_root}")
 for name in ("AgentryUniFFIRaw", "AgentryCoreBridge", "AgentryCoreBridgeTests"):
     target = targets.get(name, {})
     settings_text = json.dumps(target.get("settings", []))
@@ -236,6 +271,15 @@ for product in package.get("products", []):
         errors.append("Rust FFI targets must remain internal package targets")
 
 app_by_name_dependencies = [dependency["byName"][0] for dependency in repo_prompt_app_dependencies if dependency.get("byName")]
+repo_prompt_mcp_by_name_dependencies = [dependency["byName"][0] for dependency in repo_prompt_mcp_dependencies if dependency.get("byName")]
+if "RepoPromptC" in targets:
+    errors.append("retired RepoPromptC target must not return")
+for consumer_name, dependencies in (
+    ("RepoPromptApp", app_by_name_dependencies),
+    ("RepoPromptMCP", repo_prompt_mcp_by_name_dependencies),
+):
+    if "RepoPromptC" in dependencies:
+        errors.append(f"{consumer_name} must not depend on retired RepoPromptC")
 if app_by_name_dependencies.count("RepoPromptWorkspaceCore") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptWorkspaceCore")
 if app_by_name_dependencies.count("AgentryCoreBridge") != 1:
@@ -310,8 +354,8 @@ else:
         for dependency in domain_runtime.get("dependencies", [])
         if "product" in dependency
     }
-    if runtime_by_name != ["RepoPromptShared", "RepoPromptC", "RepoPromptCodeMapCore", "AgentryCoreBridge"] or runtime_products != {("Logging", "swift-log"), ("MCP", "swift-sdk")} or len(domain_runtime.get("dependencies", [])) != 6:
-        errors.append("RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptC, RepoPromptCodeMapCore, AgentryCoreBridge, Logging, and pinned MCP")
+    if runtime_by_name != ["RepoPromptShared", "RepoPromptCodeMapCore", "AgentryCoreBridge"] or runtime_products != {("Logging", "swift-log"), ("MCP", "swift-sdk")} or len(domain_runtime.get("dependencies", [])) != 5:
+        errors.append("RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptCodeMapCore, AgentryCoreBridge, Logging, and pinned MCP")
 if domain_runtime_tests is None:
     errors.append("RepoPromptDomainRuntimeTests target missing")
 else:
@@ -371,9 +415,8 @@ if core_test_dependencies != ["RepoPromptCodeMapCore"]:
 for core_source in Path("Sources/RepoPromptCodeMapCore").rglob("*.swift"):
     if re.search(r"^\s*import\s+(?:SwiftTreeSitter|TreeSitter\w+)\b", core_source.read_text(), re.MULTILINE):
         errors.append(f"CodeMapCore source must not import tree-sitter modules after P2 step 13: {core_source}")
-bridging_header = Path("Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h").read_text()
-if "tree_sitter_" in bridging_header or "TSLanguage" in bridging_header:
-    errors.append("bridging header must not redeclare Tree-sitter grammar APIs")
+if Path("Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h").exists():
+    errors.append("retired RepoPromptApp bridging header must not return")
 
 if errors:
     raise SystemExit("\n".join(errors))
@@ -952,9 +995,77 @@ print_matches \
 print_matches \
   "removed path_search.c C engine call sites (P4-7c c3 co-location invariant) must not return" \
   grep -R -n -E 'path_search_create\(|path_search_find\(|path_search_projected_find|path_search_destroy\(|path_search_cancellation_create\(' \
-    Sources/RepoPrompt Sources/RepoPromptC
+    Sources/RepoPrompt
 
-# 11. P6-10 production-topology guardrail (docs/architecture/rust-agent-claude-v1.md §1.2,
+# 11. RepoPromptC retirement and first-party native-source allowlist. First-party product logic
+# remains Swift + Rust. The only compiled C surface is the narrow Rust ABI shim/header pair;
+# CodeMap parser examples remain data-only resources, and third-party roots stay out of this scan.
+for retired_repoprompt_c_path in \
+  "Sources/RepoPromptC" \
+  "Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h"; do
+  if [[ -e "$retired_repoprompt_c_path" ]]; then
+    fail "retired RepoPromptC topology must not return: $retired_repoprompt_c_path"
+  fi
+done
+
+for required_rust_abi_path in \
+  "Sources/CAgentryRustCore/shim.c" \
+  "Sources/CAgentryRustCore/include/AgentryCoreFFI.h" \
+  "Sources/CAgentryRustCore/include/module.modulemap" \
+  "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift" \
+  "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift"; do
+  if [[ ! -f "$required_rust_abi_path" ]]; then
+    fail "required generated Rust ABI surface missing: $required_rust_abi_path"
+  fi
+done
+
+print_matches \
+  "Package.swift must not restore the retired RepoPromptC target or dependency" \
+  grep -n -E '(^|[^[:alnum:]_])RepoPromptC([^[:alnum:]_]|$)' Package.swift
+
+print_matches \
+  "first-party Swift must not import the retired RepoPromptC module" \
+  grep -R -n -E '^[[:space:]]*import[[:space:]]+RepoPromptC([[:space:]]|$)' Sources Tests
+
+# Exact retired call families from the deleted target. Bare historical prose is allowed; executable
+# call shapes are not.
+print_matches \
+  "retired RepoPromptC repo_* call sites must not return" \
+  grep -R -n -E 'repo_(get_file_descriptor_path|create_batch_buffer|free_batch_buffer|score_match|score_matches_batch|compile_wildcard|free_wildcard_pattern|levenshtein_distance|dice_coefficient|longest_common_subsequence|similarity_score|encode_indentation|decode_indentation|decode_html_entities|condense_whitespace|fnv1a64|escape_string|unescape_string|split_content_preserving|free_split|fuzzy_space_match|canonical_key|bulk_dice_best_match|remove_outer_backticks|trim_leading_whitespace|trim_common_leading_whitespace_preserving_endings|extract_description|extract_complexity|wildmatch|gitignore_match|normalize_pattern|parse_gitignore_line)\(' Sources Tests
+
+native_source_files="$(find . -type f \
+  \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \
+     -o -name '*.m' -o -name '*.mm' \
+     -o -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' \) \
+  -not -path './.git/*' \
+  -not -path './.build/*' \
+  -not -path './.swiftpm/*' \
+  -not -path './DerivedData/*' \
+  -not -path './build/*' \
+  -not -path './Packages/RepoPromptAgentProviders/.build/*' \
+  -not -path './Vendor/*' \
+  -not -path './ThirdPartyLicenses/*' \
+  -print | sed 's#^./##' | LC_ALL=C sort)"
+unexpected_native_source_files=""
+while IFS= read -r native_source_file; do
+  [[ -z "$native_source_file" ]] && continue
+  case "$native_source_file" in
+    "Sources/CAgentryRustCore/shim.c"|\
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h"|\
+    Tests/RepoPromptCodeMapCoreTests/Fixtures/c/*|\
+    Tests/RepoPromptCodeMapCoreTests/Fixtures/cpp/*)
+      ;;
+    *)
+      unexpected_native_source_files+="${unexpected_native_source_files:+$'\n'}$native_source_file"
+      ;;
+  esac
+done <<< "$native_source_files"
+if [[ -n "$unexpected_native_source_files" ]]; then
+  fail "unexpected first-party C/C++/Objective-C source; only Rust ABI surfaces and explicit parser fixtures are allowed"
+  printf '%s\n' "$unexpected_native_source_files" >&2
+fi
+
+# 12. P6-10 production-topology guardrail (docs/architecture/rust-agent-claude-v1.md §1.2,
 # §15.9-§15.10): the interactive Claude native runtime remains a GUI-scope-only capability with one
 # composition root. Standard Claude Code, GLM, Kimi, and custom-compatible variants all construct
 # ClaudeRustBackedNativeSessionAdapter there. The obsolete Swift controller/codec/shadow stack and

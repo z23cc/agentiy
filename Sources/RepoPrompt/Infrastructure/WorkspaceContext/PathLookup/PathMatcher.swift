@@ -22,9 +22,8 @@ enum PathMatcher {
     // MARK: - Heap-safe similarity (Swift-only, bounded Levenshtein)
 
     //
-    // IMPORTANT: We intentionally do NOT use String.similarity(to:) here.
-    // That API calls into C (repo_similarity_score / levenshtein / dice),
-    // which is a potential source of heap corruption.
+    // IMPORTANT: We intentionally do NOT use String.similarity(to:) here because path matching
+    // needs a separately bounded, case-policy-aware, separator-folding contract.
     //
     // This implementation is:
     // - bounded (banded DP) for speed

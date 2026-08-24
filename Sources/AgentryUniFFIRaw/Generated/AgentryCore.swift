@@ -834,6 +834,8 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func searchRegexBatchCompactV1(request: RegexSearchBatchRequest) throws  -> CompactRegexBatchResult
 
+    func searchScoreBatchV1(request: CoreSearchScoreBatchRequestV1) throws  -> CoreSearchScoreBatchResultV1
+
     func textDecodeV1(request: CoreTextDecodeRequestV1) throws  -> CoreTextDecodeResultV1
 
     /**
@@ -1537,6 +1539,16 @@ open func searchRegexBatchCompactV1(request: RegexSearchBatchRequest)throws  -> 
     uniffi_agentry_ffi_fn_method_coreruntime_search_regex_batch_compact_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeRegexSearchBatchRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func searchScoreBatchV1(request: CoreSearchScoreBatchRequestV1)throws  -> CoreSearchScoreBatchResultV1  {
+    return try  FfiConverterTypeCoreSearchScoreBatchResultV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_search_score_batch_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreSearchScoreBatchRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -4625,6 +4637,246 @@ public func FfiConverterTypeCorePathSearchFindResultV1_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeCorePathSearchFindResultV1_lower(_ value: CorePathSearchFindResultV1) -> RustBuffer {
     return FfiConverterTypeCorePathSearchFindResultV1.lower(value)
+}
+
+
+public struct CoreSearchScoreBatchRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let candidates: [CoreSearchScoreCandidateV1]
+    public let query: CoreSearchScoreQueryV1
+    public let fuzzyThreshold: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, candidates: [CoreSearchScoreCandidateV1], query: CoreSearchScoreQueryV1, fuzzyThreshold: Double) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.candidates = candidates
+        self.query = query
+        self.fuzzyThreshold = fuzzyThreshold
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreSearchScoreBatchRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreSearchScoreBatchRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreSearchScoreBatchRequestV1 {
+        return
+            try CoreSearchScoreBatchRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                candidates: FfiConverterSequenceTypeCoreSearchScoreCandidateV1.read(from: &buf),
+                query: FfiConverterTypeCoreSearchScoreQueryV1.read(from: &buf),
+                fuzzyThreshold: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreSearchScoreBatchRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterSequenceTypeCoreSearchScoreCandidateV1.write(value.candidates, into: &buf)
+        FfiConverterTypeCoreSearchScoreQueryV1.write(value.query, into: &buf)
+        FfiConverterDouble.write(value.fuzzyThreshold, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreBatchRequestV1_lift(_ buf: RustBuffer) throws -> CoreSearchScoreBatchRequestV1 {
+    return try FfiConverterTypeCoreSearchScoreBatchRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreBatchRequestV1_lower(_ value: CoreSearchScoreBatchRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreSearchScoreBatchRequestV1.lower(value)
+}
+
+
+public struct CoreSearchScoreBatchResultV1: Equatable, Hashable {
+    public let scores: [Int32]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(scores: [Int32]) {
+        self.scores = scores
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreSearchScoreBatchResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreSearchScoreBatchResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreSearchScoreBatchResultV1 {
+        return
+            try CoreSearchScoreBatchResultV1(
+                scores: FfiConverterSequenceInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreSearchScoreBatchResultV1, into buf: inout [UInt8]) {
+        FfiConverterSequenceInt32.write(value.scores, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreBatchResultV1_lift(_ buf: RustBuffer) throws -> CoreSearchScoreBatchResultV1 {
+    return try FfiConverterTypeCoreSearchScoreBatchResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreBatchResultV1_lower(_ value: CoreSearchScoreBatchResultV1) -> RustBuffer {
+    return FfiConverterTypeCoreSearchScoreBatchResultV1.lower(value)
+}
+
+
+public struct CoreSearchScoreCandidateV1: Equatable, Hashable {
+    public let name: Data
+    public let path: Data
+    public let nameLower: Data
+    public let pathLower: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: Data, path: Data, nameLower: Data, pathLower: Data) {
+        self.name = name
+        self.path = path
+        self.nameLower = nameLower
+        self.pathLower = pathLower
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreSearchScoreCandidateV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreSearchScoreCandidateV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreSearchScoreCandidateV1 {
+        return
+            try CoreSearchScoreCandidateV1(
+                name: FfiConverterData.read(from: &buf),
+                path: FfiConverterData.read(from: &buf),
+                nameLower: FfiConverterData.read(from: &buf),
+                pathLower: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreSearchScoreCandidateV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.name, into: &buf)
+        FfiConverterData.write(value.path, into: &buf)
+        FfiConverterData.write(value.nameLower, into: &buf)
+        FfiConverterData.write(value.pathLower, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreCandidateV1_lift(_ buf: RustBuffer) throws -> CoreSearchScoreCandidateV1 {
+    return try FfiConverterTypeCoreSearchScoreCandidateV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreCandidateV1_lower(_ value: CoreSearchScoreCandidateV1) -> RustBuffer {
+    return FfiConverterTypeCoreSearchScoreCandidateV1.lower(value)
+}
+
+
+public struct CoreSearchScoreQueryV1: Equatable, Hashable {
+    public let raw: Data
+    public let lowered: Data
+    public let hasSlash: Bool
+    public let isWildcard: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(raw: Data, lowered: Data, hasSlash: Bool, isWildcard: Bool) {
+        self.raw = raw
+        self.lowered = lowered
+        self.hasSlash = hasSlash
+        self.isWildcard = isWildcard
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreSearchScoreQueryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreSearchScoreQueryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreSearchScoreQueryV1 {
+        return
+            try CoreSearchScoreQueryV1(
+                raw: FfiConverterData.read(from: &buf),
+                lowered: FfiConverterData.read(from: &buf),
+                hasSlash: FfiConverterBool.read(from: &buf),
+                isWildcard: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreSearchScoreQueryV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.raw, into: &buf)
+        FfiConverterData.write(value.lowered, into: &buf)
+        FfiConverterBool.write(value.hasSlash, into: &buf)
+        FfiConverterBool.write(value.isWildcard, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreQueryV1_lift(_ buf: RustBuffer) throws -> CoreSearchScoreQueryV1 {
+    return try FfiConverterTypeCoreSearchScoreQueryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreSearchScoreQueryV1_lower(_ value: CoreSearchScoreQueryV1) -> RustBuffer {
+    return FfiConverterTypeCoreSearchScoreQueryV1.lower(value)
 }
 
 
@@ -9872,6 +10124,31 @@ fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceInt32: FfiConverterRustBuffer {
+    typealias SwiftType = [Int32]
+
+    public static func write(_ value: [Int32], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterInt32.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Int32] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Int32]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterInt32.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceUInt64: FfiConverterRustBuffer {
     typealias SwiftType = [UInt64]
 
@@ -10189,6 +10466,31 @@ fileprivate struct FfiConverterSequenceTypeCoreCompactCodeMapSubjectSummaryV1: F
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCoreCompactCodeMapSubjectSummaryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreSearchScoreCandidateV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreSearchScoreCandidateV1]
+
+    public static func write(_ value: [CoreSearchScoreCandidateV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreSearchScoreCandidateV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreSearchScoreCandidateV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreSearchScoreCandidateV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreSearchScoreCandidateV1.read(from: &buf))
         }
         return seq
     }
@@ -10585,6 +10887,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_search_regex_batch_compact_v1() != 41042) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_search_score_batch_v1() != 37707) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_text_decode_v1() != 10724) {

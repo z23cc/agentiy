@@ -3078,7 +3078,6 @@ values.write_text("\\n".join(remaining), encoding="utf-8")
             "Vendor",
             "Packages/RepoPromptAgentProviders/.build",
             "Sources/CSwiftPCRE2",
-            "Sources/RepoPromptC",
             "Sources/RepoPrompt/ThirdParty/SwiftPCRE2",
             "Sources/RepoPromptShared/Workflows/WorkflowPromptSharedFragments.swift",
             "Sources/RepoPromptShared/Workflows/WorkflowPrompt+Build.swift",

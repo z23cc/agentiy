@@ -6,9 +6,12 @@
 //
 
 import Cocoa
+import Darwin
 import Foundation
 import MachO
 import os.lock
+
+private let ptraceDenyAttachRequest: Int32 = 31
 
 /// This class handles application security by monitoring the environment
 /// for potential tampering or unauthorized access.
@@ -187,7 +190,7 @@ class ApplicationSecurity {
     /// Prevent external attachment - uses ptrace to deny debugger attachment
     private func preventExternalAttachment() {
         #if !DEBUG
-            ptrace(PT_DENY_ATTACH, 0, nil, 0)
+            ptrace(ptraceDenyAttachRequest, 0, nil, 0)
         #endif
     }
 

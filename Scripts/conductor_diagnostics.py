@@ -298,7 +298,6 @@ class _FocusedBuildParser:
                 "RepoPromptExecutable": "RepoPrompt",
                 "RepoPromptShared": "RepoPromptShared",
                 "RepoPromptMCP": "RepoPromptMCP",
-                "RepoPromptC": "RepoPromptC",
                 "TreeSitterScannerSupport": "TreeSitterScannerSupport",
             }
             return mapping.get(directory, directory)

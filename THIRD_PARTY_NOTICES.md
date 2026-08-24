@@ -63,14 +63,13 @@ The adapted implementation has been substantially modified for RepoPrompt. The A
 
 ## wildmatch / OpenBSD-derived fnmatch material
 
-The repository includes wildmatch material in:
+The repository includes a close Swift translation of the wildmatch implementation in:
 
-- `Sources/RepoPromptC/src/wildmatch/wildmatch.c`
-- `Sources/RepoPromptC/include/wildmatch.h`
+- `Sources/RepoPromptDomainRuntime/PathMatching/RepoWildmatch.swift`
 
-The source files state that the implementation is based on the fnmatch implementation from OpenBSD. The notice material below is reproduced from the checked-in files; no further external provenance is asserted here.
+The active Swift source preserves the copyright and BSD-style license notice from the former `wildmatch.c`, which states that the implementation is based on the fnmatch implementation from OpenBSD. The notice material below retains the full text from the former checked-in `wildmatch.c` and `wildmatch.h` files; no further external provenance is asserted here.
 
-### Notice reproduced from `wildmatch.c`
+### Notice retained from `wildmatch.c`
 
 ```text
 Copyright (c), 2016 David Aguilar
@@ -107,7 +106,7 @@ OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 SUCH DAMAGE.
 ```
 
-### Notice reproduced from `wildmatch.h`
+### Notice retained from `wildmatch.h`
 
 ```text
 Copyright (c), 2016 David Aguilar

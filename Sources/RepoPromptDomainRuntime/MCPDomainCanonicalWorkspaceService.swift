@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import MCP
-import RepoPromptC
 import RepoPromptCodeMapCore
 
 package extension DomainPhysicalToolRequest {
@@ -20,6 +19,8 @@ package extension DomainPhysicalToolResult {
     }
 }
 
+// Explicit checked conformance is an intentional concurrency boundary contract.
+// swiftformat:disable:next redundantSendable
 package struct DomainCanonicalWorkspaceSnapshot: Sendable {
     package let identity: DomainContextIdentity
     package let roots: [URL]
@@ -39,11 +40,15 @@ package struct DomainCanonicalWorkspaceSnapshot: Sendable {
     }
 }
 
+// Explicit checked conformance is an intentional concurrency boundary contract.
+// swiftformat:disable:next redundantSendable
 package enum DomainCanonicalWorkspaceMutation: Sendable {
     case setPrompt(String)
     case setSelection([String])
 }
 
+// Explicit checked conformance is an intentional concurrency boundary contract.
+// swiftformat:disable:next redundantSendable
 package struct DomainCanonicalWorkspaceAdapter: Sendable {
     package typealias ToolSnapshot = @Sendable (DomainPhysicalToolRequest) async throws -> DomainCanonicalWorkspaceSnapshot
     package typealias ReadSnapshot = @Sendable (DomainPhysicalReadRequest) async throws -> DomainCanonicalWorkspaceSnapshot
@@ -79,6 +84,7 @@ package struct DomainCanonicalWorkspaceAdapter: Sendable {
 /// The executable supplies only authoritative snapshot/mutation/path adapters; argument parsing,
 /// selection semantics, file reads, search, tree rendering, codemaps, prompt/context projection,
 /// mutation admission, and response shapes are owned here.
+// swiftformat:disable:next redundantSendable
 package struct MCPDomainCanonicalWorkspaceService: Sendable {
     private let adapter: DomainCanonicalWorkspaceAdapter
 
@@ -145,6 +151,8 @@ package struct MCPDomainCanonicalWorkspaceService: Sendable {
         var files: [Value] = []
         files.reserveCapacity(limited.count)
         for url in limited {
+            // Preserve HEAD suspension placement; this is unrelated to the concurrency contract.
+            // swiftformat:disable:next hoistAwait hoistTry
             files.append(try await Self.codeMapResult(url))
         }
         return try .object([
@@ -325,14 +333,11 @@ package struct MCPDomainCanonicalWorkspaceService: Sendable {
     }
 
     private static func globMatches(_ pattern: String, _ path: String) -> Bool {
-        let wildstar: UInt32 = 0x40
-        let casefold: UInt32 = 0x10
-        let flags = (pattern.contains("**") ? wildstar : 0) | casefold
-        return pattern.withCString { patternCString in
-            path.withCString { pathCString in
-                repo_wildmatch(patternCString, pathCString, flags) == 0
-            }
+        var options: RepoWildmatchOptions = [.caseFold]
+        if pattern.contains("**") {
+            options.insert(.wildstar)
         }
+        return RepoWildmatch.matches(pattern: pattern, text: path, options: options)
     }
 
     package func renderWorkspaceContext(_ request: DomainPhysicalReadRequest) async throws -> DomainPhysicalToolResult {

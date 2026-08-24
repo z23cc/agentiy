@@ -1,4 +1,4 @@
-use super::{Candidate, Query, score_matches_batch};
+use super::{Candidate, Query, SEARCH_SCORE_CONTRACT_VERSION_V1, score_matches_batch};
 
 fn candidate<'a>(name: &'a [u8], path: &'a [u8]) -> Candidate<'a> {
     Candidate {
@@ -115,10 +115,20 @@ fn pins_contains_tiers_and_backslash_exception() {
 }
 
 #[test]
-fn pins_wildcard_tier_and_pathname_rules() {
+fn pins_live_c_wildcard_flags_and_pathname_rules() {
+    assert_eq!(SEARCH_SCORE_CONTRACT_VERSION_V1, 1);
+    // `search_scoring.c`'s private CASEFOLD bit is actually WM_LEADING_DIR to wildmatch.c.
     assert_eq!(
         score(
             candidate(b"Widget.SWIFT", b"src/Widget.SWIFT"),
+            query(b"*.swift", false, true),
+            0.8
+        ),
+        0
+    );
+    assert_eq!(
+        score(
+            candidate(b"Widget.swift", b"src/Widget.swift"),
             query(b"*.swift", false, true),
             0.8
         ),
@@ -140,6 +150,23 @@ fn pins_wildcard_tier_and_pathname_rules() {
         ),
         650
     );
+    // The private WILDSTAR bit is actually WM_PREFIX_DIRS, so repeated stars collapse to one.
+    assert_eq!(
+        score(
+            candidate(b"main.swift", b"src/deep/main.swift"),
+            query(b"src/**/*.swift", true, true),
+            0.8
+        ),
+        650
+    );
+    assert_eq!(
+        score(
+            candidate(b"main.swift", b"src/deep/more/main.swift"),
+            query(b"src/**/*.swift", true, true),
+            0.8
+        ),
+        0
+    );
     assert_eq!(
         score(
             candidate(b"other", b"src/deep/main.swift"),
@@ -152,6 +179,14 @@ fn pins_wildcard_tier_and_pathname_rules() {
 
 #[test]
 fn pins_wildcard_escapes_and_ascii_classes() {
+    assert_eq!(
+        score(
+            candidate(b"Main.swift", b"src/Main.swift"),
+            query(b"[m]ain.swift", false, true),
+            0.8
+        ),
+        0
+    );
     assert_eq!(
         score(
             candidate(b"file*.txt", b"file*.txt"),
@@ -167,6 +202,21 @@ fn pins_wildcard_escapes_and_ascii_classes() {
             0.8
         ),
         650
+    );
+    // With WM_PATHNAME, the live C rangematch rejects an expression containing `/`
+    // before applying either a positive or negated result.
+    assert_eq!(
+        score(candidate(b"a", b"a"), query(b"[a/]", true, true), 0.8),
+        0
+    );
+    assert_eq!(
+        score(candidate(b"a", b"a"), query(b"[!/]", true, true), 0.8),
+        0
+    );
+    // A final escape is not a literal match in the bundled C matcher.
+    assert_eq!(
+        score(candidate(br"a\", br"a\"), query(br"*\", false, true), 0.8),
+        0
     );
 }
 
@@ -224,6 +274,30 @@ fn pins_fuzzy_threshold_edges_and_minimum_query_length() {
             0.0
         ),
         0
+    );
+    assert_eq!(
+        score(
+            candidate(b"abcdef", b"dir/other"),
+            query(b"abcxef", false, false),
+            f64::NAN
+        ),
+        0
+    );
+    assert_eq!(
+        score(
+            candidate(b"abcdef", b"dir/other"),
+            query(b"abcxef", false, false),
+            f64::INFINITY
+        ),
+        0
+    );
+    assert_eq!(
+        score(
+            candidate(b"abcdef", b"dir/other"),
+            query(b"zzzzzz", false, false),
+            f64::NEG_INFINITY
+        ),
+        500
     );
 }
 

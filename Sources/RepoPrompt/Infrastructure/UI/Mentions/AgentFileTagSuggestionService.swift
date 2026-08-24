@@ -86,7 +86,11 @@ final class AgentFileTagSuggestionService {
         guard !candidates.isEmpty else { return [] }
         cachedCandidates = candidates
         cachedGenerationSignature = await store.catalogGeneration(rootScope: lookupContext.rootScope)
-        return scoredSuggestions(from: candidates, query: query)
+        let suggestions = await scoredSuggestions(from: candidates, query: query)
+        // V1 scoring itself remains synchronous and uncancellable. Suppress a completed result
+        // if the autocomplete task was canceled while awaiting that shared-runtime batch.
+        guard !Task.isCancelled else { return [] }
+        return suggestions
     }
 
     private func catalogResults(
@@ -336,7 +340,10 @@ final class AgentFileTagSuggestionService {
         return file.standardizedRelativePath
     }
 
-    private func scoredSuggestions(from candidates: [FileCandidate], query: RepoSearchQuery) -> [MentionSuggestion] {
+    private func scoredSuggestions(
+        from candidates: [FileCandidate],
+        query: RepoSearchQuery
+    ) async -> [MentionSuggestion] {
         let scoringCandidates = candidates.map {
             RepoSearchBatchScorer.Candidate(
                 name: $0.matchName,
@@ -345,7 +352,7 @@ final class AgentFileTagSuggestionService {
                 pathLower: $0.scorePathLower
             )
         }
-        let rawScores = RepoSearchBatchScorer.scores(
+        let rawScores = await RepoSearchBatchScorer.scores(
             for: scoringCandidates,
             query: query,
             fuzzyThreshold: Self.fuzzyThreshold
