@@ -12,7 +12,8 @@ use crate::types::{
     CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1,
     CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
-    CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1, DrainBatch,
+    CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
+    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1, DrainBatch,
     FolderSuffixRequest, HostResponse, InventoryComposedSnapshotHandleV1,
     InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1,
     InventoryDeltaDiscoveryReceiptV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
@@ -473,6 +474,24 @@ impl CoreRuntime {
                 return Err(CoreError::InvalidArgument);
             }
             Ok(runtime::textdecode::textdecode(&request.raw_bytes).into())
+        })
+    }
+
+    pub fn workspace_document_projection_v1(
+        &self,
+        request: CoreWorkspaceDocumentProjectionRequestV1,
+    ) -> Result<CoreWorkspaceDocumentProjectionV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            if request.contract_version
+                != runtime::workspace_context::WORKSPACE_DOCUMENT_PROJECTION_CONTRACT_VERSION_V1
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            runtime::workspace_context::project_workspace_document_v1(&request.document_bytes)
+                .map(Into::into)
+                .map_err(|_| CoreError::InvalidArgument)
         })
     }
 
@@ -1825,6 +1844,48 @@ mod tests {
         assert!(!result.had_replacements);
         assert_eq!(result.policy_id, "workspace-automatic-v2");
         assert_eq!(result.legacy_encoding_name, None);
+    }
+
+    #[test]
+    fn workspace_document_projection_export_validates_identity_contract_and_payload() {
+        let (core, identity, _) = initialized_core();
+        let document = br#"{
+            "id":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+            "composeTabs":[{
+                "id":"11111111-2222-3333-4444-555555555555",
+                "prompt":"Review",
+                "selectedPaths":["Sources/App.swift"]
+            }]
+        }"#;
+        let result = core
+            .workspace_document_projection_v1(CoreWorkspaceDocumentProjectionRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version:
+                    runtime::workspace_context::WORKSPACE_DOCUMENT_PROJECTION_CONTRACT_VERSION_V1,
+                document_bytes: document.to_vec(),
+            })
+            .expect("workspace projection export");
+        assert_eq!(result.workspace_id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert_eq!(result.contexts.len(), 1);
+        assert_eq!(result.contexts[0].prompt, "Review");
+        assert_eq!(result.contexts[0].selection, ["Sources/App.swift"]);
+
+        let wrong_contract =
+            core.workspace_document_projection_v1(CoreWorkspaceDocumentProjectionRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version: 99,
+                document_bytes: document.to_vec(),
+            });
+        assert_eq!(wrong_contract, Err(CoreError::InvalidArgument));
+
+        let invalid_document =
+            core.workspace_document_projection_v1(CoreWorkspaceDocumentProjectionRequestV1 {
+                runtime_identity: identity,
+                contract_version:
+                    runtime::workspace_context::WORKSPACE_DOCUMENT_PROJECTION_CONTRACT_VERSION_V1,
+                document_bytes: b"[]".to_vec(),
+            });
+        assert_eq!(invalid_document, Err(CoreError::InvalidArgument));
     }
 
     fn search_score_request(

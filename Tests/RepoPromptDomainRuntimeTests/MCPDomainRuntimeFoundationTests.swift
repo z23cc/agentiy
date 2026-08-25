@@ -680,6 +680,7 @@ final class RepoPromptDomainRuntimeLifecycleTests: XCTestCase {
     func testInertRuntimeStartIsIdempotentAndStoppedInstanceCannotRestart() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("runtime-owner-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let runtime = try MCPDomainRuntime(
             configuration: .init(
                 mode: .app,
@@ -706,12 +707,16 @@ final class RepoPromptDomainRuntimeLifecycleTests: XCTestCase {
         XCTAssertEqual(ready.identity.lifecycleGeneration, 7)
         XCTAssertEqual(ready.identity.processID, 42)
         XCTAssertEqual(ready.catalogRevision, 0)
+        XCTAssertEqual(ready.workspaceMutationAccess.state, .writable)
+        XCTAssertTrue(ready.workspaceHealth.acceptsMutations)
 
         let result = await runtime.shutdown()
         XCTAssertEqual(result.previousLifecycle, .ready)
         XCTAssertEqual(result.finalLifecycle, .stopped)
         let stopped = await runtime.snapshot()
         XCTAssertEqual(stopped.publicationSequence, 4)
+        XCTAssertEqual(stopped.workspaceMutationAccess.state, .released)
+        XCTAssertFalse(stopped.workspaceHealth.acceptsMutations)
         let rejectedRouting = await runtime.routingCoordinator.openWindow(
             windowID: 1,
             activeWorkspaceID: nil,

@@ -847,6 +847,59 @@ pub struct CoreTextDecodeResultV1 {
     pub policy_id: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceDocumentProjectionRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub document_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceContextProjectionV1 {
+    pub context_id: String,
+    pub name: String,
+    pub active_agent_session_id: Option<String>,
+    pub active_chat_session_id: Option<String>,
+    pub prompt: String,
+    pub selection: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceDocumentProjectionV1 {
+    pub workspace_id: String,
+    pub schema_version: i64,
+    pub name: String,
+    pub repo_paths: Vec<String>,
+    pub active_context_id: Option<String>,
+    pub contexts: Vec<CoreWorkspaceContextProjectionV1>,
+}
+
+impl From<runtime::workspace_context::WorkspaceDocumentProjection>
+    for CoreWorkspaceDocumentProjectionV1
+{
+    fn from(value: runtime::workspace_context::WorkspaceDocumentProjection) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            schema_version: value.schema_version,
+            name: value.name,
+            repo_paths: value.repo_paths,
+            active_context_id: value.active_context_id,
+            contexts: value
+                .contexts
+                .into_iter()
+                .map(|context| CoreWorkspaceContextProjectionV1 {
+                    context_id: context.context_id,
+                    name: context.name,
+                    active_agent_session_id: context.active_agent_session_id,
+                    active_chat_session_id: context.active_chat_session_id,
+                    prompt: context.prompt,
+                    selection: context.selection,
+                })
+                .collect(),
+        }
+    }
+}
+
 impl From<runtime::textdecode::TextDecodeOutcome> for CoreTextDecodeResultV1 {
     fn from(value: runtime::textdecode::TextDecodeOutcome) -> Self {
         let (encoding, legacy_encoding_name) = match value.detected_encoding {

@@ -173,6 +173,8 @@ enum DomainPersistenceError: Error, Equatable {
     case writeFailed(String)
     case lockTimedOut
     case cancelled
+    case mutationPermitInvalid
+    case workspaceOutsideMutationScope
 }
 
 package struct DomainPersistenceDataSnapshot: Sendable {
@@ -286,24 +288,34 @@ package struct DomainPersistenceCoordinator {
 
     private let configuration: DomainRuntimeConfiguration
     private let identity: DomainRuntimeIdentity
+    private let workspaceAuthorityScope: DomainWorkspaceAuthorityLeaseScope?
+    private let workspaceMutationPermitRegistry: DomainWorkspaceMutationPermitRegistry?
     private let cancellation: DomainBlockingCancellation?
 
     package init(
         configuration: DomainRuntimeConfiguration,
-        identity: DomainRuntimeIdentity
+        identity: DomainRuntimeIdentity,
+        workspaceAuthorityScope: DomainWorkspaceAuthorityLeaseScope? = nil,
+        workspaceMutationPermitRegistry: DomainWorkspaceMutationPermitRegistry? = nil
     ) {
         self.configuration = configuration
         self.identity = identity
+        self.workspaceAuthorityScope = workspaceAuthorityScope
+        self.workspaceMutationPermitRegistry = workspaceMutationPermitRegistry
         cancellation = nil
     }
 
     private init(
         configuration: DomainRuntimeConfiguration,
         identity: DomainRuntimeIdentity,
+        workspaceAuthorityScope: DomainWorkspaceAuthorityLeaseScope?,
+        workspaceMutationPermitRegistry: DomainWorkspaceMutationPermitRegistry?,
         cancellation: DomainBlockingCancellation
     ) {
         self.configuration = configuration
         self.identity = identity
+        self.workspaceAuthorityScope = workspaceAuthorityScope
+        self.workspaceMutationPermitRegistry = workspaceMutationPermitRegistry
         self.cancellation = cancellation
     }
 
@@ -322,7 +334,50 @@ package struct DomainPersistenceCoordinator {
     }
 
     private func blockingWorker(_ cancellation: DomainBlockingCancellation) -> Self {
-        Self(configuration: configuration, identity: identity, cancellation: cancellation)
+        Self(
+            configuration: configuration,
+            identity: identity,
+            workspaceAuthorityScope: workspaceAuthorityScope,
+            workspaceMutationPermitRegistry: workspaceMutationPermitRegistry,
+            cancellation: cancellation
+        )
+    }
+
+    private func validateMutationPermit(
+        _ permit: DomainWorkspaceMutationPermit,
+        document: DomainWorkspaceDocument
+    ) async throws {
+        try validateMutationScope(permit, document: document)
+    }
+
+    private func validateMutationScope(
+        _ permit: DomainWorkspaceMutationPermit,
+        document: DomainWorkspaceDocument
+    ) throws {
+        try validateMutationPermitScope(permit)
+        guard let workspaceAuthorityScope,
+              workspaceAuthorityScope.containsWorkspaceDocument(document.fileURL)
+        else {
+            throw DomainPersistenceError.workspaceOutsideMutationScope
+        }
+    }
+
+    private func validateMutationPermitScope(
+        _ permit: DomainWorkspaceMutationPermit
+    ) throws {
+        guard let workspaceAuthorityScope,
+              let workspaceMutationPermitRegistry
+        else {
+            throw DomainPersistenceError.mutationPermitInvalid
+        }
+        do {
+            try workspaceMutationPermitRegistry.validate(
+                permit,
+                expectedStorageScopeDigest: workspaceAuthorityScope.storageScopeDigest
+            )
+        } catch {
+            throw DomainPersistenceError.mutationPermitInvalid
+        }
     }
 
     private func withLock<T>(at url: URL, _ body: () throws -> T) throws -> T {
@@ -603,26 +658,35 @@ package struct DomainPersistenceCoordinator {
         operationID: UUID,
         contextRevisions: [UUID: DomainRevisionState],
         operation: DomainRecordedOperation,
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> DomainPersistenceSavedCommit {
-        try await DomainBlockingIO.run { cancellation in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
             try blockingWorker(cancellation).persistCreatedBlocking(
                 document: document,
                 expectedCatalogRevision: expectedCatalogRevision,
                 operationID: operationID,
                 contextRevisions: contextRevisions,
                 operation: operation,
-                now: now
+                now: now,
+                permit: permit
             )
         }
     }
 
     func repairRecoveredCreate(
         document: DomainWorkspaceDocument,
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> UInt64 {
-        try await DomainBlockingIO.run { cancellation in
-            try blockingWorker(cancellation).withExistingWorkspaceLocks(document: document, now: now) { revision in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
+            try blockingWorker(cancellation).withExistingWorkspaceLocks(
+                document: document,
+                now: now,
+                permit: permit
+            ) { revision in
                 revision
             }
         }
@@ -632,14 +696,17 @@ package struct DomainPersistenceCoordinator {
         document: DomainWorkspaceDocument,
         expectedRevision: UInt64,
         operation: DomainRecordedOperation,
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> DomainPersistenceWorkingCommit {
-        try await DomainBlockingIO.run { cancellation in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
             try blockingWorker(cancellation).persistUnchangedBlocking(
                 document: document,
                 expectedRevision: expectedRevision,
                 operation: operation,
-                now: now
+                now: now,
+                permit: permit
             )
         }
     }
@@ -651,9 +718,11 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> DomainPersistenceWorkingCommit {
-        try await DomainBlockingIO.run { cancellation in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
             try blockingWorker(cancellation).persistWorkingBlocking(
                 document: document,
                 expectedRevision: expectedRevision,
@@ -661,7 +730,8 @@ package struct DomainPersistenceCoordinator {
                 contextRevisions: contextRevisions,
                 contextTombstones: contextTombstones,
                 operations: operations,
-                now: now
+                now: now,
+                permit: permit
             )
         }
     }
@@ -673,9 +743,11 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> DomainPersistenceSavedCommit {
-        try await DomainBlockingIO.run { cancellation in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
             try blockingWorker(cancellation).persistSavedBlocking(
                 document: document,
                 expectedWorkingRevision: expectedWorkingRevision,
@@ -683,7 +755,8 @@ package struct DomainPersistenceCoordinator {
                 contextRevisions: contextRevisions,
                 contextTombstones: contextTombstones,
                 operations: operations,
-                now: now
+                now: now,
+                permit: permit
             )
         }
     }
@@ -695,9 +768,11 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> DomainPersistenceSavedCommit {
-        try await DomainBlockingIO.run { cancellation in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
             try blockingWorker(cancellation).persistExternalReloadBlocking(
                 document: document,
                 expectedRevision: expectedRevision,
@@ -705,7 +780,8 @@ package struct DomainPersistenceCoordinator {
                 contextRevisions: contextRevisions,
                 contextTombstones: contextTombstones,
                 operations: operations,
-                now: now
+                now: now,
+                permit: permit
             )
         }
     }
@@ -718,9 +794,11 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> DomainPersistenceWorkingCommit {
-        try await DomainBlockingIO.run { cancellation in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
             try blockingWorker(cancellation).persistConflictRebaseBlocking(
                 document: document,
                 externalSavedDigest: externalSavedDigest,
@@ -729,7 +807,8 @@ package struct DomainPersistenceCoordinator {
                 contextRevisions: contextRevisions,
                 contextTombstones: contextTombstones,
                 operations: operations,
-                now: now
+                now: now,
+                permit: permit
             )
         }
     }
@@ -739,15 +818,18 @@ package struct DomainPersistenceCoordinator {
         expectedWorkspaceRevision: UInt64,
         expectedCatalogRevision: UInt64?,
         operation: DomainRecordedOperation,
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) async throws -> DomainPersistenceDeleteCommit {
-        try await DomainBlockingIO.run { cancellation in
+        try await validateMutationPermit(permit, document: document)
+        return try await DomainBlockingIO.run { cancellation in
             try blockingWorker(cancellation).persistDeletedBlocking(
                 document: document,
                 expectedWorkspaceRevision: expectedWorkspaceRevision,
                 expectedCatalogRevision: expectedCatalogRevision,
                 operation: operation,
-                now: now
+                now: now,
+                permit: permit
             )
         }
     }
@@ -1145,10 +1227,13 @@ package struct DomainPersistenceCoordinator {
         operationID: UUID,
         contextRevisions: [UUID: DomainRevisionState],
         operation: DomainRecordedOperation,
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) throws -> DomainPersistenceSavedCommit {
-        try ensureLazyMigration(now: now)
+        try validateMutationScope(permit, document: document)
+        try ensureLazyMigration(now: now, permit: permit)
         return try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
+            try validateMutationScope(permit, document: document)
             let currentCatalog = try loadCurrentCatalog(now: now)
             if let expectedCatalogRevision,
                expectedCatalogRevision != currentCatalog.revision
@@ -1170,6 +1255,7 @@ package struct DomainPersistenceCoordinator {
                 dirtyRevision: nil
             )
             let journal = try withLock(at: lockURL(document.workspaceID)) {
+                try validateMutationScope(permit, document: document)
                 if case let .success(existing?) = loadJournal(workspaceID: document.workspaceID) {
                     throw DomainPersistenceError.stateConflict(
                         expected: 0,
@@ -1290,10 +1376,16 @@ package struct DomainPersistenceCoordinator {
         document: DomainWorkspaceDocument,
         expectedRevision: UInt64,
         operation: DomainRecordedOperation,
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) throws -> DomainPersistenceWorkingCommit {
-        try ensureLazyMigration(now: now)
-        return try withExistingWorkspaceLocks(document: document, now: now) { catalogRevision in
+        try validateMutationScope(permit, document: document)
+        try ensureLazyMigration(now: now, permit: permit)
+        return try withExistingWorkspaceLocks(
+            document: document,
+            now: now,
+            permit: permit
+        ) { catalogRevision in
             let durable = try readCurrentJournalOrSeed(document: document)
             guard durable.revisions.workingRevision == expectedRevision else {
                 throw DomainPersistenceError.stateConflict(
@@ -1326,10 +1418,16 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) throws -> DomainPersistenceWorkingCommit {
-        try ensureLazyMigration(now: now)
-        return try withExistingWorkspaceLocks(document: document, now: now) { catalogRevision in
+        try validateMutationScope(permit, document: document)
+        try ensureLazyMigration(now: now, permit: permit)
+        return try withExistingWorkspaceLocks(
+            document: document,
+            now: now,
+            permit: permit
+        ) { catalogRevision in
             let durable = try readCurrentJournalOrSeed(document: document)
             guard durable.revisions.workingRevision == expectedRevision else {
                 throw DomainPersistenceError.stateConflict(
@@ -1363,10 +1461,16 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) throws -> DomainPersistenceSavedCommit {
-        try ensureLazyMigration(now: now)
-        return try withExistingWorkspaceLocks(document: document, now: now) { catalogRevision in
+        try validateMutationScope(permit, document: document)
+        try ensureLazyMigration(now: now, permit: permit)
+        return try withExistingWorkspaceLocks(
+            document: document,
+            now: now,
+            permit: permit
+        ) { catalogRevision in
             let durable = try readCurrentJournalOrSeed(document: document)
             guard durable.revisions.workingRevision == expectedWorkingRevision else {
                 throw DomainPersistenceError.stateConflict(
@@ -1456,10 +1560,16 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) throws -> DomainPersistenceSavedCommit {
-        try ensureLazyMigration(now: now)
-        return try withExistingWorkspaceLocks(document: document, now: now) { catalogRevision in
+        try validateMutationScope(permit, document: document)
+        try ensureLazyMigration(now: now, permit: permit)
+        return try withExistingWorkspaceLocks(
+            document: document,
+            now: now,
+            permit: permit
+        ) { catalogRevision in
             let current = try readCurrentJournalOrSeed(document: document)
             guard current.revisions.workingRevision == expectedRevision else {
                 throw DomainPersistenceError.stateConflict(
@@ -1517,10 +1627,16 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) throws -> DomainPersistenceWorkingCommit {
-        try ensureLazyMigration(now: now)
-        return try withExistingWorkspaceLocks(document: document, now: now) { catalogRevision in
+        try validateMutationScope(permit, document: document)
+        try ensureLazyMigration(now: now, permit: permit)
+        return try withExistingWorkspaceLocks(
+            document: document,
+            now: now,
+            permit: permit
+        ) { catalogRevision in
             let current = try readCurrentJournalOrSeed(document: document)
             guard current.revisions == expectedRevisions else {
                 throw DomainPersistenceError.stateConflict(
@@ -1564,10 +1680,13 @@ package struct DomainPersistenceCoordinator {
         expectedWorkspaceRevision: UInt64,
         expectedCatalogRevision: UInt64?,
         operation: DomainRecordedOperation,
-        now: Date
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
     ) throws -> DomainPersistenceDeleteCommit {
-        try ensureLazyMigration(now: now)
+        try validateMutationScope(permit, document: document)
+        try ensureLazyMigration(now: now, permit: permit)
         return try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
+            try validateMutationScope(permit, document: document)
             let currentCatalog = try loadCurrentCatalog(now: now)
             if let expectedCatalogRevision,
                expectedCatalogRevision != currentCatalog.revision
@@ -1578,6 +1697,7 @@ package struct DomainPersistenceCoordinator {
                 )
             }
             return try withLock(at: lockURL(document.workspaceID)) {
+                try validateMutationScope(permit, document: document)
                 let current = try readCurrentJournalOrSeed(document: document)
                 guard current.revisions.workingRevision == expectedWorkspaceRevision else {
                     throw DomainPersistenceError.stateConflict(
@@ -1879,9 +1999,12 @@ package struct DomainPersistenceCoordinator {
     private func withExistingWorkspaceLocks<T>(
         document: DomainWorkspaceDocument,
         now: Date,
+        permit: DomainWorkspaceMutationPermit,
         _ body: (UInt64) throws -> T
     ) throws -> T {
-        try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
+        try validateMutationScope(permit, document: document)
+        return try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
+            try validateMutationScope(permit, document: document)
             let catalog = try loadCurrentCatalog(now: now)
             let isDeleted = (catalog.deletions ?? []).contains {
                 $0.workspaceID == document.workspaceID
@@ -1893,6 +2016,7 @@ package struct DomainPersistenceCoordinator {
                 )
             }
             return try withLock(at: lockURL(document.workspaceID)) {
+                try validateMutationScope(permit, document: document)
                 if let entry = catalog.entries.first(where: {
                     $0.workspaceID == document.workspaceID
                 }) {
@@ -1966,9 +2090,14 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    private func ensureLazyMigration(now: Date) throws {
+    private func ensureLazyMigration(
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
+    ) throws {
+        try validateMutationPermitScope(permit)
         guard !fileManager.fileExists(atPath: policyURL.path) else { return }
         try withLock(at: lockDirectory.appendingPathComponent("runtime-policy.lock")) {
+            try validateMutationPermitScope(permit)
             guard !fileManager.fileExists(atPath: policyURL.path) else { return }
             let rollbackName = "migration-\(Int(now.timeIntervalSince1970))-\(identity.runtimeID.uuidString)"
             let rollbackDirectory = rollbackRoot.appendingPathComponent(rollbackName, isDirectory: true)
@@ -2124,5 +2253,11 @@ private enum DomainPersistenceLock {
             unlink(temporary.path)
             throw error
         }
+    }
+}
+
+enum DomainPersistenceAtomicWriter {
+    static func write(_ data: Data, to destination: URL) throws {
+        try DomainPersistenceLock.atomicWrite(data, to: destination)
     }
 }

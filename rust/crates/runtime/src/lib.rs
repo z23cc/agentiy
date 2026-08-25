@@ -29,6 +29,7 @@ mod subscription;
 pub mod textdecode;
 pub mod tokenacct;
 mod wake_pipe;
+pub mod workspace_context;
 
 pub use config::RuntimeConfig;
 pub use identity::{ABI_EPOCH, IdentityError, RuntimeIdentity};

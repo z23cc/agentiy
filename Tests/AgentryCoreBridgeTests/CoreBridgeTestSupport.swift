@@ -293,6 +293,14 @@ final class FakeCoreTransport: CoreRuntimeTransport, Sendable {
         return result
     }
 
+    func workspaceDocumentProjectionV1(
+        identity: CoreRuntimeIdentity,
+        documentBytes: Data
+    ) throws -> CoreWorkspaceDocumentProjectionV1 {
+        state.withLock { $0.actions.append("workspace-document-projection-v1") }
+        throw CoreTransportError.unexpected("missing workspace projection fixture")
+    }
+
     func filterPaths(
         identity: CoreRuntimeIdentity,
         cancellation: any CoreLeafCancellationHandle,

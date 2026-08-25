@@ -144,6 +144,10 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         rawBytes: Data
     ) throws -> CoreTextDecodeResultV1
+    func workspaceDocumentProjectionV1(
+        identity: CoreRuntimeIdentity,
+        documentBytes: Data
+    ) throws -> CoreWorkspaceDocumentProjectionV1
     func searchScoreBatchV1(
         identity: CoreRuntimeIdentity,
         request: CoreSearchScoreBatchRequestV1
@@ -832,6 +836,57 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             bomPresent: value.bomPresent,
             hadReplacements: value.hadReplacements,
             policyID: value.policyId
+        )
+    }
+
+    func workspaceDocumentProjectionV1(
+        identity: CoreRuntimeIdentity,
+        documentBytes: Data
+    ) throws -> CoreWorkspaceDocumentProjectionV1 {
+        let value: AgentryUniFFIRaw.CoreWorkspaceDocumentProjectionV1
+        do {
+            value = try runtime.workspaceDocumentProjectionV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceDocumentProjectionV1.contractVersion,
+                documentBytes: documentBytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+
+        func optionalUUID(_ raw: String?) throws -> UUID? {
+            guard let raw else { return nil }
+            guard let value = UUID(uuidString: raw) else {
+                throw CoreComputeError.malformedResponse
+            }
+            return value
+        }
+
+        guard let workspaceID = UUID(uuidString: value.workspaceId),
+              let schemaVersion = Int(exactly: value.schemaVersion)
+        else {
+            throw CoreComputeError.malformedResponse
+        }
+        let contexts = try value.contexts.map { context -> CoreWorkspaceContextProjectionV1 in
+            guard let contextID = UUID(uuidString: context.contextId) else {
+                throw CoreComputeError.malformedResponse
+            }
+            return try CoreWorkspaceContextProjectionV1(
+                contextID: contextID,
+                name: context.name,
+                activeAgentSessionID: optionalUUID(context.activeAgentSessionId),
+                activeChatSessionID: optionalUUID(context.activeChatSessionId),
+                prompt: context.prompt,
+                selection: context.selection
+            )
+        }
+        return try CoreWorkspaceDocumentProjectionV1(
+            workspaceID: workspaceID,
+            schemaVersion: schemaVersion,
+            name: value.name,
+            repoPaths: value.repoPaths,
+            activeContextID: optionalUUID(value.activeContextId),
+            contexts: contexts
         )
     }
 

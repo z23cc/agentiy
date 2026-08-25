@@ -85,6 +85,7 @@ package struct DomainRuntimeSnapshot: Sendable {
     package let workspacePublicationSequence: UInt64
     package let workspaceCatalogRevision: UInt64
     package let workspaceHealth: DomainAuthorityHealth
+    package let workspaceMutationAccess: DomainWorkspaceMutationAccessSnapshot
     package let routingRevision: UInt64
     package let agentSessionPersistenceHealth: DomainAgentSessionPersistenceHealth
     package let activityPublicationSequence: UInt64
@@ -126,6 +127,7 @@ package actor MCPDomainRuntime {
     package nonisolated let credentialEnvelopeStore: DomainCredentialEnvelopeStore
     package nonisolated let longRunningToolProvider: MCPDomainLongRunningToolProvider
 
+    private nonisolated let workspaceMutationAccess: DomainWorkspaceMutationAccess
     private let workspaceAuthority: DomainWorkspaceContextAuthority
     private var lifecycle: DomainRuntimeLifecycle = .created
     private var publicationSequence: UInt64 = 0
@@ -152,14 +154,25 @@ package actor MCPDomainRuntime {
         identity = runtimeIdentity
         toolRegistry = MCPDomainToolRegistry(registryID: registryID)
 
-        let persistence = DomainPersistenceCoordinator(
+        let workspaceAuthorityLease = DomainWorkspaceAuthorityLease(
             configuration: configuration,
             identity: runtimeIdentity
+        )
+        let workspaceMutationAccess = DomainWorkspaceMutationAccess(
+            lease: workspaceAuthorityLease
+        )
+        self.workspaceMutationAccess = workspaceMutationAccess
+        let persistence = DomainPersistenceCoordinator(
+            configuration: configuration,
+            identity: runtimeIdentity,
+            workspaceAuthorityScope: workspaceAuthorityLease.scope,
+            workspaceMutationPermitRegistry: workspaceMutationAccess.permitRegistry
         )
         persistenceCoordinator = persistence
         let authority = DomainWorkspaceContextAuthority(
             identity: runtimeIdentity,
             persistence: persistence,
+            mutationAccess: workspaceMutationAccess,
             metrics: configuration.metrics
         )
         workspaceAuthority = authority
@@ -245,11 +258,14 @@ package actor MCPDomainRuntime {
         await mutationPolicyStore.bootstrap()
         await agentSessionStore.bootstrap()
         await agentWorktreeBindingStore.bootstrap()
+        let mutationAccess = await workspaceAuthority.activateMutationAccess()
         guard lifecycle == .starting else { return }
         startTask = nil
         let workspaceSnapshot = await workspaceAuthority.snapshot()
         let agentSessions = await agentSessionStore.snapshot()
-        lifecycle = workspaceSnapshot.health.acceptsMutations && agentSessions.persistenceHealth == .ready
+        lifecycle = workspaceSnapshot.health.acceptsMutations
+            && mutationAccess.acceptsMutations
+            && agentSessions.persistenceHealth == .ready
             ? .ready
             : .degraded
         publishSnapshot()
@@ -271,6 +287,7 @@ package actor MCPDomainRuntime {
         publishSnapshot()
         externalReloadTask?.cancel()
         externalReloadTask = nil
+        await workspaceAuthority.beginMutationAccessDrain()
         _ = await domainHost.drain(timeout: configuration.hostDrainTimeout)
         await mutationApprovalBroker.shutdown()
         await interactionBroker.shutdown()
@@ -279,6 +296,7 @@ package actor MCPDomainRuntime {
         await credentialEnvelopeStore.shutdown()
         await readSideEffectCoordinator.shutdown()
         await routingCoordinator.shutdown()
+        await workspaceAuthority.finishMutationAccessDrainAndRelease()
         lifecycle = .stopped
         publishSnapshot()
         return DomainShutdownResult(
@@ -291,10 +309,21 @@ package actor MCPDomainRuntime {
     package func snapshot() async -> DomainRuntimeSnapshot {
         let catalog = await toolRegistry.snapshot()
         let workspaces = await workspaceAuthority.snapshot()
+        let workspaceMutationAccess = await workspaceAuthority.mutationAccessStateSnapshot()
         let routing = await routingCoordinator.snapshot()
         let agentSessions = await agentSessionStore.snapshot()
         let activities = await activityCenter.snapshot()
         let host = await domainHost.snapshot()
+        if lifecycle == .ready || lifecycle == .degraded {
+            let next = resolvedLifecycle(
+                workspaceHealth: workspaces.health,
+                agentPersistenceHealth: agentSessions.persistenceHealth
+            )
+            if next != lifecycle {
+                lifecycle = next
+                publishSnapshot()
+            }
+        }
         return DomainRuntimeSnapshot(
             identity: identity,
             lifecycle: lifecycle,
@@ -303,6 +332,7 @@ package actor MCPDomainRuntime {
             workspacePublicationSequence: workspaces.publicationSequence,
             workspaceCatalogRevision: workspaces.catalogRevision,
             workspaceHealth: workspaces.health,
+            workspaceMutationAccess: workspaceMutationAccess,
             routingRevision: routing.revision,
             agentSessionPersistenceHealth: agentSessions.persistenceHealth,
             activityPublicationSequence: activities.publicationSequence,
@@ -345,10 +375,21 @@ package actor MCPDomainRuntime {
     private func synchronizeLifecycleWithWorkspaceHealth() async {
         guard lifecycle == .ready || lifecycle == .degraded else { return }
         let snapshot = await workspaceAuthority.snapshot()
-        let next: DomainRuntimeLifecycle = snapshot.health.acceptsMutations ? .ready : .degraded
+        let agentSessions = await agentSessionStore.snapshot()
+        let next = resolvedLifecycle(
+            workspaceHealth: snapshot.health,
+            agentPersistenceHealth: agentSessions.persistenceHealth
+        )
         guard next != lifecycle else { return }
         lifecycle = next
         publishSnapshot()
+    }
+
+    private func resolvedLifecycle(
+        workspaceHealth: DomainAuthorityHealth,
+        agentPersistenceHealth: DomainAgentSessionPersistenceHealth
+    ) -> DomainRuntimeLifecycle {
+        workspaceHealth.acceptsMutations && agentPersistenceHealth == .ready ? .ready : .degraded
     }
 
     private func publishSnapshot() {
