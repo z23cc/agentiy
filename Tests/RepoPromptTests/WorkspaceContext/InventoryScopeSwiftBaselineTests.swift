@@ -11,12 +11,10 @@ import XCTest
 /// This intentionally follows the now-retired `InventoryCutoverBenchmarkTests`' env-gated
 /// conventions (same `DispatchTime`-based measurement, same warmup/sample shape, same size points;
 /// that harness benchmarked the same production entry points against the P3-2
-/// `RustInventoryComputer` seam, retired at P4-8) but measures only the Swift side: there is no
-/// P4 Rust candidate yet, so there is nothing to pair it against. The reference arm reuses the
-/// exact same production entry points
-/// (`WorkspaceInventoryCatalogBuilders.buildAuthoritativeCatalogComponents` /
-/// `.buildRootCatalogShardPatch`), so this harness adds a size point (100 files, per E-1's
-/// requirement that small roots are measured, not skipped) rather than a new code path.
+/// `RustInventoryComputer` seam, retired at P4-8). P4-8b retires the patch builder from product
+/// execution and P4-8c retires the full-snapshot builder; both arms remain here only as frozen
+/// historical Swift references used to interpret the registered E-1 result. Neither is a product
+/// fallback, parity authority, or shadow.
 ///
 /// Scope note (reported alongside the P4-1 deliverable): this harness captures E-1's reference
 /// numbers only. E-1d (batch point-lookup cost curve), E-2 (read economics incl. the mention-path
@@ -49,6 +47,38 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
         let event: WorkspaceAppliedIndexBatchEvent
         let previousFiles: [WorkspaceFileRecord]
         let filesByID: [UUID: WorkspaceFileRecord]
+    }
+
+    func testProductionSourcesDoNotReferenceRetiredCatalogShardBuilders() throws {
+        let repoRoot = try RepoRoot.url()
+        let sourceRoot = repoRoot.appendingPathComponent("Sources", isDirectory: true)
+        let allowedDeclarationPath = "Sources/RepoPrompt/Infrastructure/WorkspaceContext/Inventory/WorkspaceInventoryCatalogBuilders.swift"
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: sourceRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))
+        let forbiddenIdentifiers = [
+            "buildRootCatalogShard" + "Patch",
+            "buildAuthoritativeCatalog" + "Components"
+        ]
+        var violations: [String] = []
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+            let relativePath = RepoRoot.relativePath(for: fileURL, relativeTo: repoRoot)
+            let source = try String(contentsOf: fileURL, encoding: .utf8)
+            for (lineOffset, line) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmedLine.hasPrefix("//"), !trimmedLine.hasPrefix("*") else { continue }
+                for forbiddenIdentifier in forbiddenIdentifiers where line.contains(forbiddenIdentifier) {
+                    let isAllowedDeclaration = relativePath == allowedDeclarationPath
+                        && trimmedLine.hasPrefix("static func \(forbiddenIdentifier)(")
+                    if !isAllowedDeclaration {
+                        violations.append("\(relativePath):\(lineOffset + 1):\(forbiddenIdentifier)")
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(violations, [], "retired production builder references: \(violations.sorted())")
     }
 
     /// E-1's pass criteria (`p4-workspace-inventory-authority-v2-2026-08-22.md` §10):

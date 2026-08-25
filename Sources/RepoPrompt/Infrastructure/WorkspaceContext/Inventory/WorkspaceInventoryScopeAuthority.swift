@@ -231,6 +231,84 @@ actor WorkspaceInventoryScopeAuthority {
         return try await scope.openSnapshot(rootID: rootID)
     }
 
+    /// One immutable, fully-paged authority generation in Rust-published order. This is the
+    /// P4-8 read contract used by Swift presentation adapters: callers receive complete ordered
+    /// tables or an error, never a partial page prefix or independently reconstructed ordering.
+    struct OrderedSnapshotRead {
+        let generation: UInt64
+        let rootLifetimeID: String
+        let files: [CoreInventoryFileRecordV1]
+        let folders: [CoreInventoryFolderRecordV1]
+    }
+
+    func readOrderedSnapshot(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID?,
+        pageSize: UInt64 = 4096
+    ) async throws -> OrderedSnapshotRead {
+        guard pageSize > 0 else {
+            throw WorkspaceInventoryScopeAuthorityError.invalidPageSize(pageSize)
+        }
+        let binding = try requireBinding(rootID: rootID)
+        guard binding.swiftLifetimeID == expectedSwiftLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
+        }
+        let scope = try await requireScope()
+        let snapshot = try await scope.openSnapshot(rootID: rootID)
+        do {
+            guard snapshot.rootLifetimeID == binding.rustLifetimeID else {
+                throw WorkspaceInventoryScopeAuthorityError.rustLifetimeMismatch(rootID)
+            }
+
+            var files: [CoreInventoryFileRecordV1] = []
+            var folders: [CoreInventoryFolderRecordV1] = []
+            var offset: UInt64 = 0
+            while true {
+                try Task.checkCancellation()
+                let page = try await snapshot.page(offset: offset, limit: pageSize)
+                try Task.checkCancellation()
+                let expectedReturnedCount = UInt64(max(page.files.count, page.folders.count))
+                guard page.returnedCount == expectedReturnedCount else {
+                    throw WorkspaceInventoryScopeAuthorityError.invalidPageProgress(
+                        rootID: rootID,
+                        returnedCount: page.returnedCount,
+                        expectedReturnedCount: expectedReturnedCount
+                    )
+                }
+                files.append(contentsOf: page.files)
+                folders.append(contentsOf: page.folders)
+                guard page.hasMore else { break }
+                guard page.returnedCount > 0 else {
+                    throw WorkspaceInventoryScopeAuthorityError.invalidPageProgress(
+                        rootID: rootID,
+                        returnedCount: 0,
+                        expectedReturnedCount: expectedReturnedCount
+                    )
+                }
+                offset += page.returnedCount
+            }
+
+            await snapshot.close()
+            try Task.checkCancellation()
+            let currentBinding = try requireBinding(rootID: rootID)
+            guard currentBinding.swiftLifetimeID == expectedSwiftLifetimeID else {
+                throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
+            }
+            guard currentBinding.rustLifetimeID == snapshot.rootLifetimeID else {
+                throw WorkspaceInventoryScopeAuthorityError.rustLifetimeMismatch(rootID)
+            }
+            return OrderedSnapshotRead(
+                generation: snapshot.generation,
+                rootLifetimeID: snapshot.rootLifetimeID,
+                files: files,
+                folders: folders
+            )
+        } catch {
+            await snapshot.close()
+            throw error
+        }
+    }
+
     /// The B2 codemap graph-index catalog shard (§4.3.1): built authority-side under the
     /// codemap-capable extension set supplied at scope-open time.
     func openProjectedShard(rootID: UUID) async throws -> CoreInventorySnapshot {
@@ -299,6 +377,10 @@ actor WorkspaceInventoryScopeAuthority {
 
 enum WorkspaceInventoryScopeAuthorityError: Error, Equatable {
     case rootNotOpen(UUID)
+    case swiftLifetimeMismatch(UUID)
+    case rustLifetimeMismatch(UUID)
+    case invalidPageSize(UInt64)
+    case invalidPageProgress(rootID: UUID, returnedCount: UInt64, expectedReturnedCount: UInt64)
 }
 
 extension WorkspaceInventoryScopeAuthorityError: LocalizedError {
@@ -306,6 +388,14 @@ extension WorkspaceInventoryScopeAuthorityError: LocalizedError {
         switch self {
         case let .rootNotOpen(rootID):
             "Inventory scope authority has no open Rust root for \(rootID)."
+        case let .swiftLifetimeMismatch(rootID):
+            "Inventory scope authority Swift lifetime changed while reading root \(rootID)."
+        case let .rustLifetimeMismatch(rootID):
+            "Inventory scope authority Rust lifetime changed while reading root \(rootID)."
+        case let .invalidPageSize(pageSize):
+            "Inventory scope authority snapshot page size must be positive, got \(pageSize)."
+        case let .invalidPageProgress(rootID, returnedCount, expectedReturnedCount):
+            "Inventory scope authority snapshot page for root \(rootID) reported \(returnedCount) records; expected \(expectedReturnedCount)."
         }
     }
 }

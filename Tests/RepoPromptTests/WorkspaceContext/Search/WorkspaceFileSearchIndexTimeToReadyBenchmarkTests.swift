@@ -122,7 +122,7 @@ import XCTest
             private func runColdWorktreeScenario(
                 fixture: WorkspaceFileSearchIndexBenchmarkFixture
             ) async throws -> WorkspaceFileSearchIndexBenchmarkAggregate {
-                let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+                let store = WorkspaceFileContextStore()
                 addTeardownBlock { await self.unloadAllRoots(in: store) }
                 let visibleRoot = try await store.loadRoot(path: fixture.visibleRootURL.path)
                 await store.stopWatchingRoot(id: visibleRoot.id)
@@ -307,7 +307,7 @@ import XCTest
             ) async throws -> WorkspaceFileSearchIndexBenchmarkSample {
                 let fixture = try WorkspaceFileSearchIndexBenchmarkFixture.make()
                 defer { fixture.remove() }
-                let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+                let store = WorkspaceFileContextStore()
                 addTeardownBlock { await self.unloadAllRoots(in: store) }
                 let visibleRoot = try await store.loadRoot(path: fixture.visibleRootURL.path)
                 await store.stopWatchingRoot(id: visibleRoot.id)
@@ -495,7 +495,7 @@ import XCTest
             private func runIncrementalRebuildScenario(
                 fixture: WorkspaceFileSearchIndexBenchmarkFixture
             ) async throws -> WorkspaceFileSearchIndexBenchmarkAggregate {
-                let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+                let store = WorkspaceFileContextStore()
                 addTeardownBlock { await self.unloadAllRoots(in: store) }
                 let visibleRoot = try await store.loadRoot(path: fixture.visibleRootURL.path)
                 await store.stopWatchingRoot(id: visibleRoot.id)
@@ -999,7 +999,7 @@ import XCTest
                 let fixture = try WorkspaceFileSearchIndexBenchmarkFixture.make()
                 defer { fixture.remove() }
 
-                let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+                let store = WorkspaceFileContextStore()
                 let worktreeRoot = try await store.loadRoot(
                     path: fixture.worktreeRootURL.path,
                     kind: .sessionWorktree

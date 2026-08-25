@@ -16,11 +16,11 @@ import XCTest
 //
 // | Item  | Status at cutover commit                             | Where                                                                 |
 // |-------|-------------------------------------------------------|------------------------------------------------------------------------|
-// | D-1   | NOT IMPLEMENTED                                        | `maxRootCatalogShardPatchLogicalMutationCount` is still `1` (`WorkspaceFileContextStore.swift`), not raised to N. `testPatchThresholdRebuildsAffectedRootAndReusesUnaffectedRoot` (`WorkspaceCatalogShardTests.swift`) still pins the `1`-threshold behavior; not ported to a raised-N behavior. Open question 1 in the design doc ("N for D-1... still open") remains open. |
-// | D-2   | NOT IMPLEMENTED                                        | `RootCatalogShard`'s `entries` are still materialized Swift-side by `WorkspaceInventoryCatalogBuilders`/`buildAuthoritativeCatalogComponents`, not projected on read. |
+// | D-1   | SUPERSEDED by P4-8b                                    | The production Swift patch path and its threshold are retired rather than raised to N. `maxPatchLogicalMutationCount` remains an externally visible zero-valued compatibility tombstone; accepted events rebuild from the ordered Rust generation. |
+// | D-2   | NOT IMPLEMENTED                                        | `RootCatalogShard.entries` are still materialized Swift-side by the direct-read adapter (including P4-8c's uncached Rust ordered-snapshot fallback), not projected on read. |
 // | D-3   | VERIFIED                                               | `CoreInventoryScopeDiscoveryTests.testPathIdentityIsStableAcrossModifyButMintsAFreshIdAcrossRemoveThenReDiscovery` (P4-6b minting-gap closure) exercises Rust's own mint site directly via the discovery wire path. |
 // | D-4   | NOT MEASURED                                           | The claim (`unsafeOrAmbiguousBatch` rate drops) is a rate claim across real production traffic, not a single-scenario regression test; no measurement taken this pass. |
-// | D-5   | NOT IMPLEMENTED                                        | The still-live `RootCatalogShard` shadow-comparison feature (`enableCatalogShardShadowValidation`/`recordRootCatalogShardShadowComparison`/`catalogShadowBytes` -- distinct from the deleted P4-5 inventory-scope shadow arm) remains a Swift-side JSON-byte comparison, not a Rust-internal self-check. |
+// | D-5   | PARTIALLY RESOLVED at P4-8c                            | The `RootCatalogShard` Swift full-rebuild/JSON-byte shadow is retired. Its public diagnostic fields and `.shadowValidationMismatch` spelling remain zero/absent compatibility tombstones; the design's independent Rust-internal self-check is not yet implemented and remains P4-8 closure work. |
 // | D-6   | VERIFIED at P4-6b cutover; superseded by P4-7b          | `WorkspaceCatalogShardTests.swift`'s four `===` snapshot-instance-identity assertions were converted to `WorkspaceSearchRootPathIndexIdentity` equality at P4-6b. P4-7b b3 (`docs/designs/p4-7-pathsearch-production-cutover-v2-2026-08-23.md` §4.4) deletes `makeRootPathSearchIndex`, so no caller can populate `rootPathIndexes` to compare identities across anymore -- those assertions are removed, not re-verified; D-6's generation-token identity contract is moot for a holder that no longer exists on the search path. |
 // | D-7   | VERIFIED                                               | `testInterningAdversarialFixtureRoundTripsThroughTheProductionReadPath` below -- with the shadow comparator gone, D-7's witness is that the interning-adversarial fixture round-trips correctly (full discoverability, exact path set, per-path point lookups) through the production read path, rather than matching a second Swift-side arm. |
 // | D-8   | OUT OF SCOPE for P4-6b                                 | Design doc's own self-check: "P4-6a's work, not this document's" (§15.3 Finding 1 self-check, `:1236`). Codemap read-hoisting staleness, not an inventory-table drift item. |
@@ -44,7 +44,8 @@ import XCTest
 // latent bug in the same function's ancestor-folder walk (requiring a `foldersByID` lookup for
 // the root marker itself, which is never populated -- the root folder is never sent to Rust) was
 // uncovered once the first fix let the walk actually run, and fixed alongside it. All four
-// quarantined `WorkspaceCatalogShardTests` are un-skipped and green.
+// quarantined `WorkspaceCatalogShardTests` are un-skipped and green. P4-8b later retires that
+// patch path from product execution; the pure builder remains only as a historical benchmark arm.
 #if DEBUG
     final class WorkspaceInventoryScopeDriftRegisterTests: XCTestCase {
         private var stores: [WorkspaceFileContextStore] = []

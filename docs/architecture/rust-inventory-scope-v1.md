@@ -110,6 +110,107 @@ production-authoritative and out of this step's scope; their retirement, `Worksp
 deletion, and the Tier-3 (`inventoryExportCompactV1`) zero-call-site assertion remain open P4-8
 done-when items, gated on P4-7 landing first.
 
+### P4-8 prerequisite amendment — complete authority-owned snapshot paging
+
+Before a general catalog can stop rebuilding ordered inputs through Swift dictionaries, the
+read plane must guarantee that a complete immutable Rust generation can be consumed without
+silently truncating either record table. `inventorySnapshotPage` pages files and folders through
+the same offset/limit window independently. Its progress fields therefore use the larger of the
+returned file/folder counts, and `hasMore` remains true while either table fills the window. The
+former files-only calculation truncated roots whose folder table outlived their file table.
+
+`WorkspaceInventoryScopeAuthority.readOrderedSnapshot` now owns the full paging loop, validates
+the Swift and Rust lifetime fences before and after the suspending page reads, preserves Rust-
+published order, rejects inconsistent/non-progressing page metadata, and closes the handle before
+returning either a complete generation or an error. Existing
+`WorkspaceFileContextStore.fetchFileTreePageIndex` consumes that helper, revalidates the Swift
+lifetime after the authority await, and degrades only the explicit no-published-generation outcome
+to an empty root; cancellation, lifetime rotation, malformed progress, and page/transport failure
+return no page index rather than publishing a partial or falsely empty result. Callers of the
+store's non-throwing catalog fallback remain best-effort and may omit an unavailable root;
+this helper-local contract is not an end-to-end availability claim.
+
+### P4-8a amendment — normal per-root shard direct read
+
+The normal `RootCatalogShard` cold/rebuild path now consumes
+`WorkspaceInventoryScopeAuthority.readOrderedSnapshot` directly. It stable-filters the remaining
+Swift-local managed-only visibility overlay, maps records through the shared republication adapter,
+synthesizes the root marker, and materializes aligned search entries without rebuilding id-keyed
+dictionaries or re-sorting Rust's published file/folder tables. A root with no published Rust
+generation is a successful cacheable empty shard containing only that marker.
+
+The store validates the root key, Swift applied-index generation, store-local inventory mutation
+epoch/depth, delta state, and published-shard identity across every suspending read and again for
+the complete multi-root batch immediately before its atomic publication. The mutation fence spans
+each store-owned Rust commit through Swift topology/event publication, closing the reentrant window
+where new Rust records could otherwise be published under an old Swift generation. An unavailable,
+cancelled, or stale direct read never publishes a partial shard; the existing non-throwing
+catalog fallback remains best-effort and uncached. DEBUG catalog sort accounting is
+intentionally zero on the successful direct path because no Swift sort ran.
+
+P4-8a initially routed folder mutations through that direct rebuild while retaining the file-only
+Swift patch temporarily, avoiding binary insertion into a Rust-ordered folder table with Swift's
+non-equivalent canonical-comparison ordering. P4-8b below retires the remaining file patch.
+
+### P4-8b amendment — retire applied-event shard patching
+
+After the existing lifetime, generation, dirty-state, full-resync, and topology checks accept a
+canonical applied-index event, both file and folder mutations now publish one complete ordered Rust
+generation through `rebuildRootCatalogShardAuthoritatively`. Event payload records remain available
+to other subscribers but no longer reconstruct the search shard. Multi-record batches therefore do
+not produce `patchThresholdExceeded`, and inconsistent patch payload records do not produce
+`patchApplicationBackstop`; the current Rust authority wins.
+
+The P4-8a mutation/batch fences and retention behavior remain unchanged. A retained-generation cap
+still records `retentionBoundary`, withdraws the stale publication, marks the delta state dirty, and
+recovers through the next authoritative event/read after leases drain. Every successful production
+shard build is now classified as authoritative. The externally visible `patchCount`,
+`maxPatchLogicalMutationCount`, `patchThresholdExceeded`, and `patchApplicationBackstop` names remain
+compatibility tombstones: production reports zero/absent counts without removing MCP fields or enum
+spellings. The pure Swift patch builder remains only as the frozen, opt-in historical P4-1 benchmark
+reference, with a source-audit test forbidding every qualified or unqualified product reference.
+An absent Rust generation is synthesized as an empty shard only for a never-published generation-zero
+root with no delta state. Event-driven rebuilds, including generation-zero full-resync sentinels, fail
+closed by withdrawing the publication and marking the delta state dirty rather than erasing a populated
+catalog.
+
+This deliberately trades the old single-record mutation algorithm for one affected-root `O(files +
+folders)` page/materialization pass per accepted event. The retired patch already performed a full
+Rust page-through and rebuilt Swift id dictionaries before patching, so P4-8b removes that duplicate
+reconstruction rather than adding a second whole-root fetch. No new cache or coalescing authority is
+introduced without measurement.
+
+### P4-8c amendment — retire full-snapshot fallback and DEBUG shadow
+
+The product fallback no longer copies the Rust-authority tables into UUID-keyed Swift dictionaries
+and invokes `buildAuthoritativeCatalogComponents`, and the DEBUG path no longer performs a second
+whole-root read, Swift sort/materialization, JSON encoding, and byte comparison after a successful
+Rust-backed composition. Both pure Swift full-snapshot and patch builders are frozen historical P4-1
+benchmark arms; a production-source audit forbids callers outside their declarations.
+
+When a normal reusable/publishable shard batch cannot be prepared, the best-effort fallback now
+captures a per-root lifetime/generation/mutation/delta/publication fence, reads each complete ordered
+Rust snapshot through `WorkspaceInventoryScopeAuthority.readOrderedSnapshot`, materializes temporary
+root shards without re-sorting, and revalidates the entire batch after all suspending reads. A root
+whose fence changes or whose authority read fails contributes no file/folder rows, while the requested
+root metadata remains present as it did under the predecessor fallback. The explicit no-published-
+generation outcome synthesizes an empty root only at generation zero with no delta state.
+
+Temporary fallback shards are presentation values only: they are never registered, published,
+leased, cached, or counted as shard builds/compositions. The fallback therefore remains uncached; the
+next stable query can publish the ordinary authoritative shard batch. Multi-root output uses the
+existing pure merge algorithm without routing through publication diagnostics. Deterministic tests
+cover an active mutation that forces fallback, a root-A epoch change during root-B paging, omission of
+only root A's rows, cancellation omitting the current root and stopping later reads, zero
+publication/composition counters, and subsequent stable publication.
+
+`shadowComparisonCount`, `shadowMismatchCount`, `lastShadowByteCount`, and
+`.shadowValidationMismatch` remain zero/absent compatibility tombstones. D-5's proposed independent
+Rust-internal self-check is still unimplemented; P4-8c does not claim that replacement. The
+pending-root Swift builder and multi-root presentation merge remain live P4-8 work. This amendment
+also does not flip `appliedIndexEvents()` to the armed Rust republication stream; §12's
+generation/filtering/slice-rebase blockers and Phase 5 remain open.
+
 ## 4. Generation-lease / handle-lifecycle contract (§7.5's naming requirement)
 
 Four layers map ARC retention onto explicit Rust-side handles:
@@ -331,7 +432,7 @@ carry:
 | `publishedShardCount` | scope-wide | verbatim |
 | `totalBuildCount` / `totalBackstopCount` | scope-wide | verbatim |
 | `singleShardCompositionReuseCount` / `genericMergeElementVisitCount` | scope-wide | verbatim |
-| `shadowComparisonCount` / `shadowMismatchCount` / `lastShadowByteCount` | scope-wide | verbatim through P4-5; repurposed to a Rust-internal self-check per D-5 post-cutover, field names kept |
+| `shadowComparisonCount` / `shadowMismatchCount` / `lastShadowByteCount` | scope-wide | P4-8c retires the Swift full-rebuild shadow and keeps zero-valued compatibility tombstones; a future Rust-internal D-5 self-check is not implemented |
 | per-root `rootID` / `lifetimeID` | per-root | verbatim (`RootId` / `RootLifetimeId`) |
 | per-root `publishedTopologyGeneration` | per-root | verbatim (nil when the cap backstop has fired, §7.2 layer 2) |
 | per-root `liveTopologyGenerations` / `retainedTopologyGenerations` | per-root | verbatim |
@@ -355,7 +456,7 @@ because the diagnostics map is meaningless without the enum it counts):**
 | `retentionBoundary` | Preserved verbatim (§4 layer 2) |
 | `patchThresholdExceeded` | Expected to become rare (D-1, `maxRootCatalogShardPatchLogicalMutationCount` 1 -> N) |
 | `patchApplicationBackstop` | Preserved -- patch computed but unsafe to apply |
-| `shadowValidationMismatch` | Repurposed, not deleted -- Rust-internal self-check post-cutover (D-5) |
+| `shadowValidationMismatch` | Spelling retained but not produced after P4-8c; a future Rust-internal D-5 self-check is not implemented |
 
 ## 6. `inventoryOpenProjectedShard` (B2) and `inventoryQuery` (the suggestion-service seam)
 

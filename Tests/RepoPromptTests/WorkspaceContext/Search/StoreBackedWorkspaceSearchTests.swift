@@ -206,7 +206,7 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
                 )
             }
 
-            let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+            let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: visibleRoot.path)
             let worktreeRecord = try await store.loadRoot(path: worktreeRoot.path, kind: .sessionWorktree)
             let scope = WorkspaceLookupRootScope.sessionBoundWorkspace(
@@ -252,12 +252,15 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(phases.topLevel.residualOrchestrationMicroseconds, 0)
             XCTAssertGreaterThanOrEqual(phases.fileActor.residualMicroseconds, 0)
 
-            XCTAssertEqual(phases.catalog.sortInvocationCount, 1)
-            XCTAssertEqual(phases.catalog.sortFileInputCount, 5)
-            XCTAssertEqual(phases.catalog.sortFolderInputCount, 2)
-            XCTAssertGreaterThanOrEqual(phases.catalog.fileSortMicroseconds, 0)
-            XCTAssertGreaterThanOrEqual(phases.catalog.folderSortMicroseconds, 0)
-            XCTAssertGreaterThanOrEqual(phases.catalog.sortResidualMicroseconds, 0)
+            // P4-8a: the normal per-root catalog shard preserves the Rust generation's published
+            // order. Swift still filters visibility and materializes presentation entries, but no
+            // longer re-sorts the five files/two folders it just paged back from the authority.
+            XCTAssertEqual(phases.catalog.sortInvocationCount, 0)
+            XCTAssertEqual(phases.catalog.sortFileInputCount, 0)
+            XCTAssertEqual(phases.catalog.sortFolderInputCount, 0)
+            XCTAssertEqual(phases.catalog.fileSortMicroseconds, 0)
+            XCTAssertEqual(phases.catalog.folderSortMicroseconds, 0)
+            XCTAssertEqual(phases.catalog.sortResidualMicroseconds, 0)
             let nestedSortChildren = phases.catalog.fileSortMicroseconds
                 + phases.catalog.folderSortMicroseconds
                 + phases.catalog.sortResidualMicroseconds
@@ -334,9 +337,9 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             XCTAssertEqual(warm.paths, [expected.path])
             var warmDiagnostics = await store.storeWorkDiagnosticsSnapshot()
             XCTAssertEqual(warmDiagnostics.catalogRebuild.rebuildCount, 1)
-            XCTAssertEqual(warmDiagnostics.catalogRebuild.sortInvocationCount, 1)
-            XCTAssertEqual(warmDiagnostics.catalogRebuild.sortFileInputCount, 5)
-            XCTAssertEqual(warmDiagnostics.catalogRebuild.sortFolderInputCount, 2)
+            XCTAssertEqual(warmDiagnostics.catalogRebuild.sortInvocationCount, 0)
+            XCTAssertEqual(warmDiagnostics.catalogRebuild.sortFileInputCount, 0)
+            XCTAssertEqual(warmDiagnostics.catalogRebuild.sortFolderInputCount, 0)
             XCTAssertLessThanOrEqual(
                 abs(warmDiagnostics.catalogRebuild.sortReconciliationDeltaMicroseconds),
                 1000
@@ -408,7 +411,7 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             }
             try write("absolute", to: probeContainer.appendingPathComponent("Absolute.swift"))
 
-            let probeStore = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+            let probeStore = WorkspaceFileContextStore()
             let parentRecord = try await probeStore.loadRoot(path: probeContainer.path)
             let nestedRecord = try await probeStore.loadRoot(path: nestedRoot.path, kind: .sessionWorktree)
             let probeScope = WorkspaceLookupRootScope.sessionBoundWorkspace(

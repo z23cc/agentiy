@@ -3,6 +3,18 @@ import XCTest
 
 #if DEBUG
     final class WorkspaceCatalogShardTests: XCTestCase {
+        private actor FallbackReadRecorder {
+            private var rootIDs: [UUID] = []
+
+            func record(_ rootID: UUID) {
+                rootIDs.append(rootID)
+            }
+
+            func snapshot() -> [UUID] {
+                rootIDs
+            }
+        }
+
         private var stores: [WorkspaceFileContextStore] = []
         private var temporaryRoots: [URL] = []
 
@@ -19,13 +31,13 @@ import XCTest
             try await super.tearDown()
         }
 
-        func testDefaultColdCompositionReusesSingleShardAndSkipsShadowValidation() async throws {
+        func testDefaultColdCompositionReusesSingleShardAndLeavesShadowDiagnosticsAsTombstones() async throws {
             let rootAURL = try makeTemporaryRoot(name: "ColdCompositionA")
             let rootBURL = try makeTemporaryRoot(name: "ColdCompositionB")
             try write("a", to: rootAURL.appendingPathComponent("A.swift"))
             try write("b", to: rootBURL.appendingPathComponent("B.swift"))
 
-            let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+            let store = WorkspaceFileContextStore()
             stores.append(store)
             let rootA = try await loadStoppedRoot(in: store, path: rootAURL.path)
             let singleRootSnapshot = await store.searchCatalogSnapshot(
@@ -44,6 +56,7 @@ import XCTest
             XCTAssertEqual(diagnostics.singleShardCompositionReuseCount, 1)
             XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 0)
             XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
+            XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
             XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
 
             let rootB = try await loadStoppedRoot(in: store, path: rootBURL.path)
@@ -56,7 +69,6 @@ import XCTest
             XCTAssertEqual(multiRootSnapshot.files.map(\.standardizedRelativePath), ["A.swift", "B.swift"])
             XCTAssertEqual(multiRootSnapshot.files.map(\.id), multiRootSnapshot.entries.map(\.id))
             diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            let recordsOnlyDiagnostics = diagnostics
             rootADiagnostics = try diagnosticsForRoot(rootID: rootA.id, in: diagnostics)
             let rootBRecordsOnlyDiagnostics = try diagnosticsForRoot(rootID: rootB.id, in: diagnostics)
             XCTAssertEqual(rootADiagnostics.authoritativeRebuildCount, 1)
@@ -81,7 +93,306 @@ import XCTest
             // describes are fully pinned above, unaffected by this removal.
         }
 
-        func testTopologyChurnRebuildsOnlyAffectedRootShardsAndShadowMatchesAuthoritativeBytes() async throws {
+        func testEmptyRootPublishesAndReusesRustDerivedShard() async throws {
+            let rootURL = try makeTemporaryRoot(name: "EmptyRustDerivedShard")
+            let store = makeStore()
+            let root = try await loadStoppedRoot(in: store, path: rootURL.path)
+
+            let first = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            XCTAssertTrue(first.files.isEmpty)
+            XCTAssertTrue(first.entries.isEmpty)
+            XCTAssertEqual(first.diagnostics.rootCount, 1)
+            XCTAssertEqual(first.diagnostics.fileCount, 0)
+            XCTAssertEqual(first.diagnostics.folderCount, 1, "the synthetic root marker remains visible")
+
+            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            var rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(rootDiagnostics.buildCount, 1)
+            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 1)
+            XCTAssertEqual(rootDiagnostics.patchCount, 0)
+            XCTAssertNotNil(rootDiagnostics.publishedTopologyGeneration)
+
+            let second = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            XCTAssertEqual(second, first)
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(rootDiagnostics.buildCount, 1, "the empty shard must be cached rather than rebuilt")
+            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 1)
+        }
+
+        func testAcceptedEventWithoutRustGenerationWithdrawsShardInsteadOfPublishingEmpty() async throws {
+            let rootURL = try makeTemporaryRoot(name: "MissingRustGeneration")
+            try write("seed", to: rootURL.appendingPathComponent("Seed.swift"))
+            let store = makeStore()
+            let root = try await loadStoppedRoot(in: store, path: rootURL.path)
+
+            let retainedInitial = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            XCTAssertEqual(retainedInitial.files.map(\.standardizedRelativePath), ["Seed.swift"])
+            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            let initialRootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            let nextGeneration = try XCTUnwrap(initialRootDiagnostics.lastAppliedIndexGeneration) + 1
+
+            try await store.reopenInventoryScopeRootWithoutPublishedGenerationForTesting(rootID: root.id)
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
+                rootID: root.id,
+                rootPath: root.standardizedFullPath,
+                generation: nextGeneration
+            ))
+
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            let failedRootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(diagnostics.publishedShardCount, 0)
+            XCTAssertNil(failedRootDiagnostics.publishedTopologyGeneration)
+            XCTAssertEqual(failedRootDiagnostics.buildCount, initialRootDiagnostics.buildCount)
+            XCTAssertEqual(
+                failedRootDiagnostics.authoritativeRebuildCount,
+                initialRootDiagnostics.authoritativeRebuildCount
+            )
+            XCTAssertEqual(failedRootDiagnostics.lastAppliedIndexGeneration, nextGeneration)
+            XCTAssertTrue(failedRootDiagnostics.deltaStateDirty)
+            XCTAssertEqual(
+                retainedInitial.files.map(\.standardizedRelativePath),
+                ["Seed.swift"],
+                "a retained generation remains immutable even though the failed publication is withdrawn"
+            )
+
+            let uncachedFailure = await store.searchCatalogSnapshot(rootScope: .allLoaded)
+            XCTAssertEqual(uncachedFailure.roots.map(\.id), [root.id])
+            XCTAssertTrue(uncachedFailure.files.isEmpty)
+            XCTAssertTrue(uncachedFailure.entries.isEmpty)
+            XCTAssertEqual(uncachedFailure.diagnostics.rootCount, 1)
+            XCTAssertEqual(uncachedFailure.diagnostics.folderCount, 0)
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            let afterFallbackDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(diagnostics.publishedShardCount, 0)
+            XCTAssertEqual(afterFallbackDiagnostics.buildCount, initialRootDiagnostics.buildCount)
+            XCTAssertTrue(afterFallbackDiagnostics.deltaStateDirty)
+        }
+
+        func testInFlightInventoryMutationCannotPublishDirectShardUntilFenceCloses() async throws {
+            let rootURL = try makeTemporaryRoot(name: "InventoryMutationPublicationFence")
+            try write("seed", to: rootURL.appendingPathComponent("Seed.swift"))
+            let store = makeStore()
+            let root = try await loadStoppedRoot(in: store, path: rootURL.path)
+
+            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            var rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(rootDiagnostics.buildCount, 1)
+            let initialSingleShardCompositionReuseCount = diagnostics.singleShardCompositionReuseCount
+            let initialGenericMergeElementVisitCount = diagnostics.genericMergeElementVisitCount
+
+            await store.advanceRootCatalogTopologyGenerationForTesting(rootID: root.id)
+            await store.beginInventoryCatalogMutationPublicationFenceForTesting(rootID: root.id)
+            let bestEffortWhileInFlight = await store.searchCatalogSnapshot(rootScope: .allLoaded)
+            await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: root.id)
+
+            XCTAssertEqual(bestEffortWhileInFlight.files.map(\.standardizedRelativePath), ["Seed.swift"])
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(rootDiagnostics.buildCount, 1, "an in-flight Rust mutation must not publish a shard")
+            XCTAssertEqual(diagnostics.singleShardCompositionReuseCount, initialSingleShardCompositionReuseCount)
+            XCTAssertEqual(diagnostics.genericMergeElementVisitCount, initialGenericMergeElementVisitCount)
+            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspacePlusGitData)
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(rootDiagnostics.buildCount, 2)
+            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 2)
+            XCTAssertEqual(
+                diagnostics.singleShardCompositionReuseCount,
+                initialSingleShardCompositionReuseCount + 1,
+                "the uncached fallback must not prevent the post-fence publication"
+            )
+            XCTAssertEqual(diagnostics.genericMergeElementVisitCount, initialGenericMergeElementVisitCount)
+        }
+
+        func testCompletedMutationDuringSuspendedReadInvalidatesEventRebuildFence() async throws {
+            let rootURL = try makeTemporaryRoot(name: "InventoryMutationEpochFence")
+            try write("seed", to: rootURL.appendingPathComponent("Seed.swift"))
+            let store = makeStore()
+            let root = try await loadStoppedRoot(in: store, path: rootURL.path)
+
+            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            let initialRootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            let nextGeneration = try XCTUnwrap(initialRootDiagnostics.lastAppliedIndexGeneration) + 1
+            let rootID = root.id
+            await store.setRootCatalogShardPostAuthorityReadHandlerForTesting { readRootID in
+                guard readRootID == rootID else { return }
+                await store.beginInventoryCatalogMutationPublicationFenceForTesting(rootID: rootID)
+                await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: rootID)
+            }
+            addTeardownBlock {
+                await store.setRootCatalogShardPostAuthorityReadHandlerForTesting(nil)
+            }
+
+            let event = WorkspaceAppliedIndexBatchEvent(
+                rootID: root.id,
+                rootPath: root.standardizedFullPath,
+                generation: nextGeneration
+            )
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(event)
+            await store.setRootCatalogShardPostAuthorityReadHandlerForTesting(nil)
+
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            var fencedRootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(fencedRootDiagnostics.buildCount, initialRootDiagnostics.buildCount)
+            XCTAssertEqual(
+                fencedRootDiagnostics.lastAppliedIndexGeneration,
+                initialRootDiagnostics.lastAppliedIndexGeneration,
+                "matching depth after a completed mutation must not hide the changed epoch"
+            )
+            XCTAssertFalse(fencedRootDiagnostics.deltaStateDirty)
+
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(event)
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            fencedRootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(fencedRootDiagnostics.buildCount, initialRootDiagnostics.buildCount + 1)
+            XCTAssertEqual(fencedRootDiagnostics.authoritativeRebuildCount, initialRootDiagnostics.authoritativeRebuildCount + 1)
+            XCTAssertEqual(fencedRootDiagnostics.lastAppliedIndexGeneration, nextGeneration)
+            XCTAssertFalse(fencedRootDiagnostics.deltaStateDirty)
+        }
+
+        func testWholeBatchRevalidationRejectsEarlierRootChangeDuringLaterRootRead() async throws {
+            let rootAURL = try makeTemporaryRoot(name: "BatchFenceA")
+            let rootBURL = try makeTemporaryRoot(name: "BatchFenceB")
+            try write("a", to: rootAURL.appendingPathComponent("A.swift"))
+            try write("b", to: rootBURL.appendingPathComponent("B.swift"))
+            let store = makeStore()
+            let rootA = try await loadStoppedRoot(in: store, path: rootAURL.path)
+            let rootB = try await loadStoppedRoot(in: store, path: rootBURL.path)
+            let rootAID = rootA.id
+            let rootBID = rootB.id
+            await store.setRootCatalogShardPostAuthorityReadHandlerForTesting { readRootID in
+                guard readRootID == rootBID else { return }
+                await store.beginInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+                await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+            }
+            addTeardownBlock {
+                await store.setRootCatalogShardPostAuthorityReadHandlerForTesting(nil)
+            }
+
+            let fallback = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            await store.setRootCatalogShardPostAuthorityReadHandlerForTesting(nil)
+            XCTAssertEqual(fallback.files.map(\.standardizedRelativePath), ["A.swift", "B.swift"])
+            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.publishedShardCount, 0, "the replacement batch must publish atomically")
+            XCTAssertEqual(buildCount(rootID: rootA.id, in: diagnostics), 0)
+            XCTAssertEqual(buildCount(rootID: rootB.id, in: diagnostics), 0)
+
+            let published = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            XCTAssertEqual(published.files.map(\.standardizedRelativePath), ["A.swift", "B.swift"])
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.publishedShardCount, 2)
+            XCTAssertEqual(buildCount(rootID: rootA.id, in: diagnostics), 1)
+            XCTAssertEqual(buildCount(rootID: rootB.id, in: diagnostics), 1)
+        }
+
+        func testUncachedFallbackRevalidatesEarlierRootDuringLaterRootRead() async throws {
+            let rootAURL = try makeTemporaryRoot(name: "FallbackBatchFenceA")
+            let rootBURL = try makeTemporaryRoot(name: "FallbackBatchFenceB")
+            try write("a", to: rootAURL.appendingPathComponent("A.swift"))
+            try write("b", to: rootBURL.appendingPathComponent("B.swift"))
+            let store = makeStore()
+            let rootA = try await loadStoppedRoot(in: store, path: rootAURL.path)
+            let rootB = try await loadStoppedRoot(in: store, path: rootBURL.path)
+            let rootAID = rootA.id
+            let rootBID = rootB.id
+
+            await store.beginInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+            await store.setRootCatalogShardFallbackPostAuthorityReadHandlerForTesting { readRootID in
+                guard readRootID == rootBID else { return }
+                await store.beginInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+                await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+            }
+            addTeardownBlock {
+                await store.setRootCatalogShardFallbackPostAuthorityReadHandlerForTesting(nil)
+                await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+            }
+
+            let fallback = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            await store.setRootCatalogShardFallbackPostAuthorityReadHandlerForTesting(nil)
+            await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+
+            XCTAssertEqual(fallback.roots.map(\.id), [rootA.id, rootB.id])
+            XCTAssertEqual(fallback.files.map(\.standardizedRelativePath), ["B.swift"])
+            XCTAssertEqual(fallback.diagnostics.rootCount, 2)
+            XCTAssertEqual(fallback.diagnostics.folderCount, 1)
+            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.publishedShardCount, 0)
+            XCTAssertEqual(buildCount(rootID: rootA.id, in: diagnostics), 0)
+            XCTAssertEqual(buildCount(rootID: rootB.id, in: diagnostics), 0)
+            XCTAssertEqual(diagnostics.singleShardCompositionReuseCount, 0)
+            XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 0)
+
+            let published = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            XCTAssertEqual(published.files.map(\.standardizedRelativePath), ["A.swift", "B.swift"])
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.publishedShardCount, 2)
+            XCTAssertEqual(buildCount(rootID: rootA.id, in: diagnostics), 1)
+            XCTAssertEqual(buildCount(rootID: rootB.id, in: diagnostics), 1)
+            XCTAssertEqual(diagnostics.singleShardCompositionReuseCount, 0)
+            XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 2)
+        }
+
+        func testUncachedFallbackCancellationOmitsCurrentAndUnreadRootsWithoutSideEffects() async throws {
+            let rootAURL = try makeTemporaryRoot(name: "FallbackCancellationA")
+            let rootBURL = try makeTemporaryRoot(name: "FallbackCancellationB")
+            let rootCURL = try makeTemporaryRoot(name: "FallbackCancellationC")
+            try write("a", to: rootAURL.appendingPathComponent("A.swift"))
+            try write("b", to: rootBURL.appendingPathComponent("B.swift"))
+            try write("c", to: rootCURL.appendingPathComponent("C.swift"))
+            let store = makeStore()
+            let rootA = try await loadStoppedRoot(in: store, path: rootAURL.path)
+            let rootB = try await loadStoppedRoot(in: store, path: rootBURL.path)
+            let rootC = try await loadStoppedRoot(in: store, path: rootCURL.path)
+            let recorder = FallbackReadRecorder()
+            let rootAID = rootA.id
+            let rootBID = rootB.id
+
+            await store.beginInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+            await store.setRootCatalogShardFallbackPostAuthorityReadHandlerForTesting { readRootID in
+                await recorder.record(readRootID)
+                guard readRootID == rootBID else { return }
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            addTeardownBlock {
+                await store.setRootCatalogShardFallbackPostAuthorityReadHandlerForTesting(nil)
+                await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+            }
+
+            let fallback = await Task {
+                await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            }.value
+            await store.setRootCatalogShardFallbackPostAuthorityReadHandlerForTesting(nil)
+            await store.finishInventoryCatalogMutationPublicationFenceForTesting(rootID: rootAID)
+
+            XCTAssertEqual(fallback.roots.map(\.id), [rootA.id, rootB.id, rootC.id])
+            XCTAssertEqual(fallback.files.map(\.standardizedRelativePath), ["A.swift"])
+            XCTAssertEqual(fallback.diagnostics.rootCount, 3)
+            XCTAssertEqual(fallback.diagnostics.folderCount, 1)
+            let readRootIDs = await recorder.snapshot()
+            XCTAssertEqual(readRootIDs, [rootA.id, rootB.id], "root C must not be read after cancellation")
+            var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.publishedShardCount, 0)
+            XCTAssertEqual(buildCount(rootID: rootA.id, in: diagnostics), 0)
+            XCTAssertEqual(buildCount(rootID: rootB.id, in: diagnostics), 0)
+            XCTAssertEqual(buildCount(rootID: rootC.id, in: diagnostics), 0)
+            XCTAssertEqual(diagnostics.singleShardCompositionReuseCount, 0)
+            XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 0)
+
+            let published = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            XCTAssertEqual(published.files.map(\.standardizedRelativePath), ["A.swift", "B.swift", "C.swift"])
+            diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.publishedShardCount, 3)
+            XCTAssertEqual(buildCount(rootID: rootA.id, in: diagnostics), 1)
+            XCTAssertEqual(buildCount(rootID: rootB.id, in: diagnostics), 1)
+            XCTAssertEqual(buildCount(rootID: rootC.id, in: diagnostics), 1)
+            XCTAssertEqual(diagnostics.singleShardCompositionReuseCount, 0)
+            XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 3)
+        }
+
+        func testTopologyChurnRebuildsOnlyAffectedRootShardsAndKeepsShadowDiagnosticsZero() async throws {
             let visibleAURL = try makeTemporaryRoot(name: "ShardVisibleA")
             let visibleBURL = try makeTemporaryRoot(name: "ShardVisibleB")
             let gitDataURL = try makeTemporaryRoot(name: "ShardGitData")
@@ -117,9 +428,9 @@ import XCTest
             }
 
             var diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
-            XCTAssertEqual(diagnostics.shadowComparisonCount, 4)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
-            XCTAssertGreaterThan(diagnostics.lastShadowByteCount, 0)
+            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
             XCTAssertEqual(diagnostics.publishedShardCount, 5)
             XCTAssertEqual(buildCount(rootID: visibleA.id, in: diagnostics), 1)
             XCTAssertEqual(buildCount(rootID: visibleB.id, in: diagnostics), 1)
@@ -161,8 +472,9 @@ import XCTest
             XCTAssertEqual(buildCount(rootID: gitData.id, in: diagnostics), 1)
             XCTAssertEqual(buildCount(rootID: supplemental.id, in: diagnostics), 1)
             XCTAssertEqual(buildCount(rootID: worktree.id, in: diagnostics), 1)
-            XCTAssertEqual(diagnostics.shadowComparisonCount, 8)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
+            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
         }
 
         func testRetainedSnapshotsKeepOldGenerationsAliveAndBackstopRecoversAfterRelease() async throws {
@@ -204,8 +516,9 @@ import XCTest
             XCTAssertEqual(rootDiagnostics.buildCount, cap)
             XCTAssertEqual(rootDiagnostics.backstopCount, 1)
             XCTAssertEqual(diagnostics.totalBackstopCount, 1)
-            XCTAssertEqual(diagnostics.shadowComparisonCount, cap)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
+            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
 
             retainedSnapshots.removeAll(keepingCapacity: false)
             let recoveredSnapshot = await store.searchCatalogSnapshot(
@@ -220,19 +533,13 @@ import XCTest
             XCTAssertEqual(rootDiagnostics.liveTopologyGenerations.count, 1)
             XCTAssertTrue(rootDiagnostics.retainedTopologyGenerations.isEmpty)
             XCTAssertEqual(rootDiagnostics.buildCount, cap + 1)
-            // P4-6b item 1 (`docs/architecture/rust-inventory-scope-v1.md` §12.3): this literal was
-            // temporarily raised 2 -> 9 while `buildRootCatalogShardPatch`'s upserted-record
-            // equality guard silently declined every top-level-file patch (root-marker
-            // `parentFolderID` convention mismatch between `file(rootID:relativePath:)`'s raw fact
-            // read and the Rust-round-tripped re-fetch), forcing an extra authoritative rebuild --
-            // and therefore an extra path-index build -- per declined patch. Restored to the
-            // original pre-cutover value now that the patch path is fixed; not a legitimate
-            // paging-driven rebuild-count increase after all.
-            // P4-7b b3: 0, not 2 -- path-index construction is retired.
+            // P4-7b b3: path-index construction is retired; P4-8b's authoritative-only shard
+            // publication does not reintroduce it even across retention recovery.
             XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(rootDiagnostics.backstopCount, 1)
-            XCTAssertEqual(diagnostics.shadowComparisonCount, cap + 1)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
+            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
 
             // P4-7c c3: `rootPathIndexes` is deleted, so this re-fetch is retained only for its
             // side effect (settling any post-recovery rebuild work the diagnostics below inspect).
@@ -245,7 +552,7 @@ import XCTest
             XCTAssertEqual(indexedDiagnostics.pathIndexBuildCount, rootDiagnostics.pathIndexBuildCount)
         }
 
-        func testContiguousCanonicalBatchesPatchSingleFileAndFolderMutations() async throws {
+        func testContiguousCanonicalBatchesRebuildFilesAndFoldersFromRustOrder() async throws {
             assertExplicitBinaryFileOrderContract()
 
             let containerURL = try makeTemporaryRoot(name: "ShardDeltaPatch")
@@ -314,7 +621,6 @@ import XCTest
             let initialDiagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             let initialRootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: initialDiagnostics)
             let initialParentDiagnostics = try diagnosticsForRoot(rootID: parentRoot.id, in: initialDiagnostics)
-            let initialShadowComparisonCount = initialDiagnostics.shadowComparisonCount
             let lifetimeID = try await store.rootLifetimeIDForTesting(rootID: root.id)
             XCTAssertEqual(initialRootDiagnostics.lifetimeID, lifetimeID)
             XCTAssertEqual(initialRootDiagnostics.authoritativeRebuildCount, 1)
@@ -330,7 +636,7 @@ import XCTest
                 "G-Middle.swift",
                 "🧭-After.swift"
             ]
-            let expectedNestedRelativeOrdersAfterPatch = [
+            let expectedNestedRelativeOrdersAfterRebuild = [
                 [
                     "0-Before.swift",
                     "A.swift",
@@ -389,28 +695,26 @@ import XCTest
                     snapshot.files
                         .filter { $0.rootID == root.id }
                         .map(\.standardizedRelativePath),
-                    expectedNestedRelativeOrdersAfterPatch[index]
+                    expectedNestedRelativeOrdersAfterRebuild[index]
                 )
 
                 if index == 0 {
-                    let afterFirstPatch = try await diagnosticsForRoot(
+                    let afterFirstRebuild = try await diagnosticsForRoot(
                         rootID: root.id,
                         in: store.storeWorkDiagnosticsSnapshot().rootCatalogShards
                     )
-                    XCTAssertEqual(afterFirstPatch.patchCount, initialRootDiagnostics.patchCount + 1)
-                    // P4-7b b3: unchanged (both 0), not `+1` -- overlay path-index construction is
-                    // retired along with `makeRootPathSearchIndex`.
+                    XCTAssertEqual(afterFirstRebuild.patchCount, 0)
                     XCTAssertEqual(
-                        afterFirstPatch.overlayPathIndexBuildCount,
+                        afterFirstRebuild.overlayPathIndexBuildCount,
                         initialRootDiagnostics.overlayPathIndexBuildCount
                     )
                     XCTAssertEqual(
-                        afterFirstPatch.authoritativeRebuildCount,
-                        initialRootDiagnostics.authoritativeRebuildCount
+                        afterFirstRebuild.authoritativeRebuildCount,
+                        initialRootDiagnostics.authoritativeRebuildCount + 1
                     )
                 }
             }
-            let expectedPatchedFullPaths = (
+            let expectedRebuiltFullPaths = (
                 [absolutePath]
                     + expectedDiskRelativePaths.flatMap { relativePath in
                         Array(repeating: nestedPrefix + relativePath, count: 2)
@@ -419,13 +723,13 @@ import XCTest
             ).sorted {
                 $0.utf8.lexicographicallyPrecedes($1.utf8)
             }
-            assertCatalogFileOrderAndAlignment(snapshot, expectedFullPaths: expectedPatchedFullPaths)
+            assertCatalogFileOrderAndAlignment(snapshot, expectedFullPaths: expectedRebuiltFullPaths)
 
-            let patchedPrefixService = WorkspaceSearchService()
-            await patchedPrefixService.prepareIndex(from: store, rootScope: .visibleWorkspace)
-            let patchedBlankPrefix = await patchedPrefixService.search("", limit: 5)
+            let rebuiltPrefixService = WorkspaceSearchService()
+            await rebuiltPrefixService.prepareIndex(from: store, rootScope: .visibleWorkspace)
+            let rebuiltBlankPrefix = await rebuiltPrefixService.search("", limit: 5)
             XCTAssertEqual(
-                patchedBlankPrefix.results.map(\.standardizedFullPath),
+                rebuiltBlankPrefix.results.map(\.standardizedFullPath),
                 Array(snapshot.files.prefix(5).map(\.standardizedFullPath))
             )
 
@@ -469,9 +773,11 @@ import XCTest
 
             let diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             let rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
-            XCTAssertEqual(diagnostics.maxPatchLogicalMutationCount, 1)
-            XCTAssertEqual(rootDiagnostics.patchCount, 8)
-            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 1)
+            // P4-8b: patch observability remains as a compatibility tombstone, while all eight
+            // canonical mutations plus the cold build publish authoritative Rust-derived shards.
+            XCTAssertEqual(diagnostics.maxPatchLogicalMutationCount, 0)
+            XCTAssertEqual(rootDiagnostics.patchCount, 0)
+            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 9)
             XCTAssertEqual(rootDiagnostics.buildCount, 9)
             // P4-7b b3: both 0 -- path-index construction (initial and overlay) is retired.
             XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 0)
@@ -480,8 +786,9 @@ import XCTest
             XCTAssertFalse(rootDiagnostics.deltaStateDirty)
             assertFallbackInvariant(rootDiagnostics, expected: [:])
             XCTAssertNil(rootDiagnostics.fallbackReasonCounts[.shadowValidationMismatch])
-            XCTAssertGreaterThan(diagnostics.shadowComparisonCount, initialShadowComparisonCount)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
+            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
 
             // P4-7b b3 removal (design doc §4.4): this sub-scenario tested the shard-cache
             // "promotion" path -- a `.recordsOnly` shard upgraded to `.recordsAndPathIndexes` by a
@@ -496,7 +803,7 @@ import XCTest
             //
             // The parity `.recordsOnly` assertions this scenario opened with (a patch producing an
             // updated `.recordsOnly` snapshot with `rootPathIndexes.isEmpty`) remain covered above
-            // by `initialPrefixService`/`patchedPrefixService`'s empty-query parity checks, which
+            // by `initialPrefixService`/`rebuiltPrefixService`'s empty-query parity checks, which
             // now exercise `WorkspaceSearchService`'s Rust-backed path unconditionally.
         }
 
@@ -515,29 +822,29 @@ import XCTest
                 deltas: [],
                 requiresFullResync: true
             )
-            await store.applyAppliedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
                 rootID: root.id,
                 rootPath: root.standardizedFullPath,
                 generation: 3
             ))
-            await store.applyAppliedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
                 rootID: root.id,
                 rootPath: root.standardizedFullPath,
                 generation: UInt64.max
             ))
-            await store.applyAppliedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
                 rootID: root.id,
                 rootPath: root.standardizedFullPath,
                 generation: 0
             ))
-            await store.applyAppliedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
                 rootID: root.id,
                 rootPath: root.standardizedFullPath,
                 generation: 1,
                 modifiedFileIDs: [UUID()]
             ))
             await store.advanceRootCatalogTopologyGenerationForTesting(rootID: root.id)
-            await store.applyAppliedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
+            await store.applyPublishedIndexEventToRootCatalogShardForTesting(WorkspaceAppliedIndexBatchEvent(
                 rootID: root.id,
                 rootPath: root.standardizedFullPath,
                 generation: 2
@@ -553,14 +860,13 @@ import XCTest
             assertFallbackInvariant(rootDiagnostics, expected: [
                 .generationGap: 3,
                 .fullResync: 1,
-                .unsafeOrAmbiguousBatch: 1,
-                .patchApplicationBackstop: 1
+                .unsafeOrAmbiguousBatch: 1
             ])
             XCTAssertEqual(rootDiagnostics.lastAppliedIndexGeneration, 2)
             XCTAssertFalse(rootDiagnostics.deltaStateDirty)
         }
 
-        func testPatchThresholdRebuildsAffectedRootAndReusesUnaffectedRoot() async throws {
+        func testMultiFileBatchRebuildsAffectedRootAndReusesUnaffectedRoot() async throws {
             let rootAURL = try makeTemporaryRoot(name: "ShardThresholdA")
             let rootBURL = try makeTemporaryRoot(name: "ShardThresholdB")
             try write("a", to: rootAURL.appendingPathComponent("SeedA.swift"))
@@ -589,7 +895,9 @@ import XCTest
             // P4-7b b3: 0, not 2 -- path-index construction is retired.
             XCTAssertEqual(rootADiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(rootADiagnostics.overlayPathIndexBuildCount, 0)
-            assertFallbackInvariant(rootADiagnostics, expected: [.patchThresholdExceeded: 1])
+            assertFallbackInvariant(rootADiagnostics, expected: [:])
+            XCTAssertNil(rootADiagnostics.fallbackReasonCounts[.patchThresholdExceeded])
+            XCTAssertNil(rootADiagnostics.fallbackReasonCounts[.patchApplicationBackstop])
             XCTAssertEqual(rootBDiagnostics.buildCount, 1)
             XCTAssertEqual(rootBDiagnostics.authoritativeRebuildCount, 1)
             XCTAssertEqual(rootBDiagnostics.patchCount, 0)
@@ -643,10 +951,10 @@ import XCTest
             rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
             XCTAssertFalse(rootDiagnostics.deltaStateDirty)
             assertFallbackInvariant(rootDiagnostics, expected: [.retentionBoundary: 2])
-            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 2)
+            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, cap + 1)
             XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(rootDiagnostics.overlayPathIndexBuildCount, 0)
-            XCTAssertEqual(rootDiagnostics.patchCount, cap - 1)
+            XCTAssertEqual(rootDiagnostics.patchCount, 0)
             XCTAssertEqual(rootDiagnostics.backstopCount, 1)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
         }
@@ -716,8 +1024,8 @@ import XCTest
 
             diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             let replacementDiagnostics = try diagnosticsForRoot(rootID: replacementRoot.id, in: diagnostics)
-            XCTAssertEqual(replacementDiagnostics.authoritativeRebuildCount, 1)
-            XCTAssertEqual(replacementDiagnostics.patchCount, 1)
+            XCTAssertEqual(replacementDiagnostics.authoritativeRebuildCount, 2)
+            XCTAssertEqual(replacementDiagnostics.patchCount, 0)
             XCTAssertEqual(replacementDiagnostics.lastAppliedIndexGeneration, 1)
             XCTAssertFalse(replacementDiagnostics.deltaStateDirty)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
@@ -800,7 +1108,7 @@ import XCTest
         }
 
         private func makeStore() -> WorkspaceFileContextStore {
-            let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: true)
+            let store = WorkspaceFileContextStore()
             stores.append(store)
             return store
         }

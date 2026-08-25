@@ -619,7 +619,6 @@ private final class MCPCodeStructureCodemapRuntimeFixture: @unchecked Sendable {
     func makeStore() -> WorkspaceFileContextStore {
         let provider = provider
         return WorkspaceFileContextStore(
-            enableCatalogShardShadowValidation: false,
             codemapRuntimeProvider: { try provider.runtime() },
             codemapGraphIndexBuildLaunchPolicyForTesting: .disabled
         )

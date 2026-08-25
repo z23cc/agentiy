@@ -63,7 +63,7 @@ final class WorkspaceSearchRootQueryHandleLifecycleSoakTests: XCTestCase {
             throw XCTSkip("Set \(Self.soakEnvironmentKey)=1 to run the \(Self.cycleCount)-cycle handle-lifecycle soak directly (see this file's header doc).")
         }
 
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let root = try makeTestDirectory(name: "HandleLifecycleSoak")
         try write("seed", to: root.appendingPathComponent("Sources/Seed.swift"))
         try write("other", to: root.appendingPathComponent("Sources/Other.swift"))
@@ -122,7 +122,7 @@ final class WorkspaceSearchRootQueryHandleLifecycleSoakTests: XCTestCase {
             throw XCTSkip("Set \(Self.soakEnvironmentKey)=1 to run the concurrent handle-lifecycle soak directly (see this file's header doc).")
         }
 
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let root = try makeTestDirectory(name: "HandleLifecycleSoakConcurrent")
         try write("seed", to: root.appendingPathComponent("Sources/Seed.swift"))
         _ = try await store.loadRoot(path: root.path)

@@ -1060,14 +1060,12 @@ impl CoreRuntime {
             let _ = &identity;
             match scope.snapshot_page(handle_id, offset, limit) {
                 Ok(page) => {
-                    // `returned_count`/`has_more` are computed from `files` alone, unchanged from
-                    // before this fix -- `SnapshotPage` pages files and folders through the same
-                    // offset/limit window independently (see `snapshot_page`'s doc comment), and
-                    // callers that want every folder page the folder list to exhaustion the same
-                    // way they already do for files (`WorkspaceInventoryScopeShadowForwarder.
-                    // snapshotAllRecords`).
-                    let returned_count = page.files.len() as u64;
-                    let has_more = page.files.len() == limit && limit > 0;
+                    // `SnapshotPage` applies one offset/limit window independently to files and
+                    // folders. Advance by the larger returned list and keep paging while either
+                    // list fills the window; computing this from files alone truncates a root
+                    // whose folder table is longer than its file table.
+                    let returned_count = page.files.len().max(page.folders.len()) as u64;
+                    let has_more = returned_count == limit as u64 && limit > 0;
                     Ok(CompactInventoryPageV1 {
                         bytes: runtime::inventory_scope::encode_bulk_chunk(
                             &page.files,
@@ -2103,6 +2101,137 @@ mod tests {
             parent_folder_id: None,
             modification_date: None,
         }
+    }
+
+    fn sample_folder(
+        seed: u8,
+        root_id: [u8; 16],
+        relative_path: &str,
+    ) -> runtime::inventory::InventoryFolderRecord {
+        runtime::inventory::InventoryFolderRecord {
+            id: [seed; 16],
+            root_id,
+            name: relative_path.to_owned(),
+            relative_path: relative_path.to_owned(),
+            standardized_relative_path: relative_path.to_owned(),
+            full_path: format!("/repo/{relative_path}"),
+            standardized_full_path: format!("/repo/{relative_path}"),
+            parent_folder_id: None,
+            modification_date: None,
+        }
+    }
+
+    #[test]
+    fn inventory_snapshot_page_continues_through_a_folder_only_exact_multiple() {
+        let (core, identity, _cancellation) = initialized_core();
+        let root_id = vec![9u8; 16];
+        let scope = core
+            .inventory_open_scope(
+                identity.clone(),
+                CoreInventoryScopeConfigV1 {
+                    live_generation_cap: 8,
+                    max_patch_logical_mutation_count: 1,
+                    codemap_capable_extensions: Vec::new(),
+                },
+            )
+            .expect("open scope");
+        let lifetime = core
+            .inventory_open_root(InventoryRootOpenV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: root_id.clone(),
+                name: "root".to_owned(),
+                standardized_full_path: "/repo".to_owned(),
+            })
+            .expect("open root");
+        let bulk_load_id = core
+            .inventory_begin_bulk_load(
+                identity.clone(),
+                scope.scope_id.clone(),
+                root_id.clone(),
+                lifetime.root_lifetime_id,
+            )
+            .expect("begin bulk load");
+        let files = Vec::new();
+        let folders = vec![
+            sample_folder(1, [9; 16], "A"),
+            sample_folder(2, [9; 16], "B"),
+            sample_folder(3, [9; 16], "C"),
+            sample_folder(4, [9; 16], "D"),
+        ];
+        core.inventory_push_bulk_chunk(
+            identity.clone(),
+            scope.scope_id.clone(),
+            bulk_load_id,
+            root_id.clone(),
+            runtime::inventory_scope::encode_bulk_chunk(&files, &folders),
+        )
+        .expect("push bulk chunk");
+        core.inventory_commit_bulk_load(
+            identity.clone(),
+            scope.scope_id.clone(),
+            bulk_load_id,
+            InventoryPublishModeV1::AtomicPublish,
+        )
+        .expect("commit bulk load");
+        let snapshot = core
+            .inventory_open_snapshot(InventorySnapshotRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id,
+            })
+            .expect("open snapshot");
+
+        let first = core
+            .inventory_snapshot_page(
+                identity.clone(),
+                scope.scope_id.clone(),
+                snapshot.handle_id,
+                0,
+                2,
+            )
+            .expect("first snapshot page");
+        let (first_files, first_folders) =
+            runtime::inventory_scope::decode_bulk_chunk(&first.bytes).expect("decode first page");
+        assert!(first_files.is_empty());
+        assert_eq!(first_folders.len(), 2);
+        assert_eq!(first.returned_count, 2);
+        assert!(first.has_more);
+
+        let second = core
+            .inventory_snapshot_page(
+                identity.clone(),
+                scope.scope_id.clone(),
+                snapshot.handle_id,
+                first.returned_count,
+                2,
+            )
+            .expect("second snapshot page");
+        let (second_files, second_folders) =
+            runtime::inventory_scope::decode_bulk_chunk(&second.bytes).expect("decode second page");
+        assert!(second_files.is_empty());
+        assert_eq!(second_folders.len(), 2);
+        assert_eq!(second.returned_count, 2);
+        assert!(
+            second.has_more,
+            "an exact multiple requires one final empty probe"
+        );
+
+        let third = core
+            .inventory_snapshot_page(
+                identity,
+                scope.scope_id,
+                snapshot.handle_id,
+                first.returned_count + second.returned_count,
+                2,
+            )
+            .expect("final empty snapshot page");
+        let (third_files, third_folders) =
+            runtime::inventory_scope::decode_bulk_chunk(&third.bytes).expect("decode final page");
+        assert!(third_files.is_empty());
+        assert!(third_folders.is_empty());
+        assert_eq!(third.returned_count, 0);
+        assert!(!third.has_more);
     }
 
     #[test]

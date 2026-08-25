@@ -55,7 +55,7 @@ final class AgentContextFileBrowseSearchParityTests: XCTestCase {
     // MARK: - Limit boundaries (mirrors AgentFileTagSuggestionParityDifferentialTests)
 
     func testEmptyQueryReturnsAvailableEmptyGroupsThroughTheRewiredPath() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let container = try makeTestDirectory(name: "BrowseSearchParityEmptyQuery")
         try writeCorpus(under: container, suffix: "1")
         _ = try await store.loadRoot(path: container.path)
@@ -74,7 +74,7 @@ final class AgentContextFileBrowseSearchParityTests: XCTestCase {
     }
 
     func testLimitOneReturnsAtMostOneMatchThroughTheRewiredPath() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let container = try makeTestDirectory(name: "BrowseSearchParityLimitOne")
         try writeCorpus(under: container, suffix: "1")
         _ = try await store.loadRoot(path: container.path)

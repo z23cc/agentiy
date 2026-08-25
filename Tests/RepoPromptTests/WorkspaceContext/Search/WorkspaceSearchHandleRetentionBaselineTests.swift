@@ -1,22 +1,13 @@
 @testable import RepoPromptApp
 import XCTest
 
-/// P4-7b §4.5/§9 (phase b2, ordered ahead of any handle-vending exercise per the design's own
-/// caution: capture the pre-flip baseline *before* introducing retention, not after). Records, on
-/// unmodified-behavior code (nothing in this suite calls `searchRootQueryHandles` inside the
-/// storm), two numbers over a fixed edit-storm fixture:
+/// P4-7b §4.5/§9 retention baseline, carried forward through P4-8b's retirement of the Swift
+/// shard patch path. The fixed 40-event storm continues to prove that ordinary catalog refreshes
+/// and open-then-drop Rust query handles do not trip `retentionBoundary`.
 ///
-/// 1. `retentionBoundary` fallback occurrences -- the rate b3's done-when requires *not increase*
-///    over (§4.5's "test that fails on any increase over the b2 baseline"). Expected `0` today:
-///    nothing in the current search path opens a Rust snapshot handle repeatedly, so there is
-///    nothing to apply retention pressure. This assertion is the recorded baseline, not a
-///    tautology -- it is what changes (or doesn't) once b3 wires `searchRootQueryHandles` into the
-///    hot path.
-/// 2. `patchApplicationBackstop` occurrences -- reported per RK-5, kept as a *separate* number from
-///    the SLO precisely so Bucket-B's independent regression (contract doc §12.3/§9b) is never
-///    conflated with a P4-7b retention effect. Not gated to a specific count (Bucket-B's rate is
-///    out of scope for this campaign to fix or pin) -- only bounded and captured as documented
-///    evidence.
+/// P4-8b additionally pins the compatibility diagnostics: every accepted event publishes through
+/// the direct authoritative Rust snapshot path, while `patchCount`, `patchApplicationBackstop`, and
+/// `patchThresholdExceeded` remain zero-valued tombstones.
 final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
     private func makeTestDirectory(name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
@@ -45,10 +36,8 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
     /// requesting `.recordsAndPathIndexes` now intentionally `preconditionFailure`s in
     /// `composeSearchCatalogSnapshot` (D-14: "`.recordsAndPathIndexes` unreachable", fail loud not
     /// silent, per §4.6's fallback policy applied to the read side too). Switched to `.recordsOnly`
-    /// -- the only requirement any real caller uses post-flip -- which still exercises the identical
-    /// shard patch/rebuild/fallback-counting machinery this baseline measures; `requirement` only
-    /// gates whether `composeSearchCatalogSnapshot` unwraps `shard.pathSearchIndex`, not whether the
-    /// shard is built, patched, or counted.
+    /// -- the only requirement any real caller uses post-flip -- which still exercises the same
+    /// shard publication, fallback, and retention machinery this baseline measures.
     private func runEditStorm(
         store: WorkspaceFileContextStore,
         rootID: UUID,
@@ -64,23 +53,16 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
     }
 
     func testRetentionBoundaryAndBackstopBaselineOverFixedEditStorm() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: true)
+        let store = WorkspaceFileContextStore()
         let root = try makeTestDirectory(name: "HandleRetentionBaselineEditStorm")
         try write("seed", to: root.appendingPathComponent("Seed.swift"))
         let record = try await store.loadRoot(path: root.path)
-        // Stops the live FSEvents watcher so this storm's manually-replayed deltas
-        // (`replayObservedFileSystemDeltas`) are the *only* delta stream the store observes --
-        // matching `WorkspaceCatalogShardTests.loadStoppedRoot`'s pattern. Without this, the real
-        // watcher observing the same on-disk writes this storm makes races the manual replay,
-        // producing spurious unsafe/ambiguous-batch fallbacks that authoritatively rebuild on
-        // every iteration and mask the patch path entirely -- the first draft of this baseline hit
-        // exactly that (`patchCount == 0` over the whole storm), which is why this call is here.
+        // Stop the live watcher so manually replayed deltas are the only event stream. Otherwise
+        // duplicate real/manual events introduce unrelated unsafe/ambiguous fallbacks.
         await store.stopWatchingRoot(id: record.id)
 
-        // Storm size chosen to be well past `maxRootCatalogShardPatchLogicalMutationCount` (1 at
-        // the only call site today, per `WorkspaceInventoryCatalogBuilders`' doc comment) many
-        // times over, so the storm exercises both the patch and rebuild paths repeatedly, matching
-        // the "edit-storm" shape RK-5/§4.5 describe rather than a single mutation.
+        // Preserve the registered 40-event fixture so retention behavior remains comparable across
+        // the P4-8b switch from patch publication to direct authoritative rebuilds.
         try await runEditStorm(store: store, rootID: record.id, rootURL: root, iterationCount: 40)
 
         let diagnostics = await store.storeWorkDiagnosticsSnapshot()
@@ -91,11 +73,15 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
 
         let retentionBoundaryCount = shard.fallbackReasonCounts[.retentionBoundary] ?? 0
         let patchApplicationBackstopCount = shard.fallbackReasonCounts[.patchApplicationBackstop] ?? 0
+        let patchThresholdExceededCount = shard.fallbackReasonCounts[.patchThresholdExceeded] ?? 0
 
-        // Fixture sanity: a baseline over a storm that never reaches the patch path measures
-        // nothing (the exact §4.7 failure mode -- an assertion that reads as passing while proving
-        // nothing -- this document elsewhere warns against). This storm must genuinely patch.
-        XCTAssertGreaterThan(shard.patchCount, 0, "fixture sanity: this storm must exercise the patch path")
+        XCTAssertGreaterThan(
+            shard.authoritativeRebuildCount, 0,
+            "fixture sanity: the storm must exercise authoritative shard publication"
+        )
+        XCTAssertEqual(shard.patchCount, 0)
+        XCTAssertEqual(patchApplicationBackstopCount, 0)
+        XCTAssertEqual(patchThresholdExceededCount, 0)
 
         // The b2 baseline this suite exists to record. If this ever goes non-zero on unmodified
         // pre-b3 code, something else in the tree has started retaining Rust snapshot handles
@@ -105,21 +91,9 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
             "P4-7b b2 baseline: retentionBoundary must be 0 before any handle-vending is wired into the hot path"
         )
 
-        // Reported, not gated (RK-5): Bucket-B's rate is this storm's own independent number,
-        // captured here so a later b3/b4 read can cite it without re-deriving it. Bounded by the
-        // storm size only so a totally unrelated regression (every single delta backstopping) is
-        // still caught as a build-breaking signal rather than silently accepted.
-        XCTAssertLessThanOrEqual(
-            patchApplicationBackstopCount, 40,
-            "patchApplicationBackstop count is bounded by the storm's own iteration count"
-        )
         #if DEBUG
-            // Not asserted against a literal -- Bucket-B's exact rate is explicitly out of scope
-            // to pin (design doc §10) -- printed so the number is visible in the test log for the
-            // commit message / contract doc amendment to cite.
             print(
-                "P4-7b b2 baseline (pre-handle-vending): retentionBoundary=\(retentionBoundaryCount) " +
-                    "patchApplicationBackstop=\(patchApplicationBackstopCount) " +
+                "P4-8b direct-rebuild baseline: retentionBoundary=\(retentionBoundaryCount) " +
                     "authoritativeRebuildCount=\(shard.authoritativeRebuildCount) patchCount=\(shard.patchCount)"
             )
         #endif
@@ -130,7 +104,7 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
     /// half of the ordering the design calls for: prove the vending method is inert against this
     /// exact storm before b3 wires it into the always-subscribed hot path.
     func testRetentionBoundaryUnaffectedByOptInHandleVendingAcrossTheSameStorm() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: true)
+        let store = WorkspaceFileContextStore()
         let root = try makeTestDirectory(name: "HandleRetentionBaselineEditStormWithVending")
         try write("seed", to: root.appendingPathComponent("Seed.swift"))
         let record = try await store.loadRoot(path: root.path)
@@ -148,7 +122,10 @@ final class WorkspaceSearchHandleRetentionBaselineTests: XCTestCase {
 
         let diagnostics = await store.storeWorkDiagnosticsSnapshot()
         let shard = try XCTUnwrap(diagnostics.rootCatalogShards.roots.first { $0.rootID == record.id })
-        XCTAssertGreaterThan(shard.patchCount, 0, "fixture sanity: this storm must actually exercise the patch path, or retentionBoundary=0 would measure nothing (the mistake this suite's header doc records and corrects)")
+        XCTAssertGreaterThan(shard.authoritativeRebuildCount, 0)
+        XCTAssertEqual(shard.patchCount, 0)
+        XCTAssertEqual(shard.fallbackReasonCounts[.patchApplicationBackstop] ?? 0, 0)
+        XCTAssertEqual(shard.fallbackReasonCounts[.patchThresholdExceeded] ?? 0, 0)
         XCTAssertEqual(
             shard.fallbackReasonCounts[.retentionBoundary] ?? 0, 0,
             "opening-and-dropping a handle per generation (b2's shape) must not itself trip retention pressure"

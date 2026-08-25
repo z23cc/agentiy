@@ -99,7 +99,7 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
     /// would diverge if that regressed. Oracle-independent: carried no `PathSearchIndex`
     /// dependency even before P4-7c c3 deleted the oracle-driven differential above it.
     func testWorktreeBoundDisplayPathIsReconstructedFromRootName() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let container = try makeTestDirectory(name: "SuggestionSingleRootWorktree")
         try writeCorpus(under: container, suffix: "1")
         let record = try await store.loadRoot(path: container.path)
@@ -117,7 +117,7 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
     // MARK: - Limit boundaries
 
     func testLimitZeroReturnsNoResults() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let container = try makeTestDirectory(name: "SuggestionLimitZero")
         try writeCorpus(under: container, suffix: "1")
         _ = try await store.loadRoot(path: container.path)
@@ -128,7 +128,7 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
     }
 
     func testLimitOneReturnsExactlyOneResultWhenMatchesExist() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let container = try makeTestDirectory(name: "SuggestionLimitOne")
         try writeCorpus(under: container, suffix: "1")
         _ = try await store.loadRoot(path: container.path)
@@ -139,7 +139,7 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
     }
 
     func testLimitGreaterThanCorpusReturnsEveryMatchOnce() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let container = try makeTestDirectory(name: "SuggestionLimitOverCorpus")
         let relativePaths = try writeCorpus(under: container, suffix: "1")
         _ = try await store.loadRoot(path: container.path)
@@ -156,7 +156,7 @@ final class AgentFileTagSuggestionParityDifferentialTests: XCTestCase {
     /// `searchCatalogSnapshot` calls -- the sole choke point that vends `.entries` -- across a
     /// `.suggestion`-routed `catalogResultsForTesting` call, in both binding configurations.
     func testSuggestionPathNeverCallsSearchCatalogSnapshot() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let container = try makeTestDirectory(name: "SuggestionByteAccounting")
         let record = try await store.loadRoot(path: container.path)
         try writeCorpus(under: container, suffix: "1")

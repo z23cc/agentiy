@@ -57,7 +57,7 @@ final class WorkspaceSearchColocationGateTests: XCTestCase {
     }
 
     func testSearchDrivenCatalogGenerationConstructsZeroSwiftPathIndexes() async throws {
-        let store = WorkspaceFileContextStore(enableCatalogShardShadowValidation: false)
+        let store = WorkspaceFileContextStore()
         let root = try makeTestDirectory(name: "ColocationGate")
         try write("alpha", to: root.appendingPathComponent("Sources/Alpha.swift"))
         try write("beta", to: root.appendingPathComponent("Sources/Beta.swift"))

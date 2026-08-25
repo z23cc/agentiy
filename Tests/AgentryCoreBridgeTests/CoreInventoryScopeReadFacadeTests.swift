@@ -17,6 +17,48 @@ final class CoreInventoryScopeReadFacadeTests: XCTestCase {
         )
     }
 
+    private func sampleFolder(id: UUID, rootID: UUID, relativePath: String) -> CoreInventoryFolderRecordV1 {
+        CoreInventoryFolderRecordV1(
+            id: id, rootID: rootID, name: relativePath, relativePath: relativePath,
+            standardizedRelativePath: relativePath, fullPath: "/repo/\(relativePath)",
+            standardizedFullPath: "/repo/\(relativePath)", parentFolderID: nil, modificationDate: nil
+        )
+    }
+
+    // MARK: - snapshot paging
+
+    func testSnapshotPagingContinuesUntilLongerFolderTableIsExhausted() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let rootID = UUID()
+        let scope = try await CoreInventoryScope.open(bridge: bridge)
+        let rootLifetimeID = try await scope.openRoot(rootID: rootID, name: "root", standardizedFullPath: "/repo")
+        let bulkLoadID = try await scope.beginBulkLoad(rootID: rootID, rootLifetimeID: rootLifetimeID)
+        _ = try await scope.pushBulkChunk(
+            bulkLoadID: bulkLoadID,
+            rootID: rootID,
+            files: [sampleFile(id: UUID(), rootID: rootID, name: "Only.swift", relativePath: "Only.swift")],
+            folders: ["A", "B", "C"].map { sampleFolder(id: UUID(), rootID: rootID, relativePath: $0) }
+        )
+        _ = try await scope.commitBulkLoad(bulkLoadID: bulkLoadID)
+
+        let snapshot = try await scope.openSnapshot(rootID: rootID)
+        let first = try await snapshot.page(offset: 0, limit: 2)
+        XCTAssertEqual(first.files.count, 1)
+        XCTAssertEqual(first.folders.map(\.relativePath), ["A", "B"])
+        XCTAssertEqual(first.returnedCount, 2)
+        XCTAssertTrue(first.hasMore)
+
+        let second = try await snapshot.page(offset: first.returnedCount, limit: 2)
+        XCTAssertTrue(second.files.isEmpty)
+        XCTAssertEqual(second.folders.map(\.relativePath), ["C"])
+        XCTAssertEqual(second.returnedCount, 1)
+        XCTAssertFalse(second.hasMore)
+
+        await snapshot.close()
+        await scope.close()
+        _ = try await bridge.close()
+    }
+
     // MARK: - resolveRecords
 
     func testResolveRecordsReturnsFactsForPresentAndAbsentIdsInRequestOrder() async throws {

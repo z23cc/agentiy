@@ -1,20 +1,16 @@
 import Foundation
 
-/// Immutable root-shard construction output: the sorted files/folders for a set of roots plus
-/// their materialized `WorkspaceSearchCatalogEntry` values, in catalog order.
-///
-/// Mirrors `WorkspaceFileContextStore.AuthoritativeCatalogComponents` — kept as a distinct,
-/// non-actor-coupled type so it can be ported to Rust 1:1 as part of P3-2.
+/// Immutable catalog construction output shared by the frozen historical full-snapshot benchmark
+/// and the still-live pending-root publication builder. Product snapshot fallback no longer uses
+/// this type as of P4-8c.
 struct WorkspaceInventoryCatalogComponents {
     let files: [WorkspaceFileRecord]
     let folders: [WorkspaceFolderRecord]
     let entries: [WorkspaceSearchCatalogEntry]
 }
 
-/// Output of applying a single logical file/folder mutation to a previously-built catalog shard's
-/// file/folder lists, keeping them sorted in place.
-///
-/// Mirrors `WorkspaceFileContextStore.RootCatalogShardBuilderOutput`.
+/// Historical output of the retired Swift catalog-shard patch benchmark. P4-8b removes every
+/// product caller; this type remains only to interpret the registered pre-cutover Swift baseline.
 struct WorkspaceInventoryCatalogShardPatch {
     let files: [WorkspaceFileRecord]
     let folders: [WorkspaceFolderRecord]
@@ -22,27 +18,19 @@ struct WorkspaceInventoryCatalogShardPatch {
     let pathIndexChangedFileIDs: Set<UUID>
 }
 
-/// Deterministic, side-effect-free construction of workspace catalog shards: sorting/filtering
-/// discoverable files and folders into catalog order, assembling `WorkspaceSearchCatalogEntry`
-/// values, applying single-mutation patches to an existing sorted shard, and k-way merging
-/// per-root sorted shards into one globally-ordered list.
+/// Deterministic, side-effect-free catalog helpers. The full-snapshot and single-mutation builders
+/// are frozen historical Swift benchmark arms; only pending-root publication and multi-root
+/// presentation merge remain product paths after P4-8c.
 ///
 /// Extracted from `WorkspaceFileContextStore` (P3-1). Every function here takes its inputs as
 /// explicit parameters (no actor state, no filesystem I/O, no watcher/selection/graph/persistence
-/// coupling) so this is the seam P3-2 ports to Rust. `WorkspaceFileContextStore` retains thin
-/// wrapper methods that supply the actor-state parameters (`filesByID`, `foldersByID`,
-/// `managedOnlyFileIDs`, `managedOnlyFolderIDs`, etc.) and adapt the plain results back into its
-/// own private shard/component types.
-///
-/// DO NOT change comparison semantics, sort order, or the single-logical-mutation patch behavior
-/// during this extraction — those are preserved verbatim from the pre-extraction implementation.
+/// coupling). P4-8a retired normal per-root Swift construction, P4-8b retired event patching, and
+/// P4-8c retired the full-snapshot fallback and DEBUG shadow. Historical builders must not regain a
+/// product, fallback, parity, or shadow caller.
 enum WorkspaceInventoryCatalogBuilders {
-    /// Builds sorted, discoverable files/folders and their search catalog entries for `roots`,
-    /// filtering out managed-only (non-discoverable) files/folders from `filesByID`/`foldersByID`.
-    ///
-    /// Uses root-relative-path ordering when there is exactly one root (`searchRootCatalogFilePrecedes`)
-    /// and root-qualified full-path ordering otherwise (`searchCatalogFilePrecedes`), matching the
-    /// pre-extraction behavior exactly.
+    /// Frozen P4-1 Swift full-snapshot benchmark arm. P4-8c removes every product caller; preserve
+    /// its pre-cutover filtering, ordering, and materialization semantics so registered benchmark
+    /// evidence remains interpretable. It must not become a fallback, parity, or shadow authority.
     static func buildAuthoritativeCatalogComponents(
         roots: [WorkspaceRootRecord],
         filesByID: [UUID: WorkspaceFileRecord],
@@ -127,17 +115,9 @@ enum WorkspaceInventoryCatalogBuilders {
         return WorkspaceInventoryCatalogComponents(files: files, folders: folders, entries: entries)
     }
 
-    /// Applies one applied-index batch event to a previously-built, sorted shard's files/folders,
-    /// producing a patched (still sorted) files/folders list plus the file IDs whose path-index
-    /// entries changed. Returns `nil` when the event cannot be safely applied as a patch (e.g. it
-    /// references files/folders inconsistent with `filesByID`/`foldersByID`, or the event mixes
-    /// removed and upserted identities/paths) — the caller must fall back to an authoritative
-    /// rebuild in that case.
-    ///
-    /// NOTE: only ever applies a single logical mutation (`touchedFileIDs.first` /
-    /// `touchedFolderIDs.first`) even though it computes the full touched-ID sets; this is
-    /// existing behavior guarded by `maxLogicalMutationCount` (1 at the only call site) and is
-    /// preserved verbatim by this extraction.
+    /// Historical P4-1 Swift benchmark arm. Product applied-index events no longer call this
+    /// function as of P4-8b; they publish a complete ordered Rust generation. Keep the old single-
+    /// mutation semantics unchanged so previously registered benchmark evidence stays interpretable.
     static func buildRootCatalogShardPatch(
         event: WorkspaceAppliedIndexBatchEvent,
         previousFiles: [WorkspaceFileRecord],
