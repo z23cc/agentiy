@@ -52,16 +52,23 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
     func testProductionSourcesDoNotReferenceRetiredCatalogShardBuilders() throws {
         let repoRoot = try RepoRoot.url()
         let sourceRoot = repoRoot.appendingPathComponent("Sources", isDirectory: true)
-        let allowedDeclarationPath = "Sources/RepoPrompt/Infrastructure/WorkspaceContext/Inventory/WorkspaceInventoryCatalogBuilders.swift"
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(
             at: sourceRoot,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ))
-        let forbiddenIdentifiers = [
+        let historicalDeclarationIdentifiers: Set<String> = [
             "buildRootCatalogShard" + "Patch",
             "buildAuthoritativeCatalog" + "Components"
         ]
+        let pendingBuilderIdentifier = "buildPendingCatalog" + "Components"
+        let retiredContainerIdentifier = "WorkspaceInventoryCatalog" + "Builders"
+        let retiredMergeIdentifier = "mergeRootCatalogShard" + "FileEntryLists"
+        let forbiddenIdentifiers = historicalDeclarationIdentifiers.union([
+            pendingBuilderIdentifier,
+            retiredContainerIdentifier,
+            retiredMergeIdentifier
+        ])
         var violations: [String] = []
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
             let relativePath = RepoRoot.relativePath(for: fileURL, relativeTo: repoRoot)
@@ -70,15 +77,18 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
                 let trimmedLine = line.trimmingCharacters(in: .whitespaces)
                 guard !trimmedLine.hasPrefix("//"), !trimmedLine.hasPrefix("*") else { continue }
                 for forbiddenIdentifier in forbiddenIdentifiers where line.contains(forbiddenIdentifier) {
-                    let isAllowedDeclaration = relativePath == allowedDeclarationPath
-                        && trimmedLine.hasPrefix("static func \(forbiddenIdentifier)(")
-                    if !isAllowedDeclaration {
-                        violations.append("\(relativePath):\(lineOffset + 1):\(forbiddenIdentifier)")
-                    }
+                    violations.append("\(relativePath):\(lineOffset + 1):\(forbiddenIdentifier)")
                 }
             }
         }
         XCTAssertEqual(violations, [], "retired production builder references: \(violations.sorted())")
+        let retiredProductionFile = sourceRoot
+            .appendingPathComponent("RepoPrompt/Infrastructure/WorkspaceContext/Inventory", isDirectory: true)
+            .appendingPathComponent("WorkspaceInventoryCatalog" + "Builders.swift")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: retiredProductionFile.path),
+            "retired production builder file must remain deleted"
+        )
     }
 
     /// E-1's pass criteria (`p4-workspace-inventory-authority-v2-2026-08-22.md` §10):
@@ -96,7 +106,7 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
         for fileCount in [100, 1000, 10000, 100_000] {
             let fixture = Self.makeAuthoritativeFixture(fileCount: fileCount)
             let distribution = measure {
-                let result = WorkspaceInventoryCatalogBuilders.buildAuthoritativeCatalogComponents(
+                let result = HistoricalWorkspaceInventoryCatalogBuilders.buildAuthoritativeCatalogComponents(
                     roots: fixture.roots,
                     filesByID: fixture.filesByID,
                     foldersByID: fixture.foldersByID,
@@ -111,7 +121,7 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
         for previousFileCount in [100, 1000, 10000, 100_000] {
             let fixture = Self.makePatchFixture(previousFileCount: previousFileCount, batchSize: 1)
             let distribution = measure {
-                let result = WorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch(
+                let result = HistoricalWorkspaceInventoryCatalogBuilders.buildRootCatalogShardPatch(
                     event: fixture.event,
                     previousFiles: fixture.previousFiles,
                     previousFolders: [],
@@ -145,8 +155,8 @@ final class InventoryScopeSwiftBaselineTests: XCTestCase {
     /// - id-keyed: the per-id dictionary-lookup-plus-checks shape `appliedIndexRecordLookup`
     ///   performs (`WorkspaceFileContextStore.swift:6684-6725`) at N = 1/10/100/1000 ids, reproduced
     ///   directly over local dictionaries (not the full actor) for the same reason the existing E-1
-    ///   fixtures above call `WorkspaceInventoryCatalogBuilders` directly rather than driving
-    ///   `WorkspaceFileContextStore`: it isolates the lookup cost curve from actor/async dispatch
+    /// fixtures above call the test-only historical builder directly rather than driving
+    /// `WorkspaceFileContextStore`: it isolates the lookup cost curve from actor/async dispatch
     ///   overhead, which is a real but separate tax from what E-1d is measuring.
     /// - path-keyed: a loop of `[String: UUID]` dictionary lookups at N = 1/100/1000/10000 paths,
     ///   the same underlying structure `RootCatalogShardState.fileIDsByRelativePath` uses and that

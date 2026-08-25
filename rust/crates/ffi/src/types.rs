@@ -2170,6 +2170,44 @@ pub struct InventorySnapshotHandleV1 {
     pub root_lifetime_id: String,
 }
 
+/// One exact source generation for a stateful multi-root catalog composition. A missing expected
+/// generation is strict: the root must still have no published generation and contributes no rows.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryComposedRootDescriptorV1 {
+    pub root_id: Vec<u8>,
+    pub root_lifetime_id: String,
+    pub expected_generation: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum InventoryCompositionAccountingV1 {
+    NormalPresentation,
+    UncachedFallback,
+}
+
+impl From<InventoryCompositionAccountingV1> for runtime::inventory_scope::CompositionAccounting {
+    fn from(value: InventoryCompositionAccountingV1) -> Self {
+        match value {
+            InventoryCompositionAccountingV1::NormalPresentation => Self::NormalPresentation,
+            InventoryCompositionAccountingV1::UncachedFallback => Self::UncachedFallback,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryComposedSnapshotRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub roots: Vec<InventoryComposedRootDescriptorV1>,
+    pub accounting: InventoryCompositionAccountingV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryComposedSnapshotHandleV1 {
+    pub handle_id: u64,
+    pub row_count: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CompactInventoryPageV1 {
     /// `runtime::inventory_scope::encode_bulk_chunk(files, &[])` -- files only, folders section

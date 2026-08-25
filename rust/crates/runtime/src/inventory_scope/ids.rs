@@ -11,8 +11,9 @@
 //! `next_bytes`, a splitmix64 stream) for reproducible tests -- the "UUID minting with test seed"
 //! requirement named in the P4-3a scope.
 //!
-//! **Deviation from a literal UUID shape, flagged:** `SnapshotHandleId` and `BulkLoadId` are
-//! monotonic per-scope counters rather than minted UUIDs. The contract requires these to be
+//! **Deviation from a literal UUID shape, flagged:** `SnapshotHandleId`,
+//! `ComposedSnapshotHandleId`, and `BulkLoadId` are monotonic per-scope counters rather than
+//! minted UUIDs. The contract requires these to be
 //! explicit typed IDs (not proxy objects); it does not require them to be UUID-shaped, and
 //! `InventoryScopeConfig`/`InventoryRootOpenV1` naming elsewhere in the contract is silent on
 //! their representation. A counter scoped to one `Mutex`-guarded scope is simpler, cheaper to
@@ -109,9 +110,10 @@ macro_rules! counter_id {
 }
 
 counter_id!(SnapshotHandleId);
+counter_id!(ComposedSnapshotHandleId);
 counter_id!(BulkLoadId);
 
-/// A process-unique-enough monotonic counter used to mint `SnapshotHandleId`/`BulkLoadId` values
+/// A process-unique-enough monotonic counter used to mint snapshot/composed/bulk-load identifiers
 /// scoped to one `InventoryScope`. Not `pub`: callers never construct handle/bulk-load ids
 /// themselves.
 #[derive(Debug, Default)]

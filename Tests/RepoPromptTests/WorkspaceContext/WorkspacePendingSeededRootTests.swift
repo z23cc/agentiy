@@ -39,11 +39,15 @@ import XCTest
                 availabilityBeforeCommit,
                 .sessionWorktreeUnavailable(missingPhysicalRootPaths: [prepared.binding.worktreeRootPath])
             )
+            var shardDiagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(shardDiagnostics.publishedShardCount, 0)
 
             let projectionValue = try await materializer.commit(preparation)
             let projection = try XCTUnwrap(projectionValue)
             let physicalRoot = try XCTUnwrap(projection.physicalRootRefs.first)
             XCTAssertEqual(physicalRoot.standardizedFullPath, prepared.binding.worktreeRootPath)
+            shardDiagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(shardDiagnostics.publishedShardCount, 0, "visible commit installs metadata, not a Swift-built shard")
 
             let snapshot = await store.searchCatalogSnapshot(rootScope: fixture.scope(for: prepared.binding))
             XCTAssertEqual(snapshot.roots.map(\.id), [physicalRoot.id])
@@ -51,6 +55,11 @@ import XCTest
                 Set(snapshot.files.map(\.standardizedRelativePath)),
                 fixture.expectedTargetFiles
             )
+            let expectedRustOrder = fixture.expectedTargetFiles.sorted {
+                WorkspaceInventoryOrdering.compareUTF8Binary($0, $1) == .orderedAscending
+            }
+            XCTAssertEqual(snapshot.files.map(\.standardizedRelativePath), expectedRustOrder)
+            XCTAssertEqual(snapshot.entries.map(\.standardizedRelativePath), expectedRustOrder)
             // P4-7b b3 removal (design doc §4.2.2/§4.4): `searchCatalogSnapshot`'s default
             // requirement is now `.recordsOnly`, so this default-requirement fetch no longer
             // populates `rootPathIndexes` to inspect the projected-reuse shard's `buildKind`/search
@@ -104,6 +113,37 @@ import XCTest
             XCTAssertEqual(instrumentation.routeCounts[.diffSeedServing], 4)
             XCTAssertTrue(instrumentation.events.contains { $0.phase == .seedPublished })
             XCTAssertEqual(instrumentation.seed.fullCrawlFallbackCount, 0)
+
+            await materializer.release(sessionID: fixture.agentSessionID)
+        }
+
+        func testEmptyPendingRootAcceptsNoRustGenerationWithoutFullCrawl() async throws {
+            let fixture = try PendingSeededRootFixture(emptyRoot: true)
+            defer { fixture.cleanup() }
+            let prepared = try await fixture.prepareWorktree()
+            let store = WorkspaceFileContextStore()
+            let materializer = WorkspaceRootBindingProjectionMaterializer(store: store)
+            WorktreeStartupInstrumentation.resetForTesting()
+
+            let preparation = try await materializer.prepare(
+                sessionID: fixture.agentSessionID,
+                bindings: [prepared.binding],
+                startupContext: fixture.startupContext(serving: true),
+                initializationHintsByBindingID: [prepared.binding.id: prepared.hint]
+            )
+
+            XCTAssertEqual(preparation.ownership.pendingSeededRootPreparations.count, 1)
+            XCTAssertTrue(preparation.ownership.roots.isEmpty)
+            let projectionValue = try await materializer.commit(preparation)
+            let projection = try XCTUnwrap(projectionValue)
+            let root = try XCTUnwrap(projection.physicalRootRefs.first)
+            let snapshot = await store.searchCatalogSnapshot(rootScope: fixture.scope(for: prepared.binding))
+            XCTAssertEqual(snapshot.roots.map(\.id), [root.id])
+            XCTAssertTrue(snapshot.files.isEmpty)
+            XCTAssertTrue(snapshot.entries.isEmpty)
+            let diagnostics = await store.readSearchRootDiagnosticsSnapshot()
+            XCTAssertEqual(diagnostics.first { $0.rootID == root.id }?.crawlCount, 0)
+            XCTAssertEqual(WorktreeStartupInstrumentation.snapshot().seed.fullCrawlFallbackCount, 0)
 
             await materializer.release(sessionID: fixture.agentSessionID)
         }
@@ -549,6 +589,100 @@ import XCTest
             await materializer.release(sessionID: fixture.agentSessionID)
         }
 
+        func testOwnerSupersessionAfterPendingRustOrderedReadExposesNoSeededRoot() async throws {
+            let fixture = try PendingSeededRootFixture()
+            defer { fixture.cleanup() }
+            let prepared = try await fixture.prepareWorktree()
+            let store = WorkspaceFileContextStore()
+            await store.setPendingSeededRootPostOrderedReadHandlerForTesting { _ in
+                _ = try? await store.prepareSessionWorktreeOwnership(
+                    ownerID: fixture.agentSessionID,
+                    bindingFingerprint: "superseding-before-ready",
+                    physicalRootPaths: []
+                )
+            }
+            defer {
+                Task { await store.setPendingSeededRootPostOrderedReadHandlerForTesting(nil) }
+            }
+            let materializer = WorkspaceRootBindingProjectionMaterializer(store: store)
+            WorktreeStartupInstrumentation.resetForTesting()
+
+            do {
+                _ = try await materializer.prepare(
+                    sessionID: fixture.agentSessionID,
+                    bindings: [prepared.binding],
+                    startupContext: fixture.startupContext(serving: true),
+                    initializationHintsByBindingID: [prepared.binding.id: prepared.hint]
+                )
+                XCTFail("owner supersession after the Rust read must reject the stale pending result")
+            } catch WorkspaceSessionWorktreeOwnershipError.staleUpdate {
+                // Expected: owner-token currentness rejects the stale pending result.
+            }
+
+            let roots = await store.roots()
+            XCTAssertFalse(roots.contains {
+                $0.standardizedFullPath == prepared.binding.worktreeRootPath
+            })
+            let ownership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+            XCTAssertEqual(ownership.pendingSeededRootCount, 0)
+            XCTAssertEqual(ownership.pathReservationCount, 0)
+        }
+
+        func testPendingAuthorityMutationAfterRustOrderedReadFailsFenceAndFallsBackOnce() async throws {
+            let fixture = try PendingSeededRootFixture()
+            defer { fixture.cleanup() }
+            let prepared = try await fixture.prepareWorktree()
+            let store = WorkspaceFileContextStore()
+            let orderedReadRecorder = PendingSeededReadRecorder()
+            let repositoryKey = GitWorkspaceAuthorityRepositoryKey(
+                layout: prepared.hint.creationReceipt.targetLayout
+            )
+            await store.setPendingSeededRootPostOrderedReadHandlerForTesting { rootID in
+                await orderedReadRecorder.record(rootID)
+                await store.handleSeededAuthorityInvalidationForTesting(
+                    GitWorkspaceAuthorityInvalidationEvent(
+                        repositoryKey: repositoryKey,
+                        invalidationGeneration: .max,
+                        acceptedMetadataWatermark: 0,
+                        kind: .mutationBegan(.branchSwitch)
+                    )
+                )
+            }
+            defer {
+                Task { await store.setPendingSeededRootPostOrderedReadHandlerForTesting(nil) }
+            }
+            let materializer = WorkspaceRootBindingProjectionMaterializer(store: store)
+            WorktreeStartupInstrumentation.resetForTesting()
+
+            let preparation = try await materializer.prepare(
+                sessionID: fixture.agentSessionID,
+                bindings: [prepared.binding],
+                startupContext: fixture.startupContext(serving: true),
+                initializationHintsByBindingID: [prepared.binding.id: prepared.hint]
+            )
+
+            XCTAssertTrue(preparation.ownership.pendingSeededRootPreparations.isEmpty)
+            XCTAssertEqual(
+                preparation.ownership.materializationHintObservationsByPhysicalRootPath[
+                    prepared.binding.worktreeRootPath
+                ],
+                .fallback(.authorityUnstable)
+            )
+            let fallbackRoot = try XCTUnwrap(preparation.ownership.roots.first)
+            let orderedReadRootIDs = await orderedReadRecorder.snapshot()
+            let orderedReadRootID = try XCTUnwrap(orderedReadRootIDs.first)
+            XCTAssertNotEqual(fallbackRoot.rootID, orderedReadRootID)
+            let diagnostics = await store.readSearchRootDiagnosticsSnapshot()
+            XCTAssertEqual(diagnostics.first { $0.rootID == fallbackRoot.rootID }?.crawlCount, 1)
+            let ownership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+            XCTAssertEqual(ownership.pendingSeededRootCount, 0)
+            XCTAssertEqual(ownership.pathReservationCount, 0)
+            XCTAssertEqual(WorktreeStartupInstrumentation.snapshot().fallbackCounts[.authorityUnstable], 1)
+
+            _ = try await materializer.commit(preparation)
+            await materializer.release(sessionID: fixture.agentSessionID)
+        }
+
         func testOwnerSupersessionAfterPrivateWatcherActivationExposesNoSeededRoot() async throws {
             let fixture = try PendingSeededRootFixture()
             defer { fixture.cleanup() }
@@ -599,8 +733,17 @@ import XCTest
             defer { fixture.cleanup() }
             let prepared = try await fixture.prepareWorktree()
             let store = WorkspaceFileContextStore()
+            let orderedReadRecorder = PendingSeededReadRecorder()
+            await store.setPendingSeededRootPostOrderedReadHandlerForTesting { rootID in
+                await orderedReadRecorder.record(rootID)
+            }
             await store.setSeededShardPreparationFailureForTesting(true)
-            defer { Task { await store.setSeededShardPreparationFailureForTesting(false) } }
+            defer {
+                Task {
+                    await store.setPendingSeededRootPostOrderedReadHandlerForTesting(nil)
+                    await store.setSeededShardPreparationFailureForTesting(false)
+                }
+            }
             let materializer = WorkspaceRootBindingProjectionMaterializer(store: store)
             WorktreeStartupInstrumentation.resetForTesting()
 
@@ -627,6 +770,8 @@ import XCTest
             let instrumentation = WorktreeStartupInstrumentation.snapshot()
             XCTAssertEqual(instrumentation.seed.fullCrawlFallbackCount, 1)
             XCTAssertEqual(instrumentation.fallbackCounts[.seededShardPreparationFailure], 1)
+            let orderedReadRootIDs = await orderedReadRecorder.snapshot()
+            XCTAssertEqual(orderedReadRootIDs.count, 1, "forced failure must run after Rust ordered-read verification")
 
             _ = try await materializer.commit(preparation)
             await materializer.release(sessionID: fixture.agentSessionID)
@@ -692,11 +837,12 @@ import XCTest
         let agentSessionID = UUID()
         let expectedOwnerBindingGeneration: UInt64 = 1
 
-        let expectedTargetFiles: Set<String> = [
-            ".gitignore", ".worktreeinclude", "Tracked.swift"
-        ]
+        let expectedTargetFiles: Set<String>
 
-        init() throws {
+        init(emptyRoot: Bool = false) throws {
+            expectedTargetFiles = emptyRoot
+                ? []
+                : [".gitignore", ".worktreeinclude", "Tracked.swift"]
             sandbox = FileManager.default.temporaryDirectory
                 .appendingPathComponent("WorkspacePendingSeededRootTests-\(UUID().uuidString)", isDirectory: true)
             root = sandbox.appendingPathComponent("repo", isDirectory: true)
@@ -707,12 +853,16 @@ import XCTest
             try git(["config", "user.name", "RepoPrompt Test"])
             try git(["config", "user.email", "repoprompt@example.test"])
             try git(["config", "commit.gpgSign", "false"])
-            try write("Tracked.swift", "let value = 1\n")
-            try write(".gitignore", "secret.txt\n")
-            try write(".worktreeinclude", "secret.txt\n")
-            try write("secret.txt", "ephemeral secret\n")
-            try git(["add", "Tracked.swift", ".gitignore", ".worktreeinclude"])
-            try git(["commit", "-m", "base"])
+            if emptyRoot {
+                try git(["commit", "--allow-empty", "-m", "empty-base"])
+            } else {
+                try write("Tracked.swift", "let value = 1\n")
+                try write(".gitignore", "secret.txt\n")
+                try write(".worktreeinclude", "secret.txt\n")
+                try write("secret.txt", "ephemeral secret\n")
+                try git(["add", "Tracked.swift", ".gitignore", ".worktreeinclude"])
+                try git(["commit", "-m", "base"])
+            }
         }
 
         func prepareWorktree() async throws -> PreparedWorktree {
@@ -721,7 +871,7 @@ import XCTest
             let coordinator = WorkspaceRootReusableSnapshotCoordinator(gitService: git, authority: authority)
             guard case .admitted = await coordinator.observeAuthoritativeFullLoad(
                 rootURL: root,
-                authoritativeRelativeFilePaths: [".gitignore", ".worktreeinclude", "Tracked.swift"]
+                authoritativeRelativeFilePaths: expectedTargetFiles.sorted()
             ) else {
                 throw XCTSkip("Reusable snapshot admission unavailable")
             }
@@ -839,6 +989,18 @@ import XCTest
 
         func cleanup() {
             try? FileManager.default.removeItem(at: sandbox)
+        }
+    }
+
+    private actor PendingSeededReadRecorder {
+        private var rootIDs: [UUID] = []
+
+        func record(_ rootID: UUID) {
+            rootIDs.append(rootID)
+        }
+
+        func snapshot() -> [UUID] {
+            rootIDs
         }
     }
 

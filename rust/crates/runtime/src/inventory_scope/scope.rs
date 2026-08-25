@@ -18,7 +18,7 @@
 //! comments) is built by `state_machine::attempt_patch`/`rebuild_generation`, not by this file --
 //! this file only orchestrates *when* those functions run, unchanged from P4-3a.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
@@ -27,16 +27,22 @@ use crate::inventory::{InventoryFileRecord, InventoryFolderRecord, InventoryUuid
 use crate::{EventClass, EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, SubscriptionHub};
 
 use super::bulk_load::{BulkLoadError, BulkLoadTable};
+use super::composition::{
+    ComposedCatalogArtifact, ComposedRootDescriptor, ComposedSnapshotPage, CompositionAccounting,
+};
 use super::delta::{InventoryDeltaCommand, InventoryDeltaReceipt};
 use super::diagnostics::{HandleDiagnostics, InventoryDiagnosticsV1, RootDiagnostics};
 use super::fallback::{
     InventoryApplyOutcome, InventoryRejectionReason, RootCatalogShardFallbackReason,
 };
-use super::handles::{HandleReadOutcome, HandleTable, InvalidationReason};
+use super::handles::{
+    ComposedHandleReadOutcome, ComposedHandleTable, HandleReadOutcome, HandleTable,
+    InvalidationReason,
+};
 use super::identity_maps::IdentityMaps;
 use super::ids::{
-    BulkLoadId, GenerationToken, InventoryScopeId, RootId, RootLifetimeId, SnapshotHandleId,
-    UuidMinter,
+    BulkLoadId, ComposedSnapshotHandleId, GenerationToken, InventoryScopeId, RootId,
+    RootLifetimeId, SnapshotHandleId, UuidMinter,
 };
 use super::ingress_gate;
 use super::state_machine::{self, PatchAttempt, RootState};
@@ -76,8 +82,11 @@ pub enum ScopeError {
     IdentityMismatch,
     ScopeClosed,
     UnknownRoot,
+    DuplicateRoot,
     LifetimeMismatch,
+    GenerationMismatch,
     NoPublishedGeneration,
+    InvalidComposition,
 }
 
 /// `InventoryScope::snapshot_page`'s return shape. Fixes a gap `WorkspaceInventoryScopeShadowForwarder`
@@ -155,7 +164,11 @@ struct ScopeState {
     closed: bool,
     roots: HashMap<RootId, RootState>,
     handles: HandleTable,
+    composed_handles: ComposedHandleTable,
     bulk_loads: BulkLoadTable,
+    single_shard_composition_reuse_count: u64,
+    generic_merge_element_visit_count: u64,
+    identity_invalidation_epoch: u64,
 }
 
 /// P4-4b: where this scope publishes event-plane notifications (contract doc §5b). `Option`
@@ -183,12 +196,14 @@ pub struct InventoryScope {
     state: Mutex<ScopeState>,
     longest_critical_section_nanos: AtomicU64,
     rebuild_test_barrier: Mutex<Option<Arc<Barrier>>>,
+    composition_test_barrier: Mutex<Option<Arc<Barrier>>>,
     force_stale_base_once: AtomicBool,
     /// Set immediately before parking on a test-installed rebuild barrier, cleared immediately
     /// after. Lets a concurrency test spin-wait deterministically for "the writer has released
     /// the lock and is now parked in the expensive compute phase" without a wall-clock sleep or
     /// a race where the test's read loop finishes before the writer even starts.
     parked_on_rebuild_barrier: AtomicBool,
+    parked_on_composition_barrier: AtomicBool,
     event_sink: Mutex<Option<InventoryEventSink>>,
     /// Mirrors `rebuild_test_barrier`/`parked_on_rebuild_barrier` exactly, for the same reason:
     /// `inventory_scope_event_lock_ordering.rs` needs a way to park a publish call
@@ -263,12 +278,18 @@ impl InventoryScope {
                 closed: false,
                 roots: HashMap::new(),
                 handles: HandleTable::new(),
+                composed_handles: ComposedHandleTable::new(),
                 bulk_loads: BulkLoadTable::new(),
+                single_shard_composition_reuse_count: 0,
+                generic_merge_element_visit_count: 0,
+                identity_invalidation_epoch: 0,
             }),
             longest_critical_section_nanos: AtomicU64::new(0),
             rebuild_test_barrier: Mutex::new(None),
+            composition_test_barrier: Mutex::new(None),
             force_stale_base_once: AtomicBool::new(false),
             parked_on_rebuild_barrier: AtomicBool::new(false),
+            parked_on_composition_barrier: AtomicBool::new(false),
             event_sink: Mutex::new(None),
             publish_test_barrier: Mutex::new(None),
             parked_on_publish_barrier: AtomicBool::new(false),
@@ -347,6 +368,9 @@ impl InventoryScope {
                 state
                     .handles
                     .invalidate_for_root(root_id, InvalidationReason::RootClosed);
+                state
+                    .composed_handles
+                    .invalidate_for_root(root_id, InvalidationReason::RootClosed);
                 state.bulk_loads.abort_all_for_root(root_id);
             }
             state.roots.insert(
@@ -394,6 +418,9 @@ impl InventoryScope {
                     state
                         .handles
                         .invalidate_for_root(root_id, InvalidationReason::RootClosed);
+                    state
+                        .composed_handles
+                        .invalidate_for_root(root_id, InvalidationReason::RootClosed);
                     state.bulk_loads.abort_all_for_root(root_id);
                     Ok(RootUnloadReceipt {
                         root_id,
@@ -419,8 +446,11 @@ impl InventoryScope {
         }
         self.with_state(|state| {
             state.closed = true;
-            state
+            let _ = state
                 .handles
+                .invalidate_all(InvalidationReason::ScopeClosed);
+            let _ = state
+                .composed_handles
                 .invalidate_all(InvalidationReason::ScopeClosed);
             state.roots.clear();
         });
@@ -432,9 +462,20 @@ impl InventoryScope {
     /// scope); it is the operation CoreRuntime later calls.
     pub fn invalidate_all_for_identity_change(&self) {
         self.with_state(|state| {
-            state
+            state.identity_invalidation_epoch = state.identity_invalidation_epoch.saturating_add(1);
+            let mut drained_generations = state
                 .handles
-                .invalidate_all(InvalidationReason::IdentityChanged)
+                .invalidate_all(InvalidationReason::IdentityChanged);
+            drained_generations.extend(
+                state
+                    .composed_handles
+                    .invalidate_all(InvalidationReason::IdentityChanged),
+            );
+            for (root_id, generation_number) in drained_generations {
+                if let Some(root) = state.roots.get_mut(&root_id) {
+                    root.note_handle_closed_for_generation(generation_number);
+                }
+            }
         });
         // Best-effort per `publish_events`'s doc comment, and in this specific case usually a
         // guaranteed no-op through the hub: the real call sequence for a process-wide identity
@@ -538,6 +579,9 @@ impl InventoryScope {
                             state
                                 .handles
                                 .refcount_for_generation(command.root_id, generation_number)
+                                + state
+                                    .composed_handles
+                                    .refcount_for_generation(command.root_id, generation_number)
                         });
                     let root = state
                         .roots
@@ -658,6 +702,9 @@ impl InventoryScope {
                     state
                         .handles
                         .refcount_for_generation(root_id, generation_number)
+                        + state
+                            .composed_handles
+                            .refcount_for_generation(root_id, generation_number)
                 });
                 let root = state.roots.get_mut(&root_id).expect("checked above");
                 let published = root.publish(generation, outgoing_refcount);
@@ -879,6 +926,9 @@ impl InventoryScope {
                 state
                     .handles
                     .refcount_for_generation(root_id, generation_number)
+                    + state
+                        .composed_handles
+                        .refcount_for_generation(root_id, generation_number)
             });
             let root = state.roots.get_mut(&root_id).expect("checked above");
             let published = root.publish(generation, outgoing_refcount);
@@ -998,6 +1048,167 @@ impl InventoryScope {
                 }
             }
             state.handles.close_handle(handle_id);
+        });
+    }
+
+    /// Convenience wrapper for runtime callers that only need the typed handle. The FFI boundary
+    /// uses `open_composed_snapshot_with_row_count` so registration and metadata publication are
+    /// one atomic state operation rather than a register-then-read sequence.
+    pub fn open_composed_snapshot(
+        &self,
+        identity: &RuntimeIdentity,
+        descriptors: Vec<ComposedRootDescriptor>,
+        accounting: CompositionAccounting,
+        origin_tag: &'static str,
+    ) -> Result<ComposedSnapshotHandleId, ScopeError> {
+        self.open_composed_snapshot_with_row_count(identity, descriptors, accounting, origin_tag)
+            .map(|(handle_id, _)| handle_id)
+    }
+
+    /// Atomically captures the exact ordered root-generation set, composes outside the state
+    /// mutex, then revalidates every capture before registering a typed immutable handle and
+    /// returning its exact row count. `None` generation descriptors are strict never-published
+    /// assertions, never wildcards.
+    pub fn open_composed_snapshot_with_row_count(
+        &self,
+        identity: &RuntimeIdentity,
+        descriptors: Vec<ComposedRootDescriptor>,
+        accounting: CompositionAccounting,
+        origin_tag: &'static str,
+    ) -> Result<(ComposedSnapshotHandleId, usize), ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        let mut seen = HashSet::with_capacity(descriptors.len());
+        if descriptors
+            .iter()
+            .any(|descriptor| !seen.insert(descriptor.root_id))
+        {
+            return Err(ScopeError::DuplicateRoot);
+        }
+
+        let (identity_invalidation_epoch, generations) = self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            let generations = descriptors
+                .iter()
+                .map(|descriptor| {
+                    let root = state
+                        .roots
+                        .get(&descriptor.root_id)
+                        .ok_or(ScopeError::UnknownRoot)?;
+                    if root.root_lifetime != descriptor.expected_root_lifetime {
+                        return Err(ScopeError::LifetimeMismatch);
+                    }
+                    match (descriptor.expected_generation, root.published.as_ref()) {
+                        (None, None) => Ok(None),
+                        (Some(expected), Some(generation)) if generation.generation == expected => {
+                            Ok(Some(Arc::clone(generation)))
+                        }
+                        _ => Err(ScopeError::GenerationMismatch),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((state.identity_invalidation_epoch, generations))
+        })?;
+
+        let artifact = Arc::new(
+            ComposedCatalogArtifact::compose(&descriptors, &generations)
+                .map_err(|_| ScopeError::InvalidComposition)?,
+        );
+
+        if let Some(barrier) = self
+            .composition_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            self.parked_on_composition_barrier
+                .store(true, Ordering::SeqCst);
+            barrier.wait();
+            self.parked_on_composition_barrier
+                .store(false, Ordering::SeqCst);
+        }
+
+        self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            if state.identity_invalidation_epoch != identity_invalidation_epoch {
+                return Err(ScopeError::IdentityMismatch);
+            }
+            let still_current =
+                descriptors
+                    .iter()
+                    .zip(&generations)
+                    .all(|(descriptor, captured)| {
+                        let Some(root) = state.roots.get(&descriptor.root_id) else {
+                            return false;
+                        };
+                        if root.root_lifetime != descriptor.expected_root_lifetime {
+                            return false;
+                        }
+                        match (captured, root.published.as_ref()) {
+                            (None, None) => true,
+                            (Some(captured), Some(current)) => Arc::ptr_eq(captured, current),
+                            _ => false,
+                        }
+                    });
+            if !still_current {
+                return Err(ScopeError::GenerationMismatch);
+            }
+
+            if accounting == CompositionAccounting::NormalPresentation {
+                if descriptors.len() == 1 {
+                    state.single_shard_composition_reuse_count =
+                        state.single_shard_composition_reuse_count.saturating_add(1);
+                } else if descriptors.len() > 1 {
+                    state.generic_merge_element_visit_count = state
+                        .generic_merge_element_visit_count
+                        .saturating_add(u64::try_from(artifact.len()).unwrap_or(u64::MAX));
+                }
+            }
+            let row_count = artifact.len();
+            let handle_id = state.composed_handles.open_handle(artifact, origin_tag);
+            Ok((handle_id, row_count))
+        })
+    }
+
+    #[must_use]
+    pub fn read_composed_snapshot(
+        &self,
+        handle_id: ComposedSnapshotHandleId,
+    ) -> ComposedHandleReadOutcome {
+        self.with_state(|state| state.composed_handles.read(handle_id))
+    }
+
+    /// Clone the composed artifact under the lock, then clone only the requested aligned page
+    /// outside the lock. File and entry rows always share the same offset and end boundary.
+    #[must_use]
+    pub fn composed_snapshot_page(
+        &self,
+        handle_id: ComposedSnapshotHandleId,
+        offset: usize,
+        limit: usize,
+    ) -> Result<ComposedSnapshotPage, InvalidationReason> {
+        match self.with_state(|state| state.composed_handles.read(handle_id)) {
+            ComposedHandleReadOutcome::Open { artifact } => Ok(artifact.page(offset, limit)),
+            ComposedHandleReadOutcome::HandleInvalidated { reason } => Err(reason),
+        }
+    }
+
+    pub fn close_composed_snapshot(&self, handle_id: ComposedSnapshotHandleId) {
+        self.with_state(|state| {
+            if let Some((root_id, generation_number)) = state
+                .composed_handles
+                .reused_root_and_generation_of(handle_id)
+            {
+                if let Some(root) = state.roots.get_mut(&root_id) {
+                    root.note_handle_closed_for_generation(generation_number);
+                }
+            }
+            state.composed_handles.close_handle(handle_id);
         });
     }
 
@@ -1390,6 +1601,15 @@ impl InventoryScope {
                     max_live_generation_count: root.counters.max_live_generation_count,
                 })
                 .collect();
+            let now = Instant::now();
+            let oldest_open_age = state
+                .handles
+                .oldest_open_age(now)
+                .max(state.composed_handles.oldest_open_age(now));
+            let mut origin_histogram = state.handles.origin_histogram();
+            for (origin, count) in state.composed_handles.origin_histogram() {
+                *origin_histogram.entry(origin).or_insert(0) += count;
+            }
             InventoryDiagnosticsV1 {
                 live_generation_cap_per_root: self.config.live_generation_cap,
                 max_patch_logical_mutation_count: self.config.max_patch_logical_mutation_count,
@@ -1408,12 +1628,11 @@ impl InventoryScope {
                     .values()
                     .map(|root| root.counters.backstop_count)
                     .sum(),
-                // Multi-root snapshot composition (design §4.1 item 7 -- k-way merge across
-                // roots, distinct from this step's per-root index orchestration): not built by
-                // any landed step yet; flagged for whichever later step adds multi-root snapshot
-                // composition (P4-4's read surface or beyond).
-                single_shard_composition_reuse_count: 0,
-                generic_merge_element_visit_count: 0,
+                // P4-8e-a: normal-presentation accounting only. Uncached fallback compositions
+                // are deliberately excluded so these stay comparable with the historical Swift
+                // presentation-cache diagnostics.
+                single_shard_composition_reuse_count: state.single_shard_composition_reuse_count,
+                generic_merge_element_visit_count: state.generic_merge_element_visit_count,
                 // No shadow arm exists at P4-3a (P4-5's job); the self-check testing hook below
                 // is the only reachable trigger, and it is not wired to these counters
                 // automatically -- flagged in `fallback::RootCatalogShardFallbackReason::ShadowValidationMismatch`.
@@ -1425,9 +1644,9 @@ impl InventoryScope {
                     self.longest_critical_section_nanos.load(Ordering::Relaxed),
                 ),
                 handles: HandleDiagnostics {
-                    open_count: state.handles.open_count(),
-                    oldest_open_age: state.handles.oldest_open_age(Instant::now()),
-                    origin_histogram: state.handles.origin_histogram(),
+                    open_count: state.handles.open_count() + state.composed_handles.open_count(),
+                    oldest_open_age,
+                    origin_histogram,
                 },
             }
         }))
@@ -1459,6 +1678,21 @@ impl InventoryScope {
     #[must_use]
     pub fn testing_is_parked_on_rebuild_barrier(&self) -> bool {
         self.parked_on_rebuild_barrier.load(Ordering::SeqCst)
+    }
+
+    /// Installs a one-shot barrier after composed-snapshot capture and merge, but before final
+    /// revalidation/registration. This proves composition runs outside the scope-state mutex and
+    /// makes the stale-capture path deterministic.
+    pub fn testing_install_composition_barrier(&self, barrier: Arc<Barrier>) {
+        *self
+            .composition_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(barrier);
+    }
+
+    #[must_use]
+    pub fn testing_is_parked_on_composition_barrier(&self) -> bool {
+        self.parked_on_composition_barrier.load(Ordering::SeqCst)
     }
 
     /// Installs a one-shot barrier the next `publish_events` call waits on, mirroring

@@ -87,6 +87,21 @@ actor WorkspaceInventoryScopeAuthority {
         return binding
     }
 
+    private func requireCurrentBinding(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID?,
+        expectedRustLifetimeID: String
+    ) throws -> RootBinding {
+        let binding = try requireBinding(rootID: rootID)
+        guard binding.swiftLifetimeID == expectedSwiftLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
+        }
+        guard binding.rustLifetimeID == expectedRustLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.rustLifetimeMismatch(rootID)
+        }
+        return binding
+    }
+
     // MARK: - Bulk load (initial root read; §11.3's discovery bulk-chunk path)
 
     struct BulkSeedDiscoveryResult {
@@ -231,6 +246,57 @@ actor WorkspaceInventoryScopeAuthority {
         return try await scope.openSnapshot(rootID: rootID)
     }
 
+    /// Captures the exact Rust applied-index generation already present when a Swift root becomes
+    /// visible. Opening a snapshot is metadata-only; no inventory rows cross the bridge. Rust's
+    /// published catalog generations start at zero while applied-index generations start at one
+    /// and both advance once per accepted publication, so a published snapshot's applied-index
+    /// floor is exactly `snapshot.generation + 1`. The returned value is an exclusive
+    /// republication floor, not a consumer-visible generation.
+    func republicationActivationCursor(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID?
+    ) async throws -> RepublicationActivationCursor {
+        let binding = try requireBinding(rootID: rootID)
+        guard binding.swiftLifetimeID == expectedSwiftLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
+        }
+        let scope = try await requireScope()
+        let snapshot: CoreInventorySnapshot
+        do {
+            snapshot = try await scope.openSnapshot(rootID: rootID)
+        } catch CoreBridgeError.inventoryScopeNoPublishedGeneration {
+            let current = try requireCurrentBinding(
+                rootID: rootID,
+                expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+                expectedRustLifetimeID: binding.rustLifetimeID
+            )
+            return RepublicationActivationCursor(
+                rootID: rootID,
+                swiftLifetimeID: expectedSwiftLifetimeID,
+                rootLifetimeID: current.rustLifetimeID,
+                generationFloor: 0
+            )
+        }
+        defer { Task { await snapshot.close() } }
+        let current = try requireCurrentBinding(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            expectedRustLifetimeID: binding.rustLifetimeID
+        )
+        guard snapshot.rootLifetimeID == current.rustLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.rustLifetimeMismatch(rootID)
+        }
+        guard snapshot.generation < .max else {
+            throw WorkspaceInventoryScopeAuthorityError.invalidRepublicationGenerationFloor(rootID)
+        }
+        return RepublicationActivationCursor(
+            rootID: rootID,
+            swiftLifetimeID: expectedSwiftLifetimeID,
+            rootLifetimeID: current.rustLifetimeID,
+            generationFloor: snapshot.generation + 1
+        )
+    }
+
     /// One immutable, fully-paged authority generation in Rust-published order. This is the
     /// P4-8 read contract used by Swift presentation adapters: callers receive complete ordered
     /// tables or an error, never a partial page prefix or independently reconstructed ordering.
@@ -239,6 +305,45 @@ actor WorkspaceInventoryScopeAuthority {
         let rootLifetimeID: String
         let files: [CoreInventoryFileRecordV1]
         let folders: [CoreInventoryFolderRecordV1]
+    }
+
+    struct RepublicationActivationCursor: Equatable {
+        let rootID: UUID
+        let swiftLifetimeID: UUID?
+        let rootLifetimeID: String
+        let generationFloor: UInt64
+    }
+
+    struct CompositionSource: Equatable {
+        let rootID: UUID
+        let expectedSwiftLifetimeID: UUID?
+        let rootLifetimeID: String
+        let expectedGeneration: UInt64?
+    }
+
+    struct ComposedSnapshotRead {
+        let files: [CoreInventoryFileRecordV1]
+        let snapshot: CoreInventoryComposedSnapshot
+    }
+
+    /// Returns the exact currently bound Rust lifetime for a strict never-published source. The
+    /// caller still supplies and later revalidates its complete store fence; this actor check keeps
+    /// Swift/Rust root lifetimes from being mixed before the FFI open performs its own validation.
+    func compositionSource(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID?,
+        expectedGeneration: UInt64?
+    ) throws -> CompositionSource {
+        let binding = try requireBinding(rootID: rootID)
+        guard binding.swiftLifetimeID == expectedSwiftLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
+        }
+        return CompositionSource(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            rootLifetimeID: binding.rustLifetimeID,
+            expectedGeneration: expectedGeneration
+        )
     }
 
     func readOrderedSnapshot(
@@ -303,6 +408,86 @@ actor WorkspaceInventoryScopeAuthority {
                 files: files,
                 folders: folders
             )
+        } catch {
+            await snapshot.close()
+            throw error
+        }
+    }
+
+    /// Opens and fully pages one immutable multi-root composition. The returned ARC snapshot stays
+    /// open so a cacheable search snapshot can retain the Rust artifact as its generation lease;
+    /// uncached callers close it immediately after constructing their presentation value.
+    func readComposedSnapshot(
+        sources: [CompositionSource],
+        accounting: CoreInventoryCompositionAccounting,
+        pageSize: UInt64 = 4096,
+        honorCancellation: Bool = true
+    ) async throws -> ComposedSnapshotRead {
+        guard pageSize > 0 else {
+            throw WorkspaceInventoryScopeAuthorityError.invalidPageSize(pageSize)
+        }
+        for source in sources {
+            let binding = try requireBinding(rootID: source.rootID)
+            guard binding.swiftLifetimeID == source.expectedSwiftLifetimeID else {
+                throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(source.rootID)
+            }
+            guard binding.rustLifetimeID == source.rootLifetimeID else {
+                throw WorkspaceInventoryScopeAuthorityError.rustLifetimeMismatch(source.rootID)
+            }
+        }
+
+        let scope = try await requireScope()
+        let snapshot = try await scope.openComposedSnapshot(
+            roots: sources.map { source in
+                CoreInventoryComposedRootDescriptor(
+                    rootID: source.rootID,
+                    rootLifetimeID: source.rootLifetimeID,
+                    expectedGeneration: source.expectedGeneration
+                )
+            },
+            accounting: accounting
+        )
+        do {
+            var files: [CoreInventoryFileRecordV1] = []
+            files.reserveCapacity(Int(clamping: snapshot.rowCount))
+            var offset: UInt64 = 0
+            while true {
+                if honorCancellation { try Task.checkCancellation() }
+                let page = try await snapshot.page(offset: offset, limit: pageSize)
+                if honorCancellation { try Task.checkCancellation() }
+                let expectedReturnedCount = UInt64(page.files.count)
+                guard page.returnedCount == expectedReturnedCount else {
+                    throw WorkspaceInventoryScopeAuthorityError.invalidComposedPageProgress(
+                        returnedCount: page.returnedCount,
+                        expectedReturnedCount: expectedReturnedCount
+                    )
+                }
+                files.append(contentsOf: page.files)
+                guard page.hasMore else { break }
+                guard page.returnedCount > 0 else {
+                    throw WorkspaceInventoryScopeAuthorityError.invalidComposedPageProgress(
+                        returnedCount: 0,
+                        expectedReturnedCount: expectedReturnedCount
+                    )
+                }
+                offset += page.returnedCount
+            }
+            guard UInt64(files.count) == snapshot.rowCount else {
+                throw WorkspaceInventoryScopeAuthorityError.invalidComposedRowCount(
+                    returnedCount: UInt64(files.count),
+                    expectedRowCount: snapshot.rowCount
+                )
+            }
+            for source in sources {
+                let current = try requireBinding(rootID: source.rootID)
+                guard current.swiftLifetimeID == source.expectedSwiftLifetimeID else {
+                    throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(source.rootID)
+                }
+                guard current.rustLifetimeID == source.rootLifetimeID else {
+                    throw WorkspaceInventoryScopeAuthorityError.rustLifetimeMismatch(source.rootID)
+                }
+            }
+            return ComposedSnapshotRead(files: files, snapshot: snapshot)
         } catch {
             await snapshot.close()
             throw error
@@ -379,8 +564,11 @@ enum WorkspaceInventoryScopeAuthorityError: Error, Equatable {
     case rootNotOpen(UUID)
     case swiftLifetimeMismatch(UUID)
     case rustLifetimeMismatch(UUID)
+    case invalidRepublicationGenerationFloor(UUID)
     case invalidPageSize(UInt64)
     case invalidPageProgress(rootID: UUID, returnedCount: UInt64, expectedReturnedCount: UInt64)
+    case invalidComposedPageProgress(returnedCount: UInt64, expectedReturnedCount: UInt64)
+    case invalidComposedRowCount(returnedCount: UInt64, expectedRowCount: UInt64)
 }
 
 extension WorkspaceInventoryScopeAuthorityError: LocalizedError {
@@ -392,10 +580,16 @@ extension WorkspaceInventoryScopeAuthorityError: LocalizedError {
             "Inventory scope authority Swift lifetime changed while reading root \(rootID)."
         case let .rustLifetimeMismatch(rootID):
             "Inventory scope authority Rust lifetime changed while reading root \(rootID)."
+        case let .invalidRepublicationGenerationFloor(rootID):
+            "Inventory scope authority cannot advance the republication generation floor for root \(rootID)."
         case let .invalidPageSize(pageSize):
             "Inventory scope authority snapshot page size must be positive, got \(pageSize)."
         case let .invalidPageProgress(rootID, returnedCount, expectedReturnedCount):
             "Inventory scope authority snapshot page for root \(rootID) reported \(returnedCount) records; expected \(expectedReturnedCount)."
+        case let .invalidComposedPageProgress(returnedCount, expectedReturnedCount):
+            "Inventory scope authority composed page reported \(returnedCount) records; expected \(expectedReturnedCount)."
+        case let .invalidComposedRowCount(returnedCount, expectedRowCount):
+            "Inventory scope authority composed snapshot returned \(returnedCount) records; expected \(expectedRowCount)."
         }
     }
 }

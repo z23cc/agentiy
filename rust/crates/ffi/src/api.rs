@@ -13,7 +13,8 @@ use crate::types::{
     CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1, DrainBatch,
-    FolderSuffixRequest, HostResponse, InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1,
+    FolderSuffixRequest, HostResponse, InventoryComposedSnapshotHandleV1,
+    InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1,
     InventoryDeltaDiscoveryReceiptV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
     InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
     InventoryProjectedShardRequestV1, InventoryPublishModeV1, InventoryResolveRequestV1,
@@ -1091,6 +1092,99 @@ impl CoreRuntime {
             scope.close_snapshot(runtime::inventory_scope::SnapshotHandleId::from_raw(
                 handle_id,
             ));
+            Ok(())
+        })
+    }
+
+    /// Opens one immutable stateful composition from exact root lifetime/generation descriptors.
+    /// No file, folder, entry, or shard table crosses back into Rust on this control call.
+    pub fn inventory_open_composed_snapshot(
+        &self,
+        request: InventoryComposedSnapshotRequestV1,
+    ) -> Result<InventoryComposedSnapshotHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            let scope = self.inventory_scope(&request.scope_id)?;
+            let descriptors = request
+                .roots
+                .into_iter()
+                .map(|descriptor| {
+                    Ok(runtime::inventory_scope::ComposedRootDescriptor {
+                        root_id: parse_root_id(&descriptor.root_id)?,
+                        expected_root_lifetime: parse_root_lifetime_id(
+                            &descriptor.root_lifetime_id,
+                        )?,
+                        expected_generation: descriptor.expected_generation,
+                    })
+                })
+                .collect::<Result<Vec<_>, CoreError>>()?;
+            let (handle_id, row_count) = scope.open_composed_snapshot_with_row_count(
+                &identity,
+                descriptors,
+                request.accounting.into(),
+                "ffi-composed",
+            )?;
+            Ok(InventoryComposedSnapshotHandleV1 {
+                handle_id: handle_id.raw(),
+                row_count: u64::try_from(row_count).unwrap_or(u64::MAX),
+            })
+        })
+    }
+
+    /// Pages one aligned composed artifact. The compact bulk-chunk carrier is reused with an empty
+    /// folder section; Swift derives presentation entries from these bounded file rows plus its
+    /// small root dictionary.
+    pub fn inventory_composed_snapshot_page(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        handle_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<CompactInventoryPageV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.inventory_scope(&scope_id)?;
+            let _ = &identity;
+            let offset = usize::try_from(offset).map_err(|_| CoreError::InvalidArgument)?;
+            let limit = usize::try_from(limit).map_err(|_| CoreError::InvalidArgument)?;
+            let handle_id = runtime::inventory_scope::ComposedSnapshotHandleId::from_raw(handle_id);
+            match scope.read_composed_snapshot(handle_id) {
+                runtime::inventory_scope::ComposedHandleReadOutcome::Open { artifact } => {
+                    let page = artifact.page(offset, limit);
+                    if page.files.len() != page.entries.len() {
+                        return Err(CoreError::InventoryScopeInvalidRequest {
+                            message: "inventory composed page violated row alignment".to_owned(),
+                        });
+                    }
+                    let returned_count = u64::try_from(page.files.len()).unwrap_or(u64::MAX);
+                    let has_more = offset.saturating_add(page.files.len()) < artifact.len();
+                    Ok(CompactInventoryPageV1 {
+                        bytes: runtime::inventory_scope::encode_bulk_chunk(&page.files, &[]),
+                        returned_count,
+                        has_more,
+                    })
+                }
+                runtime::inventory_scope::ComposedHandleReadOutcome::HandleInvalidated {
+                    reason,
+                } => Err(handle_invalidated(reason)),
+            }
+        })
+    }
+
+    pub fn inventory_close_composed_snapshot(
+        &self,
+        scope_id: String,
+        handle_id: u64,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let scope = self.inventory_scope(&scope_id)?;
+            scope.close_composed_snapshot(
+                runtime::inventory_scope::ComposedSnapshotHandleId::from_raw(handle_id),
+            );
             Ok(())
         })
     }
@@ -2232,6 +2326,153 @@ mod tests {
         assert!(third_folders.is_empty());
         assert_eq!(third.returned_count, 0);
         assert!(!third.has_more);
+    }
+
+    #[test]
+    fn inventory_composed_snapshot_round_trips_bounded_pages_and_idempotent_close() {
+        let (core, identity, _cancellation) = initialized_core();
+        let scope = core
+            .inventory_open_scope(
+                identity.clone(),
+                CoreInventoryScopeConfigV1 {
+                    live_generation_cap: 8,
+                    max_patch_logical_mutation_count: 1,
+                    codemap_capable_extensions: Vec::new(),
+                },
+            )
+            .expect("open scope");
+
+        let ordinary_root_id = vec![7u8; 16];
+        let mut descriptors = Vec::new();
+        for (root_seed, relative_path) in [(7u8, "B.swift"), (8u8, "A.swift")] {
+            let root_id = vec![root_seed; 16];
+            let lifetime = core
+                .inventory_open_root(InventoryRootOpenV1 {
+                    runtime_identity: identity.clone(),
+                    scope_id: scope.scope_id.clone(),
+                    root_id: root_id.clone(),
+                    name: format!("root-{root_seed}"),
+                    standardized_full_path: format!("/repo-{root_seed}"),
+                })
+                .expect("open root");
+            let bulk_load_id = core
+                .inventory_begin_bulk_load(
+                    identity.clone(),
+                    scope.scope_id.clone(),
+                    root_id.clone(),
+                    lifetime.root_lifetime_id.clone(),
+                )
+                .expect("begin bulk load");
+            core.inventory_push_bulk_chunk(
+                identity.clone(),
+                scope.scope_id.clone(),
+                bulk_load_id,
+                root_id.clone(),
+                runtime::inventory_scope::encode_bulk_chunk(
+                    &[sample_file(
+                        root_seed.wrapping_add(20),
+                        [root_seed; 16],
+                        relative_path,
+                        relative_path,
+                    )],
+                    &[],
+                ),
+            )
+            .expect("push bulk chunk");
+            let generation = core
+                .inventory_commit_bulk_load(
+                    identity.clone(),
+                    scope.scope_id.clone(),
+                    bulk_load_id,
+                    InventoryPublishModeV1::AtomicPublish,
+                )
+                .expect("commit bulk load");
+            descriptors.push(crate::types::InventoryComposedRootDescriptorV1 {
+                root_id,
+                root_lifetime_id: lifetime.root_lifetime_id,
+                expected_generation: Some(generation.generation),
+            });
+        }
+
+        let composed = core
+            .inventory_open_composed_snapshot(InventoryComposedSnapshotRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                roots: descriptors,
+                accounting: crate::types::InventoryCompositionAccountingV1::NormalPresentation,
+            })
+            .expect("open composed snapshot");
+        assert_eq!(composed.row_count, 2);
+
+        let ordinary = core
+            .inventory_open_snapshot(InventorySnapshotRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope.scope_id.clone(),
+                root_id: ordinary_root_id,
+            })
+            .expect("open ordinary snapshot");
+        assert_ne!(
+            ordinary.handle_id, composed.handle_id,
+            "ordinary and composed handles must occupy disjoint raw-ID namespaces"
+        );
+        core.inventory_composed_snapshot_page(
+            identity.clone(),
+            scope.scope_id.clone(),
+            ordinary.handle_id,
+            0,
+            1,
+        )
+        .expect_err("ordinary handle must fail closed at composed page API");
+        core.inventory_snapshot_page(
+            identity.clone(),
+            scope.scope_id.clone(),
+            composed.handle_id,
+            0,
+            1,
+        )
+        .expect_err("composed handle must fail closed at ordinary page API");
+
+        let first = core
+            .inventory_composed_snapshot_page(
+                identity.clone(),
+                scope.scope_id.clone(),
+                composed.handle_id,
+                0,
+                1,
+            )
+            .expect("first composed page");
+        let (first_files, first_folders) =
+            runtime::inventory_scope::decode_bulk_chunk(&first.bytes).expect("decode first page");
+        assert_eq!(first_files[0].standardized_relative_path, "A.swift");
+        assert!(first_folders.is_empty());
+        assert_eq!(first.returned_count, 1);
+        assert!(first.has_more);
+
+        let second = core
+            .inventory_composed_snapshot_page(
+                identity,
+                scope.scope_id.clone(),
+                composed.handle_id,
+                1,
+                1,
+            )
+            .expect("second composed page");
+        let (second_files, second_folders) =
+            runtime::inventory_scope::decode_bulk_chunk(&second.bytes).expect("decode second page");
+        assert_eq!(second_files[0].standardized_relative_path, "B.swift");
+        assert!(second_folders.is_empty());
+        assert_eq!(second.returned_count, 1);
+        assert!(
+            !second.has_more,
+            "composed pages know the exact artifact length"
+        );
+
+        core.inventory_close_snapshot(scope.scope_id.clone(), ordinary.handle_id)
+            .expect("close ordinary snapshot");
+        core.inventory_close_composed_snapshot(scope.scope_id.clone(), composed.handle_id)
+            .expect("close composed snapshot");
+        core.inventory_close_composed_snapshot(scope.scope_id, composed.handle_id)
+            .expect("closing composed snapshot twice is idempotent");
     }
 
     #[test]

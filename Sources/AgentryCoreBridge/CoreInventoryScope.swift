@@ -118,6 +118,29 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
 
+    func inventoryOpenComposedSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        roots: [AgentryUniFFIRaw.InventoryComposedRootDescriptorV1],
+        accounting: AgentryUniFFIRaw.InventoryCompositionAccountingV1
+    ) throws -> AgentryUniFFIRaw.InventoryComposedSnapshotHandleV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
+    func inventoryComposedSnapshotPage(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
+    func inventoryCloseComposedSnapshot(scopeID: String, handleID: UInt64) throws {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
+
     func inventoryQuery(
         identity: CoreRuntimeIdentity,
         scopeID: String,
@@ -407,6 +430,52 @@ extension AgentryCoreBridge {
     func inventoryCloseSnapshot(scopeID: String, handleID: UInt64) throws {
         do {
             try transport.inventoryCloseSnapshot(scopeID: scopeID, handleID: handleID)
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryOpenComposedSnapshot(
+        scopeID: String,
+        roots: [AgentryUniFFIRaw.InventoryComposedRootDescriptorV1],
+        accounting: AgentryUniFFIRaw.InventoryCompositionAccountingV1
+    ) throws -> AgentryUniFFIRaw.InventoryComposedSnapshotHandleV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryOpenComposedSnapshot(
+                identity: identity,
+                scopeID: scopeID,
+                roots: roots,
+                accounting: accounting
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryComposedSnapshotPage(
+        scopeID: String,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryComposedSnapshotPage(
+                identity: identity,
+                scopeID: scopeID,
+                handleID: handleID,
+                offset: offset,
+                limit: limit
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryCloseComposedSnapshot(scopeID: String, handleID: UInt64) throws {
+        do {
+            try transport.inventoryCloseComposedSnapshot(scopeID: scopeID, handleID: handleID)
         } catch {
             throw mapTransportError(error)
         }
@@ -747,6 +816,24 @@ public struct CoreInventoryPathLookupResult: Sendable, Equatable {
     public let factsByPath: [String: CoreInventoryRecordFact]
 }
 
+public struct CoreInventoryComposedRootDescriptor: Sendable, Equatable {
+    public let rootID: UUID
+    public let rootLifetimeID: String
+    /// `nil` is strict: this root must still have no published generation and contributes no rows.
+    public let expectedGeneration: UInt64?
+
+    public init(rootID: UUID, rootLifetimeID: String, expectedGeneration: UInt64?) {
+        self.rootID = rootID
+        self.rootLifetimeID = rootLifetimeID
+        self.expectedGeneration = expectedGeneration
+    }
+}
+
+public enum CoreInventoryCompositionAccounting: Sendable, Equatable {
+    case normalPresentation
+    case uncachedFallback
+}
+
 public struct CoreInventoryDeltaReceipt: Sendable, Equatable {
     public enum Outcome: Sendable, Equatable {
         case patched
@@ -929,6 +1016,36 @@ public final class CoreInventoryScope: @unchecked Sendable {
             handleID: handle.handleId,
             generation: handle.generation,
             rootLifetimeID: handle.rootLifetimeId
+        )
+    }
+
+    /// Opens one stateful Rust multi-root composition from exact source descriptors. Only root
+    /// identity/lifetime/generation metadata crosses this control call; file rows remain Rust-owned
+    /// and are read through the returned bounded-page ARC lease.
+    public func openComposedSnapshot(
+        roots: [CoreInventoryComposedRootDescriptor],
+        accounting: CoreInventoryCompositionAccounting
+    ) async throws -> CoreInventoryComposedSnapshot {
+        let rawAccounting: AgentryUniFFIRaw.InventoryCompositionAccountingV1 = switch accounting {
+        case .normalPresentation: .normalPresentation
+        case .uncachedFallback: .uncachedFallback
+        }
+        let handle = try await bridge.inventoryOpenComposedSnapshot(
+            scopeID: scopeID,
+            roots: roots.map { descriptor in
+                AgentryUniFFIRaw.InventoryComposedRootDescriptorV1(
+                    rootId: coreInventoryUUIDData(descriptor.rootID),
+                    rootLifetimeId: descriptor.rootLifetimeID,
+                    expectedGeneration: descriptor.expectedGeneration
+                )
+            },
+            accounting: rawAccounting
+        )
+        return CoreInventoryComposedSnapshot(
+            bridge: bridge,
+            scopeID: scopeID,
+            handleID: handle.handleId,
+            rowCount: handle.rowCount
         )
     }
 
@@ -1165,6 +1282,63 @@ public final class CoreInventorySnapshot: @unchecked Sendable {
     }
 }
 
+// ---- CoreInventoryComposedSnapshot: distinct ARC facade over a composed handle ----------------
+
+/// Bridge-owned ARC wrapper over one Rust `ComposedSnapshotHandleId`. Its distinct type prevents
+/// root-only query/lookup methods from accidentally accepting a multi-root composition handle.
+public final class CoreInventoryComposedSnapshot: @unchecked Sendable {
+    private let bridge: AgentryCoreBridge
+    private let scopeID: String
+    private let handleID: UInt64
+    public let rowCount: UInt64
+    private let closedFlag = OSAllocatedUnfairLock(initialState: false)
+
+    init(bridge: AgentryCoreBridge, scopeID: String, handleID: UInt64, rowCount: UInt64) {
+        self.bridge = bridge
+        self.scopeID = scopeID
+        self.handleID = handleID
+        self.rowCount = rowCount
+    }
+
+    public func page(
+        offset: UInt64,
+        limit: UInt64
+    ) async throws -> (files: [CoreInventoryFileRecordV1], returnedCount: UInt64, hasMore: Bool) {
+        let page = try await bridge.inventoryComposedSnapshotPage(
+            scopeID: scopeID,
+            handleID: handleID,
+            offset: offset,
+            limit: limit
+        )
+        let (files, folders) = try CoreInventoryScopeWire.decodeBulkChunk(page.bytes)
+        guard folders.isEmpty else { throw CoreBridgeError.invalidArgument }
+        return (files, page.returnedCount, page.hasMore)
+    }
+
+    public func close() async {
+        let alreadyClosed = closedFlag.withLock { flag -> Bool in
+            let was = flag
+            flag = true
+            return was
+        }
+        guard !alreadyClosed else { return }
+        try? await bridge.inventoryCloseComposedSnapshot(scopeID: scopeID, handleID: handleID)
+    }
+
+    deinit {
+        let alreadyClosed = closedFlag.withLock { flag -> Bool in
+            let was = flag
+            flag = true
+            return was
+        }
+        guard !alreadyClosed else { return }
+        let bridge = self.bridge
+        let scopeID = self.scopeID
+        let handleID = self.handleID
+        Task { try? await bridge.inventoryCloseComposedSnapshot(scopeID: scopeID, handleID: handleID) }
+    }
+}
+
 // ---- CoreInventoryScopeEventStream: ARC-driven facade over one inventory-scope subscription ---
 
 /// One decoded inventory-scope notification (contract doc §5b's event catalog). `gap` is not a
@@ -1197,11 +1371,36 @@ public struct CoreInventoryGenerationAdvancedEventV1: Sendable, Equatable {
     public let upsertedCount: UInt64
     public let removedCount: UInt64
     public let modifiedCount: UInt64
+
+    public init(
+        rootID: UUID,
+        rootLifetimeID: String,
+        appliedIndexGeneration: UInt64,
+        catalogGeneration: UInt64?,
+        rebuiltAuthoritative: Bool,
+        upsertedCount: UInt64,
+        removedCount: UInt64,
+        modifiedCount: UInt64
+    ) {
+        self.rootID = rootID
+        self.rootLifetimeID = rootLifetimeID
+        self.appliedIndexGeneration = appliedIndexGeneration
+        self.catalogGeneration = catalogGeneration
+        self.rebuiltAuthoritative = rebuiltAuthoritative
+        self.upsertedCount = upsertedCount
+        self.removedCount = removedCount
+        self.modifiedCount = modifiedCount
+    }
 }
 
 public struct CoreInventoryRootLifecycleEventV1: Sendable, Equatable {
     public let rootID: UUID
     public let rootLifetimeID: String
+
+    public init(rootID: UUID, rootLifetimeID: String) {
+        self.rootID = rootID
+        self.rootLifetimeID = rootLifetimeID
+    }
 }
 
 /// Fixed order matching Rust's `RootCatalogShardFallbackReason::ALL` (contract doc §5c's 8-case
@@ -1234,6 +1433,11 @@ public enum CoreInventoryResnapshotReasonV1: UInt64, Sendable, Equatable, CaseIt
 public struct CoreInventoryResnapshotRequiredEventV1: Sendable, Equatable {
     public let rootID: UUID?
     public let reason: CoreInventoryResnapshotReasonV1
+
+    public init(rootID: UUID?, reason: CoreInventoryResnapshotReasonV1) {
+        self.rootID = rootID
+        self.reason = reason
+    }
 }
 
 public struct CoreInventoryScopeEventStream: AsyncSequence, Sendable {

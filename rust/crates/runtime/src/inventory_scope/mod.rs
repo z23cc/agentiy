@@ -38,7 +38,8 @@
 //! - `identity_maps`: per-root file/folder identity maps, the discoverability filter, and the two
 //!   O(1) maintained discoverable-count aggregates (§4.3.1.2, D-12).
 //! - `generation`: `RootGeneration`, the immutable `Arc`-retained published per-root artifact.
-//! - `handles`: the snapshot handle table (open/close/invalidate, DEBUG leak observability).
+//! - `composition`: immutable aligned multi-root catalog artifacts and bounded pages.
+//! - `handles`: the snapshot and composed-snapshot handle tables (open/close/invalidate, DEBUG leak observability).
 //! - `bulk_load`: `BulkLoadId` staging with abort-vs-commit terminal-state semantics.
 //! - `state_machine`: `RootState` (generation/publish bookkeeping, diagnostics counters) and the
 //!   pure patch-attempt / rebuild functions the scope orchestrates around its lock boundaries.
@@ -57,6 +58,7 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 
 pub mod bulk_load;
+pub mod composition;
 pub mod delta;
 pub mod diagnostics;
 pub mod fallback;
@@ -74,17 +76,24 @@ pub mod state_machine;
 pub mod wire;
 
 pub use bulk_load::{BulkLoadError, BulkLoadStaging, BulkLoadTable};
+pub use composition::{
+    ComposedCatalogArtifact, ComposedRootDescriptor, ComposedSnapshotPage, CompositionAccounting,
+    CompositionError,
+};
 pub use delta::{InventoryDeltaCommand, InventoryDeltaReceipt};
 pub use diagnostics::{HandleDiagnostics, InventoryDiagnosticsV1, RootDiagnostics};
 pub use fallback::{
     InventoryApplyOutcome, InventoryRejectionReason, RootCatalogShardFallbackReason,
 };
 pub use generation::RootGeneration;
-pub use handles::{HandleReadOutcome, HandleTable, InvalidationReason};
+pub use handles::{
+    ComposedHandleReadOutcome, ComposedHandleTable, HandleReadOutcome, HandleTable,
+    InvalidationReason,
+};
 pub use identity_maps::IdentityMaps;
 pub use ids::{
-    BulkLoadId, GenerationToken, InventoryScopeId, RootId, RootLifetimeId, SnapshotHandleId,
-    UuidMinter,
+    BulkLoadId, ComposedSnapshotHandleId, GenerationToken, InventoryScopeId, RootId,
+    RootLifetimeId, SnapshotHandleId, UuidMinter,
 };
 pub use path_index::{
     BuildKind, OverlayHistoryMetrics, PathIndexCandidate, ProjectedPathIndex, RelativePathBase,

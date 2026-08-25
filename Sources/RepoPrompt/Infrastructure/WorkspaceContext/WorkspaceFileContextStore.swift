@@ -374,6 +374,37 @@ actor WorkspaceFileContextStore {
         var childFileIDsByFolderID: [UUID: [UUID]]
     }
 
+    private struct InventoryScopeRepublicationActivationCapture {
+        let id: UUID
+        let swiftLifetimeID: UUID
+        let logicalGenerationFloor: UInt64
+    }
+
+    private struct InventoryScopeRepublicationActivation {
+        let swiftLifetimeID: UUID
+        let rustLifetimeID: String
+        var lastRustGeneration: UInt64
+        var lastLogicalGeneration: UInt64
+    }
+
+    private struct InventoryCatalogPublicationPermit: Equatable {
+        let id: UUID
+        let rootID: UUID
+        let rootLifetimeID: UUID
+    }
+
+    private struct InventoryScopeRepublicationSliceSourceJoinKey: Hashable {
+        let rootID: UUID
+        let swiftLifetimeID: UUID
+        let rustGeneration: UInt64
+    }
+
+    private struct InventoryScopeRepublicationSliceSourceJoinEntry {
+        let snapshotsByFileID: [UUID: WorkspaceSliceRebaseSourceSnapshot]
+        let byteCost: Int
+        let accessOrdinal: UInt64
+    }
+
     private struct PendingSeededRoot {
         let id: WorkspacePendingSeededRootID
         let token: WorkspaceSessionWorktreeOwnershipToken
@@ -402,6 +433,31 @@ actor WorkspaceFileContextStore {
         var lastAppliedWatcherWatermark: FileSystemWatcherIngressMailbox.Watermark
         var activationProof: FileSystemSeedPublicationActivationProof?
         var terminalFallbackReason: WorkspaceRootSeedFallbackReason?
+    }
+
+    private struct PendingSeededRustCatalogExpectation {
+        let filePaths: [String]
+        let folderPaths: [String]
+        let filePathSet: Set<String>
+        let folderPathSet: Set<String>
+
+        var isEmpty: Bool {
+            filePaths.isEmpty && folderPaths.isEmpty
+        }
+    }
+
+    private struct PendingSeededRustPreparationFence: Equatable {
+        let rootID: UUID
+        let lifetimeID: UUID
+        let initializationID: FileSystemSeedInitializationID
+        let authorityFence: GitWorkspacePendingInitializationAuthorityFence
+        let authorityInvalidationGeneration: UInt64
+        let authorityAcceptedMetadataWatermark: UInt64
+        let authorityMutationDepth: Int
+        let lastAppliedServicePublicationSequence: UInt64
+        let lastAppliedWatcherWatermark: FileSystemWatcherIngressMailbox.Watermark
+        let snapshotIdentity: WorkspaceRootReusableSnapshotIdentity?
+        let targetSnapshotIdentity: WorkspaceRootReusableSnapshotIdentity?
     }
 
     private struct PublishedSeededAuthorityState {
@@ -1268,6 +1324,8 @@ actor WorkspaceFileContextStore {
         private var scopedIngressBarrierWillFlushHandler: (@Sendable (UUID) async -> Void)?
         private var watcherActivationFailurePointForNewServicesForTesting: FileSystemService.WatcherActivationFailurePoint?
         private var seededShardPreparationShouldFailForTesting = false
+        private var pendingSeededRootPostOrderedReadHandler: (@Sendable (UUID) async -> Void)?
+        private var inventoryScopeContentModificationDidApplyHandler: (@Sendable (UUID, UInt64) async -> Void)?
         private var pendingSeededRootDidBecomeReadyHandler: (@Sendable (String) async -> Void)?
         private var pendingSeededRootDidActivateHandler: (@Sendable (String) async -> Void)?
         private var seededPublicationActivationShouldFailForTesting = false
@@ -1311,8 +1369,6 @@ actor WorkspaceFileContextStore {
         private var rootCatalogShardFallbackLifetimeIDsByRootID: [UUID: UUID] = [:]
         private var rootCatalogShardBackstopCountsByRootID: [UUID: Int] = [:]
         private var rootCatalogShardMaxLiveGenerationCountsByRootID: [UUID: Int] = [:]
-        private var rootCatalogShardSingleShardCompositionReuseCount = 0
-        private var rootCatalogShardGenericMergeElementVisitCount = 0
 
         func setCodemapGraphIndexBuildStartHandlerForTesting(
             _ handler: (@Sendable (WorkspaceCodemapRootEpoch) async -> Void)?
@@ -2020,6 +2076,12 @@ actor WorkspaceFileContextStore {
             seededShardPreparationShouldFailForTesting = enabled
         }
 
+        func setPendingSeededRootPostOrderedReadHandlerForTesting(
+            _ handler: (@Sendable (UUID) async -> Void)?
+        ) {
+            pendingSeededRootPostOrderedReadHandler = handler
+        }
+
         func setPendingSeededRootDidBecomeReadyHandler(
             _ handler: (@Sendable (String) async -> Void)?
         ) {
@@ -2178,8 +2240,13 @@ actor WorkspaceFileContextStore {
             return snapshots
         }
 
-        func storeWorkDiagnosticsSnapshot() -> StoreWorkDiagnosticsSnapshot {
-            StoreWorkDiagnosticsSnapshot(
+        func storeWorkDiagnosticsSnapshot() async -> StoreWorkDiagnosticsSnapshot {
+            let compositionDiagnostics: CoreInventoryDiagnosticsV1? = if let inventoryScopeAuthority {
+                try? await inventoryScopeAuthority.diagnostics()
+            } else {
+                nil
+            }
+            return StoreWorkDiagnosticsSnapshot(
                 invalidations: catalogInvalidationHistory,
                 catalogRebuild: CatalogRebuildDebugSnapshot(
                     rebuildCount: catalogRebuildCount,
@@ -2200,7 +2267,9 @@ actor WorkspaceFileContextStore {
                     lastFileCount: catalogRebuildLastFileCount,
                     lastRootCount: catalogRebuildLastRootCount
                 ),
-                rootCatalogShards: rootCatalogShardDebugSnapshot()
+                rootCatalogShards: rootCatalogShardDebugSnapshot(
+                    compositionDiagnostics: compositionDiagnostics
+                )
             )
         }
 
@@ -2260,7 +2329,9 @@ actor WorkspaceFileContextStore {
             catalogRebuildLastRootCount = rootCount
         }
 
-        private func rootCatalogShardDebugSnapshot() -> RootCatalogShardDebugSnapshot {
+        private func rootCatalogShardDebugSnapshot(
+            compositionDiagnostics: CoreInventoryDiagnosticsV1?
+        ) -> RootCatalogShardDebugSnapshot {
             var trackedRootIDs = Set(rootStatesByID.keys)
             trackedRootIDs.formUnion(publishedRootCatalogShardsByRootID.keys)
             trackedRootIDs.formUnion(rootCatalogShardWeakReferencesByRootID.keys)
@@ -2327,8 +2398,14 @@ actor WorkspaceFileContextStore {
                 publishedShardCount: publishedRootCatalogShardsByRootID.count,
                 totalBuildCount: rootCatalogShardBuildCountsByRootID.values.reduce(0, +),
                 totalBackstopCount: rootCatalogShardBackstopCountsByRootID.values.reduce(0, +),
-                singleShardCompositionReuseCount: rootCatalogShardSingleShardCompositionReuseCount,
-                genericMergeElementVisitCount: rootCatalogShardGenericMergeElementVisitCount,
+                singleShardCompositionReuseCount: Int(
+                    clamping:
+                    compositionDiagnostics?.singleShardCompositionReuseCount ?? 0
+                ),
+                genericMergeElementVisitCount: Int(
+                    clamping:
+                    compositionDiagnostics?.genericMergeElementVisitCount ?? 0
+                ),
                 // P4-8c compatibility tombstones. The Swift full-rebuild shadow is retired; the
                 // external diagnostics shape remains stable until the Rust-internal D-5 self-check
                 // has independent evidence and an explicit cutover.
@@ -2533,6 +2610,12 @@ actor WorkspaceFileContextStore {
             storeEditDeferredPublicationDidRegisterHandler = handler
         }
 
+        func setInventoryScopeContentModificationDidApplyHandlerForTesting(
+            _ handler: (@Sendable (UUID, UInt64) async -> Void)?
+        ) {
+            inventoryScopeContentModificationDidApplyHandler = handler
+        }
+
         func setSearchContentReadChunkHandlerForTesting(
             rootID: UUID,
             _ handler: (@Sendable (String) async -> Void)?
@@ -2592,6 +2675,7 @@ actor WorkspaceFileContextStore {
     private final class RootCatalogShard: @unchecked Sendable {
         let key: RootCatalogShardKey
         let root: WorkspaceRootRecord
+        let compositionSource: WorkspaceInventoryScopeAuthority.CompositionSource
         let files: [WorkspaceFileRecord]
         let projectionFiles: [RootCatalogProjectionFile]
         let projectionFileIndexByID: [UUID: Int]
@@ -2609,6 +2693,7 @@ actor WorkspaceFileContextStore {
         init(
             key: RootCatalogShardKey,
             root: WorkspaceRootRecord,
+            compositionSource: WorkspaceInventoryScopeAuthority.CompositionSource,
             files: [WorkspaceFileRecord],
             precomputedProjectionFiles: [RootCatalogProjectionFile]? = nil,
             folders: [WorkspaceFolderRecord],
@@ -2617,6 +2702,7 @@ actor WorkspaceFileContextStore {
         ) {
             self.key = key
             self.root = root
+            self.compositionSource = compositionSource
             self.files = files
             let projectionFiles = precomputedProjectionFiles ?? files
                 .compactMap { file in
@@ -2643,6 +2729,7 @@ actor WorkspaceFileContextStore {
         let authority: CodemapRootAuthority
         let key: RootCatalogShardKey
         let root: WorkspaceRootRecord
+        let compositionSource: WorkspaceInventoryScopeAuthority.CompositionSource
         let appliedIndexGeneration: UInt64
         let graphIndexInvalidationGeneration: UInt64
         let files: [WorkspaceFileRecord]
@@ -2663,12 +2750,6 @@ actor WorkspaceFileContextStore {
         init(_ shard: RootCatalogShard) {
             self.shard = shard
         }
-    }
-
-    private struct AuthoritativeCatalogComponents {
-        let files: [WorkspaceFileRecord]
-        let folders: [WorkspaceFolderRecord]
-        let entries: [WorkspaceSearchCatalogEntry]
     }
 
     private struct RootCatalogShardDeltaState {
@@ -2902,6 +2983,10 @@ actor WorkspaceFileContextStore {
     /// shard read is suspended; depth rejects reads taken inside the commit-to-publication window.
     private var inventoryCatalogMutationDepthByRootID: [UUID: Int] = [:]
     private var inventoryCatalogMutationEpochByRootID: [UUID: UInt64] = [:]
+    private var inventoryCatalogPublicationPermitsByRootID: [UUID: InventoryCatalogPublicationPermit] = [:]
+    private var inventoryCatalogPublicationPermitWaitersByRootID: [
+        UUID: [UUID: CheckedContinuation<Void, Never>]
+    ] = [:]
     private var codemapAuthorityGenerationsByRootEpoch: [WorkspaceCodemapRootEpoch: UInt64] = [:]
     private var codemapGraphIndexInvalidationGenerationsByRootEpoch: [
         WorkspaceCodemapRootEpoch: UInt64
@@ -2970,14 +3055,34 @@ actor WorkspaceFileContextStore {
     // forwarder this is not `#if DEBUG`.
     private var inventoryScopeAuthority: WorkspaceInventoryScopeAuthority?
 
-    // P4-6b republication arming (design doc §4.3): the adapter is constructed, subscribed, and
-    // merging as of this commit, but its output is deliberately routed to
-    // `republishedInventoryScopeEvents()` rather than `appliedIndexContinuations` -- see
-    // `startInventoryScopeRepublicationTaskIfNeeded`'s header comment for the two open gaps
-    // (generation-counter provenance, `modifiedFileSourceSnapshotsByID`'s synchronous-take
-    // lifetime) that keep the actual source flip a follow-on rather than part of this commit.
+    // P5-3 armed republication: the adapter is subscribed, activation-fenced, and joined with
+    // content-only slice sources, but its output remains on `republishedInventoryScopeEvents()`
+    // rather than `appliedIndexContinuations`. See `startInventoryScopeRepublicationTaskIfNeeded`
+    // for the remaining visibility/unload blockers that keep the production source flip a follow-on.
     private var inventoryScopeRepublicationTask: Task<Void, Never>?
     private var inventoryScopeRepublicationAdapter: WorkspaceInventoryScopeRepublicationAdapter?
+    private var inventoryScopeRepublicationActivationCapturesByRootID: [
+        UUID: InventoryScopeRepublicationActivationCapture
+    ] = [:]
+    private var inventoryScopeRepublicationActivationsByRootID: [
+        UUID: InventoryScopeRepublicationActivation
+    ] = [:]
+    private var stagedInventoryScopeRepublicationCandidatesByRootID: [
+        UUID: [WorkspaceInventoryScopeRepublicationCandidate]
+    ] = [:]
+    private var stagedInventoryScopeRepublicationCandidateCount = 0
+    private var inventoryScopeRepublicationForceResyncRootIDs: Set<UUID> = []
+    private var inventoryScopeRepublicationSliceSourceJoinsByKey: [
+        InventoryScopeRepublicationSliceSourceJoinKey: InventoryScopeRepublicationSliceSourceJoinEntry
+    ] = [:]
+    private var inventoryScopeRepublicationSliceSourceJoinEstimatedBytes = 0
+    private var inventoryScopeRepublicationSliceSourceJoinAccessOrdinal: UInt64 = 0
+    private var inventoryScopeRepublicationActivationRetryRootIDs: Set<UUID> = []
+    private var inventoryScopeRepublicationActivationRetryTasksByRootID: [UUID: Task<Void, Never>] = [:]
+    private static let maximumStagedInventoryScopeRepublicationCandidatesPerRoot = 64
+    private static let maximumStagedInventoryScopeRepublicationCandidateCount = 256
+    private static let maximumInventoryScopeRepublicationSliceSourceJoinCount = 64
+    private static let maximumInventoryScopeRepublicationSliceSourceJoinBytes = 32 * 1024 * 1024
     private var republishedInventoryScopeEventContinuations: [UUID: AsyncStream<WorkspaceAppliedIndexBatchEvent>.Continuation] = [:]
 
     struct WorkspaceInventoryScopeAuthorityUnavailable: Error {}
@@ -3013,28 +3118,18 @@ actor WorkspaceFileContextStore {
     ///
     /// Deliberately does **not** feed `appliedIndexContinuations` (the real `appliedIndexEvents()`
     /// stream `WorkspaceSearchService`/`WorkspaceFilesViewModel` subscribe to today via
-    /// `publishAppliedIndexEvent`). Two gaps keep that flip a follow-on rather than part of this
-    /// commit:
+    /// `publishAppliedIndexEvent`). P5-2 closes activation/generation provenance: ordinary and
+    /// seeded roots capture an exclusive Rust applied-index floor at the Swift-visibility seam,
+    /// candidates stage behind the existing mutation fence, and visible deliveries rebase onto
+    /// Swift's current logical generation with conservative resync on either-domain gaps.
     ///
-    /// 1. **Generation-counter provenance is unproven.** `publishAppliedIndexEvent` numbers
-    ///    generations from Swift's own `nextAppliedIndexGeneration(forRootID:)` counter; this
-    ///    adapter numbers them from Rust's `generationAdvanced.appliedIndexGeneration`. Nothing
-    ///    proves the two counters agree for an already-loaded root. Both consumers guard on
-    ///    `event.generation > handledGeneration` -- a silent mismatch would make that guard drop
-    ///    every event until Rust's numbering catches up, with no crash and no focused-test
-    ///    signal. `publishAppliedIndexEvent` also applies a discoverability filter
-    ///    (`isDiscoverableFileID`/`isDiscoverableFolderID`, which reads Swift-side
-    ///    `managedOnlyFileIDs`/`managedOnlyFolderIDs`) and an empty-batch suppression guard that
-    ///    this adapter path does not re-apply.
-    /// 2. **`modifiedFileSourceSnapshotsByID` assumes a co-located producer.** Design doc §4.3
-    ///    point 3 calls the merge "a local join, not a cross-cutting redesign" because
-    ///    `takeSliceRebaseSource` -- a **take**, consumed exactly once -- is called synchronously
-    ///    inside `publishAppliedIndexEvent` at the mutation call site. A second, asynchronous
-    ///    consumer subscribing to Rust's event stream cannot take the same resource without
-    ///    inventing a stash/eviction lifetime the design never specified. This method therefore
-    ///    republishes with `modifiedFileSourceSnapshotsByID` always empty: correct for every
-    ///    other field, incomplete for the one field `WorkspaceFilesViewModel`'s slice-rebase path
-    ///    needs -- which is exactly why this is armed, not flipped.
+    /// P5-3 now routes content-only modifications through Rust and joins the exact receipt
+    /// generation to the production path's one-shot `takeSliceRebaseSource` snapshot under explicit
+    /// count/byte bounds. The source flip still requires one atomic follow-on across the remaining
+    /// observable fields: managed-only discoverability/removal and legacy empty-batch suppression
+    /// must match, and unload needs a monotonic, lifetime-correct generation after Swift teardown.
+    /// Until those contracts land, this armed stream is differential evidence only and production
+    /// continues through `publishAppliedIndexEvent`.
     private func startInventoryScopeRepublicationTaskIfNeeded(authority: WorkspaceInventoryScopeAuthority) {
         guard inventoryScopeRepublicationTask == nil else { return }
         let adapter = WorkspaceInventoryScopeRepublicationAdapter { [weak self] rootID in
@@ -3046,14 +3141,392 @@ actor WorkspaceFileContextStore {
             do {
                 for try await event in stream {
                     guard let self else { return }
-                    guard let republished = await adapter.ingest(event) else { continue }
-                    await yieldRepublishedInventoryScopeEvent(republished)
+                    guard let candidate = await adapter.ingestCandidate(event) else { continue }
+                    await handleInventoryScopeRepublicationCandidate(candidate)
                 }
             } catch {
                 // Subscription ended (root/scope closed, or a genuine transport error). Nothing
                 // downstream depends on this stream in production yet (see this method's header
                 // comment), so there is nothing to resync -- the task simply exits.
             }
+        }
+    }
+
+    @discardableResult
+    private func beginInventoryScopeRepublicationActivationCapture(
+        rootID: UUID,
+        swiftLifetimeID: UUID,
+        logicalGenerationFloor: UInt64
+    ) -> UUID {
+        clearInventoryScopeRepublicationState(rootID: rootID, clearRetryState: false)
+        let id = UUID()
+        inventoryScopeRepublicationActivationCapturesByRootID[rootID] = .init(
+            id: id,
+            swiftLifetimeID: swiftLifetimeID,
+            logicalGenerationFloor: logicalGenerationFloor
+        )
+        return id
+    }
+
+    @discardableResult
+    private func completeInventoryScopeRepublicationActivation(
+        captureID: UUID,
+        cursor: WorkspaceInventoryScopeAuthority.RepublicationActivationCursor
+    ) -> Bool {
+        guard let capture = inventoryScopeRepublicationActivationCapturesByRootID[cursor.rootID],
+              capture.id == captureID,
+              cursor.swiftLifetimeID == capture.swiftLifetimeID,
+              let state = rootStatesByID[cursor.rootID],
+              state.lifetimeID == capture.swiftLifetimeID
+        else {
+            abandonInventoryScopeRepublicationActivation(rootID: cursor.rootID, captureID: captureID)
+            return false
+        }
+        inventoryScopeRepublicationActivationCapturesByRootID.removeValue(forKey: cursor.rootID)
+        inventoryScopeRepublicationActivationsByRootID[cursor.rootID] = .init(
+            swiftLifetimeID: capture.swiftLifetimeID,
+            rustLifetimeID: cursor.rootLifetimeID,
+            lastRustGeneration: cursor.generationFloor,
+            lastLogicalGeneration: capture.logicalGenerationFloor
+        )
+        flushStagedInventoryScopeRepublicationCandidates(rootID: cursor.rootID)
+        return true
+    }
+
+    private func abandonInventoryScopeRepublicationActivation(rootID: UUID, captureID: UUID) {
+        guard inventoryScopeRepublicationActivationCapturesByRootID[rootID]?.id == captureID else { return }
+        inventoryScopeRepublicationActivationCapturesByRootID.removeValue(forKey: rootID)
+        clearStagedInventoryScopeRepublicationCandidates(rootID: rootID)
+        inventoryScopeRepublicationForceResyncRootIDs.remove(rootID)
+    }
+
+    private func quarantineInventoryScopeRepublicationActivation(rootID: UUID) {
+        inventoryScopeRepublicationActivationRetryRootIDs.insert(rootID)
+    }
+
+    private func scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: UUID) {
+        guard inventoryScopeRepublicationActivationRetryRootIDs.contains(rootID),
+              inventoryScopeRepublicationActivationRetryTasksByRootID[rootID] == nil,
+              let state = rootStatesByID[rootID]
+        else { return }
+        let expectedSwiftLifetimeID = state.lifetimeID
+        inventoryScopeRepublicationActivationRetryTasksByRootID[rootID] = Task { [weak self] in
+            guard let self else { return }
+            await retryInventoryScopeRepublicationActivation(
+                rootID: rootID,
+                expectedSwiftLifetimeID: expectedSwiftLifetimeID
+            )
+        }
+    }
+
+    private func retryInventoryScopeRepublicationActivation(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID
+    ) async {
+        defer { inventoryScopeRepublicationActivationRetryTasksByRootID.removeValue(forKey: rootID) }
+        guard inventoryScopeRepublicationActivationRetryRootIDs.contains(rootID),
+              let state = rootStatesByID[rootID],
+              state.lifetimeID == expectedSwiftLifetimeID,
+              let inventoryScopeAuthority
+        else {
+            if rootStatesByID[rootID]?.lifetimeID != expectedSwiftLifetimeID {
+                inventoryScopeRepublicationActivationRetryRootIDs.remove(rootID)
+            }
+            return
+        }
+
+        let captureID = beginInventoryScopeRepublicationActivationCapture(
+            rootID: rootID,
+            swiftLifetimeID: expectedSwiftLifetimeID,
+            logicalGenerationFloor: appliedIndexGenerationsByRootID[rootID] ?? 0
+        )
+        let cursor: WorkspaceInventoryScopeAuthority.RepublicationActivationCursor
+        do {
+            cursor = try await inventoryScopeAuthority.republicationActivationCursor(
+                rootID: rootID,
+                expectedSwiftLifetimeID: expectedSwiftLifetimeID
+            )
+        } catch {
+            abandonInventoryScopeRepublicationActivation(rootID: rootID, captureID: captureID)
+            return
+        }
+        guard !Task.isCancelled,
+              inventoryScopeRepublicationActivationRetryRootIDs.contains(rootID)
+        else {
+            abandonInventoryScopeRepublicationActivation(rootID: rootID, captureID: captureID)
+            return
+        }
+
+        // Recovery may have missed any number of armed-only candidates while quarantined. The
+        // fresh cursor makes the next delivery safe, but not differentially contiguous.
+        inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+        if completeInventoryScopeRepublicationActivation(captureID: captureID, cursor: cursor) {
+            inventoryScopeRepublicationActivationRetryRootIDs.remove(rootID)
+        }
+    }
+
+    private func handleInventoryScopeRepublicationCandidate(
+        _ candidate: WorkspaceInventoryScopeRepublicationCandidate
+    ) {
+        let rootID = candidate.event.rootID
+        // Rust unload currently arrives before the legacy Swift unload batch has finished its
+        // teardown/readback path. P5-2 deliberately withholds it; monotonic unload generation is
+        // still an explicit source-flip blocker.
+        guard !candidate.event.isRootUnload else {
+            clearInventoryScopeRepublicationState(rootID: rootID)
+            return
+        }
+        if inventoryScopeRepublicationActivationCapturesByRootID[rootID] != nil {
+            stageInventoryScopeRepublicationCandidate(candidate)
+            return
+        }
+        guard let activation = inventoryScopeRepublicationActivationsByRootID[rootID],
+              candidate.rustRootLifetimeID == activation.rustLifetimeID,
+              let state = rootStatesByID[rootID],
+              state.lifetimeID == activation.swiftLifetimeID
+        else { return }
+        if (inventoryCatalogMutationDepthByRootID[rootID] ?? 0) > 0 {
+            stageInventoryScopeRepublicationCandidate(candidate)
+            return
+        }
+        yieldActivatedInventoryScopeRepublicationCandidate(candidate)
+    }
+
+    private func stageInventoryScopeRepublicationCandidate(
+        _ candidate: WorkspaceInventoryScopeRepublicationCandidate
+    ) {
+        let rootID = candidate.event.rootID
+        var staged = stagedInventoryScopeRepublicationCandidatesByRootID[rootID] ?? []
+        guard staged.count < Self.maximumStagedInventoryScopeRepublicationCandidatesPerRoot else {
+            clearStagedInventoryScopeRepublicationCandidates(rootID: rootID)
+            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            return
+        }
+        guard stagedInventoryScopeRepublicationCandidateCount
+            < Self.maximumStagedInventoryScopeRepublicationCandidateCount
+        else {
+            let affectedRootIDs = Set(stagedInventoryScopeRepublicationCandidatesByRootID.keys)
+                .union(inventoryScopeRepublicationActivationCapturesByRootID.keys)
+                .union(inventoryScopeRepublicationActivationsByRootID.keys)
+                .union([rootID])
+            stagedInventoryScopeRepublicationCandidatesByRootID.removeAll(keepingCapacity: true)
+            stagedInventoryScopeRepublicationCandidateCount = 0
+            inventoryScopeRepublicationForceResyncRootIDs.formUnion(affectedRootIDs)
+            return
+        }
+        staged.append(candidate)
+        stagedInventoryScopeRepublicationCandidatesByRootID[rootID] = staged
+        stagedInventoryScopeRepublicationCandidateCount += 1
+    }
+
+    private func flushStagedInventoryScopeRepublicationCandidates(rootID: UUID) {
+        guard (inventoryCatalogMutationDepthByRootID[rootID] ?? 0) == 0 else { return }
+        let candidates = stagedInventoryScopeRepublicationCandidatesByRootID.removeValue(forKey: rootID) ?? []
+        stagedInventoryScopeRepublicationCandidateCount -= candidates.count
+        for candidate in candidates {
+            yieldActivatedInventoryScopeRepublicationCandidate(candidate)
+        }
+    }
+
+    private func retainInventoryScopeRepublicationSliceSourceJoin(
+        rootID: UUID,
+        swiftLifetimeID: UUID,
+        rustGeneration: UInt64,
+        snapshotsByFileID: [UUID: WorkspaceSliceRebaseSourceSnapshot]
+    ) {
+        guard inventoryScopeRepublicationTask != nil,
+              rustGeneration > 0,
+              !snapshotsByFileID.isEmpty
+        else { return }
+        let validSnapshots = snapshotsByFileID.filter { fileID, snapshot in
+            snapshot.rootID == rootID
+                && snapshot.rootLifetimeID == swiftLifetimeID
+                && snapshot.fileID == fileID
+        }
+        guard validSnapshots.count == snapshotsByFileID.count else {
+            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            return
+        }
+        let key = InventoryScopeRepublicationSliceSourceJoinKey(
+            rootID: rootID,
+            swiftLifetimeID: swiftLifetimeID,
+            rustGeneration: rustGeneration
+        )
+        if let previous = inventoryScopeRepublicationSliceSourceJoinsByKey.removeValue(forKey: key) {
+            inventoryScopeRepublicationSliceSourceJoinEstimatedBytes -= previous.byteCost
+            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+        }
+        inventoryScopeRepublicationSliceSourceJoinAccessOrdinal &+= 1
+        let byteCost = validSnapshots.values.reduce(into: 0) { total, snapshot in
+            total += snapshot.text.utf8.count
+        }
+        inventoryScopeRepublicationSliceSourceJoinsByKey[key] = .init(
+            snapshotsByFileID: validSnapshots,
+            byteCost: byteCost,
+            accessOrdinal: inventoryScopeRepublicationSliceSourceJoinAccessOrdinal
+        )
+        inventoryScopeRepublicationSliceSourceJoinEstimatedBytes += byteCost
+        trimInventoryScopeRepublicationSliceSourceJoinsIfNeeded()
+    }
+
+    private func takeInventoryScopeRepublicationSliceSourceJoin(
+        rootID: UUID,
+        swiftLifetimeID: UUID,
+        rustGeneration: UInt64,
+        modifiedFileIDs: [UUID]
+    ) -> (snapshotsByFileID: [UUID: WorkspaceSliceRebaseSourceSnapshot], requiresFullResync: Bool) {
+        let staleKeys = inventoryScopeRepublicationSliceSourceJoinsByKey.keys.filter { key in
+            key.rootID == rootID
+                && (key.swiftLifetimeID != swiftLifetimeID || key.rustGeneration < rustGeneration)
+        }
+        var requiresFullResync = !staleKeys.isEmpty
+        removeInventoryScopeRepublicationSliceSourceJoins(keys: staleKeys)
+
+        let key = InventoryScopeRepublicationSliceSourceJoinKey(
+            rootID: rootID,
+            swiftLifetimeID: swiftLifetimeID,
+            rustGeneration: rustGeneration
+        )
+        guard let entry = inventoryScopeRepublicationSliceSourceJoinsByKey.removeValue(forKey: key) else {
+            return ([:], requiresFullResync)
+        }
+        inventoryScopeRepublicationSliceSourceJoinEstimatedBytes -= entry.byteCost
+        let modifiedFileIDSet = Set(modifiedFileIDs)
+        if !entry.snapshotsByFileID.keys.allSatisfy(modifiedFileIDSet.contains) {
+            requiresFullResync = true
+        }
+        return (
+            entry.snapshotsByFileID.filter { modifiedFileIDSet.contains($0.key) },
+            requiresFullResync
+        )
+    }
+
+    private func trimInventoryScopeRepublicationSliceSourceJoinsIfNeeded() {
+        while inventoryScopeRepublicationSliceSourceJoinsByKey.count
+            > Self.maximumInventoryScopeRepublicationSliceSourceJoinCount
+            || inventoryScopeRepublicationSliceSourceJoinEstimatedBytes
+            > Self.maximumInventoryScopeRepublicationSliceSourceJoinBytes
+        {
+            guard let oldest = inventoryScopeRepublicationSliceSourceJoinsByKey.min(by: {
+                $0.value.accessOrdinal < $1.value.accessOrdinal
+            }) else { break }
+            inventoryScopeRepublicationForceResyncRootIDs.insert(oldest.key.rootID)
+            removeInventoryScopeRepublicationSliceSourceJoins(keys: [oldest.key])
+        }
+    }
+
+    private func clearInventoryScopeRepublicationSliceSourceJoins(rootID: UUID) {
+        let keys = inventoryScopeRepublicationSliceSourceJoinsByKey.keys.filter { $0.rootID == rootID }
+        removeInventoryScopeRepublicationSliceSourceJoins(keys: keys)
+    }
+
+    private func removeInventoryScopeRepublicationSliceSourceJoins(
+        keys: some Sequence<InventoryScopeRepublicationSliceSourceJoinKey>
+    ) {
+        for key in keys {
+            if let removed = inventoryScopeRepublicationSliceSourceJoinsByKey.removeValue(forKey: key) {
+                inventoryScopeRepublicationSliceSourceJoinEstimatedBytes -= removed.byteCost
+            }
+        }
+    }
+
+    private func yieldActivatedInventoryScopeRepublicationCandidate(
+        _ candidate: WorkspaceInventoryScopeRepublicationCandidate
+    ) {
+        let event = candidate.event
+        guard var activation = inventoryScopeRepublicationActivationsByRootID[event.rootID],
+              candidate.rustRootLifetimeID == activation.rustLifetimeID,
+              let state = rootStatesByID[event.rootID],
+              state.lifetimeID == activation.swiftLifetimeID
+        else { return }
+
+        let rawGeneration = event.generation
+        guard rawGeneration > 0 else {
+            // Generation zero is the adapter's explicit "missing correlation" sentinel. It can
+            // describe a delayed hidden batch whose generation was lost, so it must never be
+            // rebased above an activation floor. Quarantine it and make the next exactly
+            // correlated delivery resync instead.
+            clearInventoryScopeRepublicationSliceSourceJoins(rootID: event.rootID)
+            inventoryScopeRepublicationForceResyncRootIDs.insert(event.rootID)
+            return
+        }
+        guard rawGeneration > activation.lastRustGeneration else {
+            let staleKeys = inventoryScopeRepublicationSliceSourceJoinsByKey.keys.filter { key in
+                key.rootID == event.rootID
+                    && key.swiftLifetimeID == activation.swiftLifetimeID
+                    && key.rustGeneration <= rawGeneration
+            }
+            removeInventoryScopeRepublicationSliceSourceJoins(keys: staleKeys)
+            return
+        }
+        let nextLogicalGeneration = activation.lastLogicalGeneration &+ 1
+        let logicalGeneration = max(
+            nextLogicalGeneration,
+            appliedIndexGenerationsByRootID[event.rootID] ?? nextLogicalGeneration
+        )
+        let rustGenerationIsContiguous = activation.lastRustGeneration != .max
+            && rawGeneration == activation.lastRustGeneration + 1
+        let logicalGenerationIsContiguous = logicalGeneration == nextLogicalGeneration
+        let sliceSourceJoin = takeInventoryScopeRepublicationSliceSourceJoin(
+            rootID: event.rootID,
+            swiftLifetimeID: activation.swiftLifetimeID,
+            rustGeneration: rawGeneration,
+            modifiedFileIDs: event.modifiedFileIDs
+        )
+        var modifiedFileSourceSnapshotsByID = event.modifiedFileSourceSnapshotsByID
+        var sliceSourceJoinCollision = false
+        for (fileID, snapshot) in sliceSourceJoin.snapshotsByFileID {
+            if let existing = modifiedFileSourceSnapshotsByID[fileID], existing != snapshot {
+                sliceSourceJoinCollision = true
+            }
+            modifiedFileSourceSnapshotsByID[fileID] = snapshot
+        }
+        let forceResync = inventoryScopeRepublicationForceResyncRootIDs.remove(event.rootID) != nil
+            || sliceSourceJoin.requiresFullResync
+            || sliceSourceJoinCollision
+        activation.lastRustGeneration = rawGeneration
+        activation.lastLogicalGeneration = logicalGeneration
+        inventoryScopeRepublicationActivationsByRootID[event.rootID] = activation
+
+        yieldRepublishedInventoryScopeEvent(WorkspaceAppliedIndexBatchEvent(
+            rootID: event.rootID,
+            rootPath: state.root.standardizedFullPath,
+            generation: logicalGeneration,
+            rootLifetimeID: state.lifetimeID,
+            modifiedFileSourceSnapshotsByID: modifiedFileSourceSnapshotsByID,
+            upsertedFiles: event.upsertedFiles,
+            upsertedFolders: event.upsertedFolders,
+            removedFileIDs: event.removedFileIDs,
+            removedFolderIDs: event.removedFolderIDs,
+            removedFilePaths: event.removedFilePaths,
+            removedFolderPaths: event.removedFolderPaths,
+            modifiedFileIDs: event.modifiedFileIDs,
+            modifiedFolderIDs: event.modifiedFolderIDs,
+            requiresFullResync: event.requiresFullResync
+                || forceResync
+                || !rustGenerationIsContiguous
+                || !logicalGenerationIsContiguous,
+            isRootUnload: false
+        ))
+    }
+
+    private func clearStagedInventoryScopeRepublicationCandidates(rootID: UUID) {
+        guard let candidates = stagedInventoryScopeRepublicationCandidatesByRootID.removeValue(forKey: rootID) else { return }
+        stagedInventoryScopeRepublicationCandidateCount -= candidates.count
+    }
+
+    private func clearInventoryScopeRepublicationState(
+        rootID: UUID,
+        clearRetryState: Bool = true
+    ) {
+        inventoryScopeRepublicationActivationCapturesByRootID.removeValue(forKey: rootID)
+        inventoryScopeRepublicationActivationsByRootID.removeValue(forKey: rootID)
+        clearStagedInventoryScopeRepublicationCandidates(rootID: rootID)
+        clearInventoryScopeRepublicationSliceSourceJoins(rootID: rootID)
+        inventoryScopeRepublicationForceResyncRootIDs.remove(rootID)
+        if clearRetryState {
+            inventoryScopeRepublicationActivationRetryRootIDs.remove(rootID)
+            inventoryScopeRepublicationActivationRetryTasksByRootID.removeValue(forKey: rootID)?.cancel()
         }
     }
 
@@ -3696,6 +4169,86 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    private func pendingSeededRustCatalogExpectation(
+        root: WorkspaceRootRecord,
+        indexes: RootIndexBuffers
+    ) -> PendingSeededRustCatalogExpectation? {
+        var filePaths: [String] = []
+        filePaths.reserveCapacity(indexes.filesByID.count)
+        for file in indexes.filesByID.values {
+            let path = file.standardizedRelativePath
+            guard file.rootID == root.id,
+                  !path.isEmpty,
+                  StandardizedPath.relative(path) == path
+            else { return nil }
+            filePaths.append(path)
+        }
+
+        var folderPaths: [String] = []
+        folderPaths.reserveCapacity(indexes.foldersByID.count)
+        for folder in indexes.foldersByID.values {
+            let path = folder.standardizedRelativePath
+            guard folder.rootID == root.id else { return nil }
+            if folder.id == root.id {
+                guard path.isEmpty else { return nil }
+                continue
+            }
+            guard !path.isEmpty,
+                  StandardizedPath.relative(path) == path
+            else { return nil }
+            folderPaths.append(path)
+        }
+
+        let filePathSet = Set(filePaths)
+        let folderPathSet = Set(folderPaths)
+        guard filePathSet.count == filePaths.count,
+              folderPathSet.count == folderPaths.count,
+              filePathSet.isDisjoint(with: folderPathSet)
+        else { return nil }
+        return PendingSeededRustCatalogExpectation(
+            filePaths: filePaths,
+            folderPaths: folderPaths,
+            filePathSet: filePathSet,
+            folderPathSet: folderPathSet
+        )
+    }
+
+    private func pendingSeededRustPreparationFence(
+        pendingID: WorkspacePendingSeededRootID,
+        token: WorkspaceSessionWorktreeOwnershipToken,
+        standardizedPath: String,
+        rootID: UUID,
+        lifetimeID: UUID
+    ) -> PendingSeededRustPreparationFence? {
+        guard pendingSeededRootIsCurrent(
+            pendingID,
+            token: token,
+            standardizedPath: standardizedPath,
+            expectedPhase: .preparingShard
+        ),
+            let pending = pendingSeededRootsByID[pendingID],
+            pending.state.root.id == rootID,
+            pending.state.lifetimeID == lifetimeID,
+            let authorityFence = pending.authorityFence,
+            workspaceStateAuthority.pendingInitializationAuthorityFenceIsSynchronouslyCurrent(authorityFence),
+            pending.authorityMutationDepth == 0,
+            pending.terminalFallbackReason == nil
+        else { return nil }
+        return PendingSeededRustPreparationFence(
+            rootID: rootID,
+            lifetimeID: lifetimeID,
+            initializationID: pending.initializationID,
+            authorityFence: authorityFence,
+            authorityInvalidationGeneration: pending.authorityInvalidationGeneration,
+            authorityAcceptedMetadataWatermark: pending.authorityAcceptedMetadataWatermark,
+            authorityMutationDepth: pending.authorityMutationDepth,
+            lastAppliedServicePublicationSequence: pending.lastAppliedServicePublicationSequence,
+            lastAppliedWatcherWatermark: pending.lastAppliedWatcherWatermark,
+            snapshotIdentity: pending.snapshot?.identity,
+            targetSnapshotIdentity: pending.targetPlanHandle?.snapshotIdentity
+        )
+    }
+
     private func installValidatedPendingAuthorityFence(
         _ candidate: GitWorkspacePendingInitializationAuthorityFence,
         pendingID: WorkspacePendingSeededRootID,
@@ -4058,11 +4611,95 @@ actor WorkspaceFileContextStore {
                 root: topology.state.root,
                 lifetimeID: topology.state.lifetimeID
             )
-            let components = buildPendingCatalogComponents(
+            guard let expectation = pendingSeededRustCatalogExpectation(
                 root: finalTopology.state.root,
                 indexes: finalTopology.indexes
-            )
+            ) else {
+                await fallBackPendingSeededRoot(
+                    pendingID,
+                    reason: .seededShardPreparationFailure,
+                    startupContext: startupContext
+                )
+                return .fallback(.seededShardPreparationFailure)
+            }
+            guard let preparationFence = pendingSeededRustPreparationFence(
+                pendingID: pendingID,
+                token: token,
+                standardizedPath: standardizedPath,
+                rootID: finalTopology.state.root.id,
+                lifetimeID: finalTopology.state.lifetimeID
+            ) else {
+                try requirePendingSeededRootCurrent(
+                    pendingID,
+                    token: token,
+                    standardizedPath: standardizedPath,
+                    expectedPhase: .preparingShard
+                )
+                let reason = pendingSeededRootsByID[pendingID]?.terminalFallbackReason ?? .authorityUnstable
+                await fallBackPendingSeededRoot(
+                    pendingID,
+                    reason: reason,
+                    startupContext: startupContext
+                )
+                return .fallback(reason)
+            }
+
+            // The root is still private, so the intermediate Rust generations produced by these
+            // existing per-path discovery choke points cannot reach any product reader. Ordering
+            // is deliberately not rebuilt in Swift: ancestors are minted on demand, and the one
+            // complete Rust generation read below is the sole ordering authority.
+            for folderPath in expectation.folderPaths {
+                try Task.checkCancellation()
+                await indexFolder(relativePath: folderPath, root: finalTopology.state.root)
+                try Task.checkCancellation()
+            }
+            for filePath in expectation.filePaths {
+                try Task.checkCancellation()
+                await indexFile(relativePath: filePath, root: finalTopology.state.root)
+                try Task.checkCancellation()
+            }
+            guard let authoritativeEntries = try await readVerifiedPendingSeededRootEntries(
+                root: finalTopology.state.root,
+                lifetimeID: finalTopology.state.lifetimeID,
+                expectation: expectation
+            ) else {
+                await fallBackPendingSeededRoot(
+                    pendingID,
+                    reason: .seededShardPreparationFailure,
+                    startupContext: startupContext
+                )
+                return .fallback(.seededShardPreparationFailure)
+            }
             #if DEBUG
+                if let pendingSeededRootPostOrderedReadHandler {
+                    await pendingSeededRootPostOrderedReadHandler(finalTopology.state.root.id)
+                }
+            #endif
+            try Task.checkCancellation()
+            try requirePendingSeededRootCurrent(
+                pendingID,
+                token: token,
+                standardizedPath: standardizedPath,
+                expectedPhase: .preparingShard
+            )
+            guard pendingSeededRustPreparationFence(
+                pendingID: pendingID,
+                token: token,
+                standardizedPath: standardizedPath,
+                rootID: finalTopology.state.root.id,
+                lifetimeID: finalTopology.state.lifetimeID
+            ) == preparationFence else {
+                let reason = pendingSeededRootsByID[pendingID]?.terminalFallbackReason ?? .authorityUnstable
+                await fallBackPendingSeededRoot(
+                    pendingID,
+                    reason: reason,
+                    startupContext: startupContext
+                )
+                return .fallback(reason)
+            }
+            #if DEBUG
+                // P4-8d moves this fault after Rust seed/read verification so the rollback test
+                // proves that a fully materialized hidden generation is synchronously closed.
                 if seededShardPreparationShouldFailForTesting {
                     await fallBackPendingSeededRoot(
                         pendingID,
@@ -4072,23 +4709,16 @@ actor WorkspaceFileContextStore {
                     return .fallback(.seededShardPreparationFailure)
                 }
             #endif
-            // P4-6b reroute, P4-7c c1 update: `WorkspaceSeededRootReplayValidator.evaluate` (no
-            // C-engine dependency, `Models/WorkspaceSeededRootReplayVerdict.swift`) is kept purely
-            // for its validation side effect -- it is the diff-seeded fast path's own correctness
-            // self-check (replayed diff vs. cached base snapshot), not a search-index nicety. A
-            // `.disagrees` verdict means the replay disagreed with the snapshot and must fall back
-            // to the ordinary full crawl, exactly as before this reroute. No index object is ever
-            // constructed on this path any more -- Rust builds its own path-search index
-            // internally from the seeded records below (contract doc §5.2/§11; the already-ported
-            // orchestration in `rust/crates/runtime/src/inventory_scope/path_index/`), so no
-            // Swift-side `WorkspaceSearchRootPathIndex`/`RootCatalogShard` is constructed for this
-            // root.
+
+            // The diff-seeded path's correctness self-check now consumes entries from the verified
+            // Rust generation rather than a Swift-sorted projection of RootIndexBuffers. A
+            // disagreement still takes the ordinary one-shot full-crawl fallback.
             guard case let .agrees(replayStatistics) = WorkspaceSeededRootReplayValidator.evaluate(
                 snapshot: snapshot,
                 planHandle: planHandle,
                 additionalChangedRelativePaths: replay.changedRelativePaths,
                 root: finalTopology.state.root,
-                authoritativeEntries: components.entries
+                authoritativeEntries: authoritativeEntries
             ) else {
                 await fallBackPendingSeededRoot(
                     pendingID,
@@ -4097,23 +4727,12 @@ actor WorkspaceFileContextStore {
                 )
                 return .fallback(.seededShardPreparationFailure)
             }
-            // Seed Rust with the validated record set via the same per-item discovery choke
-            // points (`indexFolder`/`indexFile`) the live watcher-driven crawl path already uses
-            // -- not a bulk-discovery call, because a single fresh root's folders can reference
-            // sibling folders minted in the same batch, and the per-item path's recursive
-            // `ensureRustFolderID` walk already resolves that correctly and is proven in
-            // production. Folders first (order does not matter for correctness -- ancestors are
-            // minted on demand -- only for avoiding redundant lookups).
-            for folder in components.folders {
-                await indexFolder(relativePath: folder.relativePath, root: finalTopology.state.root)
-            }
-            for file in components.files {
-                await indexFile(relativePath: file.relativePath, root: finalTopology.state.root)
-            }
+            try Task.checkCancellation()
             guard var ready = pendingSeededRootsByID[pendingID],
                   ready.phase == .preparingShard,
                   ready.state.root.id == topology.state.root.id,
-                  ready.state.lifetimeID == topology.state.lifetimeID
+                  ready.state.lifetimeID == topology.state.lifetimeID,
+                  ready.terminalFallbackReason == nil
             else { throw WorkspaceSessionWorktreeOwnershipError.staleUpdate }
 
             ready.state = finalTopology.state
@@ -5452,6 +6071,49 @@ actor WorkspaceFileContextStore {
             }
         }
 
+        // P5-2: every pending ingress is now paused and its activation proof revalidated. Capture
+        // each metadata-only Rust applied-index floor here, after the last suspending mutation
+        // source and immediately before the synchronous authority publication permit. Resuming
+        // the drains inside that permit cannot reenter this store actor before visible-state
+        // assignment and activation complete below.
+        var republicationActivationsByRootID: [
+            UUID: (
+                captureID: UUID,
+                cursor: WorkspaceInventoryScopeAuthority.RepublicationActivationCursor
+            )
+        ] = [:]
+        var republicationActivationRetryRootIDs = Set<UUID>()
+        if let inventoryScopeAuthority {
+            for pending in pendingRoots {
+                let rootID = pending.state.root.id
+                let captureID = beginInventoryScopeRepublicationActivationCapture(
+                    rootID: rootID,
+                    swiftLifetimeID: pending.state.lifetimeID,
+                    logicalGenerationFloor: 0
+                )
+                if let cursor = try? await inventoryScopeAuthority.republicationActivationCursor(
+                    rootID: rootID,
+                    expectedSwiftLifetimeID: pending.state.lifetimeID
+                ) {
+                    republicationActivationsByRootID[rootID] = (captureID, cursor)
+                } else {
+                    abandonInventoryScopeRepublicationActivation(
+                        rootID: rootID,
+                        captureID: captureID
+                    )
+                    republicationActivationRetryRootIDs.insert(rootID)
+                }
+            }
+        }
+        defer {
+            for (rootID, activation) in republicationActivationsByRootID {
+                abandonInventoryScopeRepublicationActivation(
+                    rootID: rootID,
+                    captureID: activation.captureID
+                )
+            }
+        }
+
         guard pendingRoots.compactMap(\.authorityFence).count == pendingRoots.count else {
             throw WorkspaceSessionWorktreeOwnershipError.staleUpdate
         }
@@ -5497,9 +6159,10 @@ actor WorkspaceFileContextStore {
                     lifetimeID: pending.state.lifetimeID,
                     standardizedPhysicalPath: pending.standardizedPath
                 )
-                // P4-6b reroute: no `commit(pending.indexes)` / shard-cache registration --
-                // Rust was already seeded with this root's validated record set during
-                // `preparePendingSeededRoot` (which could await; this permit closure cannot).
+                // P4-6b/P4-8d reroute: no `commit(pending.indexes)` / shard-cache registration --
+                // Rust was already seeded and its complete ordered generation was exact-verified
+                // against this root's replay during preparation (which could await; this permit
+                // closure cannot).
                 // This mirrors the ordinary crawl path's own "go live" step (`loadRoot`'s tail),
                 // which also does no local-table commit and no shard registration post-cutover.
                 rootIDsByStandardizedPath[pending.standardizedPath] = root.id
@@ -5566,6 +6229,19 @@ actor WorkspaceFileContextStore {
         // uninterrupted store-actor turn: no other store operation can observe published
         // roots before their path-match snapshots are invalidated.
         if didPublish {
+            for (rootID, activation) in republicationActivationsByRootID {
+                guard newlyPublishedRootIDs.contains(rootID) else { continue }
+                if !completeInventoryScopeRepublicationActivation(
+                    captureID: activation.captureID,
+                    cursor: activation.cursor
+                ) {
+                    republicationActivationRetryRootIDs.insert(rootID)
+                }
+            }
+            for rootID in republicationActivationRetryRootIDs where newlyPublishedRootIDs.contains(rootID) {
+                quarantineInventoryScopeRepublicationActivation(rootID: rootID)
+                scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: rootID)
+            }
             invalidatePathMatchSnapshot(
                 affectedRootKinds: [.sessionWorktree],
                 reason: .rootLoad,
@@ -6451,6 +7127,79 @@ actor WorkspaceFileContextStore {
         func finishInventoryCatalogMutationPublicationFenceForTesting(rootID: UUID) {
             guard (inventoryCatalogMutationDepthByRootID[rootID] ?? 0) > 0 else { return }
             finishInventoryCatalogMutationPublicationFence(rootID: rootID)
+        }
+
+        func configureInventoryScopeRepublicationActivationForTesting(
+            rootID: UUID,
+            rustLifetimeID: String,
+            rustGenerationFloor: UInt64,
+            logicalGenerationFloor: UInt64
+        ) throws {
+            let state = try state(for: rootID)
+            let captureID = beginInventoryScopeRepublicationActivationCapture(
+                rootID: rootID,
+                swiftLifetimeID: state.lifetimeID,
+                logicalGenerationFloor: logicalGenerationFloor
+            )
+            completeInventoryScopeRepublicationActivation(
+                captureID: captureID,
+                cursor: .init(
+                    rootID: rootID,
+                    swiftLifetimeID: state.lifetimeID,
+                    rootLifetimeID: rustLifetimeID,
+                    generationFloor: rustGenerationFloor
+                )
+            )
+        }
+
+        func injectInventoryScopeRepublicationCandidateForTesting(
+            rustLifetimeID: String?,
+            event: WorkspaceAppliedIndexBatchEvent
+        ) {
+            handleInventoryScopeRepublicationCandidate(.init(
+                rustRootLifetimeID: rustLifetimeID,
+                event: event
+            ))
+        }
+
+        func quarantineInventoryScopeRepublicationActivationForTesting(rootID: UUID) throws {
+            _ = try state(for: rootID)
+            clearInventoryScopeRepublicationState(rootID: rootID, clearRetryState: false)
+            quarantineInventoryScopeRepublicationActivation(rootID: rootID)
+            scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: rootID)
+        }
+
+        func inventoryScopeRepublicationActivationForTesting(
+            rootID: UUID
+        ) -> (rustLifetimeID: String, lastRustGeneration: UInt64)? {
+            guard let activation = inventoryScopeRepublicationActivationsByRootID[rootID] else { return nil }
+            return (activation.rustLifetimeID, activation.lastRustGeneration)
+        }
+
+        func retainInventoryScopeRepublicationSliceSourceJoinForTesting(
+            rootID: UUID,
+            rustGeneration: UInt64,
+            snapshot: WorkspaceSliceRebaseSourceSnapshot
+        ) throws {
+            let state = try state(for: rootID)
+            retainInventoryScopeRepublicationSliceSourceJoin(
+                rootID: rootID,
+                swiftLifetimeID: state.lifetimeID,
+                rustGeneration: rustGeneration,
+                snapshotsByFileID: [snapshot.fileID: snapshot]
+            )
+        }
+
+        func inventoryScopeRepublicationSliceSourceJoinCountForTesting() -> Int {
+            inventoryScopeRepublicationSliceSourceJoinsByKey.count
+        }
+
+        func maximumInventoryScopeRepublicationSliceSourceJoinCountForTesting() -> Int {
+            Self.maximumInventoryScopeRepublicationSliceSourceJoinCount
+        }
+
+        func inventoryCatalogPublicationPermitWaiterCountForTesting(rootID: UUID) -> Int {
+            inventoryCatalogPublicationPermitWaitersByRootID[rootID]?.count ?? 0
         }
 
         func setRootCatalogShardPostAuthorityReadHandlerForTesting(
@@ -7673,13 +8422,15 @@ actor WorkspaceFileContextStore {
         #else
             let preparedShards = await prepareAndPublishRootCatalogShardBatch(for: roots, requirement: requirement)
         #endif
-        if let shards = preparedShards {
-            snapshot = composeSearchCatalogSnapshot(
-                rootScope: rootScope,
-                generation: generation,
-                roots: roots,
-                shards: shards
-            )
+        if let shards = preparedShards,
+           let composed = await composeSearchCatalogSnapshot(
+               rootScope: rootScope,
+               generation: generation,
+               roots: roots,
+               shards: shards
+           )
+        {
+            snapshot = composed
             shouldCacheSnapshot = true
         } else {
             #if DEBUG
@@ -8030,6 +8781,75 @@ actor WorkspaceFileContextStore {
         return shard
     }
 
+    /// P4-8d pending-root verification seam. The root is still invisible while its existing
+    /// per-path discovery choke points seed Rust. This read proves that one complete immutable Rust
+    /// generation contains exactly the locally replayed file/folder path sets and returns only the
+    /// Rust-ordered entries needed by the replay validator. It never publishes, caches, leases, or
+    /// increments catalog-shard diagnostics.
+    private func readVerifiedPendingSeededRootEntries(
+        root: WorkspaceRootRecord,
+        lifetimeID: UUID,
+        expectation: PendingSeededRustCatalogExpectation
+    ) async throws -> [WorkspaceSearchCatalogEntry]? {
+        let authority: WorkspaceInventoryScopeAuthority
+        do {
+            authority = try await inventoryScopeAuthorityInstance()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+
+        let read: WorkspaceInventoryScopeAuthority.OrderedSnapshotRead
+        do {
+            read = try await authority.readOrderedSnapshot(
+                rootID: root.id,
+                expectedSwiftLifetimeID: lifetimeID
+            )
+        } catch CoreBridgeError.inventoryScopeNoPublishedGeneration {
+            try Task.checkCancellation()
+            return expectation.isEmpty ? [] : nil
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+        try Task.checkCancellation()
+
+        guard read.files.allSatisfy({ file in
+            file.rootID == root.id
+                && !file.standardizedRelativePath.isEmpty
+                && StandardizedPath.relative(file.standardizedRelativePath) == file.standardizedRelativePath
+        }),
+            read.folders.allSatisfy({ folder in
+                folder.rootID == root.id
+                    && folder.id != root.id
+                    && !folder.standardizedRelativePath.isEmpty
+                    && StandardizedPath.relative(folder.standardizedRelativePath) == folder.standardizedRelativePath
+            })
+        else { return nil }
+
+        let filePaths = read.files.map(\.standardizedRelativePath)
+        let folderPaths = read.folders.map(\.standardizedRelativePath)
+        let filePathSet = Set(filePaths)
+        let folderPathSet = Set(folderPaths)
+        guard filePathSet.count == filePaths.count,
+              folderPathSet.count == folderPaths.count,
+              filePathSet.isDisjoint(with: folderPathSet),
+              filePathSet == expectation.filePathSet,
+              folderPathSet == expectation.folderPathSet,
+              filePaths.count == expectation.filePaths.count,
+              folderPaths.count == expectation.folderPaths.count
+        else { return nil }
+
+        let files = read.files.map(WorkspaceInventoryScopeRepublicationAdapter.workspaceFileRecord)
+        let folders = read.folders.map(WorkspaceInventoryScopeRepublicationAdapter.workspaceFolderRecord)
+        guard recordsAreOrdered(files, by: WorkspaceInventoryOrdering.searchRootCatalogFilePrecedes),
+              recordsAreOrdered(folders, by: rustPublishedCatalogFolderPrecedes)
+        else { return nil }
+        return files.map { WorkspaceSearchCatalogEntry(file: $0, root: root) }
+    }
+
     /// P4-8c shared read/materialization seam. Both published and uncached fallback shards consume
     /// one complete immutable Rust generation, stable-filter visibility, map presentation records,
     /// synthesize the root marker, and materialize aligned entries without Swift dictionaries or
@@ -8056,6 +8876,23 @@ actor WorkspaceFileContextStore {
             read = nil
         } catch {
             return nil
+        }
+
+        let compositionSource: WorkspaceInventoryScopeAuthority.CompositionSource
+        if let read {
+            compositionSource = WorkspaceInventoryScopeAuthority.CompositionSource(
+                rootID: root.id,
+                expectedSwiftLifetimeID: key.lifetimeID,
+                rootLifetimeID: read.rootLifetimeID,
+                expectedGeneration: read.generation
+            )
+        } else {
+            guard let strictEmptySource = try? await authority.compositionSource(
+                rootID: root.id,
+                expectedSwiftLifetimeID: key.lifetimeID,
+                expectedGeneration: nil
+            ) else { return nil }
+            compositionSource = strictEmptySource
         }
 
         let coreFiles = read?.files ?? []
@@ -8114,6 +8951,7 @@ actor WorkspaceFileContextStore {
         return RootCatalogShard(
             key: key,
             root: root,
+            compositionSource: compositionSource,
             files: files,
             folders: folders,
             entries: entries,
@@ -8509,10 +9347,10 @@ actor WorkspaceFileContextStore {
         }
     #endif
 
-    /// P4-8c uncached best-effort fallback. It shares Rust ordered-root materialization with the
-    /// publication path but deliberately owns no publication side effects: temporary shards are
-    /// not registered, leased, counted, or cached. Failed or fence-stale roots contribute no rows;
-    /// the public roots metadata remains unchanged, matching the predecessor fallback contract.
+    /// P4-8e-b uncached best-effort fallback. Temporary per-root shards remain unregistered and
+    /// unleased, but their exact Rust lifetime/generation descriptors now feed the same stateful
+    /// Rust composition core as the cacheable path. Failed or fence-stale roots contribute no rows;
+    /// the composed handle is closed before return and Rust records no normal-presentation count.
     private func buildUncachedOrderedSearchCatalogSnapshot(
         rootScope: WorkspaceLookupRootScope,
         generation: UInt64,
@@ -8549,9 +9387,6 @@ actor WorkspaceFileContextStore {
             }
         }
 
-        // A root read earlier in the loop can change while a later root pages. Keep only roots whose
-        // complete Swift fence still matches, without retrying or turning this uncached fallback into
-        // an unbounded polling loop.
         var shards: [RootCatalogShard] = []
         shards.reserveCapacity(temporaryShardsByRootID.count)
         for root in roots {
@@ -8562,94 +9397,129 @@ actor WorkspaceFileContextStore {
             shards.append(shard)
         }
 
-        let merged: (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry]) = if let shard = shards.first, shards.count == 1 {
-            (shard.files, shard.entries)
-        } else {
-            mergeRootCatalogShards(shards)
+        var files: [WorkspaceFileRecord] = []
+        var entries: [WorkspaceSearchCatalogEntry] = []
+        if let authority = try? await inventoryScopeAuthorityInstance(),
+           let read = try? await authority.readComposedSnapshot(
+               sources: shards.map(\.compositionSource),
+               accounting: .uncachedFallback,
+               honorCancellation: false
+           )
+        {
+            let fencesRemainCurrent = shards.allSatisfy { shard in
+                guard let root = roots.first(where: { $0.id == shard.key.rootID }),
+                      let captured = capturedFencesByRootID[root.id]
+                else { return false }
+                return rootCatalogShardBatchFence(for: root, allowActiveInventoryMutation: true) == captured
+            }
+            if fencesRemainCurrent,
+               let presentation = composedCatalogPresentation(coreFiles: read.files, roots: roots),
+               presentation.files.count == shards.reduce(0, { $0 + $1.files.count })
+            {
+                files = presentation.files
+                entries = presentation.entries
+            }
+            await read.snapshot.close()
         }
+
         let diagnostics = WorkspaceCatalogDiagnostics(
             generation: generation,
             rootScope: rootScope,
             rootCount: roots.count,
             folderCount: shards.reduce(0) { $0 + $1.folderCount },
-            fileCount: merged.files.count
+            fileCount: files.count
         )
         return WorkspaceSearchCatalogSnapshot(
             generation: generation,
             rootScope: rootScope,
             roots: roots,
-            files: merged.files,
-            entries: merged.entries,
+            files: files,
+            entries: entries,
             diagnostics: diagnostics
         )
     }
 
-    /// Builds the publication payload for a hidden root without consulting any
-    /// globally visible store map. This is the catalog half of the 8D atomic
-    /// root publication invariant.
-    private func buildPendingCatalogComponents(
-        root: WorkspaceRootRecord,
-        indexes: RootIndexBuffers
-    ) -> AuthoritativeCatalogComponents {
-        let components = WorkspaceInventoryCatalogBuilders.buildPendingCatalogComponents(
-            root: root,
-            filesByID: indexes.filesByID,
-            foldersByID: indexes.foldersByID
-        )
-        return AuthoritativeCatalogComponents(
-            files: components.files,
-            folders: components.folders,
-            entries: components.entries
-        )
-    }
-
+    /// Cacheable P4-8e-b composition. The whole Swift batch fence and published shard identity are
+    /// captured before suspension and revalidated after Rust returns. A successful composed handle
+    /// joins the shard objects in the generation lease; any stale result is closed and never cached.
     private func composeSearchCatalogSnapshot(
         rootScope: WorkspaceLookupRootScope,
         generation: UInt64,
         roots: [WorkspaceRootRecord],
         shards: [RootCatalogShard]
-    ) -> WorkspaceSearchCatalogSnapshot {
-        let merged: (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry])
-        if let shard = shards.first, shards.count == 1 {
-            merged = (shard.files, shard.entries)
-            #if DEBUG
-                rootCatalogShardSingleShardCompositionReuseCount += 1
-            #endif
-        } else {
-            merged = mergeRootCatalogShards(shards)
-            #if DEBUG
-                rootCatalogShardGenericMergeElementVisitCount += merged.files.count
-            #endif
+    ) async -> WorkspaceSearchCatalogSnapshot? {
+        guard roots.count == shards.count else { return nil }
+        var capturedFencesByRootID: [UUID: RootCatalogShardBatchFence] = [:]
+        capturedFencesByRootID.reserveCapacity(roots.count)
+        for (root, shard) in zip(roots, shards) {
+            guard root.id == shard.key.rootID,
+                  let fence = rootCatalogShardBatchFence(for: root),
+                  fence.key == shard.key,
+                  fence.appliedIndexGeneration == shard.appliedIndexGeneration,
+                  publishedRootCatalogShardsByRootID[root.id] === shard
+            else { return nil }
+            capturedFencesByRootID[root.id] = fence
         }
+        guard let authority = try? await inventoryScopeAuthorityInstance(),
+              let read = try? await authority.readComposedSnapshot(
+                  sources: shards.map(\.compositionSource),
+                  accounting: .normalPresentation
+              )
+        else { return nil }
+
+        let batchRemainsCurrent = zip(roots, shards).allSatisfy { pair in
+            let (root, shard) = pair
+            guard let captured = capturedFencesByRootID[root.id] else { return false }
+            return rootCatalogShardBatchFence(for: root) == captured
+                && publishedRootCatalogShardsByRootID[root.id] === shard
+        }
+        guard batchRemainsCurrent,
+              let presentation = composedCatalogPresentation(coreFiles: read.files, roots: roots),
+              presentation.files.count == shards.reduce(0, { $0 + $1.files.count })
+        else {
+            await read.snapshot.close()
+            return nil
+        }
+
         let diagnostics = WorkspaceCatalogDiagnostics(
             generation: generation,
             rootScope: rootScope,
             rootCount: roots.count,
             folderCount: shards.reduce(0) { $0 + $1.folderCount },
-            fileCount: merged.files.count
+            fileCount: presentation.files.count
         )
-        // P4-7c c3: the `requirement.requiresPathIndexes` branch that unwrapped
-        // `shard.pathSearchIndex` (`preconditionFailure`-ing on `nil`, per D-14) is deleted --
-        // `pathSearchIndex` no longer exists on `RootCatalogShard`, and `requirement` is always
-        // `.recordsOnly` (the enum's only remaining case).
         return WorkspaceSearchCatalogSnapshot(
             generation: generation,
             rootScope: rootScope,
             roots: roots,
-            files: merged.files,
-            entries: merged.entries,
+            files: presentation.files,
+            entries: presentation.entries,
             diagnostics: diagnostics,
             generationLease: WorkspaceSearchCatalogGenerationLease(
-                retaining: shards.map { $0 as AnyObject }
+                retaining: shards.map { $0 as AnyObject } + [read.snapshot]
             )
         )
     }
 
-    private func mergeRootCatalogShards(
-        _ shards: [RootCatalogShard]
-    ) -> (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry]) {
-        WorkspaceInventoryCatalogBuilders.mergeRootCatalogShardFileEntryLists(
-            shards.map { (files: $0.files, entries: $0.entries) }
+    /// Maps bounded Rust file pages into app presentation records and aligned search entries. The
+    /// actor-local managed-only mirror remains presentation policy; filtering preserves Rust order.
+    private func composedCatalogPresentation(
+        coreFiles: [CoreInventoryFileRecordV1],
+        roots: [WorkspaceRootRecord]
+    ) -> (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry])? {
+        let rootsByID = Dictionary(roots.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        guard rootsByID.count == roots.count else { return nil }
+        let files = coreFiles
+            .filter { !managedOnlyFileIDs.contains($0.id) }
+            .map(WorkspaceInventoryScopeRepublicationAdapter.workspaceFileRecord)
+        guard files.allSatisfy({ rootsByID[$0.rootID] != nil }),
+              recordsAreOrdered(files, by: WorkspaceInventoryOrdering.searchCatalogFilePrecedes)
+        else { return nil }
+        return (
+            files,
+            files.compactMap { file in
+                rootsByID[file.rootID].map { WorkspaceSearchCatalogEntry(file: file, root: $0) }
+            }
         )
     }
 
@@ -9990,6 +10860,7 @@ actor WorkspaceFileContextStore {
     /// forbids retaining table content across a suspension boundary; this is built fresh on every
     /// file-tree snapshot request and discarded when the request returns).
     private struct FileTreePageIndex {
+        var compositionSource: WorkspaceInventoryScopeAuthority.CompositionSource?
         var filesByID: [UUID: WorkspaceFileRecord] = [:]
         var foldersByID: [UUID: WorkspaceFolderRecord] = [:]
         var childFolderIDsByFolderID: [UUID: [UUID]] = [:]
@@ -10014,13 +10885,24 @@ actor WorkspaceFileContextStore {
                 expectedSwiftLifetimeID: state.lifetimeID
             )
         } catch CoreBridgeError.inventoryScopeNoPublishedGeneration {
-            guard rootStatesByID[rootID]?.lifetimeID == state.lifetimeID else { return nil }
-            return FileTreePageIndex()
+            guard rootStatesByID[rootID]?.lifetimeID == state.lifetimeID,
+                  let source = try? await authority.compositionSource(
+                      rootID: rootID,
+                      expectedSwiftLifetimeID: state.lifetimeID,
+                      expectedGeneration: nil
+                  )
+            else { return nil }
+            return FileTreePageIndex(compositionSource: source)
         } catch {
             return nil
         }
         guard rootStatesByID[rootID]?.lifetimeID == state.lifetimeID else { return nil }
-        var index = FileTreePageIndex()
+        var index = FileTreePageIndex(compositionSource: WorkspaceInventoryScopeAuthority.CompositionSource(
+            rootID: rootID,
+            expectedSwiftLifetimeID: state.lifetimeID,
+            rootLifetimeID: read.rootLifetimeID,
+            expectedGeneration: read.generation
+        ))
         for coreFile in read.files {
             let file = WorkspaceInventoryScopeRepublicationAdapter.workspaceFileRecord(coreFile)
             index.filesByID[file.id] = file
@@ -10648,6 +11530,30 @@ actor WorkspaceFileContextStore {
         // authority per chunk -- no separate commit step (the pre-cutover staged-then-committed
         // `RootIndexBuffers` pattern no longer applies; Rust's own bulk-load control plane
         // already atomically stages-then-publishes, contract doc §5.2).
+        //
+        // P5-2: capture a metadata-only Rust generation floor immediately before the root becomes
+        // Swift-visible. Candidates arriving while the capture await is reentrant are staged; no
+        // await occurs between the returned cursor and visible-state activation below.
+        let republicationCaptureID = beginInventoryScopeRepublicationActivationCapture(
+            rootID: root.id,
+            swiftLifetimeID: state.lifetimeID,
+            logicalGenerationFloor: 0
+        )
+        defer {
+            abandonInventoryScopeRepublicationActivation(
+                rootID: root.id,
+                captureID: republicationCaptureID
+            )
+        }
+        let republicationCursor: WorkspaceInventoryScopeAuthority.RepublicationActivationCursor? = if let inventoryScopeAuthority {
+            try? await inventoryScopeAuthority.republicationActivationCursor(
+                rootID: root.id,
+                expectedSwiftLifetimeID: state.lifetimeID
+            )
+        } else {
+            nil
+        }
+        try Task.checkCancellation()
         if root.kind == .sessionWorktree {
             sessionRootLifetimeClock.advance()
         }
@@ -10657,6 +11563,18 @@ actor WorkspaceFileContextStore {
         rootLoadOrder.append(root.id)
         appliedIndexGenerationsByRootID[root.id] = 0
         catalogGenerationsByRootID[root.id] = 0
+        if let republicationCursor {
+            if !completeInventoryScopeRepublicationActivation(
+                captureID: republicationCaptureID,
+                cursor: republicationCursor
+            ) {
+                quarantineInventoryScopeRepublicationActivation(rootID: root.id)
+                scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: root.id)
+            }
+        } else if inventoryScopeAuthority != nil {
+            quarantineInventoryScopeRepublicationActivation(rootID: root.id)
+            scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: root.id)
+        }
         #if DEBUG
             rootCrawlCountsByRootID[root.id, default: 0] += 1
         #endif
@@ -10921,6 +11839,7 @@ actor WorkspaceFileContextStore {
         var ownershipResourcesReleasedByUnload = SessionWorktreeOwnershipRemoval()
         var invalidatedOwnershipTokens = Set<WorkspaceSessionWorktreeOwnershipToken>()
         for rootID in orderedRootIDs {
+            clearInventoryScopeRepublicationState(rootID: rootID)
             if let claim = publishedSeededAuthorityClaimsByRootID.removeValue(forKey: rootID) {
                 seededAuthorityClaimsToRelease.append(claim)
                 publishedSeededAuthorityFencesByRootID.removeValue(forKey: rootID)
@@ -15173,7 +16092,8 @@ actor WorkspaceFileContextStore {
               state.root.standardizedFullPath == authority.standardizedRootPath,
               let key = rootCatalogShardKey(for: state.root),
               let appliedIndexGeneration = appliedIndexGenerationsByRootID[authority.rootEpoch.rootID],
-              let pageIndex = await fetchFileTreePageIndex(rootID: authority.rootEpoch.rootID)
+              let pageIndex = await fetchFileTreePageIndex(rootID: authority.rootEpoch.rootID),
+              let compositionSource = pageIndex.compositionSource
         else { return nil }
         guard codemapAuthorityIsCurrent(authority),
               !codemapGraphIndexCatalogIsFenced(rootEpoch: authority.rootEpoch)
@@ -15182,6 +16102,7 @@ actor WorkspaceFileContextStore {
             authority: authority,
             key: key,
             root: state.root,
+            compositionSource: compositionSource,
             appliedIndexGeneration: appliedIndexGeneration,
             graphIndexInvalidationGeneration:
             codemapGraphIndexInvalidationGenerationsByRootEpoch[authority.rootEpoch] ?? 1,
@@ -15213,6 +16134,7 @@ actor WorkspaceFileContextStore {
         return RootCatalogShard(
             key: snapshot.key,
             root: snapshot.root,
+            compositionSource: snapshot.compositionSource,
             files: files,
             precomputedProjectionFiles: projectionFiles,
             folders: folders,
@@ -16926,6 +17848,11 @@ actor WorkspaceFileContextStore {
     ) async throws -> WorkspaceFileCatalogMaterializationResult? {
         let state = try state(for: rootID)
         let expectedLifetimeID = state.lifetimeID
+        let inventoryCatalogPublicationPermit = try await acquireInventoryCatalogPublicationPermit(
+            rootID: rootID,
+            expectedRootLifetimeID: expectedLifetimeID
+        )
+        defer { releaseInventoryCatalogPublicationPermit(inventoryCatalogPublicationPermit) }
         let standardizedRelativePath = StandardizedPath.relative(relativePath)
         let codemapFence = beginCodemapPathFence(
             rootID: rootID,
@@ -17005,17 +17932,30 @@ actor WorkspaceFileContextStore {
             let result: WorkspaceFileCatalogMaterializationResult?
             let publishedCanonicalModification: Bool
             if let file = await file(rootID: rootID, relativePath: standardizedRelativePath) {
-                invalidateSearchContent(file)
                 publishedCanonicalModification = isDiscoverableFileID(file.id)
-                if publishedCanonicalModification {
-                    await publishAppliedIndexEvent(root: state.root, modifiedFileIDs: [file.id])
-                    #if DEBUG
-                        MCPApplyEditsRebaseProbeRecorder.recordStoreModification(
+                await withInventoryCatalogMutationPublicationFence(rootID: rootID) {
+                    invalidateSearchContent(file)
+                    if publishedCanonicalModification {
+                        let rustGeneration = await applyInventoryScopeContentModification(
                             rootID: rootID,
-                            fileID: file.id,
-                            generation: appliedIndexGenerationsByRootID[rootID] ?? 0
+                            modifiedFileIDs: [file.id],
+                            modifiedFolderIDs: [],
+                            requiresFullResync: false,
+                            source: "workspace-file-context-store-edit"
                         )
-                    #endif
+                        await publishAppliedIndexEvent(
+                            root: state.root,
+                            modifiedFileIDs: [file.id],
+                            inventoryScopeRepublicationRustGeneration: rustGeneration
+                        )
+                        #if DEBUG
+                            MCPApplyEditsRebaseProbeRecorder.recordStoreModification(
+                                rootID: rootID,
+                                fileID: file.id,
+                                generation: appliedIndexGenerationsByRootID[rootID] ?? 0
+                            )
+                        #endif
+                    }
                 }
                 result = .materialized(file)
             } else {
@@ -18601,7 +19541,18 @@ actor WorkspaceFileContextStore {
         deltas: [PreparedFileSystemDelta],
         requiresFullResync: Bool = false
     ) async {
-        guard let root = rootStatesByID[rootID]?.root else { return }
+        guard let initialState = rootStatesByID[rootID] else { return }
+        guard let inventoryCatalogPublicationPermit = try? await acquireInventoryCatalogPublicationPermit(
+            rootID: rootID,
+            expectedRootLifetimeID: initialState.lifetimeID
+        ) else { return }
+        defer { releaseInventoryCatalogPublicationPermit(inventoryCatalogPublicationPermit) }
+        guard let currentState = rootStatesByID[rootID],
+              currentState.lifetimeID == inventoryCatalogPublicationPermit.rootLifetimeID
+        else { return }
+        let root = currentState.root
+        beginInventoryCatalogMutationPublicationFence(rootID: rootID)
+        defer { finishInventoryCatalogMutationPublicationFence(rootID: rootID) }
         precondition(activePublicationInvalidationBatch == nil)
         let invalidationBatch = PublicationInvalidationBatch()
         activePublicationInvalidationBatch = invalidationBatch
@@ -18670,6 +19621,13 @@ actor WorkspaceFileContextStore {
             }
         }
 
+        let rustGeneration = await applyInventoryScopeContentModification(
+            rootID: rootID,
+            modifiedFileIDs: modifiedFileIDs,
+            modifiedFolderIDs: modifiedFolderIDs,
+            requiresFullResync: requiresFullResync,
+            source: "workspace-file-context-store-file-system-modification"
+        )
         finalizePublicationInvalidations(invalidationBatch)
         await publishAppliedIndexEvent(
             root: root,
@@ -18681,7 +19639,8 @@ actor WorkspaceFileContextStore {
             removedFolderPaths: removedFolderPaths,
             modifiedFileIDs: modifiedFileIDs,
             modifiedFolderIDs: modifiedFolderIDs,
-            requiresFullResync: requiresFullResync
+            requiresFullResync: requiresFullResync,
+            inventoryScopeRepublicationRustGeneration: rustGeneration
         )
     }
 
@@ -19920,6 +20879,70 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    private func acquireInventoryCatalogPublicationPermit(
+        rootID: UUID,
+        expectedRootLifetimeID: UUID
+    ) async throws -> InventoryCatalogPublicationPermit {
+        while inventoryCatalogPublicationPermitsByRootID[rootID] != nil {
+            let waiterID = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if inventoryCatalogPublicationPermitsByRootID[rootID] == nil || Task.isCancelled {
+                        continuation.resume()
+                    } else {
+                        inventoryCatalogPublicationPermitWaitersByRootID[rootID, default: [:]][waiterID] = continuation
+                    }
+                }
+            } onCancel: {
+                Task {
+                    await self.cancelInventoryCatalogPublicationPermitWaiter(
+                        rootID: rootID,
+                        waiterID: waiterID
+                    )
+                }
+            }
+            try Task.checkCancellation()
+            guard rootStatesByID[rootID]?.lifetimeID == expectedRootLifetimeID else {
+                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
+            }
+        }
+        try Task.checkCancellation()
+        guard rootStatesByID[rootID]?.lifetimeID == expectedRootLifetimeID else {
+            throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
+        }
+        let permit = InventoryCatalogPublicationPermit(
+            id: UUID(),
+            rootID: rootID,
+            rootLifetimeID: expectedRootLifetimeID
+        )
+        inventoryCatalogPublicationPermitsByRootID[rootID] = permit
+        return permit
+    }
+
+    private func cancelInventoryCatalogPublicationPermitWaiter(
+        rootID: UUID,
+        waiterID: UUID
+    ) {
+        guard let continuation = inventoryCatalogPublicationPermitWaitersByRootID[rootID]?
+            .removeValue(forKey: waiterID)
+        else { return }
+        if inventoryCatalogPublicationPermitWaitersByRootID[rootID]?.isEmpty == true {
+            inventoryCatalogPublicationPermitWaitersByRootID.removeValue(forKey: rootID)
+        }
+        continuation.resume()
+    }
+
+    private func releaseInventoryCatalogPublicationPermit(
+        _ permit: InventoryCatalogPublicationPermit
+    ) {
+        guard inventoryCatalogPublicationPermitsByRootID[permit.rootID] == permit else { return }
+        inventoryCatalogPublicationPermitsByRootID.removeValue(forKey: permit.rootID)
+        let waiters = inventoryCatalogPublicationPermitWaitersByRootID.removeValue(forKey: permit.rootID) ?? [:]
+        for continuation in waiters.values {
+            continuation.resume()
+        }
+    }
+
     private func beginInventoryCatalogMutationPublicationFence(rootID: UUID) {
         inventoryCatalogMutationEpochByRootID[rootID, default: 0] &+= 1
         inventoryCatalogMutationDepthByRootID[rootID, default: 0] += 1
@@ -19933,6 +20956,10 @@ actor WorkspaceFileContextStore {
             inventoryCatalogMutationDepthByRootID[rootID] = nextDepth
         }
         inventoryCatalogMutationEpochByRootID[rootID, default: 0] &+= 1
+        if nextDepth == 0 {
+            flushStagedInventoryScopeRepublicationCandidates(rootID: rootID)
+            scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: rootID)
+        }
     }
 
     private func withInventoryCatalogMutationPublicationFence<T>(
@@ -20514,6 +21541,58 @@ actor WorkspaceFileContextStore {
         return mintedID
     }
 
+    private func applyInventoryScopeContentModification(
+        rootID: UUID,
+        modifiedFileIDs: [UUID],
+        modifiedFolderIDs: [UUID],
+        requiresFullResync: Bool,
+        source: String
+    ) async -> UInt64? {
+        guard !modifiedFileIDs.isEmpty || !modifiedFolderIDs.isEmpty,
+              let authority = try? await inventoryScopeAuthorityInstance()
+        else { return nil }
+        do {
+            let receipt = try await authority.applyDelta(
+                rootID: rootID,
+                requiresFullResync: requiresFullResync,
+                source: source,
+                event: CoreInventoryAppliedIndexBatchEventV1(
+                    rootID: rootID,
+                    upsertedFiles: [],
+                    upsertedFolders: [],
+                    removedFileIDs: [],
+                    removedFolderIDs: [],
+                    removedFilePaths: [],
+                    removedFolderPaths: [],
+                    modifiedFileIDs: modifiedFileIDs,
+                    modifiedFolderIDs: modifiedFolderIDs
+                )
+            )
+            switch receipt.outcome {
+            case .patched, .rebuiltAuthoritative:
+                #if DEBUG
+                    if let inventoryScopeContentModificationDidApplyHandler {
+                        await inventoryScopeContentModificationDidApplyHandler(
+                            rootID,
+                            receipt.appliedIndexGeneration
+                        )
+                    }
+                #endif
+                return receipt.appliedIndexGeneration
+            case .rejected:
+                if inventoryScopeRepublicationTask != nil {
+                    inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+                }
+                return nil
+            }
+        } catch {
+            if inventoryScopeRepublicationTask != nil {
+                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            }
+            return nil
+        }
+    }
+
     private func publishAppliedIndexEvent(
         root: WorkspaceRootRecord,
         upsertedFiles: [WorkspaceFileRecord] = [],
@@ -20524,7 +21603,8 @@ actor WorkspaceFileContextStore {
         removedFolderPaths: [String] = [],
         modifiedFileIDs: [UUID] = [],
         modifiedFolderIDs: [UUID] = [],
-        requiresFullResync: Bool = false
+        requiresFullResync: Bool = false,
+        inventoryScopeRepublicationRustGeneration: UInt64? = nil
     ) async {
         let upsertedFiles = upsertedFiles.filter { isDiscoverableFileID($0.id) }
         let upsertedFolders = upsertedFolders.filter { isDiscoverableFolderID($0.id) }
@@ -20549,6 +21629,16 @@ actor WorkspaceFileContextStore {
                 return (fileID, snapshot)
             }
         )
+        if let rootLifetimeID,
+           let inventoryScopeRepublicationRustGeneration
+        {
+            retainInventoryScopeRepublicationSliceSourceJoin(
+                rootID: root.id,
+                swiftLifetimeID: rootLifetimeID,
+                rustGeneration: inventoryScopeRepublicationRustGeneration,
+                snapshotsByFileID: modifiedFileSourceSnapshotsByID
+            )
+        }
         let generation = nextAppliedIndexGeneration(forRootID: root.id)
         #if DEBUG
             MCPApplyEditsRebaseProbeRecorder.recordAppliedIndexModification(

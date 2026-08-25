@@ -278,6 +278,20 @@ protocol CoreRuntimeTransport: Sendable {
         limit: UInt64
     ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1
     func inventoryCloseSnapshot(scopeID: String, handleID: UInt64) throws
+    func inventoryOpenComposedSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        roots: [AgentryUniFFIRaw.InventoryComposedRootDescriptorV1],
+        accounting: AgentryUniFFIRaw.InventoryCompositionAccountingV1
+    ) throws -> AgentryUniFFIRaw.InventoryComposedSnapshotHandleV1
+    func inventoryComposedSnapshotPage(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1
+    func inventoryCloseComposedSnapshot(scopeID: String, handleID: UInt64) throws
     /// P4-5: the handle-based read-plane query used by the shadow arm's index comparison arm
     /// (design doc §8.2) -- Swift-only facade completion over the already-landed FFI export
     /// (`rust/crates/ffi/src/api.rs::inventory_query`), matching `inventoryOpenScope`'s pattern.
@@ -1567,6 +1581,52 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     func inventoryCloseSnapshot(scopeID: String, handleID: UInt64) throws {
         do {
             try runtime.inventoryCloseSnapshot(scopeId: scopeID, handleId: handleID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryOpenComposedSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        roots: [AgentryUniFFIRaw.InventoryComposedRootDescriptorV1],
+        accounting: AgentryUniFFIRaw.InventoryCompositionAccountingV1
+    ) throws -> AgentryUniFFIRaw.InventoryComposedSnapshotHandleV1 {
+        do {
+            return try runtime.inventoryOpenComposedSnapshot(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                roots: roots,
+                accounting: accounting
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryComposedSnapshotPage(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CompactInventoryPageV1 {
+        do {
+            return try runtime.inventoryComposedSnapshotPage(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                handleId: handleID,
+                offset: offset,
+                limit: limit
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryCloseComposedSnapshot(scopeID: String, handleID: UInt64) throws {
+        do {
+            try runtime.inventoryCloseComposedSnapshot(scopeId: scopeID, handleId: handleID)
         } catch {
             throw Self.map(error)
         }

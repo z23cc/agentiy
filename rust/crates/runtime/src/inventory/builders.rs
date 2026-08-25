@@ -528,6 +528,18 @@ pub fn build_root_catalog_shard_patch(
 pub fn merge_root_catalog_shard_file_entry_lists(
     shards: &[(Vec<InventoryFileRecord>, Vec<InventorySearchCatalogEntry>)],
 ) -> (Vec<InventoryFileRecord>, Vec<InventorySearchCatalogEntry>) {
+    let borrowed: Vec<_> = shards
+        .iter()
+        .map(|(files, entries)| (files.as_slice(), entries.as_slice()))
+        .collect();
+    merge_root_catalog_shard_file_entry_slices(&borrowed)
+}
+
+/// Borrowed counterpart used by stateful InventoryScope composition. It clones each output row
+/// exactly once and never requires callers to rebuild temporary per-root owned tables.
+pub fn merge_root_catalog_shard_file_entry_slices(
+    shards: &[(&[InventoryFileRecord], &[InventorySearchCatalogEntry])],
+) -> (Vec<InventoryFileRecord>, Vec<InventorySearchCatalogEntry>) {
     let mut cursors: Vec<(usize, usize)> = Vec::new();
     for (shard_index, (files, _entries)) in shards.iter().enumerate() {
         for element_index in 0..files.len() {

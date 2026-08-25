@@ -102,6 +102,9 @@ enum WorkspaceSeededRootReplayVerdict: Equatable {
 }
 
 enum WorkspaceSeededRootReplayValidator {
+    /// P4-8d callers provide `authoritativeEntries` from a complete, lifetime-fenced Rust ordered
+    /// generation after exact agreement with the pending replay's local file/folder path sets.
+    ///
     /// Faithful port of `WorkspaceProjectedPathSearchIndex.init(snapshot:planHandle:
     /// additionalChangedRelativePaths:root:authoritativeEntries:)`'s guard chain
     /// (pre-P4-7c `Search/PathSearchIndex.swift:955-1097`), minus the success-path

@@ -4,11 +4,9 @@
 //! (`compact`/`contract`) retired at P4-8: it is superseded by `inventory_scope::wire`'s own
 //! interning codec, and its Swift-side FFI seam (`RustInventoryComputer`,
 //! `CoreComputeClient.inventoryBuild*`) was deleted in the same step. `WorkspaceInventoryCatalogBuilders`
-//! (the Swift reference implementation these builders port) remains live in production and is out
-//! of this step's scope; `build_pending_catalog_components` /
-//! `merge_root_catalog_shard_file_entry_lists` have no caller left after that retirement and are
-//! kept (with their existing test coverage) as parity-preserved, not-yet-reused ports rather than
-//! deleted speculatively.
+//! (the historical Swift reference implementation these builders port) is being retired at P4-8.
+//! The stateful scope reuses the borrowed multi-root merge directly during P4-8e composition; the
+//! remaining historical builder arms stay Rust-side as frozen behavior/benchmark evidence.
 
 mod builders;
 mod ordering;
@@ -18,7 +16,8 @@ pub use builders::{
     InventoryError, InventoryFileRecord, InventoryFolderRecord, InventoryRootRecord,
     InventorySearchCatalogEntry, InventoryUuid, build_authoritative_catalog_components,
     build_pending_catalog_components, build_root_catalog_shard_patch,
-    merge_root_catalog_shard_file_entry_lists, standardized_relative_path,
+    merge_root_catalog_shard_file_entry_lists, merge_root_catalog_shard_file_entry_slices,
+    standardized_relative_path,
 };
 pub use ordering::{
     compare_utf8_binary, entry_order, file_full_path_order, file_relative_path_order, folder_order,

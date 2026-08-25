@@ -317,8 +317,17 @@ impl From<ScopeError> for CoreError {
             ScopeError::IdentityMismatch => Self::StaleRuntimeIdentity,
             ScopeError::ScopeClosed => Self::RuntimeStopped,
             ScopeError::UnknownRoot => Self::InventoryScopeUnknownRoot,
+            ScopeError::DuplicateRoot => Self::InventoryScopeInvalidRequest {
+                message: "duplicate root in composed inventory snapshot".to_owned(),
+            },
             ScopeError::LifetimeMismatch => Self::InventoryScopeLifetimeMismatch,
+            ScopeError::GenerationMismatch => Self::InventoryScopeInvalidRequest {
+                message: "inventory root generation mismatch".to_owned(),
+            },
             ScopeError::NoPublishedGeneration => Self::InventoryScopeNoPublishedGeneration,
+            ScopeError::InvalidComposition => Self::InventoryScopeInvalidRequest {
+                message: "inventory composed snapshot violated row alignment".to_owned(),
+            },
         }
     }
 }

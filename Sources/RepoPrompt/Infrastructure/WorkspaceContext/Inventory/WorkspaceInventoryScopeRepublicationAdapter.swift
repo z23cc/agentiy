@@ -19,17 +19,14 @@ import Foundation
 // real Swift-published event) is deleted along with the rest of the shadow apparatus -- Rust is
 // now the sole authority, so there is no second arm left to compare against.
 //
-// **Armed, not flipped, as of this commit.** `WorkspaceFileContextStore` constructs this
-// adapter, subscribes it to `WorkspaceInventoryScopeAuthority.events()` (a hub-wide
-// subscription, started once per store), and merges its output onto
-// `republishedInventoryScopeEvents()` -- but that is a *separate* stream from
-// `appliedIndexEvents()`, the one `Search/WorkspaceSearchService.swift:157` and
-// `Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift:1520` actually subscribe to
-// via `publishAppliedIndexEvent`. See `WorkspaceFileContextStore.startInventoryScopeRepublicationTaskIfNeeded`'s
-// header comment for the two open gaps (generation-counter provenance across the Swift/Rust
-// boundary; `modifiedFileSourceSnapshotsByID`'s synchronous-take lifetime under an asynchronous
-// consumer) that keep the actual source flip -- "point the two consumers here, delete
-// `publishAppliedIndexEvent`" -- a follow-on rather than part of this commit.
+// **Armed, not flipped.** `WorkspaceFileContextStore` constructs this adapter, subscribes it to
+// `WorkspaceInventoryScopeAuthority.events()` (one hub-wide subscription per store), and merges
+// its output onto `republishedInventoryScopeEvents()`, a stream separate from production
+// `appliedIndexEvents()`. P5-2 gives ordinary and seeded roots an exclusive activation floor,
+// mutation-fence staging, Rust/Swift lifetime checks, and logical-generation rebasing. See
+// `WorkspaceFileContextStore.startInventoryScopeRepublicationTaskIfNeeded` for P5-3's completed
+// content-only/slice-source join and the remaining discoverability/empty-suppression plus unload
+// blockers that keep the actual source flip a follow-on.
 // ================================================================================================
 
 /// Fills in the two fields Rust's event stream does not carry -- `rootPath` and Swift's own
@@ -42,6 +39,11 @@ struct WorkspaceInventoryScopeRepublicationRootInfo: Equatable {
     let lifetimeID: UUID
 }
 
+struct WorkspaceInventoryScopeRepublicationCandidate: Equatable {
+    let rustRootLifetimeID: String?
+    let event: WorkspaceAppliedIndexBatchEvent
+}
+
 /// Stateful, per-scope event-stream translator (design doc §4.3). Not an actor: every consumer of
 /// a `CoreInventoryScopeEventStream` already owns a single sequential drain loop (see
 /// `CoreInventoryScopeEventCollector` in `CoreInventoryScopeEventsTests.swift` for the established
@@ -49,10 +51,48 @@ struct WorkspaceInventoryScopeRepublicationRootInfo: Equatable {
 /// discipline -- ordinary reference-type mutation, no actor isolation needed beyond whatever
 /// isolates its single caller.
 final class WorkspaceInventoryScopeRepublicationAdapter {
+    static let maxPendingGenerationsPerRoot = 64
+    static let maxPendingGenerationCount = 512
+
+    private struct PendingGenerationQueue {
+        private var values: [CoreInventoryGenerationAdvancedEventV1] = []
+        private var headIndex = 0
+
+        var count: Int {
+            values.count - headIndex
+        }
+
+        var isEmpty: Bool {
+            count == 0
+        }
+
+        mutating func append(_ value: CoreInventoryGenerationAdvancedEventV1) {
+            values.append(value)
+        }
+
+        mutating func popFirst() -> CoreInventoryGenerationAdvancedEventV1? {
+            guard headIndex < values.count else { return nil }
+            defer {
+                headIndex += 1
+                compactIfNeeded()
+            }
+            return values[headIndex]
+        }
+
+        private mutating func compactIfNeeded() {
+            guard headIndex > 32, headIndex * 2 >= values.count else { return }
+            values.removeFirst(headIndex)
+            headIndex = 0
+        }
+    }
+
     private let rootInfo: (UUID) async -> WorkspaceInventoryScopeRepublicationRootInfo?
-    private var pendingGenerationAdvancedByRootID: [UUID: CoreInventoryGenerationAdvancedEventV1] = [:]
-    private var forceResyncOnNextDeliveryByRootID: [UUID: Bool] = [:]
-    private var globalGapPending = false
+    private var pendingGenerationsByRootID: [UUID: PendingGenerationQueue] = [:]
+    private var pendingGenerationCount = 0
+    private var rustLifetimeIDByRootID: [UUID: String] = [:]
+    private var forceResyncOnNextDeliveryRootIDs: Set<UUID> = []
+    private var globalResyncEpoch: UInt64 = 0
+    private var observedGlobalResyncEpochByRootID: [UUID: UInt64] = [:]
 
     /// - Parameter rootInfo: resolves a root's current Swift-owned path/lifetime facts (an
     ///   `async` closure because the production source, `WorkspaceFileContextStore`, is an actor).
@@ -65,81 +105,178 @@ final class WorkspaceInventoryScopeRepublicationAdapter {
     /// Feeds one Rust event into the adapter. Returns a republished `WorkspaceAppliedIndexBatchEvent`
     /// when this event completed a correlatable batch or was itself a root-lifecycle event this
     /// adapter republishes; returns `nil` when the event was buffered awaiting correlation
-    /// (`generationAdvanced`), or is a kind neither consumer needs republished
-    /// (`shardFallback`/`resnapshotRequired`/`rootPublished`/`unknown` -- `rootPublished` carries
-    /// no upsert/removal payload and the consumers' resync guards only fire off a *content*
-    /// event's generation, never off root-open itself).
+    /// (`generationAdvanced`), changes correlation/resync state without a consumer-visible payload
+    /// (`resnapshotRequired`/`rootPublished`), or is a kind neither consumer needs republished
+    /// (`shardFallback`/`unknown`). `rootPublished` carries no upsert/removal payload and the
+    /// consumers' resync guards only fire off a *content* event's generation, never root-open itself.
     ///
     /// `modifiedFileSourceSnapshotsByID` is never populated here -- design doc §4.3 point 3: it is
     /// Swift-only, non-inventory state produced at a single site
     /// (`WorkspaceFileContextStore.swift`'s synthetic-modification/edit path) that never crosses
-    /// the FFI. The caller merges it in afterward, keyed by the file IDs this adapter's
-    /// republished `modifiedFileIDs` names -- a local join, not this adapter's concern.
+    /// the FFI. The caller merges it afterward through P5-3's bounded local join, keyed by the
+    /// exact Rust receipt generation and the file IDs this adapter's republished
+    /// `modifiedFileIDs` names -- still not this adapter's concern.
     func ingest(_ event: CoreInventoryScopeEvent) async -> WorkspaceAppliedIndexBatchEvent? {
+        await ingestCandidate(event)?.event
+    }
+
+    func ingestCandidate(_ event: CoreInventoryScopeEvent) async -> WorkspaceInventoryScopeRepublicationCandidate? {
         switch event {
         case .gap:
-            // Hub-wide, not per-root (§4.3: "a gap on the Rust subscription is republished as
-            // requiresFullResync"): the next event delivered for *any* root cannot be trusted to
-            // be gap-free, so every root's next delivery is force-resynced, not just whichever
-            // root happens to publish next.
-            globalGapPending = true
+            // Hub-wide, not per-root (§4.3): discard any half-correlated pairs and advance an
+            // epoch that every root consumes independently on its next delivery. One active root
+            // must never clear another root's resync obligation.
+            markGlobalResyncRequired()
             return nil
 
         case let .generationAdvanced(advanced):
-            pendingGenerationAdvancedByRootID[advanced.rootID] = advanced
+            if let currentLifetimeID = rustLifetimeIDByRootID[advanced.rootID],
+               currentLifetimeID != advanced.rootLifetimeID
+            {
+                // A delayed event from a previous Rust root lifetime cannot participate in the
+                // current lifetime's FIFO. Drop its correlation and make the next visible batch
+                // resync instead of assigning it a cross-lifetime generation.
+                discardPendingGenerations(for: advanced.rootID)
+                forceResyncOnNextDeliveryRootIDs.insert(advanced.rootID)
+                return nil
+            }
+            rustLifetimeIDByRootID[advanced.rootID] = advanced.rootLifetimeID
+
+            // Bulk commits publish generation metadata without a companion applied-index batch.
+            // Their event currently carries the zero-based catalog generation in both generation
+            // fields; a real delta always carries the one-based applied-index generation and its
+            // zero-based catalog generation, so the values differ by one. Never enqueue the
+            // generation-only bulk marker into the delta FIFO or it will be paired with the next
+            // mutation's payload and force a false resync.
+            if advanced.rebuiltAuthoritative,
+               advanced.catalogGeneration == advanced.appliedIndexGeneration
+            {
+                return nil
+            }
+
+            var queue = pendingGenerationsByRootID[advanced.rootID] ?? PendingGenerationQueue()
+            guard queue.count < Self.maxPendingGenerationsPerRoot else {
+                discardPendingGenerations(for: advanced.rootID)
+                forceResyncOnNextDeliveryRootIDs.insert(advanced.rootID)
+                return nil
+            }
+            guard pendingGenerationCount < Self.maxPendingGenerationCount else {
+                markGlobalResyncRequired()
+                return nil
+            }
+            queue.append(advanced)
+            pendingGenerationsByRootID[advanced.rootID] = queue
+            pendingGenerationCount += 1
             return nil
 
         case let .appliedIndexBatch(batch):
-            let gapForcesResync = globalGapPending || (forceResyncOnNextDeliveryByRootID[batch.rootID] ?? false)
-            forceResyncOnNextDeliveryByRootID[batch.rootID] = false
+            let advanced = popPendingGeneration(for: batch.rootID)
+            let globalResyncRequired = observedGlobalResyncEpochByRootID[batch.rootID, default: 0] < globalResyncEpoch
+            observedGlobalResyncEpochByRootID[batch.rootID] = globalResyncEpoch
+            let requiresFullResync = advanced?.rebuiltAuthoritative == true
+                || forceResyncOnNextDeliveryRootIDs.remove(batch.rootID) != nil
+                || globalResyncRequired
+                || advanced == nil
 
-            guard let advanced = pendingGenerationAdvancedByRootID.removeValue(forKey: batch.rootID) else {
-                // Correlation broken: this batch's own `generationAdvanced` was itself dropped
-                // (or arrived before this adapter started listening). Republish anyway rather
-                // than silently discard a real mutation, but force a resync -- this adapter
-                // cannot vouch for a generation number it never received, and a stale/wrong
-                // generation is worse than an extra resync (§4.3's own bias: the existing
-                // consumer guard treats `requiresFullResync` as safe-by-construction).
-                forceResyncOnNextDeliveryByRootID[batch.rootID] = false
-                return await republish(
-                    batch: batch, generation: 0, requiresFullResync: true,
-                    globalGapPendingConsumed: false
-                )
-            }
-            if globalGapPending { globalGapPending = false }
-            return await republish(
+            // Missing correlation means this batch's `generationAdvanced` was dropped (or the
+            // adapter started mid-pair). Republish with generation zero and force a resync rather
+            // than assign the batch a stale or later generation.
+            let republished = await republish(
                 batch: batch,
-                generation: advanced.appliedIndexGeneration,
-                requiresFullResync: advanced.rebuiltAuthoritative || gapForcesResync,
-                globalGapPendingConsumed: true
+                generation: advanced?.appliedIndexGeneration ?? 0,
+                requiresFullResync: requiresFullResync
+            )
+            return WorkspaceInventoryScopeRepublicationCandidate(
+                rustRootLifetimeID: advanced?.rootLifetimeID ?? rustLifetimeIDByRootID[batch.rootID],
+                event: republished
             )
 
+        case let .rootPublished(published):
+            // A root UUID can be rebound to a new Rust lifetime. Never let correlation or resync
+            // state from the previous lifetime leak into the new one.
+            clearRootState(published.rootID)
+            rustLifetimeIDByRootID[published.rootID] = published.rootLifetimeID
+            observedGlobalResyncEpochByRootID[published.rootID] = globalResyncEpoch
+            return nil
+
         case let .rootUnloaded(unload):
+            guard rustLifetimeIDByRootID[unload.rootID].map({ $0 == unload.rootLifetimeID }) ?? true else {
+                // A late close for a retired lifetime must not clear or unload the root currently
+                // bound to the same UUID.
+                return nil
+            }
             // Rust's root-close does not itself publish an `appliedIndexBatch` (nothing to
             // correlate); this is its own lifecycle event. Consumers only read `rootID` /
             // `isRootUnload` for the unload case (design doc §4.3's consumer table) -- no
             // itemized removal list is needed, matching what an unload republication has ever
             // needed to carry.
             let info = await rootInfo(unload.rootID)
-            return WorkspaceAppliedIndexBatchEvent(
-                rootID: unload.rootID,
-                rootPath: info?.standardizedFullPath ?? "",
-                generation: 0,
-                rootLifetimeID: info?.lifetimeID,
-                requiresFullResync: true,
-                isRootUnload: true
+            clearRootState(unload.rootID)
+            return WorkspaceInventoryScopeRepublicationCandidate(
+                rustRootLifetimeID: unload.rootLifetimeID,
+                event: WorkspaceAppliedIndexBatchEvent(
+                    rootID: unload.rootID,
+                    rootPath: info?.standardizedFullPath ?? "",
+                    generation: 0,
+                    rootLifetimeID: info?.lifetimeID,
+                    requiresFullResync: true,
+                    isRootUnload: true
+                )
             )
 
-        case .rootPublished, .shardFallback, .resnapshotRequired, .unknown:
+        case let .resnapshotRequired(resnapshot):
+            if let rootID = resnapshot.rootID {
+                discardPendingGenerations(for: rootID)
+                forceResyncOnNextDeliveryRootIDs.insert(rootID)
+            } else {
+                markGlobalResyncRequired()
+            }
             return nil
+
+        case .shardFallback, .unknown:
+            return nil
+        }
+    }
+
+    private func popPendingGeneration(for rootID: UUID) -> CoreInventoryGenerationAdvancedEventV1? {
+        guard var queue = pendingGenerationsByRootID[rootID] else { return nil }
+        let advanced = queue.popFirst()
+        if advanced != nil { pendingGenerationCount -= 1 }
+        if queue.isEmpty {
+            pendingGenerationsByRootID.removeValue(forKey: rootID)
+        } else {
+            pendingGenerationsByRootID[rootID] = queue
+        }
+        return advanced
+    }
+
+    private func discardPendingGenerations(for rootID: UUID) {
+        guard let queue = pendingGenerationsByRootID.removeValue(forKey: rootID) else { return }
+        pendingGenerationCount -= queue.count
+    }
+
+    private func clearRootState(_ rootID: UUID) {
+        discardPendingGenerations(for: rootID)
+        rustLifetimeIDByRootID.removeValue(forKey: rootID)
+        forceResyncOnNextDeliveryRootIDs.remove(rootID)
+        observedGlobalResyncEpochByRootID.removeValue(forKey: rootID)
+    }
+
+    private func markGlobalResyncRequired() {
+        pendingGenerationsByRootID.removeAll(keepingCapacity: true)
+        pendingGenerationCount = 0
+        if globalResyncEpoch == .max {
+            globalResyncEpoch = 1
+            observedGlobalResyncEpochByRootID.removeAll(keepingCapacity: true)
+        } else {
+            globalResyncEpoch += 1
         }
     }
 
     private func republish(
         batch: CoreInventoryAppliedIndexBatchEventV1,
         generation: UInt64,
-        requiresFullResync: Bool,
-        globalGapPendingConsumed: Bool
+        requiresFullResync: Bool
     ) async -> WorkspaceAppliedIndexBatchEvent {
         let info = await rootInfo(batch.rootID)
         return WorkspaceAppliedIndexBatchEvent(

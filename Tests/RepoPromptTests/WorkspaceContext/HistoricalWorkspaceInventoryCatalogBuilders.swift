@@ -1,8 +1,8 @@
 import Foundation
+@testable import RepoPromptApp
 
-/// Immutable catalog construction output shared by the frozen historical full-snapshot benchmark
-/// and the still-live pending-root publication builder. Product snapshot fallback no longer uses
-/// this type as of P4-8c.
+/// Immutable output of the frozen historical Swift full-snapshot benchmark. P4-8c removes its
+/// product fallback/shadow callers, and P4-8d removes the last pending-root product use.
 struct WorkspaceInventoryCatalogComponents {
     let files: [WorkspaceFileRecord]
     let folders: [WorkspaceFolderRecord]
@@ -18,16 +18,16 @@ struct WorkspaceInventoryCatalogShardPatch {
     let pathIndexChangedFileIDs: Set<UUID>
 }
 
-/// Deterministic, side-effect-free catalog helpers. The full-snapshot and single-mutation builders
-/// are frozen historical Swift benchmark arms; only pending-root publication and multi-root
-/// presentation merge remain product paths after P4-8c.
+/// Test-only, deterministic historical Swift benchmark support. P4-8e-b moves the frozen
+/// full-snapshot and single-mutation reference arms out of product Sources; none of these helpers
+/// may become a product fallback, parity authority, shadow, or presentation path.
 ///
 /// Extracted from `WorkspaceFileContextStore` (P3-1). Every function here takes its inputs as
 /// explicit parameters (no actor state, no filesystem I/O, no watcher/selection/graph/persistence
 /// coupling). P4-8a retired normal per-root Swift construction, P4-8b retired event patching, and
-/// P4-8c retired the full-snapshot fallback and DEBUG shadow. Historical builders must not regain a
-/// product, fallback, parity, or shadow caller.
-enum WorkspaceInventoryCatalogBuilders {
+/// P4-8c retired the full-snapshot fallback and DEBUG shadow, and P4-8d retired pending-root Swift
+/// This file is compiled only into RepoPromptTests.
+enum HistoricalWorkspaceInventoryCatalogBuilders {
     /// Frozen P4-1 Swift full-snapshot benchmark arm. P4-8c removes every product caller; preserve
     /// its pre-cutover filtering, ordering, and materialization semantics so registered benchmark
     /// evidence remains interpretable. It must not become a fallback, parity, or shadow authority.
@@ -98,20 +98,6 @@ enum WorkspaceInventoryCatalogBuilders {
                 return WorkspaceSearchCatalogEntry(file: file, root: root)
             }
         #endif
-        return WorkspaceInventoryCatalogComponents(files: files, folders: folders, entries: entries)
-    }
-
-    /// Builds the publication payload for a hidden root's pending in-memory index buffers,
-    /// without consulting any globally visible store map. This is the catalog half of the 8D
-    /// atomic root publication invariant.
-    static func buildPendingCatalogComponents(
-        root: WorkspaceRootRecord,
-        filesByID: [UUID: WorkspaceFileRecord],
-        foldersByID: [UUID: WorkspaceFolderRecord]
-    ) -> WorkspaceInventoryCatalogComponents {
-        let files = filesByID.values.sorted(by: WorkspaceInventoryOrdering.searchRootCatalogFilePrecedes)
-        let folders = foldersByID.values.sorted(by: WorkspaceInventoryOrdering.searchCatalogFolderPrecedes)
-        let entries = files.map { WorkspaceSearchCatalogEntry(file: $0, root: root) }
         return WorkspaceInventoryCatalogComponents(files: files, folders: folders, entries: entries)
     }
 
@@ -295,79 +281,5 @@ enum WorkspaceInventoryCatalogBuilders {
             logicalMutationCount: logicalMutationCount,
             pathIndexChangedFileIDs: pathIndexChangedFileIDs
         )
-    }
-
-    /// k-way merges already-sorted per-root (files, entries) lists — each pair sorted by
-    /// `WorkspaceInventoryOrdering.searchCatalogFilePrecedes`/`.searchCatalogEntryPrecedes` and
-    /// index-aligned (`entries[i]` corresponds to `files[i]`) — into one globally-ordered
-    /// (files, entries) pair, breaking ties between equally-ordered files by source-list index
-    /// then source-list position (stable merge).
-    static func mergeRootCatalogShardFileEntryLists(
-        _ shards: [(files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry])]
-    ) -> (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry]) {
-        struct MergeCursor {
-            let shardIndex: Int
-            let elementIndex: Int
-        }
-
-        let totalFileCount = shards.reduce(0) { $0 + $1.files.count }
-        var files: [WorkspaceFileRecord] = []
-        var entries: [WorkspaceSearchCatalogEntry] = []
-        files.reserveCapacity(totalFileCount)
-        entries.reserveCapacity(totalFileCount)
-        var heap: [MergeCursor] = []
-        heap.reserveCapacity(shards.count)
-
-        func cursorPrecedes(_ lhs: MergeCursor, _ rhs: MergeCursor) -> Bool {
-            let lhsFile = shards[lhs.shardIndex].files[lhs.elementIndex]
-            let rhsFile = shards[rhs.shardIndex].files[rhs.elementIndex]
-            if WorkspaceInventoryOrdering.searchCatalogFilePrecedes(lhsFile, rhsFile) { return true }
-            if WorkspaceInventoryOrdering.searchCatalogFilePrecedes(rhsFile, lhsFile) { return false }
-            if lhs.shardIndex == rhs.shardIndex { return lhs.elementIndex < rhs.elementIndex }
-            return lhs.shardIndex < rhs.shardIndex
-        }
-
-        func push(_ cursor: MergeCursor) {
-            heap.append(cursor)
-            var index = heap.count - 1
-            while index > 0 {
-                let parent = (index - 1) / 2
-                guard cursorPrecedes(heap[index], heap[parent]) else { break }
-                heap.swapAt(index, parent)
-                index = parent
-            }
-        }
-
-        func pop() -> MergeCursor? {
-            guard !heap.isEmpty else { return nil }
-            if heap.count == 1 { return heap.removeLast() }
-            let first = heap[0]
-            heap[0] = heap.removeLast()
-            var index = 0
-            while true {
-                let left = index * 2 + 1
-                guard left < heap.count else { break }
-                let right = left + 1
-                let next = right < heap.count && cursorPrecedes(heap[right], heap[left]) ? right : left
-                guard cursorPrecedes(heap[next], heap[index]) else { break }
-                heap.swapAt(index, next)
-                index = next
-            }
-            return first
-        }
-
-        for shardIndex in shards.indices where !shards[shardIndex].files.isEmpty {
-            push(MergeCursor(shardIndex: shardIndex, elementIndex: 0))
-        }
-        while let cursor = pop() {
-            let shard = shards[cursor.shardIndex]
-            files.append(shard.files[cursor.elementIndex])
-            entries.append(shard.entries[cursor.elementIndex])
-            let nextElementIndex = cursor.elementIndex + 1
-            if nextElementIndex < shard.files.count {
-                push(MergeCursor(shardIndex: cursor.shardIndex, elementIndex: nextElementIndex))
-            }
-        }
-        return (files, entries)
     }
 }

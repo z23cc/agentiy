@@ -139,6 +139,66 @@ final class CoreInventoryScopeTests: XCTestCase {
         _ = try await bridge.close()
     }
 
+    func testComposedSnapshotMergesExactGenerationsAndKeepsItsOwnLeaseType() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let scope = try await CoreInventoryScope.open(bridge: bridge)
+        var descriptors: [CoreInventoryComposedRootDescriptor] = []
+
+        for (name, relativePath) in [("B", "B.swift"), ("A", "A.swift")] {
+            let rootID = UUID()
+            let rootLifetimeID = try await scope.openRoot(
+                rootID: rootID,
+                name: name,
+                standardizedFullPath: "/repo-\(name)"
+            )
+            let bulkLoadID = try await scope.beginBulkLoad(rootID: rootID, rootLifetimeID: rootLifetimeID)
+            _ = try await scope.pushBulkChunk(
+                bulkLoadID: bulkLoadID,
+                rootID: rootID,
+                files: [sampleFile(id: UUID(), rootID: rootID, name: relativePath, relativePath: relativePath)],
+                folders: []
+            )
+            let receipt = try await scope.commitBulkLoad(bulkLoadID: bulkLoadID)
+            descriptors.append(CoreInventoryComposedRootDescriptor(
+                rootID: rootID,
+                rootLifetimeID: rootLifetimeID,
+                expectedGeneration: receipt.generation
+            ))
+        }
+
+        let emptyRootID = UUID()
+        let emptyLifetimeID = try await scope.openRoot(
+            rootID: emptyRootID,
+            name: "Empty",
+            standardizedFullPath: "/repo-empty"
+        )
+        descriptors.append(CoreInventoryComposedRootDescriptor(
+            rootID: emptyRootID,
+            rootLifetimeID: emptyLifetimeID,
+            expectedGeneration: nil
+        ))
+
+        let snapshot = try await scope.openComposedSnapshot(
+            roots: descriptors,
+            accounting: .normalPresentation
+        )
+        XCTAssertEqual(snapshot.rowCount, 2)
+        let first = try await snapshot.page(offset: 0, limit: 1)
+        XCTAssertEqual(first.files.map(\.standardizedRelativePath), ["A.swift"])
+        XCTAssertEqual(first.returnedCount, 1)
+        XCTAssertTrue(first.hasMore)
+        let second = try await snapshot.page(offset: 1, limit: 1)
+        XCTAssertEqual(second.files.map(\.standardizedRelativePath), ["B.swift"])
+        XCTAssertFalse(second.hasMore)
+
+        let diagnostics = try await scope.diagnostics()
+        XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 2)
+        await snapshot.close()
+        await snapshot.close()
+        await scope.close()
+        _ = try await bridge.close()
+    }
+
     func testClosingRootInvalidatesOpenHandlesAsATypedErrorNotAPanic() async throws {
         let bridge = try await AgentryCoreBridge.start()
         let rootID = UUID()

@@ -11,9 +11,15 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use super::composition::ComposedCatalogArtifact;
 use super::generation::RootGeneration;
-use super::ids::{GenerationToken, RootId, SnapshotHandleId};
+use super::ids::{ComposedSnapshotHandleId, GenerationToken, RootId, SnapshotHandleId};
 use std::sync::Arc;
+
+/// Snapshot and composed handles share the public UniFFI `u64` carrier. Reserve the high bit for
+/// composed handles so a raw ID passed to the wrong API can never alias an unrelated open handle
+/// in the other table; the typed Rust IDs and Swift facades remain the compile-time boundary.
+const COMPOSED_HANDLE_NAMESPACE_BIT: u64 = 1 << 63;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InvalidationReason {
@@ -57,7 +63,13 @@ impl HandleTable {
         generation: Arc<RootGeneration>,
         origin_tag: &'static str,
     ) -> SnapshotHandleId {
-        let id = SnapshotHandleId::from_raw(self.minter.next());
+        let sequence = self.minter.next();
+        assert_eq!(
+            sequence & COMPOSED_HANDLE_NAMESPACE_BIT,
+            0,
+            "snapshot handle namespace exhausted"
+        );
+        let id = SnapshotHandleId::from_raw(sequence);
         self.open.insert(
             id,
             OpenHandle {
@@ -139,13 +151,17 @@ impl HandleTable {
     }
 
     /// `inventoryCloseScope` / identity-change mass invalidation: every handle in the scope.
-    pub fn invalidate_all(&mut self, reason: InvalidationReason) {
+    /// Returns one `(root, generation)` entry per drained handle so callers that keep roots alive
+    /// (identity invalidation) can release retained-generation bookkeeping exactly once.
+    pub fn invalidate_all(&mut self, reason: InvalidationReason) -> Vec<(RootId, u64)> {
         let ids: Vec<SnapshotHandleId> = self.open.keys().copied().collect();
+        let mut drained_generations = Vec::with_capacity(ids.len());
         for id in ids {
             let handle = self.open.remove(&id).expect("id came from open");
+            drained_generations.push((handle.root_id, handle.generation.generation));
             self.invalidated.insert(id, reason);
-            drop(handle);
         }
+        drained_generations
     }
 
     #[must_use]
@@ -168,6 +184,158 @@ impl HandleTable {
     }
 
     /// DEBUG leak observability: open-handle count grouped by origin tag.
+    #[must_use]
+    pub fn origin_histogram(&self) -> HashMap<&'static str, usize> {
+        let mut histogram = HashMap::new();
+        for handle in self.open.values() {
+            *histogram.entry(handle.origin_tag).or_insert(0) += 1;
+        }
+        histogram
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ComposedHandleReadOutcome {
+    Open {
+        artifact: Arc<ComposedCatalogArtifact>,
+    },
+    HandleInvalidated {
+        reason: InvalidationReason,
+    },
+}
+
+struct OpenComposedHandle {
+    artifact: Arc<ComposedCatalogArtifact>,
+    origin_tag: &'static str,
+    opened_at: Instant,
+}
+
+/// Separate typed handle table for immutable multi-root compositions. A composition is invalidated
+/// when any source root closes, and a single-root reuse contributes to generation-retention
+/// accounting exactly like an ordinary snapshot handle.
+#[derive(Default)]
+pub struct ComposedHandleTable {
+    minter: super::ids::CounterMinter,
+    open: HashMap<ComposedSnapshotHandleId, OpenComposedHandle>,
+    invalidated: HashMap<ComposedSnapshotHandleId, InvalidationReason>,
+    max_open_observed: usize,
+}
+
+impl ComposedHandleTable {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn open_handle(
+        &mut self,
+        artifact: Arc<ComposedCatalogArtifact>,
+        origin_tag: &'static str,
+    ) -> ComposedSnapshotHandleId {
+        let sequence = self.minter.next();
+        assert_eq!(
+            sequence & COMPOSED_HANDLE_NAMESPACE_BIT,
+            0,
+            "composed snapshot handle namespace exhausted"
+        );
+        let id = ComposedSnapshotHandleId::from_raw(sequence | COMPOSED_HANDLE_NAMESPACE_BIT);
+        self.open.insert(
+            id,
+            OpenComposedHandle {
+                artifact,
+                origin_tag,
+                opened_at: Instant::now(),
+            },
+        );
+        self.max_open_observed = self.max_open_observed.max(self.open.len());
+        id
+    }
+
+    pub fn close_handle(&mut self, id: ComposedSnapshotHandleId) {
+        self.open.remove(&id);
+        self.invalidated.remove(&id);
+    }
+
+    pub fn read(&self, id: ComposedSnapshotHandleId) -> ComposedHandleReadOutcome {
+        if let Some(handle) = self.open.get(&id) {
+            ComposedHandleReadOutcome::Open {
+                artifact: Arc::clone(&handle.artifact),
+            }
+        } else if let Some(reason) = self.invalidated.get(&id) {
+            ComposedHandleReadOutcome::HandleInvalidated { reason: *reason }
+        } else {
+            ComposedHandleReadOutcome::HandleInvalidated {
+                reason: InvalidationReason::ScopeClosed,
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn reused_root_and_generation_of(
+        &self,
+        id: ComposedSnapshotHandleId,
+    ) -> Option<(RootId, u64)> {
+        self.open
+            .get(&id)
+            .and_then(|handle| handle.artifact.reused_root_generation())
+    }
+
+    #[must_use]
+    pub fn refcount_for_generation(&self, root_id: RootId, generation_number: u64) -> usize {
+        self.open
+            .values()
+            .filter(|handle| {
+                handle.artifact.reused_root_generation() == Some((root_id, generation_number))
+            })
+            .count()
+    }
+
+    pub fn invalidate_for_root(&mut self, root_id: RootId, reason: InvalidationReason) {
+        let doomed: Vec<ComposedSnapshotHandleId> = self
+            .open
+            .iter()
+            .filter(|(_, handle)| handle.artifact.source_root_ids().contains(&root_id))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in doomed {
+            self.open.remove(&id);
+            self.invalidated.insert(id, reason);
+        }
+    }
+
+    /// Returns the reused single-root generation for each drained handle, if any. Generic
+    /// multi-root artifacts do not contribute to retained-generation bookkeeping.
+    pub fn invalidate_all(&mut self, reason: InvalidationReason) -> Vec<(RootId, u64)> {
+        let ids: Vec<ComposedSnapshotHandleId> = self.open.keys().copied().collect();
+        let mut drained_generations = Vec::new();
+        for id in ids {
+            let handle = self.open.remove(&id).expect("id came from open");
+            if let Some(reused) = handle.artifact.reused_root_generation() {
+                drained_generations.push(reused);
+            }
+            self.invalidated.insert(id, reason);
+        }
+        drained_generations
+    }
+
+    #[must_use]
+    pub fn open_count(&self) -> usize {
+        self.open.len()
+    }
+
+    #[must_use]
+    pub fn max_open_observed(&self) -> usize {
+        self.max_open_observed
+    }
+
+    #[must_use]
+    pub fn oldest_open_age(&self, now: Instant) -> Option<std::time::Duration> {
+        self.open
+            .values()
+            .map(|handle| now.saturating_duration_since(handle.opened_at))
+            .max()
+    }
+
     #[must_use]
     pub fn origin_histogram(&self) -> HashMap<&'static str, usize> {
         let mut histogram = HashMap::new();
@@ -231,7 +399,8 @@ mod tests {
         let handles: Vec<_> = (0..5)
             .map(|_| table.open_handle(root, generation(root, 1), "test"))
             .collect();
-        table.invalidate_all(InvalidationReason::ScopeClosed);
+        let drained = table.invalidate_all(InvalidationReason::ScopeClosed);
+        assert_eq!(drained.len(), handles.len());
         for handle in handles {
             assert_eq!(
                 table.read(handle),

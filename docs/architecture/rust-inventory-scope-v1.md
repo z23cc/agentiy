@@ -197,9 +197,10 @@ root metadata remains present as it did under the predecessor fallback. The expl
 generation outcome synthesizes an empty root only at generation zero with no delta state.
 
 Temporary fallback shards are presentation values only: they are never registered, published,
-leased, cached, or counted as shard builds/compositions. The fallback therefore remains uncached; the
-next stable query can publish the ordinary authoritative shard batch. Multi-root output uses the
-existing pure merge algorithm without routing through publication diagnostics. Deterministic tests
+leased, cached, or counted as shard builds. The fallback therefore remains uncached; the next stable
+query can publish the ordinary authoritative shard batch. At the P4-8c slice multi-root output still
+used the existing pure merge algorithm; P4-8e-b below replaces that historical state with Rust
+composition using uncached-fallback accounting. Deterministic tests
 cover an active mutation that forces fallback, a root-A epoch change during root-B paging, omission of
 only root A's rows, cancellation omitting the current root and stopping later reads, zero
 publication/composition counters, and subsequent stable publication.
@@ -207,9 +208,201 @@ publication/composition counters, and subsequent stable publication.
 `shadowComparisonCount`, `shadowMismatchCount`, `lastShadowByteCount`, and
 `.shadowValidationMismatch` remain zero/absent compatibility tombstones. D-5's proposed independent
 Rust-internal self-check is still unimplemented; P4-8c does not claim that replacement. The
-pending-root Swift builder and multi-root presentation merge remain live P4-8 work. This amendment
-also does not flip `appliedIndexEvents()` to the armed Rust republication stream; §12's
-generation/filtering/slice-rebase blockers and Phase 5 remain open.
+pending-root Swift builder and multi-root presentation merge remain live P4-8 work at this slice;
+P4-8d below retires the former. This amendment also does not flip `appliedIndexEvents()` to the armed
+Rust republication stream; §12's generation/filtering/slice-rebase blockers and Phase 5 remain open.
+
+### P4-8d amendment — retire pending-root Swift construction
+
+Diff-seeded session-worktree preparation no longer sorts `RootIndexBuffers` or materializes a Swift
+catalog components payload. While the newly minted root is still absent from every visible root map,
+the store freezes its replay file/folder path sets and pending authority fence, seeds those paths
+through the existing Rust discovery choke points, and reads one complete immutable ordered Rust
+generation. Intermediate Rust generations remain unreachable to product readers and never create a
+catalog shard, cache entry, lease, or composition/build diagnostic.
+
+The ordered read must match the replay exactly: root identity, canonical non-empty paths, file/folder
+kind separation, counts, path sets, Rust file/folder order, and Swift lifetime are all fail-closed.
+Only the resulting Rust-ordered file entries reach `WorkspaceSeededRootReplayValidator`. An explicit
+no-published-generation outcome is accepted only when both expected path sets are empty; a non-empty
+pending root may not publish a falsely empty catalog.
+
+Every suspending seed/read step is bracketed by a pending preparation fence covering root/lifetime,
+Git authority fence and invalidation watermarks, mutation depth, service/watcher progress, and replay
+snapshot identity. The complete fence is synchronously revalidated after the ordered read and before
+the replay validator/ready assignment, with no intervening await. Cancellation aborts the attempt;
+path disagreement or read failure takes the existing one-shot seeded-preparation fallback. Both paths
+await the existing discard funnel, which closes the hidden Rust binding before a full crawl can reopen
+the path. The later visible publication permit is unchanged and still installs only root metadata.
+
+The two pending Swift builder layers are deleted and the production source audit requires their
+identifier to have zero hits. `RootIndexBuffers` remains a per-attempt topology/replay buffer, not a
+catalog ordering authority. At the P4-8d slice the pure multi-root presentation merge was the only live product function left
+in `WorkspaceInventoryCatalogBuilders`; P4-8e-b below retires it. D-5's Rust-internal self-check and
+the Phase 5 event-source flip remain open.
+
+### P4-8e-a amendment — stateful Rust multi-root composition core
+
+P4-8e retires the final product builder without reviving the stateless whole-table
+`inventory-compute-v1` boundary. Swift continues to choose root scope and presentation policy, but
+opens a Rust composition from an ordered descriptor list containing only `rootID`, the exact Rust
+root lifetime, and an expected generation. No `WorkspaceFileRecord`, folder, entry, or shard array
+is sent from Swift back into Rust. A missing expected generation is strict: it contributes an empty
+source only while that root still has no published generation; it is never a wildcard for the
+latest generation.
+
+The runtime captures every requested generation `Arc` atomically under the InventoryScope mutex,
+performs alignment validation and the full-path-plus-UUID stable merge after releasing that mutex,
+then reacquires the mutex and revalidates every lifetime, exact generation, and captured identity-
+invalidation epoch before registering a distinct composed-snapshot handle. Zero roots produce an
+empty artifact. A single published root
+reuses its immutable generation rather than copying rows. Multiple roots own one aligned merged
+file/entry artifact and release the captured per-root generations after registration. Duplicate
+root descriptors, generation drift, file/entry misalignment, root close, scope close, and identity
+change all fail closed through typed outcomes; close is idempotent.
+
+Composed pages are bounded and keep every file/entry shared identity and path field index-aligned.
+Root-only query and lookup APIs
+cannot accept the distinct composed handle type. Normal presentation accounting increments Rust's
+existing single-shard reuse or generic-merge visit diagnostics only after successful second
+validation and handle registration. One logical root increments the single-shard counter even when
+its strict never-published source is empty; uncached fallback composition increments neither.
+P4-8e-a lands this cargo-only authority core and contract. The additive FFI/page schema, Swift
+bridge lease, store cutover, historical benchmark relocation, and final
+`WorkspaceInventoryCatalogBuilders.swift` deletion land atomically in P4-8e-b.
+
+### P4-8e-b amendment — atomic FFI/Swift/store composition cutover
+
+The additive UniFFI contract now exposes distinct composed open/page/close calls. Open accepts only
+runtime/scope identity, ordered root descriptors, and the normal-or-fallback accounting mode; pages
+reuse the bounded bulk-chunk carrier with an empty folder section and report an exact artifact row
+count/`hasMore`. Registration returns the handle and exact row count in one atomic state operation,
+so invalidation cannot strand an unreturned handle between open and metadata lookup. Ordinary and
+composed handles reserve disjoint raw-ID namespaces; a raw ID routed to the wrong UniFFI method fails
+closed rather than aliasing another table entry. `CoreInventoryComposedSnapshot` owns the distinct
+raw handle behind idempotent ARC close semantics, so root-only query/lookup APIs cannot consume it.
+Identity invalidation drains both handle tables and releases retained-generation bookkeeping for
+each drained single-root reference before the roots continue serving the new identity epoch.
+
+Every published `RootCatalogShard`, including the codemap graph-index replacement path, carries the
+exact Rust root lifetime and catalog generation from the authority read that materialized it. The
+cacheable store path captures the complete per-root Swift batch fence and published shard object
+identity, opens and fully pages the Rust composition, then revalidates both domains before publishing
+or caching. Its search generation lease retains both the Swift shard objects and the composed Rust
+handle. A stale or malformed result is closed and falls through to the uncached path; it is never
+published as a mixed-generation snapshot.
+
+The uncached path first omits roots whose existing per-root reads/fences failed, then composes the
+remaining exact descriptors with `UncachedFallback` accounting and closes the handle before return.
+Cancellation preserves the predecessor contract: already completed root reads can still produce a
+best-effort result, while the current and later roots are omitted. Managed-only membership remains
+Swift presentation policy; filtering the Rust-ordered composed page preserves order, and a final
+visible-row count check against the fenced shards fails closed on drift.
+
+Composition diagnostics are read from `InventoryScope` rather than incremented by a parallel Swift
+counter. Frozen full-snapshot and single-mutation Swift benchmark arms move to
+`Tests/RepoPromptTests/WorkspaceContext/HistoricalWorkspaceInventoryCatalogBuilders.swift`; the
+unused test merge is deleted, production source auditing requires zero retired-builder references,
+and the product `WorkspaceInventoryCatalogBuilders.swift` file is deleted. P4-8 is complete except
+for D-5's separately approved Rust-internal self-check. This amendment does not flip the applied-index
+event source; Phase 5 remains the next authority transition.
+
+### P5-1 amendment — armed republication correlation hardening
+
+The Rust inventory-scope republication path remains armed on its separate
+`republishedInventoryScopeEvents()` stream; production `appliedIndexEvents()` and its two consumers
+remain unchanged. Before any source flip, the adapter now pairs `generationAdvanced` and
+`appliedIndexBatch` events through a per-root FIFO rather than one overwriteable slot, so two
+consecutive logical mutations for the same root retain their original generation order.
+
+Hub gaps and global `resnapshotRequired` events advance a resync epoch consumed independently by
+each root's next delivery; the first active root can no longer clear another root's obligation. A
+root-scoped resnapshot clears that root's partial correlation and forces its next delivery to
+resync. Correlation is fenced by Rust root lifetime, so stale generation/unload events cannot mutate
+a newer binding that reused the same UUID. Root publish/unload events clear all per-root adapter
+state. Pending correlation is bounded to 64 generations per root and 512 scope-wide; overflow drops
+the affected partial correlation and forces root-scoped or global resync rather than defeating the
+bounded upstream subscription. Missing correlation still republishes with generation zero plus
+`requiresFullResync`, never a guessed generation.
+
+This slice deliberately does **not** authorize the production source flip. That transition remains
+atomic across: an activation cursor/floor that excludes hidden pre-publication Rust generations;
+staging behind the store's existing mutation fence; Rust events for content-only modifications;
+the bounded one-shot slice-source join; managed-only visibility/removal parity; and a monotonic,
+lifetime-correct unload generation. Until those contracts land with consumer coverage,
+`publishAppliedIndexEvent` remains the production authority.
+
+### P5-2 amendment — activation floor and mutation-fenced armed delivery
+
+Ordinary and seeded roots now arm republication only at their Swift-visibility seam. The authority
+opens a metadata-only Rust snapshot and translates its zero-based catalog generation into the exact
+one-based applied-index floor (`catalog + 1`); a never-published root uses floor zero. The authority
+revalidates the current Swift/Rust binding after every suspending snapshot open before returning a
+cursor. Bulk-load
+`generationAdvanced` notifications have no companion `appliedIndexBatch` and currently carry the
+catalog generation in both generation fields, so the adapter classifies that exact shape as a
+bulk-only marker rather than letting it occupy the next delta's per-root FIFO slot.
+
+The store binds that exclusive floor to both Swift and Rust root lifetimes. Ordinary crawl
+publication performs no await between cursor capture and visible-state activation. Seeded-root
+publication first pauses every pending ingress and revalidates its activation proof, then captures
+all cursors immediately before the synchronous authority publication permit. Events at or below the
+floor remain hidden. Later candidates are accepted only for the bound lifetimes and monotonically
+contiguous nonzero Rust generations, then rebased onto the current Swift logical applied-index
+generation. Adapter generation zero is an uncorrelated sentinel: it is never promoted above the
+floor, and its root's next exact delivery must resync. Any gap in either domain forces
+`requiresFullResync` rather than guessing.
+
+A store-owned inventory mutation fence now spans Rust commit through legacy Swift event/topology
+publication for the armed path as well. Rust candidates arriving while a root is activating or its
+mutation depth is nonzero are staged and flushed only when depth returns to zero. Staging is bounded
+to 64 candidates per root and 256 scope-wide; overflow discards partial state and forces root-scoped
+or scope-wide resync. A transient cursor failure leaves the root in explicit quarantine rather than
+permanently dark: recovery retries after visible publication and at later zero-depth mutation fences,
+captures a fresh exact cursor, and forces the first recovered delivery to resync. The real add
+differential uses one deterministic synthetic ingress and pins
+hidden-load suppression, equal generation/payload identity against the production stream, and no
+spurious resync. Separate deterministic coverage pins floor exclusion, fence withholding, and
+bulk-only generation correlation, generation-zero exclusion, and quarantined activation recovery.
+
+This amendment still does **not** flip `appliedIndexEvents()`. Production continues through
+`publishAppliedIndexEvent`; the remaining atomic follow-on must cover content-only Rust events,
+managed-only discoverability and empty-batch suppression, the bounded one-shot
+`modifiedFileSourceSnapshotsByID` join, and monotonic lifetime-correct unload generation.
+
+### P5-3 amendment — content-only Rust events and bounded slice-source join
+
+Both canonical content-only mutation paths now reach the Rust authority before legacy Swift
+publication: store-owned `editFile` operations and aggregated watcher/service
+`.fileModified`/`.folderModified` batches submit an id-supplied `applyDelta`. A root-local
+publication permit serializes the disk-write/Rust-apply/legacy-publication interval, so actor
+reentrancy cannot let a later edit take an earlier edit's one-shot source. The modification apply and
+`publishAppliedIndexEvent` are also enclosed by the store-owned inventory mutation fence, including
+root-wide/full-resync paths that previously relied only on codemap fencing. A successful Rust receipt
+supplies the exact applied-index generation for the local payload join; a rejected or failed apply
+never fabricates correlation and makes the next armed delivery resync when the stream is active.
+
+`publishAppliedIndexEvent` remains the sole production event authority and still performs the one
+and only destructive `takeSliceRebaseSource`. When that take returns source text, the same immutable
+snapshot value is transferred into an armed-only join keyed by root ID, Swift lifetime, and exact
+Rust generation. The join is bounded to 64 entries and 32 MiB scope-wide. An activated candidate
+consumes only its exact generation and only snapshots whose file IDs are named by that Rust batch.
+Stale generations, cross-lifetime entries, payload collisions, or eviction never guess a source:
+they discard partial state and force resync. Generation-zero quarantine, activation replacement,
+root unload, and store unload clear pending joins. Ordinary modifications without a retained
+pre-edit source continue to publish an empty snapshot map, matching legacy behavior.
+
+Real store-edit differential coverage pins generation/lifetime equality and exact snapshot equality
+against production across two separately read sources, followed by a third edit proving one-shot
+exhaustion. A gated concurrent-edit test holds the first Rust receipt before legacy publication,
+proves the second edit waits before its disk write, and verifies source/generation order on both
+streams. A real synthetic watcher modification proves the content-only path produces a nonzero
+Rust-backed armed event, and deterministic overflow coverage proves the bound plus resync
+degradation. The focused P5 arming suite now contains 16 cases.
+
+This amendment still does **not** flip `appliedIndexEvents()`. Production and both consumers remain
+unchanged. The remaining source-flip blockers are managed-only discoverability/removal and legacy
+empty-batch suppression parity, plus monotonic lifetime-correct unload publication.
 
 ## 4. Generation-lease / handle-lifecycle contract (§7.5's naming requirement)
 
