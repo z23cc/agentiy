@@ -1829,6 +1829,9 @@ impl CoreInventoryScopeConfigV1 {
         Ok(runtime::inventory_scope::InventoryScopeConfig {
             live_generation_cap,
             max_patch_logical_mutation_count,
+            // D-5 is deliberately internal rather than a new public FFI knob. Debug archives
+            // self-check every patch by default; release archives retain the zero-cost path.
+            self_check_patches: cfg!(debug_assertions),
             codemap_capable_extensions: self
                 .codemap_capable_extensions
                 .iter()

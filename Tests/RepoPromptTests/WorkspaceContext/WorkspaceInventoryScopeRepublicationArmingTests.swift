@@ -3,13 +3,12 @@ import Foundation
 @testable import RepoPromptApp
 import XCTest
 
-// P5-2/P5-3 armed republication (design doc §4.3). `WorkspaceFileContextStore` constructs
-// `WorkspaceInventoryScopeRepublicationAdapter`, subscribes it to the Rust authority events, and
-// merges activation-fenced output onto `republishedInventoryScopeEvents()` -- still separate from
-// production `appliedIndexEvents()`. This file pins hidden-load suppression, exact Rust/Swift
-// generation alignment, mutation-fence staging, content-only Rust events, the bounded one-shot
-// slice-source join, and the adapter's correlation/resync contracts before the remaining
-// visibility/unload gaps permit a source flip.
+// P5-2 through P5-5 Rust republication (design doc §4.3). `WorkspaceFileContextStore` validates
+// exact transaction plans and feeds the same canonical events to production `appliedIndexEvents()`
+// and the differential `republishedInventoryScopeEvents()` mirror. These cases pin hidden-load
+// suppression, Rust/Swift generation alignment, serialized mutation capture, raw-batch identity,
+// canonical slice sources, managed-only suppression, bounded-plan degradation, subscription-safe
+// fallback, and lifetime-correct unload at the Swift visibility seam.
 #if DEBUG
     final class WorkspaceInventoryScopeRepublicationArmingTests: XCTestCase {
         private var stores: [WorkspaceFileContextStore] = []
@@ -94,6 +93,84 @@ import XCTest
             )
         }
 
+        func testVisibleMoveIntoIgnoredPathPublishesOneCanonicalRemoval() async throws {
+            let root = try makeTemporaryRoot(name: "RepublicationVisibleToIgnoredMove")
+            try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
+            try write("visible\n", to: root.appendingPathComponent("Visible.swift"))
+            let store = makeStore()
+            let armedStream = await store.republishedInventoryScopeEvents()
+            let armedCollector = RepublishedEventCollector()
+            let armedCollectorTask = Task { await armedCollector.run(armedStream) }
+            let productionStream = await store.appliedIndexEvents()
+            let productionCollector = RepublishedEventCollector()
+            let productionCollectorTask = Task { await productionCollector.run(productionStream) }
+
+            let rootRecord = try await store.loadRoot(path: root.path)
+            let maybeVisibleFile = await store.file(rootID: rootRecord.id, relativePath: "Visible.swift")
+            let visibleFile = try XCTUnwrap(maybeVisibleFile)
+            try await store.moveFile(
+                rootID: rootRecord.id,
+                from: "Visible.swift",
+                to: "Hidden.ignored"
+            )
+
+            let armedEvents = await armedCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            let productionEvents = await productionCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            _ = await armedCollector.waitForAtLeast(2, timeoutSeconds: 0.2)
+            _ = await productionCollector.waitForAtLeast(2, timeoutSeconds: 0.2)
+            let allArmedEvents = await armedCollector.eventsSnapshot()
+            let allProductionEvents = await productionCollector.eventsSnapshot()
+            let armed = try XCTUnwrap(armedEvents.first)
+            let production = try XCTUnwrap(productionEvents.first)
+
+            XCTAssertEqual(allArmedEvents.count, 1)
+            XCTAssertEqual(allProductionEvents.count, 1)
+            XCTAssertEqual(armed.generation, production.generation)
+            XCTAssertEqual(armed.rootLifetimeID, production.rootLifetimeID)
+            XCTAssertEqual(armed.removedFileIDs, [visibleFile.id])
+            XCTAssertEqual(armed.removedFilePaths, ["Visible.swift"])
+            XCTAssertTrue(armed.upsertedFiles.isEmpty)
+            XCTAssertFalse(armed.requiresFullResync)
+            XCTAssertEqual(eventSummary([armed]), eventSummary([production]))
+
+            armedCollectorTask.cancel()
+            productionCollectorTask.cancel()
+        }
+
+        func testRustUnloadPublishesCanonicalMonotonicEventAtSwiftVisibilitySeam() async throws {
+            let root = try makeTemporaryRoot(name: "RepublicationCanonicalUnload")
+            try write("seed\n", to: root.appendingPathComponent("Seed.swift"))
+            let store = makeStore()
+            let rustStream = await store.republishedInventoryScopeEvents()
+            let rustCollector = RepublishedEventCollector()
+            let rustCollectorTask = Task { await rustCollector.run(rustStream) }
+            let productionStream = await store.appliedIndexEvents()
+            let productionCollector = RepublishedEventCollector()
+            let productionCollectorTask = Task { await productionCollector.run(productionStream) }
+            let record = try await store.loadRoot(path: root.path)
+            let maybeSeed = await store.file(rootID: record.id, relativePath: "Seed.swift")
+            let seed = try XCTUnwrap(maybeSeed)
+
+            try await store.createFile(rootID: record.id, relativePath: "Created.swift", content: "created")
+            let mutationEvents = await productionCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            let mutation = try XCTUnwrap(mutationEvents.first)
+            await store.unloadRoot(id: record.id)
+
+            let rustEvents = await rustCollector.waitForAtLeast(2, timeoutSeconds: 10)
+            let productionEvents = await productionCollector.waitForAtLeast(2, timeoutSeconds: 10)
+            let rustUnload = try XCTUnwrap(rustEvents.last)
+            let productionUnload = try XCTUnwrap(productionEvents.last)
+            XCTAssertTrue(rustUnload.isRootUnload)
+            XCTAssertTrue(productionUnload.isRootUnload)
+            XCTAssertEqual(productionUnload.generation, mutation.generation + 1)
+            XCTAssertEqual(productionUnload.rootLifetimeID, mutation.rootLifetimeID)
+            XCTAssertTrue(productionUnload.removedFileIDs.contains(seed.id))
+            XCTAssertEqual(eventSummary([rustUnload]), eventSummary([productionUnload]))
+
+            rustCollectorTask.cancel()
+            productionCollectorTask.cancel()
+        }
+
         func testArmedRepublicationRealEditMatchesProductionSliceSourceExactlyOnce() async throws {
             let root = try makeTemporaryRoot(name: "RepublicationArmingEdit")
             let fileURL = root.appendingPathComponent("App.swift")
@@ -165,7 +242,7 @@ import XCTest
             productionCollectorTask.cancel()
         }
 
-        func testConcurrentEditsSerializeRustApplyThroughLegacyPublication() async throws {
+        func testConcurrentEditsSerializeRustApplyThroughCanonicalPublication() async throws {
             let root = try makeTemporaryRoot(name: "RepublicationConcurrentEdits")
             let fileURL = root.appendingPathComponent("App.swift")
             let original = "original\n"
@@ -239,6 +316,77 @@ import XCTest
             productionCollectorTask.cancel()
         }
 
+        func testPublicationPermitWaitsForCanonicalShardDeliveryBeforeNextDiskWrite() async throws {
+            let root = try makeTemporaryRoot(name: "RepublicationDeliveryAcknowledgement")
+            let fileURL = root.appendingPathComponent("App.swift")
+            try write("original\n", to: fileURL)
+            let store = makeStore()
+            let productionStream = await store.appliedIndexEvents()
+            let productionCollector = RepublishedEventCollector()
+            let productionCollectorTask = Task { await productionCollector.run(productionStream) }
+            let rootRecord = try await store.loadRoot(path: root.path)
+            guard await waitForStoreActivation(store, rootID: rootRecord.id) != nil else {
+                let stateSummary = await store.inventoryScopeRepublicationStateSummaryForTesting(
+                    rootID: rootRecord.id
+                )
+                XCTFail("the root never activated Rust republication: \(stateSummary)")
+                return
+            }
+            let deliveryGate = FirstInvocationSuspensionGate()
+            await store.setInventoryScopeRepublicationDeliveryWillApplyHandlerForTesting { rootID, _ in
+                guard rootID == rootRecord.id else { return }
+                await deliveryGate.suspendFirstInvocation()
+            }
+            let firstEditTask = Task {
+                try await store.editFile(
+                    rootID: rootRecord.id,
+                    relativePath: "App.swift",
+                    newContent: "first edit\n"
+                )
+            }
+            var deliverySuspended = false
+            for _ in 0 ..< 200 {
+                deliverySuspended = await deliveryGate.isFirstInvocationSuspended()
+                if deliverySuspended { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            guard deliverySuspended else {
+                firstEditTask.cancel()
+                _ = try? await firstEditTask.value
+                await store.setInventoryScopeRepublicationDeliveryWillApplyHandlerForTesting(nil)
+                XCTFail("the first canonical delivery never reached the deterministic suspension hook")
+                return
+            }
+            let secondEditTask = Task {
+                try await store.editFile(
+                    rootID: rootRecord.id,
+                    relativePath: "App.swift",
+                    newContent: "second edit\n"
+                )
+            }
+
+            var waiterCount = 0
+            for _ in 0 ..< 100 {
+                waiterCount = await store.inventoryCatalogPublicationPermitWaiterCountForTesting(
+                    rootID: rootRecord.id
+                )
+                if waiterCount == 1 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(waiterCount, 1, "the next mutation must wait for canonical delivery")
+            XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), "first edit\n")
+
+            await deliveryGate.releaseFirstInvocation()
+            _ = try await firstEditTask.value
+            _ = try await secondEditTask.value
+            await store.setInventoryScopeRepublicationDeliveryWillApplyHandlerForTesting(nil)
+
+            let events = await productionCollector.waitForAtLeast(2, timeoutSeconds: 10)
+            XCTAssertEqual(events.map(\.generation), [1, 2])
+            XCTAssertTrue(events.allSatisfy { !$0.requiresFullResync })
+            productionCollectorTask.cancel()
+        }
+
         func testArmedRepublicationPathObservesRealWatcherContentModification() async throws {
             let root = try makeTemporaryRoot(name: "RepublicationArmingWatcherModify")
             let fileURL = root.appendingPathComponent("App.swift")
@@ -268,16 +416,75 @@ import XCTest
             armedCollectorTask.cancel()
         }
 
-        func testSliceSourceJoinIsBoundedAndOverflowForcesResync() async throws {
-            let root = try makeTemporaryRoot(name: "RepublicationSliceJoinBound")
-            try write("source\n", to: root.appendingPathComponent("App.swift"))
+        func testUnarmedEmptyFullResyncDoesNotAdvanceRustButArmedAnchorPublishes() async throws {
+            let unarmedRoot = try makeTemporaryRoot(name: "RepublicationUnarmedEmptyResync")
+            let unarmedStore = makeStore()
+            let unarmedRecord = try await unarmedStore.loadRoot(path: unarmedRoot.path)
+            let generationBefore = try await unarmedStore.inventoryScopeAppliedIndexGenerationForTesting(
+                rootID: unarmedRecord.id
+            )
+            try await unarmedStore.publishEmptyFullResyncForTesting(rootID: unarmedRecord.id)
+            let generationAfter = try await unarmedStore.inventoryScopeAppliedIndexGenerationForTesting(
+                rootID: unarmedRecord.id
+            )
+            XCTAssertEqual(generationAfter, generationBefore)
+
+            let armedRoot = try makeTemporaryRoot(name: "RepublicationArmedEmptyResync")
+            let armedStore = makeStore()
+            let armedStream = await armedStore.republishedInventoryScopeEvents()
+            let armedCollector = RepublishedEventCollector()
+            let armedCollectorTask = Task { await armedCollector.run(armedStream) }
+            let productionStream = await armedStore.appliedIndexEvents()
+            let productionCollector = RepublishedEventCollector()
+            let productionCollectorTask = Task { await productionCollector.run(productionStream) }
+            let armedRecord = try await armedStore.loadRoot(path: armedRoot.path)
+
+            try await armedStore.publishEmptyFullResyncForTesting(rootID: armedRecord.id)
+            let armedEvents = await armedCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            let productionEvents = await productionCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            let armedEvent = try XCTUnwrap(armedEvents.first)
+            let productionEvent = try XCTUnwrap(productionEvents.first)
+            XCTAssertTrue(armedEvent.requiresFullResync)
+            XCTAssertEqual(eventSummary([armedEvent]), eventSummary([productionEvent]))
+
+            armedCollectorTask.cancel()
+            productionCollectorTask.cancel()
+        }
+
+        func testPrecisionLossImmediatelyPublishesRetainedCanonicalEventWithFullResync() async throws {
+            let root = try makeTemporaryRoot(name: "RepublicationPrecisionLossFallback")
+            let store = makeStore()
+            let mirrorStream = await store.republishedInventoryScopeEvents()
+            let mirrorCollector = RepublishedEventCollector()
+            let mirrorCollectorTask = Task { await mirrorCollector.run(mirrorStream) }
+            let productionStream = await store.appliedIndexEvents()
+            let productionCollector = RepublishedEventCollector()
+            let productionCollectorTask = Task { await productionCollector.run(productionStream) }
+            let rootRecord = try await store.loadRoot(path: root.path)
+
+            try await store.publishPrecisionLostFullResyncForTesting(rootID: rootRecord.id)
+
+            let mirrorEvents = await mirrorCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            let productionEvents = await productionCollector.waitForAtLeast(1, timeoutSeconds: 10)
+            let mirror = try XCTUnwrap(mirrorEvents.first)
+            let production = try XCTUnwrap(productionEvents.first)
+            XCTAssertTrue(mirror.requiresFullResync)
+            XCTAssertTrue(production.requiresFullResync)
+            XCTAssertEqual(eventSummary([mirror]), eventSummary([production]))
+            let retainedPlanCount = await store.inventoryScopeRepublicationPresentationPlanCountForTesting()
+            XCTAssertEqual(retainedPlanCount, 0)
+
+            mirrorCollectorTask.cancel()
+            productionCollectorTask.cancel()
+        }
+
+        func testCanonicalPresentationPlanIsBoundedAndOverflowForcesResync() async throws {
+            let root = try makeTemporaryRoot(name: "RepublicationPlanBound")
             let store = makeStore()
             let stream = await store.republishedInventoryScopeEvents()
             let collector = RepublishedEventCollector()
             let collectorTask = Task { await collector.run(stream) }
             let rootRecord = try await store.loadRoot(path: root.path)
-            let maybeFile = await store.file(rootID: rootRecord.id, relativePath: "App.swift")
-            let file = try XCTUnwrap(maybeFile)
             let lifetimeID = try await store.rootLifetimeIDForTesting(rootID: rootRecord.id)
 
             try await store.configureInventoryScopeRepublicationActivationForTesting(
@@ -286,24 +493,24 @@ import XCTest
                 rustGenerationFloor: 100,
                 logicalGenerationFloor: 0
             )
-            let maximum = await store.maximumInventoryScopeRepublicationSliceSourceJoinCountForTesting()
-            for offset in 1 ... maximum + 1 {
-                try await store.retainInventoryScopeRepublicationSliceSourceJoinForTesting(
+            let maximum = await store.maximumInventoryScopeRepublicationPresentationPlanCountForTesting()
+            for offset in 1 ... maximum {
+                let installed = try await store.retainInventoryScopeRepublicationSuppressionPlanForTesting(
                     rootID: rootRecord.id,
-                    rustGeneration: UInt64(100 + offset),
-                    snapshot: WorkspaceSliceRebaseSourceSnapshot(
-                        rootID: rootRecord.id,
-                        rootLifetimeID: lifetimeID,
-                        fileID: file.id,
-                        relativePath: file.standardizedRelativePath,
-                        fullPath: file.standardizedFullPath,
-                        text: "source-\(offset)",
-                        modificationTime: file.modificationDate?.timeIntervalSince1970 ?? 0
-                    )
+                    rustGeneration: UInt64(100 + offset)
                 )
+                XCTAssertTrue(installed)
             }
-            let retainedCount = await store.inventoryScopeRepublicationSliceSourceJoinCountForTesting()
+            let retainedCount = await store.inventoryScopeRepublicationPresentationPlanCountForTesting()
             XCTAssertEqual(retainedCount, maximum)
+
+            let overflowInstalled = try await store.retainInventoryScopeRepublicationSuppressionPlanForTesting(
+                rootID: rootRecord.id,
+                rustGeneration: UInt64(101 + maximum)
+            )
+            XCTAssertFalse(overflowInstalled)
+            let countAfterOverflow = await store.inventoryScopeRepublicationPresentationPlanCountForTesting()
+            XCTAssertEqual(countAfterOverflow, 0)
 
             await store.injectInventoryScopeRepublicationCandidateForTesting(
                 rustLifetimeID: "rust-lifetime",
@@ -311,15 +518,36 @@ import XCTest
                     rootID: rootRecord.id,
                     rootPath: rootRecord.standardizedFullPath,
                     generation: 101,
-                    rootLifetimeID: lifetimeID,
-                    modifiedFileIDs: [file.id]
+                    rootLifetimeID: lifetimeID
                 )
             )
             let events = await collector.waitForAtLeast(1, timeoutSeconds: 1)
             let overflowDelivery = try XCTUnwrap(events.first)
-            XCTAssertTrue(overflowDelivery.modifiedFileSourceSnapshotsByID.isEmpty)
             XCTAssertTrue(overflowDelivery.requiresFullResync)
             collectorTask.cancel()
+        }
+
+        func testLargeIDOnlySuppressionPlanExceedsRetainedByteBound() async throws {
+            let root = try makeTemporaryRoot(name: "RepublicationPlanByteBound")
+            let store = makeStore()
+            _ = await store.republishedInventoryScopeEvents()
+            let rootRecord = try await store.loadRoot(path: root.path)
+            try await store.configureInventoryScopeRepublicationActivationForTesting(
+                rootID: rootRecord.id,
+                rustLifetimeID: "rust-lifetime",
+                rustGenerationFloor: 100,
+                logicalGenerationFloor: 0
+            )
+            let id = UUID()
+            let largeIDOnlyBatch = [UUID](repeating: id, count: 131_072)
+            let installed = try await store.retainInventoryScopeRepublicationSuppressionPlanForTesting(
+                rootID: rootRecord.id,
+                rustGeneration: 101,
+                modifiedFileIDs: largeIDOnlyBatch
+            )
+            XCTAssertFalse(installed)
+            let retainedCount = await store.inventoryScopeRepublicationPresentationPlanCountForTesting()
+            XCTAssertEqual(retainedCount, 0)
         }
 
         func testStoreRebasesRustGenerationFloorAndStagesBehindMutationFence() async throws {
@@ -437,6 +665,47 @@ import XCTest
             collectorTask.cancel()
         }
 
+        func testSkippedGenerationWithoutSuppressionPlanForcesNextVisibleResync() async throws {
+            let root = try makeTemporaryRoot(name: "RepublicationMissingSuppressionPlan")
+            let store = makeStore()
+            let stream = await store.republishedInventoryScopeEvents()
+            let collector = RepublishedEventCollector()
+            let collectorTask = Task { await collector.run(stream) }
+            let record = try await store.loadRoot(path: root.path)
+            let lifetimeID = try await store.rootLifetimeIDForTesting(rootID: record.id)
+            try await store.configureInventoryScopeRepublicationActivationForTesting(
+                rootID: record.id,
+                rustLifetimeID: "rust-lifetime",
+                rustGenerationFloor: 100,
+                logicalGenerationFloor: 0
+            )
+            let installed = try await store.retainInventoryScopeRepublicationSuppressionPlanForTesting(
+                rootID: record.id,
+                rustGeneration: 102
+            )
+            XCTAssertTrue(installed)
+            await store.injectInventoryScopeRepublicationSuppressionCandidateForTesting(
+                rootID: record.id,
+                rustGeneration: 102
+            )
+            let suppressedEvents = await collector.eventsSnapshot()
+            XCTAssertTrue(suppressedEvents.isEmpty)
+
+            await store.injectInventoryScopeRepublicationCandidateForTesting(
+                rustLifetimeID: "rust-lifetime",
+                event: WorkspaceAppliedIndexBatchEvent(
+                    rootID: record.id,
+                    rootPath: record.standardizedFullPath,
+                    generation: 103,
+                    rootLifetimeID: lifetimeID
+                )
+            )
+            let events = await collector.waitForAtLeast(1, timeoutSeconds: 1)
+            let recovered = try XCTUnwrap(events.first)
+            XCTAssertTrue(recovered.requiresFullResync)
+            collectorTask.cancel()
+        }
+
         func testStoreRetriesQuarantinedActivationAndForcesRecoveryResync() async throws {
             let root = try makeTemporaryRoot(name: "RepublicationActivationRetry")
             let store = makeStore()
@@ -482,6 +751,67 @@ import XCTest
             XCTAssertFalse(first.requiresFullResync)
             XCTAssertEqual(second.generation, 11)
             XCTAssertFalse(second.requiresFullResync)
+        }
+
+        func testAdapterCandidateCarriesExactRawBatchAndSeparatesRebuildFromIntegrityResync() async throws {
+            let rootID = UUID()
+            let modifiedFileID = UUID()
+            let adapter = makeAdapter(rootIDs: [rootID])
+            let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+                rootID: rootID,
+                upsertedFiles: [],
+                upsertedFolders: [],
+                removedFileIDs: [],
+                removedFolderIDs: [],
+                removedFilePaths: [],
+                removedFolderPaths: [],
+                modifiedFileIDs: [modifiedFileID],
+                modifiedFolderIDs: []
+            )
+
+            await assertNoOutput(
+                generationAdvanced(rootID: rootID, generation: 7, rebuiltAuthoritative: true),
+                from: adapter
+            )
+            let output = await adapter.ingestCandidate(.appliedIndexBatch(rawBatch))
+            let candidate = try XCTUnwrap(output)
+
+            XCTAssertEqual(candidate.rustGeneration, 7)
+            XCTAssertEqual(candidate.rawBatch, rawBatch)
+            XCTAssertEqual(candidate.rustRootLifetimeID, "lifetime-\(rootID.uuidString)")
+            XCTAssertTrue(candidate.rebuiltAuthoritative)
+            XCTAssertFalse(candidate.correlationIntegrityRequiresResync)
+            XCTAssertTrue(
+                candidate.event.requiresFullResync,
+                "the compatibility event continues combining rebuild and integrity until canonical plans consume them separately"
+            )
+        }
+
+        func testAdapterCandidateMarksMissingPairAsIntegrityLossWithoutInventingRebuild() async throws {
+            let rootID = UUID()
+            let removedFileID = UUID()
+            let adapter = makeAdapter(rootIDs: [rootID])
+            let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+                rootID: rootID,
+                upsertedFiles: [],
+                upsertedFolders: [],
+                removedFileIDs: [removedFileID],
+                removedFolderIDs: [],
+                removedFilePaths: ["Hidden.swift"],
+                removedFolderPaths: [],
+                modifiedFileIDs: [],
+                modifiedFolderIDs: []
+            )
+
+            let output = await adapter.ingestCandidate(.appliedIndexBatch(rawBatch))
+            let candidate = try XCTUnwrap(output)
+
+            XCTAssertEqual(candidate.rustGeneration, 0)
+            XCTAssertEqual(candidate.rawBatch, rawBatch)
+            XCTAssertNil(candidate.rustRootLifetimeID)
+            XCTAssertTrue(candidate.correlationIntegrityRequiresResync)
+            XCTAssertFalse(candidate.rebuiltAuthoritative)
+            XCTAssertTrue(candidate.event.requiresFullResync)
         }
 
         func testAdapterGapForcesEveryRootsNextDeliveryToResync() async throws {
@@ -649,11 +979,11 @@ import XCTest
             _ store: WorkspaceFileContextStore,
             rootID: UUID
         ) async -> (rustLifetimeID: String, lastRustGeneration: UInt64)? {
-            for _ in 0 ..< 100 {
+            for _ in 0 ..< 400 {
                 if let activation = await store.inventoryScopeRepublicationActivationForTesting(rootID: rootID) {
                     return activation
                 }
-                try? await Task.sleep(for: .milliseconds(10))
+                try? await Task.sleep(for: .milliseconds(25))
             }
             return nil
         }
@@ -781,6 +1111,10 @@ import XCTest
             await withCheckedContinuation { continuation in
                 startWaiters.append(continuation)
             }
+        }
+
+        func isFirstInvocationSuspended() -> Bool {
+            firstInvocationIsSuspended
         }
 
         func releaseFirstInvocation() {

@@ -31,7 +31,7 @@ import XCTest
             try await super.tearDown()
         }
 
-        func testDefaultColdCompositionReusesSingleShardAndLeavesShadowDiagnosticsAsTombstones() async throws {
+        func testDefaultColdCompositionReusesSingleShardWithoutIncrementalSelfChecks() async throws {
             let rootAURL = try makeTemporaryRoot(name: "ColdCompositionA")
             let rootBURL = try makeTemporaryRoot(name: "ColdCompositionB")
             try write("a", to: rootAURL.appendingPathComponent("A.swift"))
@@ -392,7 +392,7 @@ import XCTest
             XCTAssertEqual(diagnostics.genericMergeElementVisitCount, 3)
         }
 
-        func testTopologyChurnRebuildsOnlyAffectedRootShardsAndKeepsShadowDiagnosticsZero() async throws {
+        func testTopologyChurnRebuildsOnlyAffectedRootShardsAndSelfChecksIncrementalPatch() async throws {
             let visibleAURL = try makeTemporaryRoot(name: "ShardVisibleA")
             let visibleBURL = try makeTemporaryRoot(name: "ShardVisibleB")
             let gitDataURL = try makeTemporaryRoot(name: "ShardGitData")
@@ -472,9 +472,9 @@ import XCTest
             XCTAssertEqual(buildCount(rootID: gitData.id, in: diagnostics), 1)
             XCTAssertEqual(buildCount(rootID: supplemental.id, in: diagnostics), 1)
             XCTAssertEqual(buildCount(rootID: worktree.id, in: diagnostics), 1)
-            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 1)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
-            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
+            XCTAssertGreaterThan(diagnostics.lastShadowByteCount, 0)
         }
 
         func testRetainedSnapshotsKeepOldGenerationsAliveAndBackstopRecoversAfterRelease() async throws {
@@ -516,9 +516,9 @@ import XCTest
             XCTAssertEqual(rootDiagnostics.buildCount, cap)
             XCTAssertEqual(rootDiagnostics.backstopCount, 1)
             XCTAssertEqual(diagnostics.totalBackstopCount, 1)
-            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, cap)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
-            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
+            XCTAssertGreaterThan(diagnostics.lastShadowByteCount, 0)
 
             retainedSnapshots.removeAll(keepingCapacity: false)
             let recoveredSnapshot = await store.searchCatalogSnapshot(
@@ -537,9 +537,9 @@ import XCTest
             // publication does not reintroduce it even across retention recovery.
             XCTAssertEqual(rootDiagnostics.pathIndexBuildCount, 0)
             XCTAssertEqual(rootDiagnostics.backstopCount, 1)
-            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, cap)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
-            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
+            XCTAssertGreaterThan(diagnostics.lastShadowByteCount, 0)
 
             // P4-7c c3: `rootPathIndexes` is deleted, so this re-fetch is retained only for its
             // side effect (settling any post-recovery rebuild work the diagnostics below inspect).
@@ -773,8 +773,10 @@ import XCTest
 
             let diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             let rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
-            // P4-8b: patch observability remains as a compatibility tombstone, while all eight
-            // canonical mutations plus the cold build publish authoritative Rust-derived shards.
+            // P4-8b keeps presentation rebuilds authority-derived. D-5 independently compares
+            // every eligible Rust patch attempt with a Rust authoritative rebuild; one canonical
+            // Swift event can contain several logical inventory mutations, so only the positive
+            // comparison/mismatch contract is presentation-stable here.
             XCTAssertEqual(diagnostics.maxPatchLogicalMutationCount, 0)
             XCTAssertEqual(rootDiagnostics.patchCount, 0)
             XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 9)
@@ -786,9 +788,9 @@ import XCTest
             XCTAssertFalse(rootDiagnostics.deltaStateDirty)
             assertFallbackInvariant(rootDiagnostics, expected: [:])
             XCTAssertNil(rootDiagnostics.fallbackReasonCounts[.shadowValidationMismatch])
-            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
+            XCTAssertGreaterThan(diagnostics.shadowComparisonCount, 0)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
-            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
+            XCTAssertGreaterThan(diagnostics.lastShadowByteCount, 0)
 
             // P4-7b b3 removal (design doc §4.4): this sub-scenario tested the shard-cache
             // "promotion" path -- a `.recordsOnly` shard upgraded to `.recordsAndPathIndexes` by a

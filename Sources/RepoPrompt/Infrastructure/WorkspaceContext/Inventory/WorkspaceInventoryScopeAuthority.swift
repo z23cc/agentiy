@@ -163,6 +163,21 @@ actor WorkspaceInventoryScopeAuthority {
 
     // MARK: - Delta application (incremental; the hot path)
 
+    struct RepublicationMutationReceipt: Equatable {
+        let rootID: UUID
+        let swiftLifetimeID: UUID?
+        let rustLifetimeID: String
+        let appliedIndexGeneration: UInt64
+        let catalogGeneration: UInt64?
+        let outcome: CoreInventoryDeltaReceipt.Outcome
+    }
+
+    struct RepublicationDiscoveryMutationReceipt: Equatable {
+        let mutation: RepublicationMutationReceipt
+        let mintedFileIDs: [UUID]
+        let mintedFolderIDs: [UUID]
+    }
+
     /// Id-supplied delta apply -- modifications (content update on an already-known id) and
     /// removals. Contract doc §11.4: "a path with an already-known id is never re-minted."
     func applyDelta(
@@ -180,6 +195,48 @@ actor WorkspaceInventoryScopeAuthority {
             source: source,
             event: event
         ))
+    }
+
+    /// P5-4b receipt path: validates the same Swift/Rust binding both immediately before command
+    /// submission and after the suspending Rust apply. A generation from a retired lifetime is
+    /// never eligible to anchor a canonical presentation plan.
+    func applyDeltaForRepublication(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID?,
+        requiresFullResync: Bool = false,
+        source: String,
+        event: CoreInventoryAppliedIndexBatchEventV1
+    ) async throws -> RepublicationMutationReceipt {
+        let binding = try requireBinding(rootID: rootID)
+        guard binding.swiftLifetimeID == expectedSwiftLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
+        }
+        let scope = try await requireScope()
+        _ = try requireCurrentBinding(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            expectedRustLifetimeID: binding.rustLifetimeID
+        )
+        let receipt = try await scope.applyDelta(CoreInventoryDeltaCommand(
+            rootID: rootID,
+            rootLifetimeID: binding.rustLifetimeID,
+            requiresFullResync: requiresFullResync,
+            source: source,
+            event: event
+        ))
+        let current = try requireCurrentBinding(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            expectedRustLifetimeID: binding.rustLifetimeID
+        )
+        return RepublicationMutationReceipt(
+            rootID: rootID,
+            swiftLifetimeID: current.swiftLifetimeID,
+            rustLifetimeID: current.rustLifetimeID,
+            appliedIndexGeneration: receipt.appliedIndexGeneration,
+            catalogGeneration: receipt.catalogGeneration,
+            outcome: receipt.outcome
+        )
     }
 
     /// Discovery delta apply -- newly-discovered paths (first time in this root lifetime, or
@@ -202,6 +259,49 @@ actor WorkspaceInventoryScopeAuthority {
             source: source,
             event: event
         ))
+    }
+
+    func applyDeltaDiscoveryForRepublication(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID?,
+        requiresFullResync: Bool = false,
+        source: String,
+        event: CoreInventoryDiscoveryAppliedIndexBatchEventV1
+    ) async throws -> RepublicationDiscoveryMutationReceipt {
+        let binding = try requireBinding(rootID: rootID)
+        guard binding.swiftLifetimeID == expectedSwiftLifetimeID else {
+            throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
+        }
+        let scope = try await requireScope()
+        _ = try requireCurrentBinding(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            expectedRustLifetimeID: binding.rustLifetimeID
+        )
+        let receipt = try await scope.applyDeltaDiscovery(CoreInventoryDeltaDiscoveryCommand(
+            rootID: rootID,
+            rootLifetimeID: binding.rustLifetimeID,
+            requiresFullResync: requiresFullResync,
+            source: source,
+            event: event
+        ))
+        let current = try requireCurrentBinding(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            expectedRustLifetimeID: binding.rustLifetimeID
+        )
+        return RepublicationDiscoveryMutationReceipt(
+            mutation: RepublicationMutationReceipt(
+                rootID: rootID,
+                swiftLifetimeID: current.swiftLifetimeID,
+                rustLifetimeID: current.rustLifetimeID,
+                appliedIndexGeneration: receipt.appliedIndexGeneration,
+                catalogGeneration: receipt.catalogGeneration,
+                outcome: receipt.outcome
+            ),
+            mintedFileIDs: receipt.mintedFileIDs,
+            mintedFolderIDs: receipt.mintedFolderIDs
+        )
     }
 
     // MARK: - Reads (Tier 1: handle + narrow reads; §6.1)

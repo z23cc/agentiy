@@ -205,9 +205,9 @@ cover an active mutation that forces fallback, a root-A epoch change during root
 only root A's rows, cancellation omitting the current root and stopping later reads, zero
 publication/composition counters, and subsequent stable publication.
 
-`shadowComparisonCount`, `shadowMismatchCount`, `lastShadowByteCount`, and
-`.shadowValidationMismatch` remain zero/absent compatibility tombstones. D-5's proposed independent
-Rust-internal self-check is still unimplemented; P4-8c does not claim that replacement. The
+At the P4-8c slice, `shadowComparisonCount`, `shadowMismatchCount`, `lastShadowByteCount`, and
+`.shadowValidationMismatch` remain zero/absent compatibility tombstones. P4-8c does not claim the
+later D-5 Rust-internal replacement, which is closed by the post-P5-5 amendment below. The
 pending-root Swift builder and multi-root presentation merge remain live P4-8 work at this slice;
 P4-8d below retires the former. This amendment also does not flip `appliedIndexEvents()` to the armed
 Rust republication stream; §12's generation/filtering/slice-rebase blockers and Phase 5 remain open.
@@ -303,8 +303,9 @@ Composition diagnostics are read from `InventoryScope` rather than incremented b
 counter. Frozen full-snapshot and single-mutation Swift benchmark arms move to
 `Tests/RepoPromptTests/WorkspaceContext/HistoricalWorkspaceInventoryCatalogBuilders.swift`; the
 unused test merge is deleted, production source auditing requires zero retired-builder references,
-and the product `WorkspaceInventoryCatalogBuilders.swift` file is deleted. P4-8 is complete except
-for D-5's separately approved Rust-internal self-check. This amendment does not flip the applied-index
+and the product `WorkspaceInventoryCatalogBuilders.swift` file is deleted. At this amendment P4-8
+is complete except for D-5's separately approved Rust-internal self-check, closed after P5-5 below.
+This amendment does not flip the applied-index
 event source; Phase 5 remains the next authority transition.
 
 ### P5-1 amendment — armed republication correlation hardening
@@ -403,6 +404,144 @@ degradation. The focused P5 arming suite now contains 16 cases.
 This amendment still does **not** flip `appliedIndexEvents()`. Production and both consumers remain
 unchanged. The remaining source-flip blockers are managed-only discoverability/removal and legacy
 empty-batch suppression parity, plus monotonic lifetime-correct unload publication.
+
+### P5-4a amendment — exact raw-batch identity and resync-cause separation
+
+P5-4's canonical presentation plan needs to validate a Rust notification against the exact command
+receipt it represents; FIFO position and summary counts are insufficient because independently
+coalesced pairs can have the same cardinality while naming different records. The armed adapter's
+internal candidate therefore now carries the exact paired Rust generation and complete id-bearing
+`CoreInventoryAppliedIndexBatchEventV1` before Swift presentation mapping. Root-unload candidates
+carry neither a delta generation nor a raw batch. Generation zero remains the explicit
+missing-correlation sentinel rather than a value inferred from the mapped consumer event.
+
+The candidate also separates `rebuiltAuthoritative` from
+`correlationIntegrityRequiresResync`. Hub gaps, scoped/global resnapshot obligations, pending-pair
+overflow, lifetime rejection, and missing generation correlation are integrity failures that the
+future presentation plan must conservatively carry across suppressed hidden generations. A
+contiguous authoritative rebuild can instead be an internal consequence of safely touching
+managed-only state and must not by itself become a later consumer-visible resync. The adapter's
+compatibility `ingest(_:)` result deliberately continues combining both causes in
+`requiresFullResync`, so this preparatory slice changes no existing armed output; the store now reads
+the exact candidate generation directly rather than recovering authority metadata from the mapped
+event shape. Two focused cases pin complete raw-payload identity, rebuild-only separation, and a
+missing-pair integrity failure; the P5 arming suite now contains 18 cases.
+
+This preparatory amendment remains armed-only. It does not itself install transaction-scoped
+canonical presentation plans, suppress intermediate/hidden Rust generations, reproduce mixed-batch
+cardinality, flip either production consumer, or publish unload. P5-4b supplies the first three
+contracts below; the source flip and unload remain P5-5 follow-ons.
+
+### P5-4b amendment — transaction-scoped canonical presentation plans
+
+Every republication-visible Rust apply now returns a validated mutation receipt carrying the Swift
+root lifetime, Rust root lifetime, exact applied-index generation, catalog generation, and apply
+outcome. The store admits catalog mutations through a root-local publication permit that spans the
+filesystem write (where applicable), Rust apply, legacy Swift catalog mutation, canonical event
+construction, and plan sealing. A bounded per-root mutation segment records each accepted receipt
+with the exact id-bearing raw batch; missing permits, lifetime drift, rejected receipts, duplicate or
+non-monotonic generations, and capacity loss fail closed to a sticky resync obligation.
+
+At the legacy visibility seam, the store seals one plan per captured Rust generation. Intermediate
+and managed-only generations receive `suppress`; only the terminal visible generation receives
+`publish(canonicalEvent)`. The published plan retains the exact already-filtered Swift event,
+including logical generation, lifetime, record/path payloads, and pre-modification slice-source
+snapshots. This replaces the earlier generation-keyed slice-source join and makes one logical Swift
+batch authoritative even when it required multiple Rust applies. Fully filtered managed-only
+batches advance only the Rust cursor and never advance the Swift logical generation.
+
+Armed delivery now requires an exact key `(rootID, Swift lifetime, Rust lifetime, Rust generation)`
+and exact raw-batch equality before consuming a plan. A suppression carries forward only
+correlation-integrity failures; `rebuiltAuthoritative` alone remains an internal Rust implementation
+detail. Missing, stale, mismatched, or overflowed plans force resync rather than synthesizing
+presentation. Plans are bounded to 64 per root, 256 scope-wide, and 32 MiB of conservatively estimated retained
+raw-plus-canonical payload; UUID collections, record/object overhead, and string storage all count
+toward the overflow-safe byte cap. Overflow clears the affected root's plans and requires recovery
+resync. A Rust generation jump is considered explained only when every skipped generation has an
+exact suppression plan; missing coverage or a skipped visible plan preserves the integrity-resync
+obligation. Empty full-resync anchors are submitted only while republication is armed.
+
+The focused arming suite contains 22 cases, including real add/edit/watcher mutations, concurrent
+edit serialization, exact slice-source parity, a visible-to-ignored move that emits exactly one
+canonical removal, raw-payload identity, rebuild/integrity separation, unexplained generation-gap
+recovery, armed-only empty anchoring, and count/retained-byte plan bounds.
+P5-4b itself left production `appliedIndexEvents()` and both consumers unchanged; P5-5 below closes
+monotonic lifetime-correct unload and performs the atomic source flip.
+
+### P5-5 amendment — lifetime-correct unload and production source flip
+
+`appliedIndexEvents()` now starts the same single hub subscription as the differential mirror. The
+continuation is registered before source startup. Rust subscription open remains asynchronous; until
+registration succeeds, mutations use legacy direct publication. At the open seam the store installs
+activation captures for every visible root before opening the source gate, then resolves cursors in
+parallel with the single stream drain so incoming candidates stage behind an exact fence rather than
+blocking the drain. Authority acquisition idempotently re-arms an existing production/mirror
+subscriber, covering a transient first runtime-open miss without eagerly starting background work
+for stores with no event consumer.
+
+A visible canonical plan is delivered in strict Rust generation order to both the mirror and the
+existing production continuation; `publishAppliedIndexEvent` still constructs the Swift-authority
+presentation payload but directly yields it only when no Rust subscription is active. The two
+production consumers retain their existing subscription API and event shape; no consumer-side
+routing or payload interpretation changed.
+
+The staged-candidate drain is fully async and awaited through the root-local publication permit. A
+per-root in-flight delivery acknowledgement keeps that permit held until the Rust-correlated
+canonical event has updated the root catalog shard, not merely until its presentation plan was
+removed. If exact mutation capture or plan sealing fails, the retained canonical visible event is
+emitted immediately with `requiresFullResync`, correlation state is quarantined, and a fresh
+activation is scheduled; the current production event is never silently dropped. If the hub stream
+ends or fails, unconsumed visible plans receive the same one-shot fail-closed delivery and later
+mutations return to the legacy direct-publish fallback. A later subscription rebases existing roots
+from fresh Rust activation cursors rather than reusing a stale generation floor.
+
+Unload freezes its complete canonical Swift event before `closeRoot`: next logical generation,
+Swift lifetime, discoverable removal IDs/paths, and the full-resync/unload flags. The Rust
+`rootUnloaded` event supplies the exact Rust lifetime receipt but cannot publish early; delivery is
+held until the existing Swift teardown visibility seam. A bounded one-second actor-yielding wait
+allows the independent hub drain to arrive, then fails closed to the retained canonical unload so
+production consumers cannot miss root removal. Every unload state clear is conditional on both the
+captured Swift and Rust lifetimes; a late close from an old lifetime cannot erase a replacement
+root's activation, generation, or diagnostics. The focused republication suite contains 25 cases,
+including monotonic mutation-to-unload generation, exact production/mirror unload parity,
+immediate precision-loss recovery, and publication-permit acknowledgement through canonical shard
+application. The existing CRUD/root-unload consumer-contract test also passes unchanged.
+
+### D-5 closure amendment — Rust-internal patch self-check
+
+The last separately approved P4-8 closure item is implemented after the P5-5 source flip. Runtime
+configuration now carries `self_check_patches`, defaulting to `cfg!(debug_assertions)`; the FFI
+record is intentionally unchanged, and the FFI conversion selects the same DEBUG-default policy.
+Release archives therefore retain the zero-cost patch path rather than adding a public setting or
+an ABI/schema toggle.
+
+For each eligible checked patch, Rust captures the already-updated authoritative map input while
+holding the scope lock, then performs the full rebuild and canonical comparison outside that lock.
+The encoding covers every semantic file, folder, and projected-entry field in fixed order, with
+explicit string lengths, UUID bytes, option tags, and raw modification-date bits. It excludes the
+path-index representation because full and overlay indexes are allowed to differ internally and
+are deterministic functions of the compared entries. String interning and allocator identity
+cannot affect the result.
+
+Installation revalidates the exact Rust root lifetime and base generation. A match publishes the
+patch unchanged. A mismatch increments `shadowMismatchCount`, records
+`shadowValidationMismatch`, emits the existing shard-fallback event, and atomically publishes the
+already-computed authoritative artifact; the mismatched patch is never consumer-visible. A stale
+base uses the existing patch-application backstop, while a rebound lifetime is rejected rather than
+installing an old artifact into the new root. Stale, root-gone, and rebound attempts do not increment
+comparison/mismatch counters or emit a false `shadowValidationMismatch`; only the artifact actually
+eligible for installation contributes D-5 diagnostics. `shadowComparisonCount`, `shadowMismatchCount`, and
+`lastShadowByteCount` now expose Rust scope diagnostics through the existing Swift/MCP fields; the
+last byte count is the authoritative canonical comparison payload. Store-local fallback diagnostics
+also consume the typed D-5 shard-fallback event.
+
+Cargo contract coverage pins both arms: a matching patch remains `Patched`, while a deterministic
+managed-only maps/published skew fails closed to `RebuiltAuthoritative` and serves only the
+canonical discoverable rows. A barrier-driven stale-base race additionally proves the abandoned
+self-check records only `patchApplicationBackstop` and leaves all three shadow diagnostics at zero;
+event coverage pins mismatch ordering as `shardFallback` → `generationAdvanced` →
+`appliedIndexBatch`. D-5 is therefore closed without restoring the deleted Swift shadow or creating
+a second authority.
 
 ## 4. Generation-lease / handle-lifecycle contract (§7.5's naming requirement)
 
@@ -625,7 +764,7 @@ carry:
 | `publishedShardCount` | scope-wide | verbatim |
 | `totalBuildCount` / `totalBackstopCount` | scope-wide | verbatim |
 | `singleShardCompositionReuseCount` / `genericMergeElementVisitCount` | scope-wide | verbatim |
-| `shadowComparisonCount` / `shadowMismatchCount` / `lastShadowByteCount` | scope-wide | P4-8c retires the Swift full-rebuild shadow and keeps zero-valued compatibility tombstones; a future Rust-internal D-5 self-check is not implemented |
+| `shadowComparisonCount` / `shadowMismatchCount` / `lastShadowByteCount` | scope-wide | Rust-internal D-5 canonical patch-vs-authoritative counts and the last authoritative comparison payload size; zero when the config gate is disabled or no eligible patch has run |
 | per-root `rootID` / `lifetimeID` | per-root | verbatim (`RootId` / `RootLifetimeId`) |
 | per-root `publishedTopologyGeneration` | per-root | verbatim (nil when the cap backstop has fired, §7.2 layer 2) |
 | per-root `liveTopologyGenerations` / `retainedTopologyGenerations` | per-root | verbatim |
@@ -649,7 +788,7 @@ because the diagnostics map is meaningless without the enum it counts):**
 | `retentionBoundary` | Preserved verbatim (§4 layer 2) |
 | `patchThresholdExceeded` | Expected to become rare (D-1, `maxRootCatalogShardPatchLogicalMutationCount` 1 -> N) |
 | `patchApplicationBackstop` | Preserved -- patch computed but unsafe to apply |
-| `shadowValidationMismatch` | Spelling retained but not produced after P4-8c; a future Rust-internal D-5 self-check is not implemented |
+| `shadowValidationMismatch` | Produced by D-5 when canonical patch and authoritative bytes differ; the patch is discarded and the authoritative generation is installed |
 
 ## 6. `inventoryOpenProjectedShard` (B2) and `inventoryQuery` (the suggestion-service seam)
 
@@ -986,6 +1125,15 @@ design:
 Neither gap is fixed here; both are named so the flip is a scoped follow-on with its own
 resolution, not a guess made under this commit's pressure.
 
+### 12.2a Amendment — republication source flip shipped in P5-5
+
+P5-3/P5-4 replaced the one-shot asynchronous join with transaction-scoped canonical presentation
+plans carrying the exact Swift logical generation and slice-source payload; P5-5 adds the
+lifetime-correct unload seam and makes validated Rust correlation the production event source.
+`appliedIndexEvents()` remains the consumer API, so `WorkspaceSearchService` and
+`WorkspaceFilesViewModel` require no routing changes. Subscription failure emits retained visible
+plans with full resync and restores legacy direct publication until a fresh activation rebase.
+
 ### 12.3 Not shipped — two behavioral regressions found by this commit's own gates
 
 Both were found by running the tests the cutover's own gate requires (not introduced by loosening
@@ -1063,8 +1211,9 @@ architecture-facing summary.
 
 D-1 (`maxRootCatalogShardPatchLogicalMutationCount` 1 → N), D-2 (entries projected on read rather
 than materialized), D-5 (shard shadow-comparison becomes Rust-internal), and D-10 (codemap
-graph-index shard built authority-side) are all still unimplemented as of this commit, verified
-directly against the running tree rather than assumed from an earlier plan. See the amended
+graph-index shard built authority-side) were all still unimplemented at the P4-6b cutover point,
+verified directly against that running tree rather than assumed from an earlier plan. This is
+historical cutover status: D-5 is closed by the post-P5-5 amendment above. See the amended
 drift-register table in `WorkspaceInventoryScopeDriftRegisterTests.swift` for the per-item
 evidence.
 

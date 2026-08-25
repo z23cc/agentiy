@@ -52,6 +52,111 @@ impl RootGeneration {
             path_index: Arc::new(RootPathIndex::full(&[])),
         }
     }
+
+    /// D-5's Rust-internal patch-vs-authoritative comparison encoding. This deliberately ignores
+    /// `path_index`'s representation: both index variants are deterministic projections of
+    /// `entries`, while their full-vs-overlay storage shape is allowed to differ. Every semantic
+    /// record/entry field is encoded in fixed order with explicit lengths and raw scalar bits, so
+    /// string interning or allocator identity can never affect equality.
+    #[must_use]
+    pub(crate) fn self_check_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_uuid(&mut bytes, &self.root_id);
+        push_uuid(&mut bytes, self.root_lifetime.as_bytes());
+        push_u64(&mut bytes, self.generation);
+        push_u64(&mut bytes, self.files.len() as u64);
+        for file in &self.files {
+            push_record(
+                &mut bytes,
+                &file.id,
+                &file.root_id,
+                &file.name,
+                &file.relative_path,
+                &file.standardized_relative_path,
+                &file.full_path,
+                &file.standardized_full_path,
+                file.parent_folder_id.as_ref(),
+                file.modification_date,
+            );
+        }
+        push_u64(&mut bytes, self.folders.len() as u64);
+        for folder in &self.folders {
+            push_record(
+                &mut bytes,
+                &folder.id,
+                &folder.root_id,
+                &folder.name,
+                &folder.relative_path,
+                &folder.standardized_relative_path,
+                &folder.full_path,
+                &folder.standardized_full_path,
+                folder.parent_folder_id.as_ref(),
+                folder.modification_date,
+            );
+        }
+        push_u64(&mut bytes, self.entries.len() as u64);
+        for entry in &self.entries {
+            push_uuid(&mut bytes, &entry.id);
+            push_uuid(&mut bytes, &entry.root_id);
+            push_string(&mut bytes, &entry.root_path);
+            push_string(&mut bytes, &entry.root_name);
+            push_string(&mut bytes, &entry.name);
+            push_string(&mut bytes, &entry.relative_path);
+            push_string(&mut bytes, &entry.standardized_relative_path);
+            push_string(&mut bytes, &entry.full_path);
+            push_string(&mut bytes, &entry.standardized_full_path);
+            push_string(&mut bytes, &entry.display_path);
+        }
+        bytes
+    }
+}
+
+fn push_record(
+    bytes: &mut Vec<u8>,
+    id: &[u8; 16],
+    root_id: &[u8; 16],
+    name: &str,
+    relative_path: &str,
+    standardized_relative_path: &str,
+    full_path: &str,
+    standardized_full_path: &str,
+    parent_folder_id: Option<&[u8; 16]>,
+    modification_date: Option<f64>,
+) {
+    push_uuid(bytes, id);
+    push_uuid(bytes, root_id);
+    push_string(bytes, name);
+    push_string(bytes, relative_path);
+    push_string(bytes, standardized_relative_path);
+    push_string(bytes, full_path);
+    push_string(bytes, standardized_full_path);
+    match parent_folder_id {
+        Some(parent_folder_id) => {
+            bytes.push(1);
+            push_uuid(bytes, parent_folder_id);
+        }
+        None => bytes.push(0),
+    }
+    match modification_date {
+        Some(modification_date) => {
+            bytes.push(1);
+            push_u64(bytes, modification_date.to_bits());
+        }
+        None => bytes.push(0),
+    }
+}
+
+fn push_uuid(bytes: &mut Vec<u8>, uuid: &[u8; 16]) {
+    bytes.extend_from_slice(uuid);
+}
+
+fn push_string(bytes: &mut Vec<u8>, value: &str) {
+    push_u64(bytes, value.len() as u64);
+    bytes.extend_from_slice(value.as_bytes());
+}
+
+fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
 }
 
 /// Hand-written rather than `#[derive(PartialEq)]`: `pathsearch::PathSearchIndex` (reused

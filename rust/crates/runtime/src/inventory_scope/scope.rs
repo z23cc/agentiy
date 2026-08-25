@@ -35,6 +35,7 @@ use super::diagnostics::{HandleDiagnostics, InventoryDiagnosticsV1, RootDiagnost
 use super::fallback::{
     InventoryApplyOutcome, InventoryRejectionReason, RootCatalogShardFallbackReason,
 };
+use super::generation::RootGeneration;
 use super::handles::{
     ComposedHandleReadOutcome, ComposedHandleTable, HandleReadOutcome, HandleTable,
     InvalidationReason,
@@ -45,7 +46,7 @@ use super::ids::{
     RootLifetimeId, SnapshotHandleId, UuidMinter,
 };
 use super::ingress_gate;
-use super::state_machine::{self, PatchAttempt, RootState};
+use super::state_machine::{self, PatchAttempt, RebuildInput, RootState};
 use super::wire::{
     DiscoveredFileRecord, DiscoveredFolderRecord, InventoryDiscoveryAppliedIndexBatchEvent,
 };
@@ -58,6 +59,10 @@ pub struct InventoryScopeConfig {
     pub live_generation_cap: usize,
     /// D-1's N, set to 1 per P4-2 §9b's provisional finding.
     pub max_patch_logical_mutation_count: usize,
+    /// D-5's Rust-internal patch-vs-authoritative validation. Enabled by default only for builds
+    /// carrying debug assertions; release callers may still opt in explicitly in cargo-level
+    /// tests or diagnostics without changing the FFI contract.
+    pub self_check_patches: bool,
     /// P4-4 (contract doc §6 / design §5.3): "the codemap-capable extension->language table
     /// (`SyntaxManager.supportsCodeMap`, `CodeMapSyntaxEngine.extensionToLanguage`) is
     /// Swift-owned policy passed **in** at `inventoryOpenScope` as scope configuration, not
@@ -72,6 +77,7 @@ impl Default for InventoryScopeConfig {
         Self {
             live_generation_cap: 8,
             max_patch_logical_mutation_count: 1,
+            self_check_patches: cfg!(debug_assertions),
             codemap_capable_extensions: std::collections::HashSet::new(),
         }
     }
@@ -168,6 +174,9 @@ struct ScopeState {
     bulk_loads: BulkLoadTable,
     single_shard_composition_reuse_count: u64,
     generic_merge_element_visit_count: u64,
+    shadow_comparison_count: u64,
+    shadow_mismatch_count: u64,
+    last_shadow_byte_count: u64,
     identity_invalidation_epoch: u64,
 }
 
@@ -282,6 +291,9 @@ impl InventoryScope {
                 bulk_loads: BulkLoadTable::new(),
                 single_shard_composition_reuse_count: 0,
                 generic_merge_element_visit_count: 0,
+                shadow_comparison_count: 0,
+                shadow_mismatch_count: 0,
+                last_shadow_byte_count: 0,
                 identity_invalidation_epoch: 0,
             }),
             longest_critical_section_nanos: AtomicU64::new(0),
@@ -509,6 +521,11 @@ impl InventoryScope {
                 base_generation: Option<u64>,
                 reason: RootCatalogShardFallbackReason,
             },
+            NeedsSelfCheck {
+                base_generation: Option<u64>,
+                patch: RootGeneration,
+                authoritative_input: RebuildInput,
+            },
         }
 
         let phase1 = self.with_state(|state| -> Phase1 {
@@ -572,6 +589,13 @@ impl InventoryScope {
                 &command.event,
                 self.config.max_patch_logical_mutation_count,
             ) {
+                PatchAttempt::Patched(generation) if self.config.self_check_patches => {
+                    Phase1::NeedsSelfCheck {
+                        base_generation: root.published.as_ref().map(|g| g.generation),
+                        patch: generation,
+                        authoritative_input: root.snapshot_for_rebuild(),
+                    }
+                }
                 PatchAttempt::Patched(generation) => {
                     let outgoing_generation_number = root.published.as_ref().map(|g| g.generation);
                     let outgoing_refcount =
@@ -624,7 +648,11 @@ impl InventoryScope {
                 reason,
             } => {
                 self.publish_events(vec![Self::shard_fallback_event(command.root_id, reason)]);
-                let receipt = self.rebuild_and_install(command.root_id, base_generation);
+                let receipt = self.rebuild_and_install(
+                    command.root_id,
+                    command.root_lifetime_id,
+                    base_generation,
+                );
                 if matches!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative) {
                     let events = self.delta_success_events(
                         command.root_id,
@@ -636,7 +664,178 @@ impl InventoryScope {
                 }
                 receipt
             }
+            Phase1::NeedsSelfCheck {
+                base_generation,
+                patch,
+                authoritative_input,
+            } => self.self_check_patch_and_install(
+                command.root_id,
+                command.root_lifetime_id,
+                base_generation,
+                patch,
+                authoritative_input,
+                &command.event,
+            ),
         }
+    }
+
+    /// D-5: compare a would-be incremental generation against a fresh authoritative build of the
+    /// same already-applied maps, outside the scope-state mutex. Equality is over the canonical
+    /// semantic encoding, not `RootPathIndex`'s permitted full-vs-overlay storage shape. A mismatch
+    /// never publishes the patch: the authoritative artifact is installed atomically instead.
+    fn self_check_patch_and_install(
+        &self,
+        root_id: RootId,
+        expected_root_lifetime: RootLifetimeId,
+        base_generation: Option<u64>,
+        patch: RootGeneration,
+        authoritative_input: RebuildInput,
+        event: &crate::inventory::InventoryAppliedIndexBatchEvent,
+    ) -> InventoryDeltaReceipt {
+        let Ok(authoritative) = state_machine::rebuild_generation(&authoritative_input) else {
+            return reject(InventoryRejectionReason::UnknownRoot, 0, None);
+        };
+        let authoritative_bytes = authoritative.self_check_bytes();
+        let authoritative_byte_count = u64::try_from(authoritative_bytes.len()).unwrap_or(u64::MAX);
+        let mismatch = patch.self_check_bytes() != authoritative_bytes;
+
+        let rebuild_test_barrier = self
+            .rebuild_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(barrier) = rebuild_test_barrier {
+            self.parked_on_rebuild_barrier.store(true, Ordering::SeqCst);
+            barrier.wait();
+            self.parked_on_rebuild_barrier
+                .store(false, Ordering::SeqCst);
+        }
+
+        enum Install {
+            Done {
+                receipt: InventoryDeltaReceipt,
+                installed_shadow_mismatch: bool,
+            },
+            Stale(Option<u64>),
+            RootGone,
+            LifetimeChanged {
+                applied_index_generation: u64,
+                catalog_generation: Option<u64>,
+            },
+        }
+
+        let install = self.with_state(|state| -> Install {
+            let current_generation = match state.roots.get(&root_id) {
+                None => return Install::RootGone,
+                Some(root) if root.root_lifetime != expected_root_lifetime => {
+                    return Install::LifetimeChanged {
+                        applied_index_generation: root.last_applied_index_generation,
+                        catalog_generation: root
+                            .published
+                            .as_ref()
+                            .map(|generation| generation.generation),
+                    };
+                }
+                Some(root) => root
+                    .published
+                    .as_ref()
+                    .map(|generation| generation.generation),
+            };
+            if current_generation != base_generation {
+                if let Some(root) = state.roots.get_mut(&root_id) {
+                    root.counters
+                        .record_fallback(RootCatalogShardFallbackReason::PatchApplicationBackstop);
+                }
+                return Install::Stale(current_generation);
+            }
+
+            // Only a comparison still eligible for installation contributes D-5 diagnostics.
+            // Root-gone, rebound-lifetime, and stale-base attempts did not choose an artifact and
+            // must not emit a false shadow mismatch into the Swift event plane.
+            state.shadow_comparison_count = state.shadow_comparison_count.saturating_add(1);
+            state.last_shadow_byte_count = authoritative_byte_count;
+            if mismatch {
+                state.shadow_mismatch_count = state.shadow_mismatch_count.saturating_add(1);
+            }
+
+            let outgoing_refcount = current_generation.map_or(0, |generation_number| {
+                state
+                    .handles
+                    .refcount_for_generation(root_id, generation_number)
+                    + state
+                        .composed_handles
+                        .refcount_for_generation(root_id, generation_number)
+            });
+            let root = state.roots.get_mut(&root_id).expect("checked above");
+            if mismatch {
+                root.counters
+                    .record_fallback(RootCatalogShardFallbackReason::ShadowValidationMismatch);
+            }
+            let candidate = if mismatch { authoritative } else { patch };
+            let published = root.publish(candidate, outgoing_refcount);
+            root.last_applied_index_generation += 1;
+            let outcome = if mismatch {
+                root.counters.authoritative_rebuild_count += 1;
+                InventoryApplyOutcome::RebuiltAuthoritative
+            } else {
+                root.counters.patch_count += 1;
+                InventoryApplyOutcome::Patched
+            };
+            Install::Done {
+                receipt: InventoryDeltaReceipt {
+                    applied_index_generation: root.last_applied_index_generation,
+                    catalog_generation: Some(published.generation),
+                    outcome,
+                },
+                installed_shadow_mismatch: mismatch,
+            }
+        });
+
+        let (receipt, installed_shadow_mismatch) = match install {
+            Install::Done {
+                receipt,
+                installed_shadow_mismatch,
+            } => (receipt, installed_shadow_mismatch),
+            Install::Stale(current_generation) => {
+                self.publish_events(vec![Self::shard_fallback_event(
+                    root_id,
+                    RootCatalogShardFallbackReason::PatchApplicationBackstop,
+                )]);
+                (
+                    self.rebuild_and_install(root_id, expected_root_lifetime, current_generation),
+                    false,
+                )
+            }
+            Install::RootGone => {
+                return reject(InventoryRejectionReason::UnknownRoot, 0, None);
+            }
+            Install::LifetimeChanged {
+                applied_index_generation,
+                catalog_generation,
+            } => {
+                return reject(
+                    InventoryRejectionReason::LifetimeMismatch,
+                    applied_index_generation,
+                    catalog_generation,
+                );
+            }
+        };
+
+        if installed_shadow_mismatch {
+            self.publish_events(vec![Self::shard_fallback_event(
+                root_id,
+                RootCatalogShardFallbackReason::ShadowValidationMismatch,
+            )]);
+        }
+        if matches!(
+            receipt.outcome,
+            InventoryApplyOutcome::Patched | InventoryApplyOutcome::RebuiltAuthoritative
+        ) {
+            let events =
+                self.delta_success_events(root_id, expected_root_lifetime, &receipt, event);
+            self.publish_events(events);
+        }
+        receipt
     }
 
     /// The expensive path: clone inputs under a brief lock, compute the sort/filter outside it,
@@ -648,12 +847,17 @@ impl InventoryScope {
     fn rebuild_and_install(
         &self,
         root_id: RootId,
+        expected_root_lifetime: RootLifetimeId,
         base_generation: Option<u64>,
     ) -> InventoryDeltaReceipt {
         enum Install {
             Done(InventoryDeltaReceipt),
             Stale,
             RootGone,
+            LifetimeChanged {
+                applied_index_generation: u64,
+                catalog_generation: Option<u64>,
+            },
         }
 
         for attempt in 0..MAX_REBUILD_INSTALL_ATTEMPTS {
@@ -666,12 +870,12 @@ impl InventoryScope {
                 return reject(InventoryRejectionReason::UnknownRoot, 0, None);
             };
 
-            if let Some(barrier) = self
+            let rebuild_test_barrier = self
                 .rebuild_test_barrier
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take()
-            {
+                .take();
+            if let Some(barrier) = rebuild_test_barrier {
                 self.parked_on_rebuild_barrier.store(true, Ordering::SeqCst);
                 barrier.wait();
                 self.parked_on_rebuild_barrier
@@ -688,7 +892,19 @@ impl InventoryScope {
             let install = self.with_state(|state| -> Install {
                 let current_generation = match state.roots.get(&root_id) {
                     None => return Install::RootGone,
-                    Some(root) => root.published.as_ref().map(|g| g.generation),
+                    Some(root) if root.root_lifetime != expected_root_lifetime => {
+                        return Install::LifetimeChanged {
+                            applied_index_generation: root.last_applied_index_generation,
+                            catalog_generation: root
+                                .published
+                                .as_ref()
+                                .map(|generation| generation.generation),
+                        };
+                    }
+                    Some(root) => root
+                        .published
+                        .as_ref()
+                        .map(|generation| generation.generation),
                 };
                 if force_stale || current_generation != base_generation {
                     if let Some(root) = state.roots.get_mut(&root_id) {
@@ -720,6 +936,16 @@ impl InventoryScope {
             match install {
                 Install::Done(receipt) => return receipt,
                 Install::RootGone => return reject(InventoryRejectionReason::UnknownRoot, 0, None),
+                Install::LifetimeChanged {
+                    applied_index_generation,
+                    catalog_generation,
+                } => {
+                    return reject(
+                        InventoryRejectionReason::LifetimeMismatch,
+                        applied_index_generation,
+                        catalog_generation,
+                    );
+                }
                 Install::Stale => {}
             }
         }
@@ -1633,12 +1859,12 @@ impl InventoryScope {
                 // presentation-cache diagnostics.
                 single_shard_composition_reuse_count: state.single_shard_composition_reuse_count,
                 generic_merge_element_visit_count: state.generic_merge_element_visit_count,
-                // No shadow arm exists at P4-3a (P4-5's job); the self-check testing hook below
-                // is the only reachable trigger, and it is not wired to these counters
-                // automatically -- flagged in `fallback::RootCatalogShardFallbackReason::ShadowValidationMismatch`.
-                shadow_comparison_count: 0,
-                shadow_mismatch_count: 0,
-                last_shadow_byte_count: 0,
+                // D-5: DEBUG-default Rust-internal patch-vs-authoritative comparisons. These are
+                // scope-wide monotonic counters; `last_shadow_byte_count` is the authoritative
+                // canonical comparison payload from the most recently completed self-check.
+                shadow_comparison_count: state.shadow_comparison_count,
+                shadow_mismatch_count: state.shadow_mismatch_count,
+                last_shadow_byte_count: state.last_shadow_byte_count,
                 roots,
                 longest_critical_section: Duration::from_nanos(
                     self.longest_critical_section_nanos.load(Ordering::Relaxed),
@@ -1743,11 +1969,9 @@ impl InventoryScope {
     }
 
     /// Marks a file managed-only (or clears that mark) directly against a root's identity maps,
-    /// bypassing the delta pipeline entirely. **Testing-only, flagged:** P4-3a's delta pipeline
-    /// does not model managed-only registration as a distinct wire operation (that concept's real
-    /// call site lives above this crate); this hook exists so managed-only-triggered fallback
-    /// paths (`UnsafeOrAmbiguousBatch` via a managed-only touch, `ShadowValidationMismatch`) are
-    /// genuinely reachable and testable at P4-3a.
+    /// bypassing the delta pipeline entirely. Testing-only counterpart to the identity-checked
+    /// production API below; retained for deterministic managed-only fallback and D-5 mismatch
+    /// coverage without constructing an FFI scope.
     pub fn testing_set_file_managed_only(
         &self,
         root_id: RootId,
@@ -1812,31 +2036,6 @@ impl InventoryScope {
                 .ok_or(ScopeError::UnknownRoot)?;
             root.maps.set_folder_managed_only(id, managed_only);
             Ok(())
-        })
-    }
-
-    /// Compares the currently published generation against a fresh authoritative rebuild of the
-    /// same root and records `ShadowValidationMismatch` on disagreement. Exercises a fallback
-    /// reason whose real (P4-5) trigger -- the shadow arm -- does not exist yet at P4-3a; see
-    /// that reason's doc comment.
-    pub fn testing_self_check_patch_against_rebuild(&self, root_id: RootId) -> bool {
-        self.with_state(|state| {
-            let Some(root) = state.roots.get_mut(&root_id) else {
-                return false;
-            };
-            let Some(published) = root.published.clone() else {
-                return false;
-            };
-            let input = root.snapshot_for_rebuild();
-            let Ok(rebuilt) = state_machine::rebuild_generation(&input) else {
-                return false;
-            };
-            let mismatch = rebuilt.files != published.files || rebuilt.folders != published.folders;
-            if mismatch {
-                root.counters
-                    .record_fallback(RootCatalogShardFallbackReason::ShadowValidationMismatch);
-            }
-            mismatch
         })
     }
 }

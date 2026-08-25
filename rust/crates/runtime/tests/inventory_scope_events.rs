@@ -201,6 +201,70 @@ fn emission_ordering_matches_the_sequence_of_mutations() {
 }
 
 #[test]
+fn shadow_validation_mismatch_precedes_authoritative_generation_events() {
+    let (scope, hub, identity) = wired_scope(3);
+    let bootstrap = hub
+        .open_subscription(
+            &identity,
+            scope.scope_id().to_subscription_scope_id(),
+            SubscriptionConfig::default(),
+            Vec::new,
+        )
+        .expect("subscribe before root publication");
+    let root_id = root(3);
+    let lifetime = scope
+        .open_root(&identity, root_id, "Root".into(), "/root".into())
+        .expect("open root");
+    let _ = hub
+        .try_drain(&identity, bootstrap.subscription_id, 16, 65_536)
+        .expect("discard root publication");
+
+    let hidden = file(1, root_id, "Hidden.swift");
+    let first = scope.apply_delta(
+        &identity,
+        full_resync_command(&scope, root_id, lifetime, hidden.clone()),
+    );
+    assert_eq!(first.outcome, InventoryApplyOutcome::RebuiltAuthoritative);
+    let _ = hub
+        .try_drain(&identity, bootstrap.subscription_id, 16, 65_536)
+        .expect("discard initial authoritative publication");
+
+    // Desynchronize the published shard from the authority maps without publishing. The next
+    // ordinary patch is valid in isolation but differs from a rebuild of the same delta.
+    scope.testing_set_file_managed_only(root_id, hidden.id, true);
+    let receipt = scope.apply_delta(
+        &identity,
+        patch_command(&scope, root_id, lifetime, file(2, root_id, "Visible.swift")),
+    );
+    assert_eq!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative);
+
+    let DrainOutcome::Batch(batch) = hub
+        .try_drain(&identity, bootstrap.subscription_id, 16, 65_536)
+        .expect("drain mismatch publication")
+    else {
+        panic!("expected a batch");
+    };
+    let kinds: Vec<u16> = batch
+        .events
+        .iter()
+        .map(|event| u16::from_le_bytes([event.payload[2], event.payload[3]]))
+        .collect();
+    assert_eq!(kinds, vec![11 /* ShardFallback */, 8, 2]);
+
+    let fallback = inventory_scope::decode_shard_fallback(&batch.events[0].payload)
+        .expect("decode shadow fallback");
+    assert_eq!(fallback.root_id, root_id);
+    assert_eq!(
+        fallback.reason,
+        inventory_scope::RootCatalogShardFallbackReason::ShadowValidationMismatch
+    );
+    let advanced = inventory_scope::decode_generation_advanced(&batch.events[1].payload)
+        .expect("decode rebuilt generation");
+    assert_eq!(advanced.catalog_generation, receipt.catalog_generation);
+    assert!(advanced.rebuilt_authoritative);
+}
+
+#[test]
 fn bounded_overflow_produces_a_gap_marker_and_a_fresh_snapshot_still_recovers() {
     let (scope, hub, identity) = wired_scope(2);
     let hub_scope_id = scope.scope_id().to_subscription_scope_id();

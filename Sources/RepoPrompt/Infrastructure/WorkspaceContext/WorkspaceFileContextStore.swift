@@ -393,16 +393,43 @@ actor WorkspaceFileContextStore {
         let rootLifetimeID: UUID
     }
 
-    private struct InventoryScopeRepublicationSliceSourceJoinKey: Hashable {
+    private struct InventoryScopeRepublicationCapturedMutation {
+        let swiftLifetimeID: UUID
+        let rustLifetimeID: String
+        let rustGeneration: UInt64
+        let expectedRawBatch: CoreInventoryAppliedIndexBatchEventV1
+    }
+
+    private struct InventoryScopeRepublicationMutationSegment {
+        let swiftLifetimeID: UUID
+        var mutations: [InventoryScopeRepublicationCapturedMutation]
+        var precisionWasLost: Bool
+    }
+
+    private struct InventoryScopeRepublicationPresentationPlanKey: Hashable {
         let rootID: UUID
         let swiftLifetimeID: UUID
+        let rustLifetimeID: String
         let rustGeneration: UInt64
     }
 
-    private struct InventoryScopeRepublicationSliceSourceJoinEntry {
-        let snapshotsByFileID: [UUID: WorkspaceSliceRebaseSourceSnapshot]
-        let byteCost: Int
-        let accessOrdinal: UInt64
+    private enum InventoryScopeRepublicationPresentationDisposition {
+        case suppress
+        case publish(WorkspaceAppliedIndexBatchEvent)
+    }
+
+    private struct InventoryScopeRepublicationPresentationPlan {
+        let expectedRawBatch: CoreInventoryAppliedIndexBatchEventV1
+        let disposition: InventoryScopeRepublicationPresentationDisposition
+        let retainedByteCost: Int
+    }
+
+    private struct InventoryScopeRepublicationUnloadPlan {
+        let swiftLifetimeID: UUID
+        let rustLifetimeID: String
+        let canonicalEvent: WorkspaceAppliedIndexBatchEvent
+        var receivedRustUnload = false
+        var reachedSwiftVisibilitySeam = false
     }
 
     private struct PendingSeededRoot {
@@ -1326,6 +1353,7 @@ actor WorkspaceFileContextStore {
         private var seededShardPreparationShouldFailForTesting = false
         private var pendingSeededRootPostOrderedReadHandler: (@Sendable (UUID) async -> Void)?
         private var inventoryScopeContentModificationDidApplyHandler: (@Sendable (UUID, UInt64) async -> Void)?
+        private var inventoryScopeRepublicationDeliveryWillApplyHandler: (@Sendable (UUID, UInt64) async -> Void)?
         private var pendingSeededRootDidBecomeReadyHandler: (@Sendable (String) async -> Void)?
         private var pendingSeededRootDidActivateHandler: (@Sendable (String) async -> Void)?
         private var seededPublicationActivationShouldFailForTesting = false
@@ -2406,12 +2434,17 @@ actor WorkspaceFileContextStore {
                     clamping:
                     compositionDiagnostics?.genericMergeElementVisitCount ?? 0
                 ),
-                // P4-8c compatibility tombstones. The Swift full-rebuild shadow is retired; the
-                // external diagnostics shape remains stable until the Rust-internal D-5 self-check
-                // has independent evidence and an explicit cutover.
-                shadowComparisonCount: 0,
-                shadowMismatchCount: 0,
-                lastShadowByteCount: 0,
+                // D-5: the retired Swift full-rebuild shadow stays deleted; these compatibility
+                // fields now expose the DEBUG-default Rust-internal patch-vs-authoritative check.
+                shadowComparisonCount: Int(
+                    clamping: compositionDiagnostics?.shadowComparisonCount ?? 0
+                ),
+                shadowMismatchCount: Int(
+                    clamping: compositionDiagnostics?.shadowMismatchCount ?? 0
+                ),
+                lastShadowByteCount: Int(
+                    clamping: compositionDiagnostics?.lastShadowByteCount ?? 0
+                ),
                 roots: roots
             )
         }
@@ -2614,6 +2647,12 @@ actor WorkspaceFileContextStore {
             _ handler: (@Sendable (UUID, UInt64) async -> Void)?
         ) {
             inventoryScopeContentModificationDidApplyHandler = handler
+        }
+
+        func setInventoryScopeRepublicationDeliveryWillApplyHandlerForTesting(
+            _ handler: (@Sendable (UUID, UInt64) async -> Void)?
+        ) {
+            inventoryScopeRepublicationDeliveryWillApplyHandler = handler
         }
 
         func setSearchContentReadChunkHandlerForTesting(
@@ -3055,11 +3094,12 @@ actor WorkspaceFileContextStore {
     // forwarder this is not `#if DEBUG`.
     private var inventoryScopeAuthority: WorkspaceInventoryScopeAuthority?
 
-    // P5-3 armed republication: the adapter is subscribed, activation-fenced, and joined with
-    // content-only slice sources, but its output remains on `republishedInventoryScopeEvents()`
-    // rather than `appliedIndexContinuations`. See `startInventoryScopeRepublicationTaskIfNeeded`
-    // for the remaining visibility/unload blockers that keep the production source flip a follow-on.
+    // P5-5 Rust republication source: the adapter is subscription-, activation-, mutation-, and
+    // lifetime-fenced. Exact canonical presentation plans now feed `appliedIndexContinuations`;
+    // `republishedInventoryScopeEvents()` remains the differential/test mirror.
     private var inventoryScopeRepublicationTask: Task<Void, Never>?
+    private var inventoryScopeRepublicationSubscriptionIsOpen = false
+    private var inventoryScopeRepublicationLastTerminationDescription: String?
     private var inventoryScopeRepublicationAdapter: WorkspaceInventoryScopeRepublicationAdapter?
     private var inventoryScopeRepublicationActivationCapturesByRootID: [
         UUID: InventoryScopeRepublicationActivationCapture
@@ -3072,29 +3112,49 @@ actor WorkspaceFileContextStore {
     ] = [:]
     private var stagedInventoryScopeRepublicationCandidateCount = 0
     private var inventoryScopeRepublicationForceResyncRootIDs: Set<UUID> = []
-    private var inventoryScopeRepublicationSliceSourceJoinsByKey: [
-        InventoryScopeRepublicationSliceSourceJoinKey: InventoryScopeRepublicationSliceSourceJoinEntry
+    private var inventoryScopeRepublicationMutationSegmentsByRootID: [
+        UUID: InventoryScopeRepublicationMutationSegment
     ] = [:]
-    private var inventoryScopeRepublicationSliceSourceJoinEstimatedBytes = 0
-    private var inventoryScopeRepublicationSliceSourceJoinAccessOrdinal: UInt64 = 0
+    private var inventoryScopeRepublicationPresentationPlansByKey: [
+        InventoryScopeRepublicationPresentationPlanKey: InventoryScopeRepublicationPresentationPlan
+    ] = [:]
+    private var inventoryScopeRepublicationPresentationPlanCountByRootID: [UUID: Int] = [:]
+    private var inventoryScopeRepublicationPresentationPlanRetainedBytes = 0
+    private var inventoryScopeRepublicationDeliveriesInFlightByRootID: [UUID: Int] = [:]
+    private var inventoryScopeRepublicationUnloadPlansByRootID: [UUID: InventoryScopeRepublicationUnloadPlan] = [:]
     private var inventoryScopeRepublicationActivationRetryRootIDs: Set<UUID> = []
     private var inventoryScopeRepublicationActivationRetryTasksByRootID: [UUID: Task<Void, Never>] = [:]
     private static let maximumStagedInventoryScopeRepublicationCandidatesPerRoot = 64
     private static let maximumStagedInventoryScopeRepublicationCandidateCount = 256
-    private static let maximumInventoryScopeRepublicationSliceSourceJoinCount = 64
-    private static let maximumInventoryScopeRepublicationSliceSourceJoinBytes = 32 * 1024 * 1024
+    private static let maximumInventoryScopeRepublicationCapturedMutationsPerRoot = 64
+    private static let maximumInventoryScopeRepublicationCapturedMutationCount = 256
+    private static let maximumInventoryScopeRepublicationPresentationPlansPerRoot = 64
+    private static let maximumInventoryScopeRepublicationPresentationPlanCount = 256
+    private static let maximumInventoryScopeRepublicationPresentationPlanBytes = 32 * 1024 * 1024
     private var republishedInventoryScopeEventContinuations: [UUID: AsyncStream<WorkspaceAppliedIndexBatchEvent>.Continuation] = [:]
 
     struct WorkspaceInventoryScopeAuthorityUnavailable: Error {}
 
     private func inventoryScopeAuthorityInstance() async throws -> WorkspaceInventoryScopeAuthority {
-        if let inventoryScopeAuthority { return inventoryScopeAuthority }
+        if let inventoryScopeAuthority {
+            if hasInventoryScopeRepublicationSubscribers {
+                await startInventoryScopeRepublicationTaskIfNeeded(authority: inventoryScopeAuthority)
+            }
+            return inventoryScopeAuthority
+        }
         guard let bridge = try await AgentryCoreService.shared.runtime() as? AgentryCoreBridge else {
             throw WorkspaceInventoryScopeAuthorityUnavailable()
         }
         let authority = WorkspaceInventoryScopeAuthority(bridge: bridge)
         inventoryScopeAuthority = authority
+        if hasInventoryScopeRepublicationSubscribers {
+            await startInventoryScopeRepublicationTaskIfNeeded(authority: authority)
+        }
         return authority
+    }
+
+    private var hasInventoryScopeRepublicationSubscribers: Bool {
+        !appliedIndexContinuations.isEmpty || !republishedInventoryScopeEventContinuations.isEmpty
     }
 
     /// Promoted from the (now-deleted) `inventoryScopeRepublicationRootInfoForTesting` --
@@ -3116,40 +3176,166 @@ actor WorkspaceFileContextStore {
     /// `WorkspaceInventoryScopeRepublicationAdapter` and publishing its output on
     /// `republishedInventoryScopeEvents()`.
     ///
-    /// Deliberately does **not** feed `appliedIndexContinuations` (the real `appliedIndexEvents()`
-    /// stream `WorkspaceSearchService`/`WorkspaceFilesViewModel` subscribe to today via
-    /// `publishAppliedIndexEvent`). P5-2 closes activation/generation provenance: ordinary and
-    /// seeded roots capture an exclusive Rust applied-index floor at the Swift-visibility seam,
-    /// candidates stage behind the existing mutation fence, and visible deliveries rebase onto
-    /// Swift's current logical generation with conservative resync on either-domain gaps.
-    ///
-    /// P5-3 now routes content-only modifications through Rust and joins the exact receipt
-    /// generation to the production path's one-shot `takeSliceRebaseSource` snapshot under explicit
-    /// count/byte bounds. The source flip still requires one atomic follow-on across the remaining
-    /// observable fields: managed-only discoverability/removal and legacy empty-batch suppression
-    /// must match, and unload needs a monotonic, lifetime-correct generation after Swift teardown.
-    /// Until those contracts land, this armed stream is differential evidence only and production
-    /// continues through `publishAppliedIndexEvent`.
-    private func startInventoryScopeRepublicationTaskIfNeeded(authority: WorkspaceInventoryScopeAuthority) {
+    /// P5-5 feeds each validated canonical plan to both production `appliedIndexContinuations` and
+    /// the differential `republishedInventoryScopeEvents()` mirror. Ordinary and seeded roots use
+    /// an exclusive Rust applied-index floor; candidates stage behind the root-local publication
+    /// permit; visible deliveries retain Swift logical generation and slice-source payloads; hidden
+    /// generations advance only the Rust cursor. Unload retains its canonical Swift payload before
+    /// `closeRoot`, validates the Rust lifetime receipt, and publishes only at the existing Swift
+    /// teardown visibility seam. Subscription termination fails closed to canonical resync events
+    /// and restores the legacy direct-publish fallback for later mutations.
+    private func startInventoryScopeRepublicationTaskIfNeeded(authority: WorkspaceInventoryScopeAuthority) async {
         guard inventoryScopeRepublicationTask == nil else { return }
+        inventoryScopeRepublicationSubscriptionIsOpen = false
+        inventoryScopeRepublicationLastTerminationDescription = nil
         let adapter = WorkspaceInventoryScopeRepublicationAdapter { [weak self] rootID in
             await self?.inventoryScopeRepublicationRootInfo(rootID: rootID)
         }
         inventoryScopeRepublicationAdapter = adapter
         inventoryScopeRepublicationTask = Task { [weak self] in
-            guard let stream = try? await authority.events() else { return }
             do {
+                let stream = try await authority.events()
+                await self?.inventoryScopeRepublicationSubscriptionDidOpen(authority: authority)
                 for try await event in stream {
                     guard let self else { return }
+                    await observeInventoryScopeDiagnosticEvent(event)
                     guard let candidate = await adapter.ingestCandidate(event) else { continue }
                     await handleInventoryScopeRepublicationCandidate(candidate)
                 }
+                await self?.recordInventoryScopeRepublicationSubscriptionTermination("stream-ended")
             } catch {
-                // Subscription ended (root/scope closed, or a genuine transport error). Nothing
-                // downstream depends on this stream in production yet (see this method's header
-                // comment), so there is nothing to resync -- the task simply exits.
+                await self?.recordInventoryScopeRepublicationSubscriptionTermination(String(reflecting: error))
+            }
+            await self?.recoverFromInventoryScopeRepublicationSubscriptionTermination()
+        }
+        // Opening is intentionally asynchronous. Until Rust has registered the subscription,
+        // mutations keep using legacy direct publication. The opening task is retained rather than
+        // killed by a wall-clock timeout: cold runtime/scope startup is allowed to take longer than
+        // an arbitrary UI-facing deadline without permanently disabling the production source.
+    }
+
+    private func observeInventoryScopeDiagnosticEvent(_ event: CoreInventoryScopeEvent) {
+        #if DEBUG
+            guard case let .shardFallback(fallback) = event,
+                  fallback.reason == .shadowValidationMismatch,
+                  let state = rootStatesByID[fallback.rootID]
+            else { return }
+            recordRootCatalogShardFallback(
+                rootID: fallback.rootID,
+                lifetimeID: state.lifetimeID,
+                reason: .shadowValidationMismatch
+            )
+        #endif
+    }
+
+    private func inventoryScopeRepublicationSubscriptionDidOpen(
+        authority: WorkspaceInventoryScopeAuthority
+    ) {
+        guard inventoryScopeRepublicationTask != nil else { return }
+
+        // Install every capture before opening the source gate. A mutation reentering after the
+        // gate opens therefore records an exact presentation plan, while Rust notifications that
+        // arrived between subscription registration and cursor capture stage behind this fence.
+        let captures = rootStatesByID.map { rootID, state in
+            (
+                rootID: rootID,
+                swiftLifetimeID: state.lifetimeID,
+                captureID: beginInventoryScopeRepublicationActivationCapture(
+                    rootID: rootID,
+                    swiftLifetimeID: state.lifetimeID,
+                    logicalGenerationFloor: appliedIndexGenerationsByRootID[rootID] ?? 0
+                )
+            )
+        }
+        inventoryScopeRepublicationSubscriptionIsOpen = true
+
+        // Cursor reads run independently of the single stream drain. Candidates can therefore be
+        // consumed and boundedly staged while each root's exact activation floor is resolved.
+        for capture in captures {
+            Task { [weak self] in
+                let cursor = try? await authority.republicationActivationCursor(
+                    rootID: capture.rootID,
+                    expectedSwiftLifetimeID: capture.swiftLifetimeID
+                )
+                await self?.completeInventoryScopeRepublicationSubscriptionActivation(
+                    captureID: capture.captureID,
+                    rootID: capture.rootID,
+                    cursor: cursor
+                )
             }
         }
+    }
+
+    private func completeInventoryScopeRepublicationSubscriptionActivation(
+        captureID: UUID,
+        rootID: UUID,
+        cursor: WorkspaceInventoryScopeAuthority.RepublicationActivationCursor?
+    ) async {
+        if let cursor,
+           await completeInventoryScopeRepublicationActivation(captureID: captureID, cursor: cursor)
+        {
+            return
+        }
+        abandonInventoryScopeRepublicationActivation(rootID: rootID, captureID: captureID)
+        guard rootStatesByID[rootID] != nil,
+              inventoryScopeRepublicationSubscriptionIsOpen
+        else { return }
+        quarantineInventoryScopeRepublicationActivation(rootID: rootID)
+        scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: rootID)
+    }
+
+    private func recordInventoryScopeRepublicationSubscriptionTermination(_ description: String) {
+        inventoryScopeRepublicationLastTerminationDescription = description
+    }
+
+    private func recoverFromInventoryScopeRepublicationSubscriptionTermination() async {
+        guard inventoryScopeRepublicationTask != nil else { return }
+        inventoryScopeRepublicationSubscriptionIsOpen = false
+        inventoryScopeRepublicationTask = nil
+        inventoryScopeRepublicationAdapter = nil
+        let visibleEvents: [WorkspaceAppliedIndexBatchEvent] =
+            inventoryScopeRepublicationPresentationPlansByKey.values.compactMap { plan -> WorkspaceAppliedIndexBatchEvent? in
+                guard case let .publish(event) = plan.disposition else { return nil }
+                return event
+            }.sorted {
+                if $0.rootID == $1.rootID { return $0.generation < $1.generation }
+                return $0.rootID.uuidString < $1.rootID.uuidString
+            }
+        let affectedRootIDs = Set(inventoryScopeRepublicationPresentationPlansByKey.keys.map(\.rootID))
+            .union(inventoryScopeRepublicationMutationSegmentsByRootID.keys)
+        for rootID in affectedRootIDs {
+            clearInventoryScopeRepublicationPresentationPlans(rootID: rootID)
+            inventoryScopeRepublicationMutationSegmentsByRootID.removeValue(forKey: rootID)
+            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+        }
+        inventoryScopeRepublicationActivationsByRootID.removeAll()
+        inventoryScopeRepublicationActivationCapturesByRootID.removeAll()
+        clearStagedInventoryScopeRepublicationCandidatesForAllRoots()
+        for event in visibleEvents {
+            let recoveryEvent = WorkspaceAppliedIndexBatchEvent(
+                rootID: event.rootID,
+                rootPath: event.rootPath,
+                generation: event.generation,
+                rootLifetimeID: event.rootLifetimeID,
+                modifiedFileSourceSnapshotsByID: event.modifiedFileSourceSnapshotsByID,
+                upsertedFiles: event.upsertedFiles,
+                upsertedFolders: event.upsertedFolders,
+                removedFileIDs: event.removedFileIDs,
+                removedFolderIDs: event.removedFolderIDs,
+                removedFilePaths: event.removedFilePaths,
+                removedFolderPaths: event.removedFolderPaths,
+                modifiedFileIDs: event.modifiedFileIDs,
+                modifiedFolderIDs: event.modifiedFolderIDs,
+                requiresFullResync: true,
+                isRootUnload: event.isRootUnload
+            )
+            await yieldInventoryScopeRepublicationEvent(recoveryEvent)
+        }
+    }
+
+    private func clearStagedInventoryScopeRepublicationCandidatesForAllRoots() {
+        stagedInventoryScopeRepublicationCandidatesByRootID.removeAll()
+        stagedInventoryScopeRepublicationCandidateCount = 0
     }
 
     @discardableResult
@@ -3172,7 +3358,7 @@ actor WorkspaceFileContextStore {
     private func completeInventoryScopeRepublicationActivation(
         captureID: UUID,
         cursor: WorkspaceInventoryScopeAuthority.RepublicationActivationCursor
-    ) -> Bool {
+    ) async -> Bool {
         guard let capture = inventoryScopeRepublicationActivationCapturesByRootID[cursor.rootID],
               capture.id == captureID,
               cursor.swiftLifetimeID == capture.swiftLifetimeID,
@@ -3189,7 +3375,7 @@ actor WorkspaceFileContextStore {
             lastRustGeneration: cursor.generationFloor,
             lastLogicalGeneration: capture.logicalGenerationFloor
         )
-        flushStagedInventoryScopeRepublicationCandidates(rootID: cursor.rootID)
+        await flushStagedInventoryScopeRepublicationCandidates(rootID: cursor.rootID)
         return true
     }
 
@@ -3260,20 +3446,104 @@ actor WorkspaceFileContextStore {
         // Recovery may have missed any number of armed-only candidates while quarantined. The
         // fresh cursor makes the next delivery safe, but not differentially contiguous.
         inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
-        if completeInventoryScopeRepublicationActivation(captureID: captureID, cursor: cursor) {
+        if await completeInventoryScopeRepublicationActivation(captureID: captureID, cursor: cursor) {
             inventoryScopeRepublicationActivationRetryRootIDs.remove(rootID)
         }
     }
 
+    private func installInventoryScopeRepublicationUnloadPlan(
+        event: WorkspaceAppliedIndexBatchEvent
+    ) -> Bool {
+        guard inventoryScopeRepublicationSubscriptionIsOpen,
+              event.isRootUnload,
+              let swiftLifetimeID = event.rootLifetimeID,
+              let activation = inventoryScopeRepublicationActivationsByRootID[event.rootID],
+              activation.swiftLifetimeID == swiftLifetimeID,
+              inventoryScopeRepublicationUnloadPlansByRootID[event.rootID] == nil
+        else { return false }
+        inventoryScopeRepublicationUnloadPlansByRootID[event.rootID] = .init(
+            swiftLifetimeID: swiftLifetimeID,
+            rustLifetimeID: activation.rustLifetimeID,
+            canonicalEvent: event
+        )
+        return true
+    }
+
+    private func reachInventoryScopeRepublicationUnloadVisibilitySeam(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID
+    ) async {
+        guard var plan = inventoryScopeRepublicationUnloadPlansByRootID[rootID],
+              plan.swiftLifetimeID == expectedSwiftLifetimeID
+        else { return }
+        plan.reachedSwiftVisibilitySeam = true
+        inventoryScopeRepublicationUnloadPlansByRootID[rootID] = plan
+        await deliverInventoryScopeRepublicationUnloadIfReady(rootID: rootID)
+        guard inventoryScopeRepublicationUnloadPlansByRootID[rootID]?.swiftLifetimeID
+            == expectedSwiftLifetimeID
+        else { return }
+
+        // `closeRoot` publishes the Rust unload before returning, but the hub drain is independent.
+        // Yield the actor while waiting so the subscriber can deliver; fail closed to the retained
+        // canonical unload rather than leaving production consumers permanently unaware.
+        for _ in 0 ..< 100 {
+            try? await Task.sleep(for: .milliseconds(10))
+            guard inventoryScopeRepublicationUnloadPlansByRootID[rootID]?.swiftLifetimeID
+                == expectedSwiftLifetimeID
+            else { return }
+            if let current = rootStatesByID[rootID], current.lifetimeID != expectedSwiftLifetimeID {
+                inventoryScopeRepublicationUnloadPlansByRootID.removeValue(forKey: rootID)
+                return
+            }
+        }
+        guard rootStatesByID[rootID] == nil,
+              let fallback = inventoryScopeRepublicationUnloadPlansByRootID.removeValue(forKey: rootID),
+              fallback.swiftLifetimeID == expectedSwiftLifetimeID
+        else { return }
+        await yieldInventoryScopeRepublicationEvent(fallback.canonicalEvent)
+        clearInventoryScopeRepublicationState(
+            rootID: rootID,
+            expectedSwiftLifetimeID: fallback.swiftLifetimeID,
+            expectedRustLifetimeID: fallback.rustLifetimeID
+        )
+    }
+
+    private func deliverInventoryScopeRepublicationUnloadIfReady(rootID: UUID) async {
+        guard let plan = inventoryScopeRepublicationUnloadPlansByRootID[rootID],
+              plan.receivedRustUnload,
+              plan.reachedSwiftVisibilitySeam
+        else { return }
+        // The await/yielding visibility wait permits actor reentrancy. Never let an old-lifetime
+        // close remove a newer root that reused the same UUID while the unload was pending.
+        guard rootStatesByID[rootID] == nil else {
+            inventoryScopeRepublicationUnloadPlansByRootID.removeValue(forKey: rootID)
+            return
+        }
+        inventoryScopeRepublicationUnloadPlansByRootID.removeValue(forKey: rootID)
+        await yieldInventoryScopeRepublicationEvent(plan.canonicalEvent)
+        clearInventoryScopeRepublicationState(
+            rootID: rootID,
+            expectedSwiftLifetimeID: plan.swiftLifetimeID,
+            expectedRustLifetimeID: plan.rustLifetimeID
+        )
+    }
+
     private func handleInventoryScopeRepublicationCandidate(
         _ candidate: WorkspaceInventoryScopeRepublicationCandidate
-    ) {
+    ) async {
         let rootID = candidate.event.rootID
-        // Rust unload currently arrives before the legacy Swift unload batch has finished its
-        // teardown/readback path. P5-2 deliberately withholds it; monotonic unload generation is
-        // still an explicit source-flip blocker.
-        guard !candidate.event.isRootUnload else {
-            clearInventoryScopeRepublicationState(rootID: rootID)
+        if candidate.event.isRootUnload {
+            guard var unloadPlan = inventoryScopeRepublicationUnloadPlansByRootID[rootID],
+                  candidate.rustRootLifetimeID == unloadPlan.rustLifetimeID,
+                  candidate.event.rootID == rootID
+            else {
+                // A late close from a retired Rust lifetime is unrelated to the root currently
+                // bound to the same UUID. Ignore it without clearing the current activation.
+                return
+            }
+            unloadPlan.receivedRustUnload = true
+            inventoryScopeRepublicationUnloadPlansByRootID[rootID] = unloadPlan
+            await deliverInventoryScopeRepublicationUnloadIfReady(rootID: rootID)
             return
         }
         if inventoryScopeRepublicationActivationCapturesByRootID[rootID] != nil {
@@ -3289,7 +3559,7 @@ actor WorkspaceFileContextStore {
             stageInventoryScopeRepublicationCandidate(candidate)
             return
         }
-        yieldActivatedInventoryScopeRepublicationCandidate(candidate)
+        await yieldActivatedInventoryScopeRepublicationCandidate(candidate)
     }
 
     private func stageInventoryScopeRepublicationCandidate(
@@ -3319,181 +3589,324 @@ actor WorkspaceFileContextStore {
         stagedInventoryScopeRepublicationCandidateCount += 1
     }
 
-    private func flushStagedInventoryScopeRepublicationCandidates(rootID: UUID) {
+    private func flushStagedInventoryScopeRepublicationCandidates(rootID: UUID) async {
         guard (inventoryCatalogMutationDepthByRootID[rootID] ?? 0) == 0 else { return }
         let candidates = stagedInventoryScopeRepublicationCandidatesByRootID.removeValue(forKey: rootID) ?? []
         stagedInventoryScopeRepublicationCandidateCount -= candidates.count
         for candidate in candidates {
-            yieldActivatedInventoryScopeRepublicationCandidate(candidate)
+            await yieldActivatedInventoryScopeRepublicationCandidate(candidate)
         }
     }
 
-    private func retainInventoryScopeRepublicationSliceSourceJoin(
-        rootID: UUID,
-        swiftLifetimeID: UUID,
-        rustGeneration: UInt64,
-        snapshotsByFileID: [UUID: WorkspaceSliceRebaseSourceSnapshot]
+    private func recordInventoryScopeRepublicationMutation(
+        receipt: WorkspaceInventoryScopeAuthority.RepublicationMutationReceipt,
+        expectedRawBatch: CoreInventoryAppliedIndexBatchEventV1
     ) {
-        guard inventoryScopeRepublicationTask != nil,
-              rustGeneration > 0,
-              !snapshotsByFileID.isEmpty
+        let rootID = receipt.rootID
+        guard inventoryScopeRepublicationSubscriptionIsOpen,
+              inventoryScopeRepublicationActivationsByRootID[rootID] != nil
+              || inventoryScopeRepublicationActivationCapturesByRootID[rootID] != nil
         else { return }
-        let validSnapshots = snapshotsByFileID.filter { fileID, snapshot in
-            snapshot.rootID == rootID
-                && snapshot.rootLifetimeID == swiftLifetimeID
-                && snapshot.fileID == fileID
+        let accepted = switch receipt.outcome {
+        case .patched, .rebuiltAuthoritative:
+            true
+        case .rejected:
+            false
         }
-        guard validSnapshots.count == snapshotsByFileID.count else {
+        guard accepted,
+              receipt.appliedIndexGeneration > 0,
+              expectedRawBatch.rootID == rootID,
+              let swiftLifetimeID = receipt.swiftLifetimeID,
+              rootStatesByID[rootID]?.lifetimeID == swiftLifetimeID,
+              inventoryCatalogMutationDepthByRootID[rootID, default: 0] > 0,
+              inventoryCatalogPublicationPermitsByRootID[rootID]?.rootLifetimeID == swiftLifetimeID
+        else {
+            markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
+            return
+        }
+
+        let scopeMutationCount = inventoryScopeRepublicationMutationSegmentsByRootID.values.reduce(into: 0) {
+            $0 += $1.mutations.count
+        }
+        var segment = inventoryScopeRepublicationMutationSegmentsByRootID[rootID]
+            ?? .init(swiftLifetimeID: swiftLifetimeID, mutations: [], precisionWasLost: false)
+        guard segment.swiftLifetimeID == swiftLifetimeID,
+              segment.mutations.count < Self.maximumInventoryScopeRepublicationCapturedMutationsPerRoot,
+              scopeMutationCount < Self.maximumInventoryScopeRepublicationCapturedMutationCount,
+              segment.mutations.last.map({ $0.rustGeneration < receipt.appliedIndexGeneration }) ?? true
+        else {
+            segment.precisionWasLost = true
+            inventoryScopeRepublicationMutationSegmentsByRootID[rootID] = segment
             inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
             return
         }
-        let key = InventoryScopeRepublicationSliceSourceJoinKey(
-            rootID: rootID,
+        segment.mutations.append(.init(
             swiftLifetimeID: swiftLifetimeID,
-            rustGeneration: rustGeneration
-        )
-        if let previous = inventoryScopeRepublicationSliceSourceJoinsByKey.removeValue(forKey: key) {
-            inventoryScopeRepublicationSliceSourceJoinEstimatedBytes -= previous.byteCost
-            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
-        }
-        inventoryScopeRepublicationSliceSourceJoinAccessOrdinal &+= 1
-        let byteCost = validSnapshots.values.reduce(into: 0) { total, snapshot in
-            total += snapshot.text.utf8.count
-        }
-        inventoryScopeRepublicationSliceSourceJoinsByKey[key] = .init(
-            snapshotsByFileID: validSnapshots,
-            byteCost: byteCost,
-            accessOrdinal: inventoryScopeRepublicationSliceSourceJoinAccessOrdinal
-        )
-        inventoryScopeRepublicationSliceSourceJoinEstimatedBytes += byteCost
-        trimInventoryScopeRepublicationSliceSourceJoinsIfNeeded()
+            rustLifetimeID: receipt.rustLifetimeID,
+            rustGeneration: receipt.appliedIndexGeneration,
+            expectedRawBatch: expectedRawBatch
+        ))
+        inventoryScopeRepublicationMutationSegmentsByRootID[rootID] = segment
     }
 
-    private func takeInventoryScopeRepublicationSliceSourceJoin(
+    private func markInventoryScopeRepublicationMutationPrecisionLost(rootID: UUID) {
+        guard inventoryScopeRepublicationSubscriptionIsOpen,
+              let state = rootStatesByID[rootID],
+              inventoryScopeRepublicationActivationsByRootID[rootID] != nil
+              || inventoryScopeRepublicationActivationCapturesByRootID[rootID] != nil
+        else { return }
+        var segment = inventoryScopeRepublicationMutationSegmentsByRootID[rootID]
+            ?? .init(swiftLifetimeID: state.lifetimeID, mutations: [], precisionWasLost: false)
+        segment.precisionWasLost = true
+        inventoryScopeRepublicationMutationSegmentsByRootID[rootID] = segment
+        inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+    }
+
+    @discardableResult
+    private func sealInventoryScopeRepublicationMutationSegment(
         rootID: UUID,
-        swiftLifetimeID: UUID,
-        rustGeneration: UInt64,
-        modifiedFileIDs: [UUID]
-    ) -> (snapshotsByFileID: [UUID: WorkspaceSliceRebaseSourceSnapshot], requiresFullResync: Bool) {
-        let staleKeys = inventoryScopeRepublicationSliceSourceJoinsByKey.keys.filter { key in
-            key.rootID == rootID
-                && (key.swiftLifetimeID != swiftLifetimeID || key.rustGeneration < rustGeneration)
+        disposition: InventoryScopeRepublicationPresentationDisposition
+    ) -> Bool {
+        guard let segment = inventoryScopeRepublicationMutationSegmentsByRootID.removeValue(forKey: rootID) else {
+            if case .publish = disposition, inventoryScopeRepublicationSubscriptionIsOpen {
+                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+                return false
+            }
+            return true
         }
-        var requiresFullResync = !staleKeys.isEmpty
-        removeInventoryScopeRepublicationSliceSourceJoins(keys: staleKeys)
+        guard !segment.precisionWasLost, !segment.mutations.isEmpty else {
+            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            return false
+        }
+        for (index, mutation) in segment.mutations.enumerated() {
+            let terminal = index == segment.mutations.index(before: segment.mutations.endIndex)
+            let planDisposition: InventoryScopeRepublicationPresentationDisposition = terminal
+                ? disposition
+                : .suppress
+            guard installInventoryScopeRepublicationPresentationPlan(
+                mutation: mutation,
+                disposition: planDisposition
+            ) else {
+                clearInventoryScopeRepublicationPresentationPlans(rootID: rootID)
+                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+                return false
+            }
+        }
+        return true
+    }
 
-        let key = InventoryScopeRepublicationSliceSourceJoinKey(
+    @discardableResult
+    private func installInventoryScopeRepublicationPresentationPlan(
+        mutation: InventoryScopeRepublicationCapturedMutation,
+        disposition: InventoryScopeRepublicationPresentationDisposition
+    ) -> Bool {
+        let rootID = mutation.expectedRawBatch.rootID
+        let key = InventoryScopeRepublicationPresentationPlanKey(
             rootID: rootID,
-            swiftLifetimeID: swiftLifetimeID,
-            rustGeneration: rustGeneration
+            swiftLifetimeID: mutation.swiftLifetimeID,
+            rustLifetimeID: mutation.rustLifetimeID,
+            rustGeneration: mutation.rustGeneration
         )
-        guard let entry = inventoryScopeRepublicationSliceSourceJoinsByKey.removeValue(forKey: key) else {
-            return ([:], requiresFullResync)
-        }
-        inventoryScopeRepublicationSliceSourceJoinEstimatedBytes -= entry.byteCost
-        let modifiedFileIDSet = Set(modifiedFileIDs)
-        if !entry.snapshotsByFileID.keys.allSatisfy(modifiedFileIDSet.contains) {
-            requiresFullResync = true
-        }
-        return (
-            entry.snapshotsByFileID.filter { modifiedFileIDSet.contains($0.key) },
-            requiresFullResync
+        guard inventoryScopeRepublicationPresentationPlansByKey[key] == nil,
+              inventoryScopeRepublicationPresentationPlanCountByRootID[rootID, default: 0]
+              < Self.maximumInventoryScopeRepublicationPresentationPlansPerRoot,
+              inventoryScopeRepublicationPresentationPlansByKey.count
+              < Self.maximumInventoryScopeRepublicationPresentationPlanCount
+        else { return false }
+        let retainedByteCost = inventoryScopeRepublicationPresentationByteCost(
+            expectedRawBatch: mutation.expectedRawBatch,
+            disposition: disposition
         )
+        let (nextRetainedBytes, retainedBytesOverflowed) =
+            inventoryScopeRepublicationPresentationPlanRetainedBytes.addingReportingOverflow(retainedByteCost)
+        guard !retainedBytesOverflowed,
+              nextRetainedBytes <= Self.maximumInventoryScopeRepublicationPresentationPlanBytes
+        else { return false }
+        inventoryScopeRepublicationPresentationPlansByKey[key] = .init(
+            expectedRawBatch: mutation.expectedRawBatch,
+            disposition: disposition,
+            retainedByteCost: retainedByteCost
+        )
+        inventoryScopeRepublicationPresentationPlanCountByRootID[rootID, default: 0] += 1
+        inventoryScopeRepublicationPresentationPlanRetainedBytes += retainedByteCost
+        return true
     }
 
-    private func trimInventoryScopeRepublicationSliceSourceJoinsIfNeeded() {
-        while inventoryScopeRepublicationSliceSourceJoinsByKey.count
-            > Self.maximumInventoryScopeRepublicationSliceSourceJoinCount
-            || inventoryScopeRepublicationSliceSourceJoinEstimatedBytes
-            > Self.maximumInventoryScopeRepublicationSliceSourceJoinBytes
-        {
-            guard let oldest = inventoryScopeRepublicationSliceSourceJoinsByKey.min(by: {
-                $0.value.accessOrdinal < $1.value.accessOrdinal
-            }) else { break }
-            inventoryScopeRepublicationForceResyncRootIDs.insert(oldest.key.rootID)
-            removeInventoryScopeRepublicationSliceSourceJoins(keys: [oldest.key])
+    private func inventoryScopeRepublicationPresentationByteCost(
+        expectedRawBatch: CoreInventoryAppliedIndexBatchEventV1,
+        disposition: InventoryScopeRepublicationPresentationDisposition
+    ) -> Int {
+        // This is deliberately conservative retained-heap accounting rather than encoded size.
+        // UUID array elements and record/reference overhead are charged well above their scalar
+        // stride so ID-only plans cannot bypass the 32 MiB cap through allocator/object overhead.
+        let uuidRetainedCost = 256
+        let recordRetainedOverhead = 256
+        let stringRetainedOverhead = 32
+        var total = 0
+
+        func add(_ amount: Int) {
+            guard total != .max, amount >= 0 else {
+                total = .max
+                return
+            }
+            let (next, overflowed) = total.addingReportingOverflow(amount)
+            total = overflowed ? .max : next
         }
+
+        func addCount(_ count: Int, unitCost: Int) {
+            let (amount, overflowed) = count.multipliedReportingOverflow(by: unitCost)
+            add(overflowed ? .max : amount)
+        }
+
+        func addString(_ value: String) {
+            let (cost, overflowed) = value.utf8.count.addingReportingOverflow(stringRetainedOverhead)
+            add(overflowed ? .max : cost)
+        }
+
+        func addRecordStrings(
+            name: String,
+            relativePath: String,
+            standardizedRelativePath: String,
+            fullPath: String,
+            standardizedFullPath: String
+        ) {
+            add(recordRetainedOverhead)
+            addCount(3, unitCost: uuidRetainedCost)
+            addString(name)
+            addString(relativePath)
+            addString(standardizedRelativePath)
+            addString(fullPath)
+            addString(standardizedFullPath)
+        }
+
+        add(uuidRetainedCost)
+        for record in expectedRawBatch.upsertedFiles {
+            addRecordStrings(
+                name: record.name,
+                relativePath: record.relativePath,
+                standardizedRelativePath: record.standardizedRelativePath,
+                fullPath: record.fullPath,
+                standardizedFullPath: record.standardizedFullPath
+            )
+        }
+        for record in expectedRawBatch.upsertedFolders {
+            addRecordStrings(
+                name: record.name,
+                relativePath: record.relativePath,
+                standardizedRelativePath: record.standardizedRelativePath,
+                fullPath: record.fullPath,
+                standardizedFullPath: record.standardizedFullPath
+            )
+        }
+        addCount(expectedRawBatch.removedFileIDs.count, unitCost: uuidRetainedCost)
+        addCount(expectedRawBatch.removedFolderIDs.count, unitCost: uuidRetainedCost)
+        addCount(expectedRawBatch.modifiedFileIDs.count, unitCost: uuidRetainedCost)
+        addCount(expectedRawBatch.modifiedFolderIDs.count, unitCost: uuidRetainedCost)
+        for path in expectedRawBatch.removedFilePaths {
+            addString(path)
+        }
+        for path in expectedRawBatch.removedFolderPaths {
+            addString(path)
+        }
+
+        guard case let .publish(event) = disposition else { return total }
+        addCount(2, unitCost: uuidRetainedCost)
+        addString(event.rootPath)
+        for snapshot in event.modifiedFileSourceSnapshotsByID.values {
+            add(recordRetainedOverhead)
+            addCount(3, unitCost: uuidRetainedCost)
+            addString(snapshot.relativePath)
+            addString(snapshot.fullPath)
+            addString(snapshot.text)
+        }
+        for record in event.upsertedFiles {
+            addRecordStrings(
+                name: record.name,
+                relativePath: record.relativePath,
+                standardizedRelativePath: record.standardizedRelativePath,
+                fullPath: record.fullPath,
+                standardizedFullPath: record.standardizedFullPath
+            )
+        }
+        for record in event.upsertedFolders {
+            addRecordStrings(
+                name: record.name,
+                relativePath: record.relativePath,
+                standardizedRelativePath: record.standardizedRelativePath,
+                fullPath: record.fullPath,
+                standardizedFullPath: record.standardizedFullPath
+            )
+        }
+        addCount(event.removedFileIDs.count, unitCost: uuidRetainedCost)
+        addCount(event.removedFolderIDs.count, unitCost: uuidRetainedCost)
+        addCount(event.modifiedFileIDs.count, unitCost: uuidRetainedCost)
+        addCount(event.modifiedFolderIDs.count, unitCost: uuidRetainedCost)
+        for path in event.removedFilePaths {
+            addString(path)
+        }
+        for path in event.removedFolderPaths {
+            addString(path)
+        }
+        return total
     }
 
-    private func clearInventoryScopeRepublicationSliceSourceJoins(rootID: UUID) {
-        let keys = inventoryScopeRepublicationSliceSourceJoinsByKey.keys.filter { $0.rootID == rootID }
-        removeInventoryScopeRepublicationSliceSourceJoins(keys: keys)
+    private func takeInventoryScopeRepublicationPresentationPlan(
+        key: InventoryScopeRepublicationPresentationPlanKey
+    ) -> InventoryScopeRepublicationPresentationPlan? {
+        guard let plan = inventoryScopeRepublicationPresentationPlansByKey.removeValue(forKey: key) else {
+            return nil
+        }
+        inventoryScopeRepublicationPresentationPlanRetainedBytes -= plan.retainedByteCost
+        let nextCount = inventoryScopeRepublicationPresentationPlanCountByRootID[key.rootID, default: 1] - 1
+        if nextCount == 0 {
+            inventoryScopeRepublicationPresentationPlanCountByRootID.removeValue(forKey: key.rootID)
+        } else {
+            inventoryScopeRepublicationPresentationPlanCountByRootID[key.rootID] = nextCount
+        }
+        return plan
     }
 
-    private func removeInventoryScopeRepublicationSliceSourceJoins(
-        keys: some Sequence<InventoryScopeRepublicationSliceSourceJoinKey>
-    ) {
+    private func discardInventoryScopeRepublicationPresentationPlans(
+        rootID: UUID,
+        throughRustGeneration: UInt64,
+        swiftLifetimeID: UUID,
+        rustLifetimeID: String
+    ) -> (count: Int, containedVisiblePlan: Bool) {
+        let keys = inventoryScopeRepublicationPresentationPlansByKey.keys.filter {
+            $0.rootID == rootID
+                && $0.swiftLifetimeID == swiftLifetimeID
+                && $0.rustLifetimeID == rustLifetimeID
+                && $0.rustGeneration <= throughRustGeneration
+        }
+        var discardedPlanCount = 0
+        var discardedVisiblePlan = false
         for key in keys {
-            if let removed = inventoryScopeRepublicationSliceSourceJoinsByKey.removeValue(forKey: key) {
-                inventoryScopeRepublicationSliceSourceJoinEstimatedBytes -= removed.byteCost
+            if let plan = takeInventoryScopeRepublicationPresentationPlan(key: key) {
+                discardedPlanCount += 1
+                if case .publish = plan.disposition {
+                    discardedVisiblePlan = true
+                }
             }
+        }
+        return (discardedPlanCount, discardedVisiblePlan)
+    }
+
+    private func clearInventoryScopeRepublicationPresentationPlans(rootID: UUID) {
+        let keys = inventoryScopeRepublicationPresentationPlansByKey.keys.filter { $0.rootID == rootID }
+        for key in keys {
+            _ = takeInventoryScopeRepublicationPresentationPlan(key: key)
         }
     }
 
-    private func yieldActivatedInventoryScopeRepublicationCandidate(
-        _ candidate: WorkspaceInventoryScopeRepublicationCandidate
-    ) {
-        let event = candidate.event
-        guard var activation = inventoryScopeRepublicationActivationsByRootID[event.rootID],
-              candidate.rustRootLifetimeID == activation.rustLifetimeID,
-              let state = rootStatesByID[event.rootID],
-              state.lifetimeID == activation.swiftLifetimeID
-        else { return }
-
-        let rawGeneration = event.generation
-        guard rawGeneration > 0 else {
-            // Generation zero is the adapter's explicit "missing correlation" sentinel. It can
-            // describe a delayed hidden batch whose generation was lost, so it must never be
-            // rebased above an activation floor. Quarantine it and make the next exactly
-            // correlated delivery resync instead.
-            clearInventoryScopeRepublicationSliceSourceJoins(rootID: event.rootID)
-            inventoryScopeRepublicationForceResyncRootIDs.insert(event.rootID)
-            return
-        }
-        guard rawGeneration > activation.lastRustGeneration else {
-            let staleKeys = inventoryScopeRepublicationSliceSourceJoinsByKey.keys.filter { key in
-                key.rootID == event.rootID
-                    && key.swiftLifetimeID == activation.swiftLifetimeID
-                    && key.rustGeneration <= rawGeneration
-            }
-            removeInventoryScopeRepublicationSliceSourceJoins(keys: staleKeys)
-            return
-        }
-        let nextLogicalGeneration = activation.lastLogicalGeneration &+ 1
-        let logicalGeneration = max(
-            nextLogicalGeneration,
-            appliedIndexGenerationsByRootID[event.rootID] ?? nextLogicalGeneration
-        )
-        let rustGenerationIsContiguous = activation.lastRustGeneration != .max
-            && rawGeneration == activation.lastRustGeneration + 1
-        let logicalGenerationIsContiguous = logicalGeneration == nextLogicalGeneration
-        let sliceSourceJoin = takeInventoryScopeRepublicationSliceSourceJoin(
+    private func inventoryScopeRepublicationFullResyncEvent(
+        _ event: WorkspaceAppliedIndexBatchEvent
+    ) -> WorkspaceAppliedIndexBatchEvent {
+        WorkspaceAppliedIndexBatchEvent(
             rootID: event.rootID,
-            swiftLifetimeID: activation.swiftLifetimeID,
-            rustGeneration: rawGeneration,
-            modifiedFileIDs: event.modifiedFileIDs
-        )
-        var modifiedFileSourceSnapshotsByID = event.modifiedFileSourceSnapshotsByID
-        var sliceSourceJoinCollision = false
-        for (fileID, snapshot) in sliceSourceJoin.snapshotsByFileID {
-            if let existing = modifiedFileSourceSnapshotsByID[fileID], existing != snapshot {
-                sliceSourceJoinCollision = true
-            }
-            modifiedFileSourceSnapshotsByID[fileID] = snapshot
-        }
-        let forceResync = inventoryScopeRepublicationForceResyncRootIDs.remove(event.rootID) != nil
-            || sliceSourceJoin.requiresFullResync
-            || sliceSourceJoinCollision
-        activation.lastRustGeneration = rawGeneration
-        activation.lastLogicalGeneration = logicalGeneration
-        inventoryScopeRepublicationActivationsByRootID[event.rootID] = activation
-
-        yieldRepublishedInventoryScopeEvent(WorkspaceAppliedIndexBatchEvent(
-            rootID: event.rootID,
-            rootPath: state.root.standardizedFullPath,
-            generation: logicalGeneration,
-            rootLifetimeID: state.lifetimeID,
-            modifiedFileSourceSnapshotsByID: modifiedFileSourceSnapshotsByID,
+            rootPath: event.rootPath,
+            generation: event.generation,
+            rootLifetimeID: event.rootLifetimeID,
+            modifiedFileSourceSnapshotsByID: event.modifiedFileSourceSnapshotsByID,
             upsertedFiles: event.upsertedFiles,
             upsertedFolders: event.upsertedFolders,
             removedFileIDs: event.removedFileIDs,
@@ -3502,12 +3915,200 @@ actor WorkspaceFileContextStore {
             removedFolderPaths: event.removedFolderPaths,
             modifiedFileIDs: event.modifiedFileIDs,
             modifiedFolderIDs: event.modifiedFolderIDs,
-            requiresFullResync: event.requiresFullResync
-                || forceResync
-                || !rustGenerationIsContiguous
-                || !logicalGenerationIsContiguous,
-            isRootUnload: false
-        ))
+            requiresFullResync: true,
+            isRootUnload: event.isRootUnload
+        )
+    }
+
+    /// A presentation-plan failure must not turn an accepted Swift-visible mutation into a lost
+    /// production event. Retire the root's current correlation state before direct delivery so a
+    /// delayed Rust candidate cannot duplicate it, then quarantine for a fresh activation cursor.
+    private func failClosedInventoryScopeRepublication(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID,
+        visibleEvents: [WorkspaceAppliedIndexBatchEvent]
+    ) async {
+        clearInventoryScopeRepublicationState(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            clearRetryState: false
+        )
+        guard rootStatesByID[rootID]?.lifetimeID == expectedSwiftLifetimeID else { return }
+        quarantineInventoryScopeRepublicationActivation(rootID: rootID)
+        inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+        for event in visibleEvents.sorted(by: { $0.generation < $1.generation }) {
+            let recovery = inventoryScopeRepublicationFullResyncEvent(event)
+            await yieldInventoryScopeRepublicationEvent(recovery)
+        }
+    }
+
+    /// The root publication permit remains held while this waits. That lets the independent hub
+    /// drain enter the actor and consume every plan, while preventing the next same-root mutation
+    /// from overtaking the canonical delivery. A bounded fail-closed fallback avoids hanging a
+    /// mutation forever if the subscription stays open but its matching event is lost.
+    private func awaitInventoryScopeRepublicationPlanDrain(
+        rootID: UUID,
+        expectedSwiftLifetimeID: UUID
+    ) async {
+        guard inventoryScopeRepublicationSubscriptionIsOpen else { return }
+        for _ in 0 ..< 100 {
+            guard rootStatesByID[rootID]?.lifetimeID == expectedSwiftLifetimeID else {
+                clearInventoryScopeRepublicationPresentationPlans(rootID: rootID)
+                return
+            }
+            if inventoryScopeRepublicationPresentationPlanCountByRootID[rootID, default: 0] == 0,
+               inventoryScopeRepublicationDeliveriesInFlightByRootID[rootID, default: 0] == 0
+            {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        // Once delivery has started, never synthesize a duplicate timeout fallback for the same
+        // logical generation. Wait for the canonical shard application and stream yield to finish.
+        while inventoryScopeRepublicationDeliveriesInFlightByRootID[rootID, default: 0] > 0 {
+            guard rootStatesByID[rootID]?.lifetimeID == expectedSwiftLifetimeID else { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        guard inventoryScopeRepublicationPresentationPlanCountByRootID[rootID, default: 0] > 0 else {
+            return
+        }
+        let visibleEvents: [WorkspaceAppliedIndexBatchEvent] =
+            inventoryScopeRepublicationPresentationPlansByKey.compactMap { element in
+                let (key, plan) = element
+                guard key.rootID == rootID,
+                      key.swiftLifetimeID == expectedSwiftLifetimeID,
+                      case let .publish(event) = plan.disposition
+                else { return nil }
+                return event
+            }
+        await failClosedInventoryScopeRepublication(
+            rootID: rootID,
+            expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+            visibleEvents: visibleEvents
+        )
+    }
+
+    private func yieldActivatedInventoryScopeRepublicationCandidate(
+        _ candidate: WorkspaceInventoryScopeRepublicationCandidate
+    ) async {
+        let rootID = candidate.event.rootID
+        guard var activation = inventoryScopeRepublicationActivationsByRootID[rootID],
+              let rustLifetimeID = candidate.rustRootLifetimeID,
+              rustLifetimeID == activation.rustLifetimeID,
+              let state = rootStatesByID[rootID],
+              state.lifetimeID == activation.swiftLifetimeID
+        else { return }
+
+        let rawGeneration = candidate.rustGeneration
+        guard rawGeneration > 0 else {
+            inventoryScopeRepublicationMutationSegmentsByRootID.removeValue(forKey: rootID)
+            clearInventoryScopeRepublicationPresentationPlans(rootID: rootID)
+            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            return
+        }
+        guard rawGeneration > activation.lastRustGeneration else {
+            _ = discardInventoryScopeRepublicationPresentationPlans(
+                rootID: rootID,
+                throughRustGeneration: rawGeneration,
+                swiftLifetimeID: activation.swiftLifetimeID,
+                rustLifetimeID: activation.rustLifetimeID
+            )
+            return
+        }
+
+        let rustGenerationIsContiguous = activation.lastRustGeneration != .max
+            && rawGeneration == activation.lastRustGeneration + 1
+        if rawGeneration > activation.lastRustGeneration + 1 {
+            let skippedGenerationCount = rawGeneration - activation.lastRustGeneration - 1
+            let discarded = discardInventoryScopeRepublicationPresentationPlans(
+                rootID: rootID,
+                throughRustGeneration: rawGeneration - 1,
+                swiftLifetimeID: activation.swiftLifetimeID,
+                rustLifetimeID: activation.rustLifetimeID
+            )
+            if discarded.containedVisiblePlan || UInt64(discarded.count) != skippedGenerationCount {
+                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            }
+        }
+
+        let key = InventoryScopeRepublicationPresentationPlanKey(
+            rootID: rootID,
+            swiftLifetimeID: activation.swiftLifetimeID,
+            rustLifetimeID: rustLifetimeID,
+            rustGeneration: rawGeneration
+        )
+        let plan = takeInventoryScopeRepublicationPresentationPlan(key: key)
+        activation.lastRustGeneration = rawGeneration
+        guard let plan else {
+            inventoryScopeRepublicationActivationsByRootID[rootID] = activation
+            inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            return
+        }
+        guard let rawBatch = candidate.rawBatch,
+              rawBatch == plan.expectedRawBatch
+        else {
+            inventoryScopeRepublicationActivationsByRootID[rootID] = activation
+            let visibleEvents: [WorkspaceAppliedIndexBatchEvent] = if case let .publish(event) = plan.disposition {
+                [event]
+            } else {
+                []
+            }
+            await failClosedInventoryScopeRepublication(
+                rootID: rootID,
+                expectedSwiftLifetimeID: activation.swiftLifetimeID,
+                visibleEvents: visibleEvents
+            )
+            return
+        }
+
+        switch plan.disposition {
+        case .suppress:
+            inventoryScopeRepublicationActivationsByRootID[rootID] = activation
+            if candidate.correlationIntegrityRequiresResync {
+                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            }
+            // A contiguous Rust authoritative rebuild is an implementation detail for a hidden
+            // transaction. It does not advance Swift's logical generation and does not leak a
+            // consumer-visible resync obligation.
+            return
+
+        case let .publish(canonicalEvent):
+            let nextLogicalGeneration = activation.lastLogicalGeneration &+ 1
+            let logicalGenerationIsContiguous = canonicalEvent.generation == nextLogicalGeneration
+            guard canonicalEvent.rootID == rootID,
+                  canonicalEvent.rootLifetimeID == state.lifetimeID,
+                  canonicalEvent.generation > activation.lastLogicalGeneration
+            else {
+                inventoryScopeRepublicationActivationsByRootID[rootID] = activation
+                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+                return
+            }
+            let forceResync = inventoryScopeRepublicationForceResyncRootIDs.remove(rootID) != nil
+            activation.lastLogicalGeneration = canonicalEvent.generation
+            inventoryScopeRepublicationActivationsByRootID[rootID] = activation
+            let deliveredEvent = WorkspaceAppliedIndexBatchEvent(
+                rootID: canonicalEvent.rootID,
+                rootPath: canonicalEvent.rootPath,
+                generation: canonicalEvent.generation,
+                rootLifetimeID: canonicalEvent.rootLifetimeID,
+                modifiedFileSourceSnapshotsByID: canonicalEvent.modifiedFileSourceSnapshotsByID,
+                upsertedFiles: canonicalEvent.upsertedFiles,
+                upsertedFolders: canonicalEvent.upsertedFolders,
+                removedFileIDs: canonicalEvent.removedFileIDs,
+                removedFolderIDs: canonicalEvent.removedFolderIDs,
+                removedFilePaths: canonicalEvent.removedFilePaths,
+                removedFolderPaths: canonicalEvent.removedFolderPaths,
+                modifiedFileIDs: canonicalEvent.modifiedFileIDs,
+                modifiedFolderIDs: canonicalEvent.modifiedFolderIDs,
+                requiresFullResync: canonicalEvent.requiresFullResync
+                    || candidate.correlationIntegrityRequiresResync
+                    || forceResync
+                    || !rustGenerationIsContiguous
+                    || !logicalGenerationIsContiguous,
+                isRootUnload: false
+            )
+            await yieldInventoryScopeRepublicationEvent(deliveredEvent)
+        }
     }
 
     private func clearStagedInventoryScopeRepublicationCandidates(rootID: UUID) {
@@ -3517,17 +4118,60 @@ actor WorkspaceFileContextStore {
 
     private func clearInventoryScopeRepublicationState(
         rootID: UUID,
+        expectedSwiftLifetimeID: UUID? = nil,
+        expectedRustLifetimeID: String? = nil,
         clearRetryState: Bool = true
     ) {
+        if let expectedSwiftLifetimeID {
+            guard rootStatesByID[rootID].map({ $0.lifetimeID == expectedSwiftLifetimeID }) ?? true,
+                  inventoryScopeRepublicationActivationCapturesByRootID[rootID]
+                  .map({ $0.swiftLifetimeID == expectedSwiftLifetimeID }) ?? true,
+                  inventoryScopeRepublicationActivationsByRootID[rootID]
+                  .map({ $0.swiftLifetimeID == expectedSwiftLifetimeID }) ?? true,
+                  inventoryScopeRepublicationUnloadPlansByRootID[rootID]
+                  .map({ $0.swiftLifetimeID == expectedSwiftLifetimeID }) ?? true
+            else { return }
+        }
+        if let expectedRustLifetimeID {
+            guard inventoryScopeRepublicationActivationsByRootID[rootID]
+                .map({ $0.rustLifetimeID == expectedRustLifetimeID }) ?? true,
+                inventoryScopeRepublicationUnloadPlansByRootID[rootID]
+                .map({ $0.rustLifetimeID == expectedRustLifetimeID }) ?? true
+            else { return }
+        }
         inventoryScopeRepublicationActivationCapturesByRootID.removeValue(forKey: rootID)
         inventoryScopeRepublicationActivationsByRootID.removeValue(forKey: rootID)
         clearStagedInventoryScopeRepublicationCandidates(rootID: rootID)
-        clearInventoryScopeRepublicationSliceSourceJoins(rootID: rootID)
+        inventoryScopeRepublicationMutationSegmentsByRootID.removeValue(forKey: rootID)
+        clearInventoryScopeRepublicationPresentationPlans(rootID: rootID)
+        inventoryScopeRepublicationUnloadPlansByRootID.removeValue(forKey: rootID)
         inventoryScopeRepublicationForceResyncRootIDs.remove(rootID)
         if clearRetryState {
             inventoryScopeRepublicationActivationRetryRootIDs.remove(rootID)
             inventoryScopeRepublicationActivationRetryTasksByRootID.removeValue(forKey: rootID)?.cancel()
         }
+    }
+
+    private func yieldInventoryScopeRepublicationEvent(
+        _ event: WorkspaceAppliedIndexBatchEvent
+    ) async {
+        let rootID = event.rootID
+        inventoryScopeRepublicationDeliveriesInFlightByRootID[rootID, default: 0] += 1
+        defer {
+            let nextCount = inventoryScopeRepublicationDeliveriesInFlightByRootID[rootID, default: 1] - 1
+            if nextCount == 0 {
+                inventoryScopeRepublicationDeliveriesInFlightByRootID.removeValue(forKey: rootID)
+            } else {
+                inventoryScopeRepublicationDeliveriesInFlightByRootID[rootID] = nextCount
+            }
+        }
+        yieldRepublishedInventoryScopeEvent(event)
+        #if DEBUG
+            if let inventoryScopeRepublicationDeliveryWillApplyHandler {
+                await inventoryScopeRepublicationDeliveryWillApplyHandler(event.rootID, event.generation)
+            }
+        #endif
+        await yieldAppliedIndexEvent(event)
     }
 
     private func yieldRepublishedInventoryScopeEvent(_ event: WorkspaceAppliedIndexBatchEvent) {
@@ -3750,26 +4394,27 @@ actor WorkspaceFileContextStore {
         fileSystemDeltaContinuations.removeValue(forKey: id)
     }
 
-    func appliedIndexEvents() -> AsyncStream<WorkspaceAppliedIndexBatchEvent> {
+    func appliedIndexEvents() async -> AsyncStream<WorkspaceAppliedIndexBatchEvent> {
         let streamID = UUID()
-        return AsyncStream { continuation in
+        let stream = AsyncStream { continuation in
             appliedIndexContinuations[streamID] = continuation
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.removeAppliedIndexContinuation(id: streamID) }
             }
         }
+        if let authority = try? await inventoryScopeAuthorityInstance() {
+            await startInventoryScopeRepublicationTaskIfNeeded(authority: authority)
+        }
+        return stream
     }
 
     private func removeAppliedIndexContinuation(id: UUID) {
         appliedIndexContinuations.removeValue(forKey: id)
     }
 
-    /// P4-6b republication arming (design doc §4.3) -- see
-    /// `startInventoryScopeRepublicationTaskIfNeeded`'s header comment for why this is a
-    /// separate stream from `appliedIndexEvents()` rather than that method's new production
-    /// source. No production consumer subscribes to this yet; it exists so the future flip is
-    /// "point the two consumers here, delete `publishAppliedIndexEvent`" rather than designing
-    /// the translation under cutover time pressure.
+    /// Differential/test mirror of P5-5's Rust-backed production `appliedIndexEvents()` source.
+    /// Both streams receive the same canonical event after exact plan validation; production
+    /// consumers continue subscribing only to `appliedIndexEvents()`.
     func republishedInventoryScopeEvents() async -> AsyncStream<WorkspaceAppliedIndexBatchEvent> {
         // Deliberately lazy and scoped to this call, not to `inventoryScopeAuthorityInstance()`
         // (a ubiquitous hot path every mutation/read routes through) -- starting a background
@@ -3777,16 +4422,17 @@ actor WorkspaceFileContextStore {
         // every production root-load on the hook for this stream's own startup cost/risk even
         // though nothing consumes it yet. Only a caller that actually wants the republished
         // stream pays for it.
-        if let authority = try? await inventoryScopeAuthorityInstance() {
-            startInventoryScopeRepublicationTaskIfNeeded(authority: authority)
-        }
         let streamID = UUID()
-        return AsyncStream { continuation in
+        let stream = AsyncStream { continuation in
             republishedInventoryScopeEventContinuations[streamID] = continuation
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.removeRepublishedInventoryScopeEventContinuation(id: streamID) }
             }
         }
+        if let authority = try? await inventoryScopeAuthorityInstance() {
+            await startInventoryScopeRepublicationTaskIfNeeded(authority: authority)
+        }
+        return stream
     }
 
     private func removeRepublishedInventoryScopeEventContinuation(id: UUID) {
@@ -6231,10 +6877,11 @@ actor WorkspaceFileContextStore {
         if didPublish {
             for (rootID, activation) in republicationActivationsByRootID {
                 guard newlyPublishedRootIDs.contains(rootID) else { continue }
-                if !completeInventoryScopeRepublicationActivation(
+                let activated = await completeInventoryScopeRepublicationActivation(
                     captureID: activation.captureID,
                     cursor: activation.cursor
-                ) {
+                )
+                if !activated {
                     republicationActivationRetryRootIDs.insert(rootID)
                 }
             }
@@ -7124,9 +7771,9 @@ actor WorkspaceFileContextStore {
             beginInventoryCatalogMutationPublicationFence(rootID: rootID)
         }
 
-        func finishInventoryCatalogMutationPublicationFenceForTesting(rootID: UUID) {
+        func finishInventoryCatalogMutationPublicationFenceForTesting(rootID: UUID) async {
             guard (inventoryCatalogMutationDepthByRootID[rootID] ?? 0) > 0 else { return }
-            finishInventoryCatalogMutationPublicationFence(rootID: rootID)
+            await finishInventoryCatalogMutationPublicationFence(rootID: rootID)
         }
 
         func configureInventoryScopeRepublicationActivationForTesting(
@@ -7134,14 +7781,14 @@ actor WorkspaceFileContextStore {
             rustLifetimeID: String,
             rustGenerationFloor: UInt64,
             logicalGenerationFloor: UInt64
-        ) throws {
+        ) async throws {
             let state = try state(for: rootID)
             let captureID = beginInventoryScopeRepublicationActivationCapture(
                 rootID: rootID,
                 swiftLifetimeID: state.lifetimeID,
                 logicalGenerationFloor: logicalGenerationFloor
             )
-            completeInventoryScopeRepublicationActivation(
+            await completeInventoryScopeRepublicationActivation(
                 captureID: captureID,
                 cursor: .init(
                     rootID: rootID,
@@ -7155,9 +7802,58 @@ actor WorkspaceFileContextStore {
         func injectInventoryScopeRepublicationCandidateForTesting(
             rustLifetimeID: String?,
             event: WorkspaceAppliedIndexBatchEvent
-        ) {
-            handleInventoryScopeRepublicationCandidate(.init(
+        ) async {
+            let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+                rootID: event.rootID,
+                upsertedFiles: [],
+                upsertedFolders: [],
+                removedFileIDs: [],
+                removedFolderIDs: [],
+                removedFilePaths: [],
+                removedFolderPaths: [],
+                modifiedFileIDs: [],
+                modifiedFolderIDs: []
+            )
+            if event.generation > 0,
+               let rustLifetimeID,
+               let activation = inventoryScopeRepublicationActivationsByRootID[event.rootID]
+            {
+                let canonicalEvent = WorkspaceAppliedIndexBatchEvent(
+                    rootID: event.rootID,
+                    rootPath: event.rootPath,
+                    generation: activation.lastLogicalGeneration &+ 1,
+                    rootLifetimeID: event.rootLifetimeID,
+                    modifiedFileSourceSnapshotsByID: event.modifiedFileSourceSnapshotsByID,
+                    upsertedFiles: event.upsertedFiles,
+                    upsertedFolders: event.upsertedFolders,
+                    removedFileIDs: event.removedFileIDs,
+                    removedFolderIDs: event.removedFolderIDs,
+                    removedFilePaths: event.removedFilePaths,
+                    removedFolderPaths: event.removedFolderPaths,
+                    modifiedFileIDs: event.modifiedFileIDs,
+                    modifiedFolderIDs: event.modifiedFolderIDs,
+                    requiresFullResync: event.requiresFullResync,
+                    isRootUnload: event.isRootUnload
+                )
+                let installed = installInventoryScopeRepublicationPresentationPlan(
+                    mutation: .init(
+                        swiftLifetimeID: activation.swiftLifetimeID,
+                        rustLifetimeID: rustLifetimeID,
+                        rustGeneration: event.generation,
+                        expectedRawBatch: rawBatch
+                    ),
+                    disposition: .publish(canonicalEvent)
+                )
+                if !installed {
+                    inventoryScopeRepublicationForceResyncRootIDs.insert(event.rootID)
+                }
+            }
+            await handleInventoryScopeRepublicationCandidate(.init(
                 rustRootLifetimeID: rustLifetimeID,
+                rustGeneration: event.generation,
+                rawBatch: event.generation > 0 ? rawBatch : nil,
+                correlationIntegrityRequiresResync: event.requiresFullResync,
+                rebuiltAuthoritative: false,
                 event: event
             ))
         }
@@ -7176,26 +7872,106 @@ actor WorkspaceFileContextStore {
             return (activation.rustLifetimeID, activation.lastRustGeneration)
         }
 
-        func retainInventoryScopeRepublicationSliceSourceJoinForTesting(
+        func inventoryScopeRepublicationStateSummaryForTesting(rootID: UUID) -> String {
+            let termination = inventoryScopeRepublicationLastTerminationDescription ?? "none"
+            return "authority=\(inventoryScopeAuthority != nil),productionSubscribers=\(appliedIndexContinuations.count),mirrorSubscribers=\(republishedInventoryScopeEventContinuations.count),task=\(inventoryScopeRepublicationTask != nil),open=\(inventoryScopeRepublicationSubscriptionIsOpen),capture=\(inventoryScopeRepublicationActivationCapturesByRootID[rootID] != nil),activation=\(inventoryScopeRepublicationActivationsByRootID[rootID] != nil),retry=\(inventoryScopeRepublicationActivationRetryRootIDs.contains(rootID)),retryTask=\(inventoryScopeRepublicationActivationRetryTasksByRootID[rootID] != nil),termination=\(termination)"
+        }
+
+        func retainInventoryScopeRepublicationSuppressionPlanForTesting(
             rootID: UUID,
             rustGeneration: UInt64,
-            snapshot: WorkspaceSliceRebaseSourceSnapshot
-        ) throws {
+            modifiedFileIDs: [UUID] = []
+        ) throws -> Bool {
             let state = try state(for: rootID)
-            retainInventoryScopeRepublicationSliceSourceJoin(
+            guard let activation = inventoryScopeRepublicationActivationsByRootID[rootID] else { return false }
+            let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
                 rootID: rootID,
-                swiftLifetimeID: state.lifetimeID,
-                rustGeneration: rustGeneration,
-                snapshotsByFileID: [snapshot.fileID: snapshot]
+                upsertedFiles: [],
+                upsertedFolders: [],
+                removedFileIDs: [],
+                removedFolderIDs: [],
+                removedFilePaths: [],
+                removedFolderPaths: [],
+                modifiedFileIDs: modifiedFileIDs,
+                modifiedFolderIDs: []
             )
+            let installed = installInventoryScopeRepublicationPresentationPlan(
+                mutation: .init(
+                    swiftLifetimeID: state.lifetimeID,
+                    rustLifetimeID: activation.rustLifetimeID,
+                    rustGeneration: rustGeneration,
+                    expectedRawBatch: rawBatch
+                ),
+                disposition: .suppress
+            )
+            if !installed {
+                clearInventoryScopeRepublicationPresentationPlans(rootID: rootID)
+                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
+            }
+            return installed
         }
 
-        func inventoryScopeRepublicationSliceSourceJoinCountForTesting() -> Int {
-            inventoryScopeRepublicationSliceSourceJoinsByKey.count
+        func injectInventoryScopeRepublicationSuppressionCandidateForTesting(
+            rootID: UUID,
+            rustGeneration: UInt64
+        ) async {
+            guard let activation = inventoryScopeRepublicationActivationsByRootID[rootID] else { return }
+            let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+                rootID: rootID,
+                upsertedFiles: [],
+                upsertedFolders: [],
+                removedFileIDs: [],
+                removedFolderIDs: [],
+                removedFilePaths: [],
+                removedFolderPaths: [],
+                modifiedFileIDs: [],
+                modifiedFolderIDs: []
+            )
+            await handleInventoryScopeRepublicationCandidate(.init(
+                rustRootLifetimeID: activation.rustLifetimeID,
+                rustGeneration: rustGeneration,
+                rawBatch: rawBatch,
+                correlationIntegrityRequiresResync: false,
+                rebuiltAuthoritative: false,
+                event: WorkspaceAppliedIndexBatchEvent(
+                    rootID: rootID,
+                    rootPath: rootStatesByID[rootID]?.root.standardizedFullPath ?? "",
+                    generation: rustGeneration,
+                    rootLifetimeID: activation.swiftLifetimeID
+                )
+            ))
         }
 
-        func maximumInventoryScopeRepublicationSliceSourceJoinCountForTesting() -> Int {
-            Self.maximumInventoryScopeRepublicationSliceSourceJoinCount
+        func inventoryScopeAppliedIndexGenerationForTesting(rootID: UUID) async throws -> UInt64 {
+            let state = try state(for: rootID)
+            let authority = try await inventoryScopeAuthorityInstance()
+            return try await authority.republicationActivationCursor(
+                rootID: rootID,
+                expectedSwiftLifetimeID: state.lifetimeID
+            ).generationFloor
+        }
+
+        func publishEmptyFullResyncForTesting(rootID: UUID) async throws {
+            let root = try state(for: rootID).root
+            try await withInventoryCatalogMutationPublicationFence(rootID: rootID) { _ in
+                await publishAppliedIndexEvent(root: root, requiresFullResync: true)
+            }
+        }
+
+        func publishPrecisionLostFullResyncForTesting(rootID: UUID) async throws {
+            let root = try state(for: rootID).root
+            try await withInventoryCatalogMutationPublicationFence(rootID: rootID) { _ in
+                markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
+                await publishAppliedIndexEvent(root: root, requiresFullResync: true)
+            }
+        }
+
+        func inventoryScopeRepublicationPresentationPlanCountForTesting() -> Int {
+            inventoryScopeRepublicationPresentationPlansByKey.count
+        }
+
+        func maximumInventoryScopeRepublicationPresentationPlanCountForTesting() -> Int {
+            Self.maximumInventoryScopeRepublicationPresentationPlansPerRoot
         }
 
         func inventoryCatalogPublicationPermitWaiterCountForTesting(rootID: UUID) -> Int {
@@ -11564,10 +12340,11 @@ actor WorkspaceFileContextStore {
         appliedIndexGenerationsByRootID[root.id] = 0
         catalogGenerationsByRootID[root.id] = 0
         if let republicationCursor {
-            if !completeInventoryScopeRepublicationActivation(
+            let activated = await completeInventoryScopeRepublicationActivation(
                 captureID: republicationCaptureID,
                 cursor: republicationCursor
-            ) {
+            )
+            if !activated {
                 quarantineInventoryScopeRepublicationActivation(rootID: root.id)
                 scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: root.id)
             }
@@ -11831,7 +12608,13 @@ actor WorkspaceFileContextStore {
         let orderedRootIDs = rootIDs.filter { seenRootIDs.insert($0).inserted }
         guard !orderedRootIDs.isEmpty else { return }
 
-        var statesToUnload: [(rootID: UUID, state: RootState, pageIndex: FileTreePageIndex?)] = []
+        var statesToUnload: [(
+            rootID: UUID,
+            state: RootState,
+            pageIndex: FileTreePageIndex?,
+            canonicalEvent: WorkspaceAppliedIndexBatchEvent,
+            awaitsRustUnload: Bool
+        )] = []
         var codemapCleanupFlights: [CodemapCleanupFlight] = []
         var codemapCleanupIDs = Set<UUID>()
         var seededAuthorityFencesToRelease: [GitWorkspacePendingInitializationAuthorityFence] = []
@@ -11839,7 +12622,6 @@ actor WorkspaceFileContextStore {
         var ownershipResourcesReleasedByUnload = SessionWorktreeOwnershipRemoval()
         var invalidatedOwnershipTokens = Set<WorkspaceSessionWorktreeOwnershipToken>()
         for rootID in orderedRootIDs {
-            clearInventoryScopeRepublicationState(rootID: rootID)
             if let claim = publishedSeededAuthorityClaimsByRootID.removeValue(forKey: rootID) {
                 seededAuthorityClaimsToRelease.append(claim)
                 publishedSeededAuthorityFencesByRootID.removeValue(forKey: rootID)
@@ -11886,13 +12668,34 @@ actor WorkspaceFileContextStore {
             if rootStatesByID[rootID]?.root.kind == .sessionWorktree {
                 sessionRootLifetimeClock.advance()
             }
-            guard let state = rootStatesByID.removeValue(forKey: rootID) else { continue }
+            guard let state = rootStatesByID[rootID] else {
+                clearInventoryScopeRepublicationState(rootID: rootID)
+                continue
+            }
             // P4-6b table-deletion conversion: the root's file ids (needed below to clean up
             // `searchContentInvalidationEpochsByFileID`) must be paged from Rust *before*
             // `closeRoot` below -- once closed, the authority can no longer serve reads for this
             // root. `RootState`'s own path maps are permanently empty post-cutover and can no
             // longer supply this list.
             let unloadingPageIndex = await fetchFileTreePageIndex(rootID: rootID)
+            let allFiles = unloadingPageIndex.map { Array($0.filesByID.values) } ?? []
+            let allFolders = unloadingPageIndex.map { Array($0.foldersByID.values) } ?? []
+            let discoverableFiles = allFiles.filter { isDiscoverableFileID($0.id) }
+            let discoverableFolders = allFolders.filter { isDiscoverableFolderID($0.id) }
+            let canonicalUnloadEvent = WorkspaceAppliedIndexBatchEvent(
+                rootID: rootID,
+                rootPath: state.root.standardizedFullPath,
+                generation: nextAppliedIndexGeneration(forRootID: rootID),
+                rootLifetimeID: state.lifetimeID,
+                removedFileIDs: discoverableFiles.map(\.id),
+                removedFolderIDs: discoverableFolders.map(\.id),
+                removedFilePaths: discoverableFiles.map(\.standardizedRelativePath).sorted(),
+                removedFolderPaths: discoverableFolders.map(\.standardizedRelativePath).sorted(),
+                requiresFullResync: true,
+                isRootUnload: true
+            )
+            let awaitsRustUnload = installInventoryScopeRepublicationUnloadPlan(event: canonicalUnloadEvent)
+            rootStatesByID.removeValue(forKey: rootID)
             if let inventoryScopeAuthority {
                 await inventoryScopeAuthority.closeRoot(rootID: rootID)
             }
@@ -11938,7 +12741,13 @@ actor WorkspaceFileContextStore {
             for tokenID in pathFenceTokenIDs {
                 removeCodemapPathFenceToken(id: tokenID)
             }
-            statesToUnload.append((rootID, state, unloadingPageIndex))
+            statesToUnload.append((
+                rootID,
+                state,
+                unloadingPageIndex,
+                canonicalUnloadEvent,
+                awaitsRustUnload
+            ))
         }
         for claim in seededAuthorityClaimsToRelease {
             await claim.release()
@@ -12047,45 +12856,51 @@ actor WorkspaceFileContextStore {
         // so removing entries from them here is still correct and necessary.
         for entry in statesToUnload {
             let rootID = entry.rootID
-            let state = entry.state
             let allFiles = entry.pageIndex.map { Array($0.filesByID.values) } ?? []
             let allFolders = entry.pageIndex.map { Array($0.foldersByID.values) } ?? []
-            let discoverableFiles = allFiles.filter { isDiscoverableFileID($0.id) }
-            let discoverableFolders = allFolders.filter { isDiscoverableFolderID($0.id) }
             for folder in allFolders {
                 managedOnlyFolderIDs.remove(folder.id)
             }
             for file in allFiles {
                 managedOnlyFileIDs.remove(file.id)
             }
-            let generation = nextAppliedIndexGeneration(forRootID: rootID)
-            await yieldAppliedIndexEvent(WorkspaceAppliedIndexBatchEvent(
-                rootID: rootID,
-                rootPath: state.root.standardizedFullPath,
-                generation: generation,
-                rootLifetimeID: state.lifetimeID,
-                removedFileIDs: discoverableFiles.map(\.id),
-                removedFolderIDs: discoverableFolders.map(\.id),
-                removedFilePaths: discoverableFiles.map(\.standardizedRelativePath).sorted(),
-                removedFolderPaths: discoverableFolders.map(\.standardizedRelativePath).sorted(),
-                requiresFullResync: true,
-                isRootUnload: true
-            ))
-            appliedIndexGenerationsByRootID.removeValue(forKey: rootID)
-            catalogGenerationsByRootID.removeValue(forKey: rootID)
-            #if DEBUG
-                publicationInvalidationHistoryByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierLaunchCountsByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierJoinCountsByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierSuccessorCountsByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierCoalescedSuccessorCountsByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierCompletionCountsByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierNoopCountsByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierTotalWaitMillisecondsByRootID.removeValue(forKey: rootID)
-                scopedIngressBarrierMaxWaitMillisecondsByRootID.removeValue(forKey: rootID)
-                lastCompletedScopedIngressBarrierByRootID.removeValue(forKey: rootID)
-                rootCrawlCountsByRootID.removeValue(forKey: rootID)
-            #endif
+            if entry.awaitsRustUnload {
+                await reachInventoryScopeRepublicationUnloadVisibilitySeam(
+                    rootID: rootID,
+                    expectedSwiftLifetimeID: entry.state.lifetimeID
+                )
+            } else {
+                if !republishedInventoryScopeEventContinuations.isEmpty {
+                    yieldRepublishedInventoryScopeEvent(entry.canonicalEvent)
+                }
+                await yieldAppliedIndexEvent(entry.canonicalEvent)
+                clearInventoryScopeRepublicationState(
+                    rootID: rootID,
+                    expectedSwiftLifetimeID: entry.state.lifetimeID
+                )
+            }
+            // The unload path suspends while watcher and Rust publication work completes. If the
+            // same UUID was rebound meanwhile, these root-keyed counters already belong to the new
+            // lifetime and must not be erased by the retiring one.
+            let rootWasRebound = rootStatesByID[rootID]
+                .map { $0.lifetimeID != entry.state.lifetimeID } ?? false
+            if !rootWasRebound {
+                appliedIndexGenerationsByRootID.removeValue(forKey: rootID)
+                catalogGenerationsByRootID.removeValue(forKey: rootID)
+                #if DEBUG
+                    publicationInvalidationHistoryByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierLaunchCountsByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierJoinCountsByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierSuccessorCountsByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierCoalescedSuccessorCountsByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierCompletionCountsByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierNoopCountsByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierTotalWaitMillisecondsByRootID.removeValue(forKey: rootID)
+                    scopedIngressBarrierMaxWaitMillisecondsByRootID.removeValue(forKey: rootID)
+                    lastCompletedScopedIngressBarrierByRootID.removeValue(forKey: rootID)
+                    rootCrawlCountsByRootID.removeValue(forKey: rootID)
+                #endif
+            }
         }
 
         #if DEBUG
@@ -16555,12 +17370,13 @@ actor WorkspaceFileContextStore {
         ).files[standardizedRelativePath]
         guard let fileID = fact?.fileID,
               let file = fact?.record,
+              file.id == fileID,
               file.rootID == rootEpoch.rootID,
               file.standardizedRelativePath == standardizedRelativePath,
               let identity = WorkspaceCodemapArtifactBindingIdentity(
                   rootID: rootEpoch.rootID,
                   rootLifetimeID: rootEpoch.rootLifetimeID,
-                  fileID: file.id,
+                  fileID: fileID,
                   standardizedRootPath: authority.standardizedRootPath,
                   standardizedRelativePath: standardizedRelativePath,
                   standardizedFullPath: file.standardizedFullPath
@@ -17908,7 +18724,10 @@ actor WorkspaceFileContextStore {
             )
             throw CancellationError()
         } catch FileSystemError.fileNotFound {
-            didCommitCodemapMutation = await withCodemapPathLocalCatalogMutation(rootID: rootID) {
+            didCommitCodemapMutation = try await withCodemapPathLocalCatalogMutation(
+                rootID: rootID,
+                publicationPermit: inventoryCatalogPublicationPermit
+            ) { _ in
                 await pruneCatalogFileMissingOnDisk(
                     rootID: rootID,
                     relativePath: standardizedRelativePath,
@@ -17933,10 +18752,13 @@ actor WorkspaceFileContextStore {
             let publishedCanonicalModification: Bool
             if let file = await file(rootID: rootID, relativePath: standardizedRelativePath) {
                 publishedCanonicalModification = isDiscoverableFileID(file.id)
-                await withInventoryCatalogMutationPublicationFence(rootID: rootID) {
+                try await withInventoryCatalogMutationPublicationFence(
+                    rootID: rootID,
+                    publicationPermit: inventoryCatalogPublicationPermit
+                ) { _ in
                     invalidateSearchContent(file)
                     if publishedCanonicalModification {
-                        let rustGeneration = await applyInventoryScopeContentModification(
+                        _ = await applyInventoryScopeContentModification(
                             rootID: rootID,
                             modifiedFileIDs: [file.id],
                             modifiedFolderIDs: [],
@@ -17945,8 +18767,7 @@ actor WorkspaceFileContextStore {
                         )
                         await publishAppliedIndexEvent(
                             root: state.root,
-                            modifiedFileIDs: [file.id],
-                            inventoryScopeRepublicationRustGeneration: rustGeneration
+                            modifiedFileIDs: [file.id]
                         )
                         #if DEBUG
                             MCPApplyEditsRebaseProbeRecorder.recordStoreModification(
@@ -18034,7 +18855,7 @@ actor WorkspaceFileContextStore {
         case let .ineligible(reason):
             throw WorkspaceFileContextStoreError.catalogMaterializationFailed("moved file is not catalog-eligible at destination: \(reason.description)")
         }
-        await withCodemapPathLocalCatalogMutation(rootID: rootID) {
+        try await withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
             await removeFile(relativePath: oldPath, rootID: rootID)
             await indexFile(relativePath: newPath, root: state.root, managedOnly: destinationManagedOnly)
             let upsertedFile = destinationManagedOnly ? nil : await file(rootID: rootID, relativePath: newPath)
@@ -18078,7 +18899,7 @@ actor WorkspaceFileContextStore {
             throw CancellationError()
         } catch FileSystemError.fileNotFound {
             if oldFile != nil {
-                didCommitCodemapMutation = await withCodemapPathLocalCatalogMutation(rootID: rootID) {
+                didCommitCodemapMutation = try await withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
                     await pruneCatalogFileMissingOnDisk(
                         rootID: rootID,
                         relativePath: standardizedRelativePath,
@@ -18089,7 +18910,7 @@ actor WorkspaceFileContextStore {
             throw FileSystemError.fileNotFound
         }
         didCommitCodemapMutation = true
-        await withCodemapPathLocalCatalogMutation(rootID: rootID) {
+        try await withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
             await removeFile(relativePath: standardizedRelativePath, rootID: rootID)
             if let oldFile, oldFileWasDiscoverable {
                 await publishAppliedIndexEvent(root: state.root, removedFileIDs: [oldFile.id], removedFilePaths: [oldFile.standardizedRelativePath])
@@ -18138,7 +18959,7 @@ actor WorkspaceFileContextStore {
             throw CancellationError()
         } catch FileSystemError.fileNotFound {
             if oldFile != nil || oldFolder != nil {
-                didCommitCodemapMutation = await withCodemapPathLocalCatalogMutation(rootID: rootID) {
+                didCommitCodemapMutation = try await withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
                     await pruneCatalogItemMissingOnDisk(
                         rootID: rootID,
                         relativePath: standardizedRelativePath,
@@ -18149,7 +18970,7 @@ actor WorkspaceFileContextStore {
             throw FileSystemError.fileNotFound
         }
         didCommitCodemapMutation = true
-        await withCodemapPathLocalCatalogMutation(rootID: rootID) {
+        try await withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
             if let oldFile {
                 await removeFile(relativePath: standardizedRelativePath, rootID: rootID)
                 if oldFileWasDiscoverable {
@@ -18841,9 +19662,13 @@ actor WorkspaceFileContextStore {
                 )
             }
             let file = if codemapPathLocalMutation {
-                try await withCodemapPathLocalCatalogMutation(rootID: rootID, perform)
+                try await withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
+                    try await perform()
+                }
             } else {
-                try await withInventoryCatalogMutationPublicationFence(rootID: rootID, perform)
+                try await withInventoryCatalogMutationPublicationFence(rootID: rootID) { _ in
+                    try await perform()
+                }
             }
             return .materialized(file)
         }
@@ -19165,13 +19990,13 @@ actor WorkspaceFileContextStore {
             rootID: rootID,
             commands: [.deleted([path])]
         )
-        let didPrune = await withCodemapPathLocalCatalogMutation(rootID: rootID) {
+        let didPrune = await (try? withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
             await pruneCatalogFileMissingOnDisk(
                 rootID: rootID,
                 relativePath: path,
                 publishDelta: publishDelta
             )
-        }
+        }) ?? false
         releaseCodemapPathFence(token, didCommitMutation: didPrune)
         return didPrune
     }
@@ -19390,11 +20215,17 @@ actor WorkspaceFileContextStore {
                 await fenceCodemapRootAuthority(rootIDs: [rootID], command: rootCommand)
             }
             guard isRootLifetimeCurrent(rootID: rootID, expectedLifetimeID: expectedLifetimeID) else { return }
-            await applyPreparedIndexDeltaMutations(
-                rootID: rootID,
-                deltas: applicableDeltas,
-                requiresFullResync: requiresFullResync
-            )
+            do {
+                try await withInventoryCatalogMutationPublicationFence(rootID: rootID) { _ in
+                    await applyPreparedIndexDeltaMutations(
+                        rootID: rootID,
+                        deltas: applicableDeltas,
+                        requiresFullResync: requiresFullResync
+                    )
+                }
+            } catch {
+                return
+            }
             didCommitRepositoryMutation = repositoryMutationFence != nil
             // Publisher application has already revoked the old root codemap authority. Keep the
             // derived cleanup flight retained/fenced, but do not hold the basic catalog publication
@@ -19413,11 +20244,17 @@ actor WorkspaceFileContextStore {
 
         if repositoryMutationFence != nil {
             guard isRootLifetimeCurrent(rootID: rootID, expectedLifetimeID: expectedLifetimeID) else { return }
-            await applyPreparedIndexDeltaMutations(
-                rootID: rootID,
-                deltas: applicableDeltas,
-                requiresFullResync: requiresFullResync
-            )
+            do {
+                try await withInventoryCatalogMutationPublicationFence(rootID: rootID) { _ in
+                    await applyPreparedIndexDeltaMutations(
+                        rootID: rootID,
+                        deltas: applicableDeltas,
+                        requiresFullResync: requiresFullResync
+                    )
+                }
+            } catch {
+                return
+            }
             didCommitRepositoryMutation = true
             return
         }
@@ -19441,12 +20278,16 @@ actor WorkspaceFileContextStore {
             releaseCodemapPathFence(token, didCommitMutation: didCommitPathMutation)
         }
         guard isRootLifetimeCurrent(rootID: rootID, expectedLifetimeID: expectedLifetimeID) else { return }
-        await withCodemapPathLocalCatalogMutation(rootID: rootID) {
-            await applyPreparedIndexDeltaMutations(
-                rootID: rootID,
-                deltas: applicableDeltas,
-                requiresFullResync: requiresFullResync
-            )
+        do {
+            try await withCodemapPathLocalCatalogMutation(rootID: rootID) { _ in
+                await applyPreparedIndexDeltaMutations(
+                    rootID: rootID,
+                    deltas: applicableDeltas,
+                    requiresFullResync: requiresFullResync
+                )
+            }
+        } catch {
+            return
         }
         #if DEBUG
             if let recorder = Self.activePublicationInvalidationRecorder,
@@ -19541,18 +20382,11 @@ actor WorkspaceFileContextStore {
         deltas: [PreparedFileSystemDelta],
         requiresFullResync: Bool = false
     ) async {
-        guard let initialState = rootStatesByID[rootID] else { return }
-        guard let inventoryCatalogPublicationPermit = try? await acquireInventoryCatalogPublicationPermit(
-            rootID: rootID,
-            expectedRootLifetimeID: initialState.lifetimeID
-        ) else { return }
-        defer { releaseInventoryCatalogPublicationPermit(inventoryCatalogPublicationPermit) }
         guard let currentState = rootStatesByID[rootID],
+              let inventoryCatalogPublicationPermit = inventoryCatalogPublicationPermitsByRootID[rootID],
               currentState.lifetimeID == inventoryCatalogPublicationPermit.rootLifetimeID
         else { return }
         let root = currentState.root
-        beginInventoryCatalogMutationPublicationFence(rootID: rootID)
-        defer { finishInventoryCatalogMutationPublicationFence(rootID: rootID) }
         precondition(activePublicationInvalidationBatch == nil)
         let invalidationBatch = PublicationInvalidationBatch()
         activePublicationInvalidationBatch = invalidationBatch
@@ -19621,7 +20455,7 @@ actor WorkspaceFileContextStore {
             }
         }
 
-        let rustGeneration = await applyInventoryScopeContentModification(
+        _ = await applyInventoryScopeContentModification(
             rootID: rootID,
             modifiedFileIDs: modifiedFileIDs,
             modifiedFolderIDs: modifiedFolderIDs,
@@ -19639,8 +20473,7 @@ actor WorkspaceFileContextStore {
             removedFolderPaths: removedFolderPaths,
             modifiedFileIDs: modifiedFileIDs,
             modifiedFolderIDs: modifiedFolderIDs,
-            requiresFullResync: requiresFullResync,
-            inventoryScopeRepublicationRustGeneration: rustGeneration
+            requiresFullResync: requiresFullResync
         )
     }
 
@@ -20948,43 +21781,100 @@ actor WorkspaceFileContextStore {
         inventoryCatalogMutationDepthByRootID[rootID, default: 0] += 1
     }
 
-    private func finishInventoryCatalogMutationPublicationFence(rootID: UUID) {
+    private func finishInventoryCatalogMutationPublicationFence(rootID: UUID) async {
         let nextDepth = (inventoryCatalogMutationDepthByRootID[rootID] ?? 1) - 1
+        let expectedSwiftLifetimeID = inventoryCatalogPublicationPermitsByRootID[rootID]?.rootLifetimeID
+        var hiddenPlanSealed = true
         if nextDepth == 0 {
+            // Any accepted Rust mutation not claimed by a canonical Swift publication is an
+            // intentionally hidden transaction. Install suppression plans before staged Rust
+            // candidates are allowed to drain.
+            hiddenPlanSealed = sealInventoryScopeRepublicationMutationSegment(
+                rootID: rootID,
+                disposition: .suppress
+            )
             inventoryCatalogMutationDepthByRootID.removeValue(forKey: rootID)
         } else {
             inventoryCatalogMutationDepthByRootID[rootID] = nextDepth
         }
         inventoryCatalogMutationEpochByRootID[rootID, default: 0] &+= 1
         if nextDepth == 0 {
-            flushStagedInventoryScopeRepublicationCandidates(rootID: rootID)
+            if !hiddenPlanSealed, let expectedSwiftLifetimeID {
+                await failClosedInventoryScopeRepublication(
+                    rootID: rootID,
+                    expectedSwiftLifetimeID: expectedSwiftLifetimeID,
+                    visibleEvents: []
+                )
+            }
+            await flushStagedInventoryScopeRepublicationCandidates(rootID: rootID)
+            if let expectedSwiftLifetimeID {
+                await awaitInventoryScopeRepublicationPlanDrain(
+                    rootID: rootID,
+                    expectedSwiftLifetimeID: expectedSwiftLifetimeID
+                )
+            }
             scheduleInventoryScopeRepublicationActivationRetryIfNeeded(rootID: rootID)
         }
     }
 
     private func withInventoryCatalogMutationPublicationFence<T>(
         rootID: UUID,
-        _ body: () async throws -> T
-    ) async rethrows -> T {
+        publicationPermit suppliedPermit: InventoryCatalogPublicationPermit? = nil,
+        _ body: (InventoryCatalogPublicationPermit) async throws -> T
+    ) async throws -> T {
+        let permit: InventoryCatalogPublicationPermit
+        let ownsPermit: Bool
+        if let suppliedPermit {
+            guard suppliedPermit.rootID == rootID,
+                  inventoryCatalogPublicationPermitsByRootID[rootID] == suppliedPermit
+            else { throw WorkspaceFileContextStoreError.rootNotLoaded(rootID) }
+            permit = suppliedPermit
+            ownsPermit = false
+        } else {
+            let currentState = try state(for: rootID)
+            permit = try await acquireInventoryCatalogPublicationPermit(
+                rootID: rootID,
+                expectedRootLifetimeID: currentState.lifetimeID
+            )
+            ownsPermit = true
+        }
         beginInventoryCatalogMutationPublicationFence(rootID: rootID)
-        defer { finishInventoryCatalogMutationPublicationFence(rootID: rootID) }
-        return try await body()
+        do {
+            let result = try await body(permit)
+            await finishInventoryCatalogMutationPublicationFence(rootID: rootID)
+            if ownsPermit {
+                releaseInventoryCatalogPublicationPermit(permit)
+            }
+            return result
+        } catch {
+            await finishInventoryCatalogMutationPublicationFence(rootID: rootID)
+            if ownsPermit {
+                releaseInventoryCatalogPublicationPermit(permit)
+            }
+            throw error
+        }
     }
 
     private func withCodemapPathLocalCatalogMutation<T>(
         rootID: UUID,
-        _ body: () async throws -> T
-    ) async rethrows -> T {
-        codemapPathLocalCatalogMutationDepthByRootID[rootID, default: 0] += 1
-        defer {
-            let next = (codemapPathLocalCatalogMutationDepthByRootID[rootID] ?? 1) - 1
-            if next == 0 {
-                codemapPathLocalCatalogMutationDepthByRootID.removeValue(forKey: rootID)
-            } else {
-                codemapPathLocalCatalogMutationDepthByRootID[rootID] = next
+        publicationPermit: InventoryCatalogPublicationPermit? = nil,
+        _ body: (InventoryCatalogPublicationPermit) async throws -> T
+    ) async throws -> T {
+        try await withInventoryCatalogMutationPublicationFence(
+            rootID: rootID,
+            publicationPermit: publicationPermit
+        ) { permit in
+            codemapPathLocalCatalogMutationDepthByRootID[rootID, default: 0] += 1
+            defer {
+                let next = (codemapPathLocalCatalogMutationDepthByRootID[rootID] ?? 1) - 1
+                if next == 0 {
+                    codemapPathLocalCatalogMutationDepthByRootID.removeValue(forKey: rootID)
+                } else {
+                    codemapPathLocalCatalogMutationDepthByRootID[rootID] = next
+                }
             }
+            return try await body(permit)
         }
-        return try await withInventoryCatalogMutationPublicationFence(rootID: rootID, body)
     }
 
     private func bumpCatalogGenerations(
@@ -21466,19 +22356,70 @@ actor WorkspaceFileContextStore {
                 parentFolderID: (parentID == root.id) ? nil : parentID,
                 modificationDate: nil
             )
-            if let receipt = try? await authority.applyDeltaDiscovery(
-                rootID: root.id, source: "workspace-file-context-store-mint",
-                event: CoreInventoryDiscoveryAppliedIndexBatchEventV1(
-                    rootID: root.id, upsertedFiles: [discovered], upsertedFolders: [],
-                    removedFileIDs: [], removedFolderIDs: [], removedFilePaths: [], removedFolderPaths: [],
-                    modifiedFileIDs: [], modifiedFolderIDs: []
-                )
-            ), let newID = receipt.mintedFileIDs.first {
-                mintedFileID = newID
-                if managedOnly {
-                    managedOnlyFileIDs.insert(newID)
-                    _ = try? await authority.setFileManagedOnly(rootID: root.id, fileID: newID, managedOnly: true)
+            let discoveryEvent = CoreInventoryDiscoveryAppliedIndexBatchEventV1(
+                rootID: root.id, upsertedFiles: [discovered], upsertedFolders: [],
+                removedFileIDs: [], removedFolderIDs: [], removedFilePaths: [], removedFolderPaths: [],
+                modifiedFileIDs: [], modifiedFolderIDs: []
+            )
+            do {
+                let capturesRepublication = inventoryScopeRepublicationActivationsByRootID[root.id] != nil
+                    || inventoryScopeRepublicationActivationCapturesByRootID[root.id] != nil
+                let newID: UUID?
+                if capturesRepublication, let swiftLifetimeID = rootStatesByID[root.id]?.lifetimeID {
+                    let receipt = try await authority.applyDeltaDiscoveryForRepublication(
+                        rootID: root.id,
+                        expectedSwiftLifetimeID: swiftLifetimeID,
+                        source: "workspace-file-context-store-mint",
+                        event: discoveryEvent
+                    )
+                    newID = receipt.mintedFileIDs.first
+                    if let newID {
+                        let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+                            rootID: root.id,
+                            upsertedFiles: [CoreInventoryFileRecordV1(
+                                id: newID,
+                                rootID: discovered.rootID,
+                                name: discovered.name,
+                                relativePath: discovered.relativePath,
+                                standardizedRelativePath: discovered.standardizedRelativePath,
+                                fullPath: discovered.fullPath,
+                                standardizedFullPath: discovered.standardizedFullPath,
+                                parentFolderID: discovered.parentFolderID,
+                                modificationDate: discovered.modificationDate
+                            )],
+                            upsertedFolders: [],
+                            removedFileIDs: [], removedFolderIDs: [],
+                            removedFilePaths: [], removedFolderPaths: [],
+                            modifiedFileIDs: [], modifiedFolderIDs: []
+                        )
+                        recordInventoryScopeRepublicationMutation(
+                            receipt: receipt.mutation,
+                            expectedRawBatch: rawBatch
+                        )
+                    }
+                } else {
+                    let receipt = try await authority.applyDeltaDiscovery(
+                        rootID: root.id,
+                        source: "workspace-file-context-store-mint",
+                        event: discoveryEvent
+                    )
+                    newID = receipt.mintedFileIDs.first
                 }
+                if let newID {
+                    mintedFileID = newID
+                    if managedOnly {
+                        managedOnlyFileIDs.insert(newID)
+                        _ = try? await authority.setFileManagedOnly(
+                            rootID: root.id,
+                            fileID: newID,
+                            managedOnly: true
+                        )
+                    }
+                } else {
+                    markInventoryScopeRepublicationMutationPrecisionLost(rootID: root.id)
+                }
+            } catch {
+                markInventoryScopeRepublicationMutationPrecisionLost(rootID: root.id)
             }
         }
         guard let fileID = mintedFileID else { return }
@@ -21526,19 +22467,72 @@ actor WorkspaceFileContextStore {
             parentFolderID: (parentID == rootID) ? nil : parentID,
             modificationDate: nil
         )
-        guard let receipt = try? await authority.applyDeltaDiscovery(
-            rootID: rootID, source: "workspace-file-context-store-mint",
-            event: CoreInventoryDiscoveryAppliedIndexBatchEventV1(
-                rootID: rootID, upsertedFiles: [], upsertedFolders: [discovered],
-                removedFileIDs: [], removedFolderIDs: [], removedFilePaths: [], removedFolderPaths: [],
-                modifiedFileIDs: [], modifiedFolderIDs: []
-            )
-        ), let mintedID = receipt.mintedFolderIDs.first else { return nil }
-        if managedOnly {
-            managedOnlyFolderIDs.insert(mintedID)
-            _ = try? await authority.setFolderManagedOnly(rootID: rootID, folderID: mintedID, managedOnly: true)
+        let discoveryEvent = CoreInventoryDiscoveryAppliedIndexBatchEventV1(
+            rootID: rootID, upsertedFiles: [], upsertedFolders: [discovered],
+            removedFileIDs: [], removedFolderIDs: [], removedFilePaths: [], removedFolderPaths: [],
+            modifiedFileIDs: [], modifiedFolderIDs: []
+        )
+        do {
+            let capturesRepublication = inventoryScopeRepublicationActivationsByRootID[rootID] != nil
+                || inventoryScopeRepublicationActivationCapturesByRootID[rootID] != nil
+            let mintedID: UUID?
+            if capturesRepublication, let swiftLifetimeID = rootStatesByID[rootID]?.lifetimeID {
+                let receipt = try await authority.applyDeltaDiscoveryForRepublication(
+                    rootID: rootID,
+                    expectedSwiftLifetimeID: swiftLifetimeID,
+                    source: "workspace-file-context-store-mint",
+                    event: discoveryEvent
+                )
+                mintedID = receipt.mintedFolderIDs.first
+                if let mintedID {
+                    let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+                        rootID: rootID,
+                        upsertedFiles: [],
+                        upsertedFolders: [CoreInventoryFolderRecordV1(
+                            id: mintedID,
+                            rootID: discovered.rootID,
+                            name: discovered.name,
+                            relativePath: discovered.relativePath,
+                            standardizedRelativePath: discovered.standardizedRelativePath,
+                            fullPath: discovered.fullPath,
+                            standardizedFullPath: discovered.standardizedFullPath,
+                            parentFolderID: discovered.parentFolderID,
+                            modificationDate: discovered.modificationDate
+                        )],
+                        removedFileIDs: [], removedFolderIDs: [],
+                        removedFilePaths: [], removedFolderPaths: [],
+                        modifiedFileIDs: [], modifiedFolderIDs: []
+                    )
+                    recordInventoryScopeRepublicationMutation(
+                        receipt: receipt.mutation,
+                        expectedRawBatch: rawBatch
+                    )
+                }
+            } else {
+                let receipt = try await authority.applyDeltaDiscovery(
+                    rootID: rootID,
+                    source: "workspace-file-context-store-mint",
+                    event: discoveryEvent
+                )
+                mintedID = receipt.mintedFolderIDs.first
+            }
+            guard let mintedID else {
+                markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
+                return nil
+            }
+            if managedOnly {
+                managedOnlyFolderIDs.insert(mintedID)
+                _ = try? await authority.setFolderManagedOnly(
+                    rootID: rootID,
+                    folderID: mintedID,
+                    managedOnly: true
+                )
+            }
+            return mintedID
+        } catch {
+            markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
+            return nil
         }
-        return mintedID
     }
 
     private func applyInventoryScopeContentModification(
@@ -21548,25 +22542,33 @@ actor WorkspaceFileContextStore {
         requiresFullResync: Bool,
         source: String
     ) async -> UInt64? {
-        guard !modifiedFileIDs.isEmpty || !modifiedFolderIDs.isEmpty,
-              let authority = try? await inventoryScopeAuthorityInstance()
+        let hasModifiedIDs = !modifiedFileIDs.isEmpty || !modifiedFolderIDs.isEmpty
+        guard hasModifiedIDs || (requiresFullResync && inventoryScopeRepublicationSubscriptionIsOpen),
+              let authority = try? await inventoryScopeAuthorityInstance(),
+              let swiftLifetimeID = rootStatesByID[rootID]?.lifetimeID
         else { return nil }
+        let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+            rootID: rootID,
+            upsertedFiles: [],
+            upsertedFolders: [],
+            removedFileIDs: [],
+            removedFolderIDs: [],
+            removedFilePaths: [],
+            removedFolderPaths: [],
+            modifiedFileIDs: modifiedFileIDs,
+            modifiedFolderIDs: modifiedFolderIDs
+        )
         do {
-            let receipt = try await authority.applyDelta(
+            let receipt = try await authority.applyDeltaForRepublication(
                 rootID: rootID,
+                expectedSwiftLifetimeID: swiftLifetimeID,
                 requiresFullResync: requiresFullResync,
                 source: source,
-                event: CoreInventoryAppliedIndexBatchEventV1(
-                    rootID: rootID,
-                    upsertedFiles: [],
-                    upsertedFolders: [],
-                    removedFileIDs: [],
-                    removedFolderIDs: [],
-                    removedFilePaths: [],
-                    removedFolderPaths: [],
-                    modifiedFileIDs: modifiedFileIDs,
-                    modifiedFolderIDs: modifiedFolderIDs
-                )
+                event: rawBatch
+            )
+            recordInventoryScopeRepublicationMutation(
+                receipt: receipt,
+                expectedRawBatch: rawBatch
             )
             switch receipt.outcome {
             case .patched, .rebuiltAuthoritative:
@@ -21580,15 +22582,11 @@ actor WorkspaceFileContextStore {
                 #endif
                 return receipt.appliedIndexGeneration
             case .rejected:
-                if inventoryScopeRepublicationTask != nil {
-                    inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
-                }
+                markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
                 return nil
             }
         } catch {
-            if inventoryScopeRepublicationTask != nil {
-                inventoryScopeRepublicationForceResyncRootIDs.insert(rootID)
-            }
+            markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
             return nil
         }
     }
@@ -21603,14 +22601,39 @@ actor WorkspaceFileContextStore {
         removedFolderPaths: [String] = [],
         modifiedFileIDs: [UUID] = [],
         modifiedFolderIDs: [UUID] = [],
-        requiresFullResync: Bool = false,
-        inventoryScopeRepublicationRustGeneration: UInt64? = nil
+        requiresFullResync: Bool = false
     ) async {
         let upsertedFiles = upsertedFiles.filter { isDiscoverableFileID($0.id) }
         let upsertedFolders = upsertedFolders.filter { isDiscoverableFolderID($0.id) }
         let modifiedFileIDs = modifiedFileIDs.filter(isDiscoverableFileID)
         let modifiedFolderIDs = modifiedFolderIDs.filter(isDiscoverableFolderID)
-        guard requiresFullResync || !upsertedFiles.isEmpty || !upsertedFolders.isEmpty || !removedFileIDs.isEmpty || !removedFolderIDs.isEmpty || !removedFilePaths.isEmpty || !removedFolderPaths.isEmpty || !modifiedFileIDs.isEmpty || !modifiedFolderIDs.isEmpty else { return }
+        let hasVisiblePayload = !upsertedFiles.isEmpty || !upsertedFolders.isEmpty
+            || !removedFileIDs.isEmpty || !removedFolderIDs.isEmpty
+            || !removedFilePaths.isEmpty || !removedFolderPaths.isEmpty
+            || !modifiedFileIDs.isEmpty || !modifiedFolderIDs.isEmpty
+        guard requiresFullResync || hasVisiblePayload else {
+            let sealed = sealInventoryScopeRepublicationMutationSegment(
+                rootID: root.id,
+                disposition: .suppress
+            )
+            if !sealed,
+               inventoryScopeRepublicationSubscriptionIsOpen,
+               let rootLifetimeID = rootStatesByID[root.id]?.lifetimeID
+            {
+                await failClosedInventoryScopeRepublication(
+                    rootID: root.id,
+                    expectedSwiftLifetimeID: rootLifetimeID,
+                    visibleEvents: []
+                )
+            }
+            return
+        }
+        if inventoryScopeRepublicationMutationSegmentsByRootID[root.id] == nil {
+            await applyInventoryScopeRepublicationPresentationAnchor(
+                rootID: root.id,
+                requiresFullResync: requiresFullResync
+            )
+        }
         let rootLifetimeID = rootStatesByID[root.id]?.lifetimeID
         // P4-6b table-deletion conversion: `filesByID[fileID]` (the modified file's current
         // record, needed by `takeSliceRebaseSource`) is now a batched `inventoryRecordFacts`
@@ -21629,16 +22652,6 @@ actor WorkspaceFileContextStore {
                 return (fileID, snapshot)
             }
         )
-        if let rootLifetimeID,
-           let inventoryScopeRepublicationRustGeneration
-        {
-            retainInventoryScopeRepublicationSliceSourceJoin(
-                rootID: root.id,
-                swiftLifetimeID: rootLifetimeID,
-                rustGeneration: inventoryScopeRepublicationRustGeneration,
-                snapshotsByFileID: modifiedFileSourceSnapshotsByID
-            )
-        }
         let generation = nextAppliedIndexGeneration(forRootID: root.id)
         #if DEBUG
             MCPApplyEditsRebaseProbeRecorder.recordAppliedIndexModification(
@@ -21647,7 +22660,7 @@ actor WorkspaceFileContextStore {
                 generation: generation
             )
         #endif
-        await yieldAppliedIndexEvent(WorkspaceAppliedIndexBatchEvent(
+        let canonicalEvent = WorkspaceAppliedIndexBatchEvent(
             rootID: root.id,
             rootPath: root.standardizedFullPath,
             generation: generation,
@@ -21662,7 +22675,62 @@ actor WorkspaceFileContextStore {
             modifiedFileIDs: modifiedFileIDs,
             modifiedFolderIDs: modifiedFolderIDs,
             requiresFullResync: requiresFullResync
-        ))
+        )
+        let planSealed = sealInventoryScopeRepublicationMutationSegment(
+            rootID: root.id,
+            disposition: .publish(canonicalEvent)
+        )
+        if !inventoryScopeRepublicationSubscriptionIsOpen {
+            if !republishedInventoryScopeEventContinuations.isEmpty {
+                yieldRepublishedInventoryScopeEvent(canonicalEvent)
+            }
+            await yieldAppliedIndexEvent(canonicalEvent)
+        } else if !planSealed || rootLifetimeID == nil {
+            if let rootLifetimeID {
+                await failClosedInventoryScopeRepublication(
+                    rootID: root.id,
+                    expectedSwiftLifetimeID: rootLifetimeID,
+                    visibleEvents: [canonicalEvent]
+                )
+            } else {
+                clearInventoryScopeRepublicationPresentationPlans(rootID: root.id)
+                let recovery = inventoryScopeRepublicationFullResyncEvent(canonicalEvent)
+                await yieldInventoryScopeRepublicationEvent(recovery)
+            }
+        }
+    }
+
+    private func applyInventoryScopeRepublicationPresentationAnchor(
+        rootID: UUID,
+        requiresFullResync: Bool
+    ) async {
+        guard inventoryScopeRepublicationSubscriptionIsOpen,
+              inventoryScopeRepublicationActivationsByRootID[rootID] != nil,
+              let state = rootStatesByID[rootID],
+              let authority = try? await inventoryScopeAuthorityInstance()
+        else { return }
+        let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+            rootID: rootID,
+            upsertedFiles: [], upsertedFolders: [],
+            removedFileIDs: [], removedFolderIDs: [],
+            removedFilePaths: [], removedFolderPaths: [],
+            modifiedFileIDs: [], modifiedFolderIDs: []
+        )
+        do {
+            let receipt = try await authority.applyDeltaForRepublication(
+                rootID: rootID,
+                expectedSwiftLifetimeID: state.lifetimeID,
+                requiresFullResync: requiresFullResync,
+                source: "workspace-file-context-store-presentation-anchor",
+                event: rawBatch
+            )
+            recordInventoryScopeRepublicationMutation(
+                receipt: receipt,
+                expectedRawBatch: rawBatch
+            )
+        } catch {
+            markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
+        }
     }
 
     /// P4-6b: routes removal through Rust by path -- `state_machine.rs`'s `apply_event_to_maps`
@@ -21680,15 +22748,26 @@ actor WorkspaceFileContextStore {
             searchContentInvalidationEpochsByFileID.removeValue(forKey: existing.id)
             managedOnlyFileIDs.remove(existing.id)
         }
-        _ = try? await authority.applyDelta(
-            rootID: rootID, source: "workspace-file-context-store-remove",
-            event: CoreInventoryAppliedIndexBatchEventV1(
-                rootID: rootID, upsertedFiles: [], upsertedFolders: [],
-                removedFileIDs: [], removedFolderIDs: [],
-                removedFilePaths: [key], removedFolderPaths: [],
-                modifiedFileIDs: [], modifiedFolderIDs: []
-            )
+        let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+            rootID: rootID, upsertedFiles: [], upsertedFolders: [],
+            removedFileIDs: [], removedFolderIDs: [],
+            removedFilePaths: [key], removedFolderPaths: [],
+            modifiedFileIDs: [], modifiedFolderIDs: []
         )
+        do {
+            let receipt = try await authority.applyDeltaForRepublication(
+                rootID: rootID,
+                expectedSwiftLifetimeID: state.lifetimeID,
+                source: "workspace-file-context-store-remove",
+                event: rawBatch
+            )
+            recordInventoryScopeRepublicationMutation(
+                receipt: receipt,
+                expectedRawBatch: rawBatch
+            )
+        } catch {
+            markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
+        }
         if existing != nil {
             invalidatePathMatchSnapshot(affectedRootKinds: [state.root.kind], affectedRootIDs: [state.root.id])
         }
@@ -21700,15 +22779,26 @@ actor WorkspaceFileContextStore {
         if let existing = await folder(rootID: rootID, relativePath: key) {
             managedOnlyFolderIDs.remove(existing.id)
         }
-        _ = try? await authority.applyDelta(
-            rootID: rootID, source: "workspace-file-context-store-remove",
-            event: CoreInventoryAppliedIndexBatchEventV1(
-                rootID: rootID, upsertedFiles: [], upsertedFolders: [],
-                removedFileIDs: [], removedFolderIDs: [],
-                removedFilePaths: [], removedFolderPaths: [key],
-                modifiedFileIDs: [], modifiedFolderIDs: []
-            )
+        let rawBatch = CoreInventoryAppliedIndexBatchEventV1(
+            rootID: rootID, upsertedFiles: [], upsertedFolders: [],
+            removedFileIDs: [], removedFolderIDs: [],
+            removedFilePaths: [], removedFolderPaths: [key],
+            modifiedFileIDs: [], modifiedFolderIDs: []
         )
+        do {
+            let receipt = try await authority.applyDeltaForRepublication(
+                rootID: rootID,
+                expectedSwiftLifetimeID: state.lifetimeID,
+                source: "workspace-file-context-store-remove",
+                event: rawBatch
+            )
+            recordInventoryScopeRepublicationMutation(
+                receipt: receipt,
+                expectedRawBatch: rawBatch
+            )
+        } catch {
+            markInventoryScopeRepublicationMutationPrecisionLost(rootID: rootID)
+        }
         invalidatePathMatchSnapshot(affectedRootKinds: [state.root.kind], affectedRootIDs: [state.root.id])
     }
 

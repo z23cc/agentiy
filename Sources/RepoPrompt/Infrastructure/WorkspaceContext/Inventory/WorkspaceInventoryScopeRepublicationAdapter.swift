@@ -19,14 +19,12 @@ import Foundation
 // real Swift-published event) is deleted along with the rest of the shadow apparatus -- Rust is
 // now the sole authority, so there is no second arm left to compare against.
 //
-// **Armed, not flipped.** `WorkspaceFileContextStore` constructs this adapter, subscribes it to
-// `WorkspaceInventoryScopeAuthority.events()` (one hub-wide subscription per store), and merges
-// its output onto `republishedInventoryScopeEvents()`, a stream separate from production
-// `appliedIndexEvents()`. P5-2 gives ordinary and seeded roots an exclusive activation floor,
-// mutation-fence staging, Rust/Swift lifetime checks, and logical-generation rebasing. See
-// `WorkspaceFileContextStore.startInventoryScopeRepublicationTaskIfNeeded` for P5-3's completed
-// content-only/slice-source join and the remaining discoverability/empty-suppression plus unload
-// blockers that keep the actual source flip a follow-on.
+// **P5-5 production source.** `WorkspaceFileContextStore` constructs this adapter, subscribes it to
+// `WorkspaceInventoryScopeAuthority.events()` (one hub-wide subscription per store), validates
+// exact transaction-scoped presentation plans, and feeds the canonical result to production
+// `appliedIndexEvents()`. `republishedInventoryScopeEvents()` remains as a differential/test mirror.
+// Activation floors, root-local publication permits, lifetime checks, logical-generation rebasing,
+// hidden-generation suppression, and Swift-seamed unload plans preserve the pre-flip consumer shape.
 // ================================================================================================
 
 /// Fills in the two fields Rust's event stream does not carry -- `rootPath` and Swift's own
@@ -41,6 +39,17 @@ struct WorkspaceInventoryScopeRepublicationRootInfo: Equatable {
 
 struct WorkspaceInventoryScopeRepublicationCandidate: Equatable {
     let rustRootLifetimeID: String?
+    /// Exact generation carried by the paired Rust notification. Zero remains the explicit
+    /// missing-correlation sentinel; root-unload candidates also have no delta generation.
+    let rustGeneration: UInt64
+    /// Exact id-bearing Rust payload before any Swift presentation mapping. P5-4's canonical
+    /// presentation plan validates this whole value rather than trusting FIFO position or counts.
+    /// Root-unload candidates have no applied-index batch and therefore carry `nil`.
+    let rawBatch: CoreInventoryAppliedIndexBatchEventV1?
+    /// Transport/correlation integrity only: hub gaps, resnapshot obligations, FIFO loss, or a
+    /// missing generation pair. Rust choosing an authoritative rebuild is deliberately separate.
+    let correlationIntegrityRequiresResync: Bool
+    let rebuiltAuthoritative: Bool
     let event: WorkspaceAppliedIndexBatchEvent
 }
 
@@ -173,21 +182,29 @@ final class WorkspaceInventoryScopeRepublicationAdapter {
             let advanced = popPendingGeneration(for: batch.rootID)
             let globalResyncRequired = observedGlobalResyncEpochByRootID[batch.rootID, default: 0] < globalResyncEpoch
             observedGlobalResyncEpochByRootID[batch.rootID] = globalResyncEpoch
-            let requiresFullResync = advanced?.rebuiltAuthoritative == true
-                || forceResyncOnNextDeliveryRootIDs.remove(batch.rootID) != nil
+            let rootResyncRequired = forceResyncOnNextDeliveryRootIDs.remove(batch.rootID) != nil
+            let correlationIntegrityRequiresResync = rootResyncRequired
                 || globalResyncRequired
                 || advanced == nil
+            let rebuiltAuthoritative = advanced?.rebuiltAuthoritative == true
+            let requiresFullResync = correlationIntegrityRequiresResync || rebuiltAuthoritative
+            let rustGeneration = advanced?.appliedIndexGeneration ?? 0
 
             // Missing correlation means this batch's `generationAdvanced` was dropped (or the
             // adapter started mid-pair). Republish with generation zero and force a resync rather
-            // than assign the batch a stale or later generation.
+            // than assign the batch a stale or later generation. `ingest(_:)` retains the existing
+            // combined compatibility flag; P5-4's store path consumes the two causes separately.
             let republished = await republish(
                 batch: batch,
-                generation: advanced?.appliedIndexGeneration ?? 0,
+                generation: rustGeneration,
                 requiresFullResync: requiresFullResync
             )
             return WorkspaceInventoryScopeRepublicationCandidate(
                 rustRootLifetimeID: advanced?.rootLifetimeID ?? rustLifetimeIDByRootID[batch.rootID],
+                rustGeneration: rustGeneration,
+                rawBatch: batch,
+                correlationIntegrityRequiresResync: correlationIntegrityRequiresResync,
+                rebuiltAuthoritative: rebuiltAuthoritative,
                 event: republished
             )
 
@@ -214,6 +231,10 @@ final class WorkspaceInventoryScopeRepublicationAdapter {
             clearRootState(unload.rootID)
             return WorkspaceInventoryScopeRepublicationCandidate(
                 rustRootLifetimeID: unload.rootLifetimeID,
+                rustGeneration: 0,
+                rawBatch: nil,
+                correlationIntegrityRequiresResync: false,
+                rebuiltAuthoritative: false,
                 event: WorkspaceAppliedIndexBatchEvent(
                     rootID: unload.rootID,
                     rootPath: info?.standardizedFullPath ?? "",

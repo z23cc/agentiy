@@ -34,10 +34,10 @@ pub enum RootCatalogShardFallbackReason {
     /// workload is single-writer); it exists as a defensive backstop-of-the-backstop and is
     /// exercised by a dedicated test via `InventoryScope::testing_force_stale_base_once`.
     PatchApplicationBackstop,
-    /// Repurposed per D-5 (no shadow arm exists at P4-3a): triggered only by the optional,
-    /// config-gated internal self-check (`InventoryScopeConfig::self_check_patches`) that
-    /// compares a patch result against an authoritative rebuild of the same delta. Flagged as
-    /// underspecified-at-this-step: the contract defers the real shadow arm to P4-5.
+    /// D-5's optional, config-gated internal self-check
+    /// (`InventoryScopeConfig::self_check_patches`) found a canonical-byte mismatch between a
+    /// patch result and an authoritative rebuild of the same delta. The patch is never published;
+    /// the authoritative artifact is installed instead.
     ShadowValidationMismatch,
 }
 

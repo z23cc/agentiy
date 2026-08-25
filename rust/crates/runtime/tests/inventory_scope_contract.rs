@@ -11,6 +11,8 @@ use agentry_runtime::inventory_scope::{
     InventoryPublishMode, InventoryRejectionReason, InventoryScope, InventoryScopeConfig,
     InventoryScopeId, RootCatalogShardFallbackReason, RootId, ScopeError,
 };
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 fn test_identity(nonce: char) -> RuntimeIdentity {
     RuntimeIdentity::new(
@@ -337,6 +339,7 @@ fn retention_boundary_lets_the_mutation_proceed_and_clears_published_topology_ge
         InventoryScopeConfig {
             live_generation_cap: 1,
             max_patch_logical_mutation_count: 1,
+            self_check_patches: false,
             codemap_capable_extensions: std::collections::HashSet::new(),
         },
     );
@@ -415,6 +418,7 @@ fn patch_threshold_exceeded_falls_back_to_rebuild() {
         InventoryScopeConfig {
             live_generation_cap: 8,
             max_patch_logical_mutation_count: 1,
+            self_check_patches: false,
             codemap_capable_extensions: std::collections::HashSet::new(),
         },
     );
@@ -492,32 +496,176 @@ fn patch_application_backstop_is_reachable_via_the_forced_stale_base_test_hook()
 }
 
 // ---------------------------------------------------------------------------------------------
-// Fallback reason 8/8: shadowValidationMismatch -- via the explicit self-check testing hook (no
-// shadow arm exists at P4-3a; see that reason's doc comment).
+// D-5: every config-enabled patch is compared against a canonical authoritative rebuild. Matching
+// patches retain the cheap published representation while the scope-wide diagnostics expose the
+// completed comparison and authoritative comparison-byte count.
 #[test]
-fn shadow_validation_mismatch_is_reachable_via_the_self_check_testing_hook() {
-    let (scope, identity) = seeded_scope(9, InventoryScopeConfig::default());
+fn self_check_matching_patch_remains_patched_and_records_diagnostics() {
+    let (scope, identity) = seeded_scope(
+        9,
+        InventoryScopeConfig {
+            self_check_patches: true,
+            ..InventoryScopeConfig::default()
+        },
+    );
     let root = root_id(1);
     let lifetime = scope
         .open_root(&identity, root, "Root".into(), "/root".into())
         .expect("open_root");
-    let target = file(1, root, "a.swift");
     scope.apply_delta(
         &identity,
-        upsert_files_command(&scope, root, lifetime, vec![target.clone()], false),
+        upsert_files_command(
+            &scope,
+            root,
+            lifetime,
+            vec![file(1, root, "a.swift")],
+            false,
+        ),
     );
 
-    // Desync the published shard from the maps without going through publish: mark the already
-    // -published file managed-only directly.
-    scope.testing_set_file_managed_only(root, target.id, true);
-    let mismatch = scope.testing_self_check_patch_against_rebuild(root);
-    assert!(mismatch);
+    let receipt = scope.apply_delta(
+        &identity,
+        upsert_files_command(
+            &scope,
+            root,
+            lifetime,
+            vec![file(2, root, "b.swift")],
+            false,
+        ),
+    );
+    assert_eq!(receipt.outcome, InventoryApplyOutcome::Patched);
 
     let diagnostics = scope.diagnostics(&identity).expect("diagnostics");
+    assert_eq!(diagnostics.shadow_comparison_count, 1);
+    assert_eq!(diagnostics.shadow_mismatch_count, 0);
+    assert!(diagnostics.last_shadow_byte_count > 0);
+    assert_eq!(diagnostics.roots[0].patch_count, 1);
+    assert_eq!(
+        diagnostics.roots[0].fallback_reason_counts
+            [&RootCatalogShardFallbackReason::ShadowValidationMismatch],
+        0
+    );
+}
+
+// Fallback reason 8/8: an intentional maps-vs-published discoverability skew makes the next
+// otherwise-patchable delta disagree with its authoritative rebuild. D-5 must never publish that
+// patch: it records the mismatch and installs the authoritative artifact in the same generation.
+#[test]
+fn shadow_validation_mismatch_fails_closed_to_authoritative_generation() {
+    let (scope, identity) = seeded_scope(
+        10,
+        InventoryScopeConfig {
+            self_check_patches: true,
+            ..InventoryScopeConfig::default()
+        },
+    );
+    let root = root_id(1);
+    let lifetime = scope
+        .open_root(&identity, root, "Root".into(), "/root".into())
+        .expect("open_root");
+    let hidden = file(1, root, "a.swift");
+    scope.apply_delta(
+        &identity,
+        upsert_files_command(&scope, root, lifetime, vec![hidden.clone()], false),
+    );
+
+    // Desync the published shard from the maps without publishing a generation, then mutate a
+    // different path so the ordinary patch eligibility checks do not themselves force a rebuild.
+    scope.testing_set_file_managed_only(root, hidden.id, true);
+    let visible = file(2, root, "b.swift");
+    let receipt = scope.apply_delta(
+        &identity,
+        upsert_files_command(&scope, root, lifetime, vec![visible.clone()], false),
+    );
+    assert_eq!(receipt.outcome, InventoryApplyOutcome::RebuiltAuthoritative);
+
+    let handle = scope
+        .open_snapshot(&identity, root, "d5-self-check")
+        .expect("open_snapshot");
+    let page = scope.snapshot_page(handle, 0, 100).expect("page");
+    assert_eq!(page.files, vec![visible]);
+
+    let diagnostics = scope.diagnostics(&identity).expect("diagnostics");
+    assert_eq!(diagnostics.shadow_comparison_count, 1);
+    assert_eq!(diagnostics.shadow_mismatch_count, 1);
+    assert!(diagnostics.last_shadow_byte_count > 0);
+    assert_eq!(diagnostics.roots[0].patch_count, 0);
+    assert_eq!(diagnostics.roots[0].authoritative_rebuild_count, 2);
     assert_eq!(
         diagnostics.roots[0].fallback_reason_counts
             [&RootCatalogShardFallbackReason::ShadowValidationMismatch],
         1
+    );
+}
+
+#[test]
+fn stale_self_check_attempt_uses_backstop_without_recording_a_false_comparison() {
+    let (scope, identity) = seeded_scope(
+        11,
+        InventoryScopeConfig {
+            self_check_patches: true,
+            ..InventoryScopeConfig::default()
+        },
+    );
+    let scope = Arc::new(scope);
+    let root = root_id(1);
+    let lifetime = scope
+        .open_root(&identity, root, "Root".into(), "/root".into())
+        .expect("open_root");
+    scope.apply_delta(
+        &identity,
+        upsert_files_command(
+            &scope,
+            root,
+            lifetime,
+            vec![file(1, root, "a.swift")],
+            false,
+        ),
+    );
+
+    let barrier = Arc::new(Barrier::new(2));
+    scope.testing_install_rebuild_barrier(Arc::clone(&barrier));
+    let writer_scope = Arc::clone(&scope);
+    let writer_identity = identity.clone();
+    let writer = thread::spawn(move || {
+        let command = upsert_files_command(
+            &writer_scope,
+            root,
+            lifetime,
+            vec![file(2, root, "b.swift")],
+            false,
+        );
+        writer_scope.apply_delta(&writer_identity, command)
+    });
+    while !scope.testing_is_parked_on_rebuild_barrier() {
+        std::hint::spin_loop();
+    }
+
+    let concurrent = scope.apply_delta(
+        &identity,
+        upsert_files_command(&scope, root, lifetime, vec![file(3, root, "c.swift")], true),
+    );
+    assert_eq!(
+        concurrent.outcome,
+        InventoryApplyOutcome::RebuiltAuthoritative
+    );
+    barrier.wait();
+    let stale = writer.join().expect("self-check writer");
+    assert_eq!(stale.outcome, InventoryApplyOutcome::RebuiltAuthoritative);
+
+    let diagnostics = scope.diagnostics(&identity).expect("diagnostics");
+    assert_eq!(diagnostics.shadow_comparison_count, 0);
+    assert_eq!(diagnostics.shadow_mismatch_count, 0);
+    assert_eq!(diagnostics.last_shadow_byte_count, 0);
+    assert_eq!(
+        diagnostics.roots[0].fallback_reason_counts
+            [&RootCatalogShardFallbackReason::PatchApplicationBackstop],
+        1
+    );
+    assert_eq!(
+        diagnostics.roots[0].fallback_reason_counts
+            [&RootCatalogShardFallbackReason::ShadowValidationMismatch],
+        0
     );
 }
 
