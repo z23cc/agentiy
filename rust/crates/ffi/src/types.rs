@@ -878,6 +878,38 @@ pub struct CoreWorkspacePersistenceMetadataResponseV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCatalogValidationRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub catalog_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCatalogTransitionRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub current_catalog_bytes: Option<Vec<u8>>,
+    pub transition_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCatalogValidationV1 {
+    pub catalog_version: u16,
+    pub revision: u64,
+    pub entry_count: u64,
+    pub deletion_count: u64,
+    pub content_digest: String,
+    pub canonical_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCatalogResponseV1 {
+    pub validation: Option<CoreWorkspaceCatalogValidationV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceWorkingJournalValidationRequestV1 {
     pub runtime_identity: RuntimeIdentity,
     pub contract_version: u16,
@@ -914,6 +946,167 @@ pub struct CoreWorkspaceWorkingJournalTransitionResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSaveTransactionRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub raw_journal_bytes: Option<Vec<u8>>,
+    pub effective_journal_bytes: Vec<u8>,
+    pub request_bytes: Vec<u8>,
+    pub candidate_document_bytes: Vec<u8>,
+    pub disk_document_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceDeleteTransactionRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub raw_catalog_bytes: Option<Vec<u8>>,
+    pub effective_catalog_bytes: Vec<u8>,
+    pub effective_journal_bytes: Vec<u8>,
+    pub request_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspacePendingSaveRecoveryRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub raw_journal_bytes: Vec<u8>,
+    pub expected_workspace_id: String,
+    pub expected_file_url: String,
+    pub document_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSaveActionKindV1 {
+    WritePendingJournal,
+    PublishWorkspaceDocument,
+    WriteCommittedJournal,
+    WriteSavedRevision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSaveFinalizationV1 {
+    Finalized,
+    PendingJournalRetained,
+    RevisionSidecarMissing,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSaveFailureV1 {
+    Cancelled,
+    StateConflict { expected: u64, actual: u64 },
+    WriteFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSaveCommitReceiptV1 {
+    pub workspace_id: String,
+    pub operation_id: String,
+    pub request_digest: String,
+    pub catalog_revision: u64,
+    pub document_digest: String,
+    pub committed_journal: CoreWorkspaceWorkingJournalValidationV1,
+    pub saved_revision: CoreWorkspacePersistenceMetadataValidationV1,
+    pub resulting_working_revision: u64,
+    pub resulting_saved_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSaveDirectiveV1 {
+    Action {
+        action_id: u64,
+        request_digest: String,
+        kind: CoreWorkspaceSaveActionKindV1,
+        expected_raw_journal_digest: Option<String>,
+        canonical_bytes: Vec<u8>,
+        content_digest: String,
+        logical_expected_revision: Option<u64>,
+        authority_receipt: Option<CoreWorkspaceSaveCommitReceiptV1>,
+    },
+    Committed {
+        receipt: CoreWorkspaceSaveCommitReceiptV1,
+        finalization: CoreWorkspaceSaveFinalizationV1,
+    },
+    Failed {
+        failure: CoreWorkspaceSaveFailureV1,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSaveActionReportV1 {
+    Success {
+        action_id: u64,
+        written_digest: String,
+    },
+    Cancelled {
+        action_id: u64,
+    },
+    StateConflict {
+        action_id: u64,
+        expected: u64,
+        actual: u64,
+    },
+    WriteFailed {
+        action_id: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceDeleteActionKindV1 {
+    PublishCatalog,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceDeleteFailureV1 {
+    Cancelled,
+    StateConflict { expected: u64, actual: u64 },
+    WriteFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceDeleteCommitReceiptV1 {
+    pub workspace_id: String,
+    pub operation_id: String,
+    pub request_digest: String,
+    pub catalog: CoreWorkspaceCatalogValidationV1,
+    pub tombstone: CoreWorkspacePersistenceMetadataValidationV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceDeleteDirectiveV1 {
+    Action {
+        action_id: u64,
+        request_digest: String,
+        kind: CoreWorkspaceDeleteActionKindV1,
+        expected_raw_catalog_digest: Option<String>,
+        canonical_bytes: Vec<u8>,
+        content_digest: String,
+        logical_expected_revision: u64,
+        authority_receipt: CoreWorkspaceDeleteCommitReceiptV1,
+    },
+    Committed {
+        receipt: CoreWorkspaceDeleteCommitReceiptV1,
+    },
+    Failed {
+        failure: CoreWorkspaceDeleteFailureV1,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspacePendingSaveRecoveryV1 {
+    NoPending {
+        journal: CoreWorkspaceWorkingJournalValidationV1,
+    },
+    PendingNotCommitted {
+        journal: CoreWorkspaceWorkingJournalValidationV1,
+    },
+    Committed {
+        clean_journal: CoreWorkspaceWorkingJournalValidationV1,
+        document_digest: String,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum CoreWorkspaceWorkingJournalValidationErrorKindV1 {
     InputTooLarge,
@@ -929,6 +1122,8 @@ pub enum CoreWorkspaceWorkingJournalValidationErrorKindV1 {
     InvalidOperationLedger,
     InvalidPendingSave,
     InvalidTimestamp,
+    ExternalDocumentConflict,
+    InvalidTransaction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -936,6 +1131,21 @@ pub struct CoreWorkspaceWorkingJournalValidationResponseV1 {
     pub validation: Option<CoreWorkspaceWorkingJournalValidationV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCatalogValidationV1>
+    for CoreWorkspaceCatalogValidationV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceCatalogValidationV1) -> Self {
+        Self {
+            catalog_version: value.catalog_version,
+            revision: value.revision,
+            entry_count: value.entry_count as u64,
+            deletion_count: value.deletion_count as u64,
+            content_digest: value.content_digest,
+            canonical_bytes: value.canonical_bytes,
+        }
+    }
 }
 
 impl From<runtime::workspace_persistence_journal::WorkspacePersistenceMetadataValidationV1>
@@ -978,6 +1188,235 @@ impl From<runtime::workspace_persistence_journal::WorkspaceWorkingJournalTransit
         Self {
             primary: value.primary.into(),
             committed: value.committed.map(Into::into),
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSaveCommitReceiptV1>
+    for CoreWorkspaceSaveCommitReceiptV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceSaveCommitReceiptV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            operation_id: value.operation_id,
+            request_digest: value.request_digest,
+            catalog_revision: value.catalog_revision,
+            document_digest: value.document_digest,
+            committed_journal: value.committed_journal.into(),
+            saved_revision: value.saved_revision.into(),
+            resulting_working_revision: value.resulting_working_revision,
+            resulting_saved_revision: value.resulting_saved_revision,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1>
+    for CoreWorkspaceSaveDirectiveV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1 as RuntimeDirective;
+        match value {
+            RuntimeDirective::Action {
+                action_id,
+                request_digest,
+                kind,
+                expected_raw_journal_digest,
+                canonical_bytes,
+                content_digest,
+                logical_expected_revision,
+                authority_receipt,
+            } => Self::Action {
+                action_id,
+                request_digest,
+                kind: kind.into(),
+                expected_raw_journal_digest,
+                canonical_bytes,
+                content_digest,
+                logical_expected_revision,
+                authority_receipt: authority_receipt.map(Into::into),
+            },
+            RuntimeDirective::Committed {
+                receipt,
+                finalization,
+            } => Self::Committed {
+                receipt: receipt.into(),
+                finalization: finalization.into(),
+            },
+            RuntimeDirective::Failed { failure } => Self::Failed {
+                failure: failure.into(),
+            },
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSaveActionKindV1>
+    for CoreWorkspaceSaveActionKindV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceSaveActionKindV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSaveActionKindV1 as RuntimeKind;
+        match value {
+            RuntimeKind::WritePendingJournal => Self::WritePendingJournal,
+            RuntimeKind::PublishWorkspaceDocument => Self::PublishWorkspaceDocument,
+            RuntimeKind::WriteCommittedJournal => Self::WriteCommittedJournal,
+            RuntimeKind::WriteSavedRevision => Self::WriteSavedRevision,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSaveFinalizationV1>
+    for CoreWorkspaceSaveFinalizationV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceSaveFinalizationV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSaveFinalizationV1 as RuntimeFinalization;
+        match value {
+            RuntimeFinalization::Finalized => Self::Finalized,
+            RuntimeFinalization::PendingJournalRetained => Self::PendingJournalRetained,
+            RuntimeFinalization::RevisionSidecarMissing => Self::RevisionSidecarMissing,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSaveFailureV1>
+    for CoreWorkspaceSaveFailureV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceSaveFailureV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSaveFailureV1 as RuntimeFailure;
+        match value {
+            RuntimeFailure::Cancelled => Self::Cancelled,
+            RuntimeFailure::StateConflict { expected, actual } => {
+                Self::StateConflict { expected, actual }
+            }
+            RuntimeFailure::WriteFailed => Self::WriteFailed,
+        }
+    }
+}
+
+impl From<CoreWorkspaceSaveActionReportV1>
+    for runtime::workspace_persistence_journal::WorkspaceSaveActionReportV1
+{
+    fn from(value: CoreWorkspaceSaveActionReportV1) -> Self {
+        match value {
+            CoreWorkspaceSaveActionReportV1::Success {
+                action_id,
+                written_digest,
+            } => Self::Success {
+                action_id,
+                written_digest,
+            },
+            CoreWorkspaceSaveActionReportV1::Cancelled { action_id } => {
+                Self::Cancelled { action_id }
+            }
+            CoreWorkspaceSaveActionReportV1::StateConflict {
+                action_id,
+                expected,
+                actual,
+            } => Self::StateConflict {
+                action_id,
+                expected,
+                actual,
+            },
+            CoreWorkspaceSaveActionReportV1::WriteFailed { action_id } => {
+                Self::WriteFailed { action_id }
+            }
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceDeleteCommitReceiptV1>
+    for CoreWorkspaceDeleteCommitReceiptV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceDeleteCommitReceiptV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            operation_id: value.operation_id,
+            request_digest: value.request_digest,
+            catalog: value.catalog.into(),
+            tombstone: value.tombstone.into(),
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceDeleteDirectiveV1>
+    for CoreWorkspaceDeleteDirectiveV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceDeleteDirectiveV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceDeleteDirectiveV1 as RuntimeDirective;
+        match value {
+            RuntimeDirective::Action {
+                action_id,
+                request_digest,
+                kind,
+                expected_raw_catalog_digest,
+                canonical_bytes,
+                content_digest,
+                logical_expected_revision,
+                authority_receipt,
+            } => Self::Action {
+                action_id,
+                request_digest,
+                kind: kind.into(),
+                expected_raw_catalog_digest,
+                canonical_bytes,
+                content_digest,
+                logical_expected_revision,
+                authority_receipt: authority_receipt.into(),
+            },
+            RuntimeDirective::Committed { receipt } => Self::Committed {
+                receipt: receipt.into(),
+            },
+            RuntimeDirective::Failed { failure } => Self::Failed {
+                failure: failure.into(),
+            },
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceDeleteActionKindV1>
+    for CoreWorkspaceDeleteActionKindV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceDeleteActionKindV1) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceDeleteActionKindV1::PublishCatalog => {
+                Self::PublishCatalog
+            }
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceDeleteFailureV1>
+    for CoreWorkspaceDeleteFailureV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceDeleteFailureV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceDeleteFailureV1 as RuntimeFailure;
+        match value {
+            RuntimeFailure::Cancelled => Self::Cancelled,
+            RuntimeFailure::StateConflict { expected, actual } => {
+                Self::StateConflict { expected, actual }
+            }
+            RuntimeFailure::WriteFailed => Self::WriteFailed,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspacePendingSaveRecoveryV1>
+    for CoreWorkspacePendingSaveRecoveryV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspacePendingSaveRecoveryV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspacePendingSaveRecoveryV1 as RuntimeRecovery;
+        match value {
+            RuntimeRecovery::NoPending { journal } => Self::NoPending {
+                journal: journal.into(),
+            },
+            RuntimeRecovery::PendingNotCommitted { journal } => Self::PendingNotCommitted {
+                journal: journal.into(),
+            },
+            RuntimeRecovery::Committed {
+                clean_journal,
+                document_digest,
+            } => Self::Committed {
+                clean_journal: clean_journal.into(),
+                document_digest,
+            },
         }
     }
 }

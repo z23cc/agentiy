@@ -73,6 +73,8 @@ public enum CoreWorkspaceWorkingJournalValidationError: Error, Sendable, Equatab
     case invalidOperationLedger
     case invalidPendingSave
     case invalidTimestamp
+    case externalDocumentConflict
+    case invalidTransaction
 }
 
 public struct CoreWorkspaceWorkingJournalTransitionPlanV1: Sendable, Equatable {
@@ -85,6 +87,31 @@ public struct CoreWorkspaceWorkingJournalTransitionPlanV1: Sendable, Equatable {
     ) {
         self.primary = primary
         self.committed = committed
+    }
+}
+
+public struct CoreWorkspaceCatalogValidationV1: Sendable, Equatable {
+    public let catalogVersion: UInt16
+    public let revision: UInt64
+    public let entryCount: UInt64
+    public let deletionCount: UInt64
+    public let contentDigest: String
+    public let canonicalBytes: Data
+
+    public init(
+        catalogVersion: UInt16,
+        revision: UInt64,
+        entryCount: UInt64,
+        deletionCount: UInt64,
+        contentDigest: String,
+        canonicalBytes: Data
+    ) {
+        self.catalogVersion = catalogVersion
+        self.revision = revision
+        self.entryCount = entryCount
+        self.deletionCount = deletionCount
+        self.contentDigest = contentDigest
+        self.canonicalBytes = canonicalBytes
     }
 }
 
@@ -132,6 +159,206 @@ public struct CoreWorkspaceWorkingJournalValidationV1: Sendable, Equatable {
     }
 }
 
+public enum CoreWorkspaceSaveActionKindV1: Sendable, Equatable {
+    case writePendingJournal
+    case publishWorkspaceDocument
+    case writeCommittedJournal
+    case writeSavedRevision
+}
+
+public enum CoreWorkspaceSaveFinalizationV1: Sendable, Equatable {
+    case finalized
+    case pendingJournalRetained
+    case revisionSidecarMissing
+}
+
+public enum CoreWorkspaceSaveFailureV1: Sendable, Equatable {
+    case cancelled
+    case stateConflict(expected: UInt64, actual: UInt64)
+    case writeFailed
+}
+
+public struct CoreWorkspaceSaveCommitReceiptV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let operationID: UUID
+    public let requestDigest: String
+    public let catalogRevision: UInt64
+    public let documentDigest: String
+    public let committedJournal: CoreWorkspaceWorkingJournalValidationV1
+    public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1
+    public let resultingWorkingRevision: UInt64
+    public let resultingSavedRevision: UInt64
+
+    public init(
+        workspaceID: UUID,
+        operationID: UUID,
+        requestDigest: String,
+        catalogRevision: UInt64,
+        documentDigest: String,
+        committedJournal: CoreWorkspaceWorkingJournalValidationV1,
+        savedRevision: CoreWorkspacePersistenceMetadataValidationV1,
+        resultingWorkingRevision: UInt64,
+        resultingSavedRevision: UInt64
+    ) {
+        self.workspaceID = workspaceID
+        self.operationID = operationID
+        self.requestDigest = requestDigest
+        self.catalogRevision = catalogRevision
+        self.documentDigest = documentDigest
+        self.committedJournal = committedJournal
+        self.savedRevision = savedRevision
+        self.resultingWorkingRevision = resultingWorkingRevision
+        self.resultingSavedRevision = resultingSavedRevision
+    }
+}
+
+public enum CoreWorkspaceSaveDirectiveV1: Sendable, Equatable {
+    case action(
+        actionID: UInt64,
+        requestDigest: String,
+        kind: CoreWorkspaceSaveActionKindV1,
+        expectedRawJournalDigest: String?,
+        canonicalBytes: Data,
+        contentDigest: String,
+        logicalExpectedRevision: UInt64?,
+        authorityReceipt: CoreWorkspaceSaveCommitReceiptV1?
+    )
+    case committed(
+        receipt: CoreWorkspaceSaveCommitReceiptV1,
+        finalization: CoreWorkspaceSaveFinalizationV1
+    )
+    case failed(CoreWorkspaceSaveFailureV1)
+}
+
+public enum CoreWorkspaceSaveActionReportV1: Sendable, Equatable {
+    case success(actionID: UInt64, writtenDigest: String)
+    case cancelled(actionID: UInt64)
+    case stateConflict(actionID: UInt64, expected: UInt64, actual: UInt64)
+    case writeFailed(actionID: UInt64)
+}
+
+public enum CoreWorkspaceDeleteFailureV1: Sendable, Equatable {
+    case cancelled
+    case stateConflict(expected: UInt64, actual: UInt64)
+    case writeFailed
+}
+
+public struct CoreWorkspaceDeleteCommitReceiptV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let operationID: UUID
+    public let requestDigest: String
+    public let catalog: CoreWorkspaceCatalogValidationV1
+    public let tombstone: CoreWorkspacePersistenceMetadataValidationV1
+
+    public init(
+        workspaceID: UUID,
+        operationID: UUID,
+        requestDigest: String,
+        catalog: CoreWorkspaceCatalogValidationV1,
+        tombstone: CoreWorkspacePersistenceMetadataValidationV1
+    ) {
+        self.workspaceID = workspaceID
+        self.operationID = operationID
+        self.requestDigest = requestDigest
+        self.catalog = catalog
+        self.tombstone = tombstone
+    }
+}
+
+public enum CoreWorkspaceDeleteDirectiveV1: Sendable, Equatable {
+    case publishCatalog(
+        actionID: UInt64,
+        requestDigest: String,
+        expectedRawCatalogDigest: String?,
+        catalog: CoreWorkspaceCatalogValidationV1,
+        logicalExpectedRevision: UInt64,
+        authorityReceipt: CoreWorkspaceDeleteCommitReceiptV1
+    )
+    case committed(CoreWorkspaceDeleteCommitReceiptV1)
+    case failed(CoreWorkspaceDeleteFailureV1)
+}
+
+public enum CoreWorkspacePendingSaveRecoveryV1: Sendable, Equatable {
+    case noPending(CoreWorkspaceWorkingJournalValidationV1)
+    case pendingNotCommitted(CoreWorkspaceWorkingJournalValidationV1)
+    case committed(
+        cleanJournal: CoreWorkspaceWorkingJournalValidationV1,
+        documentDigest: String
+    )
+}
+
+public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
+    private let nextOperation: @Sendable () throws -> CoreWorkspaceSaveDirectiveV1
+    private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
+        -> CoreWorkspaceSaveDirectiveV1
+    private let closeOperation: @Sendable () -> Void
+
+    init(
+        next: @escaping @Sendable () throws -> CoreWorkspaceSaveDirectiveV1,
+        report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
+            -> CoreWorkspaceSaveDirectiveV1,
+        close: @escaping @Sendable () -> Void
+    ) {
+        nextOperation = next
+        reportOperation = report
+        closeOperation = close
+    }
+
+    deinit {
+        closeOperation()
+    }
+
+    public func nextDirective() throws -> CoreWorkspaceSaveDirectiveV1 {
+        try nextOperation()
+    }
+
+    public func report(
+        _ report: CoreWorkspaceSaveActionReportV1
+    ) throws -> CoreWorkspaceSaveDirectiveV1 {
+        try reportOperation(report)
+    }
+
+    public func close() {
+        closeOperation()
+    }
+}
+
+public final class CoreWorkspaceDeleteTransactionV1: @unchecked Sendable {
+    private let nextOperation: @Sendable () throws -> CoreWorkspaceDeleteDirectiveV1
+    private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
+        -> CoreWorkspaceDeleteDirectiveV1
+    private let closeOperation: @Sendable () -> Void
+
+    init(
+        next: @escaping @Sendable () throws -> CoreWorkspaceDeleteDirectiveV1,
+        report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
+            -> CoreWorkspaceDeleteDirectiveV1,
+        close: @escaping @Sendable () -> Void
+    ) {
+        nextOperation = next
+        reportOperation = report
+        closeOperation = close
+    }
+
+    deinit {
+        closeOperation()
+    }
+
+    public func nextDirective() throws -> CoreWorkspaceDeleteDirectiveV1 {
+        try nextOperation()
+    }
+
+    public func report(
+        _ report: CoreWorkspaceSaveActionReportV1
+    ) throws -> CoreWorkspaceDeleteDirectiveV1 {
+        try reportOperation(report)
+    }
+
+    public func close() {
+        closeOperation()
+    }
+}
+
 /// Short-lived synchronous capability for validating working journals while a caller holds a
 /// non-suspending filesystem transaction. Every call carries the exact runtime identity captured
 /// during preparation; Rust rejects stopped, poisoned, or replaced runtimes before returning bytes.
@@ -175,6 +402,45 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         }
     }
 
+    public func validateDeletionTombstone(
+        _ artifactBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        try workspacePersistenceMetadata(artifactBytes) { identity, payloadBytes in
+            try context.transport.workspaceDeletionTombstoneValidateV1(
+                identity: identity,
+                payloadBytes: payloadBytes
+            )
+        }
+    }
+
+    public func validateCatalog(
+        _ catalogBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        guard catalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceCatalogValidateV1(
+            identity: context.identity,
+            catalogBytes: catalogBytes
+        )
+    }
+
+    public func planCatalogTransition(
+        currentCatalogBytes: Data?,
+        transitionBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        guard currentCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              transitionBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceCatalogPlanTransitionV1(
+            identity: context.identity,
+            currentCatalogBytes: currentCatalogBytes,
+            transitionBytes: transitionBytes
+        )
+    }
+
     /// Probes the exact prepared runtime identity without accepting any persistence artifact. A
     /// live runtime must reject the deliberately malformed bounded payload with the typed semantic
     /// error; a stopped or replaced runtime fails through the transport instead.
@@ -211,6 +477,73 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         return try context.transport.workspaceWorkingJournalValidateV1(
             identity: context.identity,
             journalBytes: journalBytes
+        )
+    }
+
+    public func beginDeleteTransaction(
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        effectiveJournalBytes: Data,
+        requestBytes: Data
+    ) throws -> CoreWorkspaceDeleteTransactionV1 {
+        guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              requestBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceDeleteTransactionBeginV1(
+            identity: context.identity,
+            rawCatalogBytes: rawCatalogBytes,
+            effectiveCatalogBytes: effectiveCatalogBytes,
+            effectiveJournalBytes: effectiveJournalBytes,
+            requestBytes: requestBytes
+        )
+    }
+
+    public func beginSaveTransaction(
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceSaveTransactionV1 {
+        guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              requestBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              candidateDocumentBytes.count <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes,
+              diskDocumentBytes?.count ?? 0 <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceSaveTransactionBeginV1(
+            identity: context.identity,
+            rawJournalBytes: rawJournalBytes,
+            effectiveJournalBytes: effectiveJournalBytes,
+            requestBytes: requestBytes,
+            candidateDocumentBytes: candidateDocumentBytes,
+            diskDocumentBytes: diskDocumentBytes
+        )
+    }
+
+    public func resolvePendingSave(
+        rawJournalBytes: Data,
+        expectedWorkspaceID: UUID,
+        expectedFileURL: URL,
+        documentBytes: Data?
+    ) throws -> CoreWorkspacePendingSaveRecoveryV1 {
+        guard rawJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              documentBytes?.count ?? 0 <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspacePendingSaveResolveV1(
+            identity: context.identity,
+            rawJournalBytes: rawJournalBytes,
+            expectedWorkspaceID: expectedWorkspaceID,
+            expectedFileURL: expectedFileURL,
+            documentBytes: documentBytes
         )
     }
 
@@ -434,6 +767,28 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("workspace deletion tombstone plan transport is unavailable")
     }
 
+    func workspaceDeletionTombstoneValidateV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        throw CoreTransportError.unexpected("workspace deletion tombstone validation transport is unavailable")
+    }
+
+    func workspaceCatalogValidateV1(
+        identity: CoreRuntimeIdentity,
+        catalogBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        throw CoreTransportError.unexpected("workspace catalog validation transport is unavailable")
+    }
+
+    func workspaceCatalogPlanTransitionV1(
+        identity: CoreRuntimeIdentity,
+        currentCatalogBytes: Data?,
+        transitionBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        throw CoreTransportError.unexpected("workspace catalog transition transport is unavailable")
+    }
+
     func workspaceWorkingJournalValidateV1(
         identity: CoreRuntimeIdentity,
         journalBytes: Data
@@ -448,5 +803,36 @@ extension CoreRuntimeTransport {
         documentBytes: Data?
     ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1 {
         throw CoreTransportError.unexpected("workspace working journal transition transport is unavailable")
+    }
+
+    func workspaceDeleteTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        effectiveJournalBytes: Data,
+        requestBytes: Data
+    ) throws -> CoreWorkspaceDeleteTransactionV1 {
+        throw CoreTransportError.unexpected("workspace delete transaction transport is unavailable")
+    }
+
+    func workspaceSaveTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceSaveTransactionV1 {
+        throw CoreTransportError.unexpected("workspace save transaction transport is unavailable")
+    }
+
+    func workspacePendingSaveResolveV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data,
+        expectedWorkspaceID: UUID,
+        expectedFileURL: URL,
+        documentBytes: Data?
+    ) throws -> CoreWorkspacePendingSaveRecoveryV1 {
+        throw CoreTransportError.unexpected("workspace pending save recovery transport is unavailable")
     }
 }

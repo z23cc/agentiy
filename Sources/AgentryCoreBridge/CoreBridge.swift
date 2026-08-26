@@ -167,6 +167,19 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1
+    func workspaceDeletionTombstoneValidateV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1
+    func workspaceCatalogValidateV1(
+        identity: CoreRuntimeIdentity,
+        catalogBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1
+    func workspaceCatalogPlanTransitionV1(
+        identity: CoreRuntimeIdentity,
+        currentCatalogBytes: Data?,
+        transitionBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1
     func workspaceWorkingJournalValidateV1(
         identity: CoreRuntimeIdentity,
         journalBytes: Data
@@ -177,6 +190,28 @@ protocol CoreRuntimeTransport: Sendable {
         transitionBytes: Data,
         documentBytes: Data?
     ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1
+    func workspaceDeleteTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        effectiveJournalBytes: Data,
+        requestBytes: Data
+    ) throws -> CoreWorkspaceDeleteTransactionV1
+    func workspaceSaveTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceSaveTransactionV1
+    func workspacePendingSaveResolveV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data,
+        expectedWorkspaceID: UUID,
+        expectedFileURL: URL,
+        documentBytes: Data?
+    ) throws -> CoreWorkspacePendingSaveRecoveryV1
     func workspaceProjectionOpenScopeV1(
         identity: CoreRuntimeIdentity,
         config: AgentryUniFFIRaw.CoreWorkspaceProjectionScopeConfigV1
@@ -1017,6 +1052,55 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    func workspaceDeletionTombstoneValidateV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        try workspacePersistenceMetadata(
+            identity: identity,
+            payloadBytes: payloadBytes,
+            operation: runtime.workspaceDeletionTombstoneValidateV1
+        )
+    }
+
+    func workspaceCatalogValidateV1(
+        identity: CoreRuntimeIdentity,
+        catalogBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        do {
+            let response = try runtime.workspaceCatalogValidateV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                catalogBytes: catalogBytes
+            ))
+            return try Self.workspaceCatalogValidation(response)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceCatalogPlanTransitionV1(
+        identity: CoreRuntimeIdentity,
+        currentCatalogBytes: Data?,
+        transitionBytes: Data
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        do {
+            let response = try runtime.workspaceCatalogPlanTransitionV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                currentCatalogBytes: currentCatalogBytes,
+                transitionBytes: transitionBytes
+            ))
+            return try Self.workspaceCatalogValidation(response)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private func workspacePersistenceMetadata(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data,
@@ -1053,6 +1137,50 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         } catch {
             throw Self.map(error)
         }
+    }
+
+    private static func workspaceCatalogValidation(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceCatalogResponseV1
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        if let errorKind = response.errorKind {
+            guard response.validation == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace catalog response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let result = response.validation
+        else {
+            throw CoreTransportError.unexpected("workspace catalog receipt is invalid")
+        }
+        return try workspaceCatalogValidation(result)
+    }
+
+    private static func workspaceCatalogValidation(
+        _ result: AgentryUniFFIRaw.CoreWorkspaceCatalogValidationV1
+    ) throws -> CoreWorkspaceCatalogValidationV1 {
+        let computedDigest = SHA256.hash(data: result.canonicalBytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard result.catalogVersion <= CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+              result.canonicalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              result.contentDigest == computedDigest
+        else {
+            throw CoreTransportError.unexpected("workspace catalog receipt is invalid")
+        }
+        return CoreWorkspaceCatalogValidationV1(
+            catalogVersion: result.catalogVersion,
+            revision: result.revision,
+            entryCount: result.entryCount,
+            deletionCount: result.deletionCount,
+            contentDigest: result.contentDigest,
+            canonicalBytes: result.canonicalBytes
+        )
     }
 
     private static func workspacePersistenceMetadataValidation(
@@ -1166,6 +1294,432 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func workspaceDeleteTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        effectiveJournalBytes: Data,
+        requestBytes: Data
+    ) throws -> CoreWorkspaceDeleteTransactionV1 {
+        do {
+            let response = try runtime.workspaceDeleteTransactionBeginV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                rawCatalogBytes: rawCatalogBytes,
+                effectiveCatalogBytes: effectiveCatalogBytes,
+                effectiveJournalBytes: effectiveJournalBytes,
+                requestBytes: requestBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.transaction == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace delete transaction response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let rawTransaction = response.transaction
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace delete transaction receipt is invalid"
+                )
+            }
+            return CoreWorkspaceDeleteTransactionV1(
+                next: {
+                    do {
+                        return try Self.workspaceDeleteDirective(rawTransaction.nextDirective())
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                report: { report in
+                    do {
+                        return try Self.workspaceDeleteDirective(rawTransaction.reportAction(
+                            report: Self.rawWorkspaceSaveReport(report)
+                        ))
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                close: {
+                    rawTransaction.close()
+                }
+            )
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceSaveTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceSaveTransactionV1 {
+        do {
+            let response = try runtime.workspaceSaveTransactionBeginV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                rawJournalBytes: rawJournalBytes,
+                effectiveJournalBytes: effectiveJournalBytes,
+                requestBytes: requestBytes,
+                candidateDocumentBytes: candidateDocumentBytes,
+                diskDocumentBytes: diskDocumentBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.transaction == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace save transaction response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let rawTransaction = response.transaction
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace save transaction receipt is invalid"
+                )
+            }
+            return CoreWorkspaceSaveTransactionV1(
+                next: {
+                    try Self.workspaceSaveDirective(rawTransaction.nextDirective())
+                },
+                report: { report in
+                    try Self.workspaceSaveDirective(rawTransaction.reportAction(
+                        report: Self.rawWorkspaceSaveReport(report)
+                    ))
+                },
+                close: {
+                    rawTransaction.close()
+                }
+            )
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspacePendingSaveResolveV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data,
+        expectedWorkspaceID: UUID,
+        expectedFileURL: URL,
+        documentBytes: Data?
+    ) throws -> CoreWorkspacePendingSaveRecoveryV1 {
+        do {
+            let response = try runtime.workspacePendingSaveResolveV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                rawJournalBytes: rawJournalBytes,
+                expectedWorkspaceId: expectedWorkspaceID.uuidString.lowercased(),
+                expectedFileUrl: expectedFileURL.standardizedFileURL.absoluteString,
+                documentBytes: documentBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.recovery == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace pending save response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let recovery = response.recovery
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace pending save recovery receipt is invalid"
+                )
+            }
+            return try Self.workspacePendingSaveRecovery(recovery)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    private static func workspaceDeleteDirective(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceDeleteDirectiveResponseV1
+    ) throws -> CoreWorkspaceDeleteDirectiveV1 {
+        if let errorKind = response.errorKind {
+            guard response.directive == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace delete directive response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let directive = response.directive
+        else {
+            throw CoreTransportError.unexpected("workspace delete directive receipt is invalid")
+        }
+        switch directive {
+        case let .action(
+            actionID,
+            requestDigest,
+            kind,
+            expectedRawCatalogDigest,
+            canonicalBytes,
+            contentDigest,
+            logicalExpectedRevision,
+            authorityReceipt
+        ):
+            guard kind == .publishCatalog,
+                  isSHA256(requestDigest),
+                  isSHA256(contentDigest),
+                  expectedRawCatalogDigest.map(isSHA256) ?? true,
+                  canonicalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                  sha256(canonicalBytes) == contentDigest
+            else {
+                throw CoreTransportError.unexpected("workspace delete action receipt is invalid")
+            }
+            let receipt = try workspaceDeleteCommitReceipt(authorityReceipt)
+            guard receipt.requestDigest == requestDigest,
+                  receipt.catalog.canonicalBytes == canonicalBytes,
+                  receipt.catalog.contentDigest == contentDigest,
+                  logicalExpectedRevision.addingReportingOverflow(1) == (
+                      partialValue: receipt.catalog.revision,
+                      overflow: false
+                  )
+            else {
+                throw CoreTransportError.unexpected("workspace delete action shape is invalid")
+            }
+            return .publishCatalog(
+                actionID: actionID,
+                requestDigest: requestDigest,
+                expectedRawCatalogDigest: expectedRawCatalogDigest,
+                catalog: receipt.catalog,
+                logicalExpectedRevision: logicalExpectedRevision,
+                authorityReceipt: receipt
+            )
+        case let .committed(receipt):
+            return .committed(try workspaceDeleteCommitReceipt(receipt))
+        case let .failed(failure):
+            let mapped: CoreWorkspaceDeleteFailureV1 = switch failure {
+            case .cancelled: .cancelled
+            case let .stateConflict(expected, actual):
+                .stateConflict(expected: expected, actual: actual)
+            case .writeFailed: .writeFailed
+            }
+            return .failed(mapped)
+        }
+    }
+
+    private static func workspaceDeleteCommitReceipt(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceDeleteCommitReceiptV1
+    ) throws -> CoreWorkspaceDeleteCommitReceiptV1 {
+        guard let workspaceID = UUID(uuidString: value.workspaceId),
+              let operationID = UUID(uuidString: value.operationId),
+              isSHA256(value.requestDigest)
+        else {
+            throw CoreTransportError.unexpected("workspace delete commit identity is invalid")
+        }
+        let catalog = try workspaceCatalogValidation(value.catalog)
+        let tombstone = try workspacePersistenceMetadataValidation(value.tombstone)
+        guard tombstone.workspaceID == workspaceID,
+              tombstone.operationID == operationID
+        else {
+            throw CoreTransportError.unexpected("workspace delete commit receipt is invalid")
+        }
+        return CoreWorkspaceDeleteCommitReceiptV1(
+            workspaceID: workspaceID,
+            operationID: operationID,
+            requestDigest: value.requestDigest,
+            catalog: catalog,
+            tombstone: tombstone
+        )
+    }
+
+    private static func workspaceSaveDirective(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceSaveDirectiveResponseV1
+    ) throws -> CoreWorkspaceSaveDirectiveV1 {
+        if let errorKind = response.errorKind {
+            guard response.directive == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace save directive response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let directive = response.directive
+        else {
+            throw CoreTransportError.unexpected("workspace save directive receipt is invalid")
+        }
+        switch directive {
+        case let .action(
+            actionID,
+            requestDigest,
+            kind,
+            expectedRawJournalDigest,
+            canonicalBytes,
+            contentDigest,
+            logicalExpectedRevision,
+            authorityReceipt
+        ):
+            guard isSHA256(requestDigest),
+                  isSHA256(contentDigest),
+                  canonicalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                  sha256(canonicalBytes) == contentDigest,
+                  expectedRawJournalDigest.map(isSHA256) ?? true
+            else {
+                throw CoreTransportError.unexpected("workspace save action receipt is invalid")
+            }
+            let mappedKind: CoreWorkspaceSaveActionKindV1 = switch kind {
+            case .writePendingJournal: .writePendingJournal
+            case .publishWorkspaceDocument: .publishWorkspaceDocument
+            case .writeCommittedJournal: .writeCommittedJournal
+            case .writeSavedRevision: .writeSavedRevision
+            }
+            let receipt = try authorityReceipt.map(workspaceSaveCommitReceipt)
+            let requiresAuthorityReceipt = mappedKind == .publishWorkspaceDocument
+            guard (receipt != nil) == requiresAuthorityReceipt,
+                  mappedKind == .publishWorkspaceDocument
+                  ? canonicalBytes.count <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
+                  : true
+            else {
+                throw CoreTransportError.unexpected("workspace save action shape is invalid")
+            }
+            return .action(
+                actionID: actionID,
+                requestDigest: requestDigest,
+                kind: mappedKind,
+                expectedRawJournalDigest: expectedRawJournalDigest,
+                canonicalBytes: canonicalBytes,
+                contentDigest: contentDigest,
+                logicalExpectedRevision: logicalExpectedRevision,
+                authorityReceipt: receipt
+            )
+        case let .committed(receipt, finalization):
+            let mapped: CoreWorkspaceSaveFinalizationV1 = switch finalization {
+            case .finalized: .finalized
+            case .pendingJournalRetained: .pendingJournalRetained
+            case .revisionSidecarMissing: .revisionSidecarMissing
+            }
+            return .committed(
+                receipt: try workspaceSaveCommitReceipt(receipt),
+                finalization: mapped
+            )
+        case let .failed(failure):
+            return .failed(try workspaceSaveFailure(failure))
+        }
+    }
+
+    private static func workspaceSaveCommitReceipt(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceSaveCommitReceiptV1
+    ) throws -> CoreWorkspaceSaveCommitReceiptV1 {
+        guard let workspaceID = UUID(uuidString: value.workspaceId),
+              let operationID = UUID(uuidString: value.operationId),
+              isSHA256(value.requestDigest),
+              isSHA256(value.documentDigest)
+        else {
+            throw CoreTransportError.unexpected("workspace save commit identity is invalid")
+        }
+        let journal = try workspaceWorkingJournalValidation(value.committedJournal)
+        let revision = try workspacePersistenceMetadataValidation(value.savedRevision)
+        guard journal.workspaceID == workspaceID,
+              revision.workspaceID == workspaceID,
+              revision.operationID == operationID,
+              value.resultingSavedRevision == value.resultingWorkingRevision
+        else {
+            throw CoreTransportError.unexpected("workspace save commit receipt is invalid")
+        }
+        return CoreWorkspaceSaveCommitReceiptV1(
+            workspaceID: workspaceID,
+            operationID: operationID,
+            requestDigest: value.requestDigest,
+            catalogRevision: value.catalogRevision,
+            documentDigest: value.documentDigest,
+            committedJournal: journal,
+            savedRevision: revision,
+            resultingWorkingRevision: value.resultingWorkingRevision,
+            resultingSavedRevision: value.resultingSavedRevision
+        )
+    }
+
+    private static func workspaceSaveFailure(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceSaveFailureV1
+    ) throws -> CoreWorkspaceSaveFailureV1 {
+        switch value {
+        case .cancelled: .cancelled
+        case let .stateConflict(expected, actual): .stateConflict(expected: expected, actual: actual)
+        case .writeFailed: .writeFailed
+        }
+    }
+
+    private static func rawWorkspaceSaveReport(
+        _ value: CoreWorkspaceSaveActionReportV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceSaveActionReportV1 {
+        switch value {
+        case let .success(actionID, writtenDigest):
+            .success(actionId: actionID, writtenDigest: writtenDigest)
+        case let .cancelled(actionID):
+            .cancelled(actionId: actionID)
+        case let .stateConflict(actionID, expected, actual):
+            .stateConflict(actionId: actionID, expected: expected, actual: actual)
+        case let .writeFailed(actionID):
+            .writeFailed(actionId: actionID)
+        }
+    }
+
+    private static func workspacePendingSaveRecovery(
+        _ value: AgentryUniFFIRaw.CoreWorkspacePendingSaveRecoveryV1
+    ) throws -> CoreWorkspacePendingSaveRecoveryV1 {
+        switch value {
+        case let .noPending(journal):
+            return .noPending(try workspaceWorkingJournalValidation(journal))
+        case let .pendingNotCommitted(journal):
+            return .pendingNotCommitted(try workspaceWorkingJournalValidation(journal))
+        case let .committed(cleanJournal, documentDigest):
+            guard isSHA256(documentDigest) else {
+                throw CoreTransportError.unexpected("workspace pending save digest is invalid")
+            }
+            return .committed(
+                cleanJournal: try workspaceWorkingJournalValidation(cleanJournal),
+                documentDigest: documentDigest
+            )
+        }
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.count == 64
+            && value == value.lowercased()
+            && value.utf8.allSatisfy { byte in
+                (48 ... 57).contains(byte) || (97 ... 102).contains(byte)
+            }
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func workspaceWorkingJournalValidation(
         _ result: AgentryUniFFIRaw.CoreWorkspaceWorkingJournalValidationV1
     ) throws -> CoreWorkspaceWorkingJournalValidationV1 {
@@ -1219,6 +1773,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .invalidOperationLedger: .invalidOperationLedger
         case .invalidPendingSave: .invalidPendingSave
         case .invalidTimestamp: .invalidTimestamp
+        case .externalDocumentConflict: .externalDocumentConflict
+        case .invalidTransaction: .invalidTransaction
         }
     }
 

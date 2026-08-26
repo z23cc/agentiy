@@ -13,8 +13,13 @@ use crate::types::{
     CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
-    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
-    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
+    CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogTransitionRequestV1,
+    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceDeleteDirectiveV1,
+    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
+    CoreWorkspaceDocumentProjectionV1, CoreWorkspacePendingSaveRecoveryRequestV1,
+    CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
+    CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspaceSaveActionReportV1,
+    CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
     CoreWorkspaceWorkingJournalTransitionRequestV1,
     CoreWorkspaceWorkingJournalTransitionResponseV1,
     CoreWorkspaceWorkingJournalValidationErrorKindV1,
@@ -112,6 +117,172 @@ impl LeafCancellation {
                 Err(CoreError::RuntimeStopped)
             }
         })
+    }
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CoreWorkspaceSaveTransactionBeginResponseV1 {
+    pub transaction: Option<Arc<CorePreparedWorkspaceSaveTransactionV1>>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSaveDirectiveResponseV1 {
+    pub directive: Option<CoreWorkspaceSaveDirectiveV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CoreWorkspaceDeleteTransactionBeginResponseV1 {
+    pub transaction: Option<Arc<CorePreparedWorkspaceDeleteTransactionV1>>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceDeleteDirectiveResponseV1 {
+    pub directive: Option<CoreWorkspaceDeleteDirectiveV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspacePendingSaveRecoveryResponseV1 {
+    pub recovery: Option<CoreWorkspacePendingSaveRecoveryV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(uniffi::Object)]
+pub struct CorePreparedWorkspaceSaveTransactionV1 {
+    inner: runtime::workspace_persistence_journal::PreparedWorkspaceSaveTransactionV1,
+    runtime: Weak<runtime::CoreRuntime>,
+    identity: runtime::RuntimeIdentity,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for CorePreparedWorkspaceSaveTransactionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorePreparedWorkspaceSaveTransactionV1")
+            .field("authoritative", &self.inner.is_authoritative())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CorePreparedWorkspaceSaveTransactionV1 {
+    fn require_live_runtime(&self) -> Result<(), CoreError> {
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if runtime.identity() != &self.identity {
+            return Err(CoreError::StaleRuntimeIdentity);
+        }
+        if runtime.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
+        }
+    }
+}
+
+#[uniffi::export]
+impl CorePreparedWorkspaceSaveTransactionV1 {
+    pub fn next_directive(&self) -> Result<CoreWorkspaceSaveDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_save_directive_response(
+                self.inner.next_directive(),
+            ))
+        })
+    }
+
+    pub fn report_action(
+        &self,
+        report: CoreWorkspaceSaveActionReportV1,
+    ) -> Result<CoreWorkspaceSaveDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            let result = self.inner.report_action(report.into());
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_save_directive_response(result))
+        })
+    }
+
+    pub fn close(&self) {
+        let _ = self.panic_guard.call(|| {
+            self.inner.close();
+            Ok::<(), CoreError>(())
+        });
+    }
+}
+
+#[derive(uniffi::Object)]
+pub struct CorePreparedWorkspaceDeleteTransactionV1 {
+    inner: runtime::workspace_persistence_journal::PreparedWorkspaceDeleteTransactionV1,
+    runtime: Weak<runtime::CoreRuntime>,
+    identity: runtime::RuntimeIdentity,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for CorePreparedWorkspaceDeleteTransactionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorePreparedWorkspaceDeleteTransactionV1")
+            .field("authoritative", &self.inner.is_authoritative())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CorePreparedWorkspaceDeleteTransactionV1 {
+    fn require_live_runtime(&self) -> Result<(), CoreError> {
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if runtime.identity() != &self.identity {
+            return Err(CoreError::StaleRuntimeIdentity);
+        }
+        if runtime.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
+        }
+    }
+}
+
+#[uniffi::export]
+impl CorePreparedWorkspaceDeleteTransactionV1 {
+    pub fn next_directive(&self) -> Result<CoreWorkspaceDeleteDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_delete_directive_response(
+                self.inner.next_directive(),
+            ))
+        })
+    }
+
+    pub fn report_action(
+        &self,
+        report: CoreWorkspaceSaveActionReportV1,
+    ) -> Result<CoreWorkspaceDeleteDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_delete_directive_response(
+                self.inner.report_action(report.into()),
+            ))
+        })
+    }
+
+    pub fn close(&self) {
+        let _ = self.panic_guard.call(|| {
+            self.inner.close();
+            Ok::<(), CoreError>(())
+        });
     }
 }
 
@@ -588,6 +759,14 @@ impl CoreRuntime {
                             CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTimestamp,
                             None,
                         ),
+                        JournalError::ExternalDocumentConflict => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::ExternalDocumentConflict,
+                            None,
+                        ),
+                        JournalError::InvalidTransaction => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTransaction,
+                            None,
+                        ),
                     };
                     CoreWorkspaceWorkingJournalValidationResponseV1 {
                         validation: None,
@@ -630,6 +809,116 @@ impl CoreRuntime {
                     }
                 }
             })
+        })
+    }
+
+    pub fn workspace_delete_transaction_begin_v1(
+        &self,
+        request: CoreWorkspaceDeleteTransactionRequestV1,
+    ) -> Result<CoreWorkspaceDeleteTransactionBeginResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(
+                match runtime::workspace_persistence_journal::prepare_workspace_delete_transaction_v1(
+                    request.raw_catalog_bytes.as_deref(),
+                    &request.effective_catalog_bytes,
+                    &request.effective_journal_bytes,
+                    &request.request_bytes,
+                ) {
+                    Ok(transaction) => CoreWorkspaceDeleteTransactionBeginResponseV1 {
+                        transaction: Some(Arc::new(CorePreparedWorkspaceDeleteTransactionV1 {
+                            inner: transaction,
+                            runtime: Arc::downgrade(&self.inner),
+                            identity,
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        })),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspaceDeleteTransactionBeginResponseV1 {
+                            transaction: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
+        })
+    }
+
+    pub fn workspace_save_transaction_begin_v1(
+        &self,
+        request: CoreWorkspaceSaveTransactionRequestV1,
+    ) -> Result<CoreWorkspaceSaveTransactionBeginResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(
+                match runtime::workspace_persistence_journal::prepare_workspace_save_transaction_v1(
+                    request.raw_journal_bytes.as_deref(),
+                    &request.effective_journal_bytes,
+                    &request.request_bytes,
+                    &request.candidate_document_bytes,
+                    request.disk_document_bytes.as_deref(),
+                ) {
+                    Ok(transaction) => CoreWorkspaceSaveTransactionBeginResponseV1 {
+                        transaction: Some(Arc::new(CorePreparedWorkspaceSaveTransactionV1 {
+                            inner: transaction,
+                            runtime: Arc::downgrade(&self.inner),
+                            identity,
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        })),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspaceSaveTransactionBeginResponseV1 {
+                            transaction: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
+        })
+    }
+
+    pub fn workspace_pending_save_resolve_v1(
+        &self,
+        request: CoreWorkspacePendingSaveRecoveryRequestV1,
+    ) -> Result<CoreWorkspacePendingSaveRecoveryResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(
+                match runtime::workspace_persistence_journal::resolve_workspace_pending_save_v1(
+                    &request.raw_journal_bytes,
+                    &request.expected_workspace_id,
+                    &request.expected_file_url,
+                    request.document_bytes.as_deref(),
+                ) {
+                    Ok(recovery) => CoreWorkspacePendingSaveRecoveryResponseV1 {
+                        recovery: Some(recovery.into()),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspacePendingSaveRecoveryResponseV1 {
+                            recovery: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
         })
     }
 
@@ -676,6 +965,55 @@ impl CoreRuntime {
             Ok(workspace_metadata_response(
                 runtime::workspace_persistence_journal::plan_workspace_deletion_tombstone_v1(
                     &request.payload_bytes,
+                ),
+            ))
+        })
+    }
+
+    pub fn workspace_deletion_tombstone_validate_v1(
+        &self,
+        request: CoreWorkspacePersistenceMetadataRequestV1,
+    ) -> Result<CoreWorkspacePersistenceMetadataResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_metadata_response(
+                runtime::workspace_persistence_journal::validate_workspace_deletion_tombstone_v1(
+                    &request.payload_bytes,
+                ),
+            ))
+        })
+    }
+
+    pub fn workspace_catalog_validate_v1(
+        &self,
+        request: CoreWorkspaceCatalogValidationRequestV1,
+    ) -> Result<CoreWorkspaceCatalogResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_catalog_response(
+                runtime::workspace_persistence_journal::validate_workspace_catalog_v1(
+                    &request.catalog_bytes,
+                ),
+            ))
+        })
+    }
+
+    pub fn workspace_catalog_plan_transition_v1(
+        &self,
+        request: CoreWorkspaceCatalogTransitionRequestV1,
+    ) -> Result<CoreWorkspaceCatalogResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_catalog_response(
+                runtime::workspace_persistence_journal::plan_workspace_catalog_transition_v1(
+                    request.current_catalog_bytes.as_deref(),
+                    &request.transition_bytes,
                 ),
             ))
         })
@@ -2178,6 +2516,29 @@ fn require_workspace_persistence_contract(contract_version: u16) -> Result<(), C
     }
 }
 
+fn workspace_catalog_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceCatalogValidationV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceCatalogResponseV1 {
+    match result {
+        Ok(validation) => CoreWorkspaceCatalogResponseV1 {
+            validation: Some(validation.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceCatalogResponseV1 {
+                validation: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
 fn workspace_metadata_response(
     result: Result<
         runtime::workspace_persistence_journal::WorkspacePersistenceMetadataValidationV1,
@@ -2194,6 +2555,52 @@ fn workspace_metadata_response(
             let (error_kind, future_schema_version) = workspace_journal_error(error);
             CoreWorkspacePersistenceMetadataResponseV1 {
                 validation: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
+fn workspace_save_directive_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceSaveDirectiveResponseV1 {
+    match result {
+        Ok(directive) => CoreWorkspaceSaveDirectiveResponseV1 {
+            directive: Some(directive.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceSaveDirectiveResponseV1 {
+                directive: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
+fn workspace_delete_directive_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceDeleteDirectiveV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceDeleteDirectiveResponseV1 {
+    match result {
+        Ok(directive) => CoreWorkspaceDeleteDirectiveResponseV1 {
+            directive: Some(directive.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceDeleteDirectiveResponseV1 {
+                directive: None,
                 error_kind: Some(error_kind),
                 future_schema_version,
             }
@@ -2259,6 +2666,14 @@ fn workspace_journal_error(
         ),
         JournalError::InvalidTimestamp => (
             CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTimestamp,
+            None,
+        ),
+        JournalError::ExternalDocumentConflict => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::ExternalDocumentConflict,
+            None,
+        ),
+        JournalError::InvalidTransaction => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTransaction,
             None,
         ),
     }
@@ -2665,7 +3080,7 @@ mod tests {
         }"#;
         let tombstone = core
             .workspace_deletion_tombstone_plan_v1(CoreWorkspacePersistenceMetadataRequestV1 {
-                runtime_identity: identity,
+                runtime_identity: identity.clone(),
                 contract_version: contract,
                 payload_bytes: tombstone_request.to_vec(),
             })
@@ -2676,6 +3091,47 @@ mod tests {
             tombstone.operation_id,
             "66666666-7777-8888-9999-aaaaaaaaaaaa"
         );
+        let validated_tombstone = core
+            .workspace_deletion_tombstone_validate_v1(CoreWorkspacePersistenceMetadataRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version: contract,
+                payload_bytes: tombstone.canonical_bytes.clone(),
+            })
+            .expect("deletion tombstone validation")
+            .validation
+            .expect("validated tombstone");
+        assert_eq!(validated_tombstone.operation_id, tombstone.operation_id);
+
+        let seed_transition = br#"{
+            "kind":"seed",
+            "entries":[{
+                "workspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "fileURL":"file:///tmp/Workspace.json"
+            }],
+            "updatedAt":46.0
+        }"#;
+        let catalog = core
+            .workspace_catalog_plan_transition_v1(CoreWorkspaceCatalogTransitionRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version: contract,
+                current_catalog_bytes: None,
+                transition_bytes: seed_transition.to_vec(),
+            })
+            .expect("catalog seed")
+            .validation
+            .expect("catalog validation");
+        assert_eq!(catalog.revision, 0);
+        assert_eq!(catalog.entry_count, 1);
+        let validated_catalog = core
+            .workspace_catalog_validate_v1(CoreWorkspaceCatalogValidationRequestV1 {
+                runtime_identity: identity,
+                contract_version: contract,
+                catalog_bytes: catalog.canonical_bytes.clone(),
+            })
+            .expect("catalog validate")
+            .validation
+            .expect("validated catalog");
+        assert_eq!(catalog, validated_catalog);
     }
 
     #[test]

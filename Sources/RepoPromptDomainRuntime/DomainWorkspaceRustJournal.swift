@@ -24,6 +24,181 @@ struct DomainWorkspaceDeletionTombstoneValidation: Sendable {
     let contentDigest: String
 }
 
+struct DomainWorkspaceCatalogValidation: Sendable {
+    let catalog: DomainPersistenceCoordinator.RuntimeWorkspaceCatalog
+    let canonicalBytes: Data
+    let contentDigest: String
+}
+
+enum DomainWorkspaceSaveFinalization: Sendable {
+    case finalized
+    case pendingJournalRetained
+    case revisionSidecarMissing
+}
+
+enum DomainWorkspaceSaveFailure: Sendable {
+    case cancelled
+    case stateConflict(expected: UInt64, actual: UInt64)
+    case writeFailed
+}
+
+struct DomainWorkspaceSaveCommitReceipt: Sendable {
+    let workspaceID: UUID
+    let operationID: UUID
+    let requestDigest: String
+    let catalogRevision: UInt64
+    let documentDigest: String
+    let committedJournal: DomainWorkspaceWorkingJournalValidation
+    let savedRevision: DomainWorkspaceSavedRevisionValidation
+}
+
+enum DomainWorkspaceSaveDirective: Sendable {
+    case writePendingJournal(
+        actionID: UInt64,
+        expectedRawDigest: String?,
+        validation: DomainWorkspaceWorkingJournalValidation,
+        logicalExpectedRevision: UInt64
+    )
+    case publishWorkspaceDocument(
+        actionID: UInt64,
+        bytes: Data,
+        contentDigest: String,
+        authorityReceipt: DomainWorkspaceSaveCommitReceipt
+    )
+    case writeCommittedJournal(
+        actionID: UInt64,
+        expectedRawDigest: String,
+        validation: DomainWorkspaceWorkingJournalValidation,
+        logicalExpectedRevision: UInt64
+    )
+    case writeSavedRevision(
+        actionID: UInt64,
+        validation: DomainWorkspaceSavedRevisionValidation
+    )
+    case committed(
+        receipt: DomainWorkspaceSaveCommitReceipt,
+        finalization: DomainWorkspaceSaveFinalization
+    )
+    case failed(DomainWorkspaceSaveFailure)
+}
+
+enum DomainWorkspaceDeleteFailure: Sendable {
+    case cancelled
+    case stateConflict(expected: UInt64, actual: UInt64)
+    case writeFailed
+}
+
+struct DomainWorkspaceDeleteCommitReceipt: Sendable {
+    let workspaceID: UUID
+    let operationID: UUID
+    let requestDigest: String
+    let catalog: DomainWorkspaceCatalogValidation
+    let tombstone: DomainWorkspaceDeletionTombstoneValidation
+}
+
+enum DomainWorkspaceDeleteDirective: Sendable {
+    case publishCatalog(
+        actionID: UInt64,
+        expectedRawDigest: String?,
+        catalog: DomainWorkspaceCatalogValidation,
+        logicalExpectedRevision: UInt64,
+        authorityReceipt: DomainWorkspaceDeleteCommitReceipt
+    )
+    case committed(DomainWorkspaceDeleteCommitReceipt)
+    case failed(DomainWorkspaceDeleteFailure)
+}
+
+enum DomainWorkspacePendingSaveRecovery: Sendable {
+    case noPending(DomainWorkspaceWorkingJournalValidation)
+    case pendingNotCommitted(DomainWorkspaceWorkingJournalValidation)
+    case committed(
+        cleanJournal: DomainWorkspaceWorkingJournalValidation,
+        documentDigest: String
+    )
+}
+
+enum DomainWorkspaceCatalogTransition: Sendable {
+    case seed(
+        entries: [DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.Entry],
+        updatedAt: Date
+    )
+    case upsert(
+        expectedCatalogRevision: UInt64,
+        workspaceID: UUID,
+        fileURL: URL,
+        updatedAt: Date
+    )
+    case delete(
+        expectedCatalogRevision: UInt64,
+        tombstone: DomainDeletionTombstone,
+        updatedAt: Date
+    )
+    case recoverCreate(
+        expectedCatalogRevision: UInt64,
+        workspaceID: UUID,
+        fileURL: URL,
+        updatedAt: Date
+    )
+
+    fileprivate var encoded: EncodedTransition {
+        switch self {
+        case let .seed(entries, updatedAt):
+            EncodedTransition(kind: "seed", entries: entries, updatedAt: updatedAt)
+        case let .upsert(expectedCatalogRevision, workspaceID, fileURL, updatedAt):
+            EncodedTransition(
+                kind: "upsert",
+                expectedCatalogRevision: expectedCatalogRevision,
+                workspaceID: workspaceID,
+                fileURL: fileURL,
+                updatedAt: updatedAt
+            )
+        case let .delete(expectedCatalogRevision, tombstone, updatedAt):
+            EncodedTransition(
+                kind: "delete",
+                expectedCatalogRevision: expectedCatalogRevision,
+                tombstone: tombstone,
+                updatedAt: updatedAt
+            )
+        case let .recoverCreate(expectedCatalogRevision, workspaceID, fileURL, updatedAt):
+            EncodedTransition(
+                kind: "recoverCreate",
+                expectedCatalogRevision: expectedCatalogRevision,
+                workspaceID: workspaceID,
+                fileURL: fileURL,
+                updatedAt: updatedAt
+            )
+        }
+    }
+
+    fileprivate struct EncodedTransition: Encodable {
+        let kind: String
+        var expectedCatalogRevision: UInt64?
+        var workspaceID: UUID?
+        var fileURL: URL?
+        var entries: [DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.Entry]?
+        var tombstone: DomainDeletionTombstone?
+        let updatedAt: Date
+
+        init(
+            kind: String,
+            expectedCatalogRevision: UInt64? = nil,
+            workspaceID: UUID? = nil,
+            fileURL: URL? = nil,
+            entries: [DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.Entry]? = nil,
+            tombstone: DomainDeletionTombstone? = nil,
+            updatedAt: Date
+        ) {
+            self.kind = kind
+            self.expectedCatalogRevision = expectedCatalogRevision
+            self.workspaceID = workspaceID
+            self.fileURL = fileURL
+            self.entries = entries
+            self.tombstone = tombstone
+            self.updatedAt = updatedAt
+        }
+    }
+}
+
 /// Rust-owned semantic transition request. Swift supplies command data and still owns the physical
 /// transaction; Rust decides the complete V1 journal fields and returns canonical candidate bytes.
 enum DomainWorkspaceWorkingJournalTransition: Sendable {
@@ -296,6 +471,155 @@ enum DomainWorkspaceRustJournal {
         let cleanupWarnings: [String]
     }
 
+    private struct DeleteTransactionRequest: Encodable {
+        let expectedWorkspaceID: UUID
+        let expectedFileURL: URL
+        let expectedWorkingRevision: UInt64
+        let expectedCatalogRevision: UInt64
+        let operation: DomainRecordedOperation
+        let deletedAt: Date
+    }
+
+    private struct SaveTransactionRequest: Encodable {
+        let expectedWorkspaceID: UUID
+        let expectedFileURL: URL
+        let expectedWorkingRevision: UInt64
+        let operationID: UUID
+        let contextRevisions: [UUID: DomainRevisionState]
+        let contextDigests: [UUID: String]
+        let contextTombstones: [UUID: UInt64]
+        let operations: [DomainRecordedOperation]
+        let updatedAt: Date
+        let catalogRevision: UInt64
+    }
+
+    struct PreparedSaveTransaction: Sendable {
+        private let core: CoreWorkspaceSaveTransactionV1
+        private let validator: PreparedValidator
+        private let expectedWorkspaceID: UUID
+        private let expectedFileURL: URL
+        private let expectedOperationID: UUID
+        private let expectedCatalogRevision: UInt64
+        private let expectedDocumentDigest: String
+        private let expectedWorkingRevision: UInt64
+        private let expectedUpdatedAt: Date
+
+        fileprivate init(
+            core: CoreWorkspaceSaveTransactionV1,
+            validator: PreparedValidator,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            expectedOperationID: UUID,
+            expectedCatalogRevision: UInt64,
+            expectedDocumentDigest: String,
+            expectedWorkingRevision: UInt64,
+            expectedUpdatedAt: Date
+        ) {
+            self.core = core
+            self.validator = validator
+            self.expectedWorkspaceID = expectedWorkspaceID
+            self.expectedFileURL = expectedFileURL
+            self.expectedOperationID = expectedOperationID
+            self.expectedCatalogRevision = expectedCatalogRevision
+            self.expectedDocumentDigest = expectedDocumentDigest
+            self.expectedWorkingRevision = expectedWorkingRevision
+            self.expectedUpdatedAt = expectedUpdatedAt
+        }
+
+        func nextDirective() throws -> DomainWorkspaceSaveDirective {
+            try validator.materializeSaveDirective(
+                core.nextDirective(),
+                expectedWorkspaceID: expectedWorkspaceID,
+                expectedFileURL: expectedFileURL,
+                expectedOperationID: expectedOperationID,
+                expectedCatalogRevision: expectedCatalogRevision,
+                expectedDocumentDigest: expectedDocumentDigest,
+                expectedWorkingRevision: expectedWorkingRevision,
+                expectedUpdatedAt: expectedUpdatedAt
+            )
+        }
+
+        func report(
+            _ report: CoreWorkspaceSaveActionReportV1
+        ) throws -> DomainWorkspaceSaveDirective {
+            try validator.materializeSaveDirective(
+                core.report(report),
+                expectedWorkspaceID: expectedWorkspaceID,
+                expectedFileURL: expectedFileURL,
+                expectedOperationID: expectedOperationID,
+                expectedCatalogRevision: expectedCatalogRevision,
+                expectedDocumentDigest: expectedDocumentDigest,
+                expectedWorkingRevision: expectedWorkingRevision,
+                expectedUpdatedAt: expectedUpdatedAt
+            )
+        }
+
+        func close() {
+            core.close()
+        }
+    }
+
+    struct PreparedDeleteTransaction: Sendable {
+        private let core: CoreWorkspaceDeleteTransactionV1
+        private let validator: PreparedValidator
+        private let expectedWorkspaceID: UUID
+        private let expectedFileURL: URL
+        private let expectedOperation: DomainRecordedOperation
+        private let expectedWorkingRevision: UInt64
+        private let expectedCatalogRevision: UInt64
+        private let expectedDeletedAt: Date
+
+        fileprivate init(
+            core: CoreWorkspaceDeleteTransactionV1,
+            validator: PreparedValidator,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            expectedOperation: DomainRecordedOperation,
+            expectedWorkingRevision: UInt64,
+            expectedCatalogRevision: UInt64,
+            expectedDeletedAt: Date
+        ) {
+            self.core = core
+            self.validator = validator
+            self.expectedWorkspaceID = expectedWorkspaceID
+            self.expectedFileURL = expectedFileURL
+            self.expectedOperation = expectedOperation
+            self.expectedWorkingRevision = expectedWorkingRevision
+            self.expectedCatalogRevision = expectedCatalogRevision
+            self.expectedDeletedAt = expectedDeletedAt
+        }
+
+        func nextDirective() throws -> DomainWorkspaceDeleteDirective {
+            try validator.materializeDeleteDirective(
+                core.nextDirective(),
+                expectedWorkspaceID: expectedWorkspaceID,
+                expectedFileURL: expectedFileURL,
+                expectedOperation: expectedOperation,
+                expectedWorkingRevision: expectedWorkingRevision,
+                expectedCatalogRevision: expectedCatalogRevision,
+                expectedDeletedAt: expectedDeletedAt
+            )
+        }
+
+        func report(
+            _ report: CoreWorkspaceSaveActionReportV1
+        ) throws -> DomainWorkspaceDeleteDirective {
+            try validator.materializeDeleteDirective(
+                core.report(report),
+                expectedWorkspaceID: expectedWorkspaceID,
+                expectedFileURL: expectedFileURL,
+                expectedOperation: expectedOperation,
+                expectedWorkingRevision: expectedWorkingRevision,
+                expectedCatalogRevision: expectedCatalogRevision,
+                expectedDeletedAt: expectedDeletedAt
+            )
+        }
+
+        func close() {
+            core.close()
+        }
+    }
+
     struct PreparedValidator: Sendable {
         private let core: CorePreparedWorkspaceWorkingJournalValidatorV1
 
@@ -414,6 +738,592 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
+        func validateDeletionTombstone(
+            _ bytes: Data
+        ) throws -> DomainWorkspaceDeletionTombstoneValidation {
+            do {
+                let validated = try core.validateDeletionTombstone(bytes)
+                guard validated.schemaVersion == UInt16(DomainDeletionTombstone.schemaVersion),
+                      DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                let tombstone = try JSONDecoder().decode(
+                    DomainDeletionTombstone.self,
+                    from: validated.canonicalBytes
+                )
+                guard tombstone.version == DomainDeletionTombstone.schemaVersion,
+                      tombstone.workspaceID == validated.workspaceID,
+                      tombstone.operation.operationID == validated.operationID
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                return DomainWorkspaceDeletionTombstoneValidation(
+                    tombstone: tombstone,
+                    canonicalBytes: validated.canonicalBytes,
+                    contentDigest: validated.contentDigest
+                )
+            } catch {
+                let mapped = map(error)
+                switch mapped {
+                case .writeFailed("working_journal_too_large"),
+                     .writeFailed("working_journal_rust_unavailable"):
+                    throw mapped
+                default:
+                    throw DomainPersistenceError.corruptJournal
+                }
+            }
+        }
+
+        func validateCatalog(
+            _ bytes: Data
+        ) throws -> DomainWorkspaceCatalogValidation {
+            do {
+                return try materializeCatalog(core.validateCatalog(bytes))
+            } catch {
+                let mapped = map(error)
+                if mapped == .writeFailed("working_journal_too_large") {
+                    throw DomainPersistenceError.writeFailed("workspace_catalog_too_large")
+                }
+                throw mapped
+            }
+        }
+
+        func planCatalogTransition(
+            current: DomainWorkspaceCatalogValidation?,
+            transition: DomainWorkspaceCatalogTransition
+        ) throws -> DomainWorkspaceCatalogValidation {
+            do {
+                let encoded = transition.encoded
+                let candidate = try materializeCatalog(core.planCatalogTransition(
+                    currentCatalogBytes: current?.canonicalBytes,
+                    transitionBytes: try encode(encoded)
+                ))
+                let expectedRevision: UInt64
+                switch transition {
+                case .seed:
+                    expectedRevision = 0
+                case let .upsert(expected, _, _, _),
+                     let .delete(expected, _, _),
+                     let .recoverCreate(expected, _, _, _):
+                    let advanced = expected.addingReportingOverflow(1)
+                    guard !advanced.overflow else {
+                        throw DomainPersistenceError.writeFailed("workspace_catalog_transition_invalid")
+                    }
+                    expectedRevision = advanced.partialValue
+                }
+                guard candidate.catalog.revision == expectedRevision,
+                      candidate.catalog.updatedAt == encoded.updatedAt
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                switch transition {
+                case let .seed(entries, _):
+                    guard candidate.catalog.entries == entries,
+                          candidate.catalog.deletions?.isEmpty == true
+                    else { throw DomainPersistenceError.corruptJournal }
+                case let .upsert(_, workspaceID, fileURL, _):
+                    guard candidate.catalog.entries.contains(where: {
+                        $0.workspaceID == workspaceID
+                            && $0.fileURL.standardizedFileURL == fileURL.standardizedFileURL
+                    }),
+                    candidate.catalog.deletions?.contains(where: {
+                        $0.workspaceID == workspaceID
+                    }) != true
+                    else { throw DomainPersistenceError.corruptJournal }
+                case let .delete(_, tombstone, _):
+                    guard !candidate.catalog.entries.contains(where: {
+                        $0.workspaceID == tombstone.workspaceID
+                    }),
+                    candidate.catalog.deletions?.contains(tombstone) == true
+                    else { throw DomainPersistenceError.corruptJournal }
+                case let .recoverCreate(_, workspaceID, fileURL, _):
+                    guard candidate.catalog.entries.contains(where: {
+                        $0.workspaceID == workspaceID
+                            && $0.fileURL.standardizedFileURL == fileURL.standardizedFileURL
+                    }),
+                    candidate.catalog.deletions?.contains(where: {
+                        $0.workspaceID == workspaceID
+                    }) != true
+                    else { throw DomainPersistenceError.corruptJournal }
+                }
+                return candidate
+            } catch {
+                let mapped = map(error)
+                switch mapped {
+                case .writeFailed("working_journal_too_large"):
+                    throw DomainPersistenceError.writeFailed("workspace_catalog_too_large")
+                case .writeFailed("working_journal_rust_unavailable"):
+                    throw mapped
+                default:
+                    throw DomainPersistenceError.writeFailed("workspace_catalog_transition_invalid")
+                }
+            }
+        }
+
+        func beginDeleteTransaction(
+            rawCatalogBytes: Data?,
+            effectiveCatalog: DomainWorkspaceCatalogValidation,
+            effectiveJournal: DomainWorkspaceWorkingJournalValidation,
+            document: DomainWorkspaceDocument,
+            expectedWorkingRevision: UInt64,
+            expectedCatalogRevision: UInt64,
+            operation: DomainRecordedOperation,
+            deletedAt: Date
+        ) throws -> PreparedDeleteTransaction {
+            do {
+                let request = DeleteTransactionRequest(
+                    expectedWorkspaceID: document.workspaceID,
+                    expectedFileURL: document.fileURL.standardizedFileURL,
+                    expectedWorkingRevision: expectedWorkingRevision,
+                    expectedCatalogRevision: expectedCatalogRevision,
+                    operation: operation,
+                    deletedAt: deletedAt
+                )
+                let transaction = try core.beginDeleteTransaction(
+                    rawCatalogBytes: rawCatalogBytes,
+                    effectiveCatalogBytes: effectiveCatalog.canonicalBytes,
+                    effectiveJournalBytes: effectiveJournal.canonicalBytes,
+                    requestBytes: try encode(request)
+                )
+                return PreparedDeleteTransaction(
+                    core: transaction,
+                    validator: self,
+                    expectedWorkspaceID: document.workspaceID,
+                    expectedFileURL: document.fileURL.standardizedFileURL,
+                    expectedOperation: operation,
+                    expectedWorkingRevision: expectedWorkingRevision,
+                    expectedCatalogRevision: expectedCatalogRevision,
+                    expectedDeletedAt: deletedAt
+                )
+            } catch {
+                if let validationError = error as? CoreWorkspaceWorkingJournalValidationError {
+                    if validationError == .invalidRevisionState {
+                        if effectiveCatalog.catalog.revision != expectedCatalogRevision {
+                            throw DomainPersistenceError.stateConflict(
+                                expected: expectedCatalogRevision,
+                                actual: effectiveCatalog.catalog.revision
+                            )
+                        }
+                        throw DomainPersistenceError.stateConflict(
+                            expected: expectedWorkingRevision,
+                            actual: effectiveJournal.journal.revisions.workingRevision
+                        )
+                    }
+                    if validationError == .invalidTransaction {
+                        throw DomainPersistenceError.writeFailed(
+                            "workspace_delete_transaction_invalid"
+                        )
+                    }
+                }
+                throw map(error)
+            }
+        }
+
+        func beginSaveTransaction(
+            rawJournalBytes: Data?,
+            effectiveJournal: DomainWorkspaceWorkingJournalValidation,
+            document: DomainWorkspaceDocument,
+            expectedWorkingRevision: UInt64,
+            operationID: UUID,
+            contextRevisions: [UUID: DomainRevisionState],
+            contextTombstones: [UUID: UInt64],
+            operations: [DomainRecordedOperation],
+            updatedAt: Date,
+            catalogRevision: UInt64,
+            diskDocumentBytes: Data?
+        ) throws -> PreparedSaveTransaction {
+            do {
+                let request = SaveTransactionRequest(
+                    expectedWorkspaceID: document.workspaceID,
+                    expectedFileURL: document.fileURL.standardizedFileURL,
+                    expectedWorkingRevision: expectedWorkingRevision,
+                    operationID: operationID,
+                    contextRevisions: contextRevisions,
+                    contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
+                        ($0.identity.contextID, $0.contentDigest)
+                    }),
+                    contextTombstones: contextTombstones,
+                    operations: operations,
+                    updatedAt: updatedAt,
+                    catalogRevision: catalogRevision
+                )
+                let transaction = try core.beginSaveTransaction(
+                    rawJournalBytes: rawJournalBytes,
+                    effectiveJournalBytes: effectiveJournal.canonicalBytes,
+                    requestBytes: try encode(request),
+                    candidateDocumentBytes: document.documentBytes,
+                    diskDocumentBytes: diskDocumentBytes
+                )
+                return PreparedSaveTransaction(
+                    core: transaction,
+                    validator: self,
+                    expectedWorkspaceID: document.workspaceID,
+                    expectedFileURL: document.fileURL.standardizedFileURL,
+                    expectedOperationID: operationID,
+                    expectedCatalogRevision: catalogRevision,
+                    expectedDocumentDigest: document.contentDigest,
+                    expectedWorkingRevision: expectedWorkingRevision,
+                    expectedUpdatedAt: updatedAt
+                )
+            } catch {
+                throw map(error)
+            }
+        }
+
+        func resolvePendingSave(
+            rawJournalBytes: Data,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            documentBytes: Data?
+        ) throws -> DomainWorkspacePendingSaveRecovery {
+            do {
+                let result = try core.resolvePendingSave(
+                    rawJournalBytes: rawJournalBytes,
+                    expectedWorkspaceID: expectedWorkspaceID,
+                    expectedFileURL: expectedFileURL.standardizedFileURL,
+                    documentBytes: documentBytes
+                )
+                switch result {
+                case let .noPending(validation):
+                    return .noPending(try materialize(
+                        validation,
+                        expectedWorkspaceID: expectedWorkspaceID,
+                        expectedFileURL: expectedFileURL
+                    ))
+                case let .pendingNotCommitted(validation):
+                    return .pendingNotCommitted(try materialize(
+                        validation,
+                        expectedWorkspaceID: expectedWorkspaceID,
+                        expectedFileURL: expectedFileURL
+                    ))
+                case let .committed(validation, documentDigest):
+                    let clean = try materialize(
+                        validation,
+                        expectedWorkspaceID: expectedWorkspaceID,
+                        expectedFileURL: expectedFileURL
+                    )
+                    guard clean.journal.pendingSave == nil,
+                          clean.journal.savedDigest == documentDigest
+                    else {
+                        throw DomainPersistenceError.corruptJournal
+                    }
+                    return .committed(
+                        cleanJournal: clean,
+                        documentDigest: documentDigest
+                    )
+                }
+            } catch {
+                throw map(error)
+            }
+        }
+
+        fileprivate func materializeDeleteDirective(
+            _ directive: CoreWorkspaceDeleteDirectiveV1,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            expectedOperation: DomainRecordedOperation,
+            expectedWorkingRevision: UInt64,
+            expectedCatalogRevision: UInt64,
+            expectedDeletedAt: Date
+        ) throws -> DomainWorkspaceDeleteDirective {
+            do {
+                switch directive {
+                case let .publishCatalog(
+                    actionID,
+                    requestDigest,
+                    expectedRawCatalogDigest,
+                    catalog,
+                    logicalExpectedRevision,
+                    authorityReceipt
+                ):
+                    guard logicalExpectedRevision == expectedCatalogRevision,
+                          authorityReceipt.requestDigest == requestDigest
+                    else { throw DomainPersistenceError.corruptJournal }
+                    let receipt = try materializeDeleteCommitReceipt(
+                        authorityReceipt,
+                        expectedWorkspaceID: expectedWorkspaceID,
+                        expectedFileURL: expectedFileURL,
+                        expectedOperation: expectedOperation,
+                        expectedCatalogRevision: expectedCatalogRevision,
+                        expectedDeletedAt: expectedDeletedAt
+                    )
+                    let materializedCatalog = try materializeCatalog(catalog)
+                    guard materializedCatalog.canonicalBytes == receipt.catalog.canonicalBytes,
+                          materializedCatalog.contentDigest == receipt.catalog.contentDigest
+                    else { throw DomainPersistenceError.corruptJournal }
+                    return .publishCatalog(
+                        actionID: actionID,
+                        expectedRawDigest: expectedRawCatalogDigest,
+                        catalog: materializedCatalog,
+                        logicalExpectedRevision: logicalExpectedRevision,
+                        authorityReceipt: receipt
+                    )
+                case let .committed(receipt):
+                    return .committed(try materializeDeleteCommitReceipt(
+                        receipt,
+                        expectedWorkspaceID: expectedWorkspaceID,
+                        expectedFileURL: expectedFileURL,
+                        expectedOperation: expectedOperation,
+                        expectedCatalogRevision: expectedCatalogRevision,
+                        expectedDeletedAt: expectedDeletedAt
+                    ))
+                case let .failed(failure):
+                    let mapped: DomainWorkspaceDeleteFailure = switch failure {
+                    case .cancelled: .cancelled
+                    case let .stateConflict(expected, actual):
+                        .stateConflict(expected: expected, actual: actual)
+                    case .writeFailed: .writeFailed
+                    }
+                    return .failed(mapped)
+                }
+            } catch {
+                throw map(error)
+            }
+        }
+
+        private func materializeDeleteCommitReceipt(
+            _ receipt: CoreWorkspaceDeleteCommitReceiptV1,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            expectedOperation: DomainRecordedOperation,
+            expectedCatalogRevision: UInt64,
+            expectedDeletedAt: Date
+        ) throws -> DomainWorkspaceDeleteCommitReceipt {
+            let nextRevision = expectedCatalogRevision.addingReportingOverflow(1)
+            guard !nextRevision.overflow,
+                  receipt.workspaceID == expectedWorkspaceID,
+                  receipt.operationID == expectedOperation.operationID
+            else { throw DomainPersistenceError.corruptJournal }
+            let catalog = try materializeCatalog(receipt.catalog)
+            guard catalog.catalog.revision == nextRevision.partialValue,
+                  catalog.catalog.updatedAt == expectedDeletedAt
+            else { throw DomainPersistenceError.corruptJournal }
+            let tombstoneBytes = receipt.tombstone.canonicalBytes
+            guard receipt.tombstone.workspaceID == expectedWorkspaceID,
+                  receipt.tombstone.operationID == expectedOperation.operationID,
+                  receipt.tombstone.schemaVersion == UInt16(DomainDeletionTombstone.schemaVersion),
+                  DomainContentDigest.sha256(tombstoneBytes) == receipt.tombstone.contentDigest
+            else { throw DomainPersistenceError.corruptJournal }
+            let tombstone = try JSONDecoder().decode(
+                DomainDeletionTombstone.self,
+                from: tombstoneBytes
+            )
+            guard tombstone.workspaceID == expectedWorkspaceID,
+                  tombstone.fileURL.standardizedFileURL == expectedFileURL.standardizedFileURL,
+                  tombstone.deletedAt == expectedDeletedAt,
+                  tombstone.operation == expectedOperation,
+                  !catalog.catalog.entries.contains(where: {
+                      $0.workspaceID == expectedWorkspaceID
+                  }),
+                  catalog.catalog.deletions?.contains(tombstone) == true
+            else { throw DomainPersistenceError.corruptJournal }
+            return DomainWorkspaceDeleteCommitReceipt(
+                workspaceID: expectedWorkspaceID,
+                operationID: expectedOperation.operationID,
+                requestDigest: receipt.requestDigest,
+                catalog: catalog,
+                tombstone: DomainWorkspaceDeletionTombstoneValidation(
+                    tombstone: tombstone,
+                    canonicalBytes: tombstoneBytes,
+                    contentDigest: receipt.tombstone.contentDigest
+                )
+            )
+        }
+
+        fileprivate func materializeSaveDirective(
+            _ directive: CoreWorkspaceSaveDirectiveV1,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            expectedOperationID: UUID,
+            expectedCatalogRevision: UInt64,
+            expectedDocumentDigest: String,
+            expectedWorkingRevision: UInt64,
+            expectedUpdatedAt: Date
+        ) throws -> DomainWorkspaceSaveDirective {
+            do {
+                switch directive {
+                case let .action(
+                    actionID,
+                    requestDigest,
+                    kind,
+                    expectedRawJournalDigest,
+                    canonicalBytes,
+                    contentDigest,
+                    logicalExpectedRevision,
+                    authorityReceipt
+                ):
+                    switch kind {
+                    case .writePendingJournal:
+                        guard authorityReceipt == nil,
+                              logicalExpectedRevision == expectedWorkingRevision
+                        else { throw DomainPersistenceError.corruptJournal }
+                        let validation = try materialize(
+                            CoreWorkspaceWorkingJournalValidationV1(
+                                workspaceID: expectedWorkspaceID,
+                                journalVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                                contentDigest: contentDigest,
+                                canonicalBytes: canonicalBytes
+                            ),
+                            expectedWorkspaceID: expectedWorkspaceID,
+                            expectedFileURL: expectedFileURL
+                        )
+                        guard validation.journal.pendingSave?.operationID == expectedOperationID else {
+                            throw DomainPersistenceError.corruptJournal
+                        }
+                        return .writePendingJournal(
+                            actionID: actionID,
+                            expectedRawDigest: expectedRawJournalDigest,
+                            validation: validation,
+                            logicalExpectedRevision: expectedWorkingRevision
+                        )
+                    case .publishWorkspaceDocument:
+                        guard expectedRawJournalDigest == nil,
+                              logicalExpectedRevision == nil,
+                              contentDigest == expectedDocumentDigest,
+                              let receipt = authorityReceipt,
+                              receipt.requestDigest == requestDigest
+                        else { throw DomainPersistenceError.corruptJournal }
+                        return .publishWorkspaceDocument(
+                            actionID: actionID,
+                            bytes: canonicalBytes,
+                            contentDigest: contentDigest,
+                            authorityReceipt: try materializeSaveCommitReceipt(
+                                receipt,
+                                expectedWorkspaceID: expectedWorkspaceID,
+                                expectedFileURL: expectedFileURL,
+                                expectedOperationID: expectedOperationID,
+                                expectedCatalogRevision: expectedCatalogRevision,
+                                expectedDocumentDigest: expectedDocumentDigest,
+                                expectedWorkingRevision: expectedWorkingRevision,
+                                expectedUpdatedAt: expectedUpdatedAt
+                            )
+                        )
+                    case .writeCommittedJournal:
+                        guard authorityReceipt == nil,
+                              let expectedRawJournalDigest,
+                              logicalExpectedRevision == expectedWorkingRevision
+                        else { throw DomainPersistenceError.corruptJournal }
+                        let validation = try materialize(
+                            CoreWorkspaceWorkingJournalValidationV1(
+                                workspaceID: expectedWorkspaceID,
+                                journalVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                                contentDigest: contentDigest,
+                                canonicalBytes: canonicalBytes
+                            ),
+                            expectedWorkspaceID: expectedWorkspaceID,
+                            expectedFileURL: expectedFileURL
+                        )
+                        guard validation.journal.pendingSave == nil,
+                              validation.journal.savedDigest == expectedDocumentDigest
+                        else { throw DomainPersistenceError.corruptJournal }
+                        return .writeCommittedJournal(
+                            actionID: actionID,
+                            expectedRawDigest: expectedRawJournalDigest,
+                            validation: validation,
+                            logicalExpectedRevision: expectedWorkingRevision
+                        )
+                    case .writeSavedRevision:
+                        guard authorityReceipt == nil,
+                              expectedRawJournalDigest == nil,
+                              logicalExpectedRevision == nil
+                        else { throw DomainPersistenceError.corruptJournal }
+                        let validation = try materializeSavedRevision(
+                            CoreWorkspacePersistenceMetadataValidationV1(
+                                workspaceID: expectedWorkspaceID,
+                                operationID: expectedOperationID,
+                                schemaVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                                contentDigest: contentDigest,
+                                canonicalBytes: canonicalBytes
+                            ),
+                            expectedWorkspaceID: expectedWorkspaceID,
+                            expectedOperationID: expectedOperationID,
+                            expectedSavedRevision: expectedWorkingRevision,
+                            expectedDocumentDigest: expectedDocumentDigest,
+                            expectedUpdatedAt: expectedUpdatedAt
+                        )
+                        return .writeSavedRevision(actionID: actionID, validation: validation)
+                    }
+                case let .committed(receipt, finalization):
+                    let mappedFinalization: DomainWorkspaceSaveFinalization = switch finalization {
+                    case .finalized: .finalized
+                    case .pendingJournalRetained: .pendingJournalRetained
+                    case .revisionSidecarMissing: .revisionSidecarMissing
+                    }
+                    return .committed(
+                        receipt: try materializeSaveCommitReceipt(
+                            receipt,
+                            expectedWorkspaceID: expectedWorkspaceID,
+                            expectedFileURL: expectedFileURL,
+                            expectedOperationID: expectedOperationID,
+                            expectedCatalogRevision: expectedCatalogRevision,
+                            expectedDocumentDigest: expectedDocumentDigest,
+                            expectedWorkingRevision: expectedWorkingRevision,
+                            expectedUpdatedAt: expectedUpdatedAt
+                        ),
+                        finalization: mappedFinalization
+                    )
+                case let .failed(failure):
+                    let mapped: DomainWorkspaceSaveFailure = switch failure {
+                    case .cancelled: .cancelled
+                    case let .stateConflict(expected, actual):
+                        .stateConflict(expected: expected, actual: actual)
+                    case .writeFailed: .writeFailed
+                    }
+                    return .failed(mapped)
+                }
+            } catch {
+                throw map(error)
+            }
+        }
+
+        private func materializeSaveCommitReceipt(
+            _ receipt: CoreWorkspaceSaveCommitReceiptV1,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            expectedOperationID: UUID,
+            expectedCatalogRevision: UInt64,
+            expectedDocumentDigest: String,
+            expectedWorkingRevision: UInt64,
+            expectedUpdatedAt: Date
+        ) throws -> DomainWorkspaceSaveCommitReceipt {
+            guard receipt.workspaceID == expectedWorkspaceID,
+                  receipt.operationID == expectedOperationID,
+                  receipt.catalogRevision == expectedCatalogRevision,
+                  receipt.documentDigest == expectedDocumentDigest,
+                  receipt.resultingWorkingRevision == expectedWorkingRevision,
+                  receipt.resultingSavedRevision == expectedWorkingRevision
+            else { throw DomainPersistenceError.corruptJournal }
+            let journal = try materialize(
+                receipt.committedJournal,
+                expectedWorkspaceID: expectedWorkspaceID,
+                expectedFileURL: expectedFileURL
+            )
+            guard journal.journal.revisions.workingRevision == expectedWorkingRevision,
+                  journal.journal.revisions.savedRevision == expectedWorkingRevision,
+                  journal.journal.revisions.dirtyRevision == nil,
+                  journal.journal.pendingSave == nil,
+                  journal.journal.savedDigest == expectedDocumentDigest
+            else { throw DomainPersistenceError.corruptJournal }
+            let revision = try materializeSavedRevision(
+                receipt.savedRevision,
+                expectedWorkspaceID: expectedWorkspaceID,
+                expectedOperationID: expectedOperationID,
+                expectedSavedRevision: expectedWorkingRevision,
+                expectedDocumentDigest: expectedDocumentDigest,
+                expectedUpdatedAt: expectedUpdatedAt
+            )
+            return DomainWorkspaceSaveCommitReceipt(
+                workspaceID: expectedWorkspaceID,
+                operationID: expectedOperationID,
+                requestDigest: receipt.requestDigest,
+                catalogRevision: expectedCatalogRevision,
+                documentDigest: expectedDocumentDigest,
+                committedJournal: journal,
+                savedRevision: revision
+            )
+        }
+
         func requireRuntimeAvailability() throws {
             do {
                 try core.requireRuntimeAvailability()
@@ -492,6 +1402,34 @@ enum DomainWorkspaceRustJournal {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             return try encoder.encode(value)
+        }
+
+        private func materializeCatalog(
+            _ validated: CoreWorkspaceCatalogValidationV1
+        ) throws -> DomainWorkspaceCatalogValidation {
+            guard validated.catalogVersion <= UInt16(
+                DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.schemaVersion
+            ),
+            DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
+            else {
+                throw DomainPersistenceError.corruptJournal
+            }
+            let catalog = try JSONDecoder().decode(
+                DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.self,
+                from: validated.canonicalBytes
+            )
+            guard catalog.version == Int(validated.catalogVersion),
+                  catalog.revision == validated.revision,
+                  UInt64(catalog.entries.count) == validated.entryCount,
+                  UInt64(catalog.deletions?.count ?? 0) == validated.deletionCount
+            else {
+                throw DomainPersistenceError.corruptJournal
+            }
+            return DomainWorkspaceCatalogValidation(
+                catalog: catalog,
+                canonicalBytes: validated.canonicalBytes,
+                contentDigest: validated.contentDigest
+            )
         }
 
         private func materializeSavedRevision(
@@ -597,6 +1535,10 @@ enum DomainWorkspaceRustJournal {
                  .invalidPendingSave,
                  .invalidTimestamp:
                 return .corruptJournal
+            case .externalDocumentConflict:
+                return .externalDocumentConflict
+            case .invalidTransaction:
+                return .writeFailed("workspace_save_transaction_invalid")
             }
         }
     }

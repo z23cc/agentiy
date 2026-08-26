@@ -447,6 +447,118 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(restored.health, .writable)
     }
 
+    func testOrphanDeletionSidecarCannotSuppressLiveCatalogEntry() async throws {
+        let fixture = try Fixture.make(includeWorkspace: false)
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let document = try fixture.document(prompt: "live catalog authority")
+        let created = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedCatalogRevision: 0,
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .createWorkspace(document)
+        ))
+        XCTAssertEqual(created.disposition, .applied)
+        _ = await runtime.shutdown()
+
+        let profileRoot = fixture.storageRoot
+            .appendingPathComponent("DomainRuntime", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+        let profileDirectory = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: profileRoot,
+                includingPropertiesForKeys: [.isDirectoryKey]
+            ).first
+        )
+        let deletionDirectory = profileDirectory
+            .appendingPathComponent("deletion-tombstones", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: deletionDirectory,
+            withIntermediateDirectories: true
+        )
+        let orphan = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
+            "workspaceID": fixture.workspaceID.uuidString,
+            "fileURL": fixture.workspaceFile.absoluteString,
+            "operation": [
+                "operationID": UUID().uuidString,
+                "fingerprint": String(repeating: "f", count: 64),
+                "recordedAt": 40.0,
+                "disposition": "applied",
+                "catalogRevision": created.catalogRevision &+ 1
+            ],
+            "deletedAt": 41.0
+        ], options: [.sortedKeys])
+        try orphan.write(
+            to: deletionDirectory.appendingPathComponent("\(fixture.workspaceID.uuidString).json"),
+            options: .atomic
+        )
+
+        let restarted = fixture.runtime(generation: 2)
+        try await restarted.start()
+        defer { Task { _ = await restarted.shutdown() } }
+        let restored = await restarted.workspaceStore.snapshot()
+        XCTAssertEqual(restored.workspaces.map(\.document.workspaceID), [fixture.workspaceID])
+        XCTAssertEqual(restored.health, .writable)
+    }
+
+    func testLiveAndDeletedCatalogIdentityOverlapDegradesReadOnly() async throws {
+        let fixture = try Fixture.make(includeWorkspace: false)
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let created = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedCatalogRevision: 0,
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .createWorkspace(try fixture.document(prompt: "ambiguous catalog"))
+        ))
+        XCTAssertEqual(created.disposition, .applied)
+        _ = await runtime.shutdown()
+
+        let profileRoot = fixture.storageRoot
+            .appendingPathComponent("DomainRuntime", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+        let profileDirectory = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: profileRoot,
+                includingPropertiesForKeys: [.isDirectoryKey]
+            ).first
+        )
+        let catalogURL = profileDirectory.appendingPathComponent("workspace-catalog.json")
+        var catalog = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: catalogURL)) as? [String: Any]
+        )
+        catalog["deletions"] = [[
+            "version": 1,
+            "workspaceID": fixture.workspaceID.uuidString,
+            "fileURL": fixture.workspaceFile.absoluteString,
+            "operation": [
+                "operationID": UUID().uuidString,
+                "fingerprint": String(repeating: "e", count: 64),
+                "recordedAt": 50.0,
+                "disposition": "applied",
+                "catalogRevision": created.catalogRevision
+            ],
+            "deletedAt": 51.0
+        ]]
+        try JSONSerialization.data(withJSONObject: catalog, options: [.sortedKeys])
+            .write(to: catalogURL, options: .atomic)
+
+        let restarted = fixture.runtime(generation: 2)
+        try await restarted.start()
+        defer { Task { _ = await restarted.shutdown() } }
+        let snapshot = await restarted.workspaceStore.snapshot()
+        XCTAssertEqual(
+            snapshot.health,
+            .degradedReadOnly(reason: "workspace_catalog_decode_failed")
+        )
+        XCTAssertEqual(snapshot.workspaces.map(\.document.workspaceID), [fixture.workspaceID])
+    }
+
     func testPendingSaveJournalRecoversCommittedDocumentWithoutManufacturedConflict() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
@@ -560,6 +672,122 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         let cancelled = await mutation.value
         XCTAssertEqual(cancelled.disposition, .failed)
         XCTAssertEqual(cancelled.errorCode, .cancelled)
+    }
+
+    func testCatalogRawByteCASRejectsSameRevisionExternalReplacement() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let savedDocumentBytes = try Data(contentsOf: fixture.workspaceFile)
+        let changed = try fixture.document(prompt: "catalog cas")
+        let seeded = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(changed)
+        ))
+        XCTAssertEqual(seeded.disposition, .applied)
+        let snapshot = await runtime.workspaceStore.snapshot()
+        let workspace = try XCTUnwrap(snapshot.workspaces.first)
+        let runtimeFiles = try allFiles(
+            below: fixture.storageRoot.appendingPathComponent("DomainRuntime", isDirectory: true)
+        )
+        let catalogURL = try XCTUnwrap(runtimeFiles.first {
+            $0.lastPathComponent == "workspace-catalog.json"
+        })
+        let originalCatalogBytes = try Data(contentsOf: catalogURL)
+        let catalogObject = try JSONSerialization.jsonObject(with: originalCatalogBytes)
+        let externallyReplacedBytes = try JSONSerialization.data(
+            withJSONObject: catalogObject,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        XCTAssertNotEqual(externallyReplacedBytes, originalCatalogBytes)
+        DomainPersistenceCoordinator.setCatalogReplacementTestHook(for: catalogURL) {
+            try externallyReplacedBytes.write(to: catalogURL, options: .atomic)
+        }
+        defer {
+            DomainPersistenceCoordinator.setCatalogReplacementTestHook(for: catalogURL, nil)
+        }
+
+        let deleted = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedCatalogRevision: snapshot.catalogRevision,
+            expectedWorkspaceRevision: workspace.revisions.workingRevision,
+            origin: .standalone,
+            command: .deleteWorkspace(workspaceID: fixture.workspaceID)
+        ))
+        XCTAssertEqual(deleted.disposition, .conflict)
+        XCTAssertEqual(deleted.errorCode, .stateConflict)
+        XCTAssertEqual(try Data(contentsOf: catalogURL), externallyReplacedBytes)
+        let catalogTemporaryPrefix = ".\(catalogURL.lastPathComponent)."
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(
+            at: catalogURL.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        ).contains {
+            $0.lastPathComponent.hasPrefix(catalogTemporaryPrefix)
+                && $0.pathExtension == "tmp"
+        })
+        XCTAssertEqual(try Data(contentsOf: fixture.workspaceFile), savedDocumentBytes)
+        let afterConflict = await runtime.workspaceStore.snapshot()
+        XCTAssertEqual(
+            afterConflict.workspaces.first?.document.workspaceID,
+            fixture.workspaceID
+        )
+        XCTAssertEqual(
+            afterConflict.workspaces.first?.document.documentBytes,
+            changed.documentBytes
+        )
+    }
+
+    func testDeletePreservesArtifactsWhenCatalogDirectorySyncIsIndeterminate() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let changed = try fixture.document(prompt: "directory sync fence")
+        let working = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(changed)
+        ))
+        XCTAssertEqual(working.disposition, .applied)
+        let snapshot = await runtime.workspaceStore.snapshot()
+        let workspace = try XCTUnwrap(snapshot.workspaces.first)
+        let runtimeRoot = fixture.storageRoot.appendingPathComponent("DomainRuntime", isDirectory: true)
+        let runtimeFiles = try allFiles(below: runtimeRoot)
+        let catalogURL = try XCTUnwrap(runtimeFiles.first {
+            $0.lastPathComponent == "workspace-catalog.json"
+        })
+        let journalURL = try XCTUnwrap(runtimeFiles.first {
+            $0.path.contains("working-journals")
+                && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json"
+        })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.workspaceFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journalURL.path))
+        DomainPersistenceCoordinator.setCatalogDirectorySyncTestHook(for: catalogURL) {
+            throw DomainPersistenceError.writeFailed("injected_directory_fsync_failure")
+        }
+        defer {
+            DomainPersistenceCoordinator.setCatalogDirectorySyncTestHook(for: catalogURL, nil)
+        }
+
+        let deleted = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedCatalogRevision: snapshot.catalogRevision,
+            expectedWorkspaceRevision: workspace.revisions.workingRevision,
+            origin: .standalone,
+            command: .deleteWorkspace(workspaceID: fixture.workspaceID)
+        ))
+
+        XCTAssertEqual(deleted.disposition, .applied)
+        XCTAssertNil(deleted.errorCode)
+        XCTAssertTrue(deleted.diagnostic?.contains("catalog directory sync indeterminate") == true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.workspaceFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journalURL.path))
+        let afterDelete = await runtime.workspaceStore.snapshot()
+        XCTAssertTrue(afterDelete.workspaces.isEmpty)
     }
 
     func testBootstrapIsReadOnlyAndFirstWorkingMutationCreatesJournalAndRollbackWithoutRewritingSavedDocument() async throws {

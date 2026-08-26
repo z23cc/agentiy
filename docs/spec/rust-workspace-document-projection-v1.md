@@ -639,3 +639,157 @@ ownership are deliberately reserved for P5-5d so there is no mixed authority ove
   deletion cleanup warnings, cancellation, and lease handoff without an observable behavior change.
 - Focused Bridge/DomainRuntime tests, generated-binding checks, product build, format, lint, Rust format,
   guardrails, and diff checks pass.
+
+## P5-5d amendment — Rust workspace-catalog state-machine authority
+
+P5-5d moves the complete V1 workspace-catalog semantic boundary behind the same exact-runtime prepared
+persistence capability. Rust validates catalog schema, revision, timestamps, workspace identities, file
+URLs, unique live and deleted identities, disjoint live/deleted sets, embedded deletion tombstones,
+input/output size, and canonical bytes. Revision advance is checked and rejects `UInt64.max`; it can never
+wrap to an older fence. A closed transition planner owns the four established policies: legacy `seed` at
+revision zero, create/recreate
+`upsert` with sorted live entries and removal of the same identity's tombstone, authoritative `delete`
+with stable surviving order and replacement tombstone, and crash-recovery `recoverCreate` with sorted live
+entries while preserving tombstones. Every mutating transition consumes the exact validated current
+revision and returns a digest-bound canonical candidate before Swift performs a catalog write.
+
+All production catalog semantic reads use this Rust validator: bootstrap, targeted refresh, current
+revision, mutation admission, and lazy migration. Missing-catalog fallback may still read the legacy Swift
+index because Rust performs no filesystem I/O, but Rust must construct and validate the revision-zero
+catalog before it can be published or used by a mutation. Bootstrap also validates deletion sidecars
+through Rust; Swift may materialize verified canonical records into domain values but cannot independently
+decode or repair catalog/tombstone semantics.
+
+Swift remains the sole physical writer. It retains the workspace storage lease and epoch permit,
+catalog/workspace file locks, atomic replacement, workspace document/journal/metadata ordering, rollback
+artifacts, and post-delete best-effort cleanup. Catalog publication remains the create/delete authority
+point, but the bytes and state transition at that point are exclusively Rust-planned. Existing corruption
+behavior is preserved: bootstrap/refresh project malformed or future catalogs as degraded read-only,
+ordinary mutations fail closed, missing catalogs retain legacy fallback, duplicate or overlapping
+live/deleted identities are rejected, and catalog tombstones suppress live entries. Sidecars are never
+deletion authority: bootstrap probes at most the catalog's deletion count, using exact UUID filenames, and
+accepts a sidecar only when every authoritative tombstone field except the cleanup diagnostic matches.
+
+### P5-5d done-when
+
+- Rust tests cover validation plus seed/upsert/delete/recover-create transitions, exact revision fences,
+  stable ordering, tombstone replacement/removal, duplicate identity rejection, future schema, malformed
+  timestamps/URLs, and input/output limits.
+- Real FFI/Bridge/DomainRuntime tests prove canonical catalog and tombstone receipts remain bound to every
+  requested identity, revision, URL, timestamp, and operation before any write.
+- Production `DomainPersistence` contains one catalog-path write fed only by Rust canonical bytes and zero
+  catalog/tombstone constructors, JSON decoders, encoders, or Swift sorting/filtering state transitions.
+- Existing bootstrap/refresh/create/delete/recreate/pending-create recovery, corruption, cancellation, and
+  lease-handoff regressions retain observable behavior; focused build/style/codegen/guardrail checks pass.
+
+## P5-5e amendment — Rust save transaction and pending-save recovery authority
+
+P5-5e moves the save-specific durable state machine behind the exact-runtime prepared Rust persistence
+capability. Rust prepares one bounded transaction from the exact nonmissing raw journal snapshot, the
+Rust-canonical effective journal, candidate workspace-document bytes, optional current disk-document
+bytes, and the closed save command. Rust proves the effective journal is either that raw snapshot's
+canonical form or its exact pending-save recovery against the supplied disk document; it also projects
+the candidate document and requires the requested workspace identity. It owns artifact order, action
+identity/digest binding, the workspace-document
+authority point, pre- versus post-authority failure classification, and restart recognition of a pending
+save. The persisted V1 journal, workspace document, and saved-revision schemas do not change.
+
+The transaction yields closed directives for pending-journal CAS replacement, workspace-document atomic
+replacement, committed-journal CAS replacement, saved-revision atomic replacement, and terminal
+committed/failed outcomes. Every action report must match the current action identity and expected digest;
+out-of-order or conflicting replay fails closed. Pending-journal or document failure is a failed save.
+Successful document replacement activates a prevalidated commit receipt and is the sole authority
+transition: every later journal/revision/runtime/cancellation failure yields committed with recoverable
+finalization status and can never become a false failed retry.
+
+Pending-save restart classification is likewise Rust-owned. Rust validates the exact journal, optional
+bounded document bytes, document digest, projected workspace identity, and recovery transition. Missing
+or digest-mismatched documents remain uncommitted; matching but corrupt/wrong-identity documents fail as
+corruption; a valid match returns the Rust-canonical clean journal. Swift no longer derives commitment
+from a digest comparison or invokes the generic `save`/`recoverPending` transitions in production.
+
+Swift remains the sole filesystem writer and retains the storage lease/epoch permit, catalog→workspace
+lock order, path capabilities, single-descriptor bounded reads, exact raw-journal digest CAS, atomic
+fsync/rename, and artifact cleanup. Only `ENOENT` is represented as an absent document; oversized,
+permission, I/O, and cancellation failures propagate and can never be reclassified as missing. `DomainWorkspaceContextAuthority` continues to own command admission,
+deduplication, in-memory records, results, and publication order. Create, delete, external reload,
+conflict rebase, and catalog policy are unchanged by this slice.
+
+### P5-5e done-when
+
+- Rust tests cover the complete directive sequence, exact action/digest reports, external-document
+  conflict parity, failure/cancellation at every action, terminal replay/close behavior, and pending-save
+  recovery for missing, mismatched, valid, malformed, wrong-identity, future, and oversized inputs.
+- Real FFI and Bridge tests prove the transaction object is exact-runtime bound before authority, returns
+  a prevalidated commit receipt with the document directive, and cannot be confused with generic journal
+  APIs.
+- Production save executes only Rust directives; source guards prove zero direct generic `save` and
+  `recoverPending` decisions while preserving the one physical journal-write choke point.
+- Existing save/restart/CAS/cancellation/lease-handoff regressions plus focused Rust, FFI, Bridge,
+  DomainRuntime, generated-binding, product-build, format, lint, guardrail, and diff checks pass.
+
+## P5-5f0 amendment — exact raw catalog replacement fence
+
+Every production workspace-catalog mutation now captures the physical artifact's exact presence and raw
+SHA-256 digest in the same bounded read that supplies Rust validation. The single catalog write choke
+point first writes and fsyncs its temporary candidate, then Swift reopens and rereads the live artifact
+and requires exact presence and raw-digest equality immediately before rename. Semantically equivalent
+re-encoding with the same catalog revision is still a conflict; staging latency cannot let a planner
+overwrite bytes it did not observe.
+
+The fence covers create/recreate publication, delete authority, crashed-create recovery, and lazy
+migration from an absent catalog. A mismatch performs no write and returns the existing revision conflict
+surface after Rust validates the newly observed catalog. Rust remains semantic catalog authority while
+Swift retains the storage lease, catalog lock, bounded descriptor reads, digest comparison, and physical
+fsync/rename. Supported writers must honor the catalog lock; a non-cooperating writer that replaces the
+path after the final comparison but before rename is outside this protocol because POSIX rename has no
+compare-and-swap primitive. This closes the shared durability prerequisite before P5-5f1 moves delete
+sequencing behind a prepared Rust transaction.
+
+### P5-5f0 done-when
+
+- The only catalog write helper requires an exact raw snapshot, Rust validation candidate, logical
+  expected revision, and prepared validator.
+- Every production catalog writer supplies the snapshot captured before planning; there is no unguarded
+  catalog write overload.
+- A deterministic regression replaces the catalog with different raw bytes at the same revision after
+  temporary-file staging but before final validation, proving the mutation conflicts, removes the staged
+  candidate, and preserves the external bytes and workspace.
+- Authority/source-guard tests, formatting, lint, product build, guardrails, and diff checks pass.
+
+## P5-5f1 amendment — prepared Rust delete authority transaction
+
+P5-5f1 moves delete preparation and its durable authority classification behind one exact-runtime Rust
+transaction. Rust consumes the exact raw/effective catalog pair, the effective workspace journal, and a
+closed request containing workspace/file identity, working/catalog revisions, recorded operation, and
+deletion timestamp. It validates every input, plans the canonical deletion tombstone and catalog delete
+transition, binds them into one request digest, and yields a single `publishCatalog` action carrying the
+exact raw-catalog digest, logical revision fence, canonical catalog bytes, and a prevalidated commit
+receipt.
+
+The catalog replacement remains the sole delete authority point. A cancelled, conflicting, or failed
+catalog action terminates as failed; a digest-bound successful report terminates as committed. Once the
+physical catalog rename succeeds, runtime or reporting failure can never turn the delete into a false
+failed retry: Swift activates the attached receipt before reporting success and continues committed
+finalization from that receipt if Rust becomes unavailable.
+
+Swift retains the storage lease and mutation permit, runtime-policy to catalog to workspace lock order,
+bounded reads, P5-5f0 staged raw-byte CAS replacement, and all path capabilities. Rust preparation
+requires the requested live catalog identity and file URL plus the exact applied-delete operation envelope;
+a stopped exact runtime cannot advance a pre-authority transaction. Deletion-sidecar publication plus
+journal, revision, document, git-data, and managed-directory cleanup execute only after a committed Rust
+receipt and a durable catalog-directory sync. A rename followed by directory-sync failure remains applied
+in-process through the attached receipt, but preserves every artifact and reports an indeterminate cleanup
+warning. Generic catalog `tombstone + delete` planning is no longer reachable from the production delete
+path; create, recovery, lazy migration, and post-delete cleanup-warning enrichment are unchanged.
+
+### P5-5f1 done-when
+
+- Rust tests cover exact input binding, the single directive and receipt, action identity/digest replay,
+  cancellation/conflict/write failure, close/runtime lifetime, and the pre/post-authority boundary.
+- Real FFI and Bridge tests prove the prepared object and receipt are exact-runtime bound and reject
+  malformed or contradictory catalog/journal/request inputs.
+- Production delete executes only the prepared Rust directive; its only pre-authority physical mutation
+  is the P5-5f0 catalog CAS write, and all cleanup starts after receipt activation.
+- Existing delete/recreate/restart/corruption/cancellation/lease-handoff tests plus focused Rust, FFI,
+  Bridge, DomainRuntime, codegen, product-build, style, guardrail, and diff checks pass.
