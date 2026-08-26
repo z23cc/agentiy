@@ -900,6 +900,274 @@ impl From<runtime::workspace_context::WorkspaceDocumentProjection>
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionScopeConfigV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub maximum_workspace_count: u64,
+    pub maximum_retained_bytes: u64,
+    pub maximum_snapshot_handle_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionScopeHandleV1 {
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionReplaceRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub expected_generation: u64,
+    pub document_bytes: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionUpsertRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub expected_generation: u64,
+    pub document_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionRemoveRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub expected_generation: u64,
+    pub workspace_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionMutationReceiptV1 {
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub changed: bool,
+    pub workspace_count: u64,
+    pub retained_bytes: u64,
+}
+
+impl From<runtime::workspace_context::WorkspaceProjectionMutationReceipt>
+    for CoreWorkspaceProjectionMutationReceiptV1
+{
+    fn from(value: runtime::workspace_context::WorkspaceProjectionMutationReceipt) -> Self {
+        Self {
+            previous_generation: value.previous_generation,
+            generation: value.generation,
+            changed: value.changed,
+            workspace_count: u64::try_from(value.snapshot.entries.len()).unwrap_or(u64::MAX),
+            retained_bytes: u64::try_from(value.snapshot.retained_bytes).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceProjectionPublicationKindV1 {
+    Bootstrapped,
+    WorkspaceCreated,
+    WorkspaceDeleted,
+    WorkingStateCommitted,
+    SavedDocumentCommitted,
+    ExternalReloaded,
+    ExternalConflict,
+    Degraded,
+    RoutingChanged,
+    OperationDeduplicated,
+}
+
+impl From<CoreWorkspaceProjectionPublicationKindV1>
+    for runtime::workspace_context::WorkspaceProjectionPublicationKind
+{
+    fn from(value: CoreWorkspaceProjectionPublicationKindV1) -> Self {
+        use runtime::workspace_context::WorkspaceProjectionPublicationKind as RuntimeKind;
+        match value {
+            CoreWorkspaceProjectionPublicationKindV1::Bootstrapped => RuntimeKind::Bootstrapped,
+            CoreWorkspaceProjectionPublicationKindV1::WorkspaceCreated => {
+                RuntimeKind::WorkspaceCreated
+            }
+            CoreWorkspaceProjectionPublicationKindV1::WorkspaceDeleted => {
+                RuntimeKind::WorkspaceDeleted
+            }
+            CoreWorkspaceProjectionPublicationKindV1::WorkingStateCommitted => {
+                RuntimeKind::WorkingStateCommitted
+            }
+            CoreWorkspaceProjectionPublicationKindV1::SavedDocumentCommitted => {
+                RuntimeKind::SavedDocumentCommitted
+            }
+            CoreWorkspaceProjectionPublicationKindV1::ExternalReloaded => {
+                RuntimeKind::ExternalReloaded
+            }
+            CoreWorkspaceProjectionPublicationKindV1::ExternalConflict => {
+                RuntimeKind::ExternalConflict
+            }
+            CoreWorkspaceProjectionPublicationKindV1::Degraded => RuntimeKind::Degraded,
+            CoreWorkspaceProjectionPublicationKindV1::RoutingChanged => RuntimeKind::RoutingChanged,
+            CoreWorkspaceProjectionPublicationKindV1::OperationDeduplicated => {
+                RuntimeKind::OperationDeduplicated
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionRevisionStateV1 {
+    pub working_revision: u64,
+    pub saved_revision: u64,
+    pub dirty_revision: Option<u64>,
+}
+
+impl From<CoreWorkspaceProjectionRevisionStateV1>
+    for runtime::workspace_context::WorkspaceProjectionRevisionState
+{
+    fn from(value: CoreWorkspaceProjectionRevisionStateV1) -> Self {
+        Self {
+            working_revision: value.working_revision,
+            saved_revision: value.saved_revision,
+            dirty_revision: value.dirty_revision,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionPublicationEventV1 {
+    pub sequence: u64,
+    pub catalog_revision: u64,
+    pub kind: CoreWorkspaceProjectionPublicationKindV1,
+    pub workspace_id: Option<String>,
+    pub context_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub revisions: Option<CoreWorkspaceProjectionRevisionStateV1>,
+}
+
+impl From<CoreWorkspaceProjectionPublicationEventV1>
+    for runtime::workspace_context::WorkspaceProjectionPublicationEvent
+{
+    fn from(value: CoreWorkspaceProjectionPublicationEventV1) -> Self {
+        Self {
+            sequence: value.sequence,
+            catalog_revision: value.catalog_revision,
+            kind: value.kind.into(),
+            workspace_id: value.workspace_id,
+            context_id: value.context_id,
+            operation_id: value.operation_id,
+            revisions: value.revisions.map(Into::into),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionPublishRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub expected_generation: u64,
+    pub expected_catalog_revision: u64,
+    pub expected_publication_sequence: u64,
+    pub rebased: bool,
+    pub document_bytes: Vec<Vec<u8>>,
+    pub event: CoreWorkspaceProjectionPublicationEventV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionPublicationReceiptV1 {
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub projection_changed: bool,
+    pub workspace_count: u64,
+    pub retained_bytes: u64,
+    pub previous_catalog_revision: u64,
+    pub previous_publication_sequence: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: u64,
+    pub rebased: bool,
+}
+
+impl From<runtime::workspace_context::WorkspaceProjectionPublicationReceipt>
+    for CoreWorkspaceProjectionPublicationReceiptV1
+{
+    fn from(value: runtime::workspace_context::WorkspaceProjectionPublicationReceipt) -> Self {
+        Self {
+            previous_generation: value.projection.previous_generation,
+            generation: value.projection.generation,
+            projection_changed: value.projection.changed,
+            workspace_count: u64::try_from(value.projection.snapshot.entries.len())
+                .unwrap_or(u64::MAX),
+            retained_bytes: u64::try_from(value.projection.snapshot.retained_bytes)
+                .unwrap_or(u64::MAX),
+            previous_catalog_revision: value.previous_catalog_revision,
+            previous_publication_sequence: value.previous_publication_sequence,
+            catalog_revision: value.catalog_revision,
+            publication_sequence: value.publication_sequence,
+            event_log_floor_sequence: value.event_log_floor_sequence,
+            event_log_count: u64::try_from(value.event_log_count).unwrap_or(u64::MAX),
+            rebased: value.rebased,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionRestoreCheckpointRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub checkpoint_bytes: Vec<u8>,
+    pub begin_new_publication_epoch: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionRestoreCheckpointReceiptV1 {
+    pub generation: u64,
+    pub workspace_count: u64,
+    pub retained_bytes: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: u64,
+    pub began_new_publication_epoch: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionSnapshotRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub expected_generation: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionSnapshotHandleV1 {
+    pub handle_id: u64,
+    pub generation: u64,
+    pub workspace_count: u64,
+    pub retained_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionSnapshotPageV1 {
+    pub generation: u64,
+    pub offset: u64,
+    pub returned_count: u64,
+    pub has_more: bool,
+    pub workspaces: Vec<CoreWorkspaceDocumentProjectionV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionDiagnosticsV1 {
+    pub generation: u64,
+    pub open_snapshot_handle_count: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: u64,
+}
+
 impl From<runtime::textdecode::TextDecodeOutcome> for CoreTextDecodeResultV1 {
     fn from(value: runtime::textdecode::TextDecodeOutcome) -> Self {
         let (encoding, legacy_encoding_name) = match value.detected_encoding {

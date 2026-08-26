@@ -155,6 +155,12 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case inventoryScopeBulkLoadRootMismatch
     case inventoryHandleInvalidated(CoreInventoryHandleInvalidationReason)
     case inventoryScopeInvalidRequest(String)
+    case workspaceProjectionUnknownScope
+    case workspaceProjectionScopeAlreadyOpen
+    case workspaceProjectionScopeClosed
+    case workspaceProjectionGenerationMismatch(expected: UInt64, actual: UInt64)
+    case workspaceProjectionUnknownSnapshotHandle
+    case workspaceProjectionCapacityExceeded
     // P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md, design §11 P6-6).
     case agentClaudeUnknownScope
     case agentClaudeScopeClosed
@@ -198,6 +204,13 @@ extension CoreBridgeError: LocalizedError {
         case .inventoryScopeBulkLoadRootMismatch: "The inventory bulk load does not match the given root."
         case let .inventoryHandleInvalidated(reason): "The inventory snapshot handle was invalidated: \(reason)."
         case let .inventoryScopeInvalidRequest(message): "Invalid inventory-scope-v1 request: \(message)"
+        case .workspaceProjectionUnknownScope: "The workspace projection scope is unknown or already closed."
+        case .workspaceProjectionScopeAlreadyOpen: "The workspace projection scope is already open."
+        case .workspaceProjectionScopeClosed: "The workspace projection scope is closed."
+        case let .workspaceProjectionGenerationMismatch(expected, actual):
+            "The workspace projection generation changed (expected \(expected), actual \(actual))."
+        case .workspaceProjectionUnknownSnapshotHandle: "The workspace projection snapshot handle is unknown."
+        case .workspaceProjectionCapacityExceeded: "The workspace projection scope exceeded a configured bound."
         case .agentClaudeUnknownScope: "The agent-claude scope is unknown or already closed."
         case .agentClaudeScopeClosed: "The agent-claude scope is closed."
         case .agentClaudeAlreadyRunning: "The agent-claude scope already has a running process."

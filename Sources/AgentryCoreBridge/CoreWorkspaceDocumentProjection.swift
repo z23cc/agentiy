@@ -1,3 +1,4 @@
+import AgentryUniFFIRaw
 import Foundation
 
 /// Read-only Rust projection of one composed context's headless prompt/selection fields.
@@ -84,6 +85,99 @@ public extension CoreComputeClient {
 }
 
 extension CoreRuntimeTransport {
+    func workspaceProjectionOpenScopeV1(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreWorkspaceProjectionScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionScopeHandleV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionCloseScopeV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionReplaceV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionReplaceRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionUpsertV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionUpsertRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionPublishV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionPublishRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationReceiptV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionRemoveV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionRemoveRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionExportCheckpointV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws -> Data {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionRestoreCheckpointV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionRestoreCheckpointRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionRestoreCheckpointReceiptV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionOpenSnapshotV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotHandleV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionSnapshotPageV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotPageV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionCloseSnapshotV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        handleID: UInt64
+    ) throws {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
+    func workspaceProjectionDiagnosticsV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionDiagnosticsV1 {
+        throw CoreTransportError.unexpected("workspace projection scope transport is unavailable")
+    }
+
     func workspaceDocumentProjectionV1(
         identity: CoreRuntimeIdentity,
         documentBytes: Data

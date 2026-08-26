@@ -152,6 +152,21 @@ package enum DomainWorkspaceMutationPermitKind: String, Equatable, Sendable {
     case command
 }
 
+/// Runtime-scoped proof that the physical workspace lease is still held in the writable epoch that
+/// activated a long-lived derived authority. Unlike an operation permit, this token does not hold
+/// drain open; callers must stop and close the derived authority before mutation-access drain.
+package struct DomainWorkspaceMutationLeaseToken: Sendable {
+    package let storageScopeDigest: String
+    package let leaseEpoch: UUID
+
+    fileprivate let accessID: UUID
+    fileprivate let registry: DomainWorkspaceMutationPermitRegistry
+
+    package func validate(expectedStorageScopeDigest: String) async throws {
+        try registry.validate(self, expectedStorageScopeDigest: expectedStorageScopeDigest)
+    }
+}
+
 /// Opaque, epoch-bound proof that one operation was admitted while the runtime held the physical
 /// workspace lease. Copies remain valid only while their issuing access actor retains `permitID`.
 package struct DomainWorkspaceMutationPermit: Sendable {
@@ -249,6 +264,23 @@ package final class DomainWorkspaceMutationPermitRegistry: @unchecked Sendable {
               permit.leaseEpoch == leaseEpoch,
               activePermits[permit.permitID] == permit.kind,
               state == .reconciling || state == .writable || state == .draining
+        else {
+            throw DomainWorkspaceMutationAccessError.invalidPermit
+        }
+    }
+
+    package func validate(
+        _ token: DomainWorkspaceMutationLeaseToken,
+        expectedStorageScopeDigest: String
+    ) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard token.accessID == accessID,
+              token.registry === self,
+              token.storageScopeDigest == storageScopeDigest,
+              token.storageScopeDigest == expectedStorageScopeDigest,
+              token.leaseEpoch == leaseEpoch,
+              state == .writable
         else {
             throw DomainWorkspaceMutationAccessError.invalidPermit
         }
@@ -609,6 +641,18 @@ package actor DomainWorkspaceMutationAccess {
             transition(to: .released)
         }
         return snapshot()
+    }
+
+    package func workspaceLeaseToken() throws -> DomainWorkspaceMutationLeaseToken {
+        guard state == .writable, let owner else {
+            throw DomainWorkspaceMutationAccessError.unavailable(reason: reason)
+        }
+        return DomainWorkspaceMutationLeaseToken(
+            storageScopeDigest: scope.storageScopeDigest,
+            leaseEpoch: owner.leaseEpoch,
+            accessID: accessID,
+            registry: permitRegistry
+        )
     }
 
     package func withCommandPermit<T: Sendable>(

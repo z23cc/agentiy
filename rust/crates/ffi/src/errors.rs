@@ -128,6 +128,18 @@ pub enum CoreError {
     },
     #[error("{message}")]
     InventoryScopeInvalidRequest { message: String },
+    #[error("unknown workspace projection scope")]
+    WorkspaceProjectionUnknownScope,
+    #[error("workspace projection scope is already open")]
+    WorkspaceProjectionScopeAlreadyOpen,
+    #[error("workspace projection scope is closed")]
+    WorkspaceProjectionScopeClosed,
+    #[error("workspace projection generation mismatch")]
+    WorkspaceProjectionGenerationMismatch { expected: u64, actual: u64 },
+    #[error("unknown workspace projection snapshot handle")]
+    WorkspaceProjectionUnknownSnapshotHandle,
+    #[error("workspace projection capacity exceeded")]
+    WorkspaceProjectionCapacityExceeded,
     // P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md, design §11 P6-6).
     #[error("unknown agent-claude scope")]
     AgentClaudeUnknownScope,
@@ -152,6 +164,58 @@ pub enum CoreError {
     /// port of `ControllerError.invalidControlResponse`.
     #[error("agent-claude control response error: {message}")]
     AgentClaudeControlResponseError { message: String },
+}
+
+impl From<agentry_runtime::workspace_context::WorkspaceProjectionCatalogError> for CoreError {
+    fn from(value: agentry_runtime::workspace_context::WorkspaceProjectionCatalogError) -> Self {
+        use agentry_runtime::workspace_context::WorkspaceProjectionCatalogError;
+        match value {
+            WorkspaceProjectionCatalogError::GenerationMismatch { expected, actual } => {
+                Self::WorkspaceProjectionGenerationMismatch { expected, actual }
+            }
+            WorkspaceProjectionCatalogError::WorkspaceCapacityExceeded { .. }
+            | WorkspaceProjectionCatalogError::RetainedBytesExceeded { .. }
+            | WorkspaceProjectionCatalogError::GenerationExhausted => {
+                Self::WorkspaceProjectionCapacityExceeded
+            }
+            WorkspaceProjectionCatalogError::StateUnavailable => Self::RuntimePoisoned,
+            WorkspaceProjectionCatalogError::Projection(_)
+            | WorkspaceProjectionCatalogError::DuplicateWorkspaceId(_)
+            | WorkspaceProjectionCatalogError::PublicationCursorMismatch { .. }
+            | WorkspaceProjectionCatalogError::InvalidPublicationSequence { .. }
+            | WorkspaceProjectionCatalogError::CatalogRevisionRegressed { .. }
+            | WorkspaceProjectionCatalogError::InvalidPublicationIdentity => Self::InvalidArgument,
+        }
+    }
+}
+
+impl From<agentry_runtime::workspace_context::WorkspaceProjectionScopeError> for CoreError {
+    fn from(value: agentry_runtime::workspace_context::WorkspaceProjectionScopeError) -> Self {
+        use agentry_runtime::workspace_context::WorkspaceProjectionScopeError;
+        match value {
+            WorkspaceProjectionScopeError::InvalidScopeId => Self::InvalidArgument,
+            WorkspaceProjectionScopeError::ScopeAlreadyOpen(_) => {
+                Self::WorkspaceProjectionScopeAlreadyOpen
+            }
+            WorkspaceProjectionScopeError::UnknownScope(_) => Self::WorkspaceProjectionUnknownScope,
+            WorkspaceProjectionScopeError::ScopeClosed(_) => Self::WorkspaceProjectionScopeClosed,
+            WorkspaceProjectionScopeError::ScopeCapacityExceeded { .. }
+            | WorkspaceProjectionScopeError::SnapshotHandleCapacityExceeded { .. }
+            | WorkspaceProjectionScopeError::HandleIdExhausted
+            | WorkspaceProjectionScopeError::ScopeIncarnationExhausted
+            | WorkspaceProjectionScopeError::CheckpointTooLarge { .. } => {
+                Self::WorkspaceProjectionCapacityExceeded
+            }
+            WorkspaceProjectionScopeError::UnknownSnapshotHandle(_) => {
+                Self::WorkspaceProjectionUnknownSnapshotHandle
+            }
+            WorkspaceProjectionScopeError::FutureCheckpoint(_)
+            | WorkspaceProjectionScopeError::InvalidCheckpoint
+            | WorkspaceProjectionScopeError::CheckpointStateConflict => Self::InvalidArgument,
+            WorkspaceProjectionScopeError::StateUnavailable => Self::RuntimePoisoned,
+            WorkspaceProjectionScopeError::Catalog(error) => error.into(),
+        }
+    }
 }
 
 impl From<IdentifierError> for CoreError {

@@ -42,6 +42,7 @@ pcre2 = { workspace = true }
 # (`agent_claude`) is production code, not test-only -- promoted from dev-dependencies (below) to a
 # real dependency. Already a pinned workspace dependency used elsewhere as a real dependency
 # (`crates/ffi`), so this is not a new crate in the tree.
+serde.workspace = true
 serde_json.workspace = true
 # P4-4: `inventory_scope::wire::fingerprint()` hashes the `inventory-scope-v1` schema descriptor
 # with a fixed, portable algorithm so the Swift mirror can independently reproduce it (a
@@ -67,10 +68,6 @@ tree-sitter-typescript.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-# P6-3: `#[derive(serde::Deserialize)]` for the `agent_claude::tool_owned` curated-fixture test
-# reader only -- `serde_json` (above) is the production dependency for the codec/translator port
-# itself.
-serde = { workspace = true, features = ["derive"] }
 
 # P6-4 (docs/architecture/rust-agent-claude-v1.md §5.2/§12): the confirmed `addchdir_np` extern "C"
 # binding needs an unconditional, narrowly-scoped `unsafe_code` exception. `#![forbid(unsafe_code)]`

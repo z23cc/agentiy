@@ -173,6 +173,7 @@ actor DomainWorkspaceContextAuthority {
     private let mutationAccess: DomainWorkspaceMutationAccess
     private let workspaceAuthorityScope: DomainWorkspaceAuthorityLeaseScope
     private let metrics: DomainRuntimeMetricsSink
+    private let projectionObservationSink: DomainWorkspaceProjectionObservationSink
     private var records: [UUID: WorkspaceRecord] = [:]
     /// Awaited in-memory registrations used only by read routing. They are not catalog entries and
     /// never persist ephemeral/test workspaces. A later command invalidates the overlay.
@@ -193,13 +194,15 @@ actor DomainWorkspaceContextAuthority {
         identity: DomainRuntimeIdentity,
         persistence: DomainPersistenceCoordinator,
         mutationAccess: DomainWorkspaceMutationAccess,
-        metrics: DomainRuntimeMetricsSink
+        metrics: DomainRuntimeMetricsSink,
+        projectionObservationSink: DomainWorkspaceProjectionObservationSink
     ) {
         self.identity = identity
         self.persistence = persistence
         self.mutationAccess = mutationAccess
         workspaceAuthorityScope = mutationAccess.scope
         self.metrics = metrics
+        self.projectionObservationSink = projectionObservationSink
         mutationAccessSnapshot = DomainWorkspaceMutationAccessSnapshot(
             generation: 0,
             state: .unavailable,
@@ -235,6 +238,10 @@ actor DomainWorkspaceContextAuthority {
         records = Dictionary(uniqueKeysWithValues: loaded.workspaces.map { workspace in
             (workspace.document.workspaceID, makeRecord(from: workspace))
         })
+        projectionObservationSink.observe(
+            records.values.map(\.document),
+            source: .bootstrap
+        )
         didBootstrap = true
         bootstrapTask = nil
         let projectedHealth = effectiveHealth(health)
@@ -249,7 +256,7 @@ actor DomainWorkspaceContextAuthority {
     }
 
     func snapshot() -> DomainWorkspaceCatalogSnapshot {
-        DomainWorkspaceCatalogSnapshot(
+        let snapshot = DomainWorkspaceCatalogSnapshot(
             runtimeIdentity: identity,
             isBootstrapped: didBootstrap,
             publicationSequence: publicationSequence,
@@ -261,19 +268,33 @@ actor DomainWorkspaceContextAuthority {
                 return $0.document.workspaceID.uuidString < $1.document.workspaceID.uuidString
             }
         )
+        projectionObservationSink.observe(
+            snapshot.workspaces.map(\.document),
+            source: .catalogSnapshot
+        )
+        return snapshot
     }
 
     func workspaceSnapshot(_ workspaceID: UUID) -> DomainWorkspaceSnapshot? {
-        if let registration = readRegistrations[workspaceID] {
-            return projectSnapshot(registration)
+        let snapshot = if let registration = readRegistrations[workspaceID] {
+            projectSnapshot(registration)
+        } else {
+            records[workspaceID].map(makeSnapshot)
         }
-        return records[workspaceID].map(makeSnapshot)
+        if let snapshot {
+            projectionObservationSink.observe(snapshot.document, source: .workspaceRead)
+        }
+        return snapshot
     }
 
     /// Command outcomes and mutation admission must report canonical record state; the read
     /// overlay is routing-only and must never leak into recovery health or revision baselines.
     func canonicalWorkspaceSnapshot(_ workspaceID: UUID) -> DomainWorkspaceSnapshot? {
-        records[workspaceID].map(makeSnapshot)
+        let snapshot = records[workspaceID].map(makeSnapshot)
+        if let snapshot {
+            projectionObservationSink.observe(snapshot.document, source: .canonicalWorkspaceRead)
+        }
+        return snapshot
     }
 
     func contextSnapshot(_ identity: DomainContextIdentity) -> DomainContextSnapshot? {
@@ -287,6 +308,7 @@ actor DomainWorkspaceContextAuthority {
         let previous = readRegistrations[document.workspaceID]
             ?? records[document.workspaceID].map(makeSnapshot)
         if let previous, previous.document.contentDigest == document.contentDigest {
+            projectionObservationSink.observe(previous.document, source: .readRegistration)
             return previous
         }
 
@@ -324,7 +346,9 @@ actor DomainWorkspaceContextAuthority {
             }
         )
         readRegistrations[document.workspaceID] = registration
-        return projectSnapshot(registration)
+        let projected = projectSnapshot(registration)
+        projectionObservationSink.observe(projected.document, source: .readRegistration)
+        return projected
     }
 
     func readySnapshot() async -> DomainWorkspaceCatalogSnapshot {
@@ -350,22 +374,27 @@ actor DomainWorkspaceContextAuthority {
 
     func execute(_ envelope: DomainWorkspaceCommandEnvelope) async -> DomainCommandOutcome {
         await bootstrap()
+        let outcome: DomainCommandOutcome
         do {
-            return try await mutationAccess.withCommandPermit { permit in
+            outcome = try await mutationAccess.withCommandPermit { permit in
                 await self.executeAdmitted(envelope, permit: permit)
             }
         } catch let DomainWorkspaceMutationAccessError.unavailable(reason) {
             let snapshot = await mutationAccess.snapshot()
             applyMutationAccessSnapshot(snapshot)
-            return unrecordedMutationAccessRejection(envelope, reason: reason)
+            outcome = unrecordedMutationAccessRejection(envelope, reason: reason)
         } catch {
             let snapshot = await mutationAccess.snapshot()
             applyMutationAccessSnapshot(snapshot)
-            return unrecordedMutationAccessRejection(
+            outcome = unrecordedMutationAccessRejection(
                 envelope,
                 reason: "canonical_storage_mutation_permit_invalid"
             )
         }
+        if let document = outcome.workspace?.document {
+            projectionObservationSink.observe(document, source: .commandOutcome)
+        }
+        return outcome
     }
 
     private func executeAdmitted(
@@ -619,6 +648,10 @@ actor DomainWorkspaceContextAuthority {
             await self.reconcileAfterLeaseAcquisition(permit: permit)
         }
         applyMutationAccessSnapshot(accessSnapshot)
+        projectionObservationSink.observe(
+            records.values.map(\.document),
+            source: .leaseReconciliation
+        )
         return accessSnapshot
     }
 
@@ -636,17 +669,29 @@ actor DomainWorkspaceContextAuthority {
         await bootstrap()
         let priorAccess = mutationAccessSnapshot
         let activated = await activateMutationAccess()
-        guard activated.acceptsMutations else { return .recoveryPending }
-        if !priorAccess.acceptsMutations { return .changed }
-        do {
-            let pass = try await mutationAccess.withCommandPermit { permit in
-                await self.reloadExternalChangesAdmitted(permit: permit)
+        let activity: DomainExternalReloadActivity
+        if !activated.acceptsMutations {
+            activity = .recoveryPending
+        } else if !priorAccess.acceptsMutations {
+            activity = .changed
+        } else {
+            do {
+                let pass = try await mutationAccess.withCommandPermit { permit in
+                    await self.reloadExternalChangesAdmitted(permit: permit)
+                }
+                activity = pass.activity
+            } catch {
+                applyMutationAccessSnapshot(await mutationAccess.snapshot())
+                activity = .recoveryPending
             }
-            return pass.activity
-        } catch {
-            applyMutationAccessSnapshot(await mutationAccess.snapshot())
-            return .recoveryPending
         }
+        if activity != .unchanged {
+            projectionObservationSink.observe(
+                records.values.map(\.document),
+                source: .externalReload
+            )
+        }
+        return activity
     }
 
     private func reconcileAfterLeaseAcquisition(
@@ -2220,6 +2265,10 @@ actor DomainWorkspaceContextAuthority {
         for continuation in subscribers.values {
             continuation.yield(event)
         }
+        projectionObservationSink.observePublication(
+            event,
+            documents: records.values.map(\.document)
+        )
     }
 
     private func removeSubscriber(_ token: UUID) {

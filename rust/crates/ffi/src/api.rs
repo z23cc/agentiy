@@ -31,6 +31,16 @@ use crate::types::{
     AgentClaudeInterruptReceiptV1, AgentClaudePermissionDecisionV1, AgentClaudeScopeHandleV1,
     AgentClaudeStartReceiptV1, CoreAgentClaudeScopeConfigV1,
 };
+use crate::types::{
+    CoreWorkspaceProjectionDiagnosticsV1, CoreWorkspaceProjectionMutationReceiptV1,
+    CoreWorkspaceProjectionPublicationReceiptV1, CoreWorkspaceProjectionPublishRequestV1,
+    CoreWorkspaceProjectionRemoveRequestV1, CoreWorkspaceProjectionReplaceRequestV1,
+    CoreWorkspaceProjectionRestoreCheckpointReceiptV1,
+    CoreWorkspaceProjectionRestoreCheckpointRequestV1, CoreWorkspaceProjectionScopeConfigV1,
+    CoreWorkspaceProjectionScopeHandleV1, CoreWorkspaceProjectionSnapshotHandleV1,
+    CoreWorkspaceProjectionSnapshotPageV1, CoreWorkspaceProjectionSnapshotRequestV1,
+    CoreWorkspaceProjectionUpsertRequestV1,
+};
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
 use std::os::fd::IntoRawFd;
@@ -110,6 +120,8 @@ pub struct CoreRuntime {
     path_search_service: runtime::pathsearch::PathSearchFindService,
     token_accounting_service: runtime::tokenacct::TokenAccountingService,
     inventory_scope_registry: runtime::inventory_scope::ScopeRegistry,
+    workspace_projection_scope_registry:
+        runtime::workspace_context::WorkspaceProjectionScopeRegistry,
     agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry,
     config: CoreConfig,
     initialized: AtomicBool,
@@ -492,6 +504,294 @@ impl CoreRuntime {
             runtime::workspace_context::project_workspace_document_v1(&request.document_bytes)
                 .map(Into::into)
                 .map_err(|_| CoreError::InvalidArgument)
+        })
+    }
+
+    pub fn workspace_projection_open_scope_v1(
+        &self,
+        config: CoreWorkspaceProjectionScopeConfigV1,
+    ) -> Result<CoreWorkspaceProjectionScopeHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&config.runtime_identity)?;
+            let maximum_workspace_count = usize::try_from(config.maximum_workspace_count)
+                .map_err(|_| CoreError::InvalidArgument)?;
+            let maximum_retained_bytes = usize::try_from(config.maximum_retained_bytes)
+                .map_err(|_| CoreError::InvalidArgument)?;
+            let maximum_snapshot_handle_count =
+                usize::try_from(config.maximum_snapshot_handle_count)
+                    .map_err(|_| CoreError::InvalidArgument)?;
+            if maximum_workspace_count == 0
+                || maximum_workspace_count
+                    > runtime::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_COUNT
+                || maximum_retained_bytes == 0
+                || maximum_retained_bytes
+                    > runtime::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_RETAINED_BYTES
+                || maximum_snapshot_handle_count == 0
+                || maximum_snapshot_handle_count
+                    > runtime::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_SNAPSHOT_HANDLE_COUNT
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            let scope = self.workspace_projection_scope_registry.open_scope(
+                &config.scope_id,
+                runtime::workspace_context::WorkspaceProjectionCatalogLimits {
+                    maximum_workspace_count,
+                    maximum_retained_bytes,
+                },
+                maximum_snapshot_handle_count,
+            )?;
+            Ok(CoreWorkspaceProjectionScopeHandleV1 {
+                scope_id: scope.scope_id().to_owned(),
+                scope_incarnation: scope.scope_incarnation(),
+                generation: 0,
+            })
+        })
+    }
+
+    pub fn workspace_projection_close_scope_v1(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        scope_incarnation: u64,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&identity)?;
+            self.workspace_projection_scope_registry
+                .close_scope(&scope_id, scope_incarnation)?;
+            Ok(())
+        })
+    }
+
+    pub fn workspace_projection_replace_v1(
+        &self,
+        request: CoreWorkspaceProjectionReplaceRequestV1,
+    ) -> Result<CoreWorkspaceProjectionMutationReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            Ok(scope
+                .replace_documents(request.expected_generation, &request.document_bytes)?
+                .into())
+        })
+    }
+
+    pub fn workspace_projection_upsert_v1(
+        &self,
+        request: CoreWorkspaceProjectionUpsertRequestV1,
+    ) -> Result<CoreWorkspaceProjectionMutationReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            Ok(scope
+                .upsert_document(request.expected_generation, &request.document_bytes)?
+                .into())
+        })
+    }
+
+    pub fn workspace_projection_remove_v1(
+        &self,
+        request: CoreWorkspaceProjectionRemoveRequestV1,
+    ) -> Result<CoreWorkspaceProjectionMutationReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            Ok(scope
+                .remove_workspace(request.expected_generation, &request.workspace_id)?
+                .into())
+        })
+    }
+
+    pub fn workspace_projection_publish_v1(
+        &self,
+        request: CoreWorkspaceProjectionPublishRequestV1,
+    ) -> Result<CoreWorkspaceProjectionPublicationReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            Ok(scope
+                .publish_state(
+                    request.expected_generation,
+                    request.expected_catalog_revision,
+                    request.expected_publication_sequence,
+                    request.rebased,
+                    &request.document_bytes,
+                    request.event.into(),
+                )?
+                .into())
+        })
+    }
+
+    pub fn workspace_projection_export_checkpoint_v1(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        scope_incarnation: u64,
+    ) -> Result<Vec<u8>, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&scope_id, scope_incarnation)?;
+            Ok(scope.export_checkpoint()?)
+        })
+    }
+
+    pub fn workspace_projection_restore_checkpoint_v1(
+        &self,
+        request: CoreWorkspaceProjectionRestoreCheckpointRequestV1,
+    ) -> Result<CoreWorkspaceProjectionRestoreCheckpointReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            let snapshot = if request.begin_new_publication_epoch {
+                scope.restore_checkpoint_for_new_publication_epoch(&request.checkpoint_bytes)?
+            } else {
+                scope.restore_checkpoint(&request.checkpoint_bytes)?
+            };
+            let publication = scope.publication_state()?;
+            Ok(CoreWorkspaceProjectionRestoreCheckpointReceiptV1 {
+                generation: snapshot.generation,
+                workspace_count: u64::try_from(snapshot.entries.len())
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                retained_bytes: u64::try_from(snapshot.retained_bytes)
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                catalog_revision: publication.catalog_revision,
+                publication_sequence: publication.publication_sequence,
+                event_log_floor_sequence: publication.event_log_floor_sequence,
+                event_log_count: u64::try_from(publication.events.len())
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                began_new_publication_epoch: request.begin_new_publication_epoch,
+            })
+        })
+    }
+
+    pub fn workspace_projection_open_snapshot_v1(
+        &self,
+        request: CoreWorkspaceProjectionSnapshotRequestV1,
+    ) -> Result<CoreWorkspaceProjectionSnapshotHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            let (handle_id, snapshot) = scope.open_snapshot(request.expected_generation)?;
+            Ok(CoreWorkspaceProjectionSnapshotHandleV1 {
+                handle_id: handle_id.raw(),
+                generation: snapshot.generation,
+                workspace_count: u64::try_from(snapshot.entries.len())
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                retained_bytes: u64::try_from(snapshot.retained_bytes)
+                    .map_err(|_| CoreError::InvalidArgument)?,
+            })
+        })
+    }
+
+    pub fn workspace_projection_snapshot_page_v1(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        scope_incarnation: u64,
+        handle_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<CoreWorkspaceProjectionSnapshotPageV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&identity)?;
+            let offset = usize::try_from(offset).map_err(|_| CoreError::InvalidArgument)?;
+            let limit = usize::try_from(limit).map_err(|_| CoreError::InvalidArgument)?;
+            if limit == 0 {
+                return Err(CoreError::InvalidArgument);
+            }
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&scope_id, scope_incarnation)?;
+            let snapshot = scope.read_snapshot(
+                runtime::workspace_context::WorkspaceProjectionSnapshotHandleId::from_raw(
+                    handle_id,
+                ),
+            )?;
+            let start = offset.min(snapshot.entries.len());
+            let end = start.saturating_add(limit).min(snapshot.entries.len());
+            let workspaces = snapshot.entries[start..end]
+                .iter()
+                .map(|entry| entry.projection.clone().into())
+                .collect::<Vec<_>>();
+            Ok(CoreWorkspaceProjectionSnapshotPageV1 {
+                generation: snapshot.generation,
+                offset: u64::try_from(start).map_err(|_| CoreError::InvalidArgument)?,
+                returned_count: u64::try_from(workspaces.len())
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                has_more: end < snapshot.entries.len(),
+                workspaces,
+            })
+        })
+    }
+
+    pub fn workspace_projection_close_snapshot_v1(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        scope_incarnation: u64,
+        handle_id: u64,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&scope_id, scope_incarnation)?;
+            scope.close_snapshot(
+                runtime::workspace_context::WorkspaceProjectionSnapshotHandleId::from_raw(
+                    handle_id,
+                ),
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn workspace_projection_diagnostics_v1(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        scope_incarnation: u64,
+    ) -> Result<CoreWorkspaceProjectionDiagnosticsV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&scope_id, scope_incarnation)?;
+            let (generation, open_snapshot_handle_count, publication) = scope.diagnostics()?;
+            Ok(CoreWorkspaceProjectionDiagnosticsV1 {
+                generation,
+                open_snapshot_handle_count: u64::try_from(open_snapshot_handle_count)
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                catalog_revision: publication.catalog_revision,
+                publication_sequence: publication.publication_sequence,
+                event_log_floor_sequence: publication.event_log_floor_sequence,
+                event_log_count: u64::try_from(publication.events.len())
+                    .map_err(|_| CoreError::InvalidArgument)?,
+            })
         })
     }
 
@@ -1413,6 +1713,7 @@ impl CoreRuntime {
         self.guard(|| {
             self.require_initialized()?;
             let identity = self.validate_identity(&identity)?;
+            let _ = self.workspace_projection_scope_registry.close_all();
             let receipt = self.inner.begin_shutdown(&identity)?;
             Ok(ShutdownReceipt {
                 already_started: receipt.already_started,
@@ -1662,6 +1963,8 @@ impl CoreRuntime {
             path_search_service: runtime::pathsearch::PathSearchFindService,
             token_accounting_service: runtime::tokenacct::TokenAccountingService,
             inventory_scope_registry: runtime::inventory_scope::ScopeRegistry::new(),
+            workspace_projection_scope_registry:
+                runtime::workspace_context::WorkspaceProjectionScopeRegistry::default(),
             agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry::new(),
             config,
             initialized: AtomicBool::new(false),
@@ -1737,6 +2040,7 @@ mod tests {
     use super::*;
     use crate::types::{
         CoreApplyEditsSubjectRequestV1, CoreCodeMapSourceKindV1, CoreCodeMapSubjectRequestV1,
+        CoreWorkspaceProjectionPublicationEventV1, CoreWorkspaceProjectionPublicationKindV1,
         InventoryApplyOutcomeV1, InventoryRejectionReasonV1,
     };
 
@@ -1886,6 +2190,299 @@ mod tests {
                 document_bytes: b"[]".to_vec(),
             });
         assert_eq!(invalid_document, Err(CoreError::InvalidArgument));
+    }
+
+    #[test]
+    fn workspace_projection_stateful_ffi_preserves_cas_scope_and_snapshot_contracts() {
+        let (core, identity, _) = initialized_core();
+        let scope_id = "51515151-1111-2222-3333-444444444444".to_owned();
+        let scope = core
+            .workspace_projection_open_scope_v1(CoreWorkspaceProjectionScopeConfigV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                maximum_workspace_count: 4,
+                maximum_retained_bytes: 1_048_576,
+                maximum_snapshot_handle_count: 2,
+            })
+            .expect("open workspace projection scope");
+        assert_eq!(scope.scope_id, scope_id);
+        assert_eq!(scope.generation, 0);
+
+        let workspace_a =
+            br#"{"id":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE","name":"Before"}"#.to_vec();
+        let workspace_b =
+            br#"{"id":"BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF","name":"Second"}"#.to_vec();
+        let replaced = core
+            .workspace_projection_replace_v1(CoreWorkspaceProjectionReplaceRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                scope_incarnation: scope.scope_incarnation,
+                expected_generation: 0,
+                document_bytes: vec![workspace_b, workspace_a],
+            })
+            .expect("replace catalog");
+        assert!(replaced.changed);
+        assert_eq!(replaced.generation, 1);
+        assert_eq!(replaced.workspace_count, 2);
+
+        assert_eq!(
+            core.workspace_projection_upsert_v1(CoreWorkspaceProjectionUpsertRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                scope_incarnation: scope.scope_incarnation,
+                expected_generation: 0,
+                document_bytes: br#"{"id":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE","name":"Stale"}"#
+                    .to_vec(),
+            }),
+            Err(CoreError::WorkspaceProjectionGenerationMismatch {
+                expected: 0,
+                actual: 1
+            })
+        );
+        let snapshot = core
+            .workspace_projection_open_snapshot_v1(CoreWorkspaceProjectionSnapshotRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                scope_incarnation: scope.scope_incarnation,
+                expected_generation: Some(1),
+            })
+            .expect("open immutable generation 1");
+        assert_eq!(snapshot.workspace_count, 2);
+
+        let upserted = core
+            .workspace_projection_upsert_v1(CoreWorkspaceProjectionUpsertRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                scope_incarnation: scope.scope_incarnation,
+                expected_generation: 1,
+                document_bytes: br#"{"id":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE","name":"After"}"#
+                    .to_vec(),
+            })
+            .expect("upsert later generation");
+        assert_eq!(upserted.generation, 2);
+        let first_page = core
+            .workspace_projection_snapshot_page_v1(
+                identity.clone(),
+                scope_id.clone(),
+                scope.scope_incarnation,
+                snapshot.handle_id,
+                0,
+                1,
+            )
+            .expect("page retired generation");
+        assert_eq!(first_page.generation, 1);
+        assert_eq!(first_page.workspaces[0].name, "Before");
+        assert!(first_page.has_more);
+        let second_page = core
+            .workspace_projection_snapshot_page_v1(
+                identity.clone(),
+                scope_id.clone(),
+                scope.scope_incarnation,
+                snapshot.handle_id,
+                1,
+                1,
+            )
+            .expect("second retired page");
+        assert_eq!(second_page.workspaces[0].name, "Second");
+        assert!(!second_page.has_more);
+
+        let diagnostics = core
+            .workspace_projection_diagnostics_v1(
+                identity.clone(),
+                scope_id.clone(),
+                scope.scope_incarnation,
+            )
+            .expect("diagnostics");
+        assert_eq!(diagnostics.generation, 2);
+        assert_eq!(diagnostics.open_snapshot_handle_count, 1);
+        core.workspace_projection_close_snapshot_v1(
+            identity.clone(),
+            scope_id.clone(),
+            scope.scope_incarnation,
+            snapshot.handle_id,
+        )
+        .expect("close snapshot");
+        core.workspace_projection_close_snapshot_v1(
+            identity.clone(),
+            scope_id.clone(),
+            scope.scope_incarnation,
+            snapshot.handle_id,
+        )
+        .expect("close snapshot idempotently");
+        core.workspace_projection_close_scope_v1(
+            identity.clone(),
+            scope_id.clone(),
+            scope.scope_incarnation,
+        )
+        .expect("close scope");
+        assert_eq!(
+            core.workspace_projection_diagnostics_v1(
+                identity.clone(),
+                scope_id.clone(),
+                scope.scope_incarnation,
+            ),
+            Err(CoreError::WorkspaceProjectionUnknownScope)
+        );
+        core.workspace_projection_close_scope_v1(
+            identity.clone(),
+            scope_id.clone(),
+            scope.scope_incarnation,
+        )
+        .expect("close scope idempotently");
+
+        let reopened = core
+            .workspace_projection_open_scope_v1(CoreWorkspaceProjectionScopeConfigV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                maximum_workspace_count: 4,
+                maximum_retained_bytes: 1_048_576,
+                maximum_snapshot_handle_count: 2,
+            })
+            .expect("reopen same scope identity");
+        assert_ne!(reopened.scope_incarnation, scope.scope_incarnation);
+        assert_eq!(
+            core.workspace_projection_diagnostics_v1(
+                identity.clone(),
+                scope_id.clone(),
+                scope.scope_incarnation,
+            ),
+            Err(CoreError::WorkspaceProjectionScopeClosed)
+        );
+        assert_eq!(
+            core.workspace_projection_close_scope_v1(
+                identity.clone(),
+                scope_id.clone(),
+                scope.scope_incarnation,
+            ),
+            Err(CoreError::WorkspaceProjectionScopeClosed)
+        );
+        assert_eq!(
+            core.workspace_projection_diagnostics_v1(
+                identity.clone(),
+                scope_id.clone(),
+                reopened.scope_incarnation,
+            )
+            .expect("reopened scope survives stale close")
+            .generation,
+            0
+        );
+        core.workspace_projection_close_scope_v1(identity, scope_id, reopened.scope_incarnation)
+            .expect("close reopened scope");
+    }
+
+    #[test]
+    fn workspace_projection_checkpoint_export_and_restart_restore_reset_the_event_cursor() {
+        let (core, identity, _) = initialized_core();
+        let scope_id = "61616161-1111-2222-3333-444444444444".to_owned();
+        let document =
+            br#"{"id":"bbbbbbbb-cccc-dddd-eeee-ffffffffffff","name":"Checkpoint"}"#.to_vec();
+        let opened = core
+            .workspace_projection_open_scope_v1(CoreWorkspaceProjectionScopeConfigV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                maximum_workspace_count: 4,
+                maximum_retained_bytes: 1_048_576,
+                maximum_snapshot_handle_count: 2,
+            })
+            .expect("open source");
+        let published = core
+            .workspace_projection_publish_v1(CoreWorkspaceProjectionPublishRequestV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                scope_incarnation: opened.scope_incarnation,
+                expected_generation: 0,
+                expected_catalog_revision: 0,
+                expected_publication_sequence: 0,
+                rebased: true,
+                document_bytes: vec![document],
+                event: CoreWorkspaceProjectionPublicationEventV1 {
+                    sequence: 7,
+                    catalog_revision: 9,
+                    kind: CoreWorkspaceProjectionPublicationKindV1::Bootstrapped,
+                    workspace_id: None,
+                    context_id: None,
+                    operation_id: None,
+                    revisions: None,
+                },
+            })
+            .expect("publish source");
+        assert_eq!(published.generation, 1);
+        let checkpoint = core
+            .workspace_projection_export_checkpoint_v1(
+                identity.clone(),
+                scope_id.clone(),
+                opened.scope_incarnation,
+            )
+            .expect("export checkpoint");
+        core.workspace_projection_close_scope_v1(
+            identity.clone(),
+            scope_id.clone(),
+            opened.scope_incarnation,
+        )
+        .expect("close source");
+
+        let reopened = core
+            .workspace_projection_open_scope_v1(CoreWorkspaceProjectionScopeConfigV1 {
+                runtime_identity: identity.clone(),
+                scope_id: scope_id.clone(),
+                maximum_workspace_count: 4,
+                maximum_retained_bytes: 1_048_576,
+                maximum_snapshot_handle_count: 2,
+            })
+            .expect("open target");
+        let restored = core
+            .workspace_projection_restore_checkpoint_v1(
+                CoreWorkspaceProjectionRestoreCheckpointRequestV1 {
+                    runtime_identity: identity.clone(),
+                    scope_id: scope_id.clone(),
+                    scope_incarnation: reopened.scope_incarnation,
+                    checkpoint_bytes: checkpoint,
+                    begin_new_publication_epoch: true,
+                },
+            )
+            .expect("restore checkpoint");
+        assert_eq!(restored.generation, 1);
+        assert_eq!(restored.workspace_count, 1);
+        assert_eq!(restored.catalog_revision, 0);
+        assert_eq!(restored.publication_sequence, 0);
+        assert_eq!(restored.event_log_floor_sequence, 1);
+        assert_eq!(restored.event_log_count, 0);
+        assert!(restored.began_new_publication_epoch);
+    }
+
+    #[test]
+    fn workspace_projection_scope_rejects_configuration_above_compiled_caps() {
+        let (core, identity, _) = initialized_core();
+        let maximum_count =
+            u64::try_from(runtime::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_COUNT)
+                .expect("count cap");
+        let maximum_bytes = u64::try_from(
+            runtime::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_RETAINED_BYTES,
+        )
+        .expect("byte cap");
+        let maximum_handles = u64::try_from(
+            runtime::workspace_context::DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_SNAPSHOT_HANDLE_COUNT,
+        )
+        .expect("handle cap");
+        for (index, (count, bytes, handles)) in [
+            (maximum_count + 1, maximum_bytes, maximum_handles),
+            (maximum_count, maximum_bytes + 1, maximum_handles),
+            (maximum_count, maximum_bytes, maximum_handles + 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                core.workspace_projection_open_scope_v1(CoreWorkspaceProjectionScopeConfigV1 {
+                    runtime_identity: identity.clone(),
+                    scope_id: format!("71717171-1111-2222-3333-44444444444{index}"),
+                    maximum_workspace_count: count,
+                    maximum_retained_bytes: bytes,
+                    maximum_snapshot_handle_count: handles,
+                }),
+                Err(CoreError::InvalidArgument)
+            );
+        }
     }
 
     fn search_score_request(

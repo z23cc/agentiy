@@ -308,6 +308,98 @@ final class DomainWorkspaceAuthorityLeaseTests: XCTestCase {
         XCTAssertEqual(released.state, .released)
     }
 
+    func testProjectionCheckpointPersistenceRequiresLivePermitAndAtomicallyReplacesData() async throws {
+        let root = try makeStorageRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = makeConfiguration(storageDirectory: root)
+        let identity = makeIdentity(mode: .app)
+        let lease = DomainWorkspaceAuthorityLease(
+            configuration: configuration,
+            identity: identity
+        )
+        let access = DomainWorkspaceMutationAccess(lease: lease)
+        let persistence = DomainPersistenceCoordinator(
+            configuration: configuration,
+            identity: identity,
+            workspaceAuthorityScope: lease.scope,
+            workspaceMutationPermitRegistry: access.permitRegistry
+        )
+        let activated = await access.activate { _ in true }
+        XCTAssertEqual(activated.state, .writable)
+
+        let expiredPermit = try await access.withCommandPermit { permit in
+            try await persistence.persistWorkspaceProjectionCheckpointData(
+                Data("first".utf8),
+                permit: permit
+            )
+            try await persistence.persistWorkspaceProjectionCheckpointData(
+                Data("second".utf8),
+                permit: permit
+            )
+            return permit
+        }
+        let currentCheckpoint = try await persistence.loadWorkspaceProjectionCheckpointData()
+        XCTAssertEqual(currentCheckpoint, Data("second".utf8))
+        do {
+            try await persistence.persistWorkspaceProjectionCheckpointData(
+                Data("stale".utf8),
+                permit: expiredPermit
+            )
+            XCTFail("expired checkpoint permit unexpectedly wrote")
+        } catch {
+            XCTAssertEqual(error as? DomainPersistenceError, .mutationPermitInvalid)
+        }
+        let checkpointAfterRejectedWrite = try await persistence.loadWorkspaceProjectionCheckpointData()
+        XCTAssertEqual(checkpointAfterRejectedWrite, Data("second".utf8))
+        let checkpointDirectory = configuration.workspaceStorageDirectory
+            .appendingPathComponent(".agentry-domain-runtime/workspace-projection", isDirectory: true)
+        let temporaryArtifacts = try FileManager.default.contentsOfDirectory(
+            atPath: checkpointDirectory.path
+        ).filter { $0.hasSuffix(".tmp") }
+        XCTAssertTrue(temporaryArtifacts.isEmpty)
+
+        await access.beginDrain()
+        await access.finishDrainAndRelease()
+    }
+
+    func testProjectionCheckpointLoadRejectsSparseArtifactAboveCompiledBound() async throws {
+        let root = try makeStorageRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = makeConfiguration(storageDirectory: root)
+        let identity = makeIdentity(mode: .app)
+        let lease = DomainWorkspaceAuthorityLease(configuration: configuration, identity: identity)
+        let access = DomainWorkspaceMutationAccess(lease: lease)
+        let persistence = DomainPersistenceCoordinator(
+            configuration: configuration,
+            identity: identity,
+            workspaceAuthorityScope: lease.scope,
+            workspaceMutationPermitRegistry: access.permitRegistry
+        )
+        let checkpointURL = configuration.workspaceStorageDirectory
+            .appendingPathComponent(".agentry-domain-runtime/workspace-projection", isDirectory: true)
+            .appendingPathComponent("checkpoint-v1.json")
+        try FileManager.default.createDirectory(
+            at: checkpointURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        XCTAssertTrue(FileManager.default.createFile(atPath: checkpointURL.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: checkpointURL)
+        try handle.truncate(
+            atOffset: UInt64(DomainPersistenceCoordinator.maximumWorkspaceProjectionCheckpointBytes + 1)
+        )
+        try handle.close()
+
+        do {
+            _ = try await persistence.loadWorkspaceProjectionCheckpointData()
+            XCTFail("oversized sparse checkpoint unexpectedly loaded")
+        } catch {
+            XCTAssertEqual(
+                error as? DomainPersistenceError,
+                .writeFailed("workspace_projection_checkpoint_too_large")
+            )
+        }
+    }
+
     func testCopiedPermitExpiresAndForeignRegistryRejectsIt() async throws {
         let root = try makeStorageRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -348,6 +440,28 @@ final class DomainWorkspaceAuthorityLeaseTests: XCTestCase {
         XCTAssertTrue(foreignRegistryRejected)
         await second.beginDrain()
         await second.finishDrainAndRelease()
+    }
+
+    func testWorkspaceLeaseTokenIsValidOnlyForItsWritableEpoch() async throws {
+        let root = try makeStorageRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let access = DomainWorkspaceMutationAccess(lease: DomainWorkspaceAuthorityLease(
+            configuration: makeConfiguration(storageDirectory: root),
+            identity: makeIdentity(mode: .app)
+        ))
+        let activated = await access.activate { _ in true }
+        XCTAssertEqual(activated.state, .writable)
+        let token = try await access.workspaceLeaseToken()
+        try await token.validate(expectedStorageScopeDigest: access.scope.storageScopeDigest)
+
+        await access.beginDrain()
+        do {
+            try await token.validate(expectedStorageScopeDigest: access.scope.storageScopeDigest)
+            XCTFail("draining access unexpectedly retained a writable workspace lease token")
+        } catch {
+            XCTAssertEqual(error as? DomainWorkspaceMutationAccessError, .invalidPermit)
+        }
+        await access.finishDrainAndRelease()
     }
 
     func testFailedReconciliationRelinquishesAndRetriesWithAFreshEpoch() async throws {

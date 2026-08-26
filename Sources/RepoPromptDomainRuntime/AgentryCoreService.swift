@@ -84,6 +84,23 @@ package actor AgentryCoreService {
         }
     }
 
+    package func workspaceProjectionScope(
+        scopeID: UUID
+    ) async throws -> CoreWorkspaceProjectionScope {
+        do {
+            guard let bridge = try await runtime() as? AgentryCoreBridge else {
+                throw ServiceError.searchInfrastructureUnavailable(
+                    "the runtime owner does not expose stateful workspace projection scopes"
+                )
+            }
+            return try await CoreWorkspaceProjectionScope.open(bridge: bridge, scopeID: scopeID)
+        } catch let error as ServiceError {
+            throw error
+        } catch {
+            throw ServiceError.searchInfrastructureUnavailable(String(reflecting: error))
+        }
+    }
+
     package func runtime() async throws -> any AgentryCoreRuntimeOwner {
         guard !isStopped else { throw ServiceError.stopped }
         let task: Task<any AgentryCoreRuntimeOwner, Error>

@@ -77,6 +77,12 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case inventoryScopeBulkLoadRootMismatch
     case inventoryHandleInvalidated(CoreInventoryHandleInvalidationReason)
     case inventoryScopeInvalidRequest(String)
+    case workspaceProjectionUnknownScope
+    case workspaceProjectionScopeAlreadyOpen
+    case workspaceProjectionScopeClosed
+    case workspaceProjectionGenerationMismatch(expected: UInt64, actual: UInt64)
+    case workspaceProjectionUnknownSnapshotHandle
+    case workspaceProjectionCapacityExceeded
     // P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md, design §11 P6-6).
     case agentClaudeUnknownScope
     case agentClaudeScopeClosed
@@ -148,6 +154,63 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         documentBytes: Data
     ) throws -> CoreWorkspaceDocumentProjectionV1
+    func workspaceProjectionOpenScopeV1(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreWorkspaceProjectionScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionScopeHandleV1
+    func workspaceProjectionCloseScopeV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws
+    func workspaceProjectionReplaceV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionReplaceRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1
+    func workspaceProjectionUpsertV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionUpsertRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1
+    func workspaceProjectionPublishV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionPublishRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationReceiptV1
+    func workspaceProjectionRemoveV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionRemoveRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1
+    func workspaceProjectionExportCheckpointV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws -> Data
+    func workspaceProjectionRestoreCheckpointV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionRestoreCheckpointRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionRestoreCheckpointReceiptV1
+    func workspaceProjectionOpenSnapshotV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotHandleV1
+    func workspaceProjectionSnapshotPageV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotPageV1
+    func workspaceProjectionCloseSnapshotV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        handleID: UInt64
+    ) throws
+    func workspaceProjectionDiagnosticsV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionDiagnosticsV1
     func searchScoreBatchV1(
         identity: CoreRuntimeIdentity,
         request: CoreSearchScoreBatchRequestV1
@@ -888,6 +951,216 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             activeContextID: optionalUUID(value.activeContextId),
             contexts: contexts
         )
+    }
+
+    func workspaceProjectionOpenScopeV1(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreWorkspaceProjectionScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionScopeHandleV1 {
+        do {
+            return try runtime.workspaceProjectionOpenScopeV1(config: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: config.scopeId,
+                maximumWorkspaceCount: config.maximumWorkspaceCount,
+                maximumRetainedBytes: config.maximumRetainedBytes,
+                maximumSnapshotHandleCount: config.maximumSnapshotHandleCount
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionCloseScopeV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws {
+        do {
+            try runtime.workspaceProjectionCloseScopeV1(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                scopeIncarnation: scopeIncarnation
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionReplaceV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionReplaceRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        do {
+            return try runtime.workspaceProjectionReplaceV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                expectedGeneration: request.expectedGeneration,
+                documentBytes: request.documentBytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionUpsertV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionUpsertRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        do {
+            return try runtime.workspaceProjectionUpsertV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                expectedGeneration: request.expectedGeneration,
+                documentBytes: request.documentBytes
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionPublishV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionPublishRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationReceiptV1 {
+        do {
+            return try runtime.workspaceProjectionPublishV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                expectedGeneration: request.expectedGeneration,
+                expectedCatalogRevision: request.expectedCatalogRevision,
+                expectedPublicationSequence: request.expectedPublicationSequence,
+                rebased: request.rebased,
+                documentBytes: request.documentBytes,
+                event: request.event
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionRemoveV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionRemoveRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        do {
+            return try runtime.workspaceProjectionRemoveV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                expectedGeneration: request.expectedGeneration,
+                workspaceId: request.workspaceId
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionExportCheckpointV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws -> Data {
+        do {
+            return try runtime.workspaceProjectionExportCheckpointV1(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                scopeIncarnation: scopeIncarnation
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionRestoreCheckpointV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionRestoreCheckpointRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionRestoreCheckpointReceiptV1 {
+        do {
+            return try runtime.workspaceProjectionRestoreCheckpointV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                checkpointBytes: request.checkpointBytes,
+                beginNewPublicationEpoch: request.beginNewPublicationEpoch
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionOpenSnapshotV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotHandleV1 {
+        do {
+            return try runtime.workspaceProjectionOpenSnapshotV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                expectedGeneration: request.expectedGeneration
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionSnapshotPageV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        handleID: UInt64,
+        offset: UInt64,
+        limit: UInt64
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionSnapshotPageV1 {
+        do {
+            return try runtime.workspaceProjectionSnapshotPageV1(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                scopeIncarnation: scopeIncarnation,
+                handleId: handleID,
+                offset: offset,
+                limit: limit
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionCloseSnapshotV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        handleID: UInt64
+    ) throws {
+        do {
+            try runtime.workspaceProjectionCloseSnapshotV1(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                scopeIncarnation: scopeIncarnation,
+                handleId: handleID
+            )
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionDiagnosticsV1(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        scopeIncarnation: UInt64
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionDiagnosticsV1 {
+        do {
+            return try runtime.workspaceProjectionDiagnosticsV1(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                scopeIncarnation: scopeIncarnation
+            )
+        } catch {
+            throw Self.map(error)
+        }
     }
 
     func searchScoreBatchV1(
@@ -1962,6 +2235,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .InventoryScopeBulkLoadRootMismatch: .inventoryScopeBulkLoadRootMismatch
         case let .InventoryHandleInvalidated(reason): .inventoryHandleInvalidated(Self.handleInvalidationReason(reason))
         case let .InventoryScopeInvalidRequest(message): .inventoryScopeInvalidRequest(message)
+        case .WorkspaceProjectionUnknownScope: .workspaceProjectionUnknownScope
+        case .WorkspaceProjectionScopeAlreadyOpen: .workspaceProjectionScopeAlreadyOpen
+        case .WorkspaceProjectionScopeClosed: .workspaceProjectionScopeClosed
+        case let .WorkspaceProjectionGenerationMismatch(expected, actual):
+            .workspaceProjectionGenerationMismatch(expected: expected, actual: actual)
+        case .WorkspaceProjectionUnknownSnapshotHandle: .workspaceProjectionUnknownSnapshotHandle
+        case .WorkspaceProjectionCapacityExceeded: .workspaceProjectionCapacityExceeded
         case .AgentClaudeUnknownScope: .agentClaudeUnknownScope
         case .AgentClaudeScopeClosed: .agentClaudeScopeClosed
         case .AgentClaudeAlreadyRunning: .agentClaudeAlreadyRunning
@@ -2225,6 +2505,10 @@ public actor AgentryCoreBridge {
         } catch {
             throw mapComputeFailure(error)
         }
+    }
+
+    func validateWorkspaceProjectionCompletion(identity: CoreRuntimeIdentity) throws {
+        try validate(identity)
     }
 
     func validateComputeCompletion(identity: CoreRuntimeIdentity) throws {
@@ -2650,6 +2934,13 @@ public actor AgentryCoreBridge {
         case .inventoryScopeBulkLoadRootMismatch: return .inventoryScopeBulkLoadRootMismatch
         case let .inventoryHandleInvalidated(reason): return .inventoryHandleInvalidated(reason)
         case let .inventoryScopeInvalidRequest(message): return .inventoryScopeInvalidRequest(message)
+        case .workspaceProjectionUnknownScope: return .workspaceProjectionUnknownScope
+        case .workspaceProjectionScopeAlreadyOpen: return .workspaceProjectionScopeAlreadyOpen
+        case .workspaceProjectionScopeClosed: return .workspaceProjectionScopeClosed
+        case let .workspaceProjectionGenerationMismatch(expected, actual):
+            return .workspaceProjectionGenerationMismatch(expected: expected, actual: actual)
+        case .workspaceProjectionUnknownSnapshotHandle: return .workspaceProjectionUnknownSnapshotHandle
+        case .workspaceProjectionCapacityExceeded: return .workspaceProjectionCapacityExceeded
         case .agentClaudeUnknownScope: return .agentClaudeUnknownScope
         case .agentClaudeScopeClosed: return .agentClaudeScopeClosed
         case .agentClaudeAlreadyRunning: return .agentClaudeAlreadyRunning
