@@ -13,11 +13,16 @@ use crate::types::{
     CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
-    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1, DrainBatch,
-    FolderSuffixRequest, HostResponse, InventoryComposedSnapshotHandleV1,
-    InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1, InventoryDeltaDiscoveryCommandV1,
-    InventoryDeltaDiscoveryReceiptV1, InventoryDeltaReceiptV1, InventoryDiagnosticsV1,
-    InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
+    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
+    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
+    CoreWorkspaceWorkingJournalTransitionRequestV1,
+    CoreWorkspaceWorkingJournalTransitionResponseV1,
+    CoreWorkspaceWorkingJournalValidationErrorKindV1,
+    CoreWorkspaceWorkingJournalValidationRequestV1,
+    CoreWorkspaceWorkingJournalValidationResponseV1, DrainBatch, FolderSuffixRequest, HostResponse,
+    InventoryComposedSnapshotHandleV1, InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1,
+    InventoryDeltaDiscoveryCommandV1, InventoryDeltaDiscoveryReceiptV1, InventoryDeltaReceiptV1,
+    InventoryDiagnosticsV1, InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
     InventoryProjectedShardRequestV1, InventoryPublishModeV1, InventoryResolveRequestV1,
     InventoryRootLifetimeV1, InventoryRootOpenV1, InventoryRootUnloadReceiptV1,
     InventoryScopeHandleV1, InventorySnapshotHandleV1, InventorySnapshotRequestV1, OperationState,
@@ -33,13 +38,14 @@ use crate::types::{
 };
 use crate::types::{
     CoreWorkspaceProjectionDiagnosticsV1, CoreWorkspaceProjectionMutationReceiptV1,
-    CoreWorkspaceProjectionPublicationReceiptV1, CoreWorkspaceProjectionPublishRequestV1,
+    CoreWorkspaceProjectionPublicationReceiptV1,
+    CoreWorkspaceProjectionPublishAuthoritativeRequestV1, CoreWorkspaceProjectionPublishRequestV1,
     CoreWorkspaceProjectionRemoveRequestV1, CoreWorkspaceProjectionReplaceRequestV1,
     CoreWorkspaceProjectionRestoreCheckpointReceiptV1,
     CoreWorkspaceProjectionRestoreCheckpointRequestV1, CoreWorkspaceProjectionScopeConfigV1,
     CoreWorkspaceProjectionScopeHandleV1, CoreWorkspaceProjectionSnapshotHandleV1,
     CoreWorkspaceProjectionSnapshotPageV1, CoreWorkspaceProjectionSnapshotRequestV1,
-    CoreWorkspaceProjectionUpsertRequestV1,
+    CoreWorkspaceProjectionUpsertAuthoritativeRequestV1, CoreWorkspaceProjectionUpsertRequestV1,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -507,6 +513,174 @@ impl CoreRuntime {
         })
     }
 
+    pub fn workspace_working_journal_validate_v1(
+        &self,
+        request: CoreWorkspaceWorkingJournalValidationRequestV1,
+    ) -> Result<CoreWorkspaceWorkingJournalValidationResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            if request.contract_version
+                != runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            use runtime::workspace_persistence_journal::WorkspaceWorkingJournalError as JournalError;
+            Ok(match runtime::workspace_persistence_journal::validate_workspace_working_journal_v1(
+                &request.journal_bytes,
+            ) {
+                Ok(validation) => CoreWorkspaceWorkingJournalValidationResponseV1 {
+                    validation: Some(validation.into()),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = match error {
+                        JournalError::InputTooLarge { .. } => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InputTooLarge,
+                            None,
+                        ),
+                        JournalError::OutputTooLarge { .. } => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::OutputTooLarge,
+                            None,
+                        ),
+                        JournalError::Malformed => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::Malformed,
+                            None,
+                        ),
+                        JournalError::FutureSchema(version) => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::FutureSchema,
+                            Some(version),
+                        ),
+                        JournalError::InvalidIdentity => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidIdentity,
+                            None,
+                        ),
+                        JournalError::InvalidFileUrl => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidFileUrl,
+                            None,
+                        ),
+                        JournalError::InvalidRevisionState => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidRevisionState,
+                            None,
+                        ),
+                        JournalError::InvalidDigest => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidDigest,
+                            None,
+                        ),
+                        JournalError::InvalidWorkingDocument => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidWorkingDocument,
+                            None,
+                        ),
+                        JournalError::InvalidContextTable => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidContextTable,
+                            None,
+                        ),
+                        JournalError::InvalidOperationLedger => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidOperationLedger,
+                            None,
+                        ),
+                        JournalError::InvalidPendingSave => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidPendingSave,
+                            None,
+                        ),
+                        JournalError::InvalidTimestamp => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTimestamp,
+                            None,
+                        ),
+                    };
+                    CoreWorkspaceWorkingJournalValidationResponseV1 {
+                        validation: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
+        })
+    }
+
+    pub fn workspace_working_journal_plan_transition_v1(
+        &self,
+        request: CoreWorkspaceWorkingJournalTransitionRequestV1,
+    ) -> Result<CoreWorkspaceWorkingJournalTransitionResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            if request.contract_version
+                != runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            Ok(match runtime::workspace_persistence_journal::plan_workspace_working_journal_transition_v1(
+                request.current_journal_bytes.as_deref(),
+                &request.transition_bytes,
+                request.document_bytes.as_deref(),
+            ) {
+                Ok(plan) => CoreWorkspaceWorkingJournalTransitionResponseV1 {
+                    plan: Some(plan.into()),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceWorkingJournalTransitionResponseV1 {
+                        plan: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
+        })
+    }
+
+    pub fn workspace_saved_revision_plan_v1(
+        &self,
+        request: CoreWorkspacePersistenceMetadataRequestV1,
+    ) -> Result<CoreWorkspacePersistenceMetadataResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_metadata_response(
+                runtime::workspace_persistence_journal::plan_workspace_saved_revision_record_v1(
+                    &request.payload_bytes,
+                ),
+            ))
+        })
+    }
+
+    pub fn workspace_saved_revision_validate_v1(
+        &self,
+        request: CoreWorkspacePersistenceMetadataRequestV1,
+    ) -> Result<CoreWorkspacePersistenceMetadataResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_metadata_response(
+                runtime::workspace_persistence_journal::validate_workspace_saved_revision_record_v1(
+                    &request.payload_bytes,
+                ),
+            ))
+        })
+    }
+
+    pub fn workspace_deletion_tombstone_plan_v1(
+        &self,
+        request: CoreWorkspacePersistenceMetadataRequestV1,
+    ) -> Result<CoreWorkspacePersistenceMetadataResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_metadata_response(
+                runtime::workspace_persistence_journal::plan_workspace_deletion_tombstone_v1(
+                    &request.payload_bytes,
+                ),
+            ))
+        })
+    }
+
     pub fn workspace_projection_open_scope_v1(
         &self,
         config: CoreWorkspaceProjectionScopeConfigV1,
@@ -596,6 +770,27 @@ impl CoreRuntime {
         })
     }
 
+    pub fn workspace_projection_upsert_authoritative_v1(
+        &self,
+        request: CoreWorkspaceProjectionUpsertAuthoritativeRequestV1,
+    ) -> Result<CoreWorkspaceProjectionMutationReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            Ok(scope
+                .upsert_published_workspace(
+                    request.expected_generation,
+                    request.expected_catalog_revision,
+                    request.expected_publication_sequence,
+                    &request.workspace.into(),
+                )?
+                .into())
+        })
+    }
+
     pub fn workspace_projection_remove_v1(
         &self,
         request: CoreWorkspaceProjectionRemoveRequestV1,
@@ -629,6 +824,35 @@ impl CoreRuntime {
                     request.expected_publication_sequence,
                     request.rebased,
                     &request.document_bytes,
+                    request.event.into(),
+                )?
+                .into())
+        })
+    }
+
+    pub fn workspace_projection_publish_authoritative_v1(
+        &self,
+        request: CoreWorkspaceProjectionPublishAuthoritativeRequestV1,
+    ) -> Result<CoreWorkspaceProjectionPublicationReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            let scope = self
+                .workspace_projection_scope_registry
+                .scope(&request.scope_id, request.scope_incarnation)?;
+            let workspaces = request
+                .workspaces
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<runtime::workspace_context::WorkspaceProjectionPublishedWorkspace>>(
+                );
+            Ok(scope
+                .publish_authoritative_state(
+                    request.expected_generation,
+                    request.expected_catalog_revision,
+                    request.expected_publication_sequence,
+                    request.rebased,
+                    &workspaces,
                     request.event.into(),
                 )?
                 .into())
@@ -693,13 +917,18 @@ impl CoreRuntime {
             let scope = self
                 .workspace_projection_scope_registry
                 .scope(&request.scope_id, request.scope_incarnation)?;
-            let (handle_id, snapshot) = scope.open_snapshot(request.expected_generation)?;
+            let opened = scope.open_snapshot_with_publication(request.expected_generation)?;
             Ok(CoreWorkspaceProjectionSnapshotHandleV1 {
-                handle_id: handle_id.raw(),
-                generation: snapshot.generation,
-                workspace_count: u64::try_from(snapshot.entries.len())
+                handle_id: opened.handle_id.raw(),
+                generation: opened.snapshot.generation,
+                workspace_count: u64::try_from(opened.snapshot.entries.len())
                     .map_err(|_| CoreError::InvalidArgument)?,
-                retained_bytes: u64::try_from(snapshot.retained_bytes)
+                retained_bytes: u64::try_from(opened.snapshot.retained_bytes)
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                catalog_revision: opened.catalog_revision,
+                publication_sequence: opened.publication_sequence,
+                event_log_floor_sequence: opened.event_log_floor_sequence,
+                event_log_count: u64::try_from(opened.event_log_count)
                     .map_err(|_| CoreError::InvalidArgument)?,
             })
         })
@@ -734,7 +963,7 @@ impl CoreRuntime {
             let end = start.saturating_add(limit).min(snapshot.entries.len());
             let workspaces = snapshot.entries[start..end]
                 .iter()
-                .map(|entry| entry.projection.clone().into())
+                .map(|entry| CoreWorkspaceDocumentProjectionV1::from(entry.as_ref()))
                 .collect::<Vec<_>>();
             Ok(CoreWorkspaceProjectionSnapshotPageV1 {
                 generation: snapshot.generation,
@@ -1939,6 +2168,102 @@ pub fn core_diagnostics_drain() -> Vec<String> {
 /// `throws`, and UniFFI's typed-error mechanism is exactly the "business outcome, not a panic"
 /// modeling this reason wants -- see `InventoryHandleInvalidationReasonV1`'s doc comment in
 /// `types.rs`.
+fn require_workspace_persistence_contract(contract_version: u16) -> Result<(), CoreError> {
+    if contract_version
+        == runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1
+    {
+        Ok(())
+    } else {
+        Err(CoreError::InvalidArgument)
+    }
+}
+
+fn workspace_metadata_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspacePersistenceMetadataValidationV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspacePersistenceMetadataResponseV1 {
+    match result {
+        Ok(validation) => CoreWorkspacePersistenceMetadataResponseV1 {
+            validation: Some(validation.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspacePersistenceMetadataResponseV1 {
+                validation: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
+fn workspace_journal_error(
+    error: runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+) -> (
+    CoreWorkspaceWorkingJournalValidationErrorKindV1,
+    Option<u16>,
+) {
+    use runtime::workspace_persistence_journal::WorkspaceWorkingJournalError as JournalError;
+    match error {
+        JournalError::InputTooLarge { .. } => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InputTooLarge,
+            None,
+        ),
+        JournalError::OutputTooLarge { .. } => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::OutputTooLarge,
+            None,
+        ),
+        JournalError::Malformed => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::Malformed,
+            None,
+        ),
+        JournalError::FutureSchema(version) => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::FutureSchema,
+            Some(version),
+        ),
+        JournalError::InvalidIdentity => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidIdentity,
+            None,
+        ),
+        JournalError::InvalidFileUrl => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidFileUrl,
+            None,
+        ),
+        JournalError::InvalidRevisionState => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidRevisionState,
+            None,
+        ),
+        JournalError::InvalidDigest => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidDigest,
+            None,
+        ),
+        JournalError::InvalidWorkingDocument => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidWorkingDocument,
+            None,
+        ),
+        JournalError::InvalidContextTable => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidContextTable,
+            None,
+        ),
+        JournalError::InvalidOperationLedger => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidOperationLedger,
+            None,
+        ),
+        JournalError::InvalidPendingSave => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidPendingSave,
+            None,
+        ),
+        JournalError::InvalidTimestamp => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTimestamp,
+            None,
+        ),
+    }
+}
+
 fn handle_invalidated(reason: runtime::inventory_scope::InvalidationReason) -> CoreError {
     CoreError::InventoryHandleInvalidated {
         reason: InventoryHandleInvalidationReasonV1::from(reason),
@@ -2190,6 +2515,167 @@ mod tests {
                 document_bytes: b"[]".to_vec(),
             });
         assert_eq!(invalid_document, Err(CoreError::InvalidArgument));
+    }
+
+    #[test]
+    fn workspace_working_journal_validation_export_preserves_canonical_bytes_and_identity() {
+        let (core, identity, _) = initialized_core();
+        let journal = br#"{
+            "version":1,
+            "workspaceID":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+            "fileURL":"file:///tmp/Workspace.json",
+            "revisions":{"workingRevision":0,"savedRevision":0},
+            "savedDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "contextRevisions":["11111111-2222-3333-4444-555555555555",{"workingRevision":0,"savedRevision":0}],
+            "contextDigests":["11111111-2222-3333-4444-555555555555","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+            "contextTombstones":[],
+            "operations":[],
+            "updatedAt":42.5
+        }"#;
+        let response = core
+            .workspace_working_journal_validate_v1(
+                CoreWorkspaceWorkingJournalValidationRequestV1 {
+                    runtime_identity: identity.clone(),
+                    contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+                    journal_bytes: journal.to_vec(),
+                },
+            )
+            .expect("working journal validation");
+        let result = response.validation.expect("valid response");
+        assert_eq!(response.error_kind, None);
+        assert_eq!(result.workspace_id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert_eq!(result.journal_version, 1);
+        assert_eq!(result.content_digest.len(), 64);
+        assert_eq!(
+            core.workspace_working_journal_validate_v1(
+                CoreWorkspaceWorkingJournalValidationRequestV1 {
+                    runtime_identity: identity.clone(),
+                    contract_version: 99,
+                    journal_bytes: journal.to_vec(),
+                },
+            ),
+            Err(CoreError::InvalidArgument)
+        );
+        let invalid = core
+            .workspace_working_journal_validate_v1(
+                CoreWorkspaceWorkingJournalValidationRequestV1 {
+                    runtime_identity: identity,
+                    contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+                    journal_bytes: b"[]".to_vec(),
+                },
+            )
+            .expect("semantic error response");
+        assert_eq!(invalid.validation, None);
+        assert_eq!(
+            invalid.error_kind,
+            Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::Malformed)
+        );
+    }
+
+    #[test]
+    fn workspace_working_journal_transition_export_returns_primary_and_committed_candidates() {
+        let (core, identity, _) = initialized_core();
+        let document = br#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#;
+        let transition = br#"{
+            "kind":"create",
+            "workspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "fileURL":"file:///tmp/Workspace.json",
+            "contextRevisions":[],
+            "contextDigests":[],
+            "operation":{
+                "operationID":"66666666-7777-8888-9999-aaaaaaaaaaaa",
+                "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "recordedAt":42.0,
+                "disposition":"applied",
+                "catalogRevision":1
+            },
+            "operationID":"66666666-7777-8888-9999-aaaaaaaaaaaa",
+            "updatedAt":42.0
+        }"#;
+        let response = core
+            .workspace_working_journal_plan_transition_v1(
+                CoreWorkspaceWorkingJournalTransitionRequestV1 {
+                    runtime_identity: identity,
+                    contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+                    current_journal_bytes: None,
+                    transition_bytes: transition.to_vec(),
+                    document_bytes: Some(document.to_vec()),
+                },
+            )
+            .expect("working journal transition");
+        assert_eq!(response.error_kind, None);
+        let plan = response.plan.expect("transition plan");
+        assert_eq!(
+            plan.primary.workspace_id,
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        );
+        assert!(plan.committed.is_some());
+        assert_ne!(
+            plan.primary.content_digest,
+            plan.committed.expect("committed").content_digest
+        );
+    }
+
+    #[test]
+    fn workspace_persistence_metadata_exports_plan_and_validate_canonical_records() {
+        let (core, identity, _) = initialized_core();
+        let contract =
+            runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1;
+        let saved_request = br#"{
+            "workspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "savedRevision":4,
+            "documentDigest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "operationID":"66666666-7777-8888-9999-aaaaaaaaaaaa",
+            "updatedAt":44.0
+        }"#;
+        let saved = core
+            .workspace_saved_revision_plan_v1(CoreWorkspacePersistenceMetadataRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version: contract,
+                payload_bytes: saved_request.to_vec(),
+            })
+            .expect("saved revision plan")
+            .validation
+            .expect("saved validation");
+        assert_eq!(saved.schema_version, 1);
+        assert_eq!(saved.content_digest.len(), 64);
+        let validated = core
+            .workspace_saved_revision_validate_v1(CoreWorkspacePersistenceMetadataRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version: contract,
+                payload_bytes: saved.canonical_bytes.clone(),
+            })
+            .expect("saved revision validation")
+            .validation
+            .expect("validated saved revision");
+        assert_eq!(saved, validated);
+
+        let tombstone_request = br#"{
+            "workspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "fileURL":"file:///tmp/Workspace.json",
+            "operation":{
+                "operationID":"66666666-7777-8888-9999-aaaaaaaaaaaa",
+                "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "recordedAt":45.0,
+                "disposition":"applied",
+                "catalogRevision":5
+            },
+            "deletedAt":45.5,
+            "cleanupWarnings":[]
+        }"#;
+        let tombstone = core
+            .workspace_deletion_tombstone_plan_v1(CoreWorkspacePersistenceMetadataRequestV1 {
+                runtime_identity: identity,
+                contract_version: contract,
+                payload_bytes: tombstone_request.to_vec(),
+            })
+            .expect("deletion tombstone plan")
+            .validation
+            .expect("tombstone validation");
+        assert_eq!(
+            tombstone.operation_id,
+            "66666666-7777-8888-9999-aaaaaaaaaaaa"
+        );
     }
 
     #[test]

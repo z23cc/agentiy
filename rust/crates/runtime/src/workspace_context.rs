@@ -19,6 +19,7 @@ pub const MAXIMUM_SUPPORTED_WORKSPACE_SCHEMA_VERSION: i64 = 1;
 pub const DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_COUNT: usize = 256;
 pub const DEFAULT_MAXIMUM_WORKSPACE_PROJECTION_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_PROJECTION_PUBLICATION_EVENT_COUNT: usize = 256;
+pub const MAXIMUM_WORKSPACE_PROJECTION_HEALTH_REASON_BYTES: usize = 64 * 1024;
 pub const WORKSPACE_PROJECTION_CHECKPOINT_SCHEMA_VERSION_V1: u16 = 1;
 pub const MAXIMUM_WORKSPACE_PROJECTION_CHECKPOINT_BYTES_V1: usize = 128 * 1024 * 1024;
 
@@ -42,6 +43,52 @@ pub struct WorkspaceDocumentProjection {
     pub repo_paths: Vec<String>,
     pub active_context_id: Option<String>,
     pub contexts: Vec<WorkspaceContextProjection>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceProjectionHealthKind {
+    Writable,
+    ExternalConflict,
+    DegradedReadOnly,
+    Removed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceProjectionHealth {
+    pub kind: WorkspaceProjectionHealthKind,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceProjectionRevisionState {
+    pub working_revision: u64,
+    pub saved_revision: u64,
+    pub dirty_revision: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceContextAuthorityState {
+    pub context_id: String,
+    pub revisions: WorkspaceProjectionRevisionState,
+    pub health: WorkspaceProjectionHealth,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceProjectionAuthorityState {
+    pub revisions: WorkspaceProjectionRevisionState,
+    pub health: WorkspaceProjectionHealth,
+    pub contexts: Vec<WorkspaceContextAuthorityState>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceProjectionPublishedWorkspace {
+    pub document_bytes: Vec<u8>,
+    pub authority: WorkspaceProjectionAuthorityState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +197,9 @@ pub struct WorkspaceProjectionEntry {
     pub content_digest: String,
     pub retained_bytes: usize,
     pub projection: WorkspaceDocumentProjection,
+    /// Complete revision/health authority for this exact row, or `None` after a document-only
+    /// observation/checkpoint from before P5-4e. Production reads must reconcile before use.
+    pub authority: Option<WorkspaceProjectionAuthorityState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,6 +218,16 @@ pub struct WorkspaceProjectionMutationReceipt {
     pub snapshot: Arc<WorkspaceProjectionSnapshot>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceProjectionOpenedSnapshot {
+    pub handle_id: WorkspaceProjectionSnapshotHandleId,
+    pub snapshot: Arc<WorkspaceProjectionSnapshot>,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: usize,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceProjectionPublicationKind {
@@ -181,14 +241,6 @@ pub enum WorkspaceProjectionPublicationKind {
     Degraded,
     RoutingChanged,
     OperationDeduplicated,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkspaceProjectionRevisionState {
-    pub working_revision: u64,
-    pub saved_revision: u64,
-    pub dirty_revision: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -240,6 +292,8 @@ struct WorkspaceProjectionCheckpointEntryV1 {
     content_digest: String,
     projection_checksum: String,
     projection: WorkspaceDocumentProjection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authority: Option<WorkspaceProjectionAuthorityState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -301,8 +355,11 @@ impl<'de> Deserialize<'de> for WorkspaceProjectionCheckpointEntriesV1 {
                             "workspace checkpoint entry count exceeded",
                         ));
                     }
-                    let entry_bytes =
-                        projection_retained_bytes(&entry.projection, entry.content_digest.len());
+                    let entry_bytes = projection_retained_bytes(
+                        &entry.projection,
+                        entry.authority.as_ref(),
+                        entry.content_digest.len(),
+                    );
                     retained_bytes = retained_bytes.checked_add(entry_bytes).ok_or_else(|| {
                         A::Error::custom("workspace checkpoint retained bytes overflowed")
                     })?;
@@ -446,6 +503,7 @@ pub enum WorkspaceProjectionCatalogError {
         next: u64,
     },
     InvalidPublicationIdentity,
+    InvalidAuthorityState,
     StateUnavailable,
 }
 
@@ -493,6 +551,9 @@ impl fmt::Display for WorkspaceProjectionCatalogError {
             ),
             Self::InvalidPublicationIdentity => {
                 formatter.write_str("workspace projection publication identity is invalid")
+            }
+            Self::InvalidAuthorityState => {
+                formatter.write_str("workspace projection authority state is invalid")
             }
             Self::StateUnavailable => {
                 formatter.write_str("workspace projection catalog state is unavailable")
@@ -578,7 +639,7 @@ impl WorkspaceProjectionCatalog {
                     maximum: self.limits.maximum_retained_bytes,
                 });
             }
-            let entry = Arc::new(prepare_projection_entry(document)?);
+            let entry = Arc::new(prepare_projection_entry(document, None)?);
             let workspace_id = entry.projection.workspace_id.clone();
             if prepared.insert(workspace_id.clone(), entry).is_some() {
                 return Err(WorkspaceProjectionCatalogError::DuplicateWorkspaceId(
@@ -599,13 +660,93 @@ impl WorkspaceProjectionCatalog {
         self.commit_entries(&mut state, prepared)
     }
 
-    /// Inserts or replaces one canonical document under exact generation CAS.
+    /// Atomically replaces the complete catalog with document projections plus their full
+    /// revision/health authority sidecars.
+    pub fn replace_published_workspaces(
+        &self,
+        expected_generation: u64,
+        workspaces: &[WorkspaceProjectionPublishedWorkspace],
+    ) -> Result<WorkspaceProjectionMutationReceipt, WorkspaceProjectionCatalogError> {
+        if workspaces.len() > self.limits.maximum_workspace_count {
+            return Err(WorkspaceProjectionCatalogError::WorkspaceCapacityExceeded {
+                actual: workspaces.len(),
+                maximum: self.limits.maximum_workspace_count,
+            });
+        }
+        let mut raw_input_bytes = 0usize;
+        let mut prepared = BTreeMap::new();
+        for workspace in workspaces {
+            raw_input_bytes = raw_input_bytes.saturating_add(workspace.document_bytes.len());
+            if raw_input_bytes > self.limits.maximum_retained_bytes {
+                return Err(WorkspaceProjectionCatalogError::RetainedBytesExceeded {
+                    actual: raw_input_bytes,
+                    maximum: self.limits.maximum_retained_bytes,
+                });
+            }
+            let entry = Arc::new(prepare_projection_entry(
+                &workspace.document_bytes,
+                Some(workspace.authority.clone()),
+            )?);
+            let workspace_id = entry.projection.workspace_id.clone();
+            if prepared.insert(workspace_id.clone(), entry).is_some() {
+                return Err(WorkspaceProjectionCatalogError::DuplicateWorkspaceId(
+                    workspace_id,
+                ));
+            }
+        }
+        self.validate_capacity(&prepared)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| WorkspaceProjectionCatalogError::StateUnavailable)?;
+        require_generation(&state, expected_generation)?;
+        if entries_have_same_content(&state.entries_by_workspace_id, &prepared) {
+            return Ok(unchanged_receipt(&state));
+        }
+        self.commit_entries(&mut state, prepared)
+    }
+
+    /// Inserts or replaces one complete authority row under exact generation CAS. This is used
+    /// only to repair an evicted/invalidated row while the enclosing scope cursor remains fixed.
+    pub fn upsert_published_workspace(
+        &self,
+        expected_generation: u64,
+        workspace: &WorkspaceProjectionPublishedWorkspace,
+    ) -> Result<WorkspaceProjectionMutationReceipt, WorkspaceProjectionCatalogError> {
+        let entry = Arc::new(prepare_projection_entry(
+            &workspace.document_bytes,
+            Some(workspace.authority.clone()),
+        )?);
+        let workspace_id = entry.projection.workspace_id.clone();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| WorkspaceProjectionCatalogError::StateUnavailable)?;
+        require_generation(&state, expected_generation)?;
+        if state
+            .entries_by_workspace_id
+            .get(&workspace_id)
+            .is_some_and(|current| {
+                current.content_digest == entry.content_digest
+                    && current.authority == entry.authority
+            })
+        {
+            return Ok(unchanged_receipt(&state));
+        }
+        let mut prepared = state.entries_by_workspace_id.clone();
+        prepared.insert(workspace_id, entry);
+        self.validate_capacity(&prepared)?;
+        self.commit_entries(&mut state, prepared)
+    }
+
+    /// Inserts or replaces one canonical document under exact generation CAS. A changed
+    /// document-only row explicitly clears any formerly authoritative revision/health sidecar.
     pub fn upsert_document(
         &self,
         expected_generation: u64,
         document: &[u8],
     ) -> Result<WorkspaceProjectionMutationReceipt, WorkspaceProjectionCatalogError> {
-        let entry = Arc::new(prepare_projection_entry(document)?);
+        let entry = Arc::new(prepare_projection_entry(document, None)?);
         let workspace_id = entry.projection.workspace_id.clone();
         let mut state = self
             .state
@@ -835,6 +976,11 @@ impl From<WorkspaceProjectionCatalogError> for WorkspaceProjectionScopeError {
     }
 }
 
+enum WorkspaceProjectionPublicationInput<'a> {
+    Documents(&'a [Vec<u8>]),
+    Published(&'a [WorkspaceProjectionPublishedWorkspace]),
+}
+
 struct WorkspaceProjectionScopeState {
     closed: bool,
     next_snapshot_handle_id: u64,
@@ -890,6 +1036,32 @@ impl WorkspaceProjectionScope {
         Ok(receipt)
     }
 
+    pub fn upsert_published_workspace(
+        &self,
+        expected_generation: u64,
+        expected_catalog_revision: u64,
+        expected_publication_sequence: u64,
+        workspace: &WorkspaceProjectionPublishedWorkspace,
+    ) -> Result<WorkspaceProjectionMutationReceipt, WorkspaceProjectionScopeError> {
+        let state = self.lock_open_state()?;
+        if state.publication.catalog_revision != expected_catalog_revision
+            || state.publication.publication_sequence != expected_publication_sequence
+        {
+            return Err(WorkspaceProjectionCatalogError::PublicationCursorMismatch {
+                expected_catalog_revision,
+                actual_catalog_revision: state.publication.catalog_revision,
+                expected_publication_sequence,
+                actual_publication_sequence: state.publication.publication_sequence,
+            }
+            .into());
+        }
+        let receipt = self
+            .catalog
+            .upsert_published_workspace(expected_generation, workspace)?;
+        drop(state);
+        Ok(receipt)
+    }
+
     pub fn remove_workspace(
         &self,
         expected_generation: u64,
@@ -903,9 +1075,8 @@ impl WorkspaceProjectionScope {
         Ok(receipt)
     }
 
-    /// Atomically installs the complete document projection generation and its Swift-visible
-    /// publication cursor. A normal append requires exact cursor continuity; a caller that lost
-    /// bounded ingress precision must explicitly rebase from a complete catalog snapshot.
+    /// Compatibility publication for document-only projection callers. The resulting rows carry no
+    /// revision/health authority sidecar.
     pub fn publish_state(
         &self,
         expected_generation: u64,
@@ -913,6 +1084,46 @@ impl WorkspaceProjectionScope {
         expected_publication_sequence: u64,
         rebased: bool,
         documents: &[Vec<u8>],
+        event: WorkspaceProjectionPublicationEvent,
+    ) -> Result<WorkspaceProjectionPublicationReceipt, WorkspaceProjectionScopeError> {
+        self.publish_state_input(
+            expected_generation,
+            expected_catalog_revision,
+            expected_publication_sequence,
+            rebased,
+            WorkspaceProjectionPublicationInput::Documents(documents),
+            event,
+        )
+    }
+
+    /// Atomically installs the complete semantic projections, revision/health sidecars, and
+    /// Swift-visible publication cursor.
+    pub fn publish_authoritative_state(
+        &self,
+        expected_generation: u64,
+        expected_catalog_revision: u64,
+        expected_publication_sequence: u64,
+        rebased: bool,
+        workspaces: &[WorkspaceProjectionPublishedWorkspace],
+        event: WorkspaceProjectionPublicationEvent,
+    ) -> Result<WorkspaceProjectionPublicationReceipt, WorkspaceProjectionScopeError> {
+        self.publish_state_input(
+            expected_generation,
+            expected_catalog_revision,
+            expected_publication_sequence,
+            rebased,
+            WorkspaceProjectionPublicationInput::Published(workspaces),
+            event,
+        )
+    }
+
+    fn publish_state_input(
+        &self,
+        expected_generation: u64,
+        expected_catalog_revision: u64,
+        expected_publication_sequence: u64,
+        rebased: bool,
+        input: WorkspaceProjectionPublicationInput<'_>,
         event: WorkspaceProjectionPublicationEvent,
     ) -> Result<WorkspaceProjectionPublicationReceipt, WorkspaceProjectionScopeError> {
         let mut state = self.lock_open_state()?;
@@ -955,9 +1166,14 @@ impl WorkspaceProjectionScope {
             .into());
         }
 
-        let projection = self
-            .catalog
-            .replace_documents(expected_generation, documents)?;
+        let projection = match input {
+            WorkspaceProjectionPublicationInput::Documents(documents) => self
+                .catalog
+                .replace_documents(expected_generation, documents)?,
+            WorkspaceProjectionPublicationInput::Published(workspaces) => self
+                .catalog
+                .replace_published_workspaces(expected_generation, workspaces)?,
+        };
         if rebased {
             state.publication.events.clear();
             state.publication.event_log_floor_sequence = event.sequence;
@@ -1006,8 +1222,10 @@ impl WorkspaceProjectionScope {
                     projection_checksum: checkpoint_projection_checksum(
                         &entry.content_digest,
                         &entry.projection,
+                        entry.authority.as_ref(),
                     )?,
                     projection: entry.projection.clone(),
+                    authority: entry.authority.clone(),
                 })
             })
             .collect::<Result<Vec<_>, WorkspaceProjectionScopeError>>()?;
@@ -1098,6 +1316,17 @@ impl WorkspaceProjectionScope {
         ),
         WorkspaceProjectionScopeError,
     > {
+        let opened = self.open_snapshot_with_publication(expected_generation)?;
+        Ok((opened.handle_id, opened.snapshot))
+    }
+
+    /// Opens one immutable document generation and captures the publication cursor under the
+    /// same scope-state lock. A cursor returned here can never describe a publication before or
+    /// after the generation retained by the handle.
+    pub fn open_snapshot_with_publication(
+        &self,
+        expected_generation: Option<u64>,
+    ) -> Result<WorkspaceProjectionOpenedSnapshot, WorkspaceProjectionScopeError> {
         let mut state = self.lock_open_state()?;
         let snapshot = self.catalog.snapshot()?;
         if let Some(expected) = expected_generation {
@@ -1138,7 +1367,14 @@ impl WorkspaceProjectionScope {
             .snapshots_by_handle_id
             .insert(handle_id, Arc::clone(&snapshot));
         state.retained_snapshot_bytes = next_retained_bytes;
-        Ok((handle_id, snapshot))
+        Ok(WorkspaceProjectionOpenedSnapshot {
+            handle_id,
+            snapshot,
+            catalog_revision: state.publication.catalog_revision,
+            publication_sequence: state.publication.publication_sequence,
+            event_log_floor_sequence: state.publication.event_log_floor_sequence,
+            event_log_count: state.publication.events.len(),
+        })
     }
 
     pub fn read_snapshot(
@@ -1402,18 +1638,29 @@ fn prepare_workspace_projection_checkpoint(
         if !is_lowercase_sha256(&entry.content_digest)
             || !is_lowercase_sha256(&entry.projection_checksum)
             || !is_valid_checkpoint_projection(&entry.projection)
-            || checkpoint_projection_checksum(&entry.content_digest, &entry.projection)?
-                != entry.projection_checksum
+            || entry
+                .authority
+                .as_ref()
+                .is_some_and(|authority| !is_valid_authority_state(&entry.projection, authority))
+            || checkpoint_projection_checksum(
+                &entry.content_digest,
+                &entry.projection,
+                entry.authority.as_ref(),
+            )? != entry.projection_checksum
         {
             return Err(WorkspaceProjectionScopeError::InvalidCheckpoint);
         }
         let workspace_id = entry.projection.workspace_id.clone();
-        let retained_bytes =
-            projection_retained_bytes(&entry.projection, entry.content_digest.len());
+        let retained_bytes = projection_retained_bytes(
+            &entry.projection,
+            entry.authority.as_ref(),
+            entry.content_digest.len(),
+        );
         let prepared = Arc::new(WorkspaceProjectionEntry {
             content_digest: entry.content_digest,
             retained_bytes,
             projection: entry.projection,
+            authority: entry.authority,
         });
         if entries_by_workspace_id
             .insert(workspace_id, prepared)
@@ -1448,6 +1695,7 @@ fn prepare_workspace_projection_checkpoint(
 fn checkpoint_projection_checksum(
     content_digest: &str,
     projection: &WorkspaceDocumentProjection,
+    authority: Option<&WorkspaceProjectionAuthorityState>,
 ) -> Result<String, WorkspaceProjectionScopeError> {
     let mut writer = WorkspaceProjectionCheckpointDigestWriter(Sha256::new());
     writer
@@ -1458,6 +1706,13 @@ fn checkpoint_projection_checksum(
     writer.0.update([0]);
     serde_json::to_writer(&mut writer, projection)
         .map_err(|_| WorkspaceProjectionScopeError::InvalidCheckpoint)?;
+    if let Some(authority) = authority {
+        writer.0.update([0]);
+        writer.0.update(b"authority-v1");
+        writer.0.update([0]);
+        serde_json::to_writer(&mut writer, authority)
+            .map_err(|_| WorkspaceProjectionScopeError::InvalidCheckpoint)?;
+    }
     Ok(format!("{:x}", writer.0.finalize()))
 }
 
@@ -1539,19 +1794,29 @@ fn is_valid_checkpoint_publication(
 
 fn prepare_projection_entry(
     document: &[u8],
+    authority: Option<WorkspaceProjectionAuthorityState>,
 ) -> Result<WorkspaceProjectionEntry, WorkspaceProjectionCatalogError> {
     let projection = project_workspace_document_v1(document)?;
+    if authority
+        .as_ref()
+        .is_some_and(|authority| !is_valid_authority_state(&projection, authority))
+    {
+        return Err(WorkspaceProjectionCatalogError::InvalidAuthorityState);
+    }
     let content_digest = format!("{:x}", Sha256::digest(document));
-    let retained_bytes = projection_retained_bytes(&projection, content_digest.len());
+    let retained_bytes =
+        projection_retained_bytes(&projection, authority.as_ref(), content_digest.len());
     Ok(WorkspaceProjectionEntry {
         content_digest,
         retained_bytes,
         projection,
+        authority,
     })
 }
 
 fn projection_retained_bytes(
     projection: &WorkspaceDocumentProjection,
+    authority: Option<&WorkspaceProjectionAuthorityState>,
     digest_bytes: usize,
 ) -> usize {
     const STRING_OVERHEAD: usize = 32;
@@ -1586,7 +1851,66 @@ fn projection_retained_bytes(
             total = total.saturating_add(string_cost(path));
         }
     }
+    if let Some(authority) = authority {
+        const AUTHORITY_OVERHEAD: usize = 128;
+        const CONTEXT_AUTHORITY_OVERHEAD: usize = 96;
+        total = total.saturating_add(AUTHORITY_OVERHEAD);
+        total = total.saturating_add(health_retained_bytes(&authority.health));
+        for context in &authority.contexts {
+            total = total.saturating_add(CONTEXT_AUTHORITY_OVERHEAD);
+            total = total.saturating_add(string_cost(&context.context_id));
+            total = total.saturating_add(health_retained_bytes(&context.health));
+        }
+    }
     total
+}
+
+fn health_retained_bytes(health: &WorkspaceProjectionHealth) -> usize {
+    const STRING_OVERHEAD: usize = 32;
+    health
+        .reason
+        .as_ref()
+        .map_or(0, |reason| reason.len().saturating_add(STRING_OVERHEAD))
+}
+
+fn is_valid_authority_state(
+    projection: &WorkspaceDocumentProjection,
+    authority: &WorkspaceProjectionAuthorityState,
+) -> bool {
+    is_valid_revision_state(authority.revisions)
+        && is_valid_health(&authority.health)
+        && authority.contexts.len() == projection.contexts.len()
+        && authority
+            .contexts
+            .iter()
+            .zip(&projection.contexts)
+            .all(|(authority, context)| {
+                authority.context_id == context.context_id
+                    && is_valid_revision_state(authority.revisions)
+                    && is_valid_health(&authority.health)
+            })
+}
+
+pub(crate) fn is_valid_revision_state(revisions: WorkspaceProjectionRevisionState) -> bool {
+    revisions.saved_revision <= revisions.working_revision
+        && revisions
+            .dirty_revision
+            .is_none_or(|dirty| dirty == revisions.working_revision)
+}
+
+fn is_valid_health(health: &WorkspaceProjectionHealth) -> bool {
+    match health.kind {
+        WorkspaceProjectionHealthKind::Writable | WorkspaceProjectionHealthKind::Removed => {
+            health.reason.is_none()
+        }
+        WorkspaceProjectionHealthKind::ExternalConflict
+        | WorkspaceProjectionHealthKind::DegradedReadOnly => {
+            health.reason.as_ref().is_some_and(|reason| {
+                !reason.is_empty()
+                    && reason.len() <= MAXIMUM_WORKSPACE_PROJECTION_HEALTH_REASON_BYTES
+            })
+        }
+    }
 }
 
 fn require_generation(
@@ -1612,7 +1936,9 @@ fn entries_have_same_content(
             .iter()
             .zip(right)
             .all(|((left_id, left_entry), (right_id, right_entry))| {
-                left_id == right_id && left_entry.content_digest == right_entry.content_digest
+                left_id == right_id
+                    && left_entry.content_digest == right_entry.content_digest
+                    && left_entry.authority == right_entry.authority
             })
 }
 
@@ -1682,7 +2008,7 @@ fn optional_uuid(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).and_then(canonical_uuid)
 }
 
-fn canonical_uuid(value: &str) -> Option<String> {
+pub(crate) fn canonical_uuid(value: &str) -> Option<String> {
     if value.len() != 36
         || !value.bytes().enumerate().all(|(index, byte)| match index {
             8 | 13 | 18 | 23 => byte == b'-',
@@ -2159,6 +2485,118 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_rows_are_immutable_checkpointed_and_document_only_updates_invalidate_them() {
+        let scope_id = "51515151-1111-2222-3333-444444444444";
+        let registry = WorkspaceProjectionScopeRegistry::default();
+        let scope = registry
+            .open_scope(scope_id, WorkspaceProjectionCatalogLimits::default(), 2)
+            .expect("scope");
+        let document = workspace_document(WORKSPACE_ID, "Authority");
+        let first_authority = authority_state(1, WorkspaceProjectionHealthKind::Writable, None);
+        scope
+            .publish_authoritative_state(
+                0,
+                0,
+                0,
+                true,
+                &[WorkspaceProjectionPublishedWorkspace {
+                    document_bytes: document.clone(),
+                    authority: first_authority.clone(),
+                }],
+                publication_event(1, 1, WorkspaceProjectionPublicationKind::Bootstrapped),
+            )
+            .expect("first authority publication");
+        let (old_handle, old) = scope.open_snapshot(Some(1)).expect("old snapshot");
+
+        let second_authority = authority_state(
+            2,
+            WorkspaceProjectionHealthKind::ExternalConflict,
+            Some("external_update"),
+        );
+        scope
+            .publish_authoritative_state(
+                1,
+                1,
+                1,
+                false,
+                &[WorkspaceProjectionPublishedWorkspace {
+                    document_bytes: document.clone(),
+                    authority: second_authority.clone(),
+                }],
+                publication_event(2, 2, WorkspaceProjectionPublicationKind::ExternalConflict),
+            )
+            .expect("authority-only publication");
+        assert_eq!(old.entries[0].authority.as_ref(), Some(&first_authority));
+        assert_eq!(
+            scope
+                .read_snapshot(old_handle)
+                .expect("old retained snapshot")
+                .entries[0]
+                .authority
+                .as_ref(),
+            Some(&first_authority)
+        );
+        let current = scope.open_snapshot(Some(2)).expect("current snapshot").1;
+        assert_eq!(
+            current.entries[0].authority.as_ref(),
+            Some(&second_authority)
+        );
+
+        let checkpoint = scope.export_checkpoint().expect("checkpoint");
+        let restored_registry = WorkspaceProjectionScopeRegistry::default();
+        let restored = restored_registry
+            .open_scope(scope_id, WorkspaceProjectionCatalogLimits::default(), 1)
+            .expect("restored scope");
+        let restored_snapshot = restored.restore_checkpoint(&checkpoint).expect("restore");
+        assert_eq!(
+            restored_snapshot.entries[0].authority.as_ref(),
+            Some(&second_authority)
+        );
+
+        let changed = workspace_document(WORKSPACE_ID, "Document-only change");
+        let receipt = restored
+            .upsert_document(restored_snapshot.generation, &changed)
+            .expect("document-only invalidation");
+        assert_eq!(receipt.snapshot.entries[0].authority, None);
+    }
+
+    #[test]
+    fn authoritative_row_validation_rejects_invalid_health_without_mutation() {
+        let registry = WorkspaceProjectionScopeRegistry::default();
+        let scope = registry
+            .open_scope(
+                "52525252-1111-2222-3333-444444444444",
+                WorkspaceProjectionCatalogLimits::default(),
+                1,
+            )
+            .expect("scope");
+        let invalid = WorkspaceProjectionPublishedWorkspace {
+            document_bytes: workspace_document(WORKSPACE_ID, "Invalid"),
+            authority: authority_state(1, WorkspaceProjectionHealthKind::Writable, Some("reason")),
+        };
+        assert_eq!(
+            scope
+                .publish_authoritative_state(
+                    0,
+                    0,
+                    0,
+                    true,
+                    &[invalid],
+                    publication_event(1, 1, WorkspaceProjectionPublicationKind::Bootstrapped),
+                )
+                .expect_err("writable health cannot carry a reason"),
+            WorkspaceProjectionScopeError::Catalog(
+                WorkspaceProjectionCatalogError::InvalidAuthorityState
+            )
+        );
+        assert_eq!(scope.diagnostics().expect("diagnostics").0, 0);
+        assert_eq!(
+            scope.publication_state().expect("publication"),
+            WorkspaceProjectionPublicationState::default()
+        );
+    }
+
+    #[test]
     fn registry_close_all_permanently_rejects_new_scopes() {
         let registry = WorkspaceProjectionScopeRegistry::default();
         let scope_id = "60606060-1111-2222-3333-444444444444";
@@ -2204,6 +2642,13 @@ mod tests {
         assert_eq!(rebased.event_log_floor_sequence, 7);
         assert_eq!(rebased.event_log_count, 1);
         assert!(rebased.rebased);
+        let first_snapshot = scope
+            .open_snapshot_with_publication(Some(1))
+            .expect("first snapshot cursor");
+        assert_eq!(first_snapshot.catalog_revision, 41);
+        assert_eq!(first_snapshot.publication_sequence, 7);
+        assert_eq!(first_snapshot.event_log_floor_sequence, 7);
+        assert_eq!(first_snapshot.event_log_count, 1);
 
         let second = publication_event(
             8,
@@ -2223,6 +2668,21 @@ mod tests {
         assert_eq!(appended.projection.generation, 2);
         assert_eq!(appended.previous_catalog_revision, 41);
         assert_eq!(appended.previous_publication_sequence, 7);
+        assert_eq!(first_snapshot.catalog_revision, 41);
+        assert_eq!(first_snapshot.publication_sequence, 7);
+        scope
+            .close_snapshot(first_snapshot.handle_id)
+            .expect("close first snapshot");
+        let second_snapshot = scope
+            .open_snapshot_with_publication(Some(2))
+            .expect("second snapshot cursor");
+        assert_eq!(second_snapshot.catalog_revision, 42);
+        assert_eq!(second_snapshot.publication_sequence, 8);
+        assert_eq!(second_snapshot.event_log_floor_sequence, 7);
+        assert_eq!(second_snapshot.event_log_count, 2);
+        scope
+            .close_snapshot(second_snapshot.handle_id)
+            .expect("close second snapshot");
         assert_eq!(
             scope.publication_state().expect("state").events,
             [first, second]
@@ -2617,6 +3077,25 @@ mod tests {
                 saved_revision: catalog_revision.saturating_sub(1),
                 dirty_revision: Some(catalog_revision),
             }),
+        }
+    }
+
+    fn authority_state(
+        revision: u64,
+        health_kind: WorkspaceProjectionHealthKind,
+        reason: Option<&str>,
+    ) -> WorkspaceProjectionAuthorityState {
+        WorkspaceProjectionAuthorityState {
+            revisions: WorkspaceProjectionRevisionState {
+                working_revision: revision,
+                saved_revision: revision.saturating_sub(1),
+                dirty_revision: Some(revision),
+            },
+            health: WorkspaceProjectionHealth {
+                kind: health_kind,
+                reason: reason.map(str::to_owned),
+            },
+            contexts: Vec::new(),
         }
     }
 

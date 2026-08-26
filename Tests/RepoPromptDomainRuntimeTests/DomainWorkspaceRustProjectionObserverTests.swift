@@ -318,6 +318,167 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
         XCTAssertEqual(thirdProjection.name, "Rust-LRU-Third")
         let reloadedSecondProjection = try await projector.project(documentBytes: second.documentBytes)
         XCTAssertEqual(reloadedSecondProjection.name, "Rust-LRU-Second")
+        let evictedFirst = try await projector.readWorkspace(workspaceID: first.workspaceID)
+        XCTAssertNil(evictedFirst.projection, "the least-recently-used first workspace should have been evicted")
+        let reconciledFirst = try await projector.project(documentBytes: first.documentBytes)
+        XCTAssertEqual(reconciledFirst.name, "Rust-LRU-First")
+        let rereadFirst = try await projector.readWorkspace(workspaceID: first.workspaceID)
+        let expectedFirst = try DomainWorkspaceRustProjection.swiftProjection(first)
+        XCTAssertEqual(rereadFirst.projection, expectedFirst)
+        await projector.shutdown()
+    }
+
+    func testInjectedComparisonProjectorCannotServeAuthoritativeReads() async throws {
+        let observer = makeObserver { data in
+            let value = try DomainWorkspaceDocument.decode(
+                documentBytes: data,
+                fileURL: URL(fileURLWithPath: "/tmp/comparison-only.json")
+            )
+            return try DomainWorkspaceRustProjection.swiftProjection(value)
+        }
+        await observer.start()
+
+        do {
+            _ = try await observer.authoritativeWorkspaceProjection(workspaceID: UUID())
+            XCTFail("comparison-only projector must not reactivate Swift read authority")
+        } catch DomainWorkspaceStatefulRustProjectionError.authoritativeReadUnavailable {
+            // Expected.
+        }
+        await observer.shutdown()
+    }
+
+    func testStatefulRustProjectorReadsCommittedWorkspaceWithoutMutatingGeneration() async throws {
+        let projector = DomainWorkspaceStatefulRustProjector(scopeID: UUID())
+        let value = try document(
+            name: "Rust Read Authority",
+            prompt: "authoritative prompt"
+        )
+        let expected = try DomainWorkspaceRustProjection.swiftProjection(value)
+
+        _ = try await projector.project(documentBytes: value.documentBytes)
+        let first = try await projector.readWorkspace(workspaceID: value.workspaceID)
+        let second = try await projector.readWorkspace(workspaceID: value.workspaceID)
+
+        XCTAssertEqual(first.projection, expected)
+        XCTAssertNil(first.authority, "document-only projection cannot claim revision/health authority")
+        XCTAssertEqual(second.projection, expected)
+        XCTAssertNil(second.authority)
+        XCTAssertEqual(first.generation, second.generation)
+        XCTAssertEqual(first.catalogRevision, 0)
+        XCTAssertEqual(first.publicationSequence, 0)
+        let missing = try await projector.readWorkspace(workspaceID: UUID())
+        XCTAssertNil(missing.projection)
+        XCTAssertEqual(missing.generation, first.generation)
+        XCTAssertEqual(missing.catalogRevision, first.catalogRevision)
+        XCTAssertEqual(missing.publicationSequence, first.publicationSequence)
+        await projector.shutdown()
+    }
+
+    func testStatefulRustProjectorReadCarriesAtomicPublicationCursor() async throws {
+        let projector = DomainWorkspaceStatefulRustProjector(scopeID: UUID())
+        let value = try document(name: "Rust Cursor Authority")
+        let revisions = DomainRevisionState(
+            workingRevision: 4,
+            savedRevision: 3,
+            dirtyRevision: 4
+        )
+        let workspace = snapshot(
+            document: value,
+            revisions: revisions,
+            health: .externalConflict(reason: "external_update")
+        )
+        let publication = try await projector.publish(
+            workspaces: [workspace],
+            event: publicationEvent(
+                sequence: 7,
+                catalogRevision: 4,
+                workspaceID: value.workspaceID
+            )
+        )
+        XCTAssertEqual(publication.receipt.publicationSequence, 7)
+        XCTAssertEqual(publication.receipt.catalogRevision, 4)
+
+        let read = try await projector.readWorkspace(workspaceID: value.workspaceID)
+        XCTAssertEqual(read.projection, try DomainWorkspaceRustProjection.swiftProjection(value))
+        XCTAssertEqual(read.authority, DomainWorkspaceRustProjection.authorityProjection(workspace))
+        XCTAssertEqual(read.generation, publication.receipt.generation)
+        XCTAssertEqual(read.catalogRevision, 4)
+        XCTAssertEqual(read.publicationSequence, 7)
+        XCTAssertEqual(read.eventLogFloorSequence, 7)
+        XCTAssertEqual(read.eventLogCount, 1)
+        await projector.shutdown()
+    }
+
+    func testDocumentOnlyMutationInvalidatesCompleteAuthoritySidecar() async throws {
+        let projector = DomainWorkspaceStatefulRustProjector(scopeID: UUID())
+        let workspaceID = UUID()
+        let before = try document(workspaceID: workspaceID, name: "Before")
+        let workspace = snapshot(
+            document: before,
+            revisions: .init(workingRevision: 1, savedRevision: 0, dirtyRevision: 1),
+            health: .writable
+        )
+        _ = try await projector.publish(
+            workspaces: [workspace],
+            event: publicationEvent(sequence: 1, catalogRevision: 1, workspaceID: workspaceID)
+        )
+        let authoritative = try await projector.readWorkspace(workspaceID: workspaceID)
+        XCTAssertNotNil(authoritative.authority)
+
+        let changed = try document(workspaceID: workspaceID, name: "After")
+        _ = try await projector.project(documentBytes: changed.documentBytes)
+        let invalidated = try await projector.readWorkspace(workspaceID: workspaceID)
+        XCTAssertEqual(invalidated.projection?.name, "After")
+        XCTAssertNil(invalidated.authority)
+        XCTAssertEqual(invalidated.catalogRevision, 1)
+        XCTAssertEqual(invalidated.publicationSequence, 1)
+        await projector.shutdown()
+    }
+
+    func testStatefulRustProjectorRejectsStaleReconciliationAfterNewerRemoval() async throws {
+        let projector = DomainWorkspaceStatefulRustProjector(scopeID: UUID())
+        let value = try document(name: "Removed Before Repair")
+        _ = try await projector.publish(
+            documents: [value],
+            event: publicationEvent(
+                sequence: 7,
+                catalogRevision: 4,
+                workspaceID: value.workspaceID
+            )
+        )
+        let stale = try await projector.readWorkspace(workspaceID: value.workspaceID)
+        _ = try await projector.publish(
+            documents: [],
+            event: publicationEvent(
+                sequence: 8,
+                catalogRevision: 5,
+                workspaceID: value.workspaceID
+            )
+        )
+
+        do {
+            _ = try await projector.reconcileWorkspace(
+                workspace: DomainWorkspaceSnapshot(
+                    document: value,
+                    revisions: .initial,
+                    health: .writable,
+                    contexts: value.metadata.contexts.map {
+                        DomainContextSnapshot(metadata: $0, revisions: .initial, health: .writable)
+                    }
+                ),
+                expectedGeneration: stale.generation,
+                expectedCatalogRevision: stale.catalogRevision,
+                expectedPublicationSequence: stale.publicationSequence,
+                validateLease: {}
+            )
+            XCTFail("stale reconciliation unexpectedly resurrected a removed workspace")
+        } catch DomainWorkspaceStatefulRustProjectionError.authoritativeFenceMismatch {
+            // Expected.
+        }
+        let current = try await projector.readWorkspace(workspaceID: value.workspaceID)
+        XCTAssertNil(current.projection)
+        XCTAssertEqual(current.catalogRevision, 5)
+        XCTAssertEqual(current.publicationSequence, 8)
         await projector.shutdown()
     }
 
@@ -556,13 +717,17 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
         let secondObject = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: secondCheckpoint) as? [String: Any]
         )
-        XCTAssertEqual(
-            (secondObject["generation"] as? NSNumber)?.uint64Value,
+        let secondGeneration = try XCTUnwrap(
+            (secondObject["generation"] as? NSNumber)?.uint64Value
+        )
+        XCTAssertGreaterThan(
+            secondGeneration,
             firstGeneration,
-            "matching bootstrap documents must preserve the restored Rust projection generation"
+            "restart health transitions must publish new complete authority rows even when document bytes match"
         )
         let secondEntries = try XCTUnwrap(secondObject["entries"] as? [[String: Any]])
         XCTAssertEqual(secondEntries.first?["contentDigest"] as? String, firstContentDigest)
+        XCTAssertNotNil(secondEntries.first?["authority"] as? [String: Any])
         XCTAssertEqual((secondObject["publicationSequence"] as? NSNumber)?.uint64Value, 2)
         let events = try XCTUnwrap(secondObject["events"] as? [[String: Any]])
         XCTAssertEqual(events.count, 2)
@@ -708,6 +873,25 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
         return try DomainWorkspaceDocument.decode(
             documentBytes: bytes,
             fileURL: fileURL ?? URL(fileURLWithPath: "/tmp/\(workspaceID.uuidString).json")
+        )
+    }
+
+    private func snapshot(
+        document: DomainWorkspaceDocument,
+        revisions: DomainRevisionState,
+        health: DomainAuthorityHealth
+    ) -> DomainWorkspaceSnapshot {
+        DomainWorkspaceSnapshot(
+            document: document,
+            revisions: revisions,
+            health: health,
+            contexts: document.metadata.contexts.map { metadata in
+                DomainContextSnapshot(
+                    metadata: metadata,
+                    revisions: revisions,
+                    health: health
+                )
+            }
         )
     }
 

@@ -1,4 +1,5 @@
 import AgentryUniFFIRaw
+import CryptoKit
 import Darwin
 import Dispatch
 import Foundation
@@ -154,6 +155,28 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         documentBytes: Data
     ) throws -> CoreWorkspaceDocumentProjectionV1
+    func workspaceSavedRevisionPlanV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1
+    func workspaceSavedRevisionValidateV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1
+    func workspaceDeletionTombstonePlanV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1
+    func workspaceWorkingJournalValidateV1(
+        identity: CoreRuntimeIdentity,
+        journalBytes: Data
+    ) throws -> CoreWorkspaceWorkingJournalValidationV1
+    func workspaceWorkingJournalPlanTransitionV1(
+        identity: CoreRuntimeIdentity,
+        currentJournalBytes: Data?,
+        transitionBytes: Data,
+        documentBytes: Data?
+    ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1
     func workspaceProjectionOpenScopeV1(
         identity: CoreRuntimeIdentity,
         config: AgentryUniFFIRaw.CoreWorkspaceProjectionScopeConfigV1
@@ -171,9 +194,17 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         request: AgentryUniFFIRaw.CoreWorkspaceProjectionUpsertRequestV1
     ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1
+    func workspaceProjectionUpsertAuthoritativeV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionUpsertAuthoritativeRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1
     func workspaceProjectionPublishV1(
         identity: CoreRuntimeIdentity,
         request: AgentryUniFFIRaw.CoreWorkspaceProjectionPublishRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationReceiptV1
+    func workspaceProjectionPublishAuthoritativeV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionPublishAuthoritativeRequestV1
     ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationReceiptV1
     func workspaceProjectionRemoveV1(
         identity: CoreRuntimeIdentity,
@@ -953,6 +984,244 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    func workspaceSavedRevisionPlanV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        try workspacePersistenceMetadata(
+            identity: identity,
+            payloadBytes: payloadBytes,
+            operation: runtime.workspaceSavedRevisionPlanV1
+        )
+    }
+
+    func workspaceSavedRevisionValidateV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        try workspacePersistenceMetadata(
+            identity: identity,
+            payloadBytes: payloadBytes,
+            operation: runtime.workspaceSavedRevisionValidateV1
+        )
+    }
+
+    func workspaceDeletionTombstonePlanV1(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        try workspacePersistenceMetadata(
+            identity: identity,
+            payloadBytes: payloadBytes,
+            operation: runtime.workspaceDeletionTombstonePlanV1
+        )
+    }
+
+    private func workspacePersistenceMetadata(
+        identity: CoreRuntimeIdentity,
+        payloadBytes: Data,
+        operation: (AgentryUniFFIRaw.CoreWorkspacePersistenceMetadataRequestV1) throws
+            -> AgentryUniFFIRaw.CoreWorkspacePersistenceMetadataResponseV1
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        do {
+            let response = try operation(.init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                payloadBytes: payloadBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.validation == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace persistence metadata response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let result = response.validation
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace persistence metadata receipt is invalid"
+                )
+            }
+            return try Self.workspacePersistenceMetadataValidation(result)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    private static func workspacePersistenceMetadataValidation(
+        _ result: AgentryUniFFIRaw.CoreWorkspacePersistenceMetadataValidationV1
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        let computedDigest = SHA256.hash(data: result.canonicalBytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard let workspaceID = UUID(uuidString: result.workspaceId),
+              let operationID = UUID(uuidString: result.operationId),
+              result.schemaVersion == CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+              result.canonicalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              result.contentDigest == computedDigest
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace persistence metadata receipt is invalid"
+            )
+        }
+        return CoreWorkspacePersistenceMetadataValidationV1(
+            workspaceID: workspaceID,
+            operationID: operationID,
+            schemaVersion: result.schemaVersion,
+            contentDigest: result.contentDigest,
+            canonicalBytes: result.canonicalBytes
+        )
+    }
+
+    func workspaceWorkingJournalValidateV1(
+        identity: CoreRuntimeIdentity,
+        journalBytes: Data
+    ) throws -> CoreWorkspaceWorkingJournalValidationV1 {
+        do {
+            let response = try runtime.workspaceWorkingJournalValidateV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                journalBytes: journalBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.validation == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace working journal response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let result = response.validation
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace working journal validation receipt is invalid"
+                )
+            }
+            return try Self.workspaceWorkingJournalValidation(result)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceWorkingJournalPlanTransitionV1(
+        identity: CoreRuntimeIdentity,
+        currentJournalBytes: Data?,
+        transitionBytes: Data,
+        documentBytes: Data?
+    ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1 {
+        do {
+            let response = try runtime.workspaceWorkingJournalPlanTransitionV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                currentJournalBytes: currentJournalBytes,
+                transitionBytes: transitionBytes,
+                documentBytes: documentBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.plan == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace working journal transition response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let result = response.plan
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace working journal transition receipt is invalid"
+                )
+            }
+            let primary = try Self.workspaceWorkingJournalValidation(result.primary)
+            let committed = try result.committed.map(Self.workspaceWorkingJournalValidation)
+            guard committed == nil || committed?.workspaceID == primary.workspaceID else {
+                throw CoreTransportError.unexpected(
+                    "workspace working journal transition identities differ"
+                )
+            }
+            return CoreWorkspaceWorkingJournalTransitionPlanV1(
+                primary: primary,
+                committed: committed
+            )
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    private static func workspaceWorkingJournalValidation(
+        _ result: AgentryUniFFIRaw.CoreWorkspaceWorkingJournalValidationV1
+    ) throws -> CoreWorkspaceWorkingJournalValidationV1 {
+        let computedDigest = SHA256.hash(data: result.canonicalBytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard let workspaceID = UUID(uuidString: result.workspaceId),
+              result.journalVersion == CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+              result.contentDigest.count == 64,
+              result.contentDigest == result.contentDigest.lowercased(),
+              result.contentDigest.utf8.allSatisfy({ byte in
+                  (48 ... 57).contains(byte) || (97 ... 102).contains(byte)
+              }),
+              result.canonicalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              result.contentDigest == computedDigest
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace working journal validation receipt is invalid"
+            )
+        }
+        return CoreWorkspaceWorkingJournalValidationV1(
+            workspaceID: workspaceID,
+            journalVersion: result.journalVersion,
+            contentDigest: result.contentDigest,
+            canonicalBytes: result.canonicalBytes
+        )
+    }
+
+    private static func workspaceWorkingJournalValidationError(
+        _ kind: AgentryUniFFIRaw.CoreWorkspaceWorkingJournalValidationErrorKindV1,
+        futureSchemaVersion: UInt16?
+    ) throws -> CoreWorkspaceWorkingJournalValidationError {
+        switch kind {
+        case .inputTooLarge: .inputTooLarge
+        case .outputTooLarge: .outputTooLarge
+        case .malformed: .malformed
+        case .futureSchema:
+            if let futureSchemaVersion {
+                .futureSchema(futureSchemaVersion)
+            } else {
+                throw CoreTransportError.unexpected(
+                    "future workspace journal schema response has no version"
+                )
+            }
+        case .invalidIdentity: .invalidIdentity
+        case .invalidFileUrl: .invalidFileURL
+        case .invalidRevisionState: .invalidRevisionState
+        case .invalidDigest: .invalidDigest
+        case .invalidWorkingDocument: .invalidWorkingDocument
+        case .invalidContextTable: .invalidContextTable
+        case .invalidOperationLedger: .invalidOperationLedger
+        case .invalidPendingSave: .invalidPendingSave
+        case .invalidTimestamp: .invalidTimestamp
+        }
+    }
+
     func workspaceProjectionOpenScopeV1(
         identity: CoreRuntimeIdentity,
         config: AgentryUniFFIRaw.CoreWorkspaceProjectionScopeConfigV1
@@ -1020,6 +1289,25 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func workspaceProjectionUpsertAuthoritativeV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionUpsertAuthoritativeRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        do {
+            return try runtime.workspaceProjectionUpsertAuthoritativeV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                expectedGeneration: request.expectedGeneration,
+                expectedCatalogRevision: request.expectedCatalogRevision,
+                expectedPublicationSequence: request.expectedPublicationSequence,
+                workspace: request.workspace
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func workspaceProjectionPublishV1(
         identity: CoreRuntimeIdentity,
         request: AgentryUniFFIRaw.CoreWorkspaceProjectionPublishRequestV1
@@ -1034,6 +1322,27 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 expectedPublicationSequence: request.expectedPublicationSequence,
                 rebased: request.rebased,
                 documentBytes: request.documentBytes,
+                event: request.event
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceProjectionPublishAuthoritativeV1(
+        identity: CoreRuntimeIdentity,
+        request: AgentryUniFFIRaw.CoreWorkspaceProjectionPublishAuthoritativeRequestV1
+    ) throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationReceiptV1 {
+        do {
+            return try runtime.workspaceProjectionPublishAuthoritativeV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: request.scopeId,
+                scopeIncarnation: request.scopeIncarnation,
+                expectedGeneration: request.expectedGeneration,
+                expectedCatalogRevision: request.expectedCatalogRevision,
+                expectedPublicationSequence: request.expectedPublicationSequence,
+                rebased: request.rebased,
+                workspaces: request.workspaces,
                 event: request.event
             ))
         } catch {

@@ -17,6 +17,7 @@ actor DirectHeadlessDomainContext {
         case rootMappingUnavailable
         case invalidWorkspaceDocument
         case stateConflict(String)
+        case workspaceProjectionUnavailable
         case pathOutsideWorkspace(String)
 
         var errorDescription: String? {
@@ -27,6 +28,7 @@ actor DirectHeadlessDomainContext {
             case .rootMappingUnavailable: "Direct-headless root mapping is incomplete or ambiguous"
             case .invalidWorkspaceDocument: "Workspace document is invalid"
             case let .stateConflict(reason): "Workspace state conflict: \(reason)"
+            case .workspaceProjectionUnavailable: "Rust workspace projection did not reach the current Swift document fence"
             case let .pathOutsideWorkspace(path): "Path is outside the bound workspace roots: \(path)"
             }
         }
@@ -102,13 +104,13 @@ actor DirectHeadlessDomainContext {
     }
 
     func snapshot(identity: DomainContextIdentity, sessionID: UUID? = nil) async throws -> Snapshot {
-        guard let workspace = await runtime.contextStore.workspaceSnapshot(identity.workspaceID) else {
-            throw Error.workspaceUnavailable
-        }
+        let authorityRead = try await workspaceAuthorityRead(identity: identity)
+        let workspace = authorityRead.workspace
         guard let context = workspace.contexts.first(where: { $0.metadata.identity == identity }) else {
             throw Error.contextUnavailable
         }
-        let canonicalRoots = try workspace.document.metadata.repoPaths.map { raw -> URL in
+        let canonicalRepoPaths = authorityRead.projection.repoPaths
+        let canonicalRoots = try canonicalRepoPaths.map { raw -> URL in
             let url = URL(fileURLWithPath: raw).standardizedFileURL.resolvingSymlinksInPath()
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -129,11 +131,13 @@ actor DirectHeadlessDomainContext {
                 throw DomainStandaloneScopeError.invalidWorkingDirectory(mapping.physicalRoot.path)
             }
         }
-        let contextObject = try Self.contextObject(from: workspace, contextID: identity.contextID)
-        let prompt = contextObject["prompt"] as? String ?? ""
-        let selection = contextObject["selectedPaths"] as? [String]
-            ?? contextObject["selection"] as? [String]
-            ?? []
+        guard let projectedContext = authorityRead.projection.contexts.first(where: {
+            $0.contextID == identity.contextID
+        }) else {
+            throw Error.contextUnavailable
+        }
+        let prompt = projectedContext.prompt
+        let selection = projectedContext.selection
         return Snapshot(
             identity: identity,
             workspace: workspace,
@@ -142,6 +146,138 @@ actor DirectHeadlessDomainContext {
             prompt: prompt,
             selection: Self.translateSelectionToPhysical(selection, mappings: rootOverlay.mappings)
         )
+    }
+
+    /// Resolves the production read plane through Rust and then re-reads the Swift envelope to
+    /// prove the source document did not change across the suspending snapshot call. Missing or
+    /// stale rows are reconciled directly under the lease rather than relying on observation
+    /// deduplication. The watchdog bounds operation-permit wait, Rust paging, cancellation cleanup,
+    /// and all retries under one request deadline.
+    private func workspaceAuthorityRead(
+        identity: DomainContextIdentity
+    ) async throws -> (
+        workspace: DomainWorkspaceSnapshot,
+        projection: DomainWorkspaceDocumentReadProjection
+    ) {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while true {
+            try Task.checkCancellation()
+            guard let beforeFence = await runtime.contextStore.workspaceReadFence(identity.workspaceID) else {
+                throw Error.workspaceUnavailable
+            }
+            let before = beforeFence.workspace
+            let expected: DomainWorkspaceDocumentReadProjection
+            do {
+                expected = try DomainWorkspaceRustProjection.swiftProjection(before.document)
+            } catch {
+                throw Error.invalidWorkspaceDocument
+            }
+
+            let current = try await boundedWorkspaceProjectionRead(
+                workspaceID: identity.workspaceID,
+                deadline: deadline
+            )
+            guard current.catalogRevision == beforeFence.catalogRevision,
+                  current.publicationSequence == beforeFence.publicationSequence
+            else {
+                try await waitForWorkspaceProjectionRetry(deadline: deadline)
+                continue
+            }
+            let expectedAuthority = DomainWorkspaceRustProjection.authorityProjection(before)
+            let actual: DomainWorkspaceAuthoritativeProjectionRead
+            if current.projection == expected, current.authority == expectedAuthority {
+                actual = current
+            } else {
+                do {
+                    actual = try await boundedWorkspaceProjectionReconciliation(
+                        workspace: before,
+                        expectedGeneration: current.generation,
+                        expectedCatalogRevision: current.catalogRevision,
+                        expectedPublicationSequence: current.publicationSequence,
+                        deadline: deadline
+                    )
+                } catch DomainWorkspaceStatefulRustProjectionError.authoritativeFenceMismatch {
+                    try await waitForWorkspaceProjectionRetry(deadline: deadline)
+                    continue
+                }
+            }
+            if let actualProjection = actual.projection,
+               let actualAuthority = actual.authority,
+               actualProjection == expected,
+               actualAuthority == expectedAuthority,
+               actual.catalogRevision == beforeFence.catalogRevision,
+               actual.publicationSequence == beforeFence.publicationSequence,
+               let afterFence = await runtime.contextStore.workspaceReadFence(identity.workspaceID),
+               afterFence.catalogRevision == beforeFence.catalogRevision,
+               afterFence.publicationSequence == beforeFence.publicationSequence,
+               afterFence.workspace.document.contentDigest == before.document.contentDigest
+            {
+                guard let authoritativeWorkspace = DomainWorkspaceRustProjection.workspaceSnapshot(
+                    topology: afterFence.workspace,
+                    authority: actualAuthority
+                ) else {
+                    throw Error.invalidWorkspaceDocument
+                }
+                return (authoritativeWorkspace, actualProjection)
+            }
+
+            try await waitForWorkspaceProjectionRetry(deadline: deadline)
+        }
+    }
+
+    private func boundedWorkspaceProjectionRead(
+        workspaceID: UUID,
+        deadline: ContinuousClock.Instant
+    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
+        try await boundedWorkspaceProjectionOperation(deadline: deadline) { [runtime] in
+            try await runtime.workspaceRustProjectionObserver.authoritativeWorkspaceProjection(
+                workspaceID: workspaceID
+            )
+        }
+    }
+
+    private func boundedWorkspaceProjectionReconciliation(
+        workspace: DomainWorkspaceSnapshot,
+        expectedGeneration: UInt64,
+        expectedCatalogRevision: UInt64,
+        expectedPublicationSequence: UInt64,
+        deadline: ContinuousClock.Instant
+    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
+        try await boundedWorkspaceProjectionOperation(deadline: deadline) { [runtime] in
+            try await runtime.workspaceRustProjectionObserver.reconcileAuthoritativeWorkspaceProjection(
+                workspace: workspace,
+                expectedGeneration: expectedGeneration,
+                expectedCatalogRevision: expectedCatalogRevision,
+                expectedPublicationSequence: expectedPublicationSequence
+            )
+        }
+    }
+
+    private func waitForWorkspaceProjectionRetry(
+        deadline: ContinuousClock.Instant
+    ) async throws {
+        guard ContinuousClock.now < deadline else {
+            throw Error.workspaceProjectionUnavailable
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    private func boundedWorkspaceProjectionOperation<Value: Sendable>(
+        deadline: ContinuousClock.Instant,
+        operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let now = ContinuousClock.now
+        guard now < deadline else { throw Error.workspaceProjectionUnavailable }
+        do {
+            return try await MCPToolExecutionWatchdog.execute(
+                deadline: now.duration(to: deadline),
+                cancellationGrace: .zero,
+                cleanupDisposition: .detachAndSettle,
+                operation: operation
+            )
+        } catch is MCPToolExecutionWatchdogError {
+            throw Error.workspaceProjectionUnavailable
+        }
     }
 
     func prepareSessionRootOverlay(

@@ -301,6 +301,11 @@ final class DomainWorkspaceAuthorityLeaseTests: XCTestCase {
             return permit.kind
         }
         XCTAssertEqual(commandKind, .command)
+        let reconciliationKind = try await access.withReconciliationPermit { permit in
+            try await permit.validate(expectedStorageScopeDigest: lease.scope.storageScopeDigest)
+            return permit.kind
+        }
+        XCTAssertEqual(reconciliationKind, .reconciliation)
 
         await access.beginDrain()
         await access.finishDrainAndRelease()

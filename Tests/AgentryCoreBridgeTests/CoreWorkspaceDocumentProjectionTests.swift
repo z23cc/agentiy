@@ -71,6 +71,151 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         _ = try await bridge.close()
     }
 
+    func testRealCoreValidatesFoundationWorkspaceWorkingJournalV1Shape() async throws {
+        let workspaceID = UUID()
+        let contextID = UUID()
+        let revisions = JournalRevisionFixture(
+            workingRevision: 0,
+            savedRevision: 0,
+            dirtyRevision: nil
+        )
+        let journal = JournalFixture(
+            version: 1,
+            workspaceID: workspaceID,
+            fileURL: URL(fileURLWithPath: "/tmp/Workspace.json"),
+            revisions: revisions,
+            savedDigest: String(repeating: "a", count: 64),
+            workingDocument: nil,
+            contextRevisions: [contextID: revisions],
+            contextDigests: [contextID: String(repeating: "b", count: 64)],
+            contextTombstones: [:],
+            operations: [],
+            pendingSave: nil,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 42.5)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let bytes = try encoder.encode(journal)
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+
+        let validated = try await client.validateWorkspaceWorkingJournalV1(bytes)
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let preparedValidated = try await Task.detached {
+            try prepared.validate(bytes)
+        }.value
+        let transitionDocument = Data("{\"id\":\"\(workspaceID.uuidString)\"}".utf8)
+        let operationID = UUID()
+        let transition = try JSONSerialization.data(withJSONObject: [
+            "kind": "create",
+            "workspaceID": workspaceID.uuidString,
+            "fileURL": journal.fileURL.absoluteString,
+            "contextRevisions": [],
+            "contextDigests": [],
+            "operation": [
+                "operationID": operationID.uuidString,
+                "fingerprint": String(repeating: "c", count: 64),
+                "recordedAt": 43.0,
+                "disposition": "applied",
+                "catalogRevision": 1
+            ],
+            "operationID": operationID.uuidString,
+            "updatedAt": 43.0
+        ], options: [.sortedKeys])
+        let planned = try prepared.planTransition(
+            currentJournalBytes: nil,
+            transitionBytes: transition,
+            documentBytes: transitionDocument
+        )
+        let documentDigest = String(repeating: "d", count: 64)
+        let savedRevisionRequest = try JSONSerialization.data(withJSONObject: [
+            "workspaceID": workspaceID.uuidString,
+            "savedRevision": 1,
+            "documentDigest": documentDigest,
+            "operationID": operationID.uuidString,
+            "updatedAt": 43.0
+        ], options: [.sortedKeys])
+        let savedRevision = try prepared.planSavedRevision(savedRevisionRequest)
+        let validatedSavedRevision = try prepared.validateSavedRevision(
+            savedRevision.canonicalBytes
+        )
+        let tombstoneRequest = try JSONSerialization.data(withJSONObject: [
+            "workspaceID": workspaceID.uuidString,
+            "fileURL": journal.fileURL.absoluteString,
+            "operation": [
+                "operationID": operationID.uuidString,
+                "fingerprint": String(repeating: "c", count: 64),
+                "recordedAt": 43.0,
+                "disposition": "applied",
+                "catalogRevision": 1
+            ],
+            "deletedAt": 44.0,
+            "cleanupWarnings": ["revision sidecar: denied"]
+        ], options: [.sortedKeys])
+        let tombstone = try prepared.planDeletionTombstone(tombstoneRequest)
+
+        XCTAssertNotNil(planned.committed)
+        XCTAssertEqual(planned.primary.workspaceID, workspaceID)
+        XCTAssertEqual(savedRevision, validatedSavedRevision)
+        XCTAssertEqual(savedRevision.workspaceID, workspaceID)
+        XCTAssertEqual(savedRevision.operationID, operationID)
+        XCTAssertEqual(tombstone.workspaceID, workspaceID)
+        XCTAssertEqual(tombstone.operationID, operationID)
+        XCTAssertTrue(String(decoding: tombstone.canonicalBytes, as: UTF8.self).contains(
+            "artifact_cleanup_incomplete: revision sidecar: denied"
+        ))
+        XCTAssertEqual(preparedValidated, validated)
+        XCTAssertEqual(validated.workspaceID, workspaceID)
+        XCTAssertEqual(validated.journalVersion, 1)
+        XCTAssertEqual(validated.contentDigest.count, 64)
+        XCTAssertEqual(
+            try JSONDecoder().decode(JournalFixture.self, from: validated.canonicalBytes),
+            journal
+        )
+        var futureObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: bytes) as? [String: Any]
+        )
+        futureObject["version"] = 2
+        let futureBytes = try JSONSerialization.data(
+            withJSONObject: futureObject,
+            options: [.sortedKeys]
+        )
+        do {
+            _ = try await client.validateWorkspaceWorkingJournalV1(futureBytes)
+            XCTFail("future journal unexpectedly validated")
+        } catch {
+            XCTAssertEqual(
+                error as? CoreWorkspaceWorkingJournalValidationError,
+                .futureSchema(2)
+            )
+        }
+        _ = try await bridge.close()
+    }
+
+    func testOversizedWorkingJournalIsRejectedBeforeTransportDispatch() async throws {
+        let transport = FakeCoreTransport()
+        let bridge = AgentryCoreBridge(transport: transport)
+        try await bridge.initialize()
+        let client = try await bridge.computeClient()
+        let oversized = Data(
+            repeating: 0,
+            count: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes + 1
+        )
+
+        await XCTAssertThrowsCoreErrorAsync {
+            try await client.validateWorkspaceWorkingJournalV1(oversized)
+        } verify: {
+            XCTAssertEqual(
+                $0 as? CoreComputeError,
+                .invalidRequest(
+                    "workspace journal exceeds \(CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes)-byte limit"
+                )
+            )
+        }
+        XCTAssertFalse(transport.actions.contains("workspace-working-journal-validate-v1"))
+        _ = try await bridge.close()
+    }
+
     func testRealCoreStatefulScopeRetainsImmutableGenerationAcrossMutation() async throws {
         let workspaceID = UUID()
         let scopeID = UUID()
@@ -136,12 +281,21 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             revisions: .init(workingRevision: 2, savedRevision: 1, dirtyRevision: 2)
         )
 
-        let first = try await scope.publish(
+        let authority = CoreWorkspaceProjectionAuthorityState(
+            revisions: .init(workingRevision: 2, savedRevision: 1, dirtyRevision: 2),
+            health: .init(kind: .externalConflict, reason: "external_update"),
+            contexts: []
+        )
+        let workspace = CoreWorkspaceProjectionPublishedWorkspace(
+            documentBytes: document,
+            authority: authority
+        )
+        let first = try await scope.publishAuthoritative(
             expectedGeneration: 0,
             expectedCatalogRevision: 0,
             expectedPublicationSequence: 0,
             rebased: true,
-            documents: [document],
+            workspaces: [workspace],
             event: firstEvent
         )
         XCTAssertEqual(first.generation, 1)
@@ -150,13 +304,21 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(first.catalogRevision, 9)
         XCTAssertEqual(first.eventLogFloorSequence, 5)
         XCTAssertEqual(first.eventLogCount, 1)
+        let firstSnapshot = try await scope.openSnapshot(expectedGeneration: 1)
+        XCTAssertEqual(firstSnapshot.catalogRevision, 9)
+        XCTAssertEqual(firstSnapshot.publicationSequence, 5)
+        XCTAssertEqual(firstSnapshot.eventLogFloorSequence, 5)
+        XCTAssertEqual(firstSnapshot.eventLogCount, 1)
 
-        let second = try await scope.publish(
+        let firstPage = try await firstSnapshot.page(offset: 0, limit: 1)
+        XCTAssertEqual(firstPage.workspaces.first?.authority, authority)
+
+        let second = try await scope.publishAuthoritative(
             expectedGeneration: 1,
             expectedCatalogRevision: 9,
             expectedPublicationSequence: 5,
             rebased: false,
-            documents: [document],
+            workspaces: [workspace],
             event: .init(
                 sequence: 6,
                 catalogRevision: 9,
@@ -170,6 +332,15 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(second.generation, 1, "cursor-only publication must not invent a document generation")
         XCTAssertFalse(second.projectionChanged)
         XCTAssertEqual(second.eventLogCount, 2)
+        XCTAssertEqual(firstSnapshot.catalogRevision, 9)
+        XCTAssertEqual(firstSnapshot.publicationSequence, 5)
+        await firstSnapshot.close()
+        let secondSnapshot = try await scope.openSnapshot(expectedGeneration: 1)
+        XCTAssertEqual(secondSnapshot.catalogRevision, 9)
+        XCTAssertEqual(secondSnapshot.publicationSequence, 6)
+        XCTAssertEqual(secondSnapshot.eventLogFloorSequence, 5)
+        XCTAssertEqual(secondSnapshot.eventLogCount, 2)
+        await secondSnapshot.close()
         let diagnostics = try await scope.diagnostics()
         XCTAssertEqual(diagnostics.generation, 1)
         XCTAssertEqual(diagnostics.catalogRevision, 9)
@@ -341,4 +512,38 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             }
         }
     }
+}
+
+private struct JournalRevisionFixture: Codable, Equatable {
+    let workingRevision: UInt64
+    let savedRevision: UInt64
+    let dirtyRevision: UInt64?
+}
+
+private struct JournalPendingSaveFixture: Codable, Equatable {
+    let operationID: UUID
+    let documentDigest: String
+}
+
+private struct JournalOperationFixture: Codable, Equatable {
+    let operationID: UUID
+    let fingerprint: String
+    let recordedAt: Date
+    let disposition: String
+    let catalogRevision: UInt64
+}
+
+private struct JournalFixture: Codable, Equatable {
+    let version: Int
+    let workspaceID: UUID
+    let fileURL: URL
+    let revisions: JournalRevisionFixture
+    let savedDigest: String
+    let workingDocument: Data?
+    let contextRevisions: [UUID: JournalRevisionFixture]
+    let contextDigests: [UUID: String]
+    let contextTombstones: [UUID: UInt64]
+    let operations: [JournalOperationFixture]
+    let pendingSave: JournalPendingSaveFixture?
+    let updatedAt: Date
 }

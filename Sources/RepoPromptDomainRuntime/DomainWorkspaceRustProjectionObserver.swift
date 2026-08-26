@@ -18,7 +18,7 @@ package struct DomainWorkspaceProjectionObservationSink: Sendable {
     ) -> Void
     private let observePublicationBlock: @Sendable (
         DomainWorkspaceEvent,
-        [DomainWorkspaceDocument]
+        [DomainWorkspaceSnapshot]
     ) -> Void
 
     package init(
@@ -28,7 +28,7 @@ package struct DomainWorkspaceProjectionObservationSink: Sendable {
         ) -> Void,
         observePublication: @escaping @Sendable (
             DomainWorkspaceEvent,
-            [DomainWorkspaceDocument]
+            [DomainWorkspaceSnapshot]
         ) -> Void = { _, _ in }
     ) {
         observeBlock = observe
@@ -53,9 +53,32 @@ package struct DomainWorkspaceProjectionObservationSink: Sendable {
 
     package func observePublication(
         _ event: DomainWorkspaceEvent,
+        workspaces: [DomainWorkspaceSnapshot]
+    ) {
+        observePublicationBlock(event, workspaces)
+    }
+
+    /// Comparison-only compatibility entry point. Production authority publications use the full
+    /// `workspaces:` overload so revision/health rows cannot be inferred from event tails.
+    package func observePublication(
+        _ event: DomainWorkspaceEvent,
         documents: [DomainWorkspaceDocument]
     ) {
-        observePublicationBlock(event, documents)
+        let revisions = event.revisions ?? .initial
+        observePublicationBlock(event, documents.map { document in
+            DomainWorkspaceSnapshot(
+                document: document,
+                revisions: revisions,
+                health: .writable,
+                contexts: document.metadata.contexts.map { metadata in
+                    DomainContextSnapshot(
+                        metadata: metadata,
+                        revisions: revisions,
+                        health: .writable
+                    )
+                }
+            )
+        })
     }
 
     package static let disabled = DomainWorkspaceProjectionObservationSink { _, _ in }
@@ -549,11 +572,11 @@ package actor DomainWorkspaceRustProjectionObserver {
 
     private struct PublicationWorkItem: Sendable {
         let event: DomainWorkspaceEvent
-        let documents: [DomainWorkspaceDocument]?
+        let workspaces: [DomainWorkspaceSnapshot]?
         let byteCount: Int
 
         var chargedInputBytes: Int {
-            documents == nil ? 0 : byteCount
+            workspaces == nil ? 0 : byteCount
         }
     }
 
@@ -614,20 +637,20 @@ package actor DomainWorkspaceRustProjectionObserver {
             }
         }
 
-        func observe(_ event: DomainWorkspaceEvent, documents: [DomainWorkspaceDocument]) {
+        func observe(_ event: DomainWorkspaceEvent, workspaces: [DomainWorkspaceSnapshot]) {
             let shouldWake = lock.withLock { () -> Bool in
                 guard state.lifecycle == .open else { return false }
-                let byteCount = documents.reduce(into: 0) { total, document in
-                    let next = total.addingReportingOverflow(document.documentBytes.count)
+                let byteCount = workspaces.reduce(into: 0) { total, workspace in
+                    let next = total.addingReportingOverflow(workspace.document.documentBytes.count)
                     total = next.overflow ? .max : next.partialValue
                 }
-                let hasOversizedDocument = documents.contains {
-                    $0.documentBytes.count > limits.maximumDocumentBytes
+                let hasOversizedDocument = workspaces.contains {
+                    $0.document.documentBytes.count > limits.maximumDocumentBytes
                 }
                 let oversized = hasOversizedDocument || byteCount > limits.maximumRetainedInputBytes
                 let item = PublicationWorkItem(
                     event: event,
-                    documents: oversized ? nil : documents,
+                    workspaces: oversized ? nil : workspaces,
                     byteCount: byteCount
                 )
                 guard chargeOrMakeRoom(for: item) else {
@@ -736,6 +759,7 @@ package actor DomainWorkspaceRustProjectionObserver {
     private let projector: Projector
     private let statefulProjector: DomainWorkspaceStatefulRustProjector?
     private let statefulStorageScopeDigest: String?
+    private let statefulMutationAccess: DomainWorkspaceMutationAccess?
     private let publicationProjector: PublicationProjector?
     private let checkpointLoader: CheckpointLoader?
     private let checkpointWriter: CheckpointWriter?
@@ -757,6 +781,7 @@ package actor DomainWorkspaceRustProjectionObserver {
         limits: Limits = .production,
         statefulScopeID: UUID? = nil,
         statefulStorageScopeDigest: String? = nil,
+        statefulMutationAccess: DomainWorkspaceMutationAccess? = nil,
         checkpointLoader: CheckpointLoader? = nil,
         checkpointWriter: CheckpointWriter? = nil,
         projector: Projector? = nil,
@@ -779,6 +804,7 @@ package actor DomainWorkspaceRustProjectionObserver {
         }
         statefulProjector = resolvedStatefulProjector
         self.statefulStorageScopeDigest = statefulStorageScopeDigest
+        self.statefulMutationAccess = statefulMutationAccess
         self.publicationProjector = publicationProjector
         self.checkpointLoader = checkpointLoader
         self.checkpointWriter = checkpointWriter
@@ -789,13 +815,13 @@ package actor DomainWorkspaceRustProjectionObserver {
         self.publicationIngress = publicationIngress
         let publicationObservation: @Sendable (
             DomainWorkspaceEvent,
-            [DomainWorkspaceDocument]
+            [DomainWorkspaceSnapshot]
         ) -> Void
         if publicationProjector == nil, resolvedStatefulProjector == nil {
             publicationObservation = { _, _ in }
         } else {
-            publicationObservation = { event, documents in
-                publicationIngress.observe(event, documents: documents)
+            publicationObservation = { event, workspaces in
+                publicationIngress.observe(event, workspaces: workspaces)
             }
         }
         sink = DomainWorkspaceProjectionObservationSink(
@@ -897,6 +923,70 @@ package actor DomainWorkspaceRustProjectionObserver {
         await statefulProjector?.shutdown()
     }
 
+    /// Returns the Rust-owned projection at one immutable committed generation. An injected
+    /// comparison projector has no stateful read authority and fails closed here; it can never
+    /// silently reactivate Swift canonical values in production. Lease validation brackets the
+    /// suspending snapshot read so a retired storage owner cannot serve canonical values.
+    package func authoritativeWorkspaceProjection(
+        workspaceID: UUID
+    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
+        guard lifecycle == .running else {
+            throw DomainWorkspaceStatefulRustProjectionError.stopped
+        }
+        guard let statefulProjector else {
+            throw DomainWorkspaceStatefulRustProjectionError.authoritativeReadUnavailable
+        }
+        try await validateActiveStatefulProjectionLease()
+        let read = try await statefulProjector.readWorkspace(workspaceID: workspaceID)
+        try Task.checkCancellation()
+        try await validateActiveStatefulProjectionLease()
+        guard lifecycle == .running else {
+            throw DomainWorkspaceStatefulRustProjectionError.stopped
+        }
+        return read
+    }
+
+    /// Repairs a missing or stale read projection only while the exact generation, publication
+    /// cursor, and storage-lease epoch observed by the caller remain current. The projector keeps
+    /// one operation permit across validation, conditional upsert, and the resulting snapshot read;
+    /// every success and error path revalidates the captured lease before returning.
+    package func reconcileAuthoritativeWorkspaceProjection(
+        workspace: DomainWorkspaceSnapshot,
+        expectedGeneration: UInt64,
+        expectedCatalogRevision: UInt64,
+        expectedPublicationSequence: UInt64
+    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
+        guard lifecycle == .running else {
+            throw DomainWorkspaceStatefulRustProjectionError.stopped
+        }
+        guard let statefulProjector,
+              let statefulMutationAccess,
+              let statefulStorageScopeDigest
+        else {
+            throw DomainWorkspaceStatefulRustProjectionError.authoritativeReadUnavailable
+        }
+        let read = try await statefulMutationAccess.withReconciliationPermit { permit in
+            let validatePermit: @Sendable () async throws -> Void = {
+                try await permit.validate(
+                    expectedStorageScopeDigest: statefulStorageScopeDigest
+                )
+            }
+            return try await statefulProjector.reconcileWorkspace(
+                workspace: workspace,
+                expectedGeneration: expectedGeneration,
+                expectedCatalogRevision: expectedCatalogRevision,
+                expectedPublicationSequence: expectedPublicationSequence,
+                validateLease: validatePermit
+            )
+        }
+        try Task.checkCancellation()
+        try await validateActiveStatefulProjectionLease()
+        guard lifecycle == .running else {
+            throw DomainWorkspaceStatefulRustProjectionError.stopped
+        }
+        return read
+    }
+
     package func snapshot() -> Snapshot {
         let document = ingress.snapshot()
         let publication = publicationIngress.snapshot()
@@ -948,7 +1038,7 @@ package actor DomainWorkspaceRustProjectionObserver {
     }
 
     private func processPublication(_ item: PublicationWorkItem) async {
-        guard let documents = item.documents else {
+        guard let workspaces = item.workspaces else {
             publicationIngress.complete(item, succeeded: false, rebased: false)
             recordPublicationResult(item, result: "error", rebased: false)
             return
@@ -958,13 +1048,13 @@ package actor DomainWorkspaceRustProjectionObserver {
             let checkpoint: Data?
             let checkpointExpected: Bool
             if let publicationProjector {
-                rebased = try await publicationProjector(documents, item.event)
+                rebased = try await publicationProjector(workspaces.map(\.document), item.event)
                 checkpoint = nil
                 checkpointExpected = false
             } else if let statefulProjector {
                 try await validateActiveStatefulProjectionLease()
                 let publication = try await statefulProjector.publish(
-                    documents: documents,
+                    workspaces: workspaces,
                     event: item.event
                 )
                 rebased = publication.receipt.rebased
@@ -1028,7 +1118,7 @@ package actor DomainWorkspaceRustProjectionObserver {
         dimensions["event_kind"] = item.event.kind.rawValue
         dimensions["publication_sequence"] = String(item.event.sequence)
         dimensions["catalog_revision"] = String(item.event.catalogRevision)
-        dimensions["workspace_count"] = String(item.documents?.count ?? 0)
+        dimensions["workspace_count"] = String(item.workspaces?.count ?? 0)
         dimensions["input_bytes"] = String(item.byteCount)
         dimensions["rebased"] = String(rebased)
         metrics.record(DomainRuntimeMetric(
@@ -1128,10 +1218,19 @@ package actor DomainWorkspaceRustProjectionObserver {
 
     private func validateActiveStatefulProjectionLease() async throws {
         guard statefulProjector != nil else { return }
+        let validate = try activeStatefulProjectionLeaseValidator()
+        try await validate()
+    }
+
+    private func activeStatefulProjectionLeaseValidator() throws -> @Sendable () async throws -> Void {
         guard let activationLeaseToken, let statefulStorageScopeDigest else {
             throw DomainWorkspaceMutationAccessError.invalidPermit
         }
-        try await activationLeaseToken.validate(expectedStorageScopeDigest: statefulStorageScopeDigest)
+        return {
+            try await activationLeaseToken.validate(
+                expectedStorageScopeDigest: statefulStorageScopeDigest
+            )
+        }
     }
 
     private func baseDimensions(

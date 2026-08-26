@@ -68,7 +68,7 @@ extension CoreRuntimeTransport {
     }
 }
 
-struct CoreDirectComputeOperationContext {
+struct CoreDirectComputeOperationContext: Sendable {
     let transport: any CoreRuntimeTransport
     let identity: CoreRuntimeIdentity
 }

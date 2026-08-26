@@ -184,7 +184,8 @@ impl From<agentry_runtime::workspace_context::WorkspaceProjectionCatalogError> f
             | WorkspaceProjectionCatalogError::PublicationCursorMismatch { .. }
             | WorkspaceProjectionCatalogError::InvalidPublicationSequence { .. }
             | WorkspaceProjectionCatalogError::CatalogRevisionRegressed { .. }
-            | WorkspaceProjectionCatalogError::InvalidPublicationIdentity => Self::InvalidArgument,
+            | WorkspaceProjectionCatalogError::InvalidPublicationIdentity
+            | WorkspaceProjectionCatalogError::InvalidAuthorityState => Self::InvalidArgument,
         }
     }
 }

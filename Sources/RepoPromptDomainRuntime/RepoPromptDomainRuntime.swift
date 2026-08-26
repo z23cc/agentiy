@@ -204,6 +204,7 @@ package actor MCPDomainRuntime {
             statefulStorageScopeDigest: usesStatefulRustProjection
                 ? workspaceAuthorityLease.scope.storageScopeDigest
                 : nil,
+            statefulMutationAccess: usesStatefulRustProjection ? workspaceMutationAccess : nil,
             checkpointLoader: checkpointLoader,
             checkpointWriter: checkpointWriter,
             projector: workspaceProjectionProjector

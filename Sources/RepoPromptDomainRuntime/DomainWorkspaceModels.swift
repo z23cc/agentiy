@@ -184,6 +184,16 @@ package struct DomainContextSnapshot: Codable, Equatable {
     package let metadata: DomainContextMetadata
     package let revisions: DomainRevisionState
     package let health: DomainAuthorityHealth
+
+    package init(
+        metadata: DomainContextMetadata,
+        revisions: DomainRevisionState,
+        health: DomainAuthorityHealth
+    ) {
+        self.metadata = metadata
+        self.revisions = revisions
+        self.health = health
+    }
 }
 
 package struct DomainWorkspaceSnapshot: Codable, Equatable {
@@ -191,6 +201,18 @@ package struct DomainWorkspaceSnapshot: Codable, Equatable {
     package let revisions: DomainRevisionState
     package let health: DomainAuthorityHealth
     package let contexts: [DomainContextSnapshot]
+
+    package init(
+        document: DomainWorkspaceDocument,
+        revisions: DomainRevisionState,
+        health: DomainAuthorityHealth,
+        contexts: [DomainContextSnapshot]
+    ) {
+        self.document = document
+        self.revisions = revisions
+        self.health = health
+        self.contexts = contexts
+    }
 }
 
 package struct DomainWorkspaceCatalogSnapshot: Equatable {

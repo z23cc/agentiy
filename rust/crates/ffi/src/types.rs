@@ -855,6 +855,134 @@ pub struct CoreWorkspaceDocumentProjectionRequestV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspacePersistenceMetadataRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub payload_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspacePersistenceMetadataValidationV1 {
+    pub workspace_id: String,
+    pub operation_id: String,
+    pub schema_version: u16,
+    pub content_digest: String,
+    pub canonical_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspacePersistenceMetadataResponseV1 {
+    pub validation: Option<CoreWorkspacePersistenceMetadataValidationV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceWorkingJournalValidationRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub journal_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceWorkingJournalValidationV1 {
+    pub workspace_id: String,
+    pub journal_version: u16,
+    pub content_digest: String,
+    pub canonical_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceWorkingJournalTransitionRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub current_journal_bytes: Option<Vec<u8>>,
+    pub transition_bytes: Vec<u8>,
+    pub document_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceWorkingJournalTransitionPlanV1 {
+    pub primary: CoreWorkspaceWorkingJournalValidationV1,
+    pub committed: Option<CoreWorkspaceWorkingJournalValidationV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceWorkingJournalTransitionResponseV1 {
+    pub plan: Option<CoreWorkspaceWorkingJournalTransitionPlanV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceWorkingJournalValidationErrorKindV1 {
+    InputTooLarge,
+    OutputTooLarge,
+    Malformed,
+    FutureSchema,
+    InvalidIdentity,
+    InvalidFileUrl,
+    InvalidRevisionState,
+    InvalidDigest,
+    InvalidWorkingDocument,
+    InvalidContextTable,
+    InvalidOperationLedger,
+    InvalidPendingSave,
+    InvalidTimestamp,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceWorkingJournalValidationResponseV1 {
+    pub validation: Option<CoreWorkspaceWorkingJournalValidationV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspacePersistenceMetadataValidationV1>
+    for CoreWorkspacePersistenceMetadataValidationV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspacePersistenceMetadataValidationV1,
+    ) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            operation_id: value.operation_id,
+            schema_version: value.schema_version,
+            content_digest: value.content_digest,
+            canonical_bytes: value.canonical_bytes,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceWorkingJournalValidationV1>
+    for CoreWorkspaceWorkingJournalValidationV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceWorkingJournalValidationV1,
+    ) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            journal_version: value.journal_version,
+            content_digest: value.content_digest,
+            canonical_bytes: value.canonical_bytes,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceWorkingJournalTransitionPlanV1>
+    for CoreWorkspaceWorkingJournalTransitionPlanV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceWorkingJournalTransitionPlanV1,
+    ) -> Self {
+        Self {
+            primary: value.primary.into(),
+            committed: value.committed.map(Into::into),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceContextProjectionV1 {
     pub context_id: String,
     pub name: String,
@@ -862,6 +990,34 @@ pub struct CoreWorkspaceContextProjectionV1 {
     pub active_chat_session_id: Option<String>,
     pub prompt: String,
     pub selection: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceProjectionHealthKindV1 {
+    Writable,
+    ExternalConflict,
+    DegradedReadOnly,
+    Removed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionHealthV1 {
+    pub kind: CoreWorkspaceProjectionHealthKindV1,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceContextAuthorityStateV1 {
+    pub context_id: String,
+    pub revisions: CoreWorkspaceProjectionRevisionStateV1,
+    pub health: CoreWorkspaceProjectionHealthV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionAuthorityStateV1 {
+    pub revisions: CoreWorkspaceProjectionRevisionStateV1,
+    pub health: CoreWorkspaceProjectionHealthV1,
+    pub contexts: Vec<CoreWorkspaceContextAuthorityStateV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -872,6 +1028,7 @@ pub struct CoreWorkspaceDocumentProjectionV1 {
     pub repo_paths: Vec<String>,
     pub active_context_id: Option<String>,
     pub contexts: Vec<CoreWorkspaceContextProjectionV1>,
+    pub authority: Option<CoreWorkspaceProjectionAuthorityStateV1>,
 }
 
 impl From<runtime::workspace_context::WorkspaceDocumentProjection>
@@ -896,6 +1053,45 @@ impl From<runtime::workspace_context::WorkspaceDocumentProjection>
                     selection: context.selection,
                 })
                 .collect(),
+            authority: None,
+        }
+    }
+}
+
+impl From<&runtime::workspace_context::WorkspaceProjectionEntry>
+    for CoreWorkspaceDocumentProjectionV1
+{
+    fn from(value: &runtime::workspace_context::WorkspaceProjectionEntry) -> Self {
+        let mut projection: Self = value.projection.clone().into();
+        projection.authority = value.authority.clone().map(Into::into);
+        projection
+    }
+}
+
+impl From<runtime::workspace_context::WorkspaceProjectionHealthKind>
+    for CoreWorkspaceProjectionHealthKindV1
+{
+    fn from(value: runtime::workspace_context::WorkspaceProjectionHealthKind) -> Self {
+        use runtime::workspace_context::WorkspaceProjectionHealthKind as RuntimeKind;
+        match value {
+            RuntimeKind::Writable => Self::Writable,
+            RuntimeKind::ExternalConflict => Self::ExternalConflict,
+            RuntimeKind::DegradedReadOnly => Self::DegradedReadOnly,
+            RuntimeKind::Removed => Self::Removed,
+        }
+    }
+}
+
+impl From<CoreWorkspaceProjectionHealthKindV1>
+    for runtime::workspace_context::WorkspaceProjectionHealthKind
+{
+    fn from(value: CoreWorkspaceProjectionHealthKindV1) -> Self {
+        use runtime::workspace_context::WorkspaceProjectionHealthKind as RuntimeKind;
+        match value {
+            CoreWorkspaceProjectionHealthKindV1::Writable => RuntimeKind::Writable,
+            CoreWorkspaceProjectionHealthKindV1::ExternalConflict => RuntimeKind::ExternalConflict,
+            CoreWorkspaceProjectionHealthKindV1::DegradedReadOnly => RuntimeKind::DegradedReadOnly,
+            CoreWorkspaceProjectionHealthKindV1::Removed => RuntimeKind::Removed,
         }
     }
 }
@@ -1033,6 +1229,82 @@ impl From<CoreWorkspaceProjectionRevisionStateV1>
     }
 }
 
+impl From<runtime::workspace_context::WorkspaceProjectionRevisionState>
+    for CoreWorkspaceProjectionRevisionStateV1
+{
+    fn from(value: runtime::workspace_context::WorkspaceProjectionRevisionState) -> Self {
+        Self {
+            working_revision: value.working_revision,
+            saved_revision: value.saved_revision,
+            dirty_revision: value.dirty_revision,
+        }
+    }
+}
+
+impl From<CoreWorkspaceProjectionHealthV1>
+    for runtime::workspace_context::WorkspaceProjectionHealth
+{
+    fn from(value: CoreWorkspaceProjectionHealthV1) -> Self {
+        Self {
+            kind: value.kind.into(),
+            reason: value.reason,
+        }
+    }
+}
+
+impl From<runtime::workspace_context::WorkspaceProjectionHealth>
+    for CoreWorkspaceProjectionHealthV1
+{
+    fn from(value: runtime::workspace_context::WorkspaceProjectionHealth) -> Self {
+        Self {
+            kind: value.kind.into(),
+            reason: value.reason,
+        }
+    }
+}
+
+impl From<CoreWorkspaceProjectionAuthorityStateV1>
+    for runtime::workspace_context::WorkspaceProjectionAuthorityState
+{
+    fn from(value: CoreWorkspaceProjectionAuthorityStateV1) -> Self {
+        Self {
+            revisions: value.revisions.into(),
+            health: value.health.into(),
+            contexts: value
+                .contexts
+                .into_iter()
+                .map(
+                    |context| runtime::workspace_context::WorkspaceContextAuthorityState {
+                        context_id: context.context_id,
+                        revisions: context.revisions.into(),
+                        health: context.health.into(),
+                    },
+                )
+                .collect(),
+        }
+    }
+}
+
+impl From<runtime::workspace_context::WorkspaceProjectionAuthorityState>
+    for CoreWorkspaceProjectionAuthorityStateV1
+{
+    fn from(value: runtime::workspace_context::WorkspaceProjectionAuthorityState) -> Self {
+        Self {
+            revisions: value.revisions.into(),
+            health: value.health.into(),
+            contexts: value
+                .contexts
+                .into_iter()
+                .map(|context| CoreWorkspaceContextAuthorityStateV1 {
+                    context_id: context.context_id,
+                    revisions: context.revisions.into(),
+                    health: context.health.into(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceProjectionPublicationEventV1 {
     pub sequence: u64,
@@ -1071,6 +1343,47 @@ pub struct CoreWorkspaceProjectionPublishRequestV1 {
     pub rebased: bool,
     pub document_bytes: Vec<Vec<u8>>,
     pub event: CoreWorkspaceProjectionPublicationEventV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionPublishedWorkspaceV1 {
+    pub document_bytes: Vec<u8>,
+    pub authority: CoreWorkspaceProjectionAuthorityStateV1,
+}
+
+impl From<CoreWorkspaceProjectionPublishedWorkspaceV1>
+    for runtime::workspace_context::WorkspaceProjectionPublishedWorkspace
+{
+    fn from(value: CoreWorkspaceProjectionPublishedWorkspaceV1) -> Self {
+        Self {
+            document_bytes: value.document_bytes,
+            authority: value.authority.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionPublishAuthoritativeRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub expected_generation: u64,
+    pub expected_catalog_revision: u64,
+    pub expected_publication_sequence: u64,
+    pub rebased: bool,
+    pub workspaces: Vec<CoreWorkspaceProjectionPublishedWorkspaceV1>,
+    pub event: CoreWorkspaceProjectionPublicationEventV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProjectionUpsertAuthoritativeRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub scope_incarnation: u64,
+    pub expected_generation: u64,
+    pub expected_catalog_revision: u64,
+    pub expected_publication_sequence: u64,
+    pub workspace: CoreWorkspaceProjectionPublishedWorkspaceV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -1147,6 +1460,10 @@ pub struct CoreWorkspaceProjectionSnapshotHandleV1 {
     pub generation: u64,
     pub workspace_count: u64,
     pub retained_bytes: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]

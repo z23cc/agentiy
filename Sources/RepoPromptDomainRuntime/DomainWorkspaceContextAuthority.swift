@@ -58,6 +58,12 @@ package struct DomainWorkspaceStore {
     }
 }
 
+package struct DomainWorkspaceReadFence: Sendable {
+    package let workspace: DomainWorkspaceSnapshot
+    package let catalogRevision: UInt64
+    package let publicationSequence: UInt64
+}
+
 package struct DomainContextStore {
     private let authority: DomainWorkspaceContextAuthority
 
@@ -71,6 +77,10 @@ package struct DomainContextStore {
 
     package func workspaceSnapshot(_ workspaceID: UUID) async -> DomainWorkspaceSnapshot? {
         await authority.workspaceSnapshot(workspaceID)
+    }
+
+    package func workspaceReadFence(_ workspaceID: UUID) async -> DomainWorkspaceReadFence? {
+        await authority.workspaceReadFence(workspaceID)
     }
 }
 
@@ -276,6 +286,14 @@ actor DomainWorkspaceContextAuthority {
     }
 
     func workspaceSnapshot(_ workspaceID: UUID) -> DomainWorkspaceSnapshot? {
+        workspaceReadFence(workspaceID)?.workspace
+    }
+
+    /// Atomically captures the Swift writer's complete semantic row and publication cursor. Rust
+    /// publishes and serves that row as one immutable authority generation; this Swift value is the
+    /// mutation/reconciliation fence. Read registrations remain routing overlays, so they change the
+    /// document fence without inventing a catalog event.
+    func workspaceReadFence(_ workspaceID: UUID) -> DomainWorkspaceReadFence? {
         let snapshot = if let registration = readRegistrations[workspaceID] {
             projectSnapshot(registration)
         } else {
@@ -284,7 +302,13 @@ actor DomainWorkspaceContextAuthority {
         if let snapshot {
             projectionObservationSink.observe(snapshot.document, source: .workspaceRead)
         }
-        return snapshot
+        return snapshot.map {
+            DomainWorkspaceReadFence(
+                workspace: $0,
+                catalogRevision: catalogRevision,
+                publicationSequence: publicationSequence
+            )
+        }
     }
 
     /// Command outcomes and mutation admission must report canonical record state; the read
@@ -2267,7 +2291,7 @@ actor DomainWorkspaceContextAuthority {
         }
         projectionObservationSink.observePublication(
             event,
-            documents: records.values.map(\.document)
+            workspaces: records.values.map(makeSnapshot)
         )
     }
 

@@ -569,6 +569,14 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         XCTAssertEqual(processSnapshot.workspace.document.metadata.repoPaths, [fixture.canonicalRepo.path])
         let workspaceCatalog = await prepared.runtime.workspaceStore.snapshot()
         XCTAssertEqual(workspaceCatalog.workspaces.count, 1)
+        let writerWorkspace = try XCTUnwrap(workspaceCatalog.workspaces.first)
+        let writerContext = try XCTUnwrap(
+            writerWorkspace.contexts.first { $0.metadata.identity.contextID == fixture.contextID }
+        )
+        XCTAssertEqual(processSnapshot.workspace.revisions, writerWorkspace.revisions)
+        XCTAssertEqual(processSnapshot.workspace.health, writerWorkspace.health)
+        XCTAssertEqual(processSnapshot.context.revisions, writerContext.revisions)
+        XCTAssertEqual(processSnapshot.context.health, writerContext.health)
 
         let invocationPrincipal = DomainClientPrincipal(
             principalID: UUID(),

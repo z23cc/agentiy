@@ -1,7 +1,7 @@
 # Rust workspace document projection v1
 
 Date: 2026-08-25
-Status: P5-4b lease-backed checkpoint arming and restart recovery
+Status: P5-4e complete revision/health row authority
 Predecessor: [`headless-mcp-domain-runtime-p5-0-storage-lease.md`](headless-mcp-domain-runtime-p5-0-storage-lease.md)
 
 ## Purpose and boundary
@@ -367,3 +367,275 @@ stops both workers, terminally closes the stable Rust scope, and only then relea
   resumes exact checkpoint persistence.
 - Focused runtime, FFI, bridge, and domain tests plus code generation, product build, formatting,
   lint, guardrails, and diff checks pass.
+
+## P5-4c amendment — generation-leased headless read authority
+
+P5-4c makes the first production document read cut. Direct-headless canonical workspace tools now
+source workspace root paths and the bound context's prompt/selection from an immutable Rust snapshot,
+not by reparsing the Swift workspace bytes. `DomainWorkspaceStatefulRustProjector.readWorkspace`
+opens the exact currently committed generation, pages it under the projector's single-operation
+permit, rejects missing/invalid progress, and always closes the snapshot handle. The observer validates
+the active physical-storage lease epoch immediately before and after that suspending read.
+
+Swift still supplies the revision/health/file-URL envelope needed by mutation CAS and filesystem
+routing. It is used as a fence, not as the returned canonical prompt/selection value: each read derives
+the expected complete projection, accepts Rust only on exact equality, then re-reads Swift and requires
+the source document digest to remain unchanged. Missing or stale rows reconcile directly under the
+same lease, bypassing completed-observation deduplication after LRU eviction or a full publication.
+The existing tool watchdog bounds operation-permit wait, Rust paging, cancellation cleanup, and all
+10-ms retries under one one-second request deadline. Stateful production runtimes fail closed when the
+fence cannot converge; injected comparison projectors have no read-authority capability and also fail
+closed rather than silently reactivating Swift values.
+
+This does not yet move workspace/context revision state, health, mutation commands, workspace JSON
+filesystem I/O, or the storage lease into Rust. Those remain later Phase 5 cuts; the narrower
+roots/prompt/selection boundary is now production Rust read authority rather than armed shadow state.
+
+### P5-4c done-when
+
+- Direct-headless roots, prompt, and selection are constructed from Rust projection values after an
+  exact complete-projection comparison and Swift digest revalidation.
+- Missing or stale projection data is reconciled directly through the stateful projector; stale lease,
+  stopped scope, injected comparison-only projector, persistent mismatch, or timeout fails closed.
+- Stateful projector tests prove repeated immutable reads, read-driven LRU refresh, identical-digest
+  recovery after eviction, missing-workspace rejection, and handle cleanup; focused direct-headless
+  selection/prompt tests preserve existing observable behavior.
+
+## P5-4d amendment — atomic publication-cursor read fence
+
+P5-4d closes the remaining scope-level race in the P5-4c read plane. Opening a Rust projection
+snapshot now captures its immutable document generation and the current catalog revision,
+publication sequence, event-log floor, and event-log count while holding the same scope-state lock.
+The generated FFI handle and Swift ARC lease retain those values for the handle's lifetime; a later
+cursor-only publication cannot relabel an already-open document generation.
+
+`DomainContextStore` exposes one actor-isolated Swift read fence containing the workspace
+revision/health envelope plus its catalog revision and publication sequence. Direct-headless reads
+accept a Rust projection only when its cursor equals that fence, then re-read the complete Swift fence
+and require cursor and document digest stability. A lagging publication worker is allowed to converge
+within the existing one-second total watchdog; dropped or permanently divergent publication state
+fails closed.
+
+A missing Rust row still returns its immutable generation and cursor. Reconciliation therefore cannot
+confuse an LRU eviction with a newer complete publication that removed the workspace: it proceeds only
+when the original generation, catalog revision, and publication sequence remain exact under one
+projector operation permit. The upsert is additionally wrapped in a short-lived workspace
+reconciliation permit, so mutation-access drain waits for the operation and a retired storage owner
+cannot commit after lease handoff. Permit validation runs immediately before every Rust mutation and
+again before releasing the projector permit. Reconciliation can repair missing/stale document content,
+but cannot manufacture or advance a publication cursor.
+
+This slice deliberately does **not** claim per-workspace or per-context revision/health authority.
+Rust's bounded event tail contains only the revision payload of individual events and cannot reconstruct
+the complete current envelope for every retained workspace. Moving that envelope requires a later
+schema/publication change that sends and persists the complete revision/health table; Swift remains
+its authority until then.
+
+### P5-4d done-when
+
+- Runtime and real-bridge tests prove a snapshot handle retains the cursor captured at open while a
+  later cursor-only or document-changing publication advances only newly opened handles.
+- Stateful projector reads return generation plus the exact Rust catalog/event cursor.
+- Direct-headless production reads require equal Rust/Swift cursors and stable Swift cursor/digest
+  fences without adding an unbounded wait or Swift value fallback; stale-generation repair and
+  post-removal resurrection are rejected under a drain-aware reconciliation permit.
+- Focused Rust, FFI, bridge, domain-runtime, and direct-headless tests plus generated-binding, format,
+  lint, guardrail, and diff checks pass.
+
+## P5-4e amendment — complete revision/health row authority
+
+P5-4e moves the current per-workspace and per-context revision/health envelope into the same immutable
+Rust catalog row as the semantic document projection. A complete Swift publication supplies every
+workspace snapshot, including workspace revisions/health and one context envelope for every projected
+context in exact document order. Rust validates identity/order parity, closed health-kind/reason
+invariants, and revision monotonicity before atomically installing the complete catalog and publication
+cursor. Snapshot paging returns the sidecar from the captured generation; readers never infer current
+state from the bounded event tail.
+
+Document-only projection remains available for comparison and parser tests, but such an upsert cannot
+claim authority for revisions or health: changing a row through that path clears its authority sidecar.
+A direct-headless read accepts only a complete sidecar whose row was read under the same Rust cursor as
+the Swift fence. Missing/stale rows are repaired with the complete Swift workspace snapshot through an
+exact generation/catalog-revision/publication-sequence CAS while holding the drain-aware reconciliation
+permit; a newer removal, publication, or lease epoch rejects the repair.
+
+The sidecar is included in retained-heap accounting and in the per-entry checkpoint checksum. The V1
+checkpoint JSON remains backward-readable: older entries omit the optional sidecar and retain their
+existing checksum; new entries serialize and authenticate it. Recovery of an older or document-only
+row therefore yields an explicitly unavailable envelope and must reconcile before serving production
+revision/health reads. Health reasons are data, not event diagnostics: writable/removed carry no
+reason, while external-conflict/degraded-read-only require a nonempty bounded reason.
+
+Swift still owns workspace document file URLs, filesystem I/O, mutation command admission, persistence
+journals, and the physical storage lease. Direct-headless constructs its returned workspace/context
+revision and health values from Rust after reusing only Swift-owned document/topology bytes and after a
+final cursor/digest fence. This slice does not yet move mutation execution or durable workspace JSON
+persistence into Rust.
+
+### P5-4e done-when
+
+- Runtime tests prove complete-envelope publication, immutable old-generation reads, document-only
+  invalidation, exact-cursor repair, checkpoint round-trip, and corrupt/misaligned envelope rejection.
+- Generated FFI and bridge tests carry the complete optional sidecar with closed validation and no
+  independent event-tail reconstruction.
+- Direct-headless tests prove workspace/context revisions and health are sourced from Rust while file
+  URLs and document bytes remain Swift-owned and final-fenced.
+- Focused runtime, FFI, bridge, observer, lease, and direct-headless tests plus codegen, product build,
+  format, lint, guardrails, and diff checks pass.
+
+## P5-5a-a amendment — bounded working-journal compatibility gate
+
+The persistence cut begins at the complete artifact boundary, not one command at a time. Every
+production mutation path that creates, replaces, saves, reloads, repairs, or resolves a workspace can
+touch the same V1 working journal. Allowing Swift and Rust to author different transitions would create
+two state machines over one file, so no production writer flips until Rust covers the complete
+transition inventory and the replacement can be atomic.
+
+P5-5a-a adds a stateless Rust validator/canonicalizer for the existing `DomainWorkingJournal` V1 wire
+shape. It admits at most 128 MiB, validates workspace identity, file URL, revision invariants, SHA-256
+digests, Foundation UUID-keyed dictionary shapes, the 256-operation ledger ceiling, pending-save
+identity/digest syntax, timestamps, and the dirty/working-bytes envelope. It then emits bounded,
+deterministic JSON plus its digest. Embedded workspace-document decode and pending-save recovery policy
+remain at the existing Swift layer so corrupt working bytes still produce the established per-workspace
+read-only degradation and crash markers need not appear in the bounded operation ledger.
+
+The typed FFI, Bridge, and DomainRuntime adapter preserve the existing V1 artifact. Real-Core tests
+encode the fixture with Foundation `JSONEncoder`, validate it in Rust, and decode Rust's canonical bytes
+with Foundation `JSONDecoder`; invalid input and receipt identity mismatch fail closed. The physical
+file, storage lease, filesystem lock, atomic replacement, workspace JSON, catalog, saved-revision
+record, deletion tombstone, command admission, and event publication remain Swift-owned in this
+pre-cut slice. Production `DomainPersistenceCoordinator` does not call the new adapter yet, so there is
+no dual-write or behavior change.
+
+The next atomic slice must replace all production Swift journal decode/encode entry points together.
+Its commit algorithm must prepare against exact current bytes, revalidate the mutation permit and
+raw-byte digest under the existing file lock, atomically write only Rust-produced bytes, and perform no
+fallible Rust call after the saved document becomes authoritative. Save ordering and `pendingSave`
+crash recovery remain unchanged; Rust transition-policy ownership is a later boundary.
+
+### P5-5a-a done-when
+
+- Runtime tests cover deterministic Foundation-compatible V1 validation plus future schema, invalid
+  context/revision/document, pending-save, operation-ledger, and size rejection.
+- Real FFI and Swift Bridge tests prove generated binding ownership, exact workspace identity, bounded
+  pre-dispatch rejection, and Foundation encode/Rust canonicalize/Foundation decode parity.
+- The DomainRuntime adapter verifies the returned digest and expected workspace identity without a
+  Swift semantic fallback.
+- Source audit confirms the production writer is still singular and Swift-owned until every V1 journal
+  transition can flip atomically in P5-5a-b.
+
+## P5-5a-b amendment — production Rust journal codec authority
+
+P5-5a-b makes Rust the mandatory production codec and invariant gate for every V1 working-journal read,
+proposal, repair, and replacement. Swift still constructs semantic transitions and owns the workspace
+storage lease, mutation permit, file locks, workspace/catalog/revision/tombstone ordering, and physical
+I/O. This is one artifact-boundary authority flip; it is not a second writer and does not claim Rust
+transition-policy or filesystem authority.
+
+Before entering `DomainBlockingIO`, the coordinator captures a short-lived prepared validator bound to
+one exact live Rust runtime identity. The immutable capability performs synchronous FFI validation while
+the existing catalog/workspace locks are held, so no actor hop or suspension is introduced inside a
+filesystem transaction. Runtime stop, poison, or identity replacement fails before the corresponding
+journal write; already prepared immutable bytes remain valid if the runtime subsequently closes.
+
+All physical journal reads use one descriptor and an incremental 128 MiB ceiling. Existing bytes are
+interpreted only from Rust-returned canonical bytes. Swift proposals are encoded only as validator input,
+then compared field-for-field with the Rust-decoded receipt; only Rust canonical bytes may reach the
+single journal replacement helper. Immediately before replacement, that helper rereads the exact raw
+artifact under the workspace lock and compares presence plus raw-byte digest. A mismatch writes nothing
+and reports the current Rust-decoded revision without automatic retry.
+
+Create and save prepare both pending and committed candidates before their first durable journal write.
+Their ordering remains unchanged: create is pending journal, document, committed journal, saved-revision,
+then catalog; save is pending journal, document authority point, then best-effort committed journal and
+saved-revision. Post-document finalization failure still returns the clean commit receipt and leaves the
+pending artifact for restart recovery. Bootstrap/reload do not rewrite merely noncanonical V1 bytes, and
+corrupt working-document bytes retain the existing saved-document read-only degradation behavior.
+Cancellation is latched before create's first durable journal replacement; after the pending marker is
+written, its remaining journal/document/catalog transaction is non-cancellable so the caller cannot
+observe cancellation with an unpublished orphan. Rust runtime/identity loss aborts bootstrap globally
+instead of masquerading as a corrupt workspace, while corrupt/future artifacts remain explicitly
+per-workspace unavailable. Pending-save recovery distinguishes a legitimate digest miss from a thrown
+Rust validation failure and never silently reactivates the stale pending overlay.
+
+### P5-5a-b done-when
+
+- `DomainPersistenceCoordinator` prepares a nonoptional validator for bootstrap, reload/refresh,
+  create/repair/delete, and every working/save/reload/rebase transition.
+- Production source contains exactly one journal-path write, fed only by Rust canonical bytes; there is
+  no raw Swift `DomainWorkingJournal` decoder or unbounded `Data(contentsOf:)` journal read.
+- Existing authority tests retain create/save/delete, external reload/rebase, pending-save restart,
+  corrupt working-document, read overlay, cancellation, and lease-handoff behavior.
+- Focused Rust, FFI, Bridge, DomainRuntime, source-guard, formatting, lint, generated-binding, guardrail,
+  and product-build checks pass.
+
+## P5-5b amendment — Rust working-journal transition authority
+
+P5-5b moves the complete V1 working-journal state machine behind the same prepared Rust capability as
+the codec. Swift sends a closed tagged command plus the exact current canonical artifact and optional
+workspace document bytes. Rust validates the current artifact, applies one of eight transitions
+(`seed`, `recoverPending`, `create`, `unchanged`, `working`, `save`, `externalReload`, or
+`conflictRebase`), enforces revision and pending-save policy, trims the operation ledger to the existing
+seven-day/256-entry limits, and returns canonical primary plus optional committed candidates. Create and
+save are planned in one call, before any durable write, so no fallible Rust work occurs after the
+workspace document becomes authoritative.
+
+Production `DomainPersistenceCoordinator` contains no `DomainWorkingJournal` constructor and no Swift
+operation-retention implementation. It verifies the typed Rust receipts and continues to own the
+physical transaction: workspace storage lease and epoch permit, catalog/workspace file locks, exact
+raw-byte digest CAS, atomic journal replacement, workspace JSON, saved-revision sidecar, deletion
+sidecar, catalog publication, and crash-ordering semantics. A stale expected revision, malformed command,
+invalid Rust receipt, or stopped prepared runtime fails closed without a Swift transition fallback.
+Conflict-rebase preserves the established invalid-document projection for an invalid revision shape;
+all other internal transition-contract violations remain persistence failures.
+
+This is still one Swift filesystem writer. Rust does not open workspace-storage paths, hold the kernel
+lease, or independently persist a journal. The next persistence cut may move a larger durable transaction
+or catalog policy boundary, but it must not create dual writers or weaken the current byte-CAS and
+post-document recovery guarantees.
+
+### P5-5b done-when
+
+- Rust unit tests exercise all eight transition kinds, primary/committed planning, document requirements,
+  exact expected-revision fences, pending recovery, external reload, and conflict rebase.
+- Real FFI, Bridge, and DomainRuntime tests prove Foundation command encoding reaches Rust and returns
+  canonical candidates that decode to the established Swift model.
+- Existing persistence-authority regressions preserve create/save/delete, deduplication, pending restart,
+  reload/rebase, cancellation, lease handoff, and crash ordering with no observable behavior change.
+- A production source guard proves one journal write point, eight Rust transition call sites, zero Swift
+  journal constructors, and zero Swift operation trimming; focused build/style/guardrail checks pass.
+
+## P5-5c amendment — Rust durable metadata policy authority
+
+P5-5c moves the remaining per-workspace saved-revision record and deletion-tombstone construction policy
+behind the prepared Rust persistence capability. Rust validates the exact V1 schema, identities,
+revision/digest/timestamp fields, recorded operation, and size limits, then returns canonical bytes plus a
+typed digest-bound receipt. Production Swift no longer constructs or semantically decodes either record.
+A missing, stale, future, oversized, or malformed optional saved-revision sidecar retains the established
+revision-zero recovery behavior, but that verdict now comes from Rust. Swift reads the sidecar through a
+single descriptor with the shared 128 MiB cap; an oversized artifact performs a bounded exact-runtime
+availability probe before recovering, and an unavailable prepared Rust runtime fails closed rather than
+reactivating a Swift decoder.
+
+Create, save, and external reload plan the saved-revision artifact before the first durable transaction
+write. Delete likewise plans its initial tombstone before publishing the catalog deletion authority point.
+After that authority point, filesystem cleanup remains best-effort: Rust may re-plan the tombstone with the
+bounded cleanup-warning diagnostic, but failure to plan or rewrite the recoverable sidecar cannot turn an
+already-authoritative delete into a failed command. The returned deletion receipt reports every observed
+cleanup warning even when the optional diagnostic sidecar cannot be rewritten.
+
+Swift remains the only filesystem writer and retains the workspace storage lease/epoch permit, locks,
+atomic file replacement, artifact ordering, catalog encoding, and create/delete catalog authority point.
+P5-5c is not the catalog-state-machine flip: catalog entry/deletion reconciliation and crash-policy
+ownership are deliberately reserved for P5-5d so there is no mixed authority over one publication point.
+
+### P5-5c done-when
+
+- Rust and real FFI tests cover saved-revision planning/validation, tombstone planning, canonical bytes,
+  invalid digests, identity receipts, and cleanup-warning diagnostics.
+- Production create/save/reload/delete paths write only Rust canonical saved-revision/tombstone bytes and
+  have zero Swift constructors, encoders, or tombstone-warning rewrite helpers for those artifacts.
+- Existing persistence-authority tests preserve revision recovery, create/save/reload/delete ordering,
+  deletion cleanup warnings, cancellation, and lease handoff without an observable behavior change.
+- Focused Bridge/DomainRuntime tests, generated-binding checks, product build, format, lint, Rust format,
+  guardrails, and diff checks pass.

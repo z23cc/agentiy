@@ -658,10 +658,23 @@ package actor DomainWorkspaceMutationAccess {
     package func withCommandPermit<T: Sendable>(
         _ operation: @escaping @Sendable (DomainWorkspaceMutationPermit) async throws -> T
     ) async throws -> T {
+        try await withPermit(kind: .command, operation)
+    }
+
+    package func withReconciliationPermit<T: Sendable>(
+        _ operation: @escaping @Sendable (DomainWorkspaceMutationPermit) async throws -> T
+    ) async throws -> T {
+        try await withPermit(kind: .reconciliation, operation)
+    }
+
+    private func withPermit<T: Sendable>(
+        kind: DomainWorkspaceMutationPermitKind,
+        _ operation: @escaping @Sendable (DomainWorkspaceMutationPermit) async throws -> T
+    ) async throws -> T {
         guard state == .writable, let owner else {
             throw DomainWorkspaceMutationAccessError.unavailable(reason: reason)
         }
-        let permit = issuePermit(kind: .command, owner: owner)
+        let permit = issuePermit(kind: kind, owner: owner)
         do {
             let result = try await operation(permit)
             finishPermit(permit)

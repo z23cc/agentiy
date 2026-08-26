@@ -43,6 +43,8 @@ package enum DomainWorkspaceStatefulRustProjectionError: Error, Equatable {
     case invalidWorkspaceIdentity
     case missingWorkspace(UUID)
     case invalidPageProgress
+    case authoritativeFenceMismatch
+    case authoritativeReadUnavailable
     case stopped
 }
 
@@ -74,9 +76,32 @@ package struct DomainWorkspaceStatefulRustPublication: Sendable {
     package let checkpoint: Data?
 }
 
-/// P5-2c's single-writer client over one runtime-partitioned Rust projection scope. Every observed
-/// document is committed under exact generation CAS, then resolved from an immutable snapshot of
-/// that same generation. This remains comparison-only; Swift production reads are unchanged.
+package struct DomainWorkspaceContextAuthorityReadState: Sendable, Equatable {
+    package let contextID: UUID
+    package let revisions: DomainRevisionState
+    package let health: DomainAuthorityHealth
+}
+
+package struct DomainWorkspaceAuthorityReadState: Sendable, Equatable {
+    package let revisions: DomainRevisionState
+    package let health: DomainAuthorityHealth
+    package let contexts: [DomainWorkspaceContextAuthorityReadState]
+}
+
+package struct DomainWorkspaceAuthoritativeProjectionRead: Sendable, Equatable {
+    package let projection: DomainWorkspaceDocumentReadProjection?
+    package let authority: DomainWorkspaceAuthorityReadState?
+    package let generation: UInt64
+    package let catalogRevision: UInt64
+    package let publicationSequence: UInt64
+    package let eventLogFloorSequence: UInt64
+    package let eventLogCount: UInt64
+}
+
+/// Single-writer client over one runtime-partitioned Rust projection scope. Every observed document
+/// and complete revision/health sidecar is committed under exact generation/cursor CAS and resolved
+/// from one immutable snapshot. P5-4e makes that row the direct-headless semantic read authority;
+/// Swift still owns mutation CAS inputs and physical file routing.
 package actor DomainWorkspaceStatefulRustProjector {
     private let scopeID: UUID
     private let coreService: AgentryCoreService
@@ -159,7 +184,7 @@ package actor DomainWorkspaceStatefulRustProjector {
     }
 
     package func publish(
-        documents: [DomainWorkspaceDocument],
+        workspaces: [DomainWorkspaceSnapshot],
         event: DomainWorkspaceEvent
     ) async throws -> DomainWorkspaceStatefulRustPublication {
         await acquireOperation()
@@ -172,12 +197,12 @@ package actor DomainWorkspaceStatefulRustProjector {
             && event.sequence == nextSequence.partialValue
             && event.catalogRevision >= catalogRevision
         try Task.checkCancellation()
-        let receipt = try await scope.publish(
+        let receipt = try await scope.publishAuthoritative(
             expectedGeneration: generation,
             expectedCatalogRevision: catalogRevision,
             expectedPublicationSequence: publicationSequence,
             rebased: !hasContinuousCursor,
-            documents: documents.map(\.documentBytes),
+            workspaces: workspaces.map(corePublishedWorkspace),
             event: CoreWorkspaceProjectionPublicationEvent(
                 sequence: event.sequence,
                 catalogRevision: event.catalogRevision,
@@ -199,13 +224,187 @@ package actor DomainWorkspaceStatefulRustProjector {
         publicationSequence = receipt.publicationSequence
         accessSequence = 0
         lastAccessSequenceByWorkspaceID.removeAll(keepingCapacity: true)
-        for document in documents.sorted(by: { $0.workspaceID.uuidString < $1.workspaceID.uuidString }) {
-            touch(document.workspaceID)
+        for workspace in workspaces.sorted(by: {
+            $0.document.workspaceID.uuidString < $1.document.workspaceID.uuidString
+        }) {
+            touch(workspace.document.workspaceID)
         }
         let checkpoint = try? await scope.exportCheckpoint()
         return DomainWorkspaceStatefulRustPublication(
             receipt: receipt,
             checkpoint: checkpoint
+        )
+    }
+
+    /// Comparison/test compatibility publication. Production observation supplies complete
+    /// snapshots through `publish(workspaces:event:)` and never derives health from an event.
+    package func publish(
+        documents: [DomainWorkspaceDocument],
+        event: DomainWorkspaceEvent
+    ) async throws -> DomainWorkspaceStatefulRustPublication {
+        let revisions = event.revisions ?? .initial
+        return try await publish(
+            workspaces: documents.map { document in
+                DomainWorkspaceSnapshot(
+                    document: document,
+                    revisions: revisions,
+                    health: .writable,
+                    contexts: document.metadata.contexts.map { metadata in
+                        DomainContextSnapshot(
+                            metadata: metadata,
+                            revisions: revisions,
+                            health: .writable
+                        )
+                    }
+                )
+            },
+            event: event
+        )
+    }
+
+    /// Reads one workspace from the currently committed immutable Rust generation without
+    /// mutating or re-projecting it. A missing row still returns the exact snapshot cursor so a
+    /// caller can distinguish safe LRU repair from a newer publication that removed the workspace.
+    package func readWorkspace(
+        workspaceID: UUID
+    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
+        let scope = try await requireScope()
+        return try await readWorkspace(
+            workspaceID: workspaceID,
+            from: scope,
+            expectedGeneration: generation
+        )
+    }
+
+    /// Conditionally repairs one row only when the exact Rust generation and publication cursor
+    /// observed by the caller are still current. Lease validation runs after acquiring the
+    /// projector permit, immediately before every mutation, and once more before the permit is
+    /// released.
+    package func reconcileWorkspace(
+        workspace: DomainWorkspaceSnapshot,
+        expectedGeneration: UInt64,
+        expectedCatalogRevision: UInt64,
+        expectedPublicationSequence: UInt64,
+        validateLease: @escaping @Sendable () async throws -> Void
+    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
+        let workspaceID = workspace.document.workspaceID
+        let scope = try await requireScope()
+        try await validateLease()
+        guard generation == expectedGeneration else {
+            throw DomainWorkspaceStatefulRustProjectionError.authoritativeFenceMismatch
+        }
+        let observed = try await readWorkspace(
+            workspaceID: workspaceID,
+            from: scope,
+            expectedGeneration: expectedGeneration
+        )
+        guard observed.catalogRevision == expectedCatalogRevision,
+              observed.publicationSequence == expectedPublicationSequence
+        else {
+            throw DomainWorkspaceStatefulRustProjectionError.authoritativeFenceMismatch
+        }
+
+        if lastAccessSequenceByWorkspaceID[workspaceID] == nil,
+           lastAccessSequenceByWorkspaceID.count >= maximumRetainedWorkspaceCount
+        {
+            try await validateLease()
+            _ = try await evictLeastRecentlyUsedWorkspace(excluding: workspaceID, from: scope)
+        }
+        while true {
+            do {
+                try Task.checkCancellation()
+                try await validateLease()
+                let receipt = try await scope.upsertAuthoritativeWorkspace(
+                    expectedGeneration: generation,
+                    expectedCatalogRevision: expectedCatalogRevision,
+                    expectedPublicationSequence: expectedPublicationSequence,
+                    workspace: corePublishedWorkspace(workspace)
+                )
+                generation = receipt.generation
+                break
+            } catch CoreBridgeError.workspaceProjectionCapacityExceeded {
+                try await validateLease()
+                guard try await evictLeastRecentlyUsedWorkspace(excluding: workspaceID, from: scope) else {
+                    throw CoreBridgeError.workspaceProjectionCapacityExceeded
+                }
+            }
+        }
+        touch(workspaceID)
+        let repaired = try await readWorkspace(
+            workspaceID: workspaceID,
+            from: scope,
+            expectedGeneration: generation
+        )
+        guard repaired.projection != nil,
+              repaired.authority != nil,
+              repaired.catalogRevision == expectedCatalogRevision,
+              repaired.publicationSequence == expectedPublicationSequence
+        else {
+            throw DomainWorkspaceStatefulRustProjectionError.authoritativeFenceMismatch
+        }
+        try await validateLease()
+        return repaired
+    }
+
+    private func readWorkspace(
+        workspaceID: UUID,
+        from scope: CoreWorkspaceProjectionScope,
+        expectedGeneration: UInt64
+    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
+        let snapshot = try await scope.openSnapshot(expectedGeneration: expectedGeneration)
+        do {
+            var offset: UInt64 = 0
+            while true {
+                try Task.checkCancellation()
+                let page = try await snapshot.page(offset: offset, limit: 64)
+                try Task.checkCancellation()
+                guard page.generation == expectedGeneration else {
+                    throw DomainWorkspaceStatefulRustProjectionError.invalidPageProgress
+                }
+                if let workspace = page.workspaces.first(where: { $0.workspaceID == workspaceID }) {
+                    touch(workspaceID)
+                    let read = authoritativeRead(workspace: workspace, snapshot: snapshot)
+                    await snapshot.close()
+                    return read
+                }
+                guard page.hasMore else {
+                    let read = authoritativeRead(workspace: nil, snapshot: snapshot)
+                    await snapshot.close()
+                    return read
+                }
+                guard page.returnedCount > 0 else {
+                    throw DomainWorkspaceStatefulRustProjectionError.invalidPageProgress
+                }
+                let next = offset.addingReportingOverflow(page.returnedCount)
+                guard !next.overflow else {
+                    throw DomainWorkspaceStatefulRustProjectionError.invalidPageProgress
+                }
+                offset = next.partialValue
+            }
+        } catch {
+            await snapshot.close()
+            throw error
+        }
+    }
+
+    private func authoritativeRead(
+        workspace: CoreWorkspaceDocumentProjectionV1?,
+        snapshot: CoreWorkspaceProjectionSnapshot
+    ) -> DomainWorkspaceAuthoritativeProjectionRead {
+        DomainWorkspaceAuthoritativeProjectionRead(
+            projection: workspace.map(DomainWorkspaceRustProjection.domainProjection),
+            authority: workspace?.authority.map(domainAuthorityState),
+            generation: snapshot.generation,
+            catalogRevision: snapshot.catalogRevision,
+            publicationSequence: snapshot.publicationSequence,
+            eventLogFloorSequence: snapshot.eventLogFloorSequence,
+            eventLogCount: snapshot.eventLogCount
         )
     }
 
@@ -320,6 +519,81 @@ package actor DomainWorkspaceStatefulRustProjector {
         return opened
     }
 
+    private func corePublishedWorkspace(
+        _ workspace: DomainWorkspaceSnapshot
+    ) -> CoreWorkspaceProjectionPublishedWorkspace {
+        CoreWorkspaceProjectionPublishedWorkspace(
+            documentBytes: workspace.document.documentBytes,
+            authority: CoreWorkspaceProjectionAuthorityState(
+                revisions: coreRevisionState(workspace.revisions),
+                health: coreHealth(workspace.health),
+                contexts: workspace.contexts.map { context in
+                    CoreWorkspaceContextAuthorityState(
+                        contextID: context.metadata.identity.contextID,
+                        revisions: coreRevisionState(context.revisions),
+                        health: coreHealth(context.health)
+                    )
+                }
+            )
+        )
+    }
+
+    private func coreRevisionState(_ revisions: DomainRevisionState) -> CoreWorkspaceProjectionRevisionState {
+        CoreWorkspaceProjectionRevisionState(
+            workingRevision: revisions.workingRevision,
+            savedRevision: revisions.savedRevision,
+            dirtyRevision: revisions.dirtyRevision
+        )
+    }
+
+    private func coreHealth(_ health: DomainAuthorityHealth) -> CoreWorkspaceProjectionHealth {
+        switch health {
+        case .writable:
+            CoreWorkspaceProjectionHealth(kind: .writable)
+        case let .externalConflict(reason):
+            CoreWorkspaceProjectionHealth(kind: .externalConflict, reason: reason)
+        case let .degradedReadOnly(reason):
+            CoreWorkspaceProjectionHealth(kind: .degradedReadOnly, reason: reason)
+        case .removed:
+            CoreWorkspaceProjectionHealth(kind: .removed)
+        }
+    }
+
+    private func domainAuthorityState(
+        _ authority: CoreWorkspaceProjectionAuthorityState
+    ) -> DomainWorkspaceAuthorityReadState {
+        DomainWorkspaceAuthorityReadState(
+            revisions: domainRevisionState(authority.revisions),
+            health: domainHealth(authority.health),
+            contexts: authority.contexts.map { context in
+                DomainWorkspaceContextAuthorityReadState(
+                    contextID: context.contextID,
+                    revisions: domainRevisionState(context.revisions),
+                    health: domainHealth(context.health)
+                )
+            }
+        )
+    }
+
+    private func domainRevisionState(
+        _ revisions: CoreWorkspaceProjectionRevisionState
+    ) -> DomainRevisionState {
+        DomainRevisionState(
+            workingRevision: revisions.workingRevision,
+            savedRevision: revisions.savedRevision,
+            dirtyRevision: revisions.dirtyRevision
+        )
+    }
+
+    private func domainHealth(_ health: CoreWorkspaceProjectionHealth) -> DomainAuthorityHealth {
+        switch health.kind {
+        case .writable: .writable
+        case .externalConflict: .externalConflict(reason: health.reason ?? "")
+        case .degradedReadOnly: .degradedReadOnly(reason: health.reason ?? "")
+        case .removed: .removed
+        }
+    }
+
     private func corePublicationKind(
         _ kind: DomainWorkspaceEventKind
     ) -> CoreWorkspaceProjectionPublicationKind {
@@ -348,8 +622,47 @@ package actor DomainWorkspaceStatefulRustProjector {
     }
 }
 
-/// P5-1a comparison-only Rust projector. Swift remains the production document/read authority.
+/// Shared Swift/Rust workspace projection mapping. The stateful projector owns the immutable
+/// semantic document plus complete revision/health row consumed by direct-headless reads. Swift
+/// remains the durable document writer and supplies mutation CAS inputs and physical file routing.
 package enum DomainWorkspaceRustProjection {
+    package static func authorityProjection(
+        _ workspace: DomainWorkspaceSnapshot
+    ) -> DomainWorkspaceAuthorityReadState {
+        DomainWorkspaceAuthorityReadState(
+            revisions: workspace.revisions,
+            health: workspace.health,
+            contexts: workspace.contexts.map { context in
+                DomainWorkspaceContextAuthorityReadState(
+                    contextID: context.metadata.identity.contextID,
+                    revisions: context.revisions,
+                    health: context.health
+                )
+            }
+        )
+    }
+
+    package static func workspaceSnapshot(
+        topology: DomainWorkspaceSnapshot,
+        authority: DomainWorkspaceAuthorityReadState
+    ) -> DomainWorkspaceSnapshot? {
+        guard topology.contexts.map({ $0.metadata.identity.contextID })
+            == authority.contexts.map(\.contextID)
+        else { return nil }
+        return DomainWorkspaceSnapshot(
+            document: topology.document,
+            revisions: authority.revisions,
+            health: authority.health,
+            contexts: zip(topology.contexts, authority.contexts).map { context, authority in
+                DomainContextSnapshot(
+                    metadata: context.metadata,
+                    revisions: authority.revisions,
+                    health: authority.health
+                )
+            }
+        )
+    }
+
     package static func swiftProjection(
         _ document: DomainWorkspaceDocument
     ) throws -> DomainWorkspaceDocumentReadProjection {

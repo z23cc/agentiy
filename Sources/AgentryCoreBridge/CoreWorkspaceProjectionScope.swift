@@ -40,6 +40,23 @@ public enum CoreWorkspaceProjectionPublicationKind: Sendable, Equatable {
     case operationDeduplicated
 }
 
+public enum CoreWorkspaceProjectionHealthKind: Sendable, Equatable {
+    case writable
+    case externalConflict
+    case degradedReadOnly
+    case removed
+}
+
+public struct CoreWorkspaceProjectionHealth: Sendable, Equatable {
+    public let kind: CoreWorkspaceProjectionHealthKind
+    public let reason: String?
+
+    public init(kind: CoreWorkspaceProjectionHealthKind, reason: String? = nil) {
+        self.kind = kind
+        self.reason = reason
+    }
+}
+
 public struct CoreWorkspaceProjectionRevisionState: Sendable, Equatable {
     public let workingRevision: UInt64
     public let savedRevision: UInt64
@@ -49,6 +66,48 @@ public struct CoreWorkspaceProjectionRevisionState: Sendable, Equatable {
         self.workingRevision = workingRevision
         self.savedRevision = savedRevision
         self.dirtyRevision = dirtyRevision
+    }
+}
+
+public struct CoreWorkspaceContextAuthorityState: Sendable, Equatable {
+    public let contextID: UUID
+    public let revisions: CoreWorkspaceProjectionRevisionState
+    public let health: CoreWorkspaceProjectionHealth
+
+    public init(
+        contextID: UUID,
+        revisions: CoreWorkspaceProjectionRevisionState,
+        health: CoreWorkspaceProjectionHealth
+    ) {
+        self.contextID = contextID
+        self.revisions = revisions
+        self.health = health
+    }
+}
+
+public struct CoreWorkspaceProjectionAuthorityState: Sendable, Equatable {
+    public let revisions: CoreWorkspaceProjectionRevisionState
+    public let health: CoreWorkspaceProjectionHealth
+    public let contexts: [CoreWorkspaceContextAuthorityState]
+
+    public init(
+        revisions: CoreWorkspaceProjectionRevisionState,
+        health: CoreWorkspaceProjectionHealth,
+        contexts: [CoreWorkspaceContextAuthorityState]
+    ) {
+        self.revisions = revisions
+        self.health = health
+        self.contexts = contexts
+    }
+}
+
+public struct CoreWorkspaceProjectionPublishedWorkspace: Sendable, Equatable {
+    public let documentBytes: Data
+    public let authority: CoreWorkspaceProjectionAuthorityState
+
+    public init(documentBytes: Data, authority: CoreWorkspaceProjectionAuthorityState) {
+        self.documentBytes = documentBytes
+        self.authority = authority
     }
 }
 
@@ -205,6 +264,38 @@ extension AgentryCoreBridge {
         }
     }
 
+    func workspaceProjectionUpsertAuthoritativeV1(
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        expectedGeneration: UInt64,
+        expectedCatalogRevision: UInt64,
+        expectedPublicationSequence: UInt64,
+        workspace: CoreWorkspaceProjectionPublishedWorkspace
+    ) async throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionMutationReceiptV1 {
+        let identity = try requireIdentity()
+        let transport = transport
+        do {
+            let receipt = try await Task.detached(priority: .utility) {
+                try transport.workspaceProjectionUpsertAuthoritativeV1(
+                    identity: identity,
+                    request: .init(
+                        runtimeIdentity: coreWorkspaceProjectionRawIdentity(identity),
+                        scopeId: scopeID,
+                        scopeIncarnation: scopeIncarnation,
+                        expectedGeneration: expectedGeneration,
+                        expectedCatalogRevision: expectedCatalogRevision,
+                        expectedPublicationSequence: expectedPublicationSequence,
+                        workspace: coreWorkspaceProjectionRawPublishedWorkspace(workspace)
+                    )
+                )
+            }.value
+            try validateWorkspaceProjectionCompletion(identity: identity)
+            return receipt
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
     func workspaceProjectionPublishV1(
         scopeID: String,
         scopeIncarnation: UInt64,
@@ -230,6 +321,42 @@ extension AgentryCoreBridge {
                         expectedPublicationSequence: expectedPublicationSequence,
                         rebased: rebased,
                         documentBytes: documents,
+                        event: coreWorkspaceProjectionRawPublicationEvent(event)
+                    )
+                )
+            }.value
+            try validateWorkspaceProjectionCompletion(identity: identity)
+            return receipt
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func workspaceProjectionPublishAuthoritativeV1(
+        scopeID: String,
+        scopeIncarnation: UInt64,
+        expectedGeneration: UInt64,
+        expectedCatalogRevision: UInt64,
+        expectedPublicationSequence: UInt64,
+        rebased: Bool,
+        workspaces: [CoreWorkspaceProjectionPublishedWorkspace],
+        event: CoreWorkspaceProjectionPublicationEvent
+    ) async throws -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationReceiptV1 {
+        let identity = try requireIdentity()
+        let transport = transport
+        do {
+            let receipt = try await Task.detached(priority: .utility) {
+                try transport.workspaceProjectionPublishAuthoritativeV1(
+                    identity: identity,
+                    request: .init(
+                        runtimeIdentity: coreWorkspaceProjectionRawIdentity(identity),
+                        scopeId: scopeID,
+                        scopeIncarnation: scopeIncarnation,
+                        expectedGeneration: expectedGeneration,
+                        expectedCatalogRevision: expectedCatalogRevision,
+                        expectedPublicationSequence: expectedPublicationSequence,
+                        rebased: rebased,
+                        workspaces: workspaces.map(coreWorkspaceProjectionRawPublishedWorkspace),
                         event: coreWorkspaceProjectionRawPublicationEvent(event)
                     )
                 )
@@ -471,6 +598,26 @@ public final class CoreWorkspaceProjectionScope: @unchecked Sendable {
         )
     }
 
+    public func upsertAuthoritativeWorkspace(
+        expectedGeneration: UInt64,
+        expectedCatalogRevision: UInt64,
+        expectedPublicationSequence: UInt64,
+        workspace: CoreWorkspaceProjectionPublishedWorkspace
+    ) async throws -> CoreWorkspaceProjectionMutationReceipt {
+        try ensureOpen()
+        return try coreWorkspaceProjectionMutationReceipt(
+            await bridge.workspaceProjectionUpsertAuthoritativeV1(
+                scopeID: rawScopeID,
+                scopeIncarnation: scopeIncarnation,
+                expectedGeneration: expectedGeneration,
+                expectedCatalogRevision: expectedCatalogRevision,
+                expectedPublicationSequence: expectedPublicationSequence,
+                workspace: workspace
+            ),
+            expectedPreviousGeneration: expectedGeneration
+        )
+    }
+
     public func publish(
         expectedGeneration: UInt64,
         expectedCatalogRevision: UInt64,
@@ -499,6 +646,63 @@ public final class CoreWorkspaceProjectionScope: @unchecked Sendable {
         guard raw.previousGeneration == expectedGeneration,
               generationIsValid,
               raw.workspaceCount == UInt64(documents.count),
+              raw.previousCatalogRevision == expectedCatalogRevision,
+              raw.previousPublicationSequence == expectedPublicationSequence,
+              raw.catalogRevision == event.catalogRevision,
+              raw.publicationSequence == event.sequence,
+              raw.eventLogCount > 0,
+              raw.eventLogCount <= 256,
+              raw.eventLogFloorSequence > 0,
+              raw.eventLogFloorSequence <= raw.publicationSequence,
+              raw.publicationSequence - raw.eventLogFloorSequence + 1 == raw.eventLogCount,
+              raw.rebased == rebased
+        else {
+            throw CoreBridgeError.invalidArgument
+        }
+        return CoreWorkspaceProjectionPublicationReceipt(
+            previousGeneration: raw.previousGeneration,
+            generation: raw.generation,
+            projectionChanged: raw.projectionChanged,
+            workspaceCount: raw.workspaceCount,
+            retainedBytes: raw.retainedBytes,
+            previousCatalogRevision: raw.previousCatalogRevision,
+            previousPublicationSequence: raw.previousPublicationSequence,
+            catalogRevision: raw.catalogRevision,
+            publicationSequence: raw.publicationSequence,
+            eventLogFloorSequence: raw.eventLogFloorSequence,
+            eventLogCount: raw.eventLogCount,
+            rebased: raw.rebased
+        )
+    }
+
+    public func publishAuthoritative(
+        expectedGeneration: UInt64,
+        expectedCatalogRevision: UInt64,
+        expectedPublicationSequence: UInt64,
+        rebased: Bool,
+        workspaces: [CoreWorkspaceProjectionPublishedWorkspace],
+        event: CoreWorkspaceProjectionPublicationEvent
+    ) async throws -> CoreWorkspaceProjectionPublicationReceipt {
+        try ensureOpen()
+        let raw = try await bridge.workspaceProjectionPublishAuthoritativeV1(
+            scopeID: rawScopeID,
+            scopeIncarnation: scopeIncarnation,
+            expectedGeneration: expectedGeneration,
+            expectedCatalogRevision: expectedCatalogRevision,
+            expectedPublicationSequence: expectedPublicationSequence,
+            rebased: rebased,
+            workspaces: workspaces,
+            event: event
+        )
+        let expectedNextGeneration = expectedGeneration.addingReportingOverflow(1)
+        let generationIsValid = if raw.projectionChanged {
+            !expectedNextGeneration.overflow && raw.generation == expectedNextGeneration.partialValue
+        } else {
+            raw.generation == expectedGeneration
+        }
+        guard raw.previousGeneration == expectedGeneration,
+              generationIsValid,
+              raw.workspaceCount == UInt64(workspaces.count),
               raw.previousCatalogRevision == expectedCatalogRevision,
               raw.previousPublicationSequence == expectedPublicationSequence,
               raw.catalogRevision == event.catalogRevision,
@@ -609,8 +813,17 @@ public final class CoreWorkspaceProjectionScope: @unchecked Sendable {
             scopeIncarnation: scopeIncarnation,
             expectedGeneration: expectedGeneration
         )
+        let logIsValid = if handle.eventLogCount == 0 {
+            handle.publicationSequence == 0 && handle.eventLogFloorSequence == 1
+        } else {
+            handle.eventLogCount <= 256
+                && handle.eventLogFloorSequence > 0
+                && handle.eventLogFloorSequence <= handle.publicationSequence
+                && handle.publicationSequence - handle.eventLogFloorSequence + 1 == handle.eventLogCount
+        }
         guard handle.handleId > 0,
-              expectedGeneration.map({ $0 == handle.generation }) ?? true
+              expectedGeneration.map({ $0 == handle.generation }) ?? true,
+              logIsValid
         else {
             try? await bridge.workspaceProjectionCloseSnapshotV1(
                 scopeID: rawScopeID,
@@ -626,7 +839,11 @@ public final class CoreWorkspaceProjectionScope: @unchecked Sendable {
             handleID: handle.handleId,
             generation: handle.generation,
             workspaceCount: handle.workspaceCount,
-            retainedBytes: handle.retainedBytes
+            retainedBytes: handle.retainedBytes,
+            catalogRevision: handle.catalogRevision,
+            publicationSequence: handle.publicationSequence,
+            eventLogFloorSequence: handle.eventLogFloorSequence,
+            eventLogCount: handle.eventLogCount
         )
     }
 
@@ -693,6 +910,10 @@ public final class CoreWorkspaceProjectionSnapshot: @unchecked Sendable {
     public let generation: UInt64
     public let workspaceCount: UInt64
     public let retainedBytes: UInt64
+    public let catalogRevision: UInt64
+    public let publicationSequence: UInt64
+    public let eventLogFloorSequence: UInt64
+    public let eventLogCount: UInt64
     private let closedFlag = OSAllocatedUnfairLock(initialState: false)
 
     fileprivate init(
@@ -702,7 +923,11 @@ public final class CoreWorkspaceProjectionSnapshot: @unchecked Sendable {
         handleID: UInt64,
         generation: UInt64,
         workspaceCount: UInt64,
-        retainedBytes: UInt64
+        retainedBytes: UInt64,
+        catalogRevision: UInt64,
+        publicationSequence: UInt64,
+        eventLogFloorSequence: UInt64,
+        eventLogCount: UInt64
     ) {
         self.bridge = bridge
         self.scopeID = scopeID
@@ -711,6 +936,10 @@ public final class CoreWorkspaceProjectionSnapshot: @unchecked Sendable {
         self.generation = generation
         self.workspaceCount = workspaceCount
         self.retainedBytes = retainedBytes
+        self.catalogRevision = catalogRevision
+        self.publicationSequence = publicationSequence
+        self.eventLogFloorSequence = eventLogFloorSequence
+        self.eventLogCount = eventLogCount
     }
 
     public func page(offset: UInt64, limit: UInt64) async throws -> CoreWorkspaceProjectionSnapshotPage {
@@ -833,13 +1062,103 @@ func coreWorkspaceDocumentProjection(
             selection: context.selection
         )
     }
+    let authority = try value.authority.map { raw -> CoreWorkspaceProjectionAuthorityState in
+        let contexts = try raw.contexts.map { context -> CoreWorkspaceContextAuthorityState in
+            guard let contextID = UUID(uuidString: context.contextId) else {
+                throw CoreBridgeError.invalidArgument
+            }
+            return CoreWorkspaceContextAuthorityState(
+                contextID: contextID,
+                revisions: coreWorkspaceProjectionRevisionState(context.revisions),
+                health: try coreWorkspaceProjectionHealth(context.health)
+            )
+        }
+        guard contexts.map(\.contextID) == value.contexts.compactMap({ UUID(uuidString: $0.contextId) }) else {
+            throw CoreBridgeError.invalidArgument
+        }
+        return CoreWorkspaceProjectionAuthorityState(
+            revisions: coreWorkspaceProjectionRevisionState(raw.revisions),
+            health: try coreWorkspaceProjectionHealth(raw.health),
+            contexts: contexts
+        )
+    }
     return CoreWorkspaceDocumentProjectionV1(
         workspaceID: workspaceID,
         schemaVersion: schemaVersion,
         name: value.name,
         repoPaths: value.repoPaths,
         activeContextID: try optionalUUID(value.activeContextId),
-        contexts: contexts
+        contexts: contexts,
+        authority: authority
+    )
+}
+
+private func coreWorkspaceProjectionRevisionState(
+    _ raw: AgentryUniFFIRaw.CoreWorkspaceProjectionRevisionStateV1
+) -> CoreWorkspaceProjectionRevisionState {
+    CoreWorkspaceProjectionRevisionState(
+        workingRevision: raw.workingRevision,
+        savedRevision: raw.savedRevision,
+        dirtyRevision: raw.dirtyRevision
+    )
+}
+
+private func coreWorkspaceProjectionHealth(
+    _ raw: AgentryUniFFIRaw.CoreWorkspaceProjectionHealthV1
+) throws -> CoreWorkspaceProjectionHealth {
+    let kind: CoreWorkspaceProjectionHealthKind = switch raw.kind {
+    case .writable: .writable
+    case .externalConflict: .externalConflict
+    case .degradedReadOnly: .degradedReadOnly
+    case .removed: .removed
+    }
+    switch kind {
+    case .writable, .removed:
+        guard raw.reason == nil else { throw CoreBridgeError.invalidArgument }
+    case .externalConflict, .degradedReadOnly:
+        guard let reason = raw.reason, !reason.isEmpty else { throw CoreBridgeError.invalidArgument }
+    }
+    return CoreWorkspaceProjectionHealth(kind: kind, reason: raw.reason)
+}
+
+private func coreWorkspaceProjectionRawHealth(
+    _ health: CoreWorkspaceProjectionHealth
+) -> AgentryUniFFIRaw.CoreWorkspaceProjectionHealthV1 {
+    let kind: AgentryUniFFIRaw.CoreWorkspaceProjectionHealthKindV1 = switch health.kind {
+    case .writable: .writable
+    case .externalConflict: .externalConflict
+    case .degradedReadOnly: .degradedReadOnly
+    case .removed: .removed
+    }
+    return .init(kind: kind, reason: health.reason)
+}
+
+private func coreWorkspaceProjectionRawRevisionState(
+    _ revisions: CoreWorkspaceProjectionRevisionState
+) -> AgentryUniFFIRaw.CoreWorkspaceProjectionRevisionStateV1 {
+    .init(
+        workingRevision: revisions.workingRevision,
+        savedRevision: revisions.savedRevision,
+        dirtyRevision: revisions.dirtyRevision
+    )
+}
+
+private func coreWorkspaceProjectionRawPublishedWorkspace(
+    _ workspace: CoreWorkspaceProjectionPublishedWorkspace
+) -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublishedWorkspaceV1 {
+    .init(
+        documentBytes: workspace.documentBytes,
+        authority: .init(
+            revisions: coreWorkspaceProjectionRawRevisionState(workspace.authority.revisions),
+            health: coreWorkspaceProjectionRawHealth(workspace.authority.health),
+            contexts: workspace.authority.contexts.map { context in
+                .init(
+                    contextId: context.contextID.uuidString.lowercased(),
+                    revisions: coreWorkspaceProjectionRawRevisionState(context.revisions),
+                    health: coreWorkspaceProjectionRawHealth(context.health)
+                )
+            }
+        )
     )
 }
 
