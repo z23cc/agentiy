@@ -722,7 +722,7 @@ actor DomainWorkspaceContextAuthority {
         permit: DomainWorkspaceMutationPermit
     ) async -> Bool {
         guard !Task.isCancelled else { return false }
-        let durableCatalog = await persistence.bootstrap()
+        let durableCatalog = await persistence.bootstrap(permit: permit)
         guard !Task.isCancelled, durableCatalog.health.acceptsMutations else { return false }
 
         health = durableCatalog.health
@@ -774,7 +774,7 @@ actor DomainWorkspaceContextAuthority {
         let catalogChanged = observedCatalogRevision.map { $0 != catalogRevision }
             ?? (catalogRevision != 0)
         if catalogChanged || !health.acceptsMutations {
-            let durableCatalog = await persistence.bootstrap()
+            let durableCatalog = await persistence.bootstrap(permit: permit)
             guard !Task.isCancelled else { return .incomplete }
             let previousHealth = health
             health = durableCatalog.health
@@ -1346,13 +1346,20 @@ actor DomainWorkspaceContextAuthority {
                 record.fileMetadata = fileMetadata
                 records[workspaceID] = record
                 readRegistrations.removeValue(forKey: workspaceID)
+                let diagnostic: String? = if persisted.revisionSidecarMissing {
+                    "external_reload_revision_sidecar_missing"
+                } else if attempt == 0 {
+                    nil
+                } else {
+                    "external_reload_revision_replayed"
+                }
                 publish(
                     kind: .externalReloaded,
                     workspaceID: workspaceID,
                     contextID: nil,
                     operationID: nil,
                     revisions: record.revisions,
-                    diagnostic: attempt == 0 ? nil : "external_reload_revision_replayed"
+                    diagnostic: diagnostic
                 )
                 return .applied
             } catch let error as DomainPersistenceError {

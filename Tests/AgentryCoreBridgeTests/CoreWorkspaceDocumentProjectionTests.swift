@@ -337,6 +337,271 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         }
     }
 
+    func testRealCoreJournalMutationTransactionRetainsAuthorityAfterRuntimeStops() async throws {
+        let workspaceID = UUID()
+        let operationID = UUID()
+        let fileURL = URL(fileURLWithPath: "/tmp/Journal-Mutation-\(workspaceID).json")
+        let revisions = JournalRevisionFixture(
+            workingRevision: 0,
+            savedRevision: 0,
+            dirtyRevision: nil
+        )
+        let journal = JournalFixture(
+            version: 1,
+            workspaceID: workspaceID,
+            fileURL: fileURL,
+            revisions: revisions,
+            savedDigest: String(repeating: "a", count: 64),
+            workingDocument: nil,
+            contextRevisions: [:],
+            contextDigests: [:],
+            contextTombstones: [:],
+            operations: [],
+            pendingSave: nil,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 50)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let rawJournal = try encoder.encode(journal)
+        let document = try JSONSerialization.data(withJSONObject: [
+            "id": workspaceID.uuidString,
+            "schemaVersion": 1,
+            "name": "Externally Reloaded",
+            "composeTabs": []
+        ], options: [.sortedKeys])
+        let request = try JSONSerialization.data(withJSONObject: [
+            "expectedWorkspaceID": workspaceID.uuidString,
+            "expectedFileURL": fileURL.absoluteString,
+            "catalogRevision": 9,
+            "revisionOperationID": operationID.uuidString,
+            "transition": [
+                "kind": "externalReload",
+                "expectedWorkingRevision": 0,
+                "newRevision": 1,
+                "contextRevisions": [],
+                "contextDigests": [],
+                "contextTombstones": [],
+                "operations": [],
+                "updatedAt": 51.0
+            ]
+        ], options: [.sortedKeys])
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let effective = try prepared.validate(rawJournal)
+        let rejected = try prepared.beginJournalMutationTransaction(
+            rawJournalBytes: rawJournal,
+            effectiveJournalBytes: effective.canonicalBytes,
+            requestBytes: request,
+            candidateDocumentBytes: document,
+            diskDocumentBytes: document
+        )
+        let rejectedActionCandidate: (UInt64, String)? = switch try rejected.nextDirective() {
+        case let .action(actionID, _, .writeJournal, _, _, digest, _, _):
+            (actionID, digest)
+        default:
+            nil
+        }
+        let rejectedAction = try XCTUnwrap(rejectedActionCandidate)
+        let expiredPermit = try rejected.acquireAuthorityPermit()
+        expiredPermit.close()
+        XCTAssertThrowsError(try rejected.report(.success(
+            actionID: rejectedAction.0,
+            writtenDigest: rejectedAction.1
+        )))
+        rejected.close()
+
+        let transaction = try prepared.beginJournalMutationTransaction(
+            rawJournalBytes: rawJournal,
+            effectiveJournalBytes: effective.canonicalBytes,
+            requestBytes: request,
+            candidateDocumentBytes: document,
+            diskDocumentBytes: document
+        )
+        defer { transaction.close() }
+
+        let journalActionID: UInt64
+        let journalDigest: String
+        switch try transaction.nextDirective() {
+        case let .action(
+            actionID,
+            _,
+            .writeJournal,
+            _,
+            _,
+            digest,
+            logicalExpectedRevision,
+            receipt
+        ):
+            XCTAssertEqual(logicalExpectedRevision, 0)
+            XCTAssertEqual(receipt?.workspaceID, workspaceID)
+            XCTAssertEqual(receipt?.catalogRevision, 9)
+            XCTAssertNotNil(receipt?.savedRevision)
+            journalActionID = actionID
+            journalDigest = digest
+        default:
+            return XCTFail("expected journal-authority directive")
+        }
+        let authorityPermit = try transaction.acquireAuthorityPermit()
+        let revisionActionID: UInt64
+        switch try transaction.report(.success(
+            actionID: journalActionID,
+            writtenDigest: journalDigest
+        )) {
+        case let .action(actionID, _, .writeSavedRevision, nil, _, _, nil, nil):
+            revisionActionID = actionID
+        default:
+            return XCTFail("expected saved-revision directive")
+        }
+        authorityPermit.close()
+
+        _ = try await bridge.close()
+        switch try transaction.report(.writeFailed(actionID: revisionActionID)) {
+        case let .committed(receipt, .revisionSidecarMissing):
+            XCTAssertEqual(receipt.workspaceID, workspaceID)
+            XCTAssertEqual(receipt.resultingWorkingRevision, 1)
+            XCTAssertEqual(receipt.resultingSavedRevision, 1)
+        default:
+            XCTFail("post-authority sidecar failure became a failed mutation")
+        }
+    }
+
+    func testRealCoreCreateTransactionOwnsSequenceAndRecoveryPublication() async throws {
+        let workspaceID = UUID()
+        let contextID = UUID()
+        let operationID = UUID()
+        let fileURL = URL(fileURLWithPath: "/tmp/Create-\(workspaceID).json")
+        let context: [String: Any] = [
+            "id": contextID.uuidString,
+            "name": "Context",
+            "prompt": "",
+            "selectedPaths": []
+        ]
+        let contextBytes = try JSONSerialization.data(
+            withJSONObject: context,
+            options: [.sortedKeys]
+        )
+        let contextDigest = SHA256.hash(data: contextBytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let document = try JSONSerialization.data(withJSONObject: [
+            "id": workspaceID.uuidString,
+            "schemaVersion": 1,
+            "name": "Created",
+            "composeTabs": [context]
+        ], options: [.sortedKeys])
+        let documentDigest = SHA256.hash(data: document)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let seed = try JSONSerialization.data(withJSONObject: [
+            "kind": "seed",
+            "entries": [],
+            "updatedAt": 100.0
+        ], options: [.sortedKeys])
+        let catalog = try prepared.planCatalogTransition(
+            currentCatalogBytes: nil,
+            transitionBytes: seed
+        )
+        let revisions: [String: Any] = [
+            "workingRevision": 1,
+            "savedRevision": 1
+        ]
+        let request = try JSONSerialization.data(withJSONObject: [
+            "kind": "create",
+            "expectedWorkspaceID": workspaceID.uuidString,
+            "expectedFileURL": fileURL.absoluteString,
+            "expectedCatalogRevision": 0,
+            "operationID": operationID.uuidString,
+            "contextRevisions": [contextID.uuidString, revisions],
+            "contextDigests": [contextID.uuidString, contextDigest],
+            "operation": [
+                "operationID": operationID.uuidString,
+                "fingerprint": String(repeating: "c", count: 64),
+                "recordedAt": 101.0,
+                "disposition": "applied",
+                "after": revisions,
+                "catalogRevision": 1,
+                "resultingDigest": documentDigest
+            ],
+            "updatedAt": 101.0
+        ], options: [.sortedKeys])
+        let transaction = try prepared.beginCreateTransaction(
+            rawCatalogBytes: catalog.canonicalBytes,
+            effectiveCatalogBytes: catalog.canonicalBytes,
+            rawJournalBytes: nil,
+            effectiveJournalBytes: nil,
+            requestBytes: request,
+            documentBytes: document
+        )
+        defer { transaction.close() }
+        let expectedKinds: [CoreWorkspaceCreateActionKindV1] = [
+            .writePendingJournal,
+            .publishWorkspaceDocument,
+            .writeCommittedJournal,
+            .writeSavedRevision,
+            .removeDeletionSidecar,
+            .publishCatalog
+        ]
+        var authorityReceipt: CoreWorkspaceCreateCommitReceiptV1?
+        for (index, expectedKind) in expectedKinds.enumerated() {
+            switch try transaction.nextDirective() {
+            case let .action(actionID, _, kind, _, bytes, digest, _, receipt):
+                XCTAssertEqual(actionID, UInt64(index + 1))
+                XCTAssertEqual(kind, expectedKind)
+                XCTAssertEqual(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(), digest)
+                if expectedKind == .publishCatalog {
+                    let permit = try transaction.acquireAuthorityPermit()
+                    XCTAssertThrowsError(try transaction.acquireAuthorityPermit())
+                    permit.close()
+                    authorityReceipt = try XCTUnwrap(receipt)
+                } else {
+                    XCTAssertNil(receipt)
+                    _ = try transaction.report(.success(
+                        actionID: actionID,
+                        writtenDigest: digest
+                    ))
+                }
+            default:
+                return XCTFail("expected create action \(expectedKind)")
+            }
+        }
+        let receipt = try XCTUnwrap(authorityReceipt)
+        XCTAssertEqual(receipt.workspaceID, workspaceID)
+        XCTAssertEqual(receipt.operationID, operationID)
+        XCTAssertEqual(receipt.documentDigest, documentDigest)
+        XCTAssertEqual(receipt.catalog.revision, 1)
+        XCTAssertNotNil(receipt.savedRevision)
+
+        let recoveryRequest = try JSONSerialization.data(withJSONObject: [
+            "kind": "recover",
+            "expectedWorkspaceID": workspaceID.uuidString,
+            "expectedFileURL": fileURL.absoluteString,
+            "expectedCatalogRevision": 0,
+            "updatedAt": 102.0
+        ], options: [.sortedKeys])
+        let recovery = try prepared.beginCreateTransaction(
+            rawCatalogBytes: catalog.canonicalBytes,
+            effectiveCatalogBytes: catalog.canonicalBytes,
+            rawJournalBytes: receipt.committedJournal.canonicalBytes,
+            effectiveJournalBytes: receipt.committedJournal.canonicalBytes,
+            requestBytes: recoveryRequest,
+            documentBytes: document
+        )
+        defer { recovery.close() }
+        switch try recovery.nextDirective() {
+        case let .action(actionID, _, .publishCatalog, _, _, _, _, recoveryReceipt):
+            XCTAssertEqual(actionID, 1)
+            let permit = try recovery.acquireAuthorityPermit()
+            permit.close()
+            XCTAssertNil(try XCTUnwrap(recoveryReceipt).savedRevision)
+        default:
+            XCTFail("recovery did not yield the sole catalog action")
+        }
+    }
+
     func testRealCoreDeleteTransactionCannotCreateAuthorityAfterRuntimeStops() async throws {
         let workspaceID = UUID()
         let contextID = UUID()

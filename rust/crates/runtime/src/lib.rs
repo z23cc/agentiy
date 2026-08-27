@@ -34,7 +34,9 @@ pub mod workspace_persistence_journal;
 
 pub use config::RuntimeConfig;
 pub use identity::{ABI_EPOCH, IdentityError, RuntimeIdentity};
-pub use lifecycle::{CoreRuntime, LifecycleState, RuntimeError, ShutdownReceipt};
+pub use lifecycle::{
+    AuthorityOperationPermit, CoreRuntime, LifecycleState, RuntimeError, ShutdownReceipt,
+};
 pub use observability::{
     DiagnosticRecord, DiagnosticSeverity, drain_diagnostics, record_diagnostic,
 };

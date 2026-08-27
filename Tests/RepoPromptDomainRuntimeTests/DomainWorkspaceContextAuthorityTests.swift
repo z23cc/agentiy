@@ -447,6 +447,51 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(restored.health, .writable)
     }
 
+    func testLeaseReconciliationPublishesInterruptedCreateThroughRustRecoveryOnly() async throws {
+        let fixture = try Fixture.make(includeWorkspace: false)
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let document = try fixture.document(prompt: "staged before catalog publication")
+        let created = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedCatalogRevision: 0,
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .createWorkspace(document)
+        ))
+        XCTAssertEqual(created.disposition, .applied)
+        _ = await runtime.shutdown()
+
+        let runtimeRoot = fixture.storageRoot.appendingPathComponent(
+            "DomainRuntime",
+            isDirectory: true
+        )
+        let catalogURL = try XCTUnwrap(try allFiles(below: runtimeRoot).first {
+            $0.lastPathComponent == "workspace-catalog.json"
+        })
+        let interruptedCatalog: [String: Any] = [
+            "version": 1,
+            "revision": 0,
+            "entries": [],
+            "deletions": [],
+            "updatedAt": 1.0
+        ]
+        try JSONSerialization.data(
+            withJSONObject: interruptedCatalog,
+            options: [.sortedKeys]
+        ).write(to: catalogURL, options: .atomic)
+
+        let restarted = fixture.runtime(generation: 2)
+        try await restarted.start()
+        defer { Task { _ = await restarted.shutdown() } }
+        let restored = await restarted.workspaceStore.snapshot()
+        XCTAssertEqual(restored.catalogRevision, 1)
+        XCTAssertEqual(restored.workspaces.map(\.document.workspaceID), [fixture.workspaceID])
+        XCTAssertEqual(restored.workspaces.first?.document.documentBytes, document.documentBytes)
+        XCTAssertEqual(restored.health, .writable)
+    }
+
     func testOrphanDeletionSidecarCannotSuppressLiveCatalogEntry() async throws {
         let fixture = try Fixture.make(includeWorkspace: false)
         defer { fixture.remove() }
@@ -504,7 +549,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(restored.health, .writable)
     }
 
-    func testLiveAndDeletedCatalogIdentityOverlapDegradesReadOnly() async throws {
+    func testLiveAndDeletedCatalogIdentityOverlapDegradesReadOnlyAndSuppressesAmbiguousIdentity() async throws {
         let fixture = try Fixture.make(includeWorkspace: false)
         defer { fixture.remove() }
         let runtime = fixture.runtime()
@@ -556,7 +601,10 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             snapshot.health,
             .degradedReadOnly(reason: "workspace_catalog_decode_failed")
         )
-        XCTAssertEqual(snapshot.workspaces.map(\.document.workspaceID), [fixture.workspaceID])
+        XCTAssertTrue(
+            snapshot.workspaces.isEmpty,
+            "A live/deleted identity overlap is ambiguous and must not reactivate either side."
+        )
     }
 
     func testPendingSaveJournalRecoversCommittedDocumentWithoutManufacturedConflict() async throws {

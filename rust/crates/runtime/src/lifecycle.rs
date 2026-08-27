@@ -69,6 +69,7 @@ struct Shared {
     lifecycle: Mutex<LifecycleState>,
     lifecycle_changed: Condvar,
     active_tasks: AtomicUsize,
+    active_authority_operations: AtomicUsize,
     task_cancellations: Mutex<HashMap<OperationId, watch::Sender<bool>>>,
     shutdown_grace: Duration,
 }
@@ -87,6 +88,25 @@ impl Shared {
             .lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Runtime-lifetime proof for a synchronous authority mutation that cannot be cancelled once its
+/// physical commit begins. Shutdown closes admission under the lifecycle lock, then waits for every
+/// issued permit to drop before the runtime reaches `Stopped`.
+pub struct AuthorityOperationPermit {
+    shared: Option<Arc<Shared>>,
+}
+
+impl Drop for AuthorityOperationPermit {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.take() {
+            let previous = shared
+                .active_authority_operations
+                .fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(previous > 0, "authority operation permit underflow");
+            shared.lifecycle_changed.notify_all();
+        }
     }
 }
 
@@ -120,6 +140,7 @@ impl CoreRuntime {
             lifecycle: Mutex::new(LifecycleState::Starting),
             lifecycle_changed: Condvar::new(),
             active_tasks: AtomicUsize::new(0),
+            active_authority_operations: AtomicUsize::new(0),
             task_cancellations: Mutex::new(HashMap::new()),
             shutdown_grace: config.shutdown_grace,
         });
@@ -157,6 +178,31 @@ impl CoreRuntime {
     }
     pub fn active_task_count(&self) -> usize {
         self.shared.active_tasks.load(Ordering::Acquire)
+    }
+
+    pub fn active_authority_operation_count(&self) -> usize {
+        self.shared
+            .active_authority_operations
+            .load(Ordering::Acquire)
+    }
+
+    /// Admits one non-cancellable synchronous authority commit while the runtime is still running.
+    /// Admission and the shutdown transition share the lifecycle lock, so exactly one wins.
+    pub fn begin_authority_operation(&self) -> Result<AuthorityOperationPermit, RuntimeError> {
+        let lifecycle = self
+            .shared
+            .lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *lifecycle != LifecycleState::Running {
+            return Err(RuntimeError::ShuttingDown);
+        }
+        self.shared
+            .active_authority_operations
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(AuthorityOperationPermit {
+            shared: Some(Arc::clone(&self.shared)),
+        })
     }
 
     pub fn submit<F>(
@@ -353,6 +399,12 @@ fn runtime_main(
         while shared.active_tasks.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
+        // Authority permits fence synchronous physical commits. They are intentionally not subject
+        // to the cancellable task grace deadline: reaching Stopped before a catalog rename returns
+        // would permit the next runtime lifetime to overlap the old authority mutation.
+        while shared.active_authority_operations.load(Ordering::Acquire) != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     });
     drop(runtime);
     shared
@@ -361,5 +413,10 @@ fn runtime_main(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
     shared.active_tasks.store(0, Ordering::Release);
+    debug_assert_eq!(
+        shared.active_authority_operations.load(Ordering::Acquire),
+        0,
+        "runtime stopped with an active authority operation"
+    );
     shared.set_lifecycle(LifecycleState::Stopped);
 }

@@ -159,6 +159,62 @@ public struct CoreWorkspaceWorkingJournalValidationV1: Sendable, Equatable {
     }
 }
 
+public enum CoreWorkspaceJournalMutationActionKindV1: Sendable, Equatable {
+    case writeJournal
+    case writeSavedRevision
+}
+
+public enum CoreWorkspaceJournalMutationFinalizationV1: Sendable, Equatable {
+    case finalized
+    case revisionSidecarMissing
+}
+
+public struct CoreWorkspaceJournalMutationCommitReceiptV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let requestDigest: String
+    public let catalogRevision: UInt64
+    public let committedJournal: CoreWorkspaceWorkingJournalValidationV1
+    public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
+    public let resultingWorkingRevision: UInt64
+    public let resultingSavedRevision: UInt64
+
+    public init(
+        workspaceID: UUID,
+        requestDigest: String,
+        catalogRevision: UInt64,
+        committedJournal: CoreWorkspaceWorkingJournalValidationV1,
+        savedRevision: CoreWorkspacePersistenceMetadataValidationV1?,
+        resultingWorkingRevision: UInt64,
+        resultingSavedRevision: UInt64
+    ) {
+        self.workspaceID = workspaceID
+        self.requestDigest = requestDigest
+        self.catalogRevision = catalogRevision
+        self.committedJournal = committedJournal
+        self.savedRevision = savedRevision
+        self.resultingWorkingRevision = resultingWorkingRevision
+        self.resultingSavedRevision = resultingSavedRevision
+    }
+}
+
+public enum CoreWorkspaceJournalMutationDirectiveV1: Sendable, Equatable {
+    case action(
+        actionID: UInt64,
+        requestDigest: String,
+        kind: CoreWorkspaceJournalMutationActionKindV1,
+        expectedRawJournalDigest: String?,
+        canonicalBytes: Data,
+        contentDigest: String,
+        logicalExpectedRevision: UInt64?,
+        authorityReceipt: CoreWorkspaceJournalMutationCommitReceiptV1?
+    )
+    case committed(
+        receipt: CoreWorkspaceJournalMutationCommitReceiptV1,
+        finalization: CoreWorkspaceJournalMutationFinalizationV1
+    )
+    case failed(CoreWorkspaceSaveFailureV1)
+}
+
 public enum CoreWorkspaceSaveActionKindV1: Sendable, Equatable {
     case writePendingJournal
     case publishWorkspaceDocument
@@ -237,6 +293,64 @@ public enum CoreWorkspaceSaveActionReportV1: Sendable, Equatable {
     case writeFailed(actionID: UInt64)
 }
 
+public enum CoreWorkspaceCreateActionKindV1: Sendable, Equatable {
+    case writePendingJournal
+    case publishWorkspaceDocument
+    case writeCommittedJournal
+    case writeSavedRevision
+    case removeDeletionSidecar
+    case publishCatalog
+}
+
+public enum CoreWorkspaceCreateFailureV1: Sendable, Equatable {
+    case cancelled
+    case stateConflict(expected: UInt64, actual: UInt64)
+    case writeFailed
+}
+
+public struct CoreWorkspaceCreateCommitReceiptV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let operationID: UUID
+    public let requestDigest: String
+    public let documentDigest: String
+    public let catalog: CoreWorkspaceCatalogValidationV1
+    public let committedJournal: CoreWorkspaceWorkingJournalValidationV1
+    public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
+
+    public init(
+        workspaceID: UUID,
+        operationID: UUID,
+        requestDigest: String,
+        documentDigest: String,
+        catalog: CoreWorkspaceCatalogValidationV1,
+        committedJournal: CoreWorkspaceWorkingJournalValidationV1,
+        savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
+    ) {
+        self.workspaceID = workspaceID
+        self.operationID = operationID
+        self.requestDigest = requestDigest
+        self.documentDigest = documentDigest
+        self.catalog = catalog
+        self.committedJournal = committedJournal
+        self.savedRevision = savedRevision
+    }
+}
+
+public enum CoreWorkspaceCreateDirectiveV1: Sendable, Equatable {
+    case action(
+        actionID: UInt64,
+        requestDigest: String,
+        kind: CoreWorkspaceCreateActionKindV1,
+        expectedRawDigest: String?,
+        canonicalBytes: Data,
+        contentDigest: String,
+        logicalExpectedRevision: UInt64?,
+        authorityReceipt: CoreWorkspaceCreateCommitReceiptV1?
+    )
+    case committed(CoreWorkspaceCreateCommitReceiptV1)
+    case failed(CoreWorkspaceCreateFailureV1)
+}
+
 public enum CoreWorkspaceDeleteFailureV1: Sendable, Equatable {
     case cancelled
     case stateConflict(expected: UInt64, actual: UInt64)
@@ -287,6 +401,51 @@ public enum CoreWorkspacePendingSaveRecoveryV1: Sendable, Equatable {
     )
 }
 
+public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendable {
+    private let acquireAuthorityPermitOperation: @Sendable () throws
+        -> CoreWorkspaceCreateAuthorityPermitV1
+    private let nextOperation: @Sendable () throws -> CoreWorkspaceJournalMutationDirectiveV1
+    private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
+        -> CoreWorkspaceJournalMutationDirectiveV1
+    private let closeOperation: @Sendable () -> Void
+
+    init(
+        acquireAuthorityPermit: @escaping @Sendable () throws
+            -> CoreWorkspaceCreateAuthorityPermitV1,
+        next: @escaping @Sendable () throws -> CoreWorkspaceJournalMutationDirectiveV1,
+        report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
+            -> CoreWorkspaceJournalMutationDirectiveV1,
+        close: @escaping @Sendable () -> Void
+    ) {
+        acquireAuthorityPermitOperation = acquireAuthorityPermit
+        nextOperation = next
+        reportOperation = report
+        closeOperation = close
+    }
+
+    deinit {
+        closeOperation()
+    }
+
+    public func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
+        try acquireAuthorityPermitOperation()
+    }
+
+    public func nextDirective() throws -> CoreWorkspaceJournalMutationDirectiveV1 {
+        try nextOperation()
+    }
+
+    public func report(
+        _ report: CoreWorkspaceSaveActionReportV1
+    ) throws -> CoreWorkspaceJournalMutationDirectiveV1 {
+        try reportOperation(report)
+    }
+
+    public func close() {
+        closeOperation()
+    }
+}
+
 public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
     private let nextOperation: @Sendable () throws -> CoreWorkspaceSaveDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
@@ -315,6 +474,67 @@ public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
     public func report(
         _ report: CoreWorkspaceSaveActionReportV1
     ) throws -> CoreWorkspaceSaveDirectiveV1 {
+        try reportOperation(report)
+    }
+
+    public func close() {
+        closeOperation()
+    }
+}
+
+public final class CoreWorkspaceCreateAuthorityPermitV1: @unchecked Sendable {
+    private let closeOperation: @Sendable () -> Void
+
+    init(close: @escaping @Sendable () -> Void) {
+        closeOperation = close
+    }
+
+    deinit {
+        closeOperation()
+    }
+
+    public func close() {
+        closeOperation()
+    }
+}
+
+public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
+    private let acquireAuthorityPermitOperation: @Sendable () throws
+        -> CoreWorkspaceCreateAuthorityPermitV1
+    private let nextOperation: @Sendable () throws -> CoreWorkspaceCreateDirectiveV1
+    private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
+        -> CoreWorkspaceCreateDirectiveV1
+    private let closeOperation: @Sendable () -> Void
+
+    init(
+        acquireAuthorityPermit: @escaping @Sendable () throws
+            -> CoreWorkspaceCreateAuthorityPermitV1,
+        next: @escaping @Sendable () throws -> CoreWorkspaceCreateDirectiveV1,
+        report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
+            -> CoreWorkspaceCreateDirectiveV1,
+        close: @escaping @Sendable () -> Void
+    ) {
+        acquireAuthorityPermitOperation = acquireAuthorityPermit
+        nextOperation = next
+        reportOperation = report
+        closeOperation = close
+    }
+
+    deinit {
+        closeOperation()
+    }
+
+    public func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
+        try acquireAuthorityPermitOperation()
+    }
+
+    public func nextDirective() throws -> CoreWorkspaceCreateDirectiveV1 {
+        try nextOperation()
+    }
+
+    public func report(
+        _ report: CoreWorkspaceSaveActionReportV1
+    ) throws -> CoreWorkspaceCreateDirectiveV1 {
         try reportOperation(report)
     }
 
@@ -480,6 +700,34 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         )
     }
 
+    public func beginCreateTransaction(
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data?,
+        requestBytes: Data,
+        documentBytes: Data
+    ) throws -> CoreWorkspaceCreateTransactionV1 {
+        guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              effectiveJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              requestBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              documentBytes.count <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceCreateTransactionBeginV1(
+            identity: context.identity,
+            rawCatalogBytes: rawCatalogBytes,
+            effectiveCatalogBytes: effectiveCatalogBytes,
+            rawJournalBytes: rawJournalBytes,
+            effectiveJournalBytes: effectiveJournalBytes,
+            requestBytes: requestBytes,
+            documentBytes: documentBytes
+        )
+    }
+
     public func beginDeleteTransaction(
         rawCatalogBytes: Data?,
         effectiveCatalogBytes: Data,
@@ -499,6 +747,31 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveCatalogBytes: effectiveCatalogBytes,
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes
+        )
+    }
+
+    public func beginJournalMutationTransaction(
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
+        guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              requestBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+              candidateDocumentBytes.count <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes,
+              diskDocumentBytes?.count ?? 0 <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceJournalMutationTransactionBeginV1(
+            identity: context.identity,
+            rawJournalBytes: rawJournalBytes,
+            effectiveJournalBytes: effectiveJournalBytes,
+            requestBytes: requestBytes,
+            candidateDocumentBytes: candidateDocumentBytes,
+            diskDocumentBytes: diskDocumentBytes
         )
     }
 
@@ -805,6 +1078,18 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("workspace working journal transition transport is unavailable")
     }
 
+    func workspaceCreateTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data?,
+        requestBytes: Data,
+        documentBytes: Data
+    ) throws -> CoreWorkspaceCreateTransactionV1 {
+        throw CoreTransportError.unexpected("workspace create transaction transport is unavailable")
+    }
+
     func workspaceDeleteTransactionBeginV1(
         identity: CoreRuntimeIdentity,
         rawCatalogBytes: Data?,
@@ -813,6 +1098,17 @@ extension CoreRuntimeTransport {
         requestBytes: Data
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         throw CoreTransportError.unexpected("workspace delete transaction transport is unavailable")
+    }
+
+    func workspaceJournalMutationTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
+        throw CoreTransportError.unexpected("workspace journal mutation transaction transport is unavailable")
     }
 
     func workspaceSaveTransactionBeginV1(

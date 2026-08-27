@@ -40,23 +40,26 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "validator.validateSynchronously(",
             "private func planJournalTransition(",
             "private func replaceJournal(",
+            "validator.beginCreateTransaction(",
+            "validator.beginCreateRecoveryTransaction(",
             "validator.beginSaveTransaction(",
+            "validator.beginJournalMutationTransaction(",
+            "private func executeJournalMutationTransaction(",
             "transaction.nextDirective()",
+            "transaction.acquireAuthorityPermit()",
             "transaction.report(",
             "validator.resolvePendingSave(",
             "deletionSidecarDiagnostic(",
             "case let .publishWorkspaceDocument(",
             "case let .writeCommittedJournal(",
             "candidate.canonicalBytes",
-            "validator.planSavedRevision(",
             "validator.validateSavedRevision(",
             "validator.requireRuntimeAvailability()",
             "validator.planDeletionTombstone(",
             "private func readSavedRevisionSnapshot(",
-            "savedRevision.canonicalBytes",
             "case let .writeSavedRevision(actionID, validation):",
+            "authorityReceipt.savedRevision == nil",
             "validation.canonicalBytes",
-            "revisionRecord.canonicalBytes",
             "plannedTombstone.canonicalBytes",
             "cleanupPlan.canonicalBytes",
             "allowsCancellation: false",
@@ -66,19 +69,28 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
         XCTAssertEqual(
             source.components(separatedBy: "planJournalTransition(").count - 1,
-            7,
-            "Six non-save transition call sites plus the single helper must stay Rust-owned"
+            2,
+            "Only seed/recovery composition plus the single helper may use the generic Rust planner"
         )
+        XCTAssertTrue(source.contains(".seed("), "Missing Rust seed transition")
         for transition in [
-            ".seed(",
-            ".create(",
             ".unchanged(",
             ".working(",
             ".externalReload(",
             ".conflictRebase("
         ] {
-            XCTAssertTrue(source.contains(transition), "Missing Rust transition: \(transition)")
+            XCTAssertTrue(source.contains(transition), "Missing Rust transaction transition: \(transition)")
         }
+        let transactionStart = try XCTUnwrap(source.range(
+            of: "private func executeJournalMutationTransaction("
+        ))
+        let unchangedStart = try XCTUnwrap(source.range(
+            of: "private func persistUnchangedBlocking(",
+            range: transactionStart.lowerBound ..< source.endIndex
+        ))
+        let transactionAuthority = source[transactionStart.lowerBound ..< unchangedStart.lowerBound]
+        XCTAssertTrue(transactionAuthority.contains("transaction.acquireAuthorityPermit()"))
+        XCTAssertTrue(transactionAuthority.contains("case let .writeJournal("))
     }
 
     func testProductionCatalogStateMachineIsRustOwnedWithOnePhysicalWriteBoundary() throws {
@@ -116,18 +128,20 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "validator.validateCatalog(",
             "validator.validateDeletionTombstone(",
             "validator.planCatalogTransition(",
+            "validator.beginCreateTransaction(",
+            "validator.beginCreateRecoveryTransaction(",
             "validator.beginDeleteTransaction(",
+            "createTransactionLoop: while true",
             "deleteTransactionLoop: while true",
-            "transition: .seed(",
-            "transition: .upsert(",
-            "transition: .recoverCreate("
+            "private func recoverInterruptedCreates(",
+            "transition: .seed("
         ] {
             XCTAssertTrue(source.contains(required), "Missing Rust catalog boundary: \(required)")
         }
         XCTAssertEqual(
             source.components(separatedBy: "validator.planCatalogTransition(").count - 1,
-            3,
-            "Create, recovery, and shared load/migration seed must stay Rust-owned"
+            1,
+            "Only shared load/migration seed remains on the generic Rust catalog planner"
         )
         XCTAssertTrue(
             source.contains("let catalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)"),
@@ -146,6 +160,37 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             of: "let catalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)"
         ))
         XCTAssertLessThan(migrationCatalogLock.lowerBound, migrationCatalogLoad.lowerBound)
+        let createStart = try XCTUnwrap(source.range(of: "private func persistCreatedBlocking("))
+        let unchangedStart = try XCTUnwrap(source.range(
+            of: "private func persistUnchangedBlocking(",
+            range: createStart.lowerBound ..< source.endIndex
+        ))
+        let createAuthority = source[createStart.lowerBound ..< unchangedStart.lowerBound]
+        XCTAssertFalse(createAuthority.contains("validator.planCatalogTransition("))
+        XCTAssertFalse(createAuthority.contains("transition: .upsert("))
+        XCTAssertTrue(createAuthority.contains("validator.beginCreateTransaction("))
+        XCTAssertTrue(createAuthority.contains("transaction.acquireAuthorityPermit()"))
+
+        let recoveryHelperStart = try XCTUnwrap(source.range(of: "private func withExistingWorkspaceLocks"))
+        let catalogReadStart = try XCTUnwrap(source.range(
+            of: "private func readCatalogBytes()",
+            range: recoveryHelperStart.lowerBound ..< source.endIndex
+        ))
+        let recoveryAuthority = source[recoveryHelperStart.lowerBound ..< catalogReadStart.lowerBound]
+        XCTAssertFalse(recoveryAuthority.contains("validator.planCatalogTransition("))
+        XCTAssertFalse(recoveryAuthority.contains("transition: .recoverCreate("))
+        XCTAssertTrue(recoveryAuthority.contains("validator.beginCreateRecoveryTransaction("))
+        XCTAssertTrue(recoveryAuthority.contains("transaction.acquireAuthorityPermit()"))
+
+        let bootstrapStart = try XCTUnwrap(source.range(of: "private func bootstrapBlocking("))
+        let recoveryScanStart = try XCTUnwrap(source.range(
+            of: "private func recoverInterruptedCreates(",
+            range: bootstrapStart.lowerBound ..< source.endIndex
+        ))
+        let readOnlyBootstrap = source[bootstrapStart.lowerBound ..< recoveryScanStart.lowerBound]
+        XCTAssertFalse(readOnlyBootstrap.contains("loadJournal(workspaceID:"))
+        XCTAssertFalse(readOnlyBootstrap.contains("journalURL.pathExtension"))
+
         let deleteStart = try XCTUnwrap(source.range(of: "private func persistDeletedBlocking("))
         let cleanupStart = try XCTUnwrap(source.range(
             of: "var artifactCleanupWarnings = [String]()",

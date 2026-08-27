@@ -666,7 +666,8 @@ artifacts, and post-delete best-effort cleanup. Catalog publication remains the 
 point, but the bytes and state transition at that point are exclusively Rust-planned. Existing corruption
 behavior is preserved: bootstrap/refresh project malformed or future catalogs as degraded read-only,
 ordinary mutations fail closed, missing catalogs retain legacy fallback, duplicate or overlapping
-live/deleted identities are rejected, and catalog tombstones suppress live entries. Sidecars are never
+live/deleted identities are rejected without salvaging or reactivating the ambiguous live row, and
+catalog tombstones suppress live entries. Sidecars are never
 deletion authority: bootstrap probes at most the catalog's deletion count, using exact UUID filenames, and
 accepts a sidecar only when every authoritative tombstone field except the cleanup diagnostic matches.
 
@@ -793,3 +794,91 @@ path; create, recovery, lazy migration, and post-delete cleanup-warning enrichme
   is the P5-5f0 catalog CAS write, and all cleanup starts after receipt activation.
 - Existing delete/recreate/restart/corruption/cancellation/lease-handoff tests plus focused Rust, FFI,
   Bridge, DomainRuntime, codegen, product-build, style, guardrail, and diff checks pass.
+
+## P5-5f2 amendment — prepared Rust create and recovery authority transaction
+
+P5-5f2 moves fresh create, recreate, and interrupted-create recovery behind one exact-runtime Rust
+transaction. Rust consumes the exact raw/effective catalog pair, raw/effective journal state, canonical
+workspace document bytes, and a closed request containing workspace/file identity, catalog revision,
+create operation, context revision/digest tables, and timestamp. It rejects an existing live identity,
+validates recreate tombstones, binds every input into one request digest, and plans the pending/committed
+journal, saved-revision sidecar, deletion-sidecar removal, and canonical catalog upsert.
+
+A fresh create or recreate yields the ordered actions `writePendingJournal`, `publishWorkspaceDocument`,
+`writeCommittedJournal`, `writeSavedRevision`, `removeDeletionSidecar`, and `publishCatalog`. Interrupted
+create recovery accepts only a digest-matching document plus a Rust-validated effective journal containing
+the exact applied create marker; it yields only `publishCatalog`. Recovery may clear the same identity's
+tombstone because the bound committed create marker proves that recreate artifacts were durably staged.
+An arbitrary missing catalog row, stale Swift record, or mismatched URL can never synthesize identity.
+
+The exact raw-CAS catalog rename remains the sole create authority point. Every earlier action is
+pre-authority and rolls back its staged document/journal/revision artifacts on in-process failure. The
+Rust request validator binds each supplied context digest to the canonical raw `composeTabs` object,
+requires exact initial `1/1/clean` workspace/context revisions, one matching create operation, and any
+same-identity tombstone's complete applied-delete semantics. Pending-save recovery additionally binds the
+pending operation ID to that sole create marker.
+
+Immediately before catalog replacement, the prepared transaction acquires a one-shot Rust runtime
+authority permit. Shutdown and permit admission share the runtime lifecycle lock; if shutdown wins, no
+rename begins, and if the commit wins, the runtime cannot reach `Stopped` until the synchronous rename and
+receipt activation return. After rename, the attached Rust receipt defines success even if reporting fails.
+Directory-sync uncertainty preserves the staged artifacts so a later recovery can safely re-publish
+identity.
+
+Read-only bootstrap never exposes a catalog-absent journal. Lease-backed reconciliation scans only the
+bounded runtime-owned journal directory, validates the exact disk document, and submits every candidate to
+the Rust recovery transaction under catalog/workspace locks; it does not exclude tombstoned identities or
+construct a Swift recovery candidate. Swift retains storage lease, mutation permit, lock order, bounded
+descriptor I/O, raw digest comparison, path capabilities, physical writes/removals, and rollback execution;
+it no longer constructs or interprets the create/recovery journal or catalog transition in the production
+path.
+
+### P5-5f2 done-when
+
+- Rust tests cover fresh create, recreate, interrupted recovery, exact raw/effective input binding,
+  contradictory operation/context/catalog state, action order/replay, cancellation/conflict/write failure,
+  close/runtime lifetime, and authority receipt activation.
+- Real FFI and Bridge tests cover the prepared object, all action payloads, recovery-only publication, and
+  runtime stop immediately before and after catalog authority.
+- Production create and missing-entry recovery execute only Rust directives; generic `upsert` and
+  `recoverCreate` catalog planning have zero production callers.
+- Existing create/recreate/restart/pending-create recovery/CAS/cancellation/lease-handoff regressions plus
+  focused Rust, FFI, Bridge, DomainRuntime, codegen, product-build, style, guardrail, and diff checks pass.
+
+## P5-5g amendment — prepared Rust working-journal mutation authority
+
+P5-5g moves `unchanged`, `working`, `externalReload`, and `conflictRebase` commits behind one
+exact-runtime prepared Rust transaction. Rust consumes the exact raw/effective journal pair, the complete
+semantic transition, canonical candidate document bytes, the current bounded disk document when required,
+and the current catalog revision. It validates workspace/file identity, raw/effective recovery equivalence,
+revision CAS, context tables and digests, operation ledger, external-document digest, and the resulting
+canonical journal before yielding any physical action.
+
+The transaction yields `writeJournal` and, only for external reload, `writeSavedRevision`. The journal CAS
+rename is the authority point. Immediately before that rename, Swift must acquire the transaction's
+one-shot Rust runtime authority permit; shutdown and admission share the runtime lifecycle lock. A failure
+before journal replacement is a failed mutation. Once the journal receipt is activated, a later revision
+sidecar failure is reported as committed with `revisionSidecarMissing`, never as a retryable failed
+mutation; DomainRuntime preserves that condition in the external-reload publication diagnostic. The
+journal success report is accepted only while the transaction-owned authority permit remains active,
+and consumes that permit atomically with receipt activation. Exact action reports are replay-safe;
+wrong action IDs, digests, runtime identities, duplicate permit acquisition, post-close calls, and
+contradictory inputs fail closed.
+
+Swift retains the storage lease and epoch permit, catalog/workspace lock order, bounded descriptor reads,
+path capabilities, exact raw-digest compare-and-swap, physical atomic writes, and error translation. It no
+longer independently plans these four journal transitions, decides their action sequence, or reports
+post-authority failures as pre-authority failure. Save, create, delete, and bootstrap recovery retain their
+specialized prepared transactions.
+
+### P5-5g done-when
+
+- Rust tests cover all four mutation kinds, exact raw/effective binding, stale revision and disk document,
+  context/operation contradictions, action replay, cancellation/conflict/write failure, partial success,
+  close/runtime lifetime, and one-shot authority admission.
+- Real FFI and Bridge tests cover the prepared object, action/receipt payloads, external-reload sidecar,
+  runtime stop before/after journal authority, and malformed input rejection.
+- Production callers execute only the prepared Rust directives; direct `planJournalTransition` plus
+  `replaceJournal` composition has zero callers for these four mutation kinds.
+- Existing working/save/external-reload/conflict/cancellation/restart/lease-handoff regressions plus focused
+  Rust, FFI, Bridge, DomainRuntime, codegen, product-build, style, guardrail, and diff checks pass.

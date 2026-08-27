@@ -110,6 +110,27 @@ fn concurrent_submit_and_shutdown_resolve_every_accepted_operation() {
 }
 
 #[test]
+fn shutdown_waits_for_synchronous_authority_permit_and_closes_admission() {
+    let identity = common::identity('a');
+    let runtime = CoreRuntime::new(config(1), identity.clone()).expect("runtime");
+    let permit = runtime
+        .begin_authority_operation()
+        .expect("authority permit");
+    assert_eq!(runtime.active_authority_operation_count(), 1);
+
+    runtime.begin_shutdown(&identity).expect("shutdown");
+    assert!(matches!(
+        runtime.begin_authority_operation(),
+        Err(RuntimeError::ShuttingDown)
+    ));
+    assert!(!runtime.wait_for_terminal(Duration::from_millis(25)));
+
+    drop(permit);
+    assert!(runtime.wait_for_terminal(Duration::from_secs(1)));
+    assert_eq!(runtime.active_authority_operation_count(), 0);
+}
+
+#[test]
 fn repeated_shutdown_is_idempotent() {
     let identity = common::identity('a');
     let runtime = CoreRuntime::new(config(1), identity.clone()).expect("runtime");

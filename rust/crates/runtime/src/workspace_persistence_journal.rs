@@ -11,7 +11,7 @@ use crate::workspace_context::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Mutex;
 
@@ -166,6 +166,19 @@ struct WorkspaceSaveTransactionRequestV1 {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceJournalMutationTransactionRequestV1 {
+    #[serde(rename = "expectedWorkspaceID")]
+    expected_workspace_id: String,
+    #[serde(rename = "expectedFileURL")]
+    expected_file_url: String,
+    catalog_revision: u64,
+    #[serde(rename = "revisionOperationID")]
+    revision_operation_id: Option<String>,
+    transition: WorkspaceWorkingJournalTransitionRequestV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspaceDeleteTransactionRequestV1 {
     #[serde(rename = "expectedWorkspaceID")]
     expected_workspace_id: String,
@@ -176,6 +189,133 @@ struct WorkspaceDeleteTransactionRequestV1 {
     operation: WorkspaceRecordedOperationV1,
     deleted_at: Value,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum WorkspaceCreateTransactionRequestV1 {
+    Create {
+        #[serde(rename = "expectedWorkspaceID")]
+        expected_workspace_id: String,
+        #[serde(rename = "expectedFileURL")]
+        expected_file_url: String,
+        expected_catalog_revision: u64,
+        #[serde(rename = "operationID")]
+        operation_id: String,
+        context_revisions: Value,
+        context_digests: Value,
+        operation: WorkspaceRecordedOperationV1,
+        updated_at: Value,
+    },
+    Recover {
+        #[serde(rename = "expectedWorkspaceID")]
+        expected_workspace_id: String,
+        #[serde(rename = "expectedFileURL")]
+        expected_file_url: String,
+        expected_catalog_revision: u64,
+        updated_at: Value,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceCreateActionKindV1 {
+    WritePendingJournal,
+    PublishWorkspaceDocument,
+    WriteCommittedJournal,
+    WriteSavedRevision,
+    RemoveDeletionSidecar,
+    PublishCatalog,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceCreateFailureV1 {
+    Cancelled,
+    StateConflict { expected: u64, actual: u64 },
+    WriteFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCreateCommitReceiptV1 {
+    pub workspace_id: String,
+    pub operation_id: String,
+    pub request_digest: String,
+    pub document_digest: String,
+    pub catalog: WorkspaceCatalogValidationV1,
+    pub committed_journal: WorkspaceWorkingJournalValidationV1,
+    pub saved_revision: Option<WorkspacePersistenceMetadataValidationV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceCreateDirectiveV1 {
+    Action {
+        action_id: u64,
+        request_digest: String,
+        kind: WorkspaceCreateActionKindV1,
+        expected_raw_digest: Option<String>,
+        canonical_bytes: Vec<u8>,
+        content_digest: String,
+        logical_expected_revision: Option<u64>,
+        authority_receipt: Option<WorkspaceCreateCommitReceiptV1>,
+    },
+    Committed {
+        receipt: WorkspaceCreateCommitReceiptV1,
+    },
+    Failed {
+        failure: WorkspaceCreateFailureV1,
+    },
+}
+
+pub type WorkspaceCreateActionReportV1 = WorkspaceSaveActionReportV1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceJournalMutationActionKindV1 {
+    WriteJournal,
+    WriteSavedRevision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceJournalMutationFinalizationV1 {
+    Finalized,
+    RevisionSidecarMissing,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceJournalMutationCommitReceiptV1 {
+    pub workspace_id: String,
+    pub request_digest: String,
+    pub catalog_revision: u64,
+    pub committed_journal: WorkspaceWorkingJournalValidationV1,
+    pub saved_revision: Option<WorkspacePersistenceMetadataValidationV1>,
+    pub resulting_working_revision: u64,
+    pub resulting_saved_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceJournalMutationDirectiveV1 {
+    Action {
+        action_id: u64,
+        request_digest: String,
+        kind: WorkspaceJournalMutationActionKindV1,
+        expected_raw_journal_digest: Option<String>,
+        canonical_bytes: Vec<u8>,
+        content_digest: String,
+        logical_expected_revision: Option<u64>,
+        authority_receipt: Option<WorkspaceJournalMutationCommitReceiptV1>,
+    },
+    Committed {
+        receipt: WorkspaceJournalMutationCommitReceiptV1,
+        finalization: WorkspaceJournalMutationFinalizationV1,
+    },
+    Failed {
+        failure: WorkspaceSaveFailureV1,
+    },
+}
+
+pub type WorkspaceJournalMutationActionReportV1 = WorkspaceSaveActionReportV1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceSaveActionKindV1 {
@@ -321,6 +461,11 @@ pub enum WorkspacePendingSaveRecoveryV1 {
 }
 
 #[derive(Debug)]
+pub struct PreparedWorkspaceJournalMutationTransactionV1 {
+    inner: Mutex<WorkspaceJournalMutationTransactionStateV1>,
+}
+
+#[derive(Debug)]
 pub struct PreparedWorkspaceSaveTransactionV1 {
     inner: Mutex<WorkspaceSaveTransactionStateV1>,
 }
@@ -328,6 +473,41 @@ pub struct PreparedWorkspaceSaveTransactionV1 {
 #[derive(Debug)]
 pub struct PreparedWorkspaceDeleteTransactionV1 {
     inner: Mutex<WorkspaceDeleteTransactionStateV1>,
+}
+
+#[derive(Debug)]
+pub struct PreparedWorkspaceCreateTransactionV1 {
+    inner: Mutex<WorkspaceCreateTransactionStateV1>,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceCreateTransactionStateV1 {
+    request_digest: String,
+    expected_raw_catalog_digest: Option<String>,
+    expected_catalog_revision: u64,
+    raw_journal_digest: Option<String>,
+    pending: Option<WorkspaceWorkingJournalValidationV1>,
+    document_bytes: Vec<u8>,
+    document_digest: String,
+    committed_journal: WorkspaceWorkingJournalValidationV1,
+    saved_revision: Option<WorkspacePersistenceMetadataValidationV1>,
+    catalog: WorkspaceCatalogValidationV1,
+    receipt: WorkspaceCreateCommitReceiptV1,
+    stage: WorkspaceCreateStageV1,
+    last_report: Option<WorkspaceCreateActionReportV1>,
+    last_result: Option<WorkspaceCreateDirectiveV1>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceCreateStageV1 {
+    PendingJournal,
+    Document,
+    CommittedJournal,
+    SavedRevision,
+    RemoveDeletionSidecar,
+    Catalog { action_id: u64 },
+    Terminal,
+    Closed,
 }
 
 #[derive(Clone, Debug)]
@@ -345,6 +525,27 @@ struct WorkspaceDeleteTransactionStateV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorkspaceDeleteStageV1 {
     Publication,
+    Terminal,
+    Closed,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceJournalMutationTransactionStateV1 {
+    request_digest: String,
+    raw_journal_digest: Option<String>,
+    expected_working_revision: u64,
+    committed: WorkspaceWorkingJournalValidationV1,
+    saved_revision: Option<WorkspacePersistenceMetadataValidationV1>,
+    receipt: WorkspaceJournalMutationCommitReceiptV1,
+    stage: WorkspaceJournalMutationStageV1,
+    last_report: Option<WorkspaceJournalMutationActionReportV1>,
+    last_result: Option<WorkspaceJournalMutationDirectiveV1>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceJournalMutationStageV1 {
+    Journal,
+    SavedRevision,
     Terminal,
     Closed,
 }
@@ -373,6 +574,74 @@ enum WorkspaceSaveStageV1 {
     SavedRevision,
     Terminal,
     Closed,
+}
+
+impl PreparedWorkspaceJournalMutationTransactionV1 {
+    pub fn next_directive(
+        &self,
+    ) -> Result<WorkspaceJournalMutationDirectiveV1, WorkspaceWorkingJournalError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        state.directive()
+    }
+
+    pub fn report_action(
+        &self,
+        report: WorkspaceJournalMutationActionReportV1,
+    ) -> Result<WorkspaceJournalMutationDirectiveV1, WorkspaceWorkingJournalError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if matches!(state.stage, WorkspaceJournalMutationStageV1::Closed) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        if state.last_report.as_ref() == Some(&report) {
+            return state
+                .last_result
+                .clone()
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        if matches!(state.stage, WorkspaceJournalMutationStageV1::Terminal)
+            || report.action_id() != state.action_id()?
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let result = state.advance(&report)?;
+        state.last_report = Some(report);
+        state.last_result = Some(result.clone());
+        Ok(result)
+    }
+
+    pub fn close(&self) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.stage = WorkspaceJournalMutationStageV1::Closed;
+        }
+    }
+
+    pub fn is_ready_for_authority(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|state| matches!(state.stage, WorkspaceJournalMutationStageV1::Journal))
+    }
+
+    pub fn is_authoritative(&self) -> bool {
+        self.inner.lock().is_ok_and(|state| {
+            matches!(
+                state.stage,
+                WorkspaceJournalMutationStageV1::SavedRevision
+                    | WorkspaceJournalMutationStageV1::Terminal
+            ) && matches!(
+                state.last_result,
+                Some(WorkspaceJournalMutationDirectiveV1::Action {
+                    kind: WorkspaceJournalMutationActionKindV1::WriteSavedRevision,
+                    ..
+                }) | Some(WorkspaceJournalMutationDirectiveV1::Committed { .. })
+            )
+        })
+    }
 }
 
 impl PreparedWorkspaceSaveTransactionV1 {
@@ -493,6 +762,269 @@ impl PreparedWorkspaceDeleteTransactionV1 {
     }
 }
 
+impl PreparedWorkspaceCreateTransactionV1 {
+    pub fn next_directive(
+        &self,
+    ) -> Result<WorkspaceCreateDirectiveV1, WorkspaceWorkingJournalError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        state.directive()
+    }
+
+    pub fn report_action(
+        &self,
+        report: WorkspaceCreateActionReportV1,
+    ) -> Result<WorkspaceCreateDirectiveV1, WorkspaceWorkingJournalError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if matches!(state.stage, WorkspaceCreateStageV1::Closed) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        if state.last_report.as_ref() == Some(&report) {
+            return state
+                .last_result
+                .clone()
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        if matches!(state.stage, WorkspaceCreateStageV1::Terminal)
+            || report.action_id() != state.action_id()?
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let result = state.advance(&report)?;
+        state.last_report = Some(report);
+        state.last_result = Some(result.clone());
+        Ok(result)
+    }
+
+    pub fn close(&self) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.stage = WorkspaceCreateStageV1::Closed;
+        }
+    }
+
+    pub fn is_authoritative(&self) -> bool {
+        self.inner.lock().is_ok_and(|state| {
+            matches!(state.stage, WorkspaceCreateStageV1::Terminal)
+                && matches!(
+                    state.last_result,
+                    Some(WorkspaceCreateDirectiveV1::Committed { .. })
+                )
+        })
+    }
+
+    pub fn is_ready_for_authority(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|state| matches!(state.stage, WorkspaceCreateStageV1::Catalog { .. }))
+    }
+}
+
+impl WorkspaceCreateTransactionStateV1 {
+    fn action_id(&self) -> Result<u64, WorkspaceWorkingJournalError> {
+        match self.stage {
+            WorkspaceCreateStageV1::PendingJournal => Ok(1),
+            WorkspaceCreateStageV1::Document => Ok(2),
+            WorkspaceCreateStageV1::CommittedJournal => Ok(3),
+            WorkspaceCreateStageV1::SavedRevision => Ok(4),
+            WorkspaceCreateStageV1::RemoveDeletionSidecar => Ok(5),
+            WorkspaceCreateStageV1::Catalog { action_id } => Ok(action_id),
+            WorkspaceCreateStageV1::Terminal | WorkspaceCreateStageV1::Closed => {
+                Err(WorkspaceWorkingJournalError::InvalidTransaction)
+            }
+        }
+    }
+
+    fn directive(&self) -> Result<WorkspaceCreateDirectiveV1, WorkspaceWorkingJournalError> {
+        let empty_digest = format!("{:x}", Sha256::digest([]));
+        let directive = match self.stage {
+            WorkspaceCreateStageV1::PendingJournal => {
+                let pending = self
+                    .pending
+                    .as_ref()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+                self.action(
+                    1,
+                    WorkspaceCreateActionKindV1::WritePendingJournal,
+                    self.raw_journal_digest.clone(),
+                    pending.canonical_bytes.clone(),
+                    pending.content_digest.clone(),
+                    Some(0),
+                    None,
+                )
+            }
+            WorkspaceCreateStageV1::Document => self.action(
+                2,
+                WorkspaceCreateActionKindV1::PublishWorkspaceDocument,
+                None,
+                self.document_bytes.clone(),
+                self.document_digest.clone(),
+                None,
+                None,
+            ),
+            WorkspaceCreateStageV1::CommittedJournal => {
+                let pending = self
+                    .pending
+                    .as_ref()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+                self.action(
+                    3,
+                    WorkspaceCreateActionKindV1::WriteCommittedJournal,
+                    Some(pending.content_digest.clone()),
+                    self.committed_journal.canonical_bytes.clone(),
+                    self.committed_journal.content_digest.clone(),
+                    Some(1),
+                    None,
+                )
+            }
+            WorkspaceCreateStageV1::SavedRevision => {
+                let saved_revision = self
+                    .saved_revision
+                    .as_ref()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+                self.action(
+                    4,
+                    WorkspaceCreateActionKindV1::WriteSavedRevision,
+                    None,
+                    saved_revision.canonical_bytes.clone(),
+                    saved_revision.content_digest.clone(),
+                    None,
+                    None,
+                )
+            }
+            WorkspaceCreateStageV1::RemoveDeletionSidecar => self.action(
+                5,
+                WorkspaceCreateActionKindV1::RemoveDeletionSidecar,
+                None,
+                Vec::new(),
+                empty_digest,
+                None,
+                None,
+            ),
+            WorkspaceCreateStageV1::Catalog { action_id } => self.action(
+                action_id,
+                WorkspaceCreateActionKindV1::PublishCatalog,
+                self.expected_raw_catalog_digest.clone(),
+                self.catalog.canonical_bytes.clone(),
+                self.catalog.content_digest.clone(),
+                Some(self.expected_catalog_revision),
+                Some(self.receipt.clone()),
+            ),
+            WorkspaceCreateStageV1::Terminal => {
+                return self
+                    .last_result
+                    .clone()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            WorkspaceCreateStageV1::Closed => {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        };
+        Ok(directive)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn action(
+        &self,
+        action_id: u64,
+        kind: WorkspaceCreateActionKindV1,
+        expected_raw_digest: Option<String>,
+        canonical_bytes: Vec<u8>,
+        content_digest: String,
+        logical_expected_revision: Option<u64>,
+        authority_receipt: Option<WorkspaceCreateCommitReceiptV1>,
+    ) -> WorkspaceCreateDirectiveV1 {
+        WorkspaceCreateDirectiveV1::Action {
+            action_id,
+            request_digest: self.request_digest.clone(),
+            kind,
+            expected_raw_digest,
+            canonical_bytes,
+            content_digest,
+            logical_expected_revision,
+            authority_receipt,
+        }
+    }
+
+    fn expected_written_digest(&self) -> Result<String, WorkspaceWorkingJournalError> {
+        match self.stage {
+            WorkspaceCreateStageV1::PendingJournal => self
+                .pending
+                .as_ref()
+                .map(|value| value.content_digest.clone())
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction),
+            WorkspaceCreateStageV1::Document => Ok(self.document_digest.clone()),
+            WorkspaceCreateStageV1::CommittedJournal => {
+                Ok(self.committed_journal.content_digest.clone())
+            }
+            WorkspaceCreateStageV1::SavedRevision => self
+                .saved_revision
+                .as_ref()
+                .map(|value| value.content_digest.clone())
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction),
+            WorkspaceCreateStageV1::RemoveDeletionSidecar => {
+                Ok(format!("{:x}", Sha256::digest([])))
+            }
+            WorkspaceCreateStageV1::Catalog { .. } => Ok(self.catalog.content_digest.clone()),
+            WorkspaceCreateStageV1::Terminal | WorkspaceCreateStageV1::Closed => {
+                Err(WorkspaceWorkingJournalError::InvalidTransaction)
+            }
+        }
+    }
+
+    fn advance(
+        &mut self,
+        report: &WorkspaceCreateActionReportV1,
+    ) -> Result<WorkspaceCreateDirectiveV1, WorkspaceWorkingJournalError> {
+        if let WorkspaceCreateActionReportV1::Success { written_digest, .. } = report {
+            if written_digest != &self.expected_written_digest()? {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            self.stage = match self.stage {
+                WorkspaceCreateStageV1::PendingJournal => WorkspaceCreateStageV1::Document,
+                WorkspaceCreateStageV1::Document => WorkspaceCreateStageV1::CommittedJournal,
+                WorkspaceCreateStageV1::CommittedJournal => WorkspaceCreateStageV1::SavedRevision,
+                WorkspaceCreateStageV1::SavedRevision => {
+                    WorkspaceCreateStageV1::RemoveDeletionSidecar
+                }
+                WorkspaceCreateStageV1::RemoveDeletionSidecar => {
+                    WorkspaceCreateStageV1::Catalog { action_id: 6 }
+                }
+                WorkspaceCreateStageV1::Catalog { .. } => WorkspaceCreateStageV1::Terminal,
+                WorkspaceCreateStageV1::Terminal | WorkspaceCreateStageV1::Closed => unreachable!(),
+            };
+            let result = if matches!(self.stage, WorkspaceCreateStageV1::Terminal) {
+                WorkspaceCreateDirectiveV1::Committed {
+                    receipt: self.receipt.clone(),
+                }
+            } else {
+                self.directive()?
+            };
+            return Ok(result);
+        }
+
+        let failure = match report {
+            WorkspaceCreateActionReportV1::Cancelled { .. } => WorkspaceCreateFailureV1::Cancelled,
+            WorkspaceCreateActionReportV1::StateConflict {
+                expected, actual, ..
+            } => WorkspaceCreateFailureV1::StateConflict {
+                expected: *expected,
+                actual: *actual,
+            },
+            WorkspaceCreateActionReportV1::WriteFailed { .. } => {
+                WorkspaceCreateFailureV1::WriteFailed
+            }
+            WorkspaceCreateActionReportV1::Success { .. } => unreachable!(),
+        };
+        self.stage = WorkspaceCreateStageV1::Terminal;
+        Ok(WorkspaceCreateDirectiveV1::Failed { failure })
+    }
+}
+
 impl WorkspaceDeleteTransactionStateV1 {
     fn directive(&self) -> Result<WorkspaceDeleteDirectiveV1, WorkspaceWorkingJournalError> {
         match self.stage {
@@ -545,6 +1077,141 @@ impl WorkspaceDeleteTransactionStateV1 {
             }
         };
         self.stage = WorkspaceDeleteStageV1::Terminal;
+        Ok(result)
+    }
+}
+
+impl WorkspaceJournalMutationTransactionStateV1 {
+    fn action_id(&self) -> Result<u64, WorkspaceWorkingJournalError> {
+        match self.stage {
+            WorkspaceJournalMutationStageV1::Journal => Ok(1),
+            WorkspaceJournalMutationStageV1::SavedRevision => Ok(2),
+            WorkspaceJournalMutationStageV1::Terminal | WorkspaceJournalMutationStageV1::Closed => {
+                Err(WorkspaceWorkingJournalError::InvalidTransaction)
+            }
+        }
+    }
+
+    fn directive(
+        &self,
+    ) -> Result<WorkspaceJournalMutationDirectiveV1, WorkspaceWorkingJournalError> {
+        match self.stage {
+            WorkspaceJournalMutationStageV1::Journal => {
+                Ok(WorkspaceJournalMutationDirectiveV1::Action {
+                    action_id: 1,
+                    request_digest: self.request_digest.clone(),
+                    kind: WorkspaceJournalMutationActionKindV1::WriteJournal,
+                    expected_raw_journal_digest: self.raw_journal_digest.clone(),
+                    canonical_bytes: self.committed.canonical_bytes.clone(),
+                    content_digest: self.committed.content_digest.clone(),
+                    logical_expected_revision: Some(self.expected_working_revision),
+                    authority_receipt: Some(self.receipt.clone()),
+                })
+            }
+            WorkspaceJournalMutationStageV1::SavedRevision => {
+                let saved_revision = self
+                    .saved_revision
+                    .as_ref()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+                Ok(WorkspaceJournalMutationDirectiveV1::Action {
+                    action_id: 2,
+                    request_digest: self.request_digest.clone(),
+                    kind: WorkspaceJournalMutationActionKindV1::WriteSavedRevision,
+                    expected_raw_journal_digest: None,
+                    canonical_bytes: saved_revision.canonical_bytes.clone(),
+                    content_digest: saved_revision.content_digest.clone(),
+                    logical_expected_revision: None,
+                    authority_receipt: None,
+                })
+            }
+            WorkspaceJournalMutationStageV1::Terminal => self
+                .last_result
+                .clone()
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction),
+            WorkspaceJournalMutationStageV1::Closed => {
+                Err(WorkspaceWorkingJournalError::InvalidTransaction)
+            }
+        }
+    }
+
+    fn advance(
+        &mut self,
+        report: &WorkspaceJournalMutationActionReportV1,
+    ) -> Result<WorkspaceJournalMutationDirectiveV1, WorkspaceWorkingJournalError> {
+        if let WorkspaceJournalMutationActionReportV1::Success { written_digest, .. } = report {
+            let expected = match self.stage {
+                WorkspaceJournalMutationStageV1::Journal => &self.committed.content_digest,
+                WorkspaceJournalMutationStageV1::SavedRevision => {
+                    &self
+                        .saved_revision
+                        .as_ref()
+                        .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?
+                        .content_digest
+                }
+                WorkspaceJournalMutationStageV1::Terminal
+                | WorkspaceJournalMutationStageV1::Closed => {
+                    return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+                }
+            };
+            if written_digest != expected {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            self.stage = match self.stage {
+                WorkspaceJournalMutationStageV1::Journal if self.saved_revision.is_some() => {
+                    WorkspaceJournalMutationStageV1::SavedRevision
+                }
+                WorkspaceJournalMutationStageV1::Journal
+                | WorkspaceJournalMutationStageV1::SavedRevision => {
+                    WorkspaceJournalMutationStageV1::Terminal
+                }
+                WorkspaceJournalMutationStageV1::Terminal
+                | WorkspaceJournalMutationStageV1::Closed => unreachable!(),
+            };
+            let result = if matches!(self.stage, WorkspaceJournalMutationStageV1::Terminal) {
+                WorkspaceJournalMutationDirectiveV1::Committed {
+                    receipt: self.receipt.clone(),
+                    finalization: WorkspaceJournalMutationFinalizationV1::Finalized,
+                }
+            } else {
+                self.directive()?
+            };
+            if matches!(self.stage, WorkspaceJournalMutationStageV1::Terminal) {
+                self.last_result = Some(result.clone());
+            }
+            return Ok(result);
+        }
+
+        let failure = match report {
+            WorkspaceJournalMutationActionReportV1::Cancelled { .. } => {
+                WorkspaceSaveFailureV1::Cancelled
+            }
+            WorkspaceJournalMutationActionReportV1::StateConflict {
+                expected, actual, ..
+            } => WorkspaceSaveFailureV1::StateConflict {
+                expected: *expected,
+                actual: *actual,
+            },
+            WorkspaceJournalMutationActionReportV1::WriteFailed { .. } => {
+                WorkspaceSaveFailureV1::WriteFailed
+            }
+            WorkspaceJournalMutationActionReportV1::Success { .. } => unreachable!(),
+        };
+        let result = match self.stage {
+            WorkspaceJournalMutationStageV1::Journal => {
+                WorkspaceJournalMutationDirectiveV1::Failed { failure }
+            }
+            WorkspaceJournalMutationStageV1::SavedRevision => {
+                WorkspaceJournalMutationDirectiveV1::Committed {
+                    receipt: self.receipt.clone(),
+                    finalization: WorkspaceJournalMutationFinalizationV1::RevisionSidecarMissing,
+                }
+            }
+            WorkspaceJournalMutationStageV1::Terminal | WorkspaceJournalMutationStageV1::Closed => {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        };
+        self.stage = WorkspaceJournalMutationStageV1::Terminal;
+        self.last_result = Some(result.clone());
         Ok(result)
     }
 }
@@ -779,6 +1446,676 @@ enum WorkspaceWorkingJournalTransitionRequestV1 {
         operations: Vec<WorkspaceRecordedOperationV1>,
         updated_at: Value,
     },
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_workspace_create_transaction_v1(
+    raw_catalog_bytes: Option<&[u8]>,
+    effective_catalog_bytes: &[u8],
+    raw_journal_bytes: Option<&[u8]>,
+    effective_journal_bytes: Option<&[u8]>,
+    request_bytes: &[u8],
+    document_bytes: &[u8],
+) -> Result<PreparedWorkspaceCreateTransactionV1, WorkspaceWorkingJournalError> {
+    require_metadata_input_bound(request_bytes)?;
+    require_metadata_input_bound(effective_catalog_bytes)?;
+    if document_bytes.len() > MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1 {
+        return Err(WorkspaceWorkingJournalError::InputTooLarge {
+            actual: document_bytes.len(),
+            maximum: MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+        });
+    }
+
+    let request: WorkspaceCreateTransactionRequestV1 = serde_json::from_slice(request_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let effective_catalog = validate_workspace_catalog_v1(effective_catalog_bytes)?;
+    let expected_raw_catalog_digest =
+        exact_raw_catalog_digest(raw_catalog_bytes, &effective_catalog)?;
+    let catalog_document: WorkspaceCatalogV1 =
+        serde_json::from_slice(&effective_catalog.canonical_bytes)
+            .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let projection = project_workspace_document_v1(document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let document_digest = format!("{:x}", Sha256::digest(document_bytes));
+
+    let (
+        expected_workspace_id,
+        expected_file_url,
+        expected_catalog_revision,
+        operation_id,
+        committed_journal,
+        pending,
+        saved_revision,
+        raw_journal_digest,
+        updated_at,
+        recovery,
+    ) = match request.clone() {
+        WorkspaceCreateTransactionRequestV1::Create {
+            expected_workspace_id,
+            expected_file_url,
+            expected_catalog_revision,
+            operation_id,
+            context_revisions,
+            context_digests,
+            mut operation,
+            updated_at,
+        } => {
+            if raw_journal_bytes.is_some() || effective_journal_bytes.is_some() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            let expected_workspace_id = canonical_uuid(&expected_workspace_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+            let operation_id = canonical_uuid(&operation_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+            if !valid_file_url(&expected_file_url) {
+                return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+            }
+            if effective_catalog.revision != expected_catalog_revision {
+                return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+            }
+            require_create_catalog_identity_absent(
+                &catalog_document,
+                &expected_workspace_id,
+                &expected_file_url,
+            )?;
+            if projection.workspace_id != expected_workspace_id {
+                return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+            }
+            require_create_context_tables(
+                document_bytes,
+                &projection,
+                &context_revisions,
+                &context_digests,
+            )?;
+            let expected_revision = WorkspaceProjectionRevisionState {
+                working_revision: 1,
+                saved_revision: 1,
+                dirty_revision: None,
+            };
+            let expected_resulting_catalog_revision = expected_catalog_revision
+                .checked_add(1)
+                .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
+            let canonical_operation_id =
+                validate_and_canonicalize_recorded_operation(&mut operation)?;
+            if canonical_operation_id != operation_id
+                || operation.disposition != "applied"
+                || operation.before.is_some()
+                || operation.after != Some(expected_revision)
+                || operation.catalog_revision != expected_resulting_catalog_revision
+                || operation.resulting_digest.as_deref() != Some(document_digest.as_str())
+                || operation.error_code.is_some()
+                || operation.diagnostic.is_some()
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+            }
+            let transition = WorkspaceWorkingJournalTransitionRequestV1::Create {
+                workspace_id: expected_workspace_id.clone(),
+                file_url: expected_file_url.clone(),
+                context_revisions,
+                context_digests,
+                operation,
+                operation_id: operation_id.clone(),
+                updated_at: updated_at.clone(),
+            };
+            let plan = plan_workspace_working_journal_transition_v1(
+                None,
+                &serde_json::to_vec(&transition)
+                    .map_err(|_| WorkspaceWorkingJournalError::Malformed)?,
+                Some(document_bytes),
+            )?;
+            let committed = plan
+                .committed
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+            let committed_document = parse_validated_journal(&committed.canonical_bytes)?;
+            if committed_document.revisions != expected_revision
+                || committed_document.saved_digest != document_digest
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            let saved_revision_request = WorkspaceSavedRevisionPlanRequestV1 {
+                workspace_id: expected_workspace_id.clone(),
+                saved_revision: 1,
+                document_digest: document_digest.clone(),
+                operation_id: operation_id.clone(),
+                updated_at: updated_at.clone(),
+            };
+            let saved_revision = plan_workspace_saved_revision_record_v1(
+                &serde_json::to_vec(&saved_revision_request)
+                    .map_err(|_| WorkspaceWorkingJournalError::Malformed)?,
+            )?;
+            (
+                expected_workspace_id,
+                expected_file_url,
+                expected_catalog_revision,
+                operation_id,
+                committed,
+                Some(plan.primary),
+                Some(saved_revision),
+                None,
+                updated_at,
+                false,
+            )
+        }
+        WorkspaceCreateTransactionRequestV1::Recover {
+            expected_workspace_id,
+            expected_file_url,
+            expected_catalog_revision,
+            updated_at,
+        } => {
+            let expected_workspace_id = canonical_uuid(&expected_workspace_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+            if !valid_file_url(&expected_file_url) {
+                return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+            }
+            if effective_catalog.revision != expected_catalog_revision {
+                return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+            }
+            require_create_catalog_identity_absent(
+                &catalog_document,
+                &expected_workspace_id,
+                &expected_file_url,
+            )?;
+            if projection.workspace_id != expected_workspace_id {
+                return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+            }
+            let raw_journal_bytes =
+                raw_journal_bytes.ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+            let effective_journal_bytes =
+                effective_journal_bytes.ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+            let raw_validation = validate_workspace_working_journal_v1(raw_journal_bytes)?;
+            let effective_validation =
+                validate_workspace_working_journal_v1(effective_journal_bytes)?;
+            let effective = parse_validated_journal(&effective_validation.canonical_bytes)?;
+            if effective.workspace_id != expected_workspace_id {
+                return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+            }
+            if effective.file_url != expected_file_url {
+                return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+            }
+            let recovered_pending_operation_id =
+                if raw_validation.canonical_bytes != effective_validation.canonical_bytes {
+                    let raw = parse_validated_journal(&raw_validation.canonical_bytes)?;
+                    let pending_operation_id = raw
+                        .pending_save
+                        .as_ref()
+                        .and_then(|pending| canonical_uuid(&pending.operation_id))
+                        .ok_or(WorkspaceWorkingJournalError::InvalidPendingSave)?;
+                    match resolve_workspace_pending_save_v1(
+                        raw_journal_bytes,
+                        &expected_workspace_id,
+                        &expected_file_url,
+                        Some(document_bytes),
+                    )? {
+                        WorkspacePendingSaveRecoveryV1::Committed { clean_journal, .. }
+                            if clean_journal.canonical_bytes
+                                == effective_validation.canonical_bytes => {}
+                        _ => return Err(WorkspaceWorkingJournalError::InvalidTransaction),
+                    }
+                    Some(pending_operation_id)
+                } else {
+                    None
+                };
+            let initial_revisions = WorkspaceProjectionRevisionState {
+                working_revision: 1,
+                saved_revision: 1,
+                dirty_revision: None,
+            };
+            if effective.pending_save.is_some()
+                || effective.working_document.is_some()
+                || effective.revisions != initial_revisions
+                || effective.saved_digest != document_digest
+                || effective.operations.len() != 1
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            require_create_context_tables(
+                document_bytes,
+                &projection,
+                &effective.context_revisions,
+                &effective.context_digests,
+            )?;
+            let expected_resulting_catalog_revision = expected_catalog_revision
+                .checked_add(1)
+                .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
+            let marker = effective
+                .operations
+                .iter()
+                .find(|operation| {
+                    operation.disposition == "applied"
+                        && operation.before.is_none()
+                        && operation.after == Some(effective.revisions)
+                        && operation.catalog_revision == expected_resulting_catalog_revision
+                        && operation.resulting_digest.as_deref() == Some(document_digest.as_str())
+                        && operation.error_code.is_none()
+                        && operation.diagnostic.is_none()
+                })
+                .ok_or(WorkspaceWorkingJournalError::InvalidOperationLedger)?;
+            let operation_id = canonical_uuid(&marker.operation_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidOperationLedger)?;
+            if recovered_pending_operation_id
+                .is_some_and(|pending_operation_id| pending_operation_id != operation_id)
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidPendingSave);
+            }
+            (
+                expected_workspace_id,
+                expected_file_url,
+                expected_catalog_revision,
+                operation_id,
+                effective_validation,
+                None,
+                None,
+                Some(format!("{:x}", Sha256::digest(raw_journal_bytes))),
+                updated_at,
+                true,
+            )
+        }
+    };
+
+    let transition = WorkspaceCatalogTransitionRequestV1::Upsert {
+        expected_catalog_revision,
+        workspace_id: expected_workspace_id.clone(),
+        file_url: expected_file_url.clone(),
+        updated_at,
+    };
+    let catalog = plan_workspace_catalog_transition_v1(
+        Some(&effective_catalog.canonical_bytes),
+        &serde_json::to_vec(&transition).map_err(|_| WorkspaceWorkingJournalError::Malformed)?,
+    )?;
+    let canonical_request =
+        serde_json::to_vec(&request).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let request_digest = create_transaction_request_digest(
+        &canonical_request,
+        raw_catalog_bytes,
+        &effective_catalog.canonical_bytes,
+        raw_journal_bytes,
+        effective_journal_bytes,
+        document_bytes,
+    );
+    let receipt = WorkspaceCreateCommitReceiptV1 {
+        workspace_id: expected_workspace_id,
+        operation_id,
+        request_digest: request_digest.clone(),
+        document_digest: document_digest.clone(),
+        catalog: catalog.clone(),
+        committed_journal: committed_journal.clone(),
+        saved_revision: saved_revision.clone(),
+    };
+    Ok(PreparedWorkspaceCreateTransactionV1 {
+        inner: Mutex::new(WorkspaceCreateTransactionStateV1 {
+            request_digest,
+            expected_raw_catalog_digest,
+            expected_catalog_revision,
+            raw_journal_digest,
+            pending,
+            document_bytes: document_bytes.to_vec(),
+            document_digest,
+            committed_journal,
+            saved_revision,
+            catalog,
+            receipt,
+            stage: if recovery {
+                WorkspaceCreateStageV1::Catalog { action_id: 1 }
+            } else {
+                WorkspaceCreateStageV1::PendingJournal
+            },
+            last_report: None,
+            last_result: None,
+        }),
+    })
+}
+
+fn exact_raw_catalog_digest(
+    raw_catalog_bytes: Option<&[u8]>,
+    effective_catalog: &WorkspaceCatalogValidationV1,
+) -> Result<Option<String>, WorkspaceWorkingJournalError> {
+    match raw_catalog_bytes {
+        Some(bytes) => {
+            require_metadata_input_bound(bytes)?;
+            let raw_catalog = validate_workspace_catalog_v1(bytes)?;
+            if raw_catalog.canonical_bytes != effective_catalog.canonical_bytes {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            Ok(Some(format!("{:x}", Sha256::digest(bytes))))
+        }
+        None if effective_catalog.revision == 0 => Ok(None),
+        None => Err(WorkspaceWorkingJournalError::InvalidTransaction),
+    }
+}
+
+fn require_create_catalog_identity_absent(
+    catalog: &WorkspaceCatalogV1,
+    workspace_id: &str,
+    file_url: &str,
+) -> Result<(), WorkspaceWorkingJournalError> {
+    if catalog
+        .entries
+        .iter()
+        .any(|entry| entry.workspace_id == workspace_id)
+    {
+        return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+    }
+    if let Some(tombstone) = catalog.deletions.as_ref().and_then(|deletions| {
+        deletions
+            .iter()
+            .find(|value| value.workspace_id == workspace_id)
+    }) {
+        if tombstone.file_url != file_url {
+            return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+        }
+        let operation = &tombstone.operation;
+        if operation.disposition != "applied"
+            || operation.before.is_none()
+            || operation.after.is_some()
+            || operation.catalog_revision != catalog.revision
+            || operation.resulting_digest.is_some()
+            || operation.error_code.is_some()
+            || operation
+                .diagnostic
+                .as_ref()
+                .is_some_and(|diagnostic| !diagnostic.starts_with("artifact_cleanup_incomplete: "))
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+    }
+    Ok(())
+}
+
+fn require_create_context_tables(
+    document_bytes: &[u8],
+    projection: &crate::workspace_context::WorkspaceDocumentProjection,
+    context_revisions: &Value,
+    context_digests: &Value,
+) -> Result<(), WorkspaceWorkingJournalError> {
+    let (revision_ids, _) = normalize_uuid_dictionary(context_revisions, |value| {
+        serde_json::from_value::<WorkspaceProjectionRevisionState>(value.clone()).is_ok_and(
+            |revisions| {
+                revisions
+                    == WorkspaceProjectionRevisionState {
+                        working_revision: 1,
+                        saved_revision: 1,
+                        dirty_revision: None,
+                    }
+            },
+        )
+    })?;
+    let (digest_ids, canonical_digests) = normalize_uuid_dictionary(context_digests, |value| {
+        value.as_str().is_some_and(is_sha256_digest)
+    })?;
+    let projection_ids: BTreeSet<String> = projection
+        .contexts
+        .iter()
+        .map(|context| context.context_id.clone())
+        .collect();
+    if revision_ids != digest_ids || revision_ids != projection_ids {
+        return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+    }
+
+    let document: Value = serde_json::from_slice(document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let raw_contexts = document
+        .as_object()
+        .and_then(|object| object.get("composeTabs"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut computed_digests = BTreeMap::new();
+    for raw_context in raw_contexts {
+        let context_id = raw_context
+            .as_object()
+            .and_then(|context| context.get("id"))
+            .and_then(Value::as_str)
+            .and_then(canonical_uuid)
+            .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?;
+        let canonical_bytes =
+            serde_json::to_vec(raw_context).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+        if computed_digests
+            .insert(context_id, format!("{:x}", Sha256::digest(canonical_bytes)))
+            .is_some()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+        }
+    }
+    let supplied_pairs = canonical_digests
+        .as_array()
+        .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?;
+    let supplied_digests: BTreeMap<&str, &str> = supplied_pairs
+        .chunks_exact(2)
+        .map(|pair| {
+            pair[0]
+                .as_str()
+                .zip(pair[1].as_str())
+                .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)
+        })
+        .collect::<Result<_, _>>()?;
+    if computed_digests.len() != supplied_digests.len()
+        || computed_digests.iter().any(|(context_id, digest)| {
+            supplied_digests.get(context_id.as_str()).copied() != Some(digest.as_str())
+        })
+    {
+        return Err(WorkspaceWorkingJournalError::InvalidDigest);
+    }
+    Ok(())
+}
+
+pub fn prepare_workspace_journal_mutation_transaction_v1(
+    raw_journal_bytes: Option<&[u8]>,
+    effective_journal_bytes: &[u8],
+    request_bytes: &[u8],
+    candidate_document_bytes: &[u8],
+    disk_document_bytes: Option<&[u8]>,
+) -> Result<PreparedWorkspaceJournalMutationTransactionV1, WorkspaceWorkingJournalError> {
+    require_metadata_input_bound(request_bytes)?;
+    require_metadata_input_bound(effective_journal_bytes)?;
+    if candidate_document_bytes.len() > MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1 {
+        return Err(WorkspaceWorkingJournalError::InputTooLarge {
+            actual: candidate_document_bytes.len(),
+            maximum: MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+        });
+    }
+    if let Some(bytes) = disk_document_bytes
+        && bytes.len() > MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1
+    {
+        return Err(WorkspaceWorkingJournalError::InputTooLarge {
+            actual: bytes.len(),
+            maximum: MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+        });
+    }
+
+    let mut request: WorkspaceJournalMutationTransactionRequestV1 =
+        serde_json::from_slice(request_bytes)
+            .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    request.expected_workspace_id = canonical_uuid(&request.expected_workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    if !valid_file_url(&request.expected_file_url) {
+        return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+    }
+    request.revision_operation_id = request
+        .revision_operation_id
+        .map(|value| canonical_uuid(&value).ok_or(WorkspaceWorkingJournalError::InvalidIdentity))
+        .transpose()?;
+
+    let effective_validation = validate_workspace_working_journal_v1(effective_journal_bytes)?;
+    let effective = parse_validated_journal(&effective_validation.canonical_bytes)?;
+    if effective.workspace_id != request.expected_workspace_id {
+        return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+    }
+    if effective.file_url != request.expected_file_url {
+        return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+    }
+
+    let expected_working_revision = match &request.transition {
+        WorkspaceWorkingJournalTransitionRequestV1::Unchanged {
+            expected_working_revision,
+            ..
+        }
+        | WorkspaceWorkingJournalTransitionRequestV1::Working {
+            expected_working_revision,
+            ..
+        }
+        | WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
+            expected_working_revision,
+            ..
+        } => *expected_working_revision,
+        WorkspaceWorkingJournalTransitionRequestV1::ConflictRebase {
+            expected_revisions, ..
+        } => expected_revisions.working_revision,
+        WorkspaceWorkingJournalTransitionRequestV1::Seed { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::RecoverPending { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::Create { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::Save { .. } => {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+    };
+    require_working_revision(&effective, expected_working_revision)?;
+
+    let raw_journal_digest = match raw_journal_bytes {
+        Some(bytes) => {
+            let raw_validation = validate_workspace_working_journal_v1(bytes)?;
+            let raw = parse_validated_journal(&raw_validation.canonical_bytes)?;
+            if raw.workspace_id != request.expected_workspace_id {
+                return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+            }
+            if raw.file_url != request.expected_file_url {
+                return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+            }
+            if raw_validation.canonical_bytes != effective_validation.canonical_bytes {
+                match resolve_workspace_pending_save_v1(
+                    bytes,
+                    &request.expected_workspace_id,
+                    &request.expected_file_url,
+                    disk_document_bytes,
+                )? {
+                    WorkspacePendingSaveRecoveryV1::Committed { clean_journal, .. }
+                        if clean_journal.canonical_bytes
+                            == effective_validation.canonical_bytes => {}
+                    WorkspacePendingSaveRecoveryV1::NoPending { .. }
+                    | WorkspacePendingSaveRecoveryV1::PendingNotCommitted { .. }
+                    | WorkspacePendingSaveRecoveryV1::Committed { .. } => {
+                        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+                    }
+                }
+            }
+            Some(format!("{:x}", Sha256::digest(bytes)))
+        }
+        None => None,
+    };
+
+    let projection = project_workspace_document_v1(candidate_document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    if projection.workspace_id != request.expected_workspace_id {
+        return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+    }
+    let document_digest = format!("{:x}", Sha256::digest(candidate_document_bytes));
+    let disk_digest = disk_document_bytes.map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+    let (saved_revision_number, saved_revision_updated_at) = match &request.transition {
+        WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
+            new_revision,
+            updated_at,
+            ..
+        } => {
+            if disk_digest.as_deref() != Some(document_digest.as_str())
+                || request.revision_operation_id.is_none()
+            {
+                return Err(WorkspaceWorkingJournalError::ExternalDocumentConflict);
+            }
+            (Some(*new_revision), Some(updated_at.clone()))
+        }
+        WorkspaceWorkingJournalTransitionRequestV1::ConflictRebase {
+            external_saved_digest,
+            ..
+        } => {
+            if disk_digest.as_deref() != Some(external_saved_digest.as_str())
+                || request.revision_operation_id.is_some()
+            {
+                return Err(WorkspaceWorkingJournalError::ExternalDocumentConflict);
+            }
+            (None, None)
+        }
+        WorkspaceWorkingJournalTransitionRequestV1::Unchanged { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::Working { .. } => {
+            if request.revision_operation_id.is_some() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            (None, None)
+        }
+        WorkspaceWorkingJournalTransitionRequestV1::Seed { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::RecoverPending { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::Create { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::Save { .. } => unreachable!(),
+    };
+
+    let transition_bytes = serde_json::to_vec(&request.transition)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let plan = plan_workspace_working_journal_transition_v1(
+        Some(&effective_validation.canonical_bytes),
+        &transition_bytes,
+        Some(candidate_document_bytes),
+    )?;
+    if plan.committed.is_some() {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    let committed = plan.primary;
+    let committed_journal = parse_validated_journal(&committed.canonical_bytes)?;
+    let saved_revision = match (
+        saved_revision_number,
+        saved_revision_updated_at,
+        request.revision_operation_id.as_ref(),
+    ) {
+        (Some(saved_revision), Some(updated_at), Some(operation_id)) => {
+            let revision_request = WorkspaceSavedRevisionPlanRequestV1 {
+                workspace_id: request.expected_workspace_id.clone(),
+                saved_revision,
+                document_digest: document_digest.clone(),
+                operation_id: operation_id.clone(),
+                updated_at,
+            };
+            Some(plan_workspace_saved_revision_record_v1(
+                &serde_json::to_vec(&revision_request)
+                    .map_err(|_| WorkspaceWorkingJournalError::Malformed)?,
+            )?)
+        }
+        (None, None, None) => None,
+        _ => return Err(WorkspaceWorkingJournalError::InvalidTransaction),
+    };
+    if saved_revision.is_some()
+        && (committed_journal.revisions.saved_revision != saved_revision_number.unwrap_or_default()
+            || committed_journal.saved_digest != document_digest)
+    {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+
+    let canonical_request =
+        serde_json::to_vec(&request).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let request_digest = save_transaction_request_digest(
+        &canonical_request,
+        raw_journal_bytes,
+        &effective_validation.canonical_bytes,
+        candidate_document_bytes,
+        disk_document_bytes,
+    );
+    let receipt = WorkspaceJournalMutationCommitReceiptV1 {
+        workspace_id: request.expected_workspace_id,
+        request_digest: request_digest.clone(),
+        catalog_revision: request.catalog_revision,
+        committed_journal: committed.clone(),
+        saved_revision: saved_revision.clone(),
+        resulting_working_revision: committed_journal.revisions.working_revision,
+        resulting_saved_revision: committed_journal.revisions.saved_revision,
+    };
+    Ok(PreparedWorkspaceJournalMutationTransactionV1 {
+        inner: Mutex::new(WorkspaceJournalMutationTransactionStateV1 {
+            request_digest,
+            raw_journal_digest,
+            expected_working_revision,
+            committed,
+            saved_revision,
+            receipt,
+            stage: WorkspaceJournalMutationStageV1::Journal,
+            last_report: None,
+            last_result: None,
+        }),
+    })
 }
 
 pub fn prepare_workspace_save_transaction_v1(
@@ -1120,6 +2457,34 @@ pub fn resolve_workspace_pending_save_v1(
         clean_journal: plan.primary,
         document_digest,
     })
+}
+
+fn create_transaction_request_digest(
+    request_bytes: &[u8],
+    raw_catalog_bytes: Option<&[u8]>,
+    effective_catalog_bytes: &[u8],
+    raw_journal_bytes: Option<&[u8]>,
+    effective_journal_bytes: Option<&[u8]>,
+    document_bytes: &[u8],
+) -> String {
+    fn append(hasher: &mut Sha256, bytes: Option<&[u8]>) {
+        match bytes {
+            Some(bytes) => {
+                hasher.update([1]);
+                hasher.update((bytes.len() as u64).to_be_bytes());
+                hasher.update(bytes);
+            }
+            None => hasher.update([0]),
+        }
+    }
+    let mut hasher = Sha256::new();
+    append(&mut hasher, Some(request_bytes));
+    append(&mut hasher, raw_catalog_bytes);
+    append(&mut hasher, Some(effective_catalog_bytes));
+    append(&mut hasher, raw_journal_bytes);
+    append(&mut hasher, effective_journal_bytes);
+    append(&mut hasher, Some(document_bytes));
+    format!("{:x}", hasher.finalize())
 }
 
 fn save_transaction_request_digest(
@@ -2391,6 +3756,16 @@ mod tests {
         .into_bytes()
     }
 
+    fn first_context_digest(document_bytes: &[u8]) -> String {
+        let document: Value = serde_json::from_slice(document_bytes).expect("document json");
+        let context = document["composeTabs"]
+            .as_array()
+            .and_then(|contexts| contexts.first())
+            .expect("first context");
+        let canonical = serde_json::to_vec(context).expect("canonical context");
+        format!("{:x}", Sha256::digest(canonical))
+    }
+
     fn base64_encode(bytes: &[u8]) -> String {
         const TABLE: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2525,6 +3900,518 @@ mod tests {
             "deletedAt": 3.0
         }))
         .expect("delete request")
+    }
+
+    fn create_catalog_bytes(catalog_revision: u64, tombstoned: bool) -> Vec<u8> {
+        let deletions = if tombstoned {
+            vec![serde_json::json!({
+                "version": 1,
+                "workspaceID": WORKSPACE_ID,
+                "fileURL": "file:///tmp/Workspace.json",
+                "operation": {
+                    "operationID": "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+                    "fingerprint": format!("{:x}", Sha256::digest(b"delete")),
+                    "recordedAt": 1.0,
+                    "disposition": "applied",
+                    "before": revision(1, 1, None),
+                    "catalogRevision": catalog_revision,
+                },
+                "deletedAt": 1.0
+            })]
+        } else {
+            Vec::new()
+        };
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "revision": catalog_revision,
+            "entries": [],
+            "deletions": deletions,
+            "updatedAt": 1.0
+        }))
+        .expect("create catalog")
+    }
+
+    fn create_request(catalog_revision: u64, document_bytes: &[u8]) -> Vec<u8> {
+        let mut create_operation = operation(OPERATION_ID, 2.0, catalog_revision + 1);
+        create_operation["after"] = revision(1, 1, None);
+        create_operation["resultingDigest"] =
+            Value::String(format!("{:x}", Sha256::digest(document_bytes)));
+        serde_json::to_vec(&serde_json::json!({
+            "kind": "create",
+            "expectedWorkspaceID": WORKSPACE_ID,
+            "expectedFileURL": "file:///tmp/Workspace.json",
+            "expectedCatalogRevision": catalog_revision,
+            "operationID": OPERATION_ID,
+            "contextRevisions": [CONTEXT_ID, revision(1, 1, None)],
+            "contextDigests": [CONTEXT_ID, first_context_digest(document_bytes)],
+            "operation": create_operation,
+            "updatedAt": 2.0
+        }))
+        .expect("create request")
+    }
+
+    fn recover_create_request(catalog_revision: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "kind": "recover",
+            "expectedWorkspaceID": WORKSPACE_ID,
+            "expectedFileURL": "file:///tmp/Workspace.json",
+            "expectedCatalogRevision": catalog_revision,
+            "updatedAt": 3.0
+        }))
+        .expect("recover create request")
+    }
+
+    fn journal_mutation_request(
+        transition: Value,
+        catalog_revision: u64,
+        revision_operation_id: Option<&str>,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "expectedWorkspaceID": WORKSPACE_ID,
+            "expectedFileURL": "file:///tmp/Workspace.json",
+            "catalogRevision": catalog_revision,
+            "revisionOperationID": revision_operation_id,
+            "transition": transition
+        }))
+        .expect("journal mutation request")
+    }
+
+    #[test]
+    fn journal_mutation_transaction_commits_working_state_at_journal_authority() {
+        let raw = journal_bytes(None);
+        let effective = validate_workspace_working_journal_v1(&raw).expect("effective journal");
+        let candidate = document("working");
+        let transition = serde_json::json!({
+            "kind": "working",
+            "expectedWorkingRevision": 0,
+            "newRevisions": revision(1, 0, Some(1)),
+            "contextRevisions": [CONTEXT_ID, revision(1, 0, Some(1))],
+            "contextDigests": [CONTEXT_ID, first_context_digest(&candidate)],
+            "contextTombstones": [],
+            "operations": [],
+            "updatedAt": 3.0
+        });
+        let transaction = prepare_workspace_journal_mutation_transaction_v1(
+            Some(&raw),
+            &effective.canonical_bytes,
+            &journal_mutation_request(transition, 7, None),
+            &candidate,
+            Some(&document("saved")),
+        )
+        .expect("working transaction");
+        assert!(transaction.is_ready_for_authority());
+        assert!(!transaction.is_authoritative());
+        let (action_id, digest, receipt) =
+            match transaction.next_directive().expect("journal action") {
+                WorkspaceJournalMutationDirectiveV1::Action {
+                    action_id,
+                    kind: WorkspaceJournalMutationActionKindV1::WriteJournal,
+                    content_digest,
+                    authority_receipt: Some(receipt),
+                    logical_expected_revision: Some(0),
+                    ..
+                } => (action_id, content_digest, receipt),
+                other => panic!("unexpected working directive: {other:?}"),
+            };
+        let committed = decoded(&receipt.committed_journal);
+        assert_eq!(committed.revisions.working_revision, 1);
+        assert_eq!(committed.revisions.saved_revision, 0);
+        assert_eq!(committed.revisions.dirty_revision, Some(1));
+        assert_eq!(receipt.catalog_revision, 7);
+        assert_eq!(
+            transaction
+                .report_action(WorkspaceJournalMutationActionReportV1::Success {
+                    action_id,
+                    written_digest: digest,
+                })
+                .expect("commit working journal"),
+            WorkspaceJournalMutationDirectiveV1::Committed {
+                receipt,
+                finalization: WorkspaceJournalMutationFinalizationV1::Finalized,
+            }
+        );
+        assert!(transaction.is_authoritative());
+    }
+
+    #[test]
+    fn external_reload_transaction_cleans_contexts_and_commits_without_revision_sidecar() {
+        let raw = journal_bytes(None);
+        let effective = validate_workspace_working_journal_v1(&raw).expect("effective journal");
+        let external = document("external");
+        let transition = serde_json::json!({
+            "kind": "externalReload",
+            "expectedWorkingRevision": 0,
+            "newRevision": 1,
+            "contextRevisions": [CONTEXT_ID, revision(1, 0, Some(1))],
+            "contextDigests": [CONTEXT_ID, first_context_digest(&external)],
+            "contextTombstones": [],
+            "operations": [],
+            "updatedAt": 4.0
+        });
+        let transaction = prepare_workspace_journal_mutation_transaction_v1(
+            Some(&raw),
+            &effective.canonical_bytes,
+            &journal_mutation_request(transition, 8, Some(OPERATION_ID)),
+            &external,
+            Some(&external),
+        )
+        .expect("external reload transaction");
+        let (journal_action, journal_digest, receipt) =
+            match transaction.next_directive().expect("journal action") {
+                WorkspaceJournalMutationDirectiveV1::Action {
+                    action_id,
+                    kind: WorkspaceJournalMutationActionKindV1::WriteJournal,
+                    content_digest,
+                    authority_receipt: Some(receipt),
+                    ..
+                } => (action_id, content_digest, receipt),
+                other => panic!("unexpected external directive: {other:?}"),
+            };
+        let committed = decoded(&receipt.committed_journal);
+        assert_eq!(
+            committed.context_revisions,
+            serde_json::json!([
+                CONTEXT_ID,
+                {"workingRevision": 1, "savedRevision": 1, "dirtyRevision": null}
+            ])
+        );
+        assert_eq!(
+            committed.saved_digest,
+            format!("{:x}", Sha256::digest(&external))
+        );
+        let revision_action = transaction
+            .report_action(WorkspaceJournalMutationActionReportV1::Success {
+                action_id: journal_action,
+                written_digest: journal_digest,
+            })
+            .expect("advance to saved revision");
+        assert!(transaction.is_authoritative());
+        let revision_action_id = match revision_action {
+            WorkspaceJournalMutationDirectiveV1::Action {
+                action_id,
+                kind: WorkspaceJournalMutationActionKindV1::WriteSavedRevision,
+                authority_receipt: None,
+                ..
+            } => action_id,
+            other => panic!("unexpected revision directive: {other:?}"),
+        };
+        assert_eq!(
+            transaction
+                .report_action(WorkspaceJournalMutationActionReportV1::WriteFailed {
+                    action_id: revision_action_id,
+                })
+                .expect("commit missing sidecar"),
+            WorkspaceJournalMutationDirectiveV1::Committed {
+                receipt,
+                finalization: WorkspaceJournalMutationFinalizationV1::RevisionSidecarMissing,
+            }
+        );
+
+        assert_eq!(
+            prepare_workspace_journal_mutation_transaction_v1(
+                Some(&raw),
+                &effective.canonical_bytes,
+                &journal_mutation_request(
+                    serde_json::json!({
+                        "kind": "externalReload",
+                        "expectedWorkingRevision": 0,
+                        "newRevision": 1,
+                        "contextRevisions": [CONTEXT_ID, revision(1, 1, None)],
+                        "contextDigests": [CONTEXT_ID, first_context_digest(&external)],
+                        "contextTombstones": [],
+                        "operations": [],
+                        "updatedAt": 4.0
+                    }),
+                    8,
+                    Some(OPERATION_ID)
+                ),
+                &external,
+                Some(&document("different")),
+            )
+            .expect_err("divergent disk must fail"),
+            WorkspaceWorkingJournalError::ExternalDocumentConflict
+        );
+    }
+
+    #[test]
+    fn journal_mutation_transaction_accepts_unchanged_and_conflict_rebase() {
+        let raw_clean = journal_bytes(None);
+        let effective_clean =
+            validate_workspace_working_journal_v1(&raw_clean).expect("effective clean journal");
+        let unchanged_operation_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+        let unchanged_operation = operation(unchanged_operation_id, 3.0, 9);
+        let unchanged = prepare_workspace_journal_mutation_transaction_v1(
+            Some(&raw_clean),
+            &effective_clean.canonical_bytes,
+            &journal_mutation_request(
+                serde_json::json!({
+                    "kind": "unchanged",
+                    "expectedWorkingRevision": 0,
+                    "operation": unchanged_operation,
+                    "updatedAt": 3.0
+                }),
+                9,
+                None,
+            ),
+            &document("saved"),
+            Some(&document("saved")),
+        )
+        .expect("unchanged transaction");
+        let (action_id, digest, receipt) =
+            match unchanged.next_directive().expect("unchanged action") {
+                WorkspaceJournalMutationDirectiveV1::Action {
+                    action_id,
+                    kind: WorkspaceJournalMutationActionKindV1::WriteJournal,
+                    content_digest,
+                    authority_receipt: Some(receipt),
+                    ..
+                } => (action_id, content_digest, receipt),
+                other => panic!("unexpected unchanged directive: {other:?}"),
+            };
+        assert!(
+            decoded(&receipt.committed_journal)
+                .operations
+                .iter()
+                .any(|operation| operation.operation_id == unchanged_operation_id)
+        );
+        assert!(matches!(
+            unchanged
+                .report_action(WorkspaceJournalMutationActionReportV1::Success {
+                    action_id,
+                    written_digest: digest,
+                })
+                .expect("commit unchanged"),
+            WorkspaceJournalMutationDirectiveV1::Committed {
+                finalization: WorkspaceJournalMutationFinalizationV1::Finalized,
+                ..
+            }
+        ));
+
+        let local = document("local dirty");
+        let raw_dirty = journal_bytes(Some(&local));
+        let effective_dirty =
+            validate_workspace_working_journal_v1(&raw_dirty).expect("effective dirty journal");
+        let external = document("external saved");
+        let external_digest = format!("{:x}", Sha256::digest(&external));
+        let rebased = prepare_workspace_journal_mutation_transaction_v1(
+            Some(&raw_dirty),
+            &effective_dirty.canonical_bytes,
+            &journal_mutation_request(
+                serde_json::json!({
+                    "kind": "conflictRebase",
+                    "expectedRevisions": revision(1, 0, Some(1)),
+                    "newRevisions": revision(2, 0, Some(2)),
+                    "externalSavedDigest": external_digest.clone(),
+                    "contextRevisions": [CONTEXT_ID, revision(2, 0, Some(2))],
+                    "contextDigests": [CONTEXT_ID, first_context_digest(&local)],
+                    "contextTombstones": [],
+                    "operations": [],
+                    "updatedAt": 4.0
+                }),
+                10,
+                None,
+            ),
+            &local,
+            Some(&external),
+        )
+        .expect("conflict rebase transaction");
+        let receipt = match rebased.next_directive().expect("rebase action") {
+            WorkspaceJournalMutationDirectiveV1::Action {
+                kind: WorkspaceJournalMutationActionKindV1::WriteJournal,
+                authority_receipt: Some(receipt),
+                ..
+            } => receipt,
+            other => panic!("unexpected rebase directive: {other:?}"),
+        };
+        let committed = decoded(&receipt.committed_journal);
+        assert_eq!(committed.revisions.working_revision, 2);
+        assert_eq!(committed.revisions.saved_revision, 0);
+        assert_eq!(committed.revisions.dirty_revision, Some(2));
+        assert_eq!(committed.saved_digest, external_digest);
+        assert_eq!(committed.working_document, Some(base64_encode(&local)));
+    }
+
+    #[test]
+    fn create_transaction_owns_full_recreate_sequence_and_catalog_authority() {
+        let raw_catalog = create_catalog_bytes(9, true);
+        let effective_catalog =
+            validate_workspace_catalog_v1(&raw_catalog).expect("effective catalog");
+        let document = document("created");
+        let transaction = prepare_workspace_create_transaction_v1(
+            Some(&raw_catalog),
+            &effective_catalog.canonical_bytes,
+            None,
+            None,
+            &create_request(9, &document),
+            &document,
+        )
+        .expect("create transaction");
+        let expected_kinds = [
+            WorkspaceCreateActionKindV1::WritePendingJournal,
+            WorkspaceCreateActionKindV1::PublishWorkspaceDocument,
+            WorkspaceCreateActionKindV1::WriteCommittedJournal,
+            WorkspaceCreateActionKindV1::WriteSavedRevision,
+            WorkspaceCreateActionKindV1::RemoveDeletionSidecar,
+            WorkspaceCreateActionKindV1::PublishCatalog,
+        ];
+        let mut final_receipt = None;
+        for (index, expected_kind) in expected_kinds.into_iter().enumerate() {
+            let directive = transaction.next_directive().expect("create action");
+            let (action_id, content_digest, authority_receipt) = match directive {
+                WorkspaceCreateDirectiveV1::Action {
+                    action_id,
+                    kind,
+                    content_digest,
+                    authority_receipt,
+                    ..
+                } => {
+                    assert_eq!(kind, expected_kind);
+                    assert_eq!(action_id, index as u64 + 1);
+                    (action_id, content_digest, authority_receipt)
+                }
+                other => panic!("unexpected create directive: {other:?}"),
+            };
+            if index < 5 {
+                assert!(authority_receipt.is_none());
+                assert!(!transaction.is_ready_for_authority());
+            } else {
+                assert!(transaction.is_ready_for_authority());
+                let receipt = authority_receipt.expect("catalog authority receipt");
+                assert_eq!(receipt.catalog.revision, 10);
+                assert_eq!(receipt.catalog.deletion_count, 0);
+                assert_eq!(
+                    receipt.document_digest,
+                    format!("{:x}", Sha256::digest(&document))
+                );
+                final_receipt = Some(receipt);
+            }
+            let result = transaction
+                .report_action(WorkspaceCreateActionReportV1::Success {
+                    action_id,
+                    written_digest: content_digest,
+                })
+                .expect("advance create");
+            if index == 5 {
+                assert_eq!(
+                    result,
+                    WorkspaceCreateDirectiveV1::Committed {
+                        receipt: final_receipt.clone().expect("receipt")
+                    }
+                );
+            }
+        }
+        assert!(transaction.is_authoritative());
+        assert!(!transaction.is_ready_for_authority());
+        transaction.close();
+        assert_eq!(
+            transaction.next_directive(),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+    }
+
+    #[test]
+    fn create_recovery_requires_exact_marker_and_publishes_only_catalog() {
+        let raw_catalog = create_catalog_bytes(4, true);
+        let effective_catalog =
+            validate_workspace_catalog_v1(&raw_catalog).expect("effective catalog");
+        let document = document("recovered");
+        let prepared = prepare_workspace_create_transaction_v1(
+            Some(&raw_catalog),
+            &effective_catalog.canonical_bytes,
+            None,
+            None,
+            &create_request(4, &document),
+            &document,
+        )
+        .expect("prepared create");
+        let committed_journal = match prepared.inner.lock().expect("state").receipt.clone() {
+            WorkspaceCreateCommitReceiptV1 {
+                committed_journal, ..
+            } => committed_journal,
+        };
+        let recovery = prepare_workspace_create_transaction_v1(
+            Some(&raw_catalog),
+            &effective_catalog.canonical_bytes,
+            Some(&committed_journal.canonical_bytes),
+            Some(&committed_journal.canonical_bytes),
+            &recover_create_request(4),
+            &document,
+        )
+        .expect("recovery transaction");
+        let (action_id, digest, receipt) = match recovery.next_directive().expect("catalog action")
+        {
+            WorkspaceCreateDirectiveV1::Action {
+                action_id,
+                kind: WorkspaceCreateActionKindV1::PublishCatalog,
+                content_digest,
+                authority_receipt: Some(receipt),
+                ..
+            } => (action_id, content_digest, receipt),
+            other => panic!("unexpected recovery directive: {other:?}"),
+        };
+        assert_eq!(action_id, 1);
+        assert!(receipt.saved_revision.is_none());
+        assert_eq!(receipt.catalog.deletion_count, 0);
+        assert_eq!(receipt.catalog.entry_count, 1);
+        assert_eq!(
+            recovery
+                .report_action(WorkspaceCreateActionReportV1::Success {
+                    action_id,
+                    written_digest: digest,
+                })
+                .expect("commit recovery"),
+            WorkspaceCreateDirectiveV1::Committed { receipt }
+        );
+        assert!(recovery.is_authoritative());
+
+        let mut bad_context_request: Value =
+            serde_json::from_slice(&create_request(4, &document)).expect("create request value");
+        bad_context_request["contextDigests"][1] =
+            Value::String(format!("{:x}", Sha256::digest(b"wrong context")));
+        assert!(matches!(
+            prepare_workspace_create_transaction_v1(
+                Some(&raw_catalog),
+                &effective_catalog.canonical_bytes,
+                None,
+                None,
+                &serde_json::to_vec(&bad_context_request).expect("bad context request"),
+                &document,
+            ),
+            Err(WorkspaceWorkingJournalError::InvalidDigest)
+        ));
+
+        let mut bad_catalog: Value = serde_json::from_slice(&raw_catalog).expect("catalog value");
+        bad_catalog["deletions"][0]["operation"]["after"] = revision(1, 1, None);
+        let bad_catalog = serde_json::to_vec(&bad_catalog).expect("bad catalog bytes");
+        let bad_catalog_validation =
+            validate_workspace_catalog_v1(&bad_catalog).expect("structurally valid catalog");
+        assert!(matches!(
+            prepare_workspace_create_transaction_v1(
+                Some(&bad_catalog),
+                &bad_catalog_validation.canonical_bytes,
+                None,
+                None,
+                &create_request(4, &document),
+                &document,
+            ),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        ));
+
+        let mut bad_journal: Value =
+            serde_json::from_slice(&committed_journal.canonical_bytes).expect("journal value");
+        bad_journal["operations"][0]["catalogRevision"] = Value::from(99);
+        let bad_journal = serde_json::to_vec(&bad_journal).expect("bad journal");
+        assert!(matches!(
+            prepare_workspace_create_transaction_v1(
+                Some(&raw_catalog),
+                &effective_catalog.canonical_bytes,
+                Some(&bad_journal),
+                Some(&bad_journal),
+                &recover_create_request(4),
+                &document,
+            ),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        ));
     }
 
     #[test]

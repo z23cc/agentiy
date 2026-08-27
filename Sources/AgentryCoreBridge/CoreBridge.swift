@@ -190,6 +190,15 @@ protocol CoreRuntimeTransport: Sendable {
         transitionBytes: Data,
         documentBytes: Data?
     ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1
+    func workspaceCreateTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data?,
+        requestBytes: Data,
+        documentBytes: Data
+    ) throws -> CoreWorkspaceCreateTransactionV1
     func workspaceDeleteTransactionBeginV1(
         identity: CoreRuntimeIdentity,
         rawCatalogBytes: Data?,
@@ -197,6 +206,14 @@ protocol CoreRuntimeTransport: Sendable {
         effectiveJournalBytes: Data,
         requestBytes: Data
     ) throws -> CoreWorkspaceDeleteTransactionV1
+    func workspaceJournalMutationTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceJournalMutationTransactionV1
     func workspaceSaveTransactionBeginV1(
         identity: CoreRuntimeIdentity,
         rawJournalBytes: Data?,
@@ -1294,6 +1311,86 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func workspaceCreateTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawCatalogBytes: Data?,
+        effectiveCatalogBytes: Data,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data?,
+        requestBytes: Data,
+        documentBytes: Data
+    ) throws -> CoreWorkspaceCreateTransactionV1 {
+        do {
+            let response = try runtime.workspaceCreateTransactionBeginV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                rawCatalogBytes: rawCatalogBytes,
+                effectiveCatalogBytes: effectiveCatalogBytes,
+                rawJournalBytes: rawJournalBytes,
+                effectiveJournalBytes: effectiveJournalBytes,
+                requestBytes: requestBytes,
+                documentBytes: documentBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.transaction == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace create transaction response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let rawTransaction = response.transaction
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace create transaction receipt is invalid"
+                )
+            }
+            return CoreWorkspaceCreateTransactionV1(
+                acquireAuthorityPermit: {
+                    do {
+                        let rawPermit = try rawTransaction.acquireAuthorityPermit()
+                        return CoreWorkspaceCreateAuthorityPermitV1(close: {
+                            rawPermit.close()
+                        })
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                next: {
+                    do {
+                        return try Self.workspaceCreateDirective(rawTransaction.nextDirective())
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                report: { report in
+                    do {
+                        return try Self.workspaceCreateDirective(rawTransaction.reportAction(
+                            report: Self.rawWorkspaceSaveReport(report)
+                        ))
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                close: {
+                    rawTransaction.close()
+                }
+            )
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func workspaceDeleteTransactionBeginV1(
         identity: CoreRuntimeIdentity,
         rawCatalogBytes: Data?,
@@ -1341,6 +1438,86 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 report: { report in
                     do {
                         return try Self.workspaceDeleteDirective(rawTransaction.reportAction(
+                            report: Self.rawWorkspaceSaveReport(report)
+                        ))
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                close: {
+                    rawTransaction.close()
+                }
+            )
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceJournalMutationTransactionBeginV1(
+        identity: CoreRuntimeIdentity,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        requestBytes: Data,
+        candidateDocumentBytes: Data,
+        diskDocumentBytes: Data?
+    ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
+        do {
+            let response = try runtime.workspaceJournalMutationTransactionBeginV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                rawJournalBytes: rawJournalBytes,
+                effectiveJournalBytes: effectiveJournalBytes,
+                requestBytes: requestBytes,
+                candidateDocumentBytes: candidateDocumentBytes,
+                diskDocumentBytes: diskDocumentBytes
+            ))
+            if let errorKind = response.errorKind {
+                guard response.transaction == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace journal mutation transaction response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let rawTransaction = response.transaction
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace journal mutation transaction receipt is invalid"
+                )
+            }
+            return CoreWorkspaceJournalMutationTransactionV1(
+                acquireAuthorityPermit: {
+                    do {
+                        let rawPermit = try rawTransaction.acquireAuthorityPermit()
+                        return CoreWorkspaceCreateAuthorityPermitV1(close: {
+                            rawPermit.close()
+                        })
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                next: {
+                    do {
+                        return try Self.workspaceJournalMutationDirective(
+                            rawTransaction.nextDirective()
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                report: { report in
+                    do {
+                        return try Self.workspaceJournalMutationDirective(rawTransaction.reportAction(
                             report: Self.rawWorkspaceSaveReport(report)
                         ))
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
@@ -1458,6 +1635,126 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    private static func workspaceCreateDirective(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceCreateDirectiveResponseV1
+    ) throws -> CoreWorkspaceCreateDirectiveV1 {
+        if let errorKind = response.errorKind {
+            guard response.directive == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace create directive response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let directive = response.directive
+        else {
+            throw CoreTransportError.unexpected("workspace create directive receipt is invalid")
+        }
+        switch directive {
+        case let .action(
+            actionID,
+            requestDigest,
+            kind,
+            expectedRawDigest,
+            canonicalBytes,
+            contentDigest,
+            logicalExpectedRevision,
+            authorityReceipt
+        ):
+            guard isSHA256(requestDigest),
+                  isSHA256(contentDigest),
+                  expectedRawDigest.map(isSHA256) ?? true,
+                  sha256(canonicalBytes) == contentDigest
+            else {
+                throw CoreTransportError.unexpected("workspace create action receipt is invalid")
+            }
+            let mappedKind: CoreWorkspaceCreateActionKindV1 = switch kind {
+            case .writePendingJournal: .writePendingJournal
+            case .publishWorkspaceDocument: .publishWorkspaceDocument
+            case .writeCommittedJournal: .writeCommittedJournal
+            case .writeSavedRevision: .writeSavedRevision
+            case .removeDeletionSidecar: .removeDeletionSidecar
+            case .publishCatalog: .publishCatalog
+            }
+            let maximumBytes = mappedKind == .publishWorkspaceDocument
+                ? CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
+                : CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes
+            let receipt = try authorityReceipt.map(workspaceCreateCommitReceipt)
+            guard canonicalBytes.count <= maximumBytes,
+                  (receipt != nil) == (mappedKind == .publishCatalog)
+            else {
+                throw CoreTransportError.unexpected("workspace create action shape is invalid")
+            }
+            if let receipt {
+                guard let logicalExpectedRevision,
+                      receipt.requestDigest == requestDigest,
+                      receipt.catalog.canonicalBytes == canonicalBytes,
+                      receipt.catalog.contentDigest == contentDigest,
+                      logicalExpectedRevision.addingReportingOverflow(1) == (
+                          partialValue: receipt.catalog.revision,
+                          overflow: false
+                      )
+                else {
+                    throw CoreTransportError.unexpected("workspace create catalog action is invalid")
+                }
+            }
+            return .action(
+                actionID: actionID,
+                requestDigest: requestDigest,
+                kind: mappedKind,
+                expectedRawDigest: expectedRawDigest,
+                canonicalBytes: canonicalBytes,
+                contentDigest: contentDigest,
+                logicalExpectedRevision: logicalExpectedRevision,
+                authorityReceipt: receipt
+            )
+        case let .committed(receipt):
+            return .committed(try workspaceCreateCommitReceipt(receipt))
+        case let .failed(failure):
+            let mapped: CoreWorkspaceCreateFailureV1 = switch failure {
+            case .cancelled: .cancelled
+            case let .stateConflict(expected, actual):
+                .stateConflict(expected: expected, actual: actual)
+            case .writeFailed: .writeFailed
+            }
+            return .failed(mapped)
+        }
+    }
+
+    private static func workspaceCreateCommitReceipt(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceCreateCommitReceiptV1
+    ) throws -> CoreWorkspaceCreateCommitReceiptV1 {
+        guard let workspaceID = UUID(uuidString: value.workspaceId),
+              let operationID = UUID(uuidString: value.operationId),
+              isSHA256(value.requestDigest),
+              isSHA256(value.documentDigest)
+        else {
+            throw CoreTransportError.unexpected("workspace create commit identity is invalid")
+        }
+        let catalog = try workspaceCatalogValidation(value.catalog)
+        let journal = try workspaceWorkingJournalValidation(value.committedJournal)
+        let savedRevision = try value.savedRevision.map(workspacePersistenceMetadataValidation)
+        guard journal.workspaceID == workspaceID,
+              savedRevision?.workspaceID == nil || savedRevision?.workspaceID == workspaceID,
+              savedRevision?.operationID == nil || savedRevision?.operationID == operationID
+        else {
+            throw CoreTransportError.unexpected("workspace create commit receipt is invalid")
+        }
+        return CoreWorkspaceCreateCommitReceiptV1(
+            workspaceID: workspaceID,
+            operationID: operationID,
+            requestDigest: value.requestDigest,
+            documentDigest: value.documentDigest,
+            catalog: catalog,
+            committedJournal: journal,
+            savedRevision: savedRevision
+        )
+    }
+
     private static func workspaceDeleteDirective(
         _ response: AgentryUniFFIRaw.CoreWorkspaceDeleteDirectiveResponseV1
     ) throws -> CoreWorkspaceDeleteDirectiveV1 {
@@ -1551,6 +1848,129 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             requestDigest: value.requestDigest,
             catalog: catalog,
             tombstone: tombstone
+        )
+    }
+
+    private static func workspaceJournalMutationDirective(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceJournalMutationDirectiveResponseV1
+    ) throws -> CoreWorkspaceJournalMutationDirectiveV1 {
+        if let errorKind = response.errorKind {
+            guard response.directive == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace journal mutation directive response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let directive = response.directive
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace journal mutation directive receipt is invalid"
+            )
+        }
+        switch directive {
+        case let .action(
+            actionID,
+            requestDigest,
+            kind,
+            expectedRawJournalDigest,
+            canonicalBytes,
+            contentDigest,
+            logicalExpectedRevision,
+            authorityReceipt
+        ):
+            guard isSHA256(requestDigest),
+                  isSHA256(contentDigest),
+                  canonicalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                  sha256(canonicalBytes) == contentDigest,
+                  expectedRawJournalDigest.map(isSHA256) ?? true
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace journal mutation action receipt is invalid"
+                )
+            }
+            let mappedKind: CoreWorkspaceJournalMutationActionKindV1 = switch kind {
+            case .writeJournal: .writeJournal
+            case .writeSavedRevision: .writeSavedRevision
+            }
+            let receipt = try authorityReceipt.map(workspaceJournalMutationCommitReceipt)
+            switch mappedKind {
+            case .writeJournal:
+                guard let receipt,
+                      logicalExpectedRevision != nil,
+                      receipt.requestDigest == requestDigest,
+                      receipt.committedJournal.canonicalBytes == canonicalBytes,
+                      receipt.committedJournal.contentDigest == contentDigest
+                else {
+                    throw CoreTransportError.unexpected(
+                        "workspace journal mutation authority action is invalid"
+                    )
+                }
+            case .writeSavedRevision:
+                guard receipt == nil,
+                      expectedRawJournalDigest == nil,
+                      logicalExpectedRevision == nil
+                else {
+                    throw CoreTransportError.unexpected(
+                        "workspace journal mutation sidecar action is invalid"
+                    )
+                }
+            }
+            return .action(
+                actionID: actionID,
+                requestDigest: requestDigest,
+                kind: mappedKind,
+                expectedRawJournalDigest: expectedRawJournalDigest,
+                canonicalBytes: canonicalBytes,
+                contentDigest: contentDigest,
+                logicalExpectedRevision: logicalExpectedRevision,
+                authorityReceipt: receipt
+            )
+        case let .committed(receipt, finalization):
+            let mapped: CoreWorkspaceJournalMutationFinalizationV1 = switch finalization {
+            case .finalized: .finalized
+            case .revisionSidecarMissing: .revisionSidecarMissing
+            }
+            return .committed(
+                receipt: try workspaceJournalMutationCommitReceipt(receipt),
+                finalization: mapped
+            )
+        case let .failed(failure):
+            return .failed(try workspaceSaveFailure(failure))
+        }
+    }
+
+    private static func workspaceJournalMutationCommitReceipt(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceJournalMutationCommitReceiptV1
+    ) throws -> CoreWorkspaceJournalMutationCommitReceiptV1 {
+        guard let workspaceID = UUID(uuidString: value.workspaceId),
+              isSHA256(value.requestDigest)
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace journal mutation commit identity is invalid"
+            )
+        }
+        let journal = try workspaceWorkingJournalValidation(value.committedJournal)
+        let revision = try value.savedRevision.map(workspacePersistenceMetadataValidation)
+        guard journal.workspaceID == workspaceID,
+              revision.map({ $0.workspaceID == workspaceID }) ?? true
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace journal mutation commit receipt is invalid"
+            )
+        }
+        return CoreWorkspaceJournalMutationCommitReceiptV1(
+            workspaceID: workspaceID,
+            requestDigest: value.requestDigest,
+            catalogRevision: value.catalogRevision,
+            committedJournal: journal,
+            savedRevision: revision,
+            resultingWorkingRevision: value.resultingWorkingRevision,
+            resultingSavedRevision: value.resultingSavedRevision
         )
     }
 

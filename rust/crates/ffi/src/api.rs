@@ -14,9 +14,11 @@ use crate::types::{
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogTransitionRequestV1,
-    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceDeleteDirectiveV1,
+    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCreateDirectiveV1,
+    CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
     CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
-    CoreWorkspaceDocumentProjectionV1, CoreWorkspacePendingSaveRecoveryRequestV1,
+    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceJournalMutationDirectiveV1,
+    CoreWorkspaceJournalMutationTransactionRequestV1, CoreWorkspacePendingSaveRecoveryRequestV1,
     CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
     CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspaceSaveActionReportV1,
     CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
@@ -57,7 +59,7 @@ use agentry_runtime as runtime;
 use std::os::fd::IntoRawFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 #[derive(uniffi::Object)]
 pub struct LeafCancellation {
@@ -121,6 +123,20 @@ impl LeafCancellation {
 }
 
 #[derive(Debug, uniffi::Record)]
+pub struct CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
+    pub transaction: Option<Arc<CorePreparedWorkspaceJournalMutationTransactionV1>>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceJournalMutationDirectiveResponseV1 {
+    pub directive: Option<CoreWorkspaceJournalMutationDirectiveV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Debug, uniffi::Record)]
 pub struct CoreWorkspaceSaveTransactionBeginResponseV1 {
     pub transaction: Option<Arc<CorePreparedWorkspaceSaveTransactionV1>>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
@@ -130,6 +146,20 @@ pub struct CoreWorkspaceSaveTransactionBeginResponseV1 {
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceSaveDirectiveResponseV1 {
     pub directive: Option<CoreWorkspaceSaveDirectiveV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CoreWorkspaceCreateTransactionBeginResponseV1 {
+    pub transaction: Option<Arc<CorePreparedWorkspaceCreateTransactionV1>>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCreateDirectiveResponseV1 {
+    pub directive: Option<CoreWorkspaceCreateDirectiveV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
 }
@@ -153,6 +183,147 @@ pub struct CoreWorkspacePendingSaveRecoveryResponseV1 {
     pub recovery: Option<CoreWorkspacePendingSaveRecoveryV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
+}
+
+#[derive(uniffi::Object)]
+pub struct CorePreparedWorkspaceJournalMutationTransactionV1 {
+    inner: runtime::workspace_persistence_journal::PreparedWorkspaceJournalMutationTransactionV1,
+    runtime: Weak<runtime::CoreRuntime>,
+    identity: runtime::RuntimeIdentity,
+    authority_permit_issued: AtomicBool,
+    authority_permit: Mutex<Option<Arc<Mutex<Option<runtime::AuthorityOperationPermit>>>>>,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for CorePreparedWorkspaceJournalMutationTransactionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorePreparedWorkspaceJournalMutationTransactionV1")
+            .field("authoritative", &self.inner.is_authoritative())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CorePreparedWorkspaceJournalMutationTransactionV1 {
+    fn require_live_runtime(&self) -> Result<(), CoreError> {
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if runtime.identity() != &self.identity {
+            return Err(CoreError::StaleRuntimeIdentity);
+        }
+        if runtime.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
+        }
+    }
+}
+
+#[uniffi::export]
+impl CorePreparedWorkspaceJournalMutationTransactionV1 {
+    pub fn acquire_authority_permit(
+        &self,
+    ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_ready_for_authority()
+                || self
+                    .authority_permit_issued
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            let permit = (|| {
+                let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+                if runtime.identity() != &self.identity {
+                    return Err(CoreError::StaleRuntimeIdentity);
+                }
+                runtime.begin_authority_operation().map_err(CoreError::from)
+            })();
+            match permit {
+                Ok(permit) => {
+                    let inner = Arc::new(Mutex::new(Some(permit)));
+                    *self
+                        .authority_permit
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(Arc::clone(&inner));
+                    Ok(Arc::new(CoreWorkspaceCreateAuthorityPermitV1 {
+                        inner,
+                        panic_guard: Arc::clone(&self.panic_guard),
+                    }))
+                }
+                Err(error) => {
+                    self.authority_permit_issued.store(false, Ordering::Release);
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    pub fn next_directive(
+        &self,
+    ) -> Result<CoreWorkspaceJournalMutationDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_journal_mutation_directive_response(
+                self.inner.next_directive(),
+            ))
+        })
+    }
+
+    pub fn report_action(
+        &self,
+        report: CoreWorkspaceSaveActionReportV1,
+    ) -> Result<CoreWorkspaceJournalMutationDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if self.inner.is_ready_for_authority() {
+                let authority_slot = self
+                    .authority_permit
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let authority_permit = authority_slot.as_ref().ok_or(CoreError::InvalidArgument)?;
+                let mut authority_guard = authority_permit
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if authority_guard.is_none() {
+                    return Err(CoreError::InvalidArgument);
+                }
+                let result = self.inner.report_action(report.into());
+                let did_advance = result.is_ok();
+                let response = workspace_journal_mutation_directive_response(result);
+                if did_advance {
+                    authority_guard.take();
+                }
+                return Ok(response);
+            }
+
+            let result = self.inner.report_action(report.into());
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_journal_mutation_directive_response(result))
+        })
+    }
+
+    pub fn close(&self) {
+        let _ = self.panic_guard.call(|| {
+            self.inner.close();
+            if let Some(permit) = self
+                .authority_permit
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                permit
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
+            }
+            Ok::<(), CoreError>(())
+        });
+    }
 }
 
 #[derive(uniffi::Object)]
@@ -209,6 +380,132 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
                 self.require_live_runtime()?;
             }
             Ok(workspace_save_directive_response(result))
+        })
+    }
+
+    pub fn close(&self) {
+        let _ = self.panic_guard.call(|| {
+            self.inner.close();
+            Ok::<(), CoreError>(())
+        });
+    }
+}
+
+#[derive(uniffi::Object)]
+pub struct CorePreparedWorkspaceCreateTransactionV1 {
+    inner: runtime::workspace_persistence_journal::PreparedWorkspaceCreateTransactionV1,
+    runtime: Weak<runtime::CoreRuntime>,
+    identity: runtime::RuntimeIdentity,
+    authority_permit_issued: AtomicBool,
+    panic_guard: Arc<PanicGuard>,
+}
+
+#[derive(uniffi::Object)]
+pub struct CoreWorkspaceCreateAuthorityPermitV1 {
+    inner: Arc<Mutex<Option<runtime::AuthorityOperationPermit>>>,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for CoreWorkspaceCreateAuthorityPermitV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CoreWorkspaceCreateAuthorityPermitV1")
+            .finish_non_exhaustive()
+    }
+}
+
+#[uniffi::export]
+impl CoreWorkspaceCreateAuthorityPermitV1 {
+    pub fn close(&self) {
+        let _ = self.panic_guard.call(|| {
+            self.inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            Ok::<(), CoreError>(())
+        });
+    }
+}
+
+impl std::fmt::Debug for CorePreparedWorkspaceCreateTransactionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorePreparedWorkspaceCreateTransactionV1")
+            .field("authoritative", &self.inner.is_authoritative())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CorePreparedWorkspaceCreateTransactionV1 {
+    fn require_live_runtime(&self) -> Result<(), CoreError> {
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if runtime.identity() != &self.identity {
+            return Err(CoreError::StaleRuntimeIdentity);
+        }
+        if runtime.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
+        }
+    }
+}
+
+#[uniffi::export]
+impl CorePreparedWorkspaceCreateTransactionV1 {
+    pub fn acquire_authority_permit(
+        &self,
+    ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_ready_for_authority()
+                || self
+                    .authority_permit_issued
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            let permit = (|| {
+                let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+                if runtime.identity() != &self.identity {
+                    return Err(CoreError::StaleRuntimeIdentity);
+                }
+                runtime.begin_authority_operation().map_err(CoreError::from)
+            })();
+            match permit {
+                Ok(permit) => Ok(Arc::new(CoreWorkspaceCreateAuthorityPermitV1 {
+                    inner: Arc::new(Mutex::new(Some(permit))),
+                    panic_guard: Arc::clone(&self.panic_guard),
+                })),
+                Err(error) => {
+                    self.authority_permit_issued.store(false, Ordering::Release);
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    pub fn next_directive(&self) -> Result<CoreWorkspaceCreateDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_create_directive_response(
+                self.inner.next_directive(),
+            ))
+        })
+    }
+
+    pub fn report_action(
+        &self,
+        report: CoreWorkspaceSaveActionReportV1,
+    ) -> Result<CoreWorkspaceCreateDirectiveResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_authoritative() {
+                self.require_live_runtime()?;
+            }
+            Ok(workspace_create_directive_response(
+                self.inner.report_action(report.into()),
+            ))
         })
     }
 
@@ -812,6 +1109,47 @@ impl CoreRuntime {
         })
     }
 
+    pub fn workspace_create_transaction_begin_v1(
+        &self,
+        request: CoreWorkspaceCreateTransactionRequestV1,
+    ) -> Result<CoreWorkspaceCreateTransactionBeginResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(
+                match runtime::workspace_persistence_journal::prepare_workspace_create_transaction_v1(
+                    request.raw_catalog_bytes.as_deref(),
+                    &request.effective_catalog_bytes,
+                    request.raw_journal_bytes.as_deref(),
+                    request.effective_journal_bytes.as_deref(),
+                    &request.request_bytes,
+                    &request.document_bytes,
+                ) {
+                    Ok(transaction) => CoreWorkspaceCreateTransactionBeginResponseV1 {
+                        transaction: Some(Arc::new(CorePreparedWorkspaceCreateTransactionV1 {
+                            inner: transaction,
+                            runtime: Arc::downgrade(&self.inner),
+                            identity,
+                            authority_permit_issued: AtomicBool::new(false),
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        })),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspaceCreateTransactionBeginResponseV1 {
+                            transaction: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
+        })
+    }
+
     pub fn workspace_delete_transaction_begin_v1(
         &self,
         request: CoreWorkspaceDeleteTransactionRequestV1,
@@ -847,6 +1185,47 @@ impl CoreRuntime {
                     }
                 },
             )
+        })
+    }
+
+    pub fn workspace_journal_mutation_transaction_begin_v1(
+        &self,
+        request: CoreWorkspaceJournalMutationTransactionRequestV1,
+    ) -> Result<CoreWorkspaceJournalMutationTransactionBeginResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(match runtime::workspace_persistence_journal::prepare_workspace_journal_mutation_transaction_v1(
+                request.raw_journal_bytes.as_deref(),
+                &request.effective_journal_bytes,
+                &request.request_bytes,
+                &request.candidate_document_bytes,
+                request.disk_document_bytes.as_deref(),
+            ) {
+                Ok(transaction) => CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
+                    transaction: Some(Arc::new(
+                        CorePreparedWorkspaceJournalMutationTransactionV1 {
+                            inner: transaction,
+                            runtime: Arc::downgrade(&self.inner),
+                            identity,
+                            authority_permit_issued: AtomicBool::new(false),
+                            authority_permit: Mutex::new(None),
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        },
+                    )),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
+                        transaction: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
         })
     }
 
@@ -2562,6 +2941,29 @@ fn workspace_metadata_response(
     }
 }
 
+fn workspace_journal_mutation_directive_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceJournalMutationDirectiveV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceJournalMutationDirectiveResponseV1 {
+    match result {
+        Ok(directive) => CoreWorkspaceJournalMutationDirectiveResponseV1 {
+            directive: Some(directive.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceJournalMutationDirectiveResponseV1 {
+                directive: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
 fn workspace_save_directive_response(
     result: Result<
         runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1,
@@ -2577,6 +2979,29 @@ fn workspace_save_directive_response(
         Err(error) => {
             let (error_kind, future_schema_version) = workspace_journal_error(error);
             CoreWorkspaceSaveDirectiveResponseV1 {
+                directive: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
+fn workspace_create_directive_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceCreateDirectiveV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceCreateDirectiveResponseV1 {
+    match result {
+        Ok(directive) => CoreWorkspaceCreateDirectiveResponseV1 {
+            directive: Some(directive.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceCreateDirectiveResponseV1 {
                 directive: None,
                 error_kind: Some(error_kind),
                 future_schema_version,
