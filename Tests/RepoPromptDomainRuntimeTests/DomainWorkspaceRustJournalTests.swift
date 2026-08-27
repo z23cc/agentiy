@@ -187,7 +187,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         }
     }
 
-    func testPreparedValidatorPlansSavedRevisionAndDeletionMetadataWithRustOwnedBytes() async throws {
+    func testPreparedValidatorValidatesMetadataAndAmendsOnlyDeletionCleanupDiagnostic() async throws {
         let workspaceID = UUID()
         let operationID = UUID()
         let fileURL = URL(fileURLWithPath: "/tmp/Deleted-\(workspaceID.uuidString).json")
@@ -213,7 +213,10 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         defer { Task { await service.shutdown() } }
         let prepared = try await DomainWorkspaceRustJournal.prepare(coreService: service)
 
-        let saved = try prepared.planSavedRevision(
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let savedRecord = DomainSavedRevisionRecord(
+            version: DomainSavedRevisionRecord.schemaVersion,
             workspaceID: workspaceID,
             savedRevision: 9,
             documentDigest: documentDigest,
@@ -221,51 +224,53 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             updatedAt: timestamp
         )
         let validatedSaved = try prepared.validateSavedRevision(
-            saved.canonicalBytes,
+            encoder.encode(savedRecord),
             expectedWorkspaceID: workspaceID,
             expectedDocumentDigest: documentDigest
         )
-        XCTAssertEqual(saved.record, validatedSaved.record)
-        XCTAssertEqual(saved.record.savedRevision, 9)
-        XCTAssertEqual(saved.record.updatedAt, timestamp)
-        XCTAssertEqual(saved.canonicalBytes, validatedSaved.canonicalBytes)
-        XCTAssertEqual(DomainContentDigest.sha256(saved.canonicalBytes), saved.contentDigest)
+        XCTAssertEqual(validatedSaved.record, savedRecord)
+        XCTAssertEqual(DomainContentDigest.sha256(validatedSaved.canonicalBytes), validatedSaved.contentDigest)
         XCTAssertThrowsError(try prepared.validateSavedRevision(
-            saved.canonicalBytes,
+            validatedSaved.canonicalBytes,
             expectedWorkspaceID: workspaceID,
             expectedDocumentDigest: String(repeating: "0", count: 64)
         )) { error in
             XCTAssertEqual(error as? DomainPersistenceError, .corruptJournal)
         }
 
-        let plainTombstone = try prepared.planDeletionTombstone(
+        let originalTombstone = DomainDeletionTombstone(
+            version: DomainDeletionTombstone.schemaVersion,
             workspaceID: workspaceID,
             fileURL: fileURL,
             operation: operation,
             deletedAt: timestamp
         )
-        XCTAssertEqual(plainTombstone.tombstone.workspaceID, workspaceID)
-        XCTAssertEqual(plainTombstone.tombstone.deletedAt, timestamp)
-        XCTAssertEqual(plainTombstone.tombstone.operation, operation)
-        XCTAssertNil(plainTombstone.tombstone.operation.diagnostic)
+        let authoritative = try prepared.validateDeletionTombstone(
+            encoder.encode(originalTombstone)
+        )
+        XCTAssertEqual(authoritative.tombstone, originalTombstone)
+        XCTAssertNil(authoritative.tombstone.operation.diagnostic)
         XCTAssertEqual(
-            DomainContentDigest.sha256(plainTombstone.canonicalBytes),
-            plainTombstone.contentDigest
+            DomainContentDigest.sha256(authoritative.canonicalBytes),
+            authoritative.contentDigest
         )
 
         let warnings = ["revision sidecar: denied", "workspace document: busy"]
-        let warningTombstone = try prepared.planDeletionTombstone(
-            workspaceID: workspaceID,
-            fileURL: fileURL,
-            operation: operation,
-            deletedAt: timestamp,
+        let amended = try prepared.amendDeletionTombstoneCleanup(
+            authoritative: authoritative,
             cleanupWarnings: warnings
         )
+        XCTAssertEqual(amended.tombstone.workspaceID, originalTombstone.workspaceID)
+        XCTAssertEqual(amended.tombstone.fileURL, originalTombstone.fileURL)
+        XCTAssertEqual(amended.tombstone.deletedAt, originalTombstone.deletedAt)
+        XCTAssertEqual(amended.tombstone.operation.operationID, originalTombstone.operation.operationID)
+        XCTAssertEqual(amended.tombstone.operation.fingerprint, originalTombstone.operation.fingerprint)
+        XCTAssertEqual(amended.tombstone.operation.before, originalTombstone.operation.before)
+        XCTAssertEqual(amended.tombstone.operation.after, originalTombstone.operation.after)
         XCTAssertEqual(
-            warningTombstone.tombstone.operation.diagnostic,
+            amended.tombstone.operation.diagnostic,
             "artifact_cleanup_incomplete: \(warnings.joined(separator: "; "))"
         )
-        XCTAssertEqual(warningTombstone.tombstone.operation.operationID, operationID)
     }
 
     func testPreparedValidatorSeedsAndValidatesRustOwnedCatalog() async throws {

@@ -155,17 +155,14 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         documentBytes: Data
     ) throws -> CoreWorkspaceDocumentProjectionV1
-    func workspaceSavedRevisionPlanV1(
-        identity: CoreRuntimeIdentity,
-        payloadBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1
     func workspaceSavedRevisionValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1
-    func workspaceDeletionTombstonePlanV1(
+    func workspaceDeletionTombstoneAmendCleanupV1(
         identity: CoreRuntimeIdentity,
-        payloadBytes: Data
+        authoritativeTombstoneBytes: Data,
+        cleanupWarningsBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1
     func workspaceDeletionTombstoneValidateV1(
         identity: CoreRuntimeIdentity,
@@ -1033,17 +1030,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    func workspaceSavedRevisionPlanV1(
-        identity: CoreRuntimeIdentity,
-        payloadBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        try workspacePersistenceMetadata(
-            identity: identity,
-            payloadBytes: payloadBytes,
-            operation: runtime.workspaceSavedRevisionPlanV1
-        )
-    }
-
     func workspaceSavedRevisionValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1055,15 +1041,24 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    func workspaceDeletionTombstonePlanV1(
+    func workspaceDeletionTombstoneAmendCleanupV1(
         identity: CoreRuntimeIdentity,
-        payloadBytes: Data
+        authoritativeTombstoneBytes: Data,
+        cleanupWarningsBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        try workspacePersistenceMetadata(
-            identity: identity,
-            payloadBytes: payloadBytes,
-            operation: runtime.workspaceDeletionTombstonePlanV1
-        )
+        do {
+            let response = try runtime.workspaceDeletionTombstoneAmendCleanupV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                authoritativeTombstoneBytes: authoritativeTombstoneBytes,
+                cleanupWarningsBytes: cleanupWarningsBytes
+            ))
+            return try Self.workspacePersistenceMetadataResponse(response)
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
     }
 
     func workspaceDeletionTombstoneValidateV1(
@@ -1125,30 +1120,36 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
                 payloadBytes: payloadBytes
             ))
-            if let errorKind = response.errorKind {
-                guard response.validation == nil else {
-                    throw CoreTransportError.unexpected(
-                        "workspace persistence metadata response contains success and error"
-                    )
-                }
-                throw try Self.workspaceWorkingJournalValidationError(
-                    errorKind,
-                    futureSchemaVersion: response.futureSchemaVersion
-                )
-            }
-            guard response.futureSchemaVersion == nil,
-                  let result = response.validation
-            else {
-                throw CoreTransportError.unexpected(
-                    "workspace persistence metadata receipt is invalid"
-                )
-            }
-            return try Self.workspacePersistenceMetadataValidation(result)
+            return try Self.workspacePersistenceMetadataResponse(response)
         } catch let error as CoreWorkspaceWorkingJournalValidationError {
             throw error
         } catch {
             throw Self.map(error)
         }
+    }
+
+    private static func workspacePersistenceMetadataResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspacePersistenceMetadataResponseV1
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        if let errorKind = response.errorKind {
+            guard response.validation == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace persistence metadata response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let result = response.validation
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace persistence metadata receipt is invalid"
+            )
+        }
+        return try workspacePersistenceMetadataValidation(result)
     }
 
     private static func workspaceCatalogValidation(

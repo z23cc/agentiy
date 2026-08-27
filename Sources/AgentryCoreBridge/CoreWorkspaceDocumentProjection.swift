@@ -580,17 +580,6 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         self.context = context
     }
 
-    public func planSavedRevision(
-        _ requestBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        try workspacePersistenceMetadata(requestBytes) { identity, payloadBytes in
-            try context.transport.workspaceSavedRevisionPlanV1(
-                identity: identity,
-                payloadBytes: payloadBytes
-            )
-        }
-    }
-
     public func validateSavedRevision(
         _ artifactBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
@@ -602,15 +591,23 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         }
     }
 
-    public func planDeletionTombstone(
-        _ requestBytes: Data
+    public func amendDeletionTombstoneCleanup(
+        authoritativeTombstoneBytes: Data,
+        cleanupWarningsBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        try workspacePersistenceMetadata(requestBytes) { identity, payloadBytes in
-            try context.transport.workspaceDeletionTombstonePlanV1(
-                identity: identity,
-                payloadBytes: payloadBytes
-            )
+        let totalBytes = authoritativeTombstoneBytes.count.addingReportingOverflow(
+            cleanupWarningsBytes.count
+        )
+        guard !totalBytes.overflow,
+              totalBytes.partialValue <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
         }
+        return try context.transport.workspaceDeletionTombstoneAmendCleanupV1(
+            identity: context.identity,
+            authoritativeTombstoneBytes: authoritativeTombstoneBytes,
+            cleanupWarningsBytes: cleanupWarningsBytes
+        )
     }
 
     public func validateDeletionTombstone(
@@ -1000,13 +997,6 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("workspace document projection transport is unavailable")
     }
 
-    func workspaceSavedRevisionPlanV1(
-        identity: CoreRuntimeIdentity,
-        payloadBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        throw CoreTransportError.unexpected("workspace saved revision plan transport is unavailable")
-    }
-
     func workspaceSavedRevisionValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1014,11 +1004,14 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("workspace saved revision validation transport is unavailable")
     }
 
-    func workspaceDeletionTombstonePlanV1(
+    func workspaceDeletionTombstoneAmendCleanupV1(
         identity: CoreRuntimeIdentity,
-        payloadBytes: Data
+        authoritativeTombstoneBytes: Data,
+        cleanupWarningsBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        throw CoreTransportError.unexpected("workspace deletion tombstone plan transport is unavailable")
+        throw CoreTransportError.unexpected(
+            "workspace deletion tombstone cleanup amendment transport is unavailable"
+        )
     }
 
     func workspaceDeletionTombstoneValidateV1(

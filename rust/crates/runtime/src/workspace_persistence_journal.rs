@@ -3104,7 +3104,7 @@ struct WorkspaceDeletionTombstoneV1 {
     deleted_at: Value,
 }
 
-pub fn plan_workspace_saved_revision_record_v1(
+fn plan_workspace_saved_revision_record_v1(
     request_bytes: &[u8],
 ) -> Result<WorkspacePersistenceMetadataValidationV1, WorkspaceWorkingJournalError> {
     require_metadata_input_bound(request_bytes)?;
@@ -3129,7 +3129,7 @@ pub fn validate_workspace_saved_revision_record_v1(
     canonicalize_saved_revision_record(record)
 }
 
-pub fn plan_workspace_deletion_tombstone_v1(
+fn plan_workspace_deletion_tombstone_v1(
     request_bytes: &[u8],
 ) -> Result<WorkspacePersistenceMetadataValidationV1, WorkspaceWorkingJournalError> {
     require_metadata_input_bound(request_bytes)?;
@@ -3157,6 +3157,41 @@ pub fn validate_workspace_deletion_tombstone_v1(
     require_metadata_input_bound(bytes)?;
     let tombstone: WorkspaceDeletionTombstoneV1 =
         serde_json::from_slice(bytes).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    canonicalize_deletion_tombstone(tombstone)
+}
+
+pub fn amend_workspace_deletion_tombstone_cleanup_v1(
+    authoritative_tombstone_bytes: &[u8],
+    cleanup_warnings_bytes: &[u8],
+) -> Result<WorkspacePersistenceMetadataValidationV1, WorkspaceWorkingJournalError> {
+    require_metadata_input_bound(authoritative_tombstone_bytes)?;
+    require_metadata_input_bound(cleanup_warnings_bytes)?;
+    let total_input_bytes = authoritative_tombstone_bytes
+        .len()
+        .checked_add(cleanup_warnings_bytes.len())
+        .unwrap_or(usize::MAX);
+    if total_input_bytes > MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1 {
+        return Err(WorkspaceWorkingJournalError::InputTooLarge {
+            actual: total_input_bytes,
+            maximum: MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        });
+    }
+    let authoritative = validate_workspace_deletion_tombstone_v1(authoritative_tombstone_bytes)?;
+    if authoritative.canonical_bytes.as_slice() != authoritative_tombstone_bytes {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    let mut tombstone: WorkspaceDeletionTombstoneV1 =
+        serde_json::from_slice(&authoritative.canonical_bytes)
+            .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let cleanup_warnings: Vec<String> = serde_json::from_slice(cleanup_warnings_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    if cleanup_warnings.is_empty() || cleanup_warnings.iter().any(String::is_empty) {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    tombstone.operation.diagnostic = Some(format!(
+        "artifact_cleanup_incomplete: {}",
+        cleanup_warnings.join("; ")
+    ));
     canonicalize_deletion_tombstone(tombstone)
 }
 
@@ -5624,7 +5659,7 @@ mod tests {
             "fileURL": "file:///tmp/Workspace.json",
             "operation": operation(OPERATION_ID, 22.0, 7),
             "deletedAt": 22.5,
-            "cleanupWarnings": ["revision sidecar: denied", "workspace document: busy"]
+            "cleanupWarnings": []
         });
         let tombstone = plan_workspace_deletion_tombstone_v1(
             &serde_json::to_vec(&tombstone_request).expect("tombstone request"),
@@ -5632,11 +5667,36 @@ mod tests {
         .expect("tombstone plan");
         assert_eq!(tombstone.workspace_id, WORKSPACE_ID);
         assert_eq!(tombstone.operation_id, OPERATION_ID);
-        let value: Value =
-            serde_json::from_slice(&tombstone.canonical_bytes).expect("tombstone json");
+        let cleanup_warnings = serde_json::to_vec(&vec![
+            "revision sidecar: denied",
+            "workspace document: busy",
+        ])
+        .expect("cleanup warnings");
+        let amended = amend_workspace_deletion_tombstone_cleanup_v1(
+            &tombstone.canonical_bytes,
+            &cleanup_warnings,
+        )
+        .expect("cleanup amendment");
+        assert_eq!(amended.workspace_id, tombstone.workspace_id);
+        assert_eq!(amended.operation_id, tombstone.operation_id);
+        let original_value: Value =
+            serde_json::from_slice(&tombstone.canonical_bytes).expect("original tombstone json");
+        let mut amended_value: Value =
+            serde_json::from_slice(&amended.canonical_bytes).expect("amended tombstone json");
         assert_eq!(
-            value["operation"]["diagnostic"],
+            amended_value["operation"]["diagnostic"],
             "artifact_cleanup_incomplete: revision sidecar: denied; workspace document: busy"
+        );
+        amended_value["operation"]["diagnostic"] =
+            original_value["operation"]["diagnostic"].clone();
+        assert_eq!(amended_value, original_value);
+        assert_eq!(
+            amend_workspace_deletion_tombstone_cleanup_v1(&tombstone.canonical_bytes, b"[]"),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        assert_eq!(
+            amend_workspace_deletion_tombstone_cleanup_v1(&tombstone.canonical_bytes, br#"[""]"#),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
         );
 
         let mut invalid_saved = saved_request;

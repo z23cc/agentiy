@@ -999,3 +999,31 @@ physical publication path can use it.
   all catalog mutations remain specialized prepared transactions.
 - Real FFI/Bridge seed tests, Domain seed/authority/source-guard regressions, deterministic codegen, product
   build, style, guardrails, Rust formatting, and diff checks pass.
+
+## P5-5l amendment — metadata planner transport retirement
+
+P5-5l removes standalone saved-revision planning from the cross-language contract. Every production saved
+revision candidate is already attached to a specialized Rust create, journal-mutation, or save transaction;
+Swift only validates existing sidecars during reads. The saved-revision request planner therefore becomes a
+private Rust helper reused by those prepared transactions, while the validation endpoint remains public.
+
+Deletion tombstone creation likewise remains private to the Rust delete transaction. The only post-authority
+need is recording best-effort artifact-cleanup diagnostics in the non-authoritative tombstone sidecar and
+return receipt. A dedicated cleanup-amendment endpoint accepts the exact canonical authoritative tombstone
+bytes plus a bounded JSON warning list, revalidates the tombstone, changes only the operation diagnostic, and
+returns canonical bytes. Swift must verify every tombstone field except that diagnostic remains identical.
+Pending-save resolution remains a supported production recovery boundary and is not retired in this slice.
+
+### P5-5l done-when
+
+- Saved-revision and general deletion-tombstone planner functions are private to Rust; prepared transactions
+  retain their existing metadata generation and finalization coverage.
+- UniFFI, generated bindings, Core transport, and Domain expose no standalone saved-revision or general
+  deletion-tombstone planner, only validation plus the dedicated cleanup amendment.
+- Cleanup amendment rejects non-canonical authoritative tombstone bytes and empty, malformed, oversized, or
+  invalid warning requests; the final canonical artifact remains size-bounded and preserves every authoritative
+  tombstone field except the exact `artifact_cleanup_incomplete` diagnostic.
+- `DomainPersistence` invokes cleanup amendment only after delete authority, never before catalog publication;
+  pending-save recovery remains unchanged.
+- Focused Rust/FFI/Bridge/Domain delete, restart, metadata, source-guard, codegen, product-build, style,
+  guardrail, formatting, and diff checks pass.

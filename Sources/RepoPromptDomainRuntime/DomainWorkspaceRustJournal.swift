@@ -575,22 +575,6 @@ private extension DomainWorkspaceWorkingJournalTransition {
 
 /// P5-5 prepared Rust journal authority bound to one exact live runtime identity.
 enum DomainWorkspaceRustJournal {
-    private struct SavedRevisionPlanRequest: Encodable {
-        let workspaceID: UUID
-        let savedRevision: UInt64
-        let documentDigest: String
-        let operationID: UUID
-        let updatedAt: Date
-    }
-
-    private struct DeletionTombstonePlanRequest: Encodable {
-        let workspaceID: UUID
-        let fileURL: URL
-        let operation: DomainRecordedOperation
-        let deletedAt: Date
-        let cleanupWarnings: [String]
-    }
-
     private struct CreateTransactionRequest: Encodable {
         let kind: String
         let expectedWorkspaceID: UUID
@@ -907,34 +891,6 @@ enum DomainWorkspaceRustJournal {
             self.core = core
         }
 
-        func planSavedRevision(
-            workspaceID: UUID,
-            savedRevision: UInt64,
-            documentDigest: String,
-            operationID: UUID,
-            updatedAt: Date
-        ) throws -> DomainWorkspaceSavedRevisionValidation {
-            do {
-                let bytes = try encode(SavedRevisionPlanRequest(
-                    workspaceID: workspaceID,
-                    savedRevision: savedRevision,
-                    documentDigest: documentDigest,
-                    operationID: operationID,
-                    updatedAt: updatedAt
-                ))
-                return try materializeSavedRevision(
-                    core.planSavedRevision(bytes),
-                    expectedWorkspaceID: workspaceID,
-                    expectedOperationID: operationID,
-                    expectedSavedRevision: savedRevision,
-                    expectedDocumentDigest: documentDigest,
-                    expectedUpdatedAt: updatedAt
-                )
-            } catch {
-                throw mapMetadataPlan(error)
-            }
-        }
-
         func validateSavedRevision(
             _ bytes: Data,
             expectedWorkspaceID: UUID,
@@ -961,24 +917,21 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
-        func planDeletionTombstone(
-            workspaceID: UUID,
-            fileURL: URL,
-            operation: DomainRecordedOperation,
-            deletedAt: Date,
-            cleanupWarnings: [String] = []
+        func amendDeletionTombstoneCleanup(
+            authoritative: DomainWorkspaceDeletionTombstoneValidation,
+            cleanupWarnings: [String]
         ) throws -> DomainWorkspaceDeletionTombstoneValidation {
             do {
-                let bytes = try encode(DeletionTombstonePlanRequest(
-                    workspaceID: workspaceID,
-                    fileURL: fileURL,
-                    operation: operation,
-                    deletedAt: deletedAt,
-                    cleanupWarnings: cleanupWarnings
-                ))
-                let validated = try core.planDeletionTombstone(bytes)
-                guard validated.workspaceID == workspaceID,
-                      validated.operationID == operation.operationID,
+                let original = authoritative.tombstone
+                guard DomainContentDigest.sha256(authoritative.canonicalBytes) == authoritative.contentDigest else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                let validated = try core.amendDeletionTombstoneCleanup(
+                    authoritativeTombstoneBytes: authoritative.canonicalBytes,
+                    cleanupWarningsBytes: try encode(cleanupWarnings)
+                )
+                guard validated.workspaceID == original.workspaceID,
+                      validated.operationID == original.operation.operationID,
                       validated.schemaVersion == UInt16(DomainDeletionTombstone.schemaVersion),
                       DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
                 else {
@@ -988,24 +941,24 @@ enum DomainWorkspaceRustJournal {
                     DomainDeletionTombstone.self,
                     from: validated.canonicalBytes
                 )
-                let expectedDiagnostic = cleanupWarnings.isEmpty
-                    ? operation.diagnostic
-                    : "artifact_cleanup_incomplete: \(cleanupWarnings.joined(separator: "; "))"
-                guard tombstone.workspaceID == workspaceID,
-                      tombstone.fileURL.standardizedFileURL == fileURL.standardizedFileURL,
-                      tombstone.version == DomainDeletionTombstone.schemaVersion,
-                      tombstone.deletedAt == deletedAt,
-                      tombstone.operation.operationID == operation.operationID,
-                      tombstone.operation.fingerprint == operation.fingerprint,
-                      tombstone.operation.recordedAt == operation.recordedAt,
-                      tombstone.operation.disposition == operation.disposition,
-                      tombstone.operation.before == operation.before,
-                      tombstone.operation.after == operation.after,
-                      tombstone.operation.catalogRevision == operation.catalogRevision,
-                      tombstone.operation.resultingDigest == operation.resultingDigest,
-                      tombstone.operation.errorCode == operation.errorCode,
-                      tombstone.operation.diagnostic == expectedDiagnostic
+                let expectedDiagnostic =
+                    "artifact_cleanup_incomplete: \(cleanupWarnings.joined(separator: "; "))"
+                guard let originalJSON = try JSONSerialization.jsonObject(
+                    with: authoritative.canonicalBytes
+                ) as? [String: Any],
+                    var amendedJSON = try JSONSerialization.jsonObject(
+                        with: validated.canonicalBytes
+                    ) as? [String: Any],
+                    let originalOperation = originalJSON["operation"] as? [String: Any],
+                    var amendedOperation = amendedJSON["operation"] as? [String: Any],
+                    amendedOperation["diagnostic"] as? String == expectedDiagnostic,
+                    tombstone.operation.diagnostic == expectedDiagnostic
                 else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                amendedOperation["diagnostic"] = originalOperation["diagnostic"] ?? NSNull()
+                amendedJSON["operation"] = amendedOperation
+                guard (amendedJSON as NSDictionary).isEqual(originalJSON as NSDictionary) else {
                     throw DomainPersistenceError.corruptJournal
                 }
                 return DomainWorkspaceDeletionTombstoneValidation(

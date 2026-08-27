@@ -107,18 +107,17 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         }.value
         let operationID = UUID()
         let documentDigest = String(repeating: "d", count: 64)
-        let savedRevisionRequest = try JSONSerialization.data(withJSONObject: [
+        let savedRevisionRecord = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
             "workspaceID": workspaceID.uuidString,
             "savedRevision": 1,
             "documentDigest": documentDigest,
             "operationID": operationID.uuidString,
             "updatedAt": 43.0
         ], options: [.sortedKeys])
-        let savedRevision = try prepared.planSavedRevision(savedRevisionRequest)
-        let validatedSavedRevision = try prepared.validateSavedRevision(
-            savedRevision.canonicalBytes
-        )
-        let tombstoneRequest = try JSONSerialization.data(withJSONObject: [
+        let savedRevision = try prepared.validateSavedRevision(savedRevisionRecord)
+        let tombstoneRecord = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
             "workspaceID": workspaceID.uuidString,
             "fileURL": journal.fileURL.absoluteString,
             "operation": [
@@ -128,11 +127,23 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
                 "disposition": "applied",
                 "catalogRevision": 1
             ],
-            "deletedAt": 44.0,
-            "cleanupWarnings": ["revision sidecar: denied"]
+            "deletedAt": 44.0
         ], options: [.sortedKeys])
-        let tombstone = try prepared.planDeletionTombstone(tombstoneRequest)
-        let validatedTombstone = try prepared.validateDeletionTombstone(tombstone.canonicalBytes)
+        let tombstone = try prepared.validateDeletionTombstone(tombstoneRecord)
+        let cleanupWarnings = try JSONSerialization.data(
+            withJSONObject: ["revision sidecar: denied"],
+            options: [.sortedKeys]
+        )
+        let amendedTombstone = try prepared.amendDeletionTombstoneCleanup(
+            authoritativeTombstoneBytes: tombstone.canonicalBytes,
+            cleanupWarningsBytes: cleanupWarnings
+        )
+        XCTAssertThrowsError(try prepared.amendDeletionTombstoneCleanup(
+            authoritativeTombstoneBytes: tombstone.canonicalBytes,
+            cleanupWarningsBytes: Data("[]".utf8)
+        )) {
+            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
+        }
         let catalogTransition = try JSONSerialization.data(withJSONObject: [
             "kind": "seed",
             "entries": [[
@@ -154,18 +165,21 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
         }
 
-        XCTAssertEqual(savedRevision, validatedSavedRevision)
         XCTAssertEqual(savedRevision.workspaceID, workspaceID)
         XCTAssertEqual(savedRevision.operationID, operationID)
         XCTAssertEqual(tombstone.workspaceID, workspaceID)
         XCTAssertEqual(tombstone.operationID, operationID)
-        XCTAssertEqual(validatedTombstone, tombstone)
+        XCTAssertEqual(amendedTombstone.workspaceID, tombstone.workspaceID)
+        XCTAssertEqual(amendedTombstone.operationID, tombstone.operationID)
         XCTAssertEqual(catalog, validatedCatalog)
         XCTAssertEqual(catalog.catalogVersion, 1)
         XCTAssertEqual(catalog.revision, 0)
         XCTAssertEqual(catalog.entryCount, 1)
         XCTAssertEqual(catalog.deletionCount, 0)
-        XCTAssertTrue(String(decoding: tombstone.canonicalBytes, as: UTF8.self).contains(
+        XCTAssertFalse(String(decoding: tombstone.canonicalBytes, as: UTF8.self).contains(
+            "artifact_cleanup_incomplete"
+        ))
+        XCTAssertTrue(String(decoding: amendedTombstone.canonicalBytes, as: UTF8.self).contains(
             "artifact_cleanup_incomplete: revision sidecar: denied"
         ))
         XCTAssertEqual(preparedValidated, validated)

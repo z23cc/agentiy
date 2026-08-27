@@ -59,7 +59,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "candidate.canonicalBytes",
             "validator.validateSavedRevision(",
             "validator.requireRuntimeAvailability()",
-            "validator.planDeletionTombstone(",
+            "validator.amendDeletionTombstoneCleanup(",
             "private func readSavedRevisionSnapshot(",
             "postAuthoritySuccessFinalization",
             "postAuthorityFailureFinalization",
@@ -225,6 +225,51 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(runtime.contains("pub fn seed_workspace_catalog_v1("))
     }
 
+    func testStandaloneMetadataPlannersAreRustInternalOnlyAndCleanupAmendmentIsNarrow() throws {
+        let root = repositoryRoot()
+        let transportSources = [
+            "rust/crates/ffi/src/api.rs",
+            "rust/crates/ffi/src/types.rs",
+            "Sources/AgentryCoreBridge/CoreBridge.swift",
+            "Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift",
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+        ]
+        let retiredSymbols = [
+            "workspace_saved_revision_plan_v1",
+            "workspaceSavedRevisionPlanV1",
+            "workspace_deletion_tombstone_plan_v1",
+            "workspaceDeletionTombstonePlanV1",
+            "func planSavedRevision(",
+            "func planDeletionTombstone(",
+            "SavedRevisionPlanRequest",
+            "DeletionTombstonePlanRequest"
+        ]
+        for relativePath in transportSources {
+            let source = try String(
+                contentsOf: root.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for symbol in retiredSymbols {
+                XCTAssertFalse(
+                    source.contains(symbol),
+                    "Retired standalone metadata planner returned in \(relativePath): \(symbol)"
+                )
+            }
+        }
+
+        let runtime = try String(
+            contentsOf: root.appendingPathComponent(
+                "rust/crates/runtime/src/workspace_persistence_journal.rs"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(runtime.contains("fn plan_workspace_saved_revision_record_v1("))
+        XCTAssertFalse(runtime.contains("pub fn plan_workspace_saved_revision_record_v1("))
+        XCTAssertTrue(runtime.contains("fn plan_workspace_deletion_tombstone_v1("))
+        XCTAssertFalse(runtime.contains("pub fn plan_workspace_deletion_tombstone_v1("))
+        XCTAssertTrue(runtime.contains("pub fn amend_workspace_deletion_tombstone_cleanup_v1("))
+    }
+
     func testProductionCatalogStateMachineIsRustOwnedWithOnePhysicalWriteBoundary() throws {
         let sourceURL = repositoryRoot()
             .appendingPathComponent("Sources/RepoPromptDomainRuntime/DomainPersistence.swift")
@@ -329,8 +374,21 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         ))
         let deleteAuthority = source[deleteStart.lowerBound ..< cleanupStart.lowerBound]
         XCTAssertFalse(deleteAuthority.contains("validator.planDeletionTombstone("))
+        XCTAssertFalse(deleteAuthority.contains("validator.amendDeletionTombstoneCleanup("))
         XCTAssertFalse(deleteAuthority.contains("transition: .delete("))
         XCTAssertTrue(deleteAuthority.contains("validator.beginDeleteTransaction("))
+        let cleanupEnd = try XCTUnwrap(source.range(
+            of: "private func finalizeDeletedWorkspaceArtifacts(",
+            range: cleanupStart.lowerBound ..< source.endIndex
+        ))
+        let postAuthorityCleanup = source[cleanupStart.lowerBound ..< cleanupEnd.lowerBound]
+        XCTAssertEqual(
+            postAuthorityCleanup.components(
+                separatedBy: "validator.amendDeletionTombstoneCleanup("
+            ).count - 1,
+            2,
+            "Only post-authority cleanup may amend the non-authoritative tombstone diagnostic"
+        )
     }
 
     private func repositoryRoot() -> URL {

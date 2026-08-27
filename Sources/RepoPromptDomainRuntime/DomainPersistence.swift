@@ -2703,11 +2703,8 @@ package struct DomainPersistenceCoordinator {
                 var recordedTombstone = tombstone
                 if !artifactCleanupWarnings.isEmpty {
                     do {
-                        let cleanupPlan = try validator.planDeletionTombstone(
-                            workspaceID: tombstone.workspaceID,
-                            fileURL: tombstone.fileURL,
-                            operation: tombstone.operation,
-                            deletedAt: tombstone.deletedAt,
+                        let cleanupPlan = try validator.amendDeletionTombstoneCleanup(
+                            authoritative: plannedTombstone,
                             cleanupWarnings: artifactCleanupWarnings
                         )
                         recordedTombstone = cleanupPlan.tombstone
@@ -2721,11 +2718,8 @@ package struct DomainPersistenceCoordinator {
                                 artifactCleanupWarnings.append(
                                     "cleanup status sidecar: \(error.localizedDescription)"
                                 )
-                                if let amendedPlan = try? validator.planDeletionTombstone(
-                                    workspaceID: tombstone.workspaceID,
-                                    fileURL: tombstone.fileURL,
-                                    operation: tombstone.operation,
-                                    deletedAt: tombstone.deletedAt,
+                                if let amendedPlan = try? validator.amendDeletionTombstoneCleanup(
+                                    authoritative: plannedTombstone,
                                     cleanupWarnings: artifactCleanupWarnings
                                 ) {
                                     recordedTombstone = amendedPlan.tombstone

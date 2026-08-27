@@ -16,13 +16,14 @@ use crate::types::{
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
     CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCreateDirectiveV1,
     CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
-    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
-    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceJournalMutationDirectiveV1,
-    CoreWorkspaceJournalMutationTransactionRequestV1, CoreWorkspacePendingSaveRecoveryRequestV1,
-    CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
-    CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspaceSaveActionReportV1,
-    CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
-    CoreWorkspaceWorkingJournalSeedRequestV1, CoreWorkspaceWorkingJournalValidationErrorKindV1,
+    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDeletionTombstoneCleanupRequestV1,
+    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
+    CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
+    CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
+    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
+    CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
+    CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceWorkingJournalSeedRequestV1,
+    CoreWorkspaceWorkingJournalValidationErrorKindV1,
     CoreWorkspaceWorkingJournalValidationRequestV1,
     CoreWorkspaceWorkingJournalValidationResponseV1, DrainBatch, FolderSuffixRequest, HostResponse,
     InventoryComposedSnapshotHandleV1, InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1,
@@ -1297,22 +1298,6 @@ impl CoreRuntime {
         })
     }
 
-    pub fn workspace_saved_revision_plan_v1(
-        &self,
-        request: CoreWorkspacePersistenceMetadataRequestV1,
-    ) -> Result<CoreWorkspacePersistenceMetadataResponseV1, CoreError> {
-        self.guard(|| {
-            self.require_running()?;
-            self.validate_identity(&request.runtime_identity)?;
-            require_workspace_persistence_contract(request.contract_version)?;
-            Ok(workspace_metadata_response(
-                runtime::workspace_persistence_journal::plan_workspace_saved_revision_record_v1(
-                    &request.payload_bytes,
-                ),
-            ))
-        })
-    }
-
     pub fn workspace_saved_revision_validate_v1(
         &self,
         request: CoreWorkspacePersistenceMetadataRequestV1,
@@ -1329,17 +1314,18 @@ impl CoreRuntime {
         })
     }
 
-    pub fn workspace_deletion_tombstone_plan_v1(
+    pub fn workspace_deletion_tombstone_amend_cleanup_v1(
         &self,
-        request: CoreWorkspacePersistenceMetadataRequestV1,
+        request: CoreWorkspaceDeletionTombstoneCleanupRequestV1,
     ) -> Result<CoreWorkspacePersistenceMetadataResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
             Ok(workspace_metadata_response(
-                runtime::workspace_persistence_journal::plan_workspace_deletion_tombstone_v1(
-                    &request.payload_bytes,
+                runtime::workspace_persistence_journal::amend_workspace_deletion_tombstone_cleanup_v1(
+                    &request.authoritative_tombstone_bytes,
+                    &request.cleanup_warnings_bytes,
                 ),
             ))
         })
@@ -3453,11 +3439,12 @@ mod tests {
     }
 
     #[test]
-    fn workspace_persistence_metadata_exports_plan_and_validate_canonical_records() {
+    fn workspace_persistence_metadata_exports_validate_and_cleanup_amendment() {
         let (core, identity, _) = initialized_core();
         let contract =
             runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1;
-        let saved_request = br#"{
+        let saved_record = br#"{
+            "version":1,
             "workspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "savedRevision":4,
             "documentDigest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -3465,28 +3452,19 @@ mod tests {
             "updatedAt":44.0
         }"#;
         let saved = core
-            .workspace_saved_revision_plan_v1(CoreWorkspacePersistenceMetadataRequestV1 {
-                runtime_identity: identity.clone(),
-                contract_version: contract,
-                payload_bytes: saved_request.to_vec(),
-            })
-            .expect("saved revision plan")
-            .validation
-            .expect("saved validation");
-        assert_eq!(saved.schema_version, 1);
-        assert_eq!(saved.content_digest.len(), 64);
-        let validated = core
             .workspace_saved_revision_validate_v1(CoreWorkspacePersistenceMetadataRequestV1 {
                 runtime_identity: identity.clone(),
                 contract_version: contract,
-                payload_bytes: saved.canonical_bytes.clone(),
+                payload_bytes: saved_record.to_vec(),
             })
             .expect("saved revision validation")
             .validation
             .expect("validated saved revision");
-        assert_eq!(saved, validated);
+        assert_eq!(saved.schema_version, 1);
+        assert_eq!(saved.content_digest.len(), 64);
 
-        let tombstone_request = br#"{
+        let tombstone_bytes = br#"{
+            "version":1,
             "workspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "fileURL":"file:///tmp/Workspace.json",
             "operation":{
@@ -3496,32 +3474,53 @@ mod tests {
                 "disposition":"applied",
                 "catalogRevision":5
             },
-            "deletedAt":45.5,
-            "cleanupWarnings":[]
+            "deletedAt":45.5
         }"#;
         let tombstone = core
-            .workspace_deletion_tombstone_plan_v1(CoreWorkspacePersistenceMetadataRequestV1 {
-                runtime_identity: identity.clone(),
-                contract_version: contract,
-                payload_bytes: tombstone_request.to_vec(),
-            })
-            .expect("deletion tombstone plan")
-            .validation
-            .expect("tombstone validation");
-        assert_eq!(
-            tombstone.operation_id,
-            "66666666-7777-8888-9999-aaaaaaaaaaaa"
-        );
-        let validated_tombstone = core
             .workspace_deletion_tombstone_validate_v1(CoreWorkspacePersistenceMetadataRequestV1 {
                 runtime_identity: identity.clone(),
                 contract_version: contract,
-                payload_bytes: tombstone.canonical_bytes.clone(),
+                payload_bytes: tombstone_bytes.to_vec(),
             })
             .expect("deletion tombstone validation")
             .validation
             .expect("validated tombstone");
-        assert_eq!(validated_tombstone.operation_id, tombstone.operation_id);
+        let noncanonical = core
+            .workspace_deletion_tombstone_amend_cleanup_v1(
+                CoreWorkspaceDeletionTombstoneCleanupRequestV1 {
+                    runtime_identity: identity.clone(),
+                    contract_version: contract,
+                    authoritative_tombstone_bytes: tombstone_bytes.to_vec(),
+                    cleanup_warnings_bytes: br#"["revision sidecar: denied"]"#.to_vec(),
+                },
+            )
+            .expect("noncanonical tombstone cleanup rejection");
+        assert_eq!(noncanonical.validation, None);
+        assert_eq!(
+            noncanonical.error_kind,
+            Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTransaction)
+        );
+
+        let amended = core
+            .workspace_deletion_tombstone_amend_cleanup_v1(
+                CoreWorkspaceDeletionTombstoneCleanupRequestV1 {
+                    runtime_identity: identity.clone(),
+                    contract_version: contract,
+                    authoritative_tombstone_bytes: tombstone.canonical_bytes.clone(),
+                    cleanup_warnings_bytes: br#"["revision sidecar: denied"]"#.to_vec(),
+                },
+            )
+            .expect("deletion tombstone cleanup amendment")
+            .validation
+            .expect("amended tombstone");
+        assert_eq!(amended.workspace_id, tombstone.workspace_id);
+        assert_eq!(amended.operation_id, tombstone.operation_id);
+        let amended_value: serde_json::Value =
+            serde_json::from_slice(&amended.canonical_bytes).expect("amended tombstone json");
+        assert_eq!(
+            amended_value["operation"]["diagnostic"],
+            "artifact_cleanup_incomplete: revision sidecar: denied"
+        );
 
         let seed_transition = br#"{
             "kind":"seed",
