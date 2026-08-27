@@ -802,43 +802,18 @@ actor DomainWorkspaceContextAuthority {
     }
 
     @discardableResult
-    private func registerCommandAdmissionOperation(
-        _ operation: DomainRecordedOperation,
-        workspaceID: UUID?
+    private func registerTransientCommandAdmissionOperation(
+        _ operation: DomainRecordedOperation
     ) -> Bool {
         guard let commandAdmission else { return false }
         do {
-            _ = try commandAdmission.insert(
-                workspaceID: workspaceID,
+            _ = try commandAdmission.insertTransient(
                 operation: operation
             )
             return true
         } catch {
             return false
         }
-    }
-
-    @discardableResult
-    private func registerPersistedCommandAdmissionOperation(
-        expected: DomainRecordedOperation,
-        operations: [DomainRecordedOperation],
-        workspaceID: UUID?
-    ) -> Bool {
-        let matching = operations.filter { $0.operationID == expected.operationID }
-        guard matching.count == 1,
-              matching[0] == expected
-        else {
-            markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
-            return false
-        }
-        guard registerCommandAdmissionOperation(
-            matching[0],
-            workspaceID: workspaceID
-        ) else {
-            markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
-            return false
-        }
-        return true
     }
 
     private func markCommandAdmissionReceiptMissing(workspaceID: UUID?) {
@@ -861,10 +836,18 @@ actor DomainWorkspaceContextAuthority {
     }
 
     @discardableResult
-    private func removeCommandAdmissionWorkspace(_ workspaceID: UUID) -> Bool {
+    private func reconcileCommandAdmissionWorkspace(
+        workspaceID: UUID,
+        operations: [DomainRecordedOperation],
+        deletedOperation: DomainRecordedOperation?
+    ) -> Bool {
         guard let commandAdmission else { return false }
         do {
-            _ = try commandAdmission.removeWorkspace(workspaceID)
+            _ = try commandAdmission.reconcileWorkspace(
+                workspaceID: workspaceID,
+                operations: operations,
+                deletedOperation: deletedOperation
+            )
             return true
         } catch {
             return false
@@ -877,6 +860,7 @@ actor DomainWorkspaceContextAuthority {
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome? {
         guard let workspaceID = envelope.workspaceID,
+              let input = DomainWorkspaceCommandIdentityInput(envelope),
               let admission = commandAdmission
         else {
             return unrecordedCommandIdentityRejection(
@@ -888,11 +872,11 @@ actor DomainWorkspaceContextAuthority {
         }
         let decision: DomainWorkspaceCommandAdmissionDecision
         do {
-            decision = try admission.decision(
-                workspaceID: workspaceID,
-                operationID: envelope.operationID,
-                fingerprint: fingerprint
-            )
+            let preflight = try admission.preflight(input)
+            guard preflight.fingerprint == fingerprint else {
+                throw DomainWorkspaceCommandAdmissionPreflightError.invalidReceipt
+            }
+            decision = preflight.decision
         } catch {
             quarantineCommandAdmission()
             return unrecordedCommandIdentityRejection(
@@ -1812,6 +1796,14 @@ actor DomainWorkspaceContextAuthority {
             outcome: provisional
         )
         do {
+            guard let commandAdmission else {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_admission_rust_unavailable"
+                )
+            }
             let persisted = try await persistence.persistCreated(
                 document: document,
                 expectedCatalogRevision: envelope.expectedCatalogRevision ?? catalogRevision,
@@ -1819,7 +1811,8 @@ actor DomainWorkspaceContextAuthority {
                 contextRevisions: contextRevisions,
                 operation: recorded,
                 now: recorded.recordedAt,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
             catalogRevision = persisted.catalogRevision
             let record = WorkspaceRecord(
@@ -1834,11 +1827,6 @@ actor DomainWorkspaceContextAuthority {
                 fileMetadata: .missing
             )
             records[document.workspaceID] = record
-            registerPersistedCommandAdmissionOperation(
-                expected: recorded,
-                operations: persisted.journal.operations,
-                workspaceID: document.workspaceID
-            )
             let outcome = DomainCommandOutcome(
                 operationID: envelope.operationID,
                 disposition: .applied,
@@ -1934,17 +1922,30 @@ actor DomainWorkspaceContextAuthority {
             outcome: provisional
         )
         do {
+            guard let commandAdmission else {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_admission_rust_unavailable"
+                )
+            }
             let deleted = try await persistence.persistDeleted(
                 document: record.document,
                 expectedWorkspaceRevision: record.revisions.workingRevision,
                 expectedCatalogRevision: envelope.expectedCatalogRevision ?? catalogRevision,
                 operation: operation,
                 now: operation.recordedAt,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
             records.removeValue(forKey: workspaceID)
             catalogRevision = deleted.catalogRevision
             let cleanupDiagnostic = deleted.tombstone.operation.diagnostic
+            if !deleted.commandAdmissionFinalizationReconciled {
+                quarantineCommandAdmission()
+                markCommandAdmissionReceiptMissing(workspaceID: nil)
+            }
             let outcome = DomainCommandOutcome(
                 operationID: envelope.operationID,
                 disposition: .applied,
@@ -1953,16 +1954,6 @@ actor DomainWorkspaceContextAuthority {
                 catalogRevision: catalogRevision,
                 resultingDigest: nil,
                 diagnostic: cleanupDiagnostic
-            )
-            removeCommandAdmissionWorkspace(workspaceID)
-            registerPersistedCommandAdmissionOperation(
-                expected: DomainRecordedOperation(
-                    fingerprint: fingerprint,
-                    recordedAt: operation.recordedAt,
-                    outcome: outcome
-                ),
-                operations: [deleted.tombstone.operation],
-                workspaceID: nil
             )
             publish(
                 kind: .workspaceDeleted,
@@ -2077,6 +2068,14 @@ actor DomainWorkspaceContextAuthority {
             let operations = record.operations + [recorded]
             let persisted: DomainPersistenceWorkingCommit
             do {
+                guard let commandAdmission else {
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_admission_rust_unavailable"
+                    )
+                }
                 persisted = try await persistence.persistWorking(
                     document: document,
                     expectedRevision: before.workingRevision,
@@ -2085,7 +2084,8 @@ actor DomainWorkspaceContextAuthority {
                     contextTombstones: record.contextTombstones.merging(contextUpdate.tombstones) { _, new in new },
                     operations: operations,
                     now: recorded.recordedAt,
-                    permit: permit
+                    permit: permit,
+                    commandAdmission: commandAdmission
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
             } catch let error as DomainPersistenceError {
@@ -2135,11 +2135,6 @@ actor DomainWorkspaceContextAuthority {
             record.contextTombstones = persisted.journal.contextTombstones
             record.operations = persisted.journal.operations
             records[document.workspaceID] = record
-            registerPersistedCommandAdmissionOperation(
-                expected: recorded,
-                operations: persisted.journal.operations,
-                workspaceID: document.workspaceID
-            )
             let applied = DomainCommandOutcome(
                 operationID: envelope.operationID,
                 disposition: .applied,
@@ -2218,6 +2213,14 @@ actor DomainWorkspaceContextAuthority {
         let recorded = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: Date(), outcome: provisional)
         let operations = record.operations + [recorded]
         do {
+            guard let commandAdmission else {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_admission_rust_unavailable"
+                )
+            }
             let saved = try await persistence.persistSaved(
                 document: record.document,
                 expectedWorkingRevision: before.workingRevision,
@@ -2226,7 +2229,8 @@ actor DomainWorkspaceContextAuthority {
                 contextTombstones: record.contextTombstones,
                 operations: operations,
                 now: recorded.recordedAt,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
             catalogRevision = max(catalogRevision, saved.catalogRevision)
             record.savedDigest = saved.journal.savedDigest
@@ -2234,11 +2238,6 @@ actor DomainWorkspaceContextAuthority {
             record.contextRevisions = saved.journal.contextRevisions
             record.operations = saved.journal.operations
             records[workspaceID] = record
-            registerPersistedCommandAdmissionOperation(
-                expected: recorded,
-                operations: saved.journal.operations,
-                workspaceID: workspaceID
-            )
         } catch let error as DomainPersistenceError {
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
@@ -2464,6 +2463,14 @@ actor DomainWorkspaceContextAuthority {
                 let contextRevisions = Dictionary(uniqueKeysWithValues: external.metadata.contexts.map {
                     ($0.identity.contextID, after)
                 })
+                guard let commandAdmission else {
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_admission_rust_unavailable"
+                    )
+                }
                 let persisted = try await persistence.persistExternalReload(
                     document: external,
                     expectedRevision: before.workingRevision,
@@ -2472,7 +2479,8 @@ actor DomainWorkspaceContextAuthority {
                     contextTombstones: record.contextTombstones,
                     operations: operations,
                     now: now,
-                    permit: permit
+                    permit: permit,
+                    commandAdmission: commandAdmission
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
                 record.document = external
@@ -2481,6 +2489,14 @@ actor DomainWorkspaceContextAuthority {
                 record.contextRevisions = persisted.journal.contextRevisions
                 record.operations = persisted.journal.operations
             } else {
+                guard let commandAdmission else {
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_admission_rust_unavailable"
+                    )
+                }
                 let persisted = try await persistence.persistConflictRebase(
                     document: record.document,
                     externalSavedDigest: external.contentDigest,
@@ -2490,7 +2506,8 @@ actor DomainWorkspaceContextAuthority {
                     contextTombstones: record.contextTombstones,
                     operations: operations,
                     now: now,
-                    permit: permit
+                    permit: permit,
+                    commandAdmission: commandAdmission
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
                 record.savedDigest = persisted.journal.savedDigest
@@ -2523,11 +2540,6 @@ actor DomainWorkspaceContextAuthority {
         record.health = .writable
         record.externalDocument = nil
         records[workspaceID] = record
-        registerPersistedCommandAdmissionOperation(
-            expected: operation,
-            operations: record.operations,
-            workspaceID: workspaceID
-        )
         let outcome = DomainCommandOutcome(
             operationID: envelope.operationID,
             disposition: .applied,
@@ -2696,11 +2708,11 @@ actor DomainWorkspaceContextAuthority {
             records.removeValue(forKey: workspaceID)
             unavailableWorkspaces.removeValue(forKey: workspaceID)
             guard let deletedOperation = refreshed.deletedOperation,
-                  registerCommandAdmissionOperation(
-                      deletedOperation,
-                      workspaceID: nil
-                  ),
-                  removeCommandAdmissionWorkspace(workspaceID)
+                  reconcileCommandAdmissionWorkspace(
+                      workspaceID: workspaceID,
+                      operations: [],
+                      deletedOperation: deletedOperation
+                  )
             else {
                 markCommandAdmissionReceiptMissing(workspaceID: nil)
                 return
@@ -2714,18 +2726,13 @@ actor DomainWorkspaceContextAuthority {
             }
             return
         }
-        guard removeCommandAdmissionWorkspace(workspaceID) else {
+        guard reconcileCommandAdmissionWorkspace(
+            workspaceID: workspaceID,
+            operations: workspace.operations,
+            deletedOperation: nil
+        ) else {
             markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
             return
-        }
-        for operation in workspace.operations {
-            guard registerCommandAdmissionOperation(
-                operation,
-                workspaceID: workspaceID
-            ) else {
-                markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
-                return
-            }
         }
         let canPreserveConflict = previous?.document.contentDigest == workspace.document.contentDigest
             && previous?.revisions == workspace.revisions
@@ -2890,21 +2897,25 @@ actor DomainWorkspaceContextAuthority {
             outcome: outcome
         )
         do {
+            guard let commandAdmission else {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_admission_rust_unavailable"
+                )
+            }
             let persisted = try await persistence.persistUnchanged(
                 document: record.document,
                 expectedRevision: record.revisions.workingRevision,
                 operation: operation,
                 now: operation.recordedAt,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
             catalogRevision = max(catalogRevision, persisted.catalogRevision)
             record.operations = persisted.journal.operations
             records[record.document.workspaceID] = record
-            registerPersistedCommandAdmissionOperation(
-                expected: operation,
-                operations: persisted.journal.operations,
-                workspaceID: record.document.workspaceID
-            )
             return outcome
         } catch {
             return persistenceFailureOutcome(envelope, record: record, error: error)
@@ -3021,13 +3032,12 @@ actor DomainWorkspaceContextAuthority {
             diagnostic: diagnostic,
             workspace: workspace
         )
-        if !registerCommandAdmissionOperation(
+        if !registerTransientCommandAdmissionOperation(
             DomainRecordedOperation(
                 fingerprint: fingerprint,
                 recordedAt: Date(),
                 outcome: outcome
-            ),
-            workspaceID: nil
+            )
         ) {
             markCommandAdmissionReceiptMissing(workspaceID: envelope.workspaceID)
         }

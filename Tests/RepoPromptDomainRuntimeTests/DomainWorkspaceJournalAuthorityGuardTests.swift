@@ -377,6 +377,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertFalse(deleteAuthority.contains("validator.amendDeletionTombstoneCleanup("))
         XCTAssertFalse(deleteAuthority.contains("transition: .delete("))
         XCTAssertTrue(deleteAuthority.contains("validator.beginDeleteTransaction("))
+        XCTAssertTrue(deleteAuthority.contains("transaction.acquireAuthorityPermit()"))
         let cleanupEnd = try XCTUnwrap(source.range(
             of: "private func finalizeDeletedWorkspaceArtifacts(",
             range: cleanupStart.lowerBound ..< source.endIndex
@@ -453,7 +454,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(adapter.contains("core.preflight("))
     }
 
-    func testCommandReplayAndCollisionProductionAdmissionUsesPreparedRustIndex() throws {
+    func testCommandReplayAndCollisionProductionAdmissionFinalizesWithRustTransactions() throws {
         let root = repositoryRoot()
         let authority = try String(
             contentsOf: root.appendingPathComponent(
@@ -471,13 +472,13 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for required in [
             "private var commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?",
             "let admission = commandAdmission",
-            "decision = try admission.decision(",
+            "decision = preflight.decision",
             "private var pendingCommandAdmissions: [UUID: PendingCommandAdmission]",
             "private func reconcileCommandAdmission(",
             "commandAdmission.reconcileDurable(durable)",
-            "registerPersistedCommandAdmissionOperation(",
-            "refreshed.deletedOperation",
-            "removeCommandAdmissionWorkspace(workspaceID)"
+            "commandAdmission: commandAdmission",
+            "private func reconcileCommandAdmissionWorkspace(",
+            "refreshed.deletedOperation"
         ] {
             XCTAssertTrue(authority.contains(required), "Missing prepared Rust admission: \(required)")
         }
@@ -489,7 +490,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "rebuildCommandAdmission",
             "operationIndex",
             "globalOperations",
-            "swiftCommandAdmissionDecision"
+            "swiftCommandAdmissionDecision",
+            "registerPersistedCommandAdmissionOperation(",
+            "removeCommandAdmissionWorkspace(",
+            "decision = try admission.decision("
         ] {
             XCTAssertFalse(authority.contains(retired), "Retired Swift admission lookup remains: \(retired)")
         }
@@ -505,14 +509,24 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             adapter.contains("try core.replace("),
             "Complete admission replacement must not remain exposed through the Domain adapter"
         )
+        XCTAssertFalse(
+            adapter.contains("core.removeWorkspace("),
+            "Independent Swift workspace admission removal must remain retired"
+        )
+        XCTAssertFalse(
+            adapter.contains("func insert(\n            workspaceID:"),
+            "Swift must not expose a generic durable admission insert"
+        )
         for required in [
             "struct PreparedCommandAdmission: Sendable",
             "core.beginCommandAdmission(",
             "core.preflight(",
             "core.decision(",
             "core.reconcileDurable(",
-            "core.insert(",
-            "core.removeWorkspace("
+            "core.reconcileWorkspace(",
+            "core.insertTransient(",
+            "transactionBinding",
+            "reconcileAdmissionFinalization("
         ] {
             XCTAssertTrue(adapter.contains(required), "Missing Rust admission adapter: \(required)")
         }

@@ -4,11 +4,11 @@ public enum AgentryCoreBindingIdentity {
     public static let abiEpoch: UInt32 = 1
     public static let payloadSchemaVersions: [UInt16] = [1]
 #if AGENTRY_CORE_RELEASE_ARCHIVE
-    public static let buildFingerprint = "87052028e4a67d1c1ce42aab869807091ffc0af1d73622ba6d21d4d3a0eaeeee"
+    public static let buildFingerprint = "89e43d404a96454a318d9f872300db07e1fc7310dac6e6668b24304fc6e8804f"
 #elseif DEBUG
-    public static let buildFingerprint = "6bd1b7dd3ba3aeb5e05f5541701ffed9ea4453fcbbba4bf30002a0f69df704ff"
+    public static let buildFingerprint = "cb7b2e4d6922a6892fba83a6998991e6711739deaa1e3a81bb4c57e5254681cb"
 #else
-    public static let buildFingerprint = "87052028e4a67d1c1ce42aab869807091ffc0af1d73622ba6d21d4d3a0eaeeee"
+    public static let buildFingerprint = "89e43d404a96454a318d9f872300db07e1fc7310dac6e6668b24304fc6e8804f"
 #endif
     public static let bindingChecksum = "092c3c12c71469cb3eaf3c7ee9393e08a4239c50d309da6c17a51d47ce9626c4"
 }

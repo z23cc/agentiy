@@ -985,6 +985,10 @@ enum DomainWorkspaceRustJournal {
             self.expectedDeletedAt = expectedDeletedAt
         }
 
+        func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
+            try core.acquireAuthorityPermit()
+        }
+
         func nextDirective() throws -> DomainWorkspaceDeleteDirective {
             try validator.materializeDeleteDirective(
                 core.nextDirective(),
@@ -1011,6 +1015,18 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
+        func reconcileAdmissionFinalization(
+            operation: DomainRecordedOperation
+        ) throws {
+            do {
+                try core.reconcileAdmissionFinalization(
+                    operation: validator.coreRecordedOperation(operation)
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
         func close() {
             core.close()
         }
@@ -1026,6 +1042,10 @@ enum DomainWorkspaceRustJournal {
         ) {
             self.core = core
             self.validator = validator
+        }
+
+        fileprivate var transactionBinding: CorePreparedWorkspaceCommandAdmissionV1 {
+            core
         }
 
         func preflight(
@@ -1099,15 +1119,17 @@ enum DomainWorkspaceRustJournal {
         }
 
         @discardableResult
-        func insert(
-            workspaceID: UUID?,
-            operation: DomainRecordedOperation
+        func reconcileWorkspace(
+            workspaceID: UUID,
+            operations: [DomainRecordedOperation],
+            deletedOperation: DomainRecordedOperation?
         ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
             do {
                 return validator.materializeCommandAdmissionDiagnostics(
-                    try core.insert(
+                    try core.reconcileWorkspace(
                         workspaceID: workspaceID,
-                        operation: validator.coreRecordedOperation(operation)
+                        operations: operations.map(validator.coreRecordedOperation),
+                        deletedOperation: deletedOperation.map(validator.coreRecordedOperation)
                     )
                 )
             } catch {
@@ -1116,12 +1138,14 @@ enum DomainWorkspaceRustJournal {
         }
 
         @discardableResult
-        func removeWorkspace(
-            _ workspaceID: UUID
+        func insertTransient(
+            operation: DomainRecordedOperation
         ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
             do {
                 return validator.materializeCommandAdmissionDiagnostics(
-                    try core.removeWorkspace(workspaceID)
+                    try core.insertTransient(
+                        operation: validator.coreRecordedOperation(operation)
+                    )
                 )
             } catch {
                 throw validator.mapCommandAdmissionError(error)
@@ -1548,7 +1572,8 @@ enum DomainWorkspaceRustJournal {
             document: DomainWorkspaceDocument,
             contextRevisions: [UUID: DomainRevisionState],
             operation: DomainRecordedOperation,
-            updatedAt: Date
+            updatedAt: Date,
+            commandAdmission: PreparedCommandAdmission
         ) throws -> PreparedCreateTransaction {
             try beginCreateTransaction(
                 rawCatalogBytes: rawCatalogBytes,
@@ -1570,7 +1595,8 @@ enum DomainWorkspaceRustJournal {
                     updatedAt: updatedAt
                 ),
                 expectedOperation: operation,
-                isRecovery: false
+                isRecovery: false,
+                commandAdmission: commandAdmission
             )
         }
 
@@ -1600,7 +1626,8 @@ enum DomainWorkspaceRustJournal {
                     updatedAt: updatedAt
                 ),
                 expectedOperation: nil,
-                isRecovery: true
+                isRecovery: true,
+                commandAdmission: nil
             )
         }
 
@@ -1612,7 +1639,8 @@ enum DomainWorkspaceRustJournal {
             document: DomainWorkspaceDocument,
             request: CreateTransactionRequest,
             expectedOperation: DomainRecordedOperation?,
-            isRecovery: Bool
+            isRecovery: Bool,
+            commandAdmission: PreparedCommandAdmission?
         ) throws -> PreparedCreateTransaction {
             do {
                 let transaction = try core.beginCreateTransaction(
@@ -1621,7 +1649,8 @@ enum DomainWorkspaceRustJournal {
                     rawJournalBytes: rawJournalBytes,
                     effectiveJournalBytes: effectiveJournal?.canonicalBytes,
                     requestBytes: try encode(request),
-                    documentBytes: document.documentBytes
+                    documentBytes: document.documentBytes,
+                    commandAdmission: commandAdmission?.transactionBinding
                 )
                 return PreparedCreateTransaction(
                     core: transaction,
@@ -1655,7 +1684,8 @@ enum DomainWorkspaceRustJournal {
             expectedWorkingRevision: UInt64,
             expectedCatalogRevision: UInt64,
             operation: DomainRecordedOperation,
-            deletedAt: Date
+            deletedAt: Date,
+            commandAdmission: PreparedCommandAdmission
         ) throws -> PreparedDeleteTransaction {
             do {
                 let request = DeleteTransactionRequest(
@@ -1670,7 +1700,8 @@ enum DomainWorkspaceRustJournal {
                     rawCatalogBytes: rawCatalogBytes,
                     effectiveCatalogBytes: effectiveCatalog.canonicalBytes,
                     effectiveJournalBytes: effectiveJournal.canonicalBytes,
-                    requestBytes: try encode(request)
+                    requestBytes: try encode(request),
+                    commandAdmission: commandAdmission.transactionBinding
                 )
                 return PreparedDeleteTransaction(
                     core: transaction,
@@ -1714,7 +1745,8 @@ enum DomainWorkspaceRustJournal {
             catalogRevision: UInt64,
             revisionOperationID: UUID?,
             updatedAt: Date,
-            diskDocumentBytes: Data?
+            diskDocumentBytes: Data?,
+            commandAdmission: PreparedCommandAdmission?
         ) throws -> PreparedJournalMutationTransaction {
             do {
                 let request = JournalMutationTransactionRequest(
@@ -1729,7 +1761,8 @@ enum DomainWorkspaceRustJournal {
                     effectiveJournalBytes: effectiveJournal.canonicalBytes,
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
-                    diskDocumentBytes: diskDocumentBytes
+                    diskDocumentBytes: diskDocumentBytes,
+                    commandAdmission: commandAdmission?.transactionBinding
                 )
                 return PreparedJournalMutationTransaction(
                     core: transaction,
@@ -1774,7 +1807,8 @@ enum DomainWorkspaceRustJournal {
             operations: [DomainRecordedOperation],
             updatedAt: Date,
             catalogRevision: UInt64,
-            diskDocumentBytes: Data?
+            diskDocumentBytes: Data?,
+            commandAdmission: PreparedCommandAdmission
         ) throws -> PreparedSaveTransaction {
             do {
                 let request = SaveTransactionRequest(
@@ -1796,7 +1830,8 @@ enum DomainWorkspaceRustJournal {
                     effectiveJournalBytes: effectiveJournal.canonicalBytes,
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
-                    diskDocumentBytes: diskDocumentBytes
+                    diskDocumentBytes: diskDocumentBytes,
+                    commandAdmission: commandAdmission.transactionBinding
                 )
                 return PreparedSaveTransaction(
                     core: transaction,

@@ -180,7 +180,11 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             errorCode: nil,
             diagnostic: nil
         )
-        _ = try admission.insert(workspaceID: workspaceID, operation: preflightOperation)
+        _ = try admission.reconcileWorkspace(
+            workspaceID: workspaceID,
+            operations: [operation, preflightOperation],
+            deletedOperation: nil
+        )
         XCTAssertEqual(
             try admission.preflight(preflightRequest).decision,
             .replay(scope: .workspace, operation: preflightOperation)
@@ -219,7 +223,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             errorCode: "state_conflict",
             diagnostic: "transient"
         )
-        _ = try admission.insert(workspaceID: nil, operation: transient)
+        _ = try admission.insertTransient(operation: transient)
         let durableReplacement = CoreWorkspaceRecordedOperationV1(
             operationID: UUID(),
             fingerprint: String(repeating: "c", count: 64),
@@ -252,7 +256,11 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             .replay(scope: .workspace, operation: durableReplacement)
         )
 
-        _ = try admission.removeWorkspace(workspaceID)
+        _ = try admission.reconcileWorkspace(
+            workspaceID: workspaceID,
+            operations: [],
+            deletedOperation: nil
+        )
         XCTAssertEqual(
             try admission.decision(
                 workspaceID: workspaceID,
@@ -505,12 +513,25 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let client = try await bridge.computeClient()
         let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
         let effective = try prepared.validate(rawJournal)
+        let admission = try prepared.beginCommandAdmission(records: [])
+        defer { admission.close() }
+        XCTAssertThrowsError(try prepared.beginSaveTransaction(
+            rawJournalBytes: rawJournal,
+            effectiveJournalBytes: effective.canonicalBytes,
+            requestBytes: request,
+            candidateDocumentBytes: document,
+            diskDocumentBytes: nil,
+            commandAdmission: nil
+        )) {
+            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
+        }
         let transaction = try prepared.beginSaveTransaction(
             rawJournalBytes: rawJournal,
             effectiveJournalBytes: effective.canonicalBytes,
             requestBytes: request,
             candidateDocumentBytes: document,
-            diskDocumentBytes: nil
+            diskDocumentBytes: nil,
+            commandAdmission: admission
         )
         defer { transaction.close() }
 
@@ -664,7 +685,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveJournalBytes: effective.canonicalBytes,
             requestBytes: request,
             candidateDocumentBytes: document,
-            diskDocumentBytes: document
+            diskDocumentBytes: document,
+            commandAdmission: nil
         )
         let rejectedActionCandidate: (UInt64, String)? = switch try rejected.nextDirective() {
         case let .action(actionID, _, .writeJournal, _, _, digest, _, _, _, _):
@@ -686,7 +708,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveJournalBytes: effective.canonicalBytes,
             requestBytes: request,
             candidateDocumentBytes: document,
-            diskDocumentBytes: document
+            diskDocumentBytes: document,
+            commandAdmission: nil
         )
         defer { transaction.close() }
 
@@ -787,6 +810,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "updatedAt": 100.0
         ], options: [.sortedKeys])
         let catalog = try prepared.seedCatalog(seedRequestBytes: seed)
+        let admission = try prepared.beginCommandAdmission(records: [])
+        defer { admission.close() }
         let revisions: [String: Any] = [
             "workingRevision": 1,
             "savedRevision": 1
@@ -810,13 +835,25 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             ],
             "updatedAt": 101.0
         ], options: [.sortedKeys])
+        XCTAssertThrowsError(try prepared.beginCreateTransaction(
+            rawCatalogBytes: catalog.canonicalBytes,
+            effectiveCatalogBytes: catalog.canonicalBytes,
+            rawJournalBytes: nil,
+            effectiveJournalBytes: nil,
+            requestBytes: request,
+            documentBytes: document,
+            commandAdmission: nil
+        )) {
+            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
+        }
         let transaction = try prepared.beginCreateTransaction(
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalogBytes: catalog.canonicalBytes,
             rawJournalBytes: nil,
             effectiveJournalBytes: nil,
             requestBytes: request,
-            documentBytes: document
+            documentBytes: document,
+            commandAdmission: admission
         )
         defer { transaction.close() }
         let expectedKinds: [CoreWorkspaceCreateActionKindV1] = [
@@ -870,7 +907,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             rawJournalBytes: receipt.committedJournal.canonicalBytes,
             effectiveJournalBytes: receipt.committedJournal.canonicalBytes,
             requestBytes: recoveryRequest,
-            documentBytes: document
+            documentBytes: document,
+            commandAdmission: nil
         )
         defer { recovery.close() }
         switch try recovery.nextDirective() {
@@ -915,6 +953,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let client = try await bridge.computeClient()
         let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
         let effectiveJournal = try prepared.validate(rawJournal)
+        let admission = try prepared.beginCommandAdmission(records: [])
+        defer { admission.close() }
         let seed = try JSONSerialization.data(withJSONObject: [
             "kind": "seed",
             "entries": [[
@@ -942,6 +982,15 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             ],
             "deletedAt": 41.0
         ], options: [.sortedKeys])
+        XCTAssertThrowsError(try prepared.beginDeleteTransaction(
+            rawCatalogBytes: catalog.canonicalBytes,
+            effectiveCatalogBytes: catalog.canonicalBytes,
+            effectiveJournalBytes: effectiveJournal.canonicalBytes,
+            requestBytes: request,
+            commandAdmission: nil
+        )) {
+            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
+        }
         let emptySeed = try JSONSerialization.data(withJSONObject: [
             "kind": "seed",
             "entries": [],
@@ -952,7 +1001,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             rawCatalogBytes: emptyCatalog.canonicalBytes,
             effectiveCatalogBytes: emptyCatalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
-            requestBytes: request
+            requestBytes: request,
+            commandAdmission: admission
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidIdentity)
         }
@@ -969,7 +1019,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             rawCatalogBytes: mismatchedURLCatalog.canonicalBytes,
             effectiveCatalogBytes: mismatchedURLCatalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
-            requestBytes: request
+            requestBytes: request,
+            commandAdmission: admission
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidFileURL)
         }
@@ -988,7 +1039,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             requestBytes: try JSONSerialization.data(
                 withJSONObject: mismatchedRevisionRequest,
                 options: [.sortedKeys]
-            )
+            ),
+            commandAdmission: admission
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidOperationLedger)
         }
@@ -996,7 +1048,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalogBytes: catalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
-            requestBytes: request
+            requestBytes: request,
+            commandAdmission: admission
         )
         let closedActionID: UInt64
         let closedDigest: String
@@ -1022,7 +1075,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalogBytes: catalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
-            requestBytes: request
+            requestBytes: request,
+            commandAdmission: admission
         )
         defer { transaction.close() }
 
@@ -1057,6 +1111,9 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             return XCTFail("expected catalog-authority directive")
         }
 
+        let authorityPermit = try transaction.acquireAuthorityPermit()
+        XCTAssertThrowsError(try transaction.acquireAuthorityPermit())
+        authorityPermit.close()
         _ = try await bridge.close()
         XCTAssertThrowsError(try transaction.report(.success(
             actionID: actionID,

@@ -1276,3 +1276,53 @@ enable a Swift fingerprint or lookup fallback.
   wake-up, and contains no standalone identity-plus-decision pair.
 - Cancellation or Rust/capability failure records no operation and remains retryable; focused Runtime/FFI/Bridge/
   Domain authority, source-guard, codegen, product-build, style, guardrail, formatting, and diff checks pass.
+
+## P5-7b amendment — transaction-bound durable admission finalization
+
+P5-7b makes each prepared Rust persistence transaction and the exact prepared command-admission capability one
+combined post-preflight authority. When create, delete, working-journal, or save preparation proves that the
+candidate durable state adds exactly one command receipt, transaction begin reserves that canonical effect under
+the admission lock. The reservation is invisible to replay/collision lookup until physical authority succeeds,
+but it participates in collision, capacity, reconciliation, and close accounting so a concurrent durable reload
+cannot invalidate or overbook the pending finalization. Reservation validation is independent of later physical
+completion order: a pending delete never frees capacity for another reservation, and delete/workspace effects for the
+same workspace cannot coexist invisibly. Therefore finalizing transactions in any permitted order cannot recreate a
+deleted workspace index or turn a previously valid reservation into capacity overflow.
+
+A catalog-authoritative create or delete holds an exact-runtime authority permit continuously from immediately before
+the physical catalog replacement through the matching successful `report_action`. A prepared transaction that contains
+a command-admission finalization but receives no exact prepared admission capability is invalid at Rust begin; only a
+transaction that proves it is recovery or contains no command receipt may be explicitly unbound.
+
+The first successful action that makes the transaction durably authoritative finalizes the reservation in the
+same Rust `report_action` call. Workspace mutations atomically insert the receipt into the process-global and
+workspace indexes. Deletion atomically removes the deleted workspace index and inserts the validated tombstone
+receipt into the process-global index. A transaction that terminates before durable authority cancels its
+reservation. Once durable authority has succeeded, runtime shutdown or optional sidecar failure may not erase
+the finalization receipt; the transaction retains the exact-runtime binding needed to publish replay state and
+returns the established committed/partial-success receipt.
+
+Swift passes the same prepared capability into command persistence and only validates the returned transaction
+receipt. It no longer scans the committed operation ledger, inserts durable receipts, removes deleted workspace
+indexes, or repairs those effects after the persistence call. Any decision needed after actor reentrancy, CAS
+refresh, or waiter wake-up reissues the single atomic prepared preflight; the standalone decision export is not a
+production convergence path. Bootstrap and complete catalog reload retain one atomic durable reconciliation for
+recovery, with Rust preserving process-global receipts and every in-flight reservation across replacement.
+Transient non-durable outcomes remain explicitly process-lifetime records and cannot impersonate durable
+transaction finalization.
+
+### P5-7b done-when
+
+- Rust tests cover reservation invisibility, collision/capacity accounting, reconcile while reserved, exactly-once
+  retry, pre-authority cancellation, post-authority runtime loss, sidecar partial success, and delete's atomic
+  workspace-remove/global-insert effect.
+- Create, delete, working-journal, and save transaction bindings reject zero/multiple/mismatched added receipts;
+  recovery and non-command transactions remain explicitly unbound.
+- Typed UniFFI and Bridge carry the exact prepared admission object into transaction begin without JSON handles,
+  fallback lookup, or a second runtime identity.
+- Swift command persistence contains no post-commit operation-ledger scan, durable insert, or delete remove-plus-
+  insert sequence; CAS and waiter recovery reissue prepared preflight instead of standalone decision.
+- Bootstrap/full-reload reconciliation preserves reserved effects and fails closed on conflicts, runtime/capability
+  loss, or malformed receipts; command publication and outcome behavior remain unchanged.
+- Focused Runtime/FFI/Bridge/Domain authority, source-guard, codegen, product-build, style, guardrail, formatting,
+  and diff checks pass.

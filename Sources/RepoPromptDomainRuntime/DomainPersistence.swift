@@ -147,6 +147,7 @@ struct DomainPersistenceDeleteCommit {
     let catalogRevision: UInt64
     let tombstone: DomainDeletionTombstone
     let artifactCleanupWarnings: [String]
+    let commandAdmissionFinalizationReconciled: Bool
 }
 
 enum DomainPersistenceError: Error, Equatable {
@@ -832,7 +833,8 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         operation: DomainRecordedOperation,
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -845,7 +847,8 @@ package struct DomainPersistenceCoordinator {
                 contextRevisions: contextRevisions,
                 operation: operation,
                 now: now,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
         }
     }
@@ -874,7 +877,8 @@ package struct DomainPersistenceCoordinator {
         expectedRevision: UInt64,
         operation: DomainRecordedOperation,
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -885,7 +889,8 @@ package struct DomainPersistenceCoordinator {
                 expectedRevision: expectedRevision,
                 operation: operation,
                 now: now,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
         }
     }
@@ -898,7 +903,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -912,7 +918,8 @@ package struct DomainPersistenceCoordinator {
                 contextTombstones: contextTombstones,
                 operations: operations,
                 now: now,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
         }
     }
@@ -925,7 +932,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -939,7 +947,8 @@ package struct DomainPersistenceCoordinator {
                 contextTombstones: contextTombstones,
                 operations: operations,
                 now: now,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
         }
     }
@@ -952,7 +961,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -966,7 +976,8 @@ package struct DomainPersistenceCoordinator {
                 contextTombstones: contextTombstones,
                 operations: operations,
                 now: now,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
         }
     }
@@ -980,7 +991,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -995,7 +1007,8 @@ package struct DomainPersistenceCoordinator {
                 contextTombstones: contextTombstones,
                 operations: operations,
                 now: now,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
         }
     }
@@ -1006,7 +1019,8 @@ package struct DomainPersistenceCoordinator {
         expectedCatalogRevision: UInt64?,
         operation: DomainRecordedOperation,
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) async throws -> DomainPersistenceDeleteCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -1018,7 +1032,8 @@ package struct DomainPersistenceCoordinator {
                 expectedCatalogRevision: expectedCatalogRevision,
                 operation: operation,
                 now: now,
-                permit: permit
+                permit: permit,
+                commandAdmission: commandAdmission
             )
         }
     }
@@ -1588,7 +1603,8 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         operation: DomainRecordedOperation,
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -1641,7 +1657,8 @@ package struct DomainPersistenceCoordinator {
                     document: document,
                     contextRevisions: contextRevisions,
                     operation: operation,
-                    updatedAt: now
+                    updatedAt: now,
+                    commandAdmission: commandAdmission
                 )
                 defer { transaction.close() }
 
@@ -1834,7 +1851,8 @@ package struct DomainPersistenceCoordinator {
         catalogRevision: UInt64,
         revisionOperationID: UUID?,
         now: Date,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
         finalization: DomainWorkspaceJournalMutationFinalization
@@ -1851,7 +1869,8 @@ package struct DomainPersistenceCoordinator {
             catalogRevision: catalogRevision,
             revisionOperationID: revisionOperationID,
             updatedAt: now,
-            diskDocumentBytes: diskDocumentBytes
+            diskDocumentBytes: diskDocumentBytes,
+            commandAdmission: commandAdmission
         )
         defer { transaction.close() }
 
@@ -2029,7 +2048,8 @@ package struct DomainPersistenceCoordinator {
         expectedRevision: UInt64,
         operation: DomainRecordedOperation,
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2055,7 +2075,8 @@ package struct DomainPersistenceCoordinator {
                 catalogRevision: catalogRevision,
                 revisionOperationID: nil,
                 now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL)
+                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
+                commandAdmission: commandAdmission
             ).receipt
             return DomainPersistenceWorkingCommit(
                 journal: receipt.committedJournal.journal,
@@ -2073,7 +2094,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2105,7 +2127,8 @@ package struct DomainPersistenceCoordinator {
                 catalogRevision: catalogRevision,
                 revisionOperationID: nil,
                 now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL)
+                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
+                commandAdmission: commandAdmission
             ).receipt
             return DomainPersistenceWorkingCommit(
                 journal: receipt.committedJournal.journal,
@@ -2123,7 +2146,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2152,7 +2176,8 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 updatedAt: now,
                 catalogRevision: catalogRevision,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL)
+                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
+                commandAdmission: commandAdmission
             )
             defer { transaction.close() }
 
@@ -2432,7 +2457,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2465,7 +2491,8 @@ package struct DomainPersistenceCoordinator {
                 catalogRevision: catalogRevision,
                 revisionOperationID: operationID,
                 now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL)
+                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
+                commandAdmission: commandAdmission
             )
             let revisionSidecarMissing: Bool = switch result.finalization {
             case .finalized: false
@@ -2489,7 +2516,8 @@ package struct DomainPersistenceCoordinator {
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2522,7 +2550,8 @@ package struct DomainPersistenceCoordinator {
                 catalogRevision: catalogRevision,
                 revisionOperationID: nil,
                 now: now,
-                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL)
+                diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
+                commandAdmission: commandAdmission
             ).receipt
             return DomainPersistenceWorkingCommit(
                 journal: receipt.committedJournal.journal,
@@ -2538,7 +2567,8 @@ package struct DomainPersistenceCoordinator {
         expectedCatalogRevision: UInt64?,
         operation: DomainRecordedOperation,
         now: Date,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) throws -> DomainPersistenceDeleteCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2566,7 +2596,8 @@ package struct DomainPersistenceCoordinator {
                     expectedWorkingRevision: expectedWorkspaceRevision,
                     expectedCatalogRevision: requestedCatalogRevision,
                     operation: operation,
-                    deletedAt: now
+                    deletedAt: now,
+                    commandAdmission: commandAdmission
                 )
                 defer { transaction.close() }
 
@@ -2607,6 +2638,8 @@ package struct DomainPersistenceCoordinator {
                             throw DomainPersistenceError.corruptJournal
                         }
                         do {
+                            let authorityPermit = try transaction.acquireAuthorityPermit()
+                            defer { authorityPermit.close() }
                             let catalogWriteReceipt = try writeCatalog(
                                 expected: currentCatalogSnapshot.raw,
                                 candidate: catalog,
@@ -2738,10 +2771,23 @@ package struct DomainPersistenceCoordinator {
                         )
                     }
                 }
+                let commandAdmissionFinalizationReconciled: Bool
+                do {
+                    try transaction.reconcileAdmissionFinalization(
+                        operation: recordedTombstone.operation
+                    )
+                    commandAdmissionFinalizationReconciled = true
+                } catch {
+                    // Catalog publication already established delete authority. Admission repair is
+                    // isolated into the returned commit so the caller can quarantine replay without
+                    // manufacturing a failed physical delete.
+                    commandAdmissionFinalizationReconciled = false
+                }
                 return DomainPersistenceDeleteCommit(
                     catalogRevision: next.catalog.revision,
                     tombstone: recordedTombstone,
-                    artifactCleanupWarnings: artifactCleanupWarnings
+                    artifactCleanupWarnings: artifactCleanupWarnings,
+                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
                 )
             }
         }

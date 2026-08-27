@@ -265,39 +265,48 @@ public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Sendable, Equatable {
 }
 
 public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable {
+    let rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1
     private let preflightOperation: @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
         -> CoreWorkspaceCommandAdmissionPreflightV1
     private let decisionOperation: @Sendable (UUID, UUID, String) throws
         -> CoreWorkspaceCommandAdmissionDecisionV1
     private let reconcileDurableOperation: @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
-    private let insertOperation: @Sendable (UUID?, CoreWorkspaceRecordedOperationV1) throws
-        -> CoreWorkspaceCommandAdmissionDiagnosticsV1
-    private let removeWorkspaceOperation: @Sendable (UUID) throws
+    private let reconcileWorkspaceOperation: @Sendable (
+        UUID,
+        [CoreWorkspaceRecordedOperationV1],
+        CoreWorkspaceRecordedOperationV1?
+    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1
+    private let insertTransientOperation: @Sendable (CoreWorkspaceRecordedOperationV1) throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let diagnosticsOperation: @Sendable () throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let closeOperation: @Sendable () -> Void
 
     init(
+        rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1,
         preflight: @escaping @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
             -> CoreWorkspaceCommandAdmissionPreflightV1,
         decision: @escaping @Sendable (UUID, UUID, String) throws
             -> CoreWorkspaceCommandAdmissionDecisionV1,
         reconcileDurable: @escaping @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
             -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
-        insert: @escaping @Sendable (UUID?, CoreWorkspaceRecordedOperationV1) throws
-            -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
-        removeWorkspace: @escaping @Sendable (UUID) throws
+        reconcileWorkspace: @escaping @Sendable (
+            UUID,
+            [CoreWorkspaceRecordedOperationV1],
+            CoreWorkspaceRecordedOperationV1?
+        ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
+        insertTransient: @escaping @Sendable (CoreWorkspaceRecordedOperationV1) throws
             -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         close: @escaping @Sendable () -> Void
     ) {
+        self.rawAdmission = rawAdmission
         preflightOperation = preflight
         decisionOperation = decision
         reconcileDurableOperation = reconcileDurable
-        insertOperation = insert
-        removeWorkspaceOperation = removeWorkspace
+        reconcileWorkspaceOperation = reconcileWorkspace
+        insertTransientOperation = insertTransient
         diagnosticsOperation = diagnostics
         closeOperation = close
     }
@@ -328,18 +337,19 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
     }
 
     @discardableResult
-    public func insert(
-        workspaceID: UUID?,
-        operation: CoreWorkspaceRecordedOperationV1
+    public func reconcileWorkspace(
+        workspaceID: UUID,
+        operations: [CoreWorkspaceRecordedOperationV1],
+        deletedOperation: CoreWorkspaceRecordedOperationV1?
     ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
-        try insertOperation(workspaceID, operation)
+        try reconcileWorkspaceOperation(workspaceID, operations, deletedOperation)
     }
 
     @discardableResult
-    public func removeWorkspace(
-        _ workspaceID: UUID
+    public func insertTransient(
+        operation: CoreWorkspaceRecordedOperationV1
     ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
-        try removeWorkspaceOperation(workspaceID)
+        try insertTransientOperation(operation)
     }
 
     public func diagnostics() throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
@@ -809,24 +819,40 @@ public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
 }
 
 public final class CoreWorkspaceDeleteTransactionV1: @unchecked Sendable {
+    private let acquireAuthorityPermitOperation: @Sendable () throws
+        -> CoreWorkspaceCreateAuthorityPermitV1
     private let nextOperation: @Sendable () throws -> CoreWorkspaceDeleteDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceDeleteDirectiveV1
+    private let reconcileAdmissionFinalizationOperation: @Sendable (
+        CoreWorkspaceRecordedOperationV1
+    ) throws -> Void
     private let closeOperation: @Sendable () -> Void
 
     init(
+        acquireAuthorityPermit: @escaping @Sendable () throws
+            -> CoreWorkspaceCreateAuthorityPermitV1,
         next: @escaping @Sendable () throws -> CoreWorkspaceDeleteDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceDeleteDirectiveV1,
+        reconcileAdmissionFinalization: @escaping @Sendable (
+            CoreWorkspaceRecordedOperationV1
+        ) throws -> Void,
         close: @escaping @Sendable () -> Void
     ) {
+        acquireAuthorityPermitOperation = acquireAuthorityPermit
         nextOperation = next
         reportOperation = report
+        reconcileAdmissionFinalizationOperation = reconcileAdmissionFinalization
         closeOperation = close
     }
 
     deinit {
         closeOperation()
+    }
+
+    public func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
+        try acquireAuthorityPermitOperation()
     }
 
     public func nextDirective() throws -> CoreWorkspaceDeleteDirectiveV1 {
@@ -837,6 +863,12 @@ public final class CoreWorkspaceDeleteTransactionV1: @unchecked Sendable {
         _ report: CoreWorkspaceSaveActionReportV1
     ) throws -> CoreWorkspaceDeleteDirectiveV1 {
         try reportOperation(report)
+    }
+
+    public func reconcileAdmissionFinalization(
+        operation: CoreWorkspaceRecordedOperationV1
+    ) throws {
+        try reconcileAdmissionFinalizationOperation(operation)
     }
 
     public func close() {
@@ -990,7 +1022,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         rawJournalBytes: Data?,
         effectiveJournalBytes: Data?,
         requestBytes: Data,
-        documentBytes: Data
+        documentBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1008,7 +1041,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             rawJournalBytes: rawJournalBytes,
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
-            documentBytes: documentBytes
+            documentBytes: documentBytes,
+            commandAdmission: commandAdmission
         )
     }
 
@@ -1016,7 +1050,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         rawCatalogBytes: Data?,
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
-        requestBytes: Data
+        requestBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1030,7 +1065,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             rawCatalogBytes: rawCatalogBytes,
             effectiveCatalogBytes: effectiveCatalogBytes,
             effectiveJournalBytes: effectiveJournalBytes,
-            requestBytes: requestBytes
+            requestBytes: requestBytes,
+            commandAdmission: commandAdmission
         )
     }
 
@@ -1039,7 +1075,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1055,7 +1092,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
-            diskDocumentBytes: diskDocumentBytes
+            diskDocumentBytes: diskDocumentBytes,
+            commandAdmission: commandAdmission
         )
     }
 
@@ -1064,7 +1102,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1080,7 +1119,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
-            diskDocumentBytes: diskDocumentBytes
+            diskDocumentBytes: diskDocumentBytes,
+            commandAdmission: commandAdmission
         )
     }
 
@@ -1370,7 +1410,8 @@ extension CoreRuntimeTransport {
         rawJournalBytes: Data?,
         effectiveJournalBytes: Data?,
         requestBytes: Data,
-        documentBytes: Data
+        documentBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         throw CoreTransportError.unexpected("workspace create transaction transport is unavailable")
     }
@@ -1380,7 +1421,8 @@ extension CoreRuntimeTransport {
         rawCatalogBytes: Data?,
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
-        requestBytes: Data
+        requestBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         throw CoreTransportError.unexpected("workspace delete transaction transport is unavailable")
     }
@@ -1391,7 +1433,8 @@ extension CoreRuntimeTransport {
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         throw CoreTransportError.unexpected("workspace journal mutation transaction transport is unavailable")
     }
@@ -1402,7 +1445,8 @@ extension CoreRuntimeTransport {
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         throw CoreTransportError.unexpected("workspace save transaction transport is unavailable")
     }

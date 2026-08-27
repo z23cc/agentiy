@@ -199,14 +199,16 @@ protocol CoreRuntimeTransport: Sendable {
         rawJournalBytes: Data?,
         effectiveJournalBytes: Data?,
         requestBytes: Data,
-        documentBytes: Data
+        documentBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceCreateTransactionV1
     func workspaceDeleteTransactionBeginV1(
         identity: CoreRuntimeIdentity,
         rawCatalogBytes: Data?,
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
-        requestBytes: Data
+        requestBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1
     func workspaceJournalMutationTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -214,7 +216,8 @@ protocol CoreRuntimeTransport: Sendable {
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1
     func workspaceSaveTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -222,7 +225,8 @@ protocol CoreRuntimeTransport: Sendable {
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceSaveTransactionV1
     func workspacePendingSaveResolveV1(
         identity: CoreRuntimeIdentity,
@@ -1105,6 +1109,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
             return CorePreparedWorkspaceCommandAdmissionV1(
+                rawAdmission: rawAdmission,
                 preflight: { request in
                     do {
                         return try Self.workspaceCommandAdmissionPreflight(
@@ -1150,12 +1155,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
-                insert: { workspaceID, operation in
+                reconcileWorkspace: { workspaceID, operations, deletedOperation in
                     do {
                         return try Self.workspaceCommandAdmissionDiagnostics(
-                            rawAdmission.insert(
-                                workspaceId: workspaceID?.uuidString,
-                                operation: Self.rawWorkspaceRecordedOperation(operation)
+                            rawAdmission.reconcileWorkspace(
+                                workspaceId: workspaceID.uuidString,
+                                operations: operations.map(Self.rawWorkspaceRecordedOperation),
+                                deletedOperation: deletedOperation.map(Self.rawWorkspaceRecordedOperation)
                             )
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
@@ -1164,10 +1170,12 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
-                removeWorkspace: { workspaceID in
+                insertTransient: { operation in
                     do {
                         return try Self.workspaceCommandAdmissionDiagnostics(
-                            rawAdmission.removeWorkspace(workspaceId: workspaceID.uuidString)
+                            rawAdmission.insertTransient(
+                                operation: Self.rawWorkspaceRecordedOperation(operation)
+                            )
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
                         throw error
@@ -1467,7 +1475,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         rawJournalBytes: Data?,
         effectiveJournalBytes: Data?,
         requestBytes: Data,
-        documentBytes: Data
+        documentBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         do {
             let response = try runtime.workspaceCreateTransactionBeginV1(request: .init(
@@ -1479,7 +1488,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 effectiveJournalBytes: effectiveJournalBytes,
                 requestBytes: requestBytes,
                 documentBytes: documentBytes
-            ))
+            ), admission: commandAdmission?.rawAdmission)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1545,7 +1554,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         rawCatalogBytes: Data?,
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
-        requestBytes: Data
+        requestBytes: Data,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         do {
             let response = try runtime.workspaceDeleteTransactionBeginV1(request: .init(
@@ -1555,7 +1565,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 effectiveCatalogBytes: effectiveCatalogBytes,
                 effectiveJournalBytes: effectiveJournalBytes,
                 requestBytes: requestBytes
-            ))
+            ), admission: commandAdmission?.rawAdmission)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1575,6 +1585,16 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
             return CoreWorkspaceDeleteTransactionV1(
+                acquireAuthorityPermit: {
+                    do {
+                        let rawPermit = try rawTransaction.acquireAuthorityPermit()
+                        return CoreWorkspaceCreateAuthorityPermitV1(close: {
+                            rawPermit.close()
+                        })
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
                 next: {
                     do {
                         return try Self.workspaceDeleteDirective(rawTransaction.nextDirective())
@@ -1589,6 +1609,19 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         return try Self.workspaceDeleteDirective(rawTransaction.reportAction(
                             report: Self.rawWorkspaceSaveReport(report)
                         ))
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                reconcileAdmissionFinalization: { operation in
+                    do {
+                        _ = try Self.workspaceCommandAdmissionDiagnostics(
+                            rawTransaction.reconcileAdmissionFinalization(
+                                operation: Self.rawWorkspaceRecordedOperation(operation)
+                            )
+                        )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
                         throw error
                     } catch {
@@ -1612,7 +1645,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         do {
             let response = try runtime.workspaceJournalMutationTransactionBeginV1(request: .init(
@@ -1623,7 +1657,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 requestBytes: requestBytes,
                 candidateDocumentBytes: candidateDocumentBytes,
                 diskDocumentBytes: diskDocumentBytes
-            ))
+            ), admission: commandAdmission?.rawAdmission)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1692,7 +1726,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         effectiveJournalBytes: Data,
         requestBytes: Data,
         candidateDocumentBytes: Data,
-        diskDocumentBytes: Data?
+        diskDocumentBytes: Data?,
+        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         do {
             let response = try runtime.workspaceSaveTransactionBeginV1(request: .init(
@@ -1703,7 +1738,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 requestBytes: requestBytes,
                 candidateDocumentBytes: candidateDocumentBytes,
                 diskDocumentBytes: diskDocumentBytes
-            ))
+            ), admission: commandAdmission?.rawAdmission)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(

@@ -291,7 +291,11 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 resultingDigest: nil
             )
         )
-        _ = try admission.insert(workspaceID: workspaceID, operation: preflightOperation)
+        _ = try admission.reconcileWorkspace(
+            workspaceID: workspaceID,
+            operations: [operation, preflightOperation],
+            deletedOperation: nil
+        )
         XCTAssertEqual(
             try admission.preflight(preflightInput).decision,
             .replay(scope: .workspace, operation: preflightOperation)
@@ -309,7 +313,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 resultingDigest: String(repeating: "b", count: 64)
             )
         )
-        _ = try admission.insert(workspaceID: nil, operation: transient)
+        _ = try admission.insertTransient(operation: transient)
         let durableReplacement = DomainRecordedOperation(
             fingerprint: String(repeating: "c", count: 64),
             recordedAt: Date(timeIntervalSinceReferenceDate: 44.5),
@@ -342,7 +346,11 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             .replay(scope: .workspace, operation: durableReplacement)
         )
 
-        _ = try admission.removeWorkspace(workspaceID)
+        _ = try admission.reconcileWorkspace(
+            workspaceID: workspaceID,
+            operations: [],
+            deletedOperation: nil
+        )
         XCTAssertEqual(
             try admission.decision(
                 workspaceID: workspaceID,

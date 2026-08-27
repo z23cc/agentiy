@@ -155,7 +155,7 @@ pub struct CoreWorkspaceCommandAdmissionMutationResponseV1 {
 
 #[derive(uniffi::Object)]
 pub struct CorePreparedWorkspaceCommandAdmissionV1 {
-    inner: runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1,
+    inner: Arc<runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1>,
     runtime: Weak<runtime::CoreRuntime>,
     identity: runtime::RuntimeIdentity,
     panic_guard: Arc<PanicGuard>,
@@ -230,27 +230,33 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
         })
     }
 
-    pub fn insert(
+    pub fn reconcile_workspace(
         &self,
-        workspace_id: Option<String>,
+        workspace_id: String,
+        operations: Vec<CoreWorkspaceRecordedOperationV1>,
+        deleted_operation: Option<CoreWorkspaceRecordedOperationV1>,
+    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let operations = operations.into_iter().map(Into::into).collect::<Vec<_>>();
+            Ok(workspace_command_admission_mutation_response(
+                self.inner.reconcile_workspace(
+                    &workspace_id,
+                    &operations,
+                    deleted_operation.map(Into::into),
+                ),
+            ))
+        })
+    }
+
+    pub fn insert_transient(
+        &self,
         operation: CoreWorkspaceRecordedOperationV1,
     ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
         self.panic_guard.call(|| {
             self.require_live_runtime()?;
             Ok(workspace_command_admission_mutation_response(
-                self.inner.insert(workspace_id, operation.into()),
-            ))
-        })
-    }
-
-    pub fn remove_workspace(
-        &self,
-        workspace_id: String,
-    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
-        self.panic_guard.call(|| {
-            self.require_live_runtime()?;
-            Ok(workspace_command_admission_mutation_response(
-                self.inner.remove_workspace(&workspace_id),
+                self.inner.insert(None, operation.into()),
             ))
         })
     }
@@ -337,6 +343,49 @@ pub struct CoreWorkspacePendingSaveRecoveryResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
+fn finalize_workspace_command_admission_reservation(
+    reservation: &Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
+) -> Result<(), runtime::workspace_persistence_journal::WorkspaceWorkingJournalError> {
+    let mut reservation = reservation.lock().map_err(|_| {
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError::InvalidTransaction
+    })?;
+    if let Some(pending) = reservation.as_mut() {
+        pending.finalize()?;
+        reservation.take();
+    }
+    Ok(())
+}
+
+fn cancel_workspace_command_admission_reservation(
+    reservation: &Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
+) {
+    if let Ok(mut reservation) = reservation.lock() {
+        reservation.take();
+    }
+}
+
+fn reserve_workspace_command_admission_finalization(
+    admission: Option<&Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+    finalization: Option<
+        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionFinalizationV1,
+    >,
+) -> Result<
+    Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+> {
+    match (admission, finalization) {
+        (Some(admission), Some(finalization)) => admission.inner.reserve(finalization).map(Some),
+        (None, Some(_)) => Err(
+            runtime::workspace_persistence_journal::WorkspaceWorkingJournalError::InvalidTransaction,
+        ),
+        (_, None) => Ok(None),
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct CorePreparedWorkspaceJournalMutationTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceJournalMutationTransactionV1,
@@ -344,6 +393,9 @@ pub struct CorePreparedWorkspaceJournalMutationTransactionV1 {
     identity: runtime::RuntimeIdentity,
     authority_permit_issued: AtomicBool,
     authority_permit: Mutex<Option<Arc<Mutex<Option<runtime::AuthorityOperationPermit>>>>>,
+    admission_reservation: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
     panic_guard: Arc<PanicGuard>,
 }
 
@@ -442,8 +494,20 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
                 if authority_guard.is_none() {
                     return Err(CoreError::InvalidArgument);
                 }
-                let result = self.inner.report_action(report.into());
+                let mut result = self.inner.report_action(report.into());
                 let did_advance = result.is_ok();
+                if did_advance && self.inner.is_authoritative() {
+                    if let Err(error) = finalize_workspace_command_admission_reservation(
+                        &self.admission_reservation,
+                    ) {
+                        result = Err(error);
+                    }
+                } else if matches!(
+                    result,
+                    Ok(runtime::workspace_persistence_journal::WorkspaceJournalMutationDirectiveV1::Failed { .. })
+                ) {
+                    cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                }
                 let response = workspace_journal_mutation_directive_response(result);
                 if did_advance {
                     authority_guard.take();
@@ -451,7 +515,19 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
                 return Ok(response);
             }
 
-            let result = self.inner.report_action(report.into());
+            let mut result = self.inner.report_action(report.into());
+            if result.is_ok() && self.inner.is_authoritative() {
+                if let Err(error) = finalize_workspace_command_admission_reservation(
+                    &self.admission_reservation,
+                ) {
+                    result = Err(error);
+                }
+            } else if matches!(
+                result,
+                Ok(runtime::workspace_persistence_journal::WorkspaceJournalMutationDirectiveV1::Failed { .. })
+            ) {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
             if !self.inner.is_authoritative() {
                 self.require_live_runtime()?;
             }
@@ -461,6 +537,12 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            if self.inner.is_authoritative() {
+                let _ =
+                    finalize_workspace_command_admission_reservation(&self.admission_reservation);
+            } else {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
             self.inner.close();
             if let Some(permit) = self
                 .authority_permit
@@ -482,6 +564,9 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
 pub struct CorePreparedWorkspaceSaveTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceSaveTransactionV1,
     runtime: Weak<runtime::CoreRuntime>,
+    admission_reservation: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
     identity: runtime::RuntimeIdentity,
     panic_guard: Arc<PanicGuard>,
 }
@@ -527,7 +612,19 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
         report: CoreWorkspaceSaveActionReportV1,
     ) -> Result<CoreWorkspaceSaveDirectiveResponseV1, CoreError> {
         self.panic_guard.call(|| {
-            let result = self.inner.report_action(report.into());
+            let mut result = self.inner.report_action(report.into());
+            if result.is_ok() && self.inner.is_authoritative() {
+                if let Err(error) =
+                    finalize_workspace_command_admission_reservation(&self.admission_reservation)
+                {
+                    result = Err(error);
+                }
+            } else if matches!(
+                result,
+                Ok(runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1::Failed { .. })
+            ) {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
             if !self.inner.is_authoritative() {
                 self.require_live_runtime()?;
             }
@@ -537,6 +634,12 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            if self.inner.is_authoritative() {
+                let _ =
+                    finalize_workspace_command_admission_reservation(&self.admission_reservation);
+            } else {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
             self.inner.close();
             Ok::<(), CoreError>(())
         });
@@ -547,6 +650,9 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
 pub struct CorePreparedWorkspaceCreateTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceCreateTransactionV1,
     runtime: Weak<runtime::CoreRuntime>,
+    admission_reservation: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
     identity: runtime::RuntimeIdentity,
     authority_permit_issued: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -655,14 +761,31 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
             if !self.inner.is_authoritative() {
                 self.require_live_runtime()?;
             }
-            Ok(workspace_create_directive_response(
-                self.inner.report_action(report.into()),
-            ))
+            let mut result = self.inner.report_action(report.into());
+            if result.is_ok() && self.inner.is_authoritative() {
+                if let Err(error) = finalize_workspace_command_admission_reservation(
+                    &self.admission_reservation,
+                ) {
+                    result = Err(error);
+                }
+            } else if matches!(
+                result,
+                Ok(runtime::workspace_persistence_journal::WorkspaceCreateDirectiveV1::Failed { .. })
+            ) {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
+            Ok(workspace_create_directive_response(result))
         })
     }
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            if self.inner.is_authoritative() {
+                let _ =
+                    finalize_workspace_command_admission_reservation(&self.admission_reservation);
+            } else {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
             self.inner.close();
             Ok::<(), CoreError>(())
         });
@@ -673,7 +796,12 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
 pub struct CorePreparedWorkspaceDeleteTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceDeleteTransactionV1,
     runtime: Weak<runtime::CoreRuntime>,
+    admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+    admission_reservation: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
     identity: runtime::RuntimeIdentity,
+    authority_permit_issued: AtomicBool,
     panic_guard: Arc<PanicGuard>,
 }
 
@@ -702,6 +830,38 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
 
 #[uniffi::export]
 impl CorePreparedWorkspaceDeleteTransactionV1 {
+    pub fn acquire_authority_permit(
+        &self,
+    ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_ready_for_authority()
+                || self
+                    .authority_permit_issued
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            let permit = (|| {
+                let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+                if runtime.identity() != &self.identity {
+                    return Err(CoreError::StaleRuntimeIdentity);
+                }
+                runtime.begin_authority_operation().map_err(CoreError::from)
+            })();
+            match permit {
+                Ok(permit) => Ok(Arc::new(CoreWorkspaceCreateAuthorityPermitV1 {
+                    inner: Arc::new(Mutex::new(Some(permit))),
+                    panic_guard: Arc::clone(&self.panic_guard),
+                })),
+                Err(error) => {
+                    self.authority_permit_issued.store(false, Ordering::Release);
+                    Err(error)
+                }
+            }
+        })
+    }
+
     pub fn next_directive(&self) -> Result<CoreWorkspaceDeleteDirectiveResponseV1, CoreError> {
         self.panic_guard.call(|| {
             if !self.inner.is_authoritative() {
@@ -721,14 +881,60 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
             if !self.inner.is_authoritative() {
                 self.require_live_runtime()?;
             }
-            Ok(workspace_delete_directive_response(
-                self.inner.report_action(report.into()),
+            let mut result = self.inner.report_action(report.into());
+            if result.is_ok() && self.inner.is_authoritative() {
+                if let Err(error) = finalize_workspace_command_admission_reservation(
+                    &self.admission_reservation,
+                ) {
+                    result = Err(error);
+                }
+            } else if matches!(
+                result,
+                Ok(runtime::workspace_persistence_journal::WorkspaceDeleteDirectiveV1::Failed { .. })
+            ) {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
+            Ok(workspace_delete_directive_response(result))
+        })
+    }
+
+    pub fn reconcile_admission_finalization(
+        &self,
+        operation: CoreWorkspaceRecordedOperationV1,
+    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            if !self.inner.is_authoritative() {
+                return Err(CoreError::InvalidArgument);
+            }
+            let admission = self.admission.as_ref().ok_or(CoreError::InvalidArgument)?;
+            let (workspace_id, expected_operation) = match self
+                .inner
+                .command_admission_finalization()
+            {
+                Ok(runtime::workspace_persistence_journal::WorkspaceCommandAdmissionFinalizationV1::Delete {
+                    workspace_id,
+                    operation,
+                }) => (workspace_id, operation),
+                _ => return Err(CoreError::InvalidArgument),
+            };
+            Ok(workspace_command_admission_mutation_response(
+                admission.inner.reconcile_finalized_delete(
+                    &workspace_id,
+                    expected_operation,
+                    operation.into(),
+                ),
             ))
         })
     }
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            if self.inner.is_authoritative() {
+                let _ =
+                    finalize_workspace_command_admission_reservation(&self.admission_reservation);
+            } else {
+                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+            }
             self.inner.close();
             Ok::<(), CoreError>(())
         });
@@ -1180,7 +1386,7 @@ impl CoreRuntime {
             ) {
                 Ok(admission) => CoreWorkspaceCommandAdmissionBeginResponseV1 {
                     admission: Some(Arc::new(CorePreparedWorkspaceCommandAdmissionV1 {
-                        inner: admission,
+                        inner: Arc::new(admission),
                         runtime: Arc::downgrade(&self.inner),
                         identity,
                         panic_guard: Arc::clone(&self.panic_guard),
@@ -1329,11 +1535,18 @@ impl CoreRuntime {
     pub fn workspace_create_transaction_begin_v1(
         &self,
         request: CoreWorkspaceCreateTransactionRequestV1,
+        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
     ) -> Result<CoreWorkspaceCreateTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
+            if let Some(admission) = admission.as_ref() {
+                admission.require_live_runtime()?;
+                if admission.identity != identity {
+                    return Err(CoreError::StaleRuntimeIdentity);
+                }
+            }
             Ok(
                 match runtime::workspace_persistence_journal::prepare_workspace_create_transaction_v1(
                     request.raw_catalog_bytes.as_deref(),
@@ -1342,11 +1555,19 @@ impl CoreRuntime {
                     request.effective_journal_bytes.as_deref(),
                     &request.request_bytes,
                     &request.document_bytes,
-                ) {
-                    Ok(transaction) => CoreWorkspaceCreateTransactionBeginResponseV1 {
+                )
+                .and_then(|transaction| {
+                    let reservation = reserve_workspace_command_admission_finalization(
+                        admission.as_ref(),
+                        transaction.command_admission_finalization()?,
+                    )?;
+                    Ok((transaction, reservation))
+                }) {
+                    Ok((transaction, reservation)) => CoreWorkspaceCreateTransactionBeginResponseV1 {
                         transaction: Some(Arc::new(CorePreparedWorkspaceCreateTransactionV1 {
                             inner: transaction,
                             runtime: Arc::downgrade(&self.inner),
+                            admission_reservation: Mutex::new(reservation),
                             identity,
                             authority_permit_issued: AtomicBool::new(false),
                             panic_guard: Arc::clone(&self.panic_guard),
@@ -1370,23 +1591,40 @@ impl CoreRuntime {
     pub fn workspace_delete_transaction_begin_v1(
         &self,
         request: CoreWorkspaceDeleteTransactionRequestV1,
+        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
     ) -> Result<CoreWorkspaceDeleteTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
+            if let Some(admission) = admission.as_ref() {
+                admission.require_live_runtime()?;
+                if admission.identity != identity {
+                    return Err(CoreError::StaleRuntimeIdentity);
+                }
+            }
             Ok(
                 match runtime::workspace_persistence_journal::prepare_workspace_delete_transaction_v1(
                     request.raw_catalog_bytes.as_deref(),
                     &request.effective_catalog_bytes,
                     &request.effective_journal_bytes,
                     &request.request_bytes,
-                ) {
-                    Ok(transaction) => CoreWorkspaceDeleteTransactionBeginResponseV1 {
+                )
+                .and_then(|transaction| {
+                    let reservation = reserve_workspace_command_admission_finalization(
+                        admission.as_ref(),
+                        Some(transaction.command_admission_finalization()?),
+                    )?;
+                    Ok((transaction, reservation))
+                }) {
+                    Ok((transaction, reservation)) => CoreWorkspaceDeleteTransactionBeginResponseV1 {
                         transaction: Some(Arc::new(CorePreparedWorkspaceDeleteTransactionV1 {
                             inner: transaction,
                             runtime: Arc::downgrade(&self.inner),
+                            admission: admission.clone(),
+                            admission_reservation: Mutex::new(reservation),
                             identity,
+                            authority_permit_issued: AtomicBool::new(false),
                             panic_guard: Arc::clone(&self.panic_guard),
                         })),
                         error_kind: None,
@@ -1408,19 +1646,33 @@ impl CoreRuntime {
     pub fn workspace_journal_mutation_transaction_begin_v1(
         &self,
         request: CoreWorkspaceJournalMutationTransactionRequestV1,
+        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
     ) -> Result<CoreWorkspaceJournalMutationTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
+            if let Some(admission) = admission.as_ref() {
+                admission.require_live_runtime()?;
+                if admission.identity != identity {
+                    return Err(CoreError::StaleRuntimeIdentity);
+                }
+            }
             Ok(match runtime::workspace_persistence_journal::prepare_workspace_journal_mutation_transaction_v1(
                 request.raw_journal_bytes.as_deref(),
                 &request.effective_journal_bytes,
                 &request.request_bytes,
                 &request.candidate_document_bytes,
                 request.disk_document_bytes.as_deref(),
-            ) {
-                Ok(transaction) => CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
+            )
+            .and_then(|transaction| {
+                let reservation = reserve_workspace_command_admission_finalization(
+                    admission.as_ref(),
+                    transaction.command_admission_finalization()?,
+                )?;
+                Ok((transaction, reservation))
+            }) {
+                Ok((transaction, reservation)) => CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
                     transaction: Some(Arc::new(
                         CorePreparedWorkspaceJournalMutationTransactionV1 {
                             inner: transaction,
@@ -1428,6 +1680,7 @@ impl CoreRuntime {
                             identity,
                             authority_permit_issued: AtomicBool::new(false),
                             authority_permit: Mutex::new(None),
+                            admission_reservation: Mutex::new(reservation),
                             panic_guard: Arc::clone(&self.panic_guard),
                         },
                     )),
@@ -1449,11 +1702,18 @@ impl CoreRuntime {
     pub fn workspace_save_transaction_begin_v1(
         &self,
         request: CoreWorkspaceSaveTransactionRequestV1,
+        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
     ) -> Result<CoreWorkspaceSaveTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
+            if let Some(admission) = admission.as_ref() {
+                admission.require_live_runtime()?;
+                if admission.identity != identity {
+                    return Err(CoreError::StaleRuntimeIdentity);
+                }
+            }
             Ok(
                 match runtime::workspace_persistence_journal::prepare_workspace_save_transaction_v1(
                     request.raw_journal_bytes.as_deref(),
@@ -1461,11 +1721,19 @@ impl CoreRuntime {
                     &request.request_bytes,
                     &request.candidate_document_bytes,
                     request.disk_document_bytes.as_deref(),
-                ) {
-                    Ok(transaction) => CoreWorkspaceSaveTransactionBeginResponseV1 {
+                )
+                .and_then(|transaction| {
+                    let reservation = reserve_workspace_command_admission_finalization(
+                        admission.as_ref(),
+                        Some(transaction.command_admission_finalization()?),
+                    )?;
+                    Ok((transaction, reservation))
+                }) {
+                    Ok((transaction, reservation)) => CoreWorkspaceSaveTransactionBeginResponseV1 {
                         transaction: Some(Arc::new(CorePreparedWorkspaceSaveTransactionV1 {
                             inner: transaction,
                             runtime: Arc::downgrade(&self.inner),
+                            admission_reservation: Mutex::new(reservation),
                             identity,
                             panic_guard: Arc::clone(&self.panic_guard),
                         })),
@@ -3809,7 +4077,7 @@ mod tests {
             ..operation.clone()
         };
         admission
-            .insert(None, transient.clone())
+            .insert_transient(transient.clone())
             .expect("transient insert");
         let durable = CoreWorkspaceRecordedOperationV1 {
             operation_id: "88888888-9999-aaaa-bbbb-cccccccccccc".to_owned(),
@@ -3840,12 +4108,42 @@ mod tests {
             })
         );
 
+        let tombstone = CoreWorkspaceRecordedOperationV1 {
+            operation_id: "99999999-aaaa-bbbb-cccc-dddddddddddd".to_owned(),
+            fingerprint: "b".repeat(64),
+            ..operation.clone()
+        };
+        let reconciled = admission
+            .reconcile_workspace(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                Vec::new(),
+                Some(tombstone.clone()),
+            )
+            .expect("targeted delete reconcile")
+            .diagnostics
+            .expect("targeted diagnostics");
+        assert_eq!(reconciled.workspace_operation_count, 0);
+        assert_eq!(
+            admission
+                .decision(
+                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                    tombstone.operation_id.clone(),
+                    tombstone.fingerprint.clone(),
+                )
+                .expect("targeted tombstone replay")
+                .decision,
+            Some(CoreWorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: tombstone,
+            })
+        );
+
         let malformed = CoreWorkspaceRecordedOperationV1 {
             operation_id: "not-a-uuid".to_owned(),
             ..operation
         };
         let rejected = admission
-            .insert(None, malformed)
+            .insert_transient(malformed)
             .expect("semantic error response");
         assert_eq!(rejected.diagnostics, None);
         assert_eq!(
