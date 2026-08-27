@@ -394,43 +394,87 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_command_identity_input_too_large"
             )
         }
-        let fingerprint: String
-        do {
-            try Task.checkCancellation()
-            fingerprint = try await resolveCommandIdentity(commandIdentityInput)
-            try Task.checkCancellation()
-        } catch is CancellationError {
+        guard let workspaceID = envelope.workspaceID else {
             return unrecordedCommandIdentityRejection(
                 envelope,
-                disposition: .failed,
-                errorCode: .cancelled,
-                diagnostic: "workspace_command_identity_cancelled"
-            )
-        } catch {
-            return unrecordedCommandIdentityRejection(
-                envelope,
-                disposition: .readOnly,
-                errorCode: .runtimeReadOnlyDegraded,
-                diagnostic: "workspace_command_identity_rust_unavailable"
+                disposition: .invalid,
+                errorCode: .invalidDocument,
+                diagnostic: "workspace_command_identity_workspace_missing"
             )
         }
-        guard isLowercaseSHA256(fingerprint) else {
-            return unrecordedCommandIdentityRejection(
-                envelope,
-                disposition: .readOnly,
-                errorCode: .runtimeReadOnlyDegraded,
-                diagnostic: "workspace_command_identity_receipt_invalid"
-            )
-        }
-        let workspaceID = envelope.workspaceID
+        var fingerprint = ""
         admissionReservation: while true {
-            while let pending = pendingCommandAdmissions[envelope.operationID] {
+            let preflight: DomainWorkspaceCommandAdmissionPreflight
+            do {
+                try Task.checkCancellation()
+                if commandIdentityResolver == nil {
+                    // This bounded synchronous call and the reservation check below execute in one
+                    // actor turn, so an unseen receipt cannot miss a completed pending admission.
+                    preflight = try resolveCommandPreflight(commandIdentityInput)
+                } else {
+                    preflight = try await resolveInjectedCommandPreflight(
+                        commandIdentityInput,
+                        workspaceID: workspaceID
+                    )
+                }
+                try Task.checkCancellation()
+            } catch is CancellationError {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .failed,
+                    errorCode: .cancelled,
+                    diagnostic: "workspace_command_identity_cancelled"
+                )
+            } catch let error as DomainWorkspaceCommandAdmissionPreflightError {
+                switch error {
+                case .invalidInput:
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .invalid,
+                        errorCode: .invalidDocument,
+                        diagnostic: "workspace_command_identity_input_invalid"
+                    )
+                case .invalidReceipt:
+                    quarantineCommandAdmission()
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_identity_receipt_invalid"
+                    )
+                case .unavailable:
+                    quarantineCommandAdmission()
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_identity_rust_unavailable"
+                    )
+                }
+            } catch {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_identity_rust_unavailable"
+                )
+            }
+            guard isLowercaseSHA256(preflight.fingerprint) else {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_identity_receipt_invalid"
+                )
+            }
+            fingerprint = preflight.fingerprint
+            if let pending = pendingCommandAdmissions[envelope.operationID] {
                 guard pending.workspaceID == workspaceID,
                       pending.fingerprint == fingerprint
                 else {
                     return collisionOutcome(
                         envelope.operationID,
-                        workspace: workspaceID.flatMap { records[$0].map(makeSnapshot) }
+                        workspace: records[workspaceID].map(makeSnapshot)
                     )
                 }
                 await withCheckedContinuation { continuation in
@@ -444,12 +488,26 @@ actor DomainWorkspaceContextAuthority {
                     current.waiters.append(continuation)
                     pendingCommandAdmissions[envelope.operationID] = current
                 }
+                // The command that owned the reservation may have durably committed while this
+                // waiter slept. Reissue the atomic Rust preflight rather than reusing an unseen
+                // decision captured before the wait.
+                continue admissionReservation
             }
-            if let recorded = await recordedOutcome(
-                for: envelope,
-                fingerprint: fingerprint,
-                permit: permit
-            ) {
+            if preflight.decision != .unseen {
+                guard let recorded = await recordedOutcome(
+                    for: envelope,
+                    fingerprint: fingerprint,
+                    decision: preflight.decision,
+                    permit: permit
+                ) else {
+                    quarantineCommandAdmission()
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_admission_receipt_invalid"
+                    )
+                }
                 return recorded
             }
             if commandAdmissionIsCorrupt {
@@ -496,7 +554,7 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "ephemeral_workspace_not_persistable"
             )
         }
-        if let workspaceID, unavailableWorkspaces[workspaceID] != nil {
+        if unavailableWorkspaces[workspaceID] != nil {
             return recordTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
@@ -658,30 +716,36 @@ actor DomainWorkspaceContextAuthority {
         return nil
     }
 
-    private func resolveCommandIdentity(
+    private func resolveCommandPreflight(
         _ input: DomainWorkspaceCommandIdentityInput
-    ) async throws -> String {
-        if let commandIdentityResolver {
-            return try await commandIdentityResolver(input)
+    ) throws -> DomainWorkspaceCommandAdmissionPreflight {
+        guard let commandAdmission else {
+            throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
         }
-        let validator: DomainWorkspaceRustJournal.PreparedValidator
-        if let commandIdentityValidator {
-            validator = commandIdentityValidator
-        } else {
-            let prepared = try await DomainWorkspaceRustJournal.prepare()
-            commandIdentityValidator = prepared
-            validator = prepared
+        return try commandAdmission.preflight(input)
+    }
+
+    private func resolveInjectedCommandPreflight(
+        _ input: DomainWorkspaceCommandIdentityInput,
+        workspaceID: UUID
+    ) async throws -> DomainWorkspaceCommandAdmissionPreflight {
+        guard let commandIdentityResolver else {
+            throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
         }
-        do {
-            return try await Task.detached(priority: nil) {
-                try Task.checkCancellation()
-                return try validator.commandIdentity(input)
-            }.value
-        } catch {
-            commandIdentityValidator = nil
-            quarantineCommandAdmission()
-            throw error
+        // Deterministic tests may override only identity computation. Production never enters this
+        // split seam and always uses the synchronous prepared preflight above.
+        let fingerprint = try await commandIdentityResolver(input)
+        guard let commandAdmission else {
+            throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
         }
+        return DomainWorkspaceCommandAdmissionPreflight(
+            fingerprint: fingerprint,
+            decision: try commandAdmission.decision(
+                workspaceID: workspaceID,
+                operationID: input.operationID,
+                fingerprint: fingerprint
+            )
+        )
     }
 
     private func isLowercaseSHA256(_ value: String) -> Bool {
@@ -838,7 +902,28 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_command_admission_rust_unavailable"
             )
         }
+        return await recordedOutcome(
+            for: envelope,
+            fingerprint: fingerprint,
+            decision: decision,
+            permit: permit
+        )
+    }
 
+    private func recordedOutcome(
+        for envelope: DomainWorkspaceCommandEnvelope,
+        fingerprint: String,
+        decision: DomainWorkspaceCommandAdmissionDecision,
+        permit: DomainWorkspaceMutationPermit
+    ) async -> DomainCommandOutcome? {
+        guard let workspaceID = envelope.workspaceID else {
+            return unrecordedCommandIdentityRejection(
+                envelope,
+                disposition: .readOnly,
+                errorCode: .runtimeReadOnlyDegraded,
+                diagnostic: "workspace_command_admission_receipt_invalid"
+            )
+        }
         switch decision {
         case .unseen:
             return nil

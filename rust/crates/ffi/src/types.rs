@@ -1023,6 +1023,12 @@ pub enum CoreWorkspaceCommandAdmissionDecisionV1 {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionPreflightV1 {
+    pub identity: CoreWorkspaceCommandIdentityV1,
+    pub decision: CoreWorkspaceCommandAdmissionDecisionV1,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceCommandAdmissionDiagnosticsV1 {
     pub global_operation_count: u64,
@@ -1109,6 +1115,19 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecis
                     operation: operation.into(),
                 }
             }
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionPreflightV1>
+    for CoreWorkspaceCommandAdmissionPreflightV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandAdmissionPreflightV1,
+    ) -> Self {
+        Self {
+            identity: value.identity.into(),
+            decision: value.decision.into(),
         }
     }
 }

@@ -116,6 +116,17 @@ enum DomainWorkspaceCommandAdmissionDecision: Sendable, Equatable {
     )
 }
 
+struct DomainWorkspaceCommandAdmissionPreflight: Sendable, Equatable {
+    let fingerprint: String
+    let decision: DomainWorkspaceCommandAdmissionDecision
+}
+
+enum DomainWorkspaceCommandAdmissionPreflightError: Error, Sendable, Equatable {
+    case invalidInput
+    case invalidReceipt
+    case unavailable
+}
+
 struct DomainWorkspaceCommandAdmissionDiagnostics: Sendable, Equatable {
     let globalOperationCount: UInt64
     let workspaceCount: UInt64
@@ -1017,6 +1028,47 @@ enum DomainWorkspaceRustJournal {
             self.validator = validator
         }
 
+        func preflight(
+            _ input: DomainWorkspaceCommandIdentityInput
+        ) throws -> DomainWorkspaceCommandAdmissionPreflight {
+            let request = validator.coreCommandIdentityRequest(input)
+            do {
+                let receipt = try core.preflight(request)
+                guard receipt.identity.workspaceID == request.workspaceID,
+                      receipt.identity.commandKind == request.commandKind,
+                      PreparedValidator.isSHA256Digest(receipt.identity.fingerprint)
+                else {
+                    throw DomainWorkspaceCommandAdmissionPreflightError.invalidReceipt
+                }
+                let decision = try validator.materializeCommandAdmissionDecision(receipt.decision)
+                if case let .replay(_, operation) = decision {
+                    guard operation.operationID == input.operationID,
+                          operation.fingerprint == receipt.identity.fingerprint
+                    else {
+                        throw DomainWorkspaceCommandAdmissionPreflightError.invalidReceipt
+                    }
+                }
+                return DomainWorkspaceCommandAdmissionPreflight(
+                    fingerprint: receipt.identity.fingerprint,
+                    decision: decision
+                )
+            } catch let error as DomainWorkspaceCommandAdmissionPreflightError {
+                throw error
+            } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                switch error {
+                case .inputTooLarge,
+                     .invalidIdentity,
+                     .invalidFileURL,
+                     .invalidDigest:
+                    throw DomainWorkspaceCommandAdmissionPreflightError.invalidInput
+                default:
+                    throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
+                }
+            } catch {
+                throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
+            }
+        }
+
         func decision(
             workspaceID: UUID,
             operationID: UUID,
@@ -1108,6 +1160,24 @@ enum DomainWorkspaceRustJournal {
         func commandIdentity(
             _ input: DomainWorkspaceCommandIdentityInput
         ) throws -> String {
+            let request = coreCommandIdentityRequest(input)
+            do {
+                let identity = try core.commandIdentity(request)
+                guard identity.workspaceID == request.workspaceID,
+                      identity.commandKind == request.commandKind,
+                      Self.isSHA256Digest(identity.fingerprint)
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                return identity.fingerprint
+            } catch {
+                throw map(error)
+            }
+        }
+
+        fileprivate func coreCommandIdentityRequest(
+            _ input: DomainWorkspaceCommandIdentityInput
+        ) -> CoreWorkspaceCommandIdentityRequestV1 {
             let origin: CoreWorkspaceCommandOriginV1 = switch input.origin {
             case let .appPresentation(windowID):
                 .appPresentation(windowID: Int64(windowID))
@@ -1155,33 +1225,22 @@ enum DomainWorkspaceRustJournal {
                     }
                 )
             }
-            do {
-                let identity = try core.commandIdentity(CoreWorkspaceCommandIdentityRequestV1(
-                    operationID: input.operationID,
-                    expectedCatalogRevision: input.expectedCatalogRevision,
-                    expectedWorkspaceRevision: input.expectedWorkspaceRevision,
-                    expectedContextRevision: input.expectedContextRevision,
-                    origin: origin,
-                    commandKind: command.kind,
-                    workspaceID: command.workspaceID,
-                    fileURL: command.fileURL,
-                    contentDigest: command.contentDigest,
-                    acceptExternal: command.acceptExternal,
-                    protectedAgentIdentities: command.protectedAgentIdentities
-                ))
-                guard identity.workspaceID == command.workspaceID,
-                      identity.commandKind == command.kind,
-                      Self.isSHA256Digest(identity.fingerprint)
-                else {
-                    throw DomainPersistenceError.corruptJournal
-                }
-                return identity.fingerprint
-            } catch {
-                throw map(error)
-            }
+            return CoreWorkspaceCommandIdentityRequestV1(
+                operationID: input.operationID,
+                expectedCatalogRevision: input.expectedCatalogRevision,
+                expectedWorkspaceRevision: input.expectedWorkspaceRevision,
+                expectedContextRevision: input.expectedContextRevision,
+                origin: origin,
+                commandKind: command.kind,
+                workspaceID: command.workspaceID,
+                fileURL: command.fileURL,
+                contentDigest: command.contentDigest,
+                acceptExternal: command.acceptExternal,
+                protectedAgentIdentities: command.protectedAgentIdentities
+            )
         }
 
-        private static func isSHA256Digest(_ value: String) -> Bool {
+        fileprivate static func isSHA256Digest(_ value: String) -> Bool {
             value.utf8.count == 64 && value.utf8.allSatisfy { byte in
                 (48 ... 57).contains(byte) || (65 ... 70).contains(byte) || (97 ... 102).contains(byte)
             }

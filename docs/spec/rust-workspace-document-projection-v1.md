@@ -1247,3 +1247,32 @@ behavior remain unchanged.
   cancellation, malformed receipt, or runtime loss still fail closed.
 - Focused command-identity, authority, lifecycle, source-guard, product-build, style, guardrail, formatting, and
   diff checks pass.
+
+## P5-7a amendment — atomic prepared command preflight
+
+P5-7a combines immutable command identity and durable replay/collision lookup into one exact-runtime operation
+on the prepared Rust command-admission capability. The receipt contains the validated canonical workspace
+identity, command kind, lowercase SHA-256 fingerprint, and the admission decision captured from the same locked
+Rust state. Production may not call the standalone identity export and then separately ask the prepared index
+for a decision.
+
+Swift retains the workspace-storage lease, mutation permit, actor-local in-flight waiter coordination, physical
+I/O, and command execution routing. The bounded prepared preflight and the actor-local pending check/reservation
+execute synchronously in one authority actor turn; an `.unseen` receipt therefore cannot miss a reservation that
+appears and disappears across actor reentrancy. A waiter that resumes after an identical in-flight command
+completes must request a fresh Rust preflight before proceeding, so the newly inserted durable receipt is
+observed; it may not reuse an earlier `.unseen` result. Semantic request validation rejects only that command and
+does not quarantine the shared prepared capability; malformed receipts or runtime/capability failures fail closed
+and quarantine it. Test-only resolver injection remains isolated from the default production path and cannot
+enable a Swift fingerprint or lookup fallback.
+
+### P5-7a done-when
+
+- Runtime tests prove preflight identity/decision consistency, replay, collision, invalid input, close, and exact
+  runtime fences.
+- Typed UniFFI and Bridge receipts reject partial success/error shapes, mismatched workspace or command identity,
+  malformed digest, and invalid replay receipts.
+- The production authority performs one prepared preflight before pending reservation, repeats it after waiter
+  wake-up, and contains no standalone identity-plus-decision pair.
+- Cancellation or Rust/capability failure records no operation and remains retryable; focused Runtime/FFI/Bridge/
+  Domain authority, source-guard, codegen, product-build, style, guardrail, formatting, and diff checks pass.

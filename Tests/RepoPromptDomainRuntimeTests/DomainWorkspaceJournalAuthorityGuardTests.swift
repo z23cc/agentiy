@@ -430,14 +430,27 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertFalse(runtime.contains("DomainWorkspaceRustCommandIdentityObserver"))
         XCTAssertFalse(runtime.contains("workspaceCommandIdentityProjector"))
         for required in [
-            "fingerprint = try await resolveCommandIdentity(commandIdentityInput)",
+            "preflight = try resolveCommandPreflight(commandIdentityInput)",
+            "return try commandAdmission.preflight(input)",
+            "actor turn, so an unseen receipt cannot miss a completed pending admission",
+            "continue admissionReservation",
+            "if preflight.decision != .unseen",
+            "decision: preflight.decision",
             "fingerprint: fingerprint",
             "unrecordedCommandIdentityRejection("
         ] {
             XCTAssertTrue(authority.contains(required), "Missing Rust admission boundary: \(required)")
         }
+        for retired in [
+            "resolveCommandIdentity(",
+            "validator.commandIdentity(input)"
+        ] {
+            XCTAssertFalse(authority.contains(retired), "Split production preflight remains: \(retired)")
+        }
         XCTAssertTrue(adapter.contains("func commandIdentity("))
         XCTAssertTrue(adapter.contains("core.commandIdentity("))
+        XCTAssertTrue(adapter.contains("func preflight("))
+        XCTAssertTrue(adapter.contains("core.preflight("))
     }
 
     func testCommandReplayAndCollisionProductionAdmissionUsesPreparedRustIndex() throws {
@@ -495,6 +508,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for required in [
             "struct PreparedCommandAdmission: Sendable",
             "core.beginCommandAdmission(",
+            "core.preflight(",
             "core.decision(",
             "core.reconcileDurable(",
             "core.insert(",

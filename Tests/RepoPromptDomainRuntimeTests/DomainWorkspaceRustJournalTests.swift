@@ -269,6 +269,34 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             .collision(scope: .workspace)
         )
 
+        let preflightEnvelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            expectedCatalogRevision: 7,
+            expectedWorkspaceRevision: 3,
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
+        )
+        let preflightInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(preflightEnvelope))
+        let unseenPreflight = try admission.preflight(preflightInput)
+        XCTAssertEqual(unseenPreflight.decision, .unseen)
+        let preflightOperation = DomainRecordedOperation(
+            fingerprint: unseenPreflight.fingerprint,
+            recordedAt: Date(timeIntervalSinceReferenceDate: 43),
+            outcome: DomainCommandOutcome(
+                operationID: preflightEnvelope.operationID,
+                disposition: .unchanged,
+                before: revisions,
+                after: revisions,
+                catalogRevision: 7,
+                resultingDigest: nil
+            )
+        )
+        _ = try admission.insert(workspaceID: workspaceID, operation: preflightOperation)
+        XCTAssertEqual(
+            try admission.preflight(preflightInput).decision,
+            .replay(scope: .workspace, operation: preflightOperation)
+        )
+
         let transient = DomainRecordedOperation(
             fingerprint: String(repeating: "d", count: 64),
             recordedAt: Date(timeIntervalSinceReferenceDate: 43.5),

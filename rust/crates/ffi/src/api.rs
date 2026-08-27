@@ -16,17 +16,18 @@ use crate::types::{
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
     CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionBeginRequestV1,
     CoreWorkspaceCommandAdmissionDecisionV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
-    CoreWorkspaceCommandAdmissionSeedRecordV1, CoreWorkspaceCommandIdentityRequestV1,
-    CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCreateDirectiveV1,
-    CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
-    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDeletionTombstoneCleanupRequestV1,
-    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
-    CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
-    CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
-    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
-    CoreWorkspaceRecordedOperationV1, CoreWorkspaceSaveActionReportV1,
-    CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
-    CoreWorkspaceWorkingJournalSeedRequestV1, CoreWorkspaceWorkingJournalValidationErrorKindV1,
+    CoreWorkspaceCommandAdmissionPreflightV1, CoreWorkspaceCommandAdmissionSeedRecordV1,
+    CoreWorkspaceCommandIdentityRequestV1, CoreWorkspaceCommandIdentityResponseV1,
+    CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
+    CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
+    CoreWorkspaceDeletionTombstoneCleanupRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
+    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceJournalMutationDirectiveV1,
+    CoreWorkspaceJournalMutationTransactionRequestV1, CoreWorkspacePendingSaveRecoveryRequestV1,
+    CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
+    CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspaceRecordedOperationV1,
+    CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
+    CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceWorkingJournalSeedRequestV1,
+    CoreWorkspaceWorkingJournalValidationErrorKindV1,
     CoreWorkspaceWorkingJournalValidationRequestV1,
     CoreWorkspaceWorkingJournalValidationResponseV1, DrainBatch, FolderSuffixRequest, HostResponse,
     InventoryComposedSnapshotHandleV1, InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1,
@@ -138,6 +139,13 @@ pub struct CoreWorkspaceCommandAdmissionDecisionResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionPreflightResponseV1 {
+    pub preflight: Option<CoreWorkspaceCommandAdmissionPreflightV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceCommandAdmissionMutationResponseV1 {
     pub diagnostics: Option<CoreWorkspaceCommandAdmissionDiagnosticsV1>,
@@ -177,6 +185,23 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
 
 #[uniffi::export]
 impl CorePreparedWorkspaceCommandAdmissionV1 {
+    pub fn preflight(
+        &self,
+        request: CoreWorkspaceCommandIdentityRequestV1,
+    ) -> Result<CoreWorkspaceCommandAdmissionPreflightResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            if request.runtime_identity.parse()? != self.identity {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_command_admission_preflight_response(
+                self.inner
+                    .preflight(workspace_command_identity_request(request)),
+            ))
+        })
+    }
+
     pub fn decision(
         &self,
         workspace_id: String,
@@ -1117,23 +1142,7 @@ impl CoreRuntime {
             self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
             let result = runtime::workspace_persistence_journal::workspace_command_identity_v1(
-                runtime::workspace_persistence_journal::WorkspaceCommandIdentityRequestV1 {
-                    operation_id: request.operation_id,
-                    expected_catalog_revision: request.expected_catalog_revision,
-                    expected_workspace_revision: request.expected_workspace_revision,
-                    expected_context_revision: request.expected_context_revision,
-                    origin: request.origin.into(),
-                    command_kind: request.command_kind.into(),
-                    workspace_id: request.workspace_id,
-                    file_url: request.file_url,
-                    content_digest: request.content_digest,
-                    accept_external: request.accept_external,
-                    protected_agent_identities: request
-                        .protected_agent_identities
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
-                },
+                workspace_command_identity_request(request),
             );
             Ok(match result {
                 Ok(identity) => CoreWorkspaceCommandIdentityResponseV1 {
@@ -3133,6 +3142,51 @@ fn workspace_metadata_response(
     }
 }
 
+fn workspace_command_identity_request(
+    request: CoreWorkspaceCommandIdentityRequestV1,
+) -> runtime::workspace_persistence_journal::WorkspaceCommandIdentityRequestV1 {
+    runtime::workspace_persistence_journal::WorkspaceCommandIdentityRequestV1 {
+        operation_id: request.operation_id,
+        expected_catalog_revision: request.expected_catalog_revision,
+        expected_workspace_revision: request.expected_workspace_revision,
+        expected_context_revision: request.expected_context_revision,
+        origin: request.origin.into(),
+        command_kind: request.command_kind.into(),
+        workspace_id: request.workspace_id,
+        file_url: request.file_url,
+        content_digest: request.content_digest,
+        accept_external: request.accept_external,
+        protected_agent_identities: request
+            .protected_agent_identities
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    }
+}
+
+fn workspace_command_admission_preflight_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionPreflightV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceCommandAdmissionPreflightResponseV1 {
+    match result {
+        Ok(preflight) => CoreWorkspaceCommandAdmissionPreflightResponseV1 {
+            preflight: Some(preflight.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceCommandAdmissionPreflightResponseV1 {
+                preflight: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
 fn workspace_command_admission_decision_response(
     result: Result<
         runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1,
@@ -3650,7 +3704,8 @@ mod tests {
         let (core, identity, _) = initialized_core();
         let operation = CoreWorkspaceRecordedOperationV1 {
             operation_id: "66666666-7777-8888-9999-aaaaaaaaaaaa".to_owned(),
-            fingerprint: "f".repeat(64),
+            fingerprint: "4a06f1cb575766d8be224014ef503c41ccd40d82a94521be142f4746cbd4b9f0"
+                .to_owned(),
             recorded_at: 42.5,
             disposition: "applied".to_owned(),
             before: None,
@@ -3674,6 +3729,51 @@ mod tests {
             .expect("command admission begin");
         assert_eq!(response.error_kind, None);
         let admission = response.admission.expect("prepared admission");
+
+        let preflight_request = CoreWorkspaceCommandIdentityRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+            operation_id: operation.operation_id.clone(),
+            expected_catalog_revision: None,
+            expected_workspace_revision: None,
+            expected_context_revision: None,
+            origin: CoreWorkspaceCommandOriginV1::AppPresentation { window_id: 42 },
+            command_kind: CoreWorkspaceCommandKindV1::Create,
+            workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+            file_url: Some("file:///tmp/Workspace.json".to_owned()),
+            content_digest: Some("f".repeat(64)),
+            accept_external: None,
+            protected_agent_identities: Vec::new(),
+        };
+        let preflight = admission
+            .preflight(preflight_request.clone())
+            .expect("typed preflight")
+            .preflight
+            .expect("preflight receipt");
+        assert_eq!(
+            preflight,
+            CoreWorkspaceCommandAdmissionPreflightV1 {
+                identity: crate::types::CoreWorkspaceCommandIdentityV1 {
+                    workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                    command_kind: CoreWorkspaceCommandKindV1::Create,
+                    fingerprint: operation.fingerprint.clone(),
+                },
+                decision: CoreWorkspaceCommandAdmissionDecisionV1::Replay {
+                    scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace,
+                    operation: operation.clone(),
+                },
+            }
+        );
+        let mut invalid_preflight = preflight_request.clone();
+        invalid_preflight.content_digest = Some("invalid".to_owned());
+        let rejected_preflight = admission
+            .preflight(invalid_preflight)
+            .expect("typed semantic failure");
+        assert_eq!(rejected_preflight.preflight, None);
+        assert_eq!(
+            rejected_preflight.error_kind,
+            Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidDigest)
+        );
 
         let replay = admission
             .decision(
@@ -3756,6 +3856,10 @@ mod tests {
         assert_eq!(diagnostics.diagnostics, Some(reconciled));
 
         core.begin_shutdown(identity).expect("shutdown");
+        assert_eq!(
+            admission.preflight(preflight_request),
+            Err(CoreError::RuntimeStopped)
+        );
         assert_eq!(
             admission.decision(
                 "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),

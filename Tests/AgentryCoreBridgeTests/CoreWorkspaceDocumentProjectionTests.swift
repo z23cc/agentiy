@@ -151,6 +151,62 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         )
         XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
 
+        let preflightRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: 7,
+            expectedWorkspaceRevision: 1,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .save,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+        let unseenPreflight = try admission.preflight(preflightRequest)
+        XCTAssertEqual(unseenPreflight.identity.workspaceID, workspaceID)
+        XCTAssertEqual(unseenPreflight.identity.commandKind, .save)
+        XCTAssertEqual(unseenPreflight.decision, .unseen)
+        let preflightOperation = CoreWorkspaceRecordedOperationV1(
+            operationID: preflightRequest.operationID,
+            fingerprint: unseenPreflight.identity.fingerprint,
+            recordedAt: 43,
+            disposition: "unchanged",
+            before: nil,
+            after: nil,
+            catalogRevision: 7,
+            resultingDigest: nil,
+            errorCode: nil,
+            diagnostic: nil
+        )
+        _ = try admission.insert(workspaceID: workspaceID, operation: preflightOperation)
+        XCTAssertEqual(
+            try admission.preflight(preflightRequest).decision,
+            .replay(scope: .workspace, operation: preflightOperation)
+        )
+        let invalidPreflightRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: 7,
+            expectedWorkspaceRevision: 0,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .create,
+            workspaceID: UUID(),
+            fileURL: URL(fileURLWithPath: "/tmp/Invalid-Preflight.json"),
+            contentDigest: "invalid-digest",
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+        XCTAssertThrowsError(try admission.preflight(invalidPreflightRequest)) { error in
+            XCTAssertEqual(error as? CoreWorkspaceWorkingJournalValidationError, .invalidDigest)
+        }
+        XCTAssertEqual(
+            try admission.preflight(preflightRequest).decision,
+            .replay(scope: .workspace, operation: preflightOperation),
+            "A semantic request error must not close the shared prepared admission capability."
+        )
+
         let transient = CoreWorkspaceRecordedOperationV1(
             operationID: UUID(),
             fingerprint: String(repeating: "d", count: 64),

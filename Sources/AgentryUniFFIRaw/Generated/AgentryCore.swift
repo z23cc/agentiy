@@ -659,6 +659,8 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
 
     func insert(workspaceId: String?, operation: CoreWorkspaceRecordedOperationV1) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
 
+    func preflight(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandAdmissionPreflightResponseV1
+
     func reconcileDurable(records: [CoreWorkspaceCommandAdmissionSeedRecordV1]) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
 
     func removeWorkspace(workspaceId: String) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
@@ -753,6 +755,16 @@ open func insert(workspaceId: String?, operation: CoreWorkspaceRecordedOperation
             self.uniffiCloneHandle(),
         FfiConverterOptionString.lower(workspaceId),
         FfiConverterTypeCoreWorkspaceRecordedOperationV1_lower(operation),uniffiCallStatus
+    )
+})
+}
+
+open func preflight(request: CoreWorkspaceCommandIdentityRequestV1)throws  -> CoreWorkspaceCommandAdmissionPreflightResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_preflight(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -7017,6 +7029,118 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lift
 #endif
 public func FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionMutationResponseV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceCommandAdmissionPreflightResponseV1: Equatable, Hashable {
+    public let preflight: CoreWorkspaceCommandAdmissionPreflightV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(preflight: CoreWorkspaceCommandAdmissionPreflightV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.preflight = preflight
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionPreflightResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionPreflightResponseV1 {
+        return
+            try CoreWorkspaceCommandAdmissionPreflightResponseV1(
+                preflight: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionPreflightV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionPreflightResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionPreflightV1.write(value.preflight, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionPreflightResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionPreflightResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceCommandAdmissionPreflightV1: Equatable, Hashable {
+    public let identity: CoreWorkspaceCommandIdentityV1
+    public let decision: CoreWorkspaceCommandAdmissionDecisionV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(identity: CoreWorkspaceCommandIdentityV1, decision: CoreWorkspaceCommandAdmissionDecisionV1) {
+        self.identity = identity
+        self.decision = decision
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionPreflightV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
+        return
+            try CoreWorkspaceCommandAdmissionPreflightV1(
+                identity: FfiConverterTypeCoreWorkspaceCommandIdentityV1.read(from: &buf),
+                decision: FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionPreflightV1, into buf: inout [UInt8]) {
+        FfiConverterTypeCoreWorkspaceCommandIdentityV1.write(value.identity, into: &buf)
+        FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.write(value.decision, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1_lower(_ value: CoreWorkspaceCommandAdmissionPreflightV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.lower(value)
 }
 
 
@@ -18107,6 +18231,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDiagnostic
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionPreflightV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandAdmissionPreflightV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandIdentityV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceCommandIdentityV1?
 
@@ -19413,6 +19561,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_insert() != 64091) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_preflight() != 38913) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_reconcile_durable() != 47920) {

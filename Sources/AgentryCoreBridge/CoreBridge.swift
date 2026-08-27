@@ -1042,51 +1042,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         identity: CoreRuntimeIdentity,
         request: CoreWorkspaceCommandIdentityRequestV1
     ) throws -> CoreWorkspaceCommandIdentityV1 {
-        let rawOrigin: AgentryUniFFIRaw.CoreWorkspaceCommandOriginV1 = switch request.origin {
-        case let .appPresentation(windowID):
-            .appPresentation(windowId: windowID)
-        case let .appMCP(connectionID):
-            .appMcp(connectionId: connectionID?.uuidString)
-        case .standalone:
-            .standalone
-        case .externalReload:
-            .externalReload
-        }
-        let rawKind: AgentryUniFFIRaw.CoreWorkspaceCommandKindV1 = switch request.commandKind {
-        case .create: .create
-        case .replace: .replace
-        case .save: .save
-        case .delete: .delete
-        case .resolveExternalConflict: .resolveExternalConflict
-        }
-        let rawProtected = request.protectedAgentIdentities.map { protected in
-            let location: AgentryUniFFIRaw.CoreWorkspaceTabLocationV1 = switch protected.location {
-            case .composed: .composed
-            case .stashed: .stashed
-            }
-            return AgentryUniFFIRaw.CoreWorkspaceProtectedAgentIdentityV1(
-                tabId: protected.tabID.uuidString,
-                location: location,
-                activeAgentSessionId: protected.activeAgentSessionID?.uuidString,
-                isPinned: protected.isPinned
-            )
-        }
         do {
-            let response = try runtime.workspaceCommandIdentityV1(request: .init(
-                runtimeIdentity: Self.rawIdentity(identity),
-                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
-                operationId: request.operationID.uuidString,
-                expectedCatalogRevision: request.expectedCatalogRevision,
-                expectedWorkspaceRevision: request.expectedWorkspaceRevision,
-                expectedContextRevision: request.expectedContextRevision,
-                origin: rawOrigin,
-                commandKind: rawKind,
-                workspaceId: request.workspaceID.uuidString,
-                fileUrl: request.fileURL?.absoluteString,
-                contentDigest: request.contentDigest,
-                acceptExternal: request.acceptExternal,
-                protectedAgentIdentities: rawProtected
-            ))
+            let response = try runtime.workspaceCommandIdentityV1(
+                request: Self.rawWorkspaceCommandIdentityRequest(
+                    identity: identity,
+                    request: request
+                )
+            )
             if let errorKind = response.errorKind {
                 guard response.identity == nil else {
                     throw CoreTransportError.unexpected(
@@ -1099,32 +1061,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
             guard response.futureSchemaVersion == nil,
-                  let value = response.identity,
-                  let workspaceID = UUID(uuidString: value.workspaceId),
-                  workspaceID == request.workspaceID,
-                  Self.isSHA256(value.fingerprint)
+                  let value = response.identity
             else {
                 throw CoreTransportError.unexpected(
                     "workspace command identity receipt is invalid"
                 )
             }
-            let commandKind: CoreWorkspaceCommandKindV1 = switch value.commandKind {
-            case .create: .create
-            case .replace: .replace
-            case .save: .save
-            case .delete: .delete
-            case .resolveExternalConflict: .resolveExternalConflict
-            }
-            guard commandKind == request.commandKind else {
-                throw CoreTransportError.unexpected(
-                    "workspace command identity kind does not match request"
-                )
-            }
-            return CoreWorkspaceCommandIdentityV1(
-                workspaceID: workspaceID,
-                commandKind: commandKind,
-                fingerprint: value.fingerprint
-            )
+            return try Self.workspaceCommandIdentity(value, request: request)
         } catch let error as CoreWorkspaceWorkingJournalValidationError {
             throw error
         } catch {
@@ -1162,6 +1105,23 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
             return CorePreparedWorkspaceCommandAdmissionV1(
+                preflight: { request in
+                    do {
+                        return try Self.workspaceCommandAdmissionPreflight(
+                            rawAdmission.preflight(
+                                request: Self.rawWorkspaceCommandIdentityRequest(
+                                    identity: identity,
+                                    request: request
+                                )
+                            ),
+                            request: request
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
                 decision: { workspaceID, operationID, fingerprint in
                     do {
                         return try Self.workspaceCommandAdmissionDecision(
@@ -2364,6 +2324,81 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    private static func rawWorkspaceCommandIdentityRequest(
+        identity: CoreRuntimeIdentity,
+        request: CoreWorkspaceCommandIdentityRequestV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceCommandIdentityRequestV1 {
+        let origin: AgentryUniFFIRaw.CoreWorkspaceCommandOriginV1 = switch request.origin {
+        case let .appPresentation(windowID): .appPresentation(windowId: windowID)
+        case let .appMCP(connectionID): .appMcp(connectionId: connectionID?.uuidString)
+        case .standalone: .standalone
+        case .externalReload: .externalReload
+        }
+        let commandKind: AgentryUniFFIRaw.CoreWorkspaceCommandKindV1 = switch request.commandKind {
+        case .create: .create
+        case .replace: .replace
+        case .save: .save
+        case .delete: .delete
+        case .resolveExternalConflict: .resolveExternalConflict
+        }
+        let protectedAgentIdentities = request.protectedAgentIdentities.map { protected in
+            let location: AgentryUniFFIRaw.CoreWorkspaceTabLocationV1 = switch protected.location {
+            case .composed: .composed
+            case .stashed: .stashed
+            }
+            return AgentryUniFFIRaw.CoreWorkspaceProtectedAgentIdentityV1(
+                tabId: protected.tabID.uuidString,
+                location: location,
+                activeAgentSessionId: protected.activeAgentSessionID?.uuidString,
+                isPinned: protected.isPinned
+            )
+        }
+        return .init(
+            runtimeIdentity: rawIdentity(identity),
+            contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+            operationId: request.operationID.uuidString,
+            expectedCatalogRevision: request.expectedCatalogRevision,
+            expectedWorkspaceRevision: request.expectedWorkspaceRevision,
+            expectedContextRevision: request.expectedContextRevision,
+            origin: origin,
+            commandKind: commandKind,
+            workspaceId: request.workspaceID.uuidString,
+            fileUrl: request.fileURL?.absoluteString,
+            contentDigest: request.contentDigest,
+            acceptExternal: request.acceptExternal,
+            protectedAgentIdentities: protectedAgentIdentities
+        )
+    }
+
+    private static func workspaceCommandIdentity(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceCommandIdentityV1,
+        request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceCommandIdentityV1 {
+        guard let workspaceID = UUID(uuidString: value.workspaceId),
+              workspaceID == request.workspaceID,
+              isSHA256(value.fingerprint)
+        else {
+            throw CoreTransportError.unexpected("workspace command identity receipt is invalid")
+        }
+        let commandKind: CoreWorkspaceCommandKindV1 = switch value.commandKind {
+        case .create: .create
+        case .replace: .replace
+        case .save: .save
+        case .delete: .delete
+        case .resolveExternalConflict: .resolveExternalConflict
+        }
+        guard commandKind == request.commandKind else {
+            throw CoreTransportError.unexpected(
+                "workspace command identity kind does not match request"
+            )
+        }
+        return CoreWorkspaceCommandIdentityV1(
+            workspaceID: workspaceID,
+            commandKind: commandKind,
+            fingerprint: value.fingerprint
+        )
+    }
+
     private static func rawWorkspaceCommandAdmissionSeedRecord(
         _ value: CoreWorkspaceCommandAdmissionSeedRecordV1
     ) -> AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionSeedRecordV1 {
@@ -2400,6 +2435,43 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    private static func workspaceCommandAdmissionPreflight(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionPreflightResponseV1,
+        request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
+        if let errorKind = response.errorKind {
+            guard response.preflight == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace command preflight contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let preflight = response.preflight
+        else {
+            throw CoreTransportError.unexpected("workspace command preflight is invalid")
+        }
+        let identity = try workspaceCommandIdentity(preflight.identity, request: request)
+        let decision = try workspaceCommandAdmissionDecision(preflight.decision)
+        if case let .replay(_, operation) = decision {
+            guard operation.operationID == request.operationID,
+                  operation.fingerprint == identity.fingerprint
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace command preflight replay does not match request identity"
+                )
+            }
+        }
+        return CoreWorkspaceCommandAdmissionPreflightV1(
+            identity: identity,
+            decision: decision
+        )
+    }
+
     private static func workspaceCommandAdmissionDecision(
         _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionDecisionResponseV1
     ) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
@@ -2421,7 +2493,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 "workspace command admission decision is invalid"
             )
         }
-        return switch decision {
+        return try workspaceCommandAdmissionDecision(decision)
+    }
+
+    private static func workspaceCommandAdmissionDecision(
+        _ decision: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionDecisionV1
+    ) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
+        switch decision {
         case .unseen:
             .unseen
         case let .collision(scope):

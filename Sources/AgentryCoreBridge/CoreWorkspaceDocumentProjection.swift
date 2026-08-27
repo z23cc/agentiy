@@ -235,6 +235,19 @@ public enum CoreWorkspaceCommandAdmissionDecisionV1: Sendable, Equatable {
     )
 }
 
+public struct CoreWorkspaceCommandAdmissionPreflightV1: Sendable, Equatable {
+    public let identity: CoreWorkspaceCommandIdentityV1
+    public let decision: CoreWorkspaceCommandAdmissionDecisionV1
+
+    public init(
+        identity: CoreWorkspaceCommandIdentityV1,
+        decision: CoreWorkspaceCommandAdmissionDecisionV1
+    ) {
+        self.identity = identity
+        self.decision = decision
+    }
+}
+
 public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Sendable, Equatable {
     public let globalOperationCount: UInt64
     public let workspaceCount: UInt64
@@ -252,6 +265,8 @@ public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Sendable, Equatable {
 }
 
 public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable {
+    private let preflightOperation: @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
+        -> CoreWorkspaceCommandAdmissionPreflightV1
     private let decisionOperation: @Sendable (UUID, UUID, String) throws
         -> CoreWorkspaceCommandAdmissionDecisionV1
     private let reconcileDurableOperation: @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
@@ -265,6 +280,8 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
     private let closeOperation: @Sendable () -> Void
 
     init(
+        preflight: @escaping @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
+            -> CoreWorkspaceCommandAdmissionPreflightV1,
         decision: @escaping @Sendable (UUID, UUID, String) throws
             -> CoreWorkspaceCommandAdmissionDecisionV1,
         reconcileDurable: @escaping @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
@@ -276,6 +293,7 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         close: @escaping @Sendable () -> Void
     ) {
+        preflightOperation = preflight
         decisionOperation = decision
         reconcileDurableOperation = reconcileDurable
         insertOperation = insert
@@ -286,6 +304,12 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
 
     deinit {
         closeOperation()
+    }
+
+    public func preflight(
+        _ request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
+        try preflightOperation(request)
     }
 
     public func decision(

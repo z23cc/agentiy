@@ -362,6 +362,12 @@ pub enum WorkspaceCommandAdmissionDecisionV1 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceCommandAdmissionPreflightV1 {
+    pub identity: WorkspaceCommandIdentityV1,
+    pub decision: WorkspaceCommandAdmissionDecisionV1,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceCommandAdmissionSeedRecordV1 {
     /// `Some` seeds both the exact workspace index and the global index. `None` is global-only.
     pub workspace_id: Option<String>,
@@ -721,6 +727,24 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         let diagnostics = replacement.diagnostics();
         *current = replacement;
         Ok(diagnostics)
+    }
+
+    pub fn preflight(
+        &self,
+        request: WorkspaceCommandIdentityRequestV1,
+    ) -> Result<WorkspaceCommandAdmissionPreflightV1, WorkspaceWorkingJournalError> {
+        let operation_id = canonical_uuid(&request.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let identity = workspace_command_identity_v1(request)?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let state = state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let decision = state.decision(&identity.workspace_id, &operation_id, &identity.fingerprint);
+        Ok(WorkspaceCommandAdmissionPreflightV1 { identity, decision })
     }
 
     pub fn decision(
@@ -4563,6 +4587,84 @@ mod tests {
             fingerprint,
             index as f64,
         )
+    }
+
+    #[test]
+    fn command_admission_preflight_binds_identity_and_current_decision() {
+        let admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
+        let request = command_identity_request(WorkspaceCommandKindV1::Save);
+        let unseen = admission
+            .preflight(request.clone())
+            .expect("unseen preflight");
+        assert_eq!(unseen.identity.workspace_id, WORKSPACE_ID);
+        assert_eq!(unseen.identity.command_kind, WorkspaceCommandKindV1::Save);
+        assert!(matches!(
+            unseen.decision,
+            WorkspaceCommandAdmissionDecisionV1::Unseen
+        ));
+
+        let operation = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: unseen.identity.fingerprint.clone(),
+            recorded_at: 1.0,
+            disposition: "invalid".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 0,
+            resulting_digest: None,
+            error_code: Some("workspace_unavailable".to_owned()),
+            diagnostic: Some("workspace_not_found".to_owned()),
+        };
+        admission
+            .insert(Some(WORKSPACE_ID.to_owned()), operation.clone())
+            .expect("insert receipt");
+        assert_eq!(
+            admission
+                .preflight(request.clone())
+                .expect("replay preflight"),
+            WorkspaceCommandAdmissionPreflightV1 {
+                identity: unseen.identity.clone(),
+                decision: WorkspaceCommandAdmissionDecisionV1::Replay {
+                    scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
+                    operation,
+                },
+            }
+        );
+
+        let mut collision_request = request;
+        collision_request.origin = WorkspaceCommandOriginV1::Standalone;
+        let collision = admission
+            .preflight(collision_request)
+            .expect("collision preflight");
+        assert_ne!(collision.identity.fingerprint, unseen.identity.fingerprint);
+        assert!(matches!(
+            collision.decision,
+            WorkspaceCommandAdmissionDecisionV1::Collision {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace
+            }
+        ));
+
+        let mut invalid = command_identity_request(WorkspaceCommandKindV1::Create);
+        invalid.content_digest = Some("invalid".to_owned());
+        assert_eq!(
+            admission.preflight(invalid),
+            Err(WorkspaceWorkingJournalError::InvalidDigest)
+        );
+        assert_eq!(
+            admission.diagnostics().expect("unchanged diagnostics"),
+            WorkspaceCommandAdmissionDiagnosticsV1 {
+                global_operation_count: 1,
+                workspace_count: 1,
+                workspace_operation_count: 1,
+            }
+        );
+
+        admission.close();
+        assert_eq!(
+            admission.preflight(command_identity_request(WorkspaceCommandKindV1::Save)),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
     }
 
     #[test]
