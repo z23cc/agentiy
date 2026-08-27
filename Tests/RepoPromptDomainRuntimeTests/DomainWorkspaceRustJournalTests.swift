@@ -83,7 +83,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         }
     }
 
-    func testPreparedCommandIdentityMatchesFrozenSwiftOracleForEveryCommandAndOrigin() async throws {
+    func testPreparedCommandIdentityIsStableAndCanonicalForEveryCommandAndOrigin() async throws {
         let workspaceID = UUID()
         let fileURL = URL(fileURLWithPath: "/tmp/CommandIdentity-\(workspaceID.uuidString).json")
         func document(_ marker: String) -> DomainWorkspaceDocument {
@@ -125,9 +125,10 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 isPinned: true
             )
         ]
+        let operationID = UUID()
         let envelopes = [
             DomainWorkspaceCommandEnvelope(
-                operationID: UUID(),
+                operationID: operationID,
                 expectedCatalogRevision: nil,
                 expectedWorkspaceRevision: nil,
                 expectedContextRevision: nil,
@@ -135,7 +136,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 command: .createWorkspace(document("create"))
             ),
             DomainWorkspaceCommandEnvelope(
-                operationID: UUID(),
+                operationID: operationID,
                 expectedCatalogRevision: 7,
                 expectedWorkspaceRevision: 8,
                 expectedContextRevision: 9,
@@ -143,20 +144,20 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 command: .replaceWorkingDocument(document("replace"))
             ),
             DomainWorkspaceCommandEnvelope(
-                operationID: UUID(),
+                operationID: operationID,
                 expectedWorkspaceRevision: 3,
                 origin: .appMCP(connectionID: nil),
                 command: .saveWorkspaceDocument(workspaceID: workspaceID)
             ),
             DomainWorkspaceCommandEnvelope(
-                operationID: UUID(),
+                operationID: operationID,
                 expectedCatalogRevision: 4,
                 expectedWorkspaceRevision: 5,
                 origin: .standalone,
                 command: .deleteWorkspace(workspaceID: workspaceID)
             ),
             DomainWorkspaceCommandEnvelope(
-                operationID: UUID(),
+                operationID: operationID,
                 expectedWorkspaceRevision: 6,
                 expectedContextRevision: 7,
                 origin: .externalReload,
@@ -171,9 +172,43 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         defer { Task { await service.shutdown() } }
         let prepared = try await DomainWorkspaceRustJournal.prepare(coreService: service)
 
-        for envelope in envelopes {
-            XCTAssertEqual(try prepared.commandIdentity(envelope), envelope.fingerprint)
+        let fingerprints = try envelopes.map { envelope in
+            let fingerprint = try prepared.commandIdentity(envelope)
+            XCTAssertEqual(try prepared.commandIdentity(envelope), fingerprint)
+            XCTAssertEqual(fingerprint.count, 64)
+            XCTAssertNotNil(fingerprint.range(of: "^[0-9a-f]{64}$", options: .regularExpression))
+            return fingerprint
         }
+        XCTAssertEqual(Set(fingerprints).count, envelopes.count)
+
+        let fieldIsolationEnvelopes = [
+            DomainWorkspaceCommandEnvelope(
+                operationID: operationID,
+                origin: .standalone,
+                command: .saveWorkspaceDocument(workspaceID: workspaceID)
+            ),
+            DomainWorkspaceCommandEnvelope(
+                operationID: operationID,
+                origin: .externalReload,
+                command: .saveWorkspaceDocument(workspaceID: workspaceID)
+            ),
+            DomainWorkspaceCommandEnvelope(
+                operationID: operationID,
+                expectedWorkspaceRevision: 1,
+                origin: .standalone,
+                command: .saveWorkspaceDocument(workspaceID: workspaceID)
+            ),
+            DomainWorkspaceCommandEnvelope(
+                operationID: operationID,
+                origin: .standalone,
+                command: .deleteWorkspace(workspaceID: workspaceID)
+            )
+        ]
+        XCTAssertEqual(
+            Set(try fieldIsolationEnvelopes.map(prepared.commandIdentity)).count,
+            fieldIsolationEnvelopes.count,
+            "command kind, origin, and revision fences must each affect Rust identity"
+        )
         let reversed = DomainWorkspaceCommandEnvelope(
             operationID: envelopes[4].operationID,
             expectedWorkspaceRevision: 6,
@@ -185,8 +220,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 protectedAgentIdentities: Array(protected.reversed())
             )
         )
-        XCTAssertEqual(reversed.fingerprint, envelopes[4].fingerprint)
-        XCTAssertEqual(try prepared.commandIdentity(reversed), envelopes[4].fingerprint)
+        XCTAssertEqual(try prepared.commandIdentity(reversed), fingerprints[4])
     }
 
     func testPreparedCommandAdmissionRoundTripsCompleteDomainReceipt() async throws {
@@ -583,6 +617,191 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             XCTFail("future journal unexpectedly validated")
         } catch {
             XCTAssertEqual(error as? DomainPersistenceError, .futureJournal(2))
+        }
+    }
+
+    func testProductionDeduplicationAndCollisionUseInjectedRustIdentity() async throws {
+        let directory = temporaryDirectory(name: "command-identity-authority")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let resolver = CommandIdentityAuthorityResolverScript(steps: [
+            .value(String(repeating: "a", count: 64)),
+            .value(String(repeating: "b", count: 64))
+        ])
+        let runtime = MCPDomainRuntime(
+            configuration: commandIdentityConfiguration(directory: directory),
+            workspaceProjectionProjector: { _ in
+                throw CommandIdentityAuthorityTestError.projectorFailed
+            },
+            workspaceCommandIdentityResolver: { input in
+                try await resolver.resolve(input)
+            }
+        )
+        try await runtime.start()
+        let envelope = commandIdentityEnvelope()
+
+        let first = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(first.disposition, .invalid)
+        XCTAssertEqual(first.errorCode, .workspaceUnavailable)
+        let second = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(second.disposition, .invalid)
+        XCTAssertEqual(second.errorCode, .operationIDCollision)
+        let invocationCount = await resolver.invocationCount
+        XCTAssertEqual(invocationCount, 2)
+        _ = await runtime.shutdown()
+    }
+
+    func testRustIdentityFailureDoesNotRecordOperationAndRetryCanProceed() async throws {
+        let directory = temporaryDirectory(name: "command-identity-retry")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let rustFingerprint = String(repeating: "c", count: 64)
+        let resolver = CommandIdentityAuthorityResolverScript(steps: [
+            .failure,
+            .value(rustFingerprint),
+            .value(rustFingerprint)
+        ])
+        let runtime = MCPDomainRuntime(
+            configuration: commandIdentityConfiguration(directory: directory),
+            workspaceProjectionProjector: { _ in
+                throw CommandIdentityAuthorityTestError.projectorFailed
+            },
+            workspaceCommandIdentityResolver: { input in
+                try await resolver.resolve(input)
+            }
+        )
+        try await runtime.start()
+        let envelope = commandIdentityEnvelope()
+
+        let rejected = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(rejected.disposition, .readOnly)
+        XCTAssertEqual(rejected.errorCode, .runtimeReadOnlyDegraded)
+        XCTAssertEqual(rejected.diagnostic, "workspace_command_identity_rust_unavailable")
+        let retried = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(retried.disposition, .invalid)
+        XCTAssertEqual(retried.errorCode, .workspaceUnavailable)
+        let deduplicated = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(deduplicated.disposition, .deduplicated)
+        XCTAssertEqual(deduplicated.errorCode, .workspaceUnavailable)
+        _ = await runtime.shutdown()
+    }
+
+    func testCancellationAfterResolverSuccessDoesNotRecordOperation() async throws {
+        let directory = temporaryDirectory(name: "command-identity-cancelled")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let resolver = CommandIdentityAuthorityCancellationResolver()
+        let runtime = MCPDomainRuntime(
+            configuration: commandIdentityConfiguration(directory: directory),
+            workspaceProjectionProjector: { _ in
+                throw CommandIdentityAuthorityTestError.projectorFailed
+            },
+            workspaceCommandIdentityResolver: { input in
+                await resolver.resolve(input)
+            }
+        )
+        try await runtime.start()
+        let envelope = commandIdentityEnvelope()
+        let cancelledTask = Task { await runtime.workspaceStore.execute(envelope) }
+        let resolverStarted = await waitForCommandIdentityResolver { await resolver.hasStarted }
+        XCTAssertTrue(resolverStarted)
+
+        cancelledTask.cancel()
+        await resolver.release()
+        let cancelled = await cancelledTask.value
+        XCTAssertEqual(cancelled.disposition, .failed)
+        XCTAssertEqual(cancelled.errorCode, .cancelled)
+        XCTAssertEqual(cancelled.diagnostic, "workspace_command_identity_cancelled")
+
+        let retried = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(retried.disposition, .invalid)
+        XCTAssertEqual(retried.errorCode, .workspaceUnavailable)
+        _ = await runtime.shutdown()
+    }
+
+    private func commandIdentityEnvelope() -> DomainWorkspaceCommandEnvelope {
+        DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 1,
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: UUID())
+        )
+    }
+
+    private func commandIdentityConfiguration(directory: URL) -> DomainRuntimeConfiguration {
+        DomainRuntimeConfiguration(
+            mode: .standalone,
+            profileIdentifier: "command-identity-authority-\(UUID().uuidString)",
+            storageDirectory: directory,
+            eventDirectory: directory.appendingPathComponent("Events", isDirectory: true),
+            temporaryDirectory: directory.appendingPathComponent("Temp", isDirectory: true),
+            externalReloadInterval: nil
+        )
+    }
+
+    private func temporaryDirectory(name: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoPrompt-\(name)-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    private func waitForCommandIdentityResolver(
+        _ predicate: @escaping () async -> Bool
+    ) async -> Bool {
+        for _ in 0 ..< 200 {
+            if await predicate() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+}
+
+private enum CommandIdentityAuthorityTestError: Error {
+    case projectorFailed
+}
+
+private actor CommandIdentityAuthorityCancellationResolver {
+    private(set) var hasStarted = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var invocationCount = 0
+
+    func resolve(_: DomainWorkspaceCommandIdentityInput) async -> String {
+        invocationCount += 1
+        if invocationCount == 1 {
+            hasStarted = true
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+            }
+            return String(repeating: "d", count: 64)
+        }
+        return String(repeating: "e", count: 64)
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor CommandIdentityAuthorityResolverScript {
+    enum Step: Sendable {
+        case value(String)
+        case failure
+    }
+
+    private var steps: [Step]
+    private(set) var invocationCount = 0
+
+    init(steps: [Step]) {
+        self.steps = steps
+    }
+
+    func resolve(_: DomainWorkspaceCommandIdentityInput) throws -> String {
+        invocationCount += 1
+        guard !steps.isEmpty else {
+            throw CommandIdentityAuthorityTestError.projectorFailed
+        }
+        switch steps.removeFirst() {
+        case let .value(value):
+            return value
+        case .failure:
+            throw CommandIdentityAuthorityTestError.projectorFailed
         }
     }
 }

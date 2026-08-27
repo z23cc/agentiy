@@ -140,7 +140,6 @@ actor DomainWorkspaceContextAuthority {
     private let workspaceAuthorityScope: DomainWorkspaceAuthorityLeaseScope
     private let metrics: DomainRuntimeMetricsSink
     private let projectionObservationSink: DomainWorkspaceProjectionObservationSink
-    private let commandIdentityObservationSink: DomainWorkspaceCommandIdentityObservationSink
     private let commandIdentityResolver: DomainWorkspaceCommandIdentityResolver?
     private var commandIdentityValidator: DomainWorkspaceRustJournal.PreparedValidator?
     private var commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
@@ -166,7 +165,6 @@ actor DomainWorkspaceContextAuthority {
         mutationAccess: DomainWorkspaceMutationAccess,
         metrics: DomainRuntimeMetricsSink,
         projectionObservationSink: DomainWorkspaceProjectionObservationSink,
-        commandIdentityObservationSink: DomainWorkspaceCommandIdentityObservationSink,
         commandIdentityResolver: DomainWorkspaceCommandIdentityResolver? = nil
     ) {
         self.identity = identity
@@ -175,7 +173,6 @@ actor DomainWorkspaceContextAuthority {
         workspaceAuthorityScope = mutationAccess.scope
         self.metrics = metrics
         self.projectionObservationSink = projectionObservationSink
-        self.commandIdentityObservationSink = commandIdentityObservationSink
         self.commandIdentityResolver = commandIdentityResolver
         mutationAccessSnapshot = DomainWorkspaceMutationAccessSnapshot(
             generation: 0,
@@ -397,7 +394,6 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_command_identity_input_too_large"
             )
         }
-        let rustFingerprintStart = DispatchTime.now().uptimeNanoseconds
         let fingerprint: String
         do {
             try Task.checkCancellation()
@@ -426,17 +422,6 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_command_identity_receipt_invalid"
             )
         }
-        let rustFingerprintLatency = DispatchTime.now().uptimeNanoseconds &- rustFingerprintStart
-        let swiftFingerprintStart = DispatchTime.now().uptimeNanoseconds
-        let swiftFingerprint = envelope.fingerprint
-        let swiftFingerprintLatency = DispatchTime.now().uptimeNanoseconds &- swiftFingerprintStart
-        commandIdentityObservationSink.observe(
-            envelope,
-            swiftFingerprint: swiftFingerprint,
-            swiftLatencyNanoseconds: swiftFingerprintLatency,
-            authoritativeRustFingerprint: fingerprint,
-            authoritativeRustLatencyNanoseconds: rustFingerprintLatency
-        )
         let workspaceID = envelope.workspaceID
         admissionReservation: while true {
             while let pending = pendingCommandAdmissions[envelope.operationID] {

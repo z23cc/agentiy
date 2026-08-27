@@ -391,11 +391,23 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         )
     }
 
-    func testCommandIdentityProductionAdmissionUsesRustWithSwiftOnlyAsObserverOracle() throws {
+    func testCommandIdentityProductionAdmissionUsesRustWithoutSwiftOracle() throws {
         let root = repositoryRoot()
         let authority = try String(
             contentsOf: root.appendingPathComponent(
                 "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
+            ),
+            encoding: .utf8
+        )
+        let command = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceCommand.swift"
+            ),
+            encoding: .utf8
+        )
+        let runtime = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/RepoPromptDomainRuntime.swift"
             ),
             encoding: .utf8
         )
@@ -406,28 +418,24 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertEqual(
-            authority.components(separatedBy: "envelope.fingerprint").count - 1,
-            1,
-            "The sole Swift fingerprint read must remain the differential observer oracle"
-        )
-        XCTAssertFalse(authority.contains("fingerprint: envelope.fingerprint"))
+        for forbidden in [
+            "envelope.fingerprint",
+            "commandIdentityObservationSink",
+            "swiftFingerprint"
+        ] {
+            XCTAssertFalse(authority.contains(forbidden), "Retired Swift oracle remains: \(forbidden)")
+        }
+        XCTAssertFalse(command.contains("package var fingerprint: String"))
+        XCTAssertFalse(command.contains("fingerprintComponent"))
+        XCTAssertFalse(runtime.contains("DomainWorkspaceRustCommandIdentityObserver"))
+        XCTAssertFalse(runtime.contains("workspaceCommandIdentityProjector"))
         for required in [
             "fingerprint = try await resolveCommandIdentity(commandIdentityInput)",
             "fingerprint: fingerprint",
-            "authoritativeRustFingerprint: fingerprint",
             "unrecordedCommandIdentityRejection("
         ] {
             XCTAssertTrue(authority.contains(required), "Missing Rust admission boundary: \(required)")
         }
-        XCTAssertEqual(
-            authority.components(
-                separatedBy: "commandIdentityObservationSink.observe("
-            ).count - 1,
-            1,
-            "The admitted command path must submit exactly one non-suspending parity observation"
-        )
-        XCTAssertFalse(authority.contains("await commandIdentityObservationSink"))
         XCTAssertTrue(adapter.contains("func commandIdentity("))
         XCTAssertTrue(adapter.contains("core.commandIdentity("))
     }

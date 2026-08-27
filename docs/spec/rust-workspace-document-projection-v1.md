@@ -1221,3 +1221,29 @@ rebuilding or inferring locally.
   the deletion delta is taken from the Rust-validated catalog tombstone rather than synthesized in Swift.
 - Focused Rust/FFI/Bridge/Domain authority, source-guard, codegen, product-build, style, guardrail, formatting,
   and diff checks pass.
+
+## P5-6g amendment — Swift command-identity oracle retirement
+
+P5-6g removes the comparison-only Swift command fingerprint implementation and its bounded observer after
+Rust command identity and durable admission reconciliation become the sole production decision path. The
+runtime no longer owns, starts, drains, injects, or exposes a command-identity comparison worker. The admitted
+command path performs exactly one exact-runtime Rust identity request and uses that validated lowercase SHA-256
+receipt for pending-command pairing, replay/collision decisions, persistence receipts, and publication.
+
+`DomainWorkspaceCommandEnvelope` is now data only; it cannot locally derive an operation fingerprint. Rust
+contract tests verify deterministic receipts, distinct command/origin coverage, and protected-identity stable
+ordering without retaining a second semantic implementation as an oracle. Source guards ban the retired Swift
+fingerprint accessor, observer sink, projector injection, and runtime lifecycle surface. This removes diagnostic
+queueing and comparison metrics only; command outcomes, storage lease ownership, physical I/O, and failure
+behavior remain unchanged.
+
+### P5-6g done-when
+
+- No production or test source defines `DomainWorkspaceRustCommandIdentityObserver`, its sink, or its projector
+  injection and lifecycle surface.
+- `DomainWorkspaceCommandEnvelope` contains no fingerprint algorithm, and production admission contains no
+  Swift fingerprint read or fallback.
+- Exact-runtime Rust identity remains required before pending-command pairing and prepared admission lookup;
+  cancellation, malformed receipt, or runtime loss still fail closed.
+- Focused command-identity, authority, lifecycle, source-guard, product-build, style, guardrail, formatting, and
+  diff checks pass.
