@@ -200,7 +200,7 @@ protocol CoreRuntimeTransport: Sendable {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1
     func workspaceDeleteTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -208,7 +208,7 @@ protocol CoreRuntimeTransport: Sendable {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1
     func workspaceJournalMutationTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -217,7 +217,7 @@ protocol CoreRuntimeTransport: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1
     func workspaceSaveTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -226,7 +226,7 @@ protocol CoreRuntimeTransport: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1
     func workspacePendingSaveResolveV1(
         identity: CoreRuntimeIdentity,
@@ -1110,31 +1110,16 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             }
             return CorePreparedWorkspaceCommandAdmissionV1(
                 rawAdmission: rawAdmission,
-                preflight: { request in
+                acquire: { request in
                     do {
-                        return try Self.workspaceCommandAdmissionPreflight(
-                            rawAdmission.preflight(
+                        return try Self.workspaceCommandAdmissionAcquisition(
+                            rawAdmission.acquire(
                                 request: Self.rawWorkspaceCommandIdentityRequest(
                                     identity: identity,
                                     request: request
                                 )
                             ),
                             request: request
-                        )
-                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
-                        throw error
-                    } catch {
-                        throw Self.map(error)
-                    }
-                },
-                decision: { workspaceID, operationID, fingerprint in
-                    do {
-                        return try Self.workspaceCommandAdmissionDecision(
-                            rawAdmission.decision(
-                                workspaceId: workspaceID.uuidString,
-                                operationId: operationID.uuidString,
-                                fingerprint: fingerprint
-                            )
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
                         throw error
@@ -1162,19 +1147,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                                 workspaceId: workspaceID.uuidString,
                                 operations: operations.map(Self.rawWorkspaceRecordedOperation),
                                 deletedOperation: deletedOperation.map(Self.rawWorkspaceRecordedOperation)
-                            )
-                        )
-                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
-                        throw error
-                    } catch {
-                        throw Self.map(error)
-                    }
-                },
-                insertTransient: { operation in
-                    do {
-                        return try Self.workspaceCommandAdmissionDiagnostics(
-                            rawAdmission.insertTransient(
-                                operation: Self.rawWorkspaceRecordedOperation(operation)
                             )
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
@@ -1476,7 +1448,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         do {
             let response = try runtime.workspaceCreateTransactionBeginV1(request: .init(
@@ -1488,7 +1460,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 effectiveJournalBytes: effectiveJournalBytes,
                 requestBytes: requestBytes,
                 documentBytes: documentBytes
-            ), admission: commandAdmission?.rawAdmission)
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1555,7 +1527,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         do {
             let response = try runtime.workspaceDeleteTransactionBeginV1(request: .init(
@@ -1565,7 +1537,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 effectiveCatalogBytes: effectiveCatalogBytes,
                 effectiveJournalBytes: effectiveJournalBytes,
                 requestBytes: requestBytes
-            ), admission: commandAdmission?.rawAdmission)
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1646,7 +1618,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         do {
             let response = try runtime.workspaceJournalMutationTransactionBeginV1(request: .init(
@@ -1657,7 +1629,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 requestBytes: requestBytes,
                 candidateDocumentBytes: candidateDocumentBytes,
                 diskDocumentBytes: diskDocumentBytes
-            ), admission: commandAdmission?.rawAdmission)
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1727,7 +1699,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         do {
             let response = try runtime.workspaceSaveTransactionBeginV1(request: .init(
@@ -1738,7 +1710,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 requestBytes: requestBytes,
                 candidateDocumentBytes: candidateDocumentBytes,
                 diskDocumentBytes: diskDocumentBytes
-            ), admission: commandAdmission?.rawAdmission)
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -2470,14 +2442,20 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    private static func workspaceCommandAdmissionPreflight(
-        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionPreflightResponseV1,
+    private static func workspaceCommandAdmissionAcquisition(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionAcquireResponseV1,
         request: CoreWorkspaceCommandIdentityRequestV1
-    ) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
+    ) throws -> CoreWorkspaceCommandAdmissionAcquisitionV1 {
         if let errorKind = response.errorKind {
-            guard response.preflight == nil else {
+            guard response.kind == nil,
+                  response.identity == nil,
+                  response.claim == nil,
+                  response.scope == nil,
+                  response.operation == nil,
+                  response.generation == nil
+            else {
                 throw CoreTransportError.unexpected(
-                    "workspace command preflight contains success and error"
+                    "workspace command acquisition contains success and error"
                 )
             }
             throw try workspaceWorkingJournalValidationError(
@@ -2486,63 +2464,115 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             )
         }
         guard response.futureSchemaVersion == nil,
-              let preflight = response.preflight
+              let kind = response.kind,
+              let rawIdentity = response.identity
         else {
-            throw CoreTransportError.unexpected("workspace command preflight is invalid")
+            throw CoreTransportError.unexpected("workspace command acquisition is invalid")
         }
-        let identity = try workspaceCommandIdentity(preflight.identity, request: request)
-        let decision = try workspaceCommandAdmissionDecision(preflight.decision)
-        if case let .replay(_, operation) = decision {
+        let identity = try workspaceCommandIdentity(rawIdentity, request: request)
+        switch kind {
+        case .claimed:
+            guard let rawClaim = response.claim,
+                  let generation = response.generation,
+                  generation > 0,
+                  UUID(uuidString: rawClaim.workspaceId()) == identity.workspaceID,
+                  UUID(uuidString: rawClaim.operationId()) == request.operationID,
+                  rawClaim.fingerprint() == identity.fingerprint,
+                  rawClaim.generation() == generation,
+                  response.scope == nil,
+                  response.operation == nil
+            else {
+                throw CoreTransportError.unexpected("workspace command claim receipt is invalid")
+            }
+            let claim = CoreWorkspaceCommandExecutionClaimV1(
+                rawClaim: rawClaim,
+                finalizeTransient: { operation in
+                    do {
+                        let receipt = try rawClaim.finalizeTransient(
+                            operation: rawWorkspaceRecordedOperation(operation)
+                        )
+                        if let errorKind = receipt.errorKind {
+                            guard receipt.operation == nil else {
+                                throw CoreTransportError.unexpected(
+                                    "workspace command transient finalization contains success and error"
+                                )
+                            }
+                            throw try workspaceWorkingJournalValidationError(
+                                errorKind,
+                                futureSchemaVersion: receipt.futureSchemaVersion
+                            )
+                        }
+                        guard receipt.futureSchemaVersion == nil,
+                              let rawOperation = receipt.operation
+                        else {
+                            throw CoreTransportError.unexpected(
+                                "workspace command transient finalization receipt is invalid"
+                            )
+                        }
+                        let finalized = try workspaceRecordedOperation(rawOperation)
+                        guard finalized == operation else {
+                            throw CoreTransportError.unexpected(
+                                "workspace command transient finalization changed the operation"
+                            )
+                        }
+                        return finalized
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw map(error)
+                    }
+                },
+                abandon: {
+                    do {
+                        return try rawClaim.abandon()
+                    } catch {
+                        throw map(error)
+                    }
+                },
+                close: { rawClaim.close() }
+            )
+            return .claimed(identity: identity, claim: claim, generation: generation)
+        case .pending:
+            guard response.claim == nil,
+                  response.scope == nil,
+                  response.operation == nil,
+                  let generation = response.generation,
+                  generation > 0
+            else {
+                throw CoreTransportError.unexpected("workspace command pending receipt is invalid")
+            }
+            return .pending(identity: identity, generation: generation)
+        case .collision:
+            guard response.claim == nil,
+                  response.operation == nil,
+                  response.generation == nil
+            else {
+                throw CoreTransportError.unexpected("workspace command collision receipt is invalid")
+            }
+            return .collision(
+                identity: identity,
+                scope: response.scope.map(workspaceCommandAdmissionScope)
+            )
+        case .replay:
+            guard response.claim == nil,
+                  response.generation == nil,
+                  let scope = response.scope,
+                  let rawOperation = response.operation
+            else {
+                throw CoreTransportError.unexpected("workspace command replay receipt is invalid")
+            }
+            let operation = try workspaceRecordedOperation(rawOperation)
             guard operation.operationID == request.operationID,
                   operation.fingerprint == identity.fingerprint
             else {
                 throw CoreTransportError.unexpected(
-                    "workspace command preflight replay does not match request identity"
+                    "workspace command replay does not match request identity"
                 )
             }
-        }
-        return CoreWorkspaceCommandAdmissionPreflightV1(
-            identity: identity,
-            decision: decision
-        )
-    }
-
-    private static func workspaceCommandAdmissionDecision(
-        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionDecisionResponseV1
-    ) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
-        if let errorKind = response.errorKind {
-            guard response.decision == nil else {
-                throw CoreTransportError.unexpected(
-                    "workspace command admission decision contains success and error"
-                )
-            }
-            throw try workspaceWorkingJournalValidationError(
-                errorKind,
-                futureSchemaVersion: response.futureSchemaVersion
-            )
-        }
-        guard response.futureSchemaVersion == nil,
-              let decision = response.decision
-        else {
-            throw CoreTransportError.unexpected(
-                "workspace command admission decision is invalid"
-            )
-        }
-        return try workspaceCommandAdmissionDecision(decision)
-    }
-
-    private static func workspaceCommandAdmissionDecision(
-        _ decision: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionDecisionV1
-    ) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
-        switch decision {
-        case .unseen:
-            .unseen
-        case let .collision(scope):
-            .collision(scope: workspaceCommandAdmissionScope(scope))
-        case let .replay(scope, operation):
-            .replay(
+            return .replay(
+                identity: identity,
                 scope: workspaceCommandAdmissionScope(scope),
-                operation: try workspaceRecordedOperation(operation)
+                operation: operation
             )
         }
     }

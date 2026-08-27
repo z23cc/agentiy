@@ -106,14 +106,13 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         _ = try await bridge.close()
     }
 
-    func testRealCoreProvidesPreparedWorkspaceCommandAdmission() async throws {
+    func testRealCoreProvidesClaimBoundWorkspaceCommandAdmission() async throws {
         let bridge = try await AgentryCoreBridge.start()
         let client = try await bridge.computeClient()
         let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
         let workspaceID = UUID()
-        let operationID = UUID()
-        let operation = CoreWorkspaceRecordedOperationV1(
-            operationID: operationID,
+        let seededOperation = CoreWorkspaceRecordedOperationV1(
+            operationID: UUID(),
             fingerprint: String(repeating: "f", count: 64),
             recordedAt: 42.5,
             disposition: "applied",
@@ -129,29 +128,12 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             diagnostic: nil
         )
         let admission = try prepared.beginCommandAdmission(records: [
-            .init(workspaceID: workspaceID, operation: operation),
+            .init(workspaceID: workspaceID, operation: seededOperation),
         ])
         defer { admission.close() }
-
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: operationID,
-                fingerprint: operation.fingerprint
-            ),
-            .replay(scope: .workspace, operation: operation)
-        )
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: operationID,
-                fingerprint: String(repeating: "e", count: 64)
-            ),
-            .collision(scope: .workspace)
-        )
         XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
 
-        let preflightRequest = CoreWorkspaceCommandIdentityRequestV1(
+        let transientRequest = CoreWorkspaceCommandIdentityRequestV1(
             operationID: UUID(),
             expectedCatalogRevision: 7,
             expectedWorkspaceRevision: 1,
@@ -164,57 +146,49 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             acceptExternal: nil,
             protectedAgentIdentities: []
         )
-        let unseenPreflight = try admission.preflight(preflightRequest)
-        XCTAssertEqual(unseenPreflight.identity.workspaceID, workspaceID)
-        XCTAssertEqual(unseenPreflight.identity.commandKind, .save)
-        XCTAssertEqual(unseenPreflight.decision, .unseen)
-        let preflightOperation = CoreWorkspaceRecordedOperationV1(
-            operationID: preflightRequest.operationID,
-            fingerprint: unseenPreflight.identity.fingerprint,
-            recordedAt: 43,
-            disposition: "unchanged",
-            before: nil,
-            after: nil,
-            catalogRevision: 7,
-            resultingDigest: nil,
-            errorCode: nil,
-            diagnostic: nil
-        )
-        _ = try admission.reconcileWorkspace(
-            workspaceID: workspaceID,
-            operations: [operation, preflightOperation],
-            deletedOperation: nil
-        )
-        XCTAssertEqual(
-            try admission.preflight(preflightRequest).decision,
-            .replay(scope: .workspace, operation: preflightOperation)
-        )
-        let invalidPreflightRequest = CoreWorkspaceCommandIdentityRequestV1(
-            operationID: UUID(),
-            expectedCatalogRevision: 7,
-            expectedWorkspaceRevision: 0,
-            expectedContextRevision: nil,
-            origin: .standalone,
-            commandKind: .create,
-            workspaceID: UUID(),
-            fileURL: URL(fileURLWithPath: "/tmp/Invalid-Preflight.json"),
-            contentDigest: "invalid-digest",
+        let transientIdentity: CoreWorkspaceCommandIdentityV1
+        let transientClaim: CoreWorkspaceCommandExecutionClaimV1
+        let transientGeneration: UInt64
+        switch try admission.acquire(transientRequest) {
+        case let .claimed(identity, claim, generation):
+            transientIdentity = identity
+            transientClaim = claim
+            transientGeneration = generation
+        default:
+            return XCTFail("Expected the first acquisition to claim execution")
+        }
+        switch try admission.acquire(transientRequest) {
+        case let .pending(identity, generation):
+            XCTAssertEqual(identity, transientIdentity)
+            XCTAssertEqual(generation, transientGeneration)
+        default:
+            XCTFail("Expected matching concurrent acquisition to remain pending")
+        }
+        let collisionRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: transientRequest.operationID,
+            expectedCatalogRevision: transientRequest.expectedCatalogRevision,
+            expectedWorkspaceRevision: transientRequest.expectedWorkspaceRevision,
+            expectedContextRevision: transientRequest.expectedContextRevision,
+            origin: .externalReload,
+            commandKind: transientRequest.commandKind,
+            workspaceID: transientRequest.workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
             acceptExternal: nil,
             protectedAgentIdentities: []
         )
-        XCTAssertThrowsError(try admission.preflight(invalidPreflightRequest)) { error in
-            XCTAssertEqual(error as? CoreWorkspaceWorkingJournalValidationError, .invalidDigest)
+        switch try admission.acquire(collisionRequest) {
+        case let .collision(identity, scope):
+            XCTAssertNotEqual(identity.fingerprint, transientIdentity.fingerprint)
+            XCTAssertNil(scope)
+        default:
+            XCTFail("Expected an in-flight identity collision")
         }
-        XCTAssertEqual(
-            try admission.preflight(preflightRequest).decision,
-            .replay(scope: .workspace, operation: preflightOperation),
-            "A semantic request error must not close the shared prepared admission capability."
-        )
 
-        let transient = CoreWorkspaceRecordedOperationV1(
-            operationID: UUID(),
-            fingerprint: String(repeating: "d", count: 64),
-            recordedAt: 43.5,
+        let transientOperation = CoreWorkspaceRecordedOperationV1(
+            operationID: transientRequest.operationID,
+            fingerprint: transientIdentity.fingerprint,
+            recordedAt: 43,
             disposition: "conflict",
             before: nil,
             after: nil,
@@ -223,11 +197,68 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             errorCode: "state_conflict",
             diagnostic: "transient"
         )
-        _ = try admission.insertTransient(operation: transient)
-        let durableReplacement = CoreWorkspaceRecordedOperationV1(
+        XCTAssertEqual(
+            try transientClaim.finalizeTransient(operation: transientOperation),
+            transientOperation
+        )
+        switch try admission.acquire(transientRequest) {
+        case let .replay(identity, scope, operation):
+            XCTAssertEqual(identity, transientIdentity)
+            XCTAssertEqual(scope, .global)
+            XCTAssertEqual(operation, transientOperation)
+        default:
+            XCTFail("Expected transient finalization to replay globally")
+        }
+
+        let invalidRequest = CoreWorkspaceCommandIdentityRequestV1(
             operationID: UUID(),
-            fingerprint: String(repeating: "c", count: 64),
-            recordedAt: 44.5,
+            expectedCatalogRevision: 7,
+            expectedWorkspaceRevision: 0,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .create,
+            workspaceID: UUID(),
+            fileURL: URL(fileURLWithPath: "/tmp/Invalid-Acquire.json"),
+            contentDigest: "invalid-digest",
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+        XCTAssertThrowsError(try admission.acquire(invalidRequest)) { error in
+            XCTAssertEqual(error as? CoreWorkspaceWorkingJournalValidationError, .invalidDigest)
+        }
+        switch try admission.acquire(transientRequest) {
+        case .replay:
+            break
+        default:
+            XCTFail("A semantic request error must not close the prepared admission")
+        }
+
+        let durableRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: 8,
+            expectedWorkspaceRevision: 1,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .save,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+        let durableIdentity: CoreWorkspaceCommandIdentityV1
+        let durableClaim: CoreWorkspaceCommandExecutionClaimV1
+        switch try admission.acquire(durableRequest) {
+        case let .claimed(identity, claim, _):
+            durableIdentity = identity
+            durableClaim = claim
+        default:
+            return XCTFail("Expected durable execution claim")
+        }
+        let durableOperation = CoreWorkspaceRecordedOperationV1(
+            operationID: durableRequest.operationID,
+            fingerprint: durableIdentity.fingerprint,
+            recordedAt: 44,
             disposition: "unchanged",
             before: nil,
             after: nil,
@@ -236,48 +267,59 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             errorCode: nil,
             diagnostic: nil
         )
-        _ = try admission.reconcileDurable([
-            .init(workspaceID: workspaceID, operation: durableReplacement),
-        ])
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: transient.operationID,
-                fingerprint: transient.fingerprint
-            ),
-            .replay(scope: .global, operation: transient)
+        _ = try admission.reconcileWorkspace(
+            workspaceID: workspaceID,
+            operations: [durableOperation],
+            deletedOperation: nil
         )
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: durableReplacement.operationID,
-                fingerprint: durableReplacement.fingerprint
-            ),
-            .replay(scope: .workspace, operation: durableReplacement)
-        )
+        XCTAssertFalse(try durableClaim.abandon())
+        switch try admission.acquire(durableRequest) {
+        case let .replay(identity, scope, operation):
+            XCTAssertEqual(identity, durableIdentity)
+            XCTAssertEqual(scope, .workspace)
+            XCTAssertEqual(operation, durableOperation)
+        default:
+            XCTFail("Expected reconciled durable receipt to replay in workspace scope")
+        }
 
+        let reconciled = try admission.reconcileDurable([
+            .init(workspaceID: workspaceID, operation: durableOperation),
+        ])
+        XCTAssertEqual(reconciled.globalOperationCount, 3)
+        XCTAssertEqual(reconciled.workspaceOperationCount, 1)
         _ = try admission.reconcileWorkspace(
             workspaceID: workspaceID,
             operations: [],
             deletedOperation: nil
         )
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: operationID,
-                fingerprint: operation.fingerprint
-            ),
-            .replay(scope: .global, operation: operation)
-        )
+        switch try admission.acquire(durableRequest) {
+        case let .replay(_, scope, operation):
+            XCTAssertEqual(scope, .global)
+            XCTAssertEqual(operation, durableOperation)
+        default:
+            XCTFail("Removing a workspace index must retain the global replay receipt")
+        }
 
         admission.close()
         XCTAssertThrowsError(try admission.diagnostics()) { error in
-            XCTAssertEqual(
-                error as? CoreWorkspaceWorkingJournalValidationError,
-                .invalidTransaction
-            )
+            XCTAssertEqual(error as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
         }
         _ = try await bridge.close()
+    }
+
+    private func acquireCommandExecutionClaim(
+        from admission: CorePreparedWorkspaceCommandAdmissionV1,
+        request: CoreWorkspaceCommandIdentityRequestV1,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> (CoreWorkspaceCommandIdentityV1, CoreWorkspaceCommandExecutionClaimV1) {
+        switch try admission.acquire(request) {
+        case let .claimed(identity, claim, _):
+            return (identity, claim)
+        default:
+            XCTFail("Expected a fresh command execution claim", file: file, line: line)
+            throw CoreWorkspaceWorkingJournalValidationError.invalidTransaction
+        }
     }
 
     func testRealCoreValidatesFoundationWorkspaceWorkingJournalV1Shape() async throws {
@@ -491,6 +533,28 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "name": "Workspace",
             "composeTabs": []
         ], options: [.sortedKeys])
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let effective = try prepared.validate(rawJournal)
+        let admission = try prepared.beginCommandAdmission(records: [])
+        defer { admission.close() }
+        let (commandIdentity, commandClaim) = try acquireCommandExecutionClaim(
+            from: admission,
+            request: CoreWorkspaceCommandIdentityRequestV1(
+                operationID: operationID,
+                expectedCatalogRevision: nil,
+                expectedWorkspaceRevision: 0,
+                expectedContextRevision: nil,
+                origin: .standalone,
+                commandKind: .save,
+                workspaceID: workspaceID,
+                fileURL: nil,
+                contentDigest: nil,
+                acceptExternal: nil,
+                protectedAgentIdentities: []
+            )
+        )
         let request = try JSONSerialization.data(withJSONObject: [
             "expectedWorkspaceID": workspaceID.uuidString,
             "expectedFileURL": fileURL.absoluteString,
@@ -501,7 +565,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "contextTombstones": [],
             "operations": [[
                 "operationID": operationID.uuidString,
-                "fingerprint": String(repeating: "c", count: 64),
+                "fingerprint": commandIdentity.fingerprint,
                 "recordedAt": 41.0,
                 "disposition": "applied",
                 "catalogRevision": 7
@@ -509,19 +573,13 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "updatedAt": 41.0,
             "catalogRevision": 7
         ], options: [.sortedKeys])
-        let bridge = try await AgentryCoreBridge.start()
-        let client = try await bridge.computeClient()
-        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
-        let effective = try prepared.validate(rawJournal)
-        let admission = try prepared.beginCommandAdmission(records: [])
-        defer { admission.close() }
         XCTAssertThrowsError(try prepared.beginSaveTransaction(
             rawJournalBytes: rawJournal,
             effectiveJournalBytes: effective.canonicalBytes,
             requestBytes: request,
             candidateDocumentBytes: document,
             diskDocumentBytes: nil,
-            commandAdmission: nil
+            commandClaim: nil
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
         }
@@ -531,7 +589,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             requestBytes: request,
             candidateDocumentBytes: document,
             diskDocumentBytes: nil,
-            commandAdmission: admission
+            commandClaim: commandClaim
         )
         defer { transaction.close() }
 
@@ -686,7 +744,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             requestBytes: request,
             candidateDocumentBytes: document,
             diskDocumentBytes: document,
-            commandAdmission: nil
+            commandClaim: nil
         )
         let rejectedActionCandidate: (UInt64, String)? = switch try rejected.nextDirective() {
         case let .action(actionID, _, .writeJournal, _, _, digest, _, _, _, _):
@@ -709,7 +767,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             requestBytes: request,
             candidateDocumentBytes: document,
             diskDocumentBytes: document,
-            commandAdmission: nil
+            commandClaim: nil
         )
         defer { transaction.close() }
 
@@ -812,6 +870,22 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let catalog = try prepared.seedCatalog(seedRequestBytes: seed)
         let admission = try prepared.beginCommandAdmission(records: [])
         defer { admission.close() }
+        let (commandIdentity, commandClaim) = try acquireCommandExecutionClaim(
+            from: admission,
+            request: CoreWorkspaceCommandIdentityRequestV1(
+                operationID: operationID,
+                expectedCatalogRevision: 0,
+                expectedWorkspaceRevision: nil,
+                expectedContextRevision: nil,
+                origin: .standalone,
+                commandKind: .create,
+                workspaceID: workspaceID,
+                fileURL: fileURL,
+                contentDigest: documentDigest,
+                acceptExternal: nil,
+                protectedAgentIdentities: []
+            )
+        )
         let revisions: [String: Any] = [
             "workingRevision": 1,
             "savedRevision": 1
@@ -826,7 +900,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "contextDigests": [contextID.uuidString, contextDigest],
             "operation": [
                 "operationID": operationID.uuidString,
-                "fingerprint": String(repeating: "c", count: 64),
+                "fingerprint": commandIdentity.fingerprint,
                 "recordedAt": 101.0,
                 "disposition": "applied",
                 "after": revisions,
@@ -842,7 +916,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveJournalBytes: nil,
             requestBytes: request,
             documentBytes: document,
-            commandAdmission: nil
+            commandClaim: nil
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
         }
@@ -853,7 +927,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveJournalBytes: nil,
             requestBytes: request,
             documentBytes: document,
-            commandAdmission: admission
+            commandClaim: commandClaim
         )
         defer { transaction.close() }
         let expectedKinds: [CoreWorkspaceCreateActionKindV1] = [
@@ -908,7 +982,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveJournalBytes: receipt.committedJournal.canonicalBytes,
             requestBytes: recoveryRequest,
             documentBytes: document,
-            commandAdmission: nil
+            commandClaim: nil
         )
         defer { recovery.close() }
         switch try recovery.nextDirective() {
@@ -955,6 +1029,22 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let effectiveJournal = try prepared.validate(rawJournal)
         let admission = try prepared.beginCommandAdmission(records: [])
         defer { admission.close() }
+        let (commandIdentity, commandClaim) = try acquireCommandExecutionClaim(
+            from: admission,
+            request: CoreWorkspaceCommandIdentityRequestV1(
+                operationID: operationID,
+                expectedCatalogRevision: 0,
+                expectedWorkspaceRevision: 0,
+                expectedContextRevision: nil,
+                origin: .standalone,
+                commandKind: .delete,
+                workspaceID: workspaceID,
+                fileURL: nil,
+                contentDigest: nil,
+                acceptExternal: nil,
+                protectedAgentIdentities: []
+            )
+        )
         let seed = try JSONSerialization.data(withJSONObject: [
             "kind": "seed",
             "entries": [[
@@ -971,7 +1061,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "expectedCatalogRevision": 0,
             "operation": [
                 "operationID": operationID.uuidString,
-                "fingerprint": String(repeating: "c", count: 64),
+                "fingerprint": commandIdentity.fingerprint,
                 "recordedAt": 41.0,
                 "disposition": "applied",
                 "before": [
@@ -987,7 +1077,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveCatalogBytes: catalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
             requestBytes: request,
-            commandAdmission: nil
+            commandClaim: nil
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
         }
@@ -1002,7 +1092,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveCatalogBytes: emptyCatalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
             requestBytes: request,
-            commandAdmission: admission
+            commandClaim: commandClaim
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidIdentity)
         }
@@ -1020,7 +1110,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveCatalogBytes: mismatchedURLCatalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
             requestBytes: request,
-            commandAdmission: admission
+            commandClaim: commandClaim
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidFileURL)
         }
@@ -1040,43 +1130,34 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
                 withJSONObject: mismatchedRevisionRequest,
                 options: [.sortedKeys]
             ),
-            commandAdmission: admission
+            commandClaim: commandClaim
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidOperationLedger)
         }
-        let closedTransaction = try prepared.beginDeleteTransaction(
-            rawCatalogBytes: catalog.canonicalBytes,
-            effectiveCatalogBytes: catalog.canonicalBytes,
-            effectiveJournalBytes: effectiveJournal.canonicalBytes,
-            requestBytes: request,
-            commandAdmission: admission
-        )
-        let closedActionID: UInt64
-        let closedDigest: String
-        switch try closedTransaction.nextDirective() {
-        case let .publishCatalog(actionID, _, _, candidate, _, _):
-            closedActionID = actionID
-            closedDigest = candidate.contentDigest
+        switch try admission.acquire(CoreWorkspaceCommandIdentityRequestV1(
+            operationID: operationID,
+            expectedCatalogRevision: 0,
+            expectedWorkspaceRevision: 0,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .delete,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )) {
+        case let .pending(identity, _):
+            XCTAssertEqual(identity, commandIdentity)
         default:
-            return XCTFail("expected close-test catalog directive")
+            return XCTFail("Delete validation attempts consumed or changed the command claim")
         }
-        closedTransaction.close()
-        XCTAssertThrowsError(try closedTransaction.nextDirective()) {
-            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
-        }
-        XCTAssertThrowsError(try closedTransaction.report(.success(
-            actionID: closedActionID,
-            writtenDigest: closedDigest
-        ))) {
-            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
-        }
-
         let transaction = try prepared.beginDeleteTransaction(
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalogBytes: catalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
             requestBytes: request,
-            commandAdmission: admission
+            commandClaim: commandClaim
         )
         defer { transaction.close() }
 

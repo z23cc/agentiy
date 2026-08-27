@@ -1015,6 +1015,31 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         _ = await restarted.shutdown()
     }
 
+    func testConcurrentMatchingPostClaimConflictHasOneTerminalReceipt() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let envelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 99,
+            origin: .standalone,
+            command: .replaceWorkingDocument(try fixture.document(prompt: "must conflict"))
+        )
+
+        async let first = runtime.workspaceStore.execute(envelope)
+        async let second = runtime.workspaceStore.execute(envelope)
+        let outcomes = await [first, second]
+
+        XCTAssertEqual(outcomes.filter { $0.disposition == .conflict }.count, 1)
+        XCTAssertEqual(outcomes.filter { $0.disposition == .deduplicated }.count, 1)
+        XCTAssertEqual(outcomes[0].errorCode, .stateConflict)
+        XCTAssertEqual(outcomes[1].errorCode, .stateConflict)
+        XCTAssertEqual(outcomes[0].diagnostic, "workspace_revision_mismatch")
+        XCTAssertEqual(outcomes[1].diagnostic, "workspace_revision_mismatch")
+        _ = await runtime.shutdown()
+    }
+
     func testContextCASFailsClosedWhenOneCommandChangesMultipleContexts() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }

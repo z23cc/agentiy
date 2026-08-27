@@ -14,20 +14,20 @@ use crate::types::{
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
-    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionBeginRequestV1,
-    CoreWorkspaceCommandAdmissionDecisionV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
-    CoreWorkspaceCommandAdmissionPreflightV1, CoreWorkspaceCommandAdmissionSeedRecordV1,
+    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionAcquireKindV1,
+    CoreWorkspaceCommandAdmissionBeginRequestV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
+    CoreWorkspaceCommandAdmissionLookupScopeV1, CoreWorkspaceCommandAdmissionSeedRecordV1,
     CoreWorkspaceCommandIdentityRequestV1, CoreWorkspaceCommandIdentityResponseV1,
-    CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
-    CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
-    CoreWorkspaceDeletionTombstoneCleanupRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
-    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceJournalMutationDirectiveV1,
-    CoreWorkspaceJournalMutationTransactionRequestV1, CoreWorkspacePendingSaveRecoveryRequestV1,
-    CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
-    CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspaceRecordedOperationV1,
-    CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
-    CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceWorkingJournalSeedRequestV1,
-    CoreWorkspaceWorkingJournalValidationErrorKindV1,
+    CoreWorkspaceCommandIdentityV1, CoreWorkspaceCreateDirectiveV1,
+    CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
+    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDeletionTombstoneCleanupRequestV1,
+    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
+    CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
+    CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
+    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
+    CoreWorkspaceRecordedOperationV1, CoreWorkspaceSaveActionReportV1,
+    CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
+    CoreWorkspaceWorkingJournalSeedRequestV1, CoreWorkspaceWorkingJournalValidationErrorKindV1,
     CoreWorkspaceWorkingJournalValidationRequestV1,
     CoreWorkspaceWorkingJournalValidationResponseV1, DrainBatch, FolderSuffixRequest, HostResponse,
     InventoryComposedSnapshotHandleV1, InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1,
@@ -132,25 +132,114 @@ pub struct CoreWorkspaceCommandAdmissionBeginResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionDecisionResponseV1 {
-    pub decision: Option<CoreWorkspaceCommandAdmissionDecisionV1>,
-    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
-    pub future_schema_version: Option<u16>,
-}
-
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionPreflightResponseV1 {
-    pub preflight: Option<CoreWorkspaceCommandAdmissionPreflightV1>,
-    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
-    pub future_schema_version: Option<u16>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceCommandAdmissionMutationResponseV1 {
     pub diagnostics: Option<CoreWorkspaceCommandAdmissionDiagnosticsV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionAcquireResponseV1 {
+    pub kind: Option<CoreWorkspaceCommandAdmissionAcquireKindV1>,
+    pub identity: Option<CoreWorkspaceCommandIdentityV1>,
+    pub claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+    pub scope: Option<CoreWorkspaceCommandAdmissionLookupScopeV1>,
+    pub operation: Option<CoreWorkspaceRecordedOperationV1>,
+    pub generation: Option<u64>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandTransientFinalizationResponseV1 {
+    pub operation: Option<CoreWorkspaceRecordedOperationV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(uniffi::Object)]
+pub struct CoreWorkspaceCommandExecutionClaimV1 {
+    inner: Arc<runtime::workspace_persistence_journal::WorkspaceCommandExecutionClaimV1>,
+    admission: Arc<runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1>,
+    runtime: Weak<runtime::CoreRuntime>,
+    identity: runtime::RuntimeIdentity,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for CoreWorkspaceCommandExecutionClaimV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CoreWorkspaceCommandExecutionClaimV1")
+            .field("operation_id", &self.inner.operation_id())
+            .field("generation", &self.inner.generation())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CoreWorkspaceCommandExecutionClaimV1 {
+    fn require_live_runtime(&self) -> Result<(), CoreError> {
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if runtime.identity() != &self.identity {
+            return Err(CoreError::StaleRuntimeIdentity);
+        }
+        if runtime.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
+        }
+    }
+}
+
+#[uniffi::export]
+impl CoreWorkspaceCommandExecutionClaimV1 {
+    pub fn workspace_id(&self) -> String {
+        self.inner.workspace_id().to_owned()
+    }
+
+    pub fn operation_id(&self) -> String {
+        self.inner.operation_id().to_owned()
+    }
+
+    pub fn fingerprint(&self) -> String {
+        self.inner.fingerprint().to_owned()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.inner.generation()
+    }
+
+    pub fn finalize_transient(
+        &self,
+        operation: CoreWorkspaceRecordedOperationV1,
+    ) -> Result<CoreWorkspaceCommandTransientFinalizationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(workspace_command_transient_finalization_response(
+                self.inner.finalize_transient(operation.into()),
+            ))
+        })
+    }
+
+    pub fn abandon(&self) -> Result<bool, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            self.inner.abandon().map_err(|_| CoreError::InvalidArgument)
+        })
+    }
+
+    pub fn close(&self) {
+        let _ = self.panic_guard.call(|| {
+            let _ = self.inner.abandon();
+            Ok::<(), CoreError>(())
+        });
+    }
+}
+
+impl Drop for CoreWorkspaceCommandExecutionClaimV1 {
+    fn drop(&mut self) {
+        let _ = self.inner.abandon();
+    }
 }
 
 #[derive(uniffi::Object)]
@@ -185,34 +274,20 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
 
 #[uniffi::export]
 impl CorePreparedWorkspaceCommandAdmissionV1 {
-    pub fn preflight(
+    pub fn acquire(
         &self,
         request: CoreWorkspaceCommandIdentityRequestV1,
-    ) -> Result<CoreWorkspaceCommandAdmissionPreflightResponseV1, CoreError> {
+    ) -> Result<CoreWorkspaceCommandAdmissionAcquireResponseV1, CoreError> {
         self.panic_guard.call(|| {
             self.require_live_runtime()?;
             if request.runtime_identity.parse()? != self.identity {
                 return Err(CoreError::StaleRuntimeIdentity);
             }
             require_workspace_persistence_contract(request.contract_version)?;
-            Ok(workspace_command_admission_preflight_response(
+            Ok(workspace_command_admission_acquire_response(
                 self.inner
-                    .preflight(workspace_command_identity_request(request)),
-            ))
-        })
-    }
-
-    pub fn decision(
-        &self,
-        workspace_id: String,
-        operation_id: String,
-        fingerprint: String,
-    ) -> Result<CoreWorkspaceCommandAdmissionDecisionResponseV1, CoreError> {
-        self.panic_guard.call(|| {
-            self.require_live_runtime()?;
-            Ok(workspace_command_admission_decision_response(
-                self.inner
-                    .decision(&workspace_id, &operation_id, &fingerprint),
+                    .acquire(workspace_command_identity_request(request)),
+                self,
             ))
         })
     }
@@ -245,18 +320,6 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
                     &operations,
                     deleted_operation.map(Into::into),
                 ),
-            ))
-        })
-    }
-
-    pub fn insert_transient(
-        &self,
-        operation: CoreWorkspaceRecordedOperationV1,
-    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
-        self.panic_guard.call(|| {
-            self.require_live_runtime()?;
-            Ok(workspace_command_admission_mutation_response(
-                self.inner.insert(None, operation.into()),
             ))
         })
     }
@@ -368,8 +431,8 @@ fn cancel_workspace_command_admission_reservation(
     }
 }
 
-fn reserve_workspace_command_admission_finalization(
-    admission: Option<&Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+fn bind_workspace_command_admission_finalization(
+    claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     finalization: Option<
         runtime::workspace_persistence_journal::WorkspaceCommandAdmissionFinalizationV1,
     >,
@@ -377,12 +440,15 @@ fn reserve_workspace_command_admission_finalization(
     Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
     runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
 > {
-    match (admission, finalization) {
-        (Some(admission), Some(finalization)) => admission.inner.reserve(finalization).map(Some),
-        (None, Some(_)) => Err(
+    match (claim, finalization) {
+        (Some(claim), Some(finalization)) => claim
+            .admission
+            .bind_claim(&claim.inner, finalization)
+            .map(Some),
+        (None, Some(_)) | (Some(_), None) => Err(
             runtime::workspace_persistence_journal::WorkspaceWorkingJournalError::InvalidTransaction,
         ),
-        (_, None) => Ok(None),
+        (None, None) => Ok(None),
     }
 }
 
@@ -796,7 +862,7 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
 pub struct CorePreparedWorkspaceDeleteTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceDeleteTransactionV1,
     runtime: Weak<runtime::CoreRuntime>,
-    admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+    command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     admission_reservation: Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
     >,
@@ -906,7 +972,10 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
             if !self.inner.is_authoritative() {
                 return Err(CoreError::InvalidArgument);
             }
-            let admission = self.admission.as_ref().ok_or(CoreError::InvalidArgument)?;
+            let claim = self
+                .command_claim
+                .as_ref()
+                .ok_or(CoreError::InvalidArgument)?;
             let (workspace_id, expected_operation) = match self
                 .inner
                 .command_admission_finalization()
@@ -918,7 +987,7 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
                 _ => return Err(CoreError::InvalidArgument),
             };
             Ok(workspace_command_admission_mutation_response(
-                admission.inner.reconcile_finalized_delete(
+                claim.admission.reconcile_finalized_delete(
                     &workspace_id,
                     expected_operation,
                     operation.into(),
@@ -1535,15 +1604,15 @@ impl CoreRuntime {
     pub fn workspace_create_transaction_begin_v1(
         &self,
         request: CoreWorkspaceCreateTransactionRequestV1,
-        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+        command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     ) -> Result<CoreWorkspaceCreateTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
-            if let Some(admission) = admission.as_ref() {
-                admission.require_live_runtime()?;
-                if admission.identity != identity {
+            if let Some(command_claim) = command_claim.as_ref() {
+                command_claim.require_live_runtime()?;
+                if command_claim.identity != identity {
                     return Err(CoreError::StaleRuntimeIdentity);
                 }
             }
@@ -1557,8 +1626,8 @@ impl CoreRuntime {
                     &request.document_bytes,
                 )
                 .and_then(|transaction| {
-                    let reservation = reserve_workspace_command_admission_finalization(
-                        admission.as_ref(),
+                    let reservation = bind_workspace_command_admission_finalization(
+                        command_claim.as_ref(),
                         transaction.command_admission_finalization()?,
                     )?;
                     Ok((transaction, reservation))
@@ -1591,15 +1660,15 @@ impl CoreRuntime {
     pub fn workspace_delete_transaction_begin_v1(
         &self,
         request: CoreWorkspaceDeleteTransactionRequestV1,
-        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+        command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     ) -> Result<CoreWorkspaceDeleteTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
-            if let Some(admission) = admission.as_ref() {
-                admission.require_live_runtime()?;
-                if admission.identity != identity {
+            if let Some(command_claim) = command_claim.as_ref() {
+                command_claim.require_live_runtime()?;
+                if command_claim.identity != identity {
                     return Err(CoreError::StaleRuntimeIdentity);
                 }
             }
@@ -1611,8 +1680,8 @@ impl CoreRuntime {
                     &request.request_bytes,
                 )
                 .and_then(|transaction| {
-                    let reservation = reserve_workspace_command_admission_finalization(
-                        admission.as_ref(),
+                    let reservation = bind_workspace_command_admission_finalization(
+                        command_claim.as_ref(),
                         Some(transaction.command_admission_finalization()?),
                     )?;
                     Ok((transaction, reservation))
@@ -1621,7 +1690,7 @@ impl CoreRuntime {
                         transaction: Some(Arc::new(CorePreparedWorkspaceDeleteTransactionV1 {
                             inner: transaction,
                             runtime: Arc::downgrade(&self.inner),
-                            admission: admission.clone(),
+                            command_claim: command_claim.clone(),
                             admission_reservation: Mutex::new(reservation),
                             identity,
                             authority_permit_issued: AtomicBool::new(false),
@@ -1646,15 +1715,15 @@ impl CoreRuntime {
     pub fn workspace_journal_mutation_transaction_begin_v1(
         &self,
         request: CoreWorkspaceJournalMutationTransactionRequestV1,
-        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+        command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     ) -> Result<CoreWorkspaceJournalMutationTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
-            if let Some(admission) = admission.as_ref() {
-                admission.require_live_runtime()?;
-                if admission.identity != identity {
+            if let Some(command_claim) = command_claim.as_ref() {
+                command_claim.require_live_runtime()?;
+                if command_claim.identity != identity {
                     return Err(CoreError::StaleRuntimeIdentity);
                 }
             }
@@ -1666,8 +1735,8 @@ impl CoreRuntime {
                 request.disk_document_bytes.as_deref(),
             )
             .and_then(|transaction| {
-                let reservation = reserve_workspace_command_admission_finalization(
-                    admission.as_ref(),
+                let reservation = bind_workspace_command_admission_finalization(
+                    command_claim.as_ref(),
                     transaction.command_admission_finalization()?,
                 )?;
                 Ok((transaction, reservation))
@@ -1702,15 +1771,15 @@ impl CoreRuntime {
     pub fn workspace_save_transaction_begin_v1(
         &self,
         request: CoreWorkspaceSaveTransactionRequestV1,
-        admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+        command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     ) -> Result<CoreWorkspaceSaveTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
-            if let Some(admission) = admission.as_ref() {
-                admission.require_live_runtime()?;
-                if admission.identity != identity {
+            if let Some(command_claim) = command_claim.as_ref() {
+                command_claim.require_live_runtime()?;
+                if command_claim.identity != identity {
                     return Err(CoreError::StaleRuntimeIdentity);
                 }
             }
@@ -1723,8 +1792,8 @@ impl CoreRuntime {
                     request.disk_document_bytes.as_deref(),
                 )
                 .and_then(|transaction| {
-                    let reservation = reserve_workspace_command_admission_finalization(
-                        admission.as_ref(),
+                    let reservation = bind_workspace_command_admission_finalization(
+                        command_claim.as_ref(),
                         Some(transaction.command_admission_finalization()?),
                     )?;
                     Ok((transaction, reservation))
@@ -3432,22 +3501,100 @@ fn workspace_command_identity_request(
     }
 }
 
-fn workspace_command_admission_preflight_response(
+fn workspace_command_admission_acquire_response(
     result: Result<
-        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionPreflightV1,
+        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionAcquireV1,
         runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
     >,
-) -> CoreWorkspaceCommandAdmissionPreflightResponseV1 {
+    admission: &CorePreparedWorkspaceCommandAdmissionV1,
+) -> CoreWorkspaceCommandAdmissionAcquireResponseV1 {
+    let success = |kind,
+                   identity: runtime::workspace_persistence_journal::WorkspaceCommandIdentityV1,
+                   claim,
+                   scope,
+                   operation,
+                   generation| CoreWorkspaceCommandAdmissionAcquireResponseV1 {
+        kind: Some(kind),
+        identity: Some(identity.into()),
+        claim,
+        scope,
+        operation,
+        generation,
+        error_kind: None,
+        future_schema_version: None,
+    };
     match result {
-        Ok(preflight) => CoreWorkspaceCommandAdmissionPreflightResponseV1 {
-            preflight: Some(preflight.into()),
-            error_kind: None,
-            future_schema_version: None,
-        },
+        Ok(
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionAcquireV1::Claimed {
+                identity,
+                claim,
+            },
+        ) => {
+            let generation = claim.generation();
+            success(
+                CoreWorkspaceCommandAdmissionAcquireKindV1::Claimed,
+                identity,
+                Some(Arc::new(CoreWorkspaceCommandExecutionClaimV1 {
+                    inner: Arc::new(claim),
+                    admission: Arc::clone(&admission.inner),
+                    runtime: Weak::clone(&admission.runtime),
+                    identity: admission.identity.clone(),
+                    panic_guard: Arc::clone(&admission.panic_guard),
+                })),
+                None,
+                None,
+                Some(generation),
+            )
+        }
+        Ok(
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionAcquireV1::Pending {
+                identity,
+                generation,
+            },
+        ) => success(
+            CoreWorkspaceCommandAdmissionAcquireKindV1::Pending,
+            identity,
+            None,
+            None,
+            None,
+            Some(generation),
+        ),
+        Ok(
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionAcquireV1::Collision {
+                identity,
+                scope,
+            },
+        ) => success(
+            CoreWorkspaceCommandAdmissionAcquireKindV1::Collision,
+            identity,
+            None,
+            scope.map(Into::into),
+            None,
+            None,
+        ),
+        Ok(
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionAcquireV1::Replay {
+                identity,
+                scope,
+                operation,
+            },
+        ) => success(
+            CoreWorkspaceCommandAdmissionAcquireKindV1::Replay,
+            identity,
+            None,
+            Some(scope.into()),
+            Some(operation.into()),
+            None,
+        ),
         Err(error) => {
             let (error_kind, future_schema_version) = workspace_journal_error(error);
-            CoreWorkspaceCommandAdmissionPreflightResponseV1 {
-                preflight: None,
+            CoreWorkspaceCommandAdmissionAcquireResponseV1 {
+                kind: None,
+                identity: None,
+                claim: None,
+                scope: None,
+                operation: None,
+                generation: None,
                 error_kind: Some(error_kind),
                 future_schema_version,
             }
@@ -3455,22 +3602,22 @@ fn workspace_command_admission_preflight_response(
     }
 }
 
-fn workspace_command_admission_decision_response(
+fn workspace_command_transient_finalization_response(
     result: Result<
-        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1,
+        runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1,
         runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
     >,
-) -> CoreWorkspaceCommandAdmissionDecisionResponseV1 {
+) -> CoreWorkspaceCommandTransientFinalizationResponseV1 {
     match result {
-        Ok(decision) => CoreWorkspaceCommandAdmissionDecisionResponseV1 {
-            decision: Some(decision.into()),
+        Ok(operation) => CoreWorkspaceCommandTransientFinalizationResponseV1 {
+            operation: Some(operation.into()),
             error_kind: None,
             future_schema_version: None,
         },
         Err(error) => {
             let (error_kind, future_schema_version) = workspace_journal_error(error);
-            CoreWorkspaceCommandAdmissionDecisionResponseV1 {
-                decision: None,
+            CoreWorkspaceCommandTransientFinalizationResponseV1 {
+                operation: None,
                 error_kind: Some(error_kind),
                 future_schema_version,
             }
@@ -4013,72 +4160,68 @@ mod tests {
             accept_external: None,
             protected_agent_identities: Vec::new(),
         };
-        let preflight = admission
-            .preflight(preflight_request.clone())
-            .expect("typed preflight")
-            .preflight
-            .expect("preflight receipt");
+        let replay = admission
+            .acquire(preflight_request.clone())
+            .expect("typed replay acquire");
         assert_eq!(
-            preflight,
-            CoreWorkspaceCommandAdmissionPreflightV1 {
-                identity: crate::types::CoreWorkspaceCommandIdentityV1 {
-                    workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                    command_kind: CoreWorkspaceCommandKindV1::Create,
-                    fingerprint: operation.fingerprint.clone(),
-                },
-                decision: CoreWorkspaceCommandAdmissionDecisionV1::Replay {
-                    scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace,
-                    operation: operation.clone(),
-                },
-            }
+            replay.kind,
+            Some(CoreWorkspaceCommandAdmissionAcquireKindV1::Replay)
         );
-        let mut invalid_preflight = preflight_request.clone();
-        invalid_preflight.content_digest = Some("invalid".to_owned());
-        let rejected_preflight = admission
-            .preflight(invalid_preflight)
-            .expect("typed semantic failure");
-        assert_eq!(rejected_preflight.preflight, None);
         assert_eq!(
-            rejected_preflight.error_kind,
+            replay.scope,
+            Some(CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace)
+        );
+        assert_eq!(replay.operation, Some(operation.clone()));
+        assert!(replay.claim.is_none());
+        let mut invalid_acquire = preflight_request.clone();
+        invalid_acquire.content_digest = Some("invalid".to_owned());
+        let rejected_acquire = admission
+            .acquire(invalid_acquire)
+            .expect("typed semantic failure");
+        assert_eq!(rejected_acquire.kind, None);
+        assert_eq!(
+            rejected_acquire.error_kind,
             Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidDigest)
         );
 
-        let replay = admission
-            .decision(
-                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                operation.operation_id.clone(),
-                operation.fingerprint.clone(),
-            )
-            .expect("typed replay");
-        assert_eq!(
-            replay.decision,
-            Some(CoreWorkspaceCommandAdmissionDecisionV1::Replay {
-                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace,
-                operation: operation.clone(),
-            })
-        );
+        let mut collision_request = preflight_request.clone();
+        collision_request.content_digest = Some("e".repeat(64));
         let collision = admission
-            .decision(
-                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                operation.operation_id.clone(),
-                "e".repeat(64),
-            )
-            .expect("typed collision");
+            .acquire(collision_request)
+            .expect("typed collision acquire");
         assert_eq!(
-            collision.decision,
-            Some(CoreWorkspaceCommandAdmissionDecisionV1::Collision {
-                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace,
-            })
+            collision.kind,
+            Some(CoreWorkspaceCommandAdmissionAcquireKindV1::Collision)
+        );
+        assert_eq!(
+            collision.scope,
+            Some(CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace)
         );
 
+        let mut transient_request = preflight_request.clone();
+        transient_request.operation_id = "77777777-8888-9999-aaaa-bbbbbbbbbbbb".to_owned();
+        let acquired = admission
+            .acquire(transient_request.clone())
+            .expect("transient claim acquire");
+        assert_eq!(
+            acquired.kind,
+            Some(CoreWorkspaceCommandAdmissionAcquireKindV1::Claimed)
+        );
         let transient = CoreWorkspaceRecordedOperationV1 {
-            operation_id: "77777777-8888-9999-aaaa-bbbbbbbbbbbb".to_owned(),
-            fingerprint: "d".repeat(64),
+            operation_id: transient_request.operation_id.clone(),
+            fingerprint: acquired
+                .identity
+                .as_ref()
+                .expect("claim identity")
+                .fingerprint
+                .clone(),
             ..operation.clone()
         };
-        admission
-            .insert_transient(transient.clone())
-            .expect("transient insert");
+        let claim = acquired.claim.expect("execution claim");
+        let finalized = claim
+            .finalize_transient(transient.clone())
+            .expect("transient finalization");
+        assert_eq!(finalized.operation, Some(transient.clone()));
         let durable = CoreWorkspaceRecordedOperationV1 {
             operation_id: "88888888-9999-aaaa-bbbb-cccccccccccc".to_owned(),
             fingerprint: "c".repeat(64),
@@ -4093,20 +4236,18 @@ mod tests {
         let reconciled = reconciled.diagnostics.expect("reconciled diagnostics");
         assert_eq!(reconciled.global_operation_count, 3);
         assert_eq!(reconciled.workspace_operation_count, 1);
+        let retained = admission
+            .acquire(transient_request)
+            .expect("retained global acquire");
         assert_eq!(
-            admission
-                .decision(
-                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                    transient.operation_id.clone(),
-                    transient.fingerprint.clone(),
-                )
-                .expect("retained global")
-                .decision,
-            Some(CoreWorkspaceCommandAdmissionDecisionV1::Replay {
-                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Global,
-                operation: transient,
-            })
+            retained.kind,
+            Some(CoreWorkspaceCommandAdmissionAcquireKindV1::Replay)
         );
+        assert_eq!(
+            retained.scope,
+            Some(CoreWorkspaceCommandAdmissionLookupScopeV1::Global)
+        );
+        assert_eq!(retained.operation, Some(transient));
 
         let tombstone = CoreWorkspaceRecordedOperationV1 {
             operation_id: "99999999-aaaa-bbbb-cccc-dddddddddddd".to_owned(),
@@ -4123,49 +4264,36 @@ mod tests {
             .diagnostics
             .expect("targeted diagnostics");
         assert_eq!(reconciled.workspace_operation_count, 0);
-        assert_eq!(
-            admission
-                .decision(
-                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                    tombstone.operation_id.clone(),
-                    tombstone.fingerprint.clone(),
-                )
-                .expect("targeted tombstone replay")
-                .decision,
-            Some(CoreWorkspaceCommandAdmissionDecisionV1::Replay {
-                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Global,
-                operation: tombstone,
-            })
-        );
+        assert_eq!(reconciled.global_operation_count, 4);
 
+        let mut malformed_request = preflight_request.clone();
+        malformed_request.operation_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned();
+        let malformed_claim = admission
+            .acquire(malformed_request)
+            .expect("malformed claim acquire")
+            .claim
+            .expect("malformed execution claim");
         let malformed = CoreWorkspaceRecordedOperationV1 {
             operation_id: "not-a-uuid".to_owned(),
             ..operation
         };
-        let rejected = admission
-            .insert_transient(malformed)
+        let rejected = malformed_claim
+            .finalize_transient(malformed)
             .expect("semantic error response");
-        assert_eq!(rejected.diagnostics, None);
+        assert_eq!(rejected.operation, None);
         assert_eq!(
             rejected.error_kind,
             Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidOperationLedger)
         );
+        malformed_claim.abandon().expect("abandon malformed claim");
         let diagnostics = admission.diagnostics().expect("unchanged diagnostics");
         assert_eq!(diagnostics.diagnostics, Some(reconciled));
 
         core.begin_shutdown(identity).expect("shutdown");
-        assert_eq!(
-            admission.preflight(preflight_request),
+        assert!(matches!(
+            admission.acquire(preflight_request),
             Err(CoreError::RuntimeStopped)
-        );
-        assert_eq!(
-            admission.decision(
-                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                "66666666-7777-8888-9999-aaaaaaaaaaaa".to_owned(),
-                "f".repeat(64),
-            ),
-            Err(CoreError::RuntimeStopped)
-        );
+        ));
     }
 
     #[test]

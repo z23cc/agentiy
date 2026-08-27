@@ -651,15 +651,11 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Sendable {
 
+    func acquire(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1
+
     func close()
 
-    func decision(workspaceId: String, operationId: String, fingerprint: String) throws  -> CoreWorkspaceCommandAdmissionDecisionResponseV1
-
     func diagnostics() throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
-
-    func insertTransient(operation: CoreWorkspaceRecordedOperationV1) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
-
-    func preflight(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandAdmissionPreflightResponseV1
 
     func reconcileDurable(records: [CoreWorkspaceCommandAdmissionSeedRecordV1]) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
 
@@ -719,6 +715,16 @@ open class CorePreparedWorkspaceCommandAdmissionV1: CorePreparedWorkspaceCommand
 
 
 
+open func acquire(request: CoreWorkspaceCommandIdentityRequestV1)throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_acquire(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
 open func close()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_close(
@@ -727,43 +733,11 @@ open func close()  {try! rustCall() {
 }
 }
 
-open func decision(workspaceId: String, operationId: String, fingerprint: String)throws  -> CoreWorkspaceCommandAdmissionDecisionResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_decision(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(workspaceId),
-        FfiConverterString.lower(operationId),
-        FfiConverterString.lower(fingerprint),uniffiCallStatus
-    )
-})
-}
-
 open func diagnostics()throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_diagnostics(
             self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-
-open func insertTransient(operation: CoreWorkspaceRecordedOperationV1)throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_insert_transient(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceRecordedOperationV1_lower(operation),uniffiCallStatus
-    )
-})
-}
-
-open func preflight(request: CoreWorkspaceCommandIdentityRequestV1)throws  -> CoreWorkspaceCommandAdmissionPreflightResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_preflight(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -1664,9 +1638,9 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandIdentityResponseV1
 
-    func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?) throws  -> CoreWorkspaceCreateTransactionBeginResponseV1
+    func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceCreateTransactionBeginResponseV1
 
-    func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?) throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1
+    func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1
 
     func workspaceDeletionTombstoneAmendCleanupV1(request: CoreWorkspaceDeletionTombstoneCleanupRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
@@ -1674,7 +1648,7 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceDocumentProjectionV1(request: CoreWorkspaceDocumentProjectionRequestV1) throws  -> CoreWorkspaceDocumentProjectionV1
 
-    func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?) throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1
+    func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1
 
     func workspacePendingSaveResolveV1(request: CoreWorkspacePendingSaveRecoveryRequestV1) throws  -> CoreWorkspacePendingSaveRecoveryResponseV1
 
@@ -1706,7 +1680,7 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceProjectionUpsertV1(request: CoreWorkspaceProjectionUpsertRequestV1) throws  -> CoreWorkspaceProjectionMutationReceiptV1
 
-    func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?) throws  -> CoreWorkspaceSaveTransactionBeginResponseV1
+    func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceSaveTransactionBeginResponseV1
 
     func workspaceSavedRevisionValidateV1(request: CoreWorkspacePersistenceMetadataRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
@@ -2540,24 +2514,24 @@ open func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityReques
 })
 }
 
-open func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?)throws  -> CoreWorkspaceCreateTransactionBeginResponseV1  {
+open func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceCreateTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceCreateTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_create_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceCreateTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.lower(admission),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
 
-open func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?)throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1  {
+open func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceDeleteTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_delete_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceDeleteTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.lower(admission),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
@@ -2592,13 +2566,13 @@ open func workspaceDocumentProjectionV1(request: CoreWorkspaceDocumentProjection
 })
 }
 
-open func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?)throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1  {
+open func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceJournalMutationTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_journal_mutation_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceJournalMutationTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.lower(admission),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
@@ -2765,13 +2739,13 @@ open func workspaceProjectionUpsertV1(request: CoreWorkspaceProjectionUpsertRequ
 })
 }
 
-open func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, admission: CorePreparedWorkspaceCommandAdmissionV1?)throws  -> CoreWorkspaceSaveTransactionBeginResponseV1  {
+open func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceSaveTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceSaveTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_save_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceSaveTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.lower(admission),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
@@ -2849,6 +2823,189 @@ public func FfiConverterTypeCoreRuntime_lift(_ handle: UInt64) throws -> CoreRun
 #endif
 public func FfiConverterTypeCoreRuntime_lower(_ value: CoreRuntime) -> UInt64 {
     return FfiConverterTypeCoreRuntime.lower(value)
+}
+
+
+
+
+
+
+public protocol CoreWorkspaceCommandExecutionClaimV1Protocol: AnyObject, Sendable {
+
+    func abandon() throws  -> Bool
+
+    func close()
+
+    func finalizeTransient(operation: CoreWorkspaceRecordedOperationV1) throws  -> CoreWorkspaceCommandTransientFinalizationResponseV1
+
+    func fingerprint()  -> String
+
+    func generation()  -> UInt64
+
+    func operationId()  -> String
+
+    func workspaceId()  -> String
+
+}
+open class CoreWorkspaceCommandExecutionClaimV1: CoreWorkspaceCommandExecutionClaimV1Protocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_agentry_ffi_fn_clone_coreworkspacecommandexecutionclaimv1(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_agentry_ffi_fn_free_coreworkspacecommandexecutionclaimv1(handle, $0) }
+    }
+
+
+
+
+open func abandon()throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_abandon(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func close()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_close(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+open func finalizeTransient(operation: CoreWorkspaceRecordedOperationV1)throws  -> CoreWorkspaceCommandTransientFinalizationResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandTransientFinalizationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_finalize_transient(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceRecordedOperationV1_lower(operation),uniffiCallStatus
+    )
+})
+}
+
+open func fingerprint() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_fingerprint(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func generation() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_generation(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func operationId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_operation_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func workspaceId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_workspace_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandExecutionClaimV1: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = CoreWorkspaceCommandExecutionClaimV1
+
+    public static func lift(_ handle: UInt64) throws -> CoreWorkspaceCommandExecutionClaimV1 {
+        return CoreWorkspaceCommandExecutionClaimV1(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: CoreWorkspaceCommandExecutionClaimV1) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandExecutionClaimV1 {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandExecutionClaimV1, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandExecutionClaimV1_lift(_ handle: UInt64) throws -> CoreWorkspaceCommandExecutionClaimV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandExecutionClaimV1.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandExecutionClaimV1_lower(_ value: CoreWorkspaceCommandExecutionClaimV1) -> UInt64 {
+    return FfiConverterTypeCoreWorkspaceCommandExecutionClaimV1.lower(value)
 }
 
 
@@ -6770,6 +6927,84 @@ public func FfiConverterTypeCoreWorkspaceCatalogValidationV1_lower(_ value: Core
 }
 
 
+public struct CoreWorkspaceCommandAdmissionAcquireResponseV1 {
+    public let kind: CoreWorkspaceCommandAdmissionAcquireKindV1?
+    public let identity: CoreWorkspaceCommandIdentityV1?
+    public let claim: CoreWorkspaceCommandExecutionClaimV1?
+    public let scope: CoreWorkspaceCommandAdmissionLookupScopeV1?
+    public let operation: CoreWorkspaceRecordedOperationV1?
+    public let generation: UInt64?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: CoreWorkspaceCommandAdmissionAcquireKindV1?, identity: CoreWorkspaceCommandIdentityV1?, claim: CoreWorkspaceCommandExecutionClaimV1?, scope: CoreWorkspaceCommandAdmissionLookupScopeV1?, operation: CoreWorkspaceRecordedOperationV1?, generation: UInt64?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.kind = kind
+        self.identity = identity
+        self.claim = claim
+        self.scope = scope
+        self.operation = operation
+        self.generation = generation
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionAcquireResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionAcquireResponseV1 {
+        return
+            try CoreWorkspaceCommandAdmissionAcquireResponseV1(
+                kind: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionAcquireKindV1.read(from: &buf),
+                identity: FfiConverterOptionTypeCoreWorkspaceCommandIdentityV1.read(from: &buf),
+                claim: FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.read(from: &buf),
+                scope: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionLookupScopeV1.read(from: &buf),
+                operation: FfiConverterOptionTypeCoreWorkspaceRecordedOperationV1.read(from: &buf),
+                generation: FfiConverterOptionUInt64.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionAcquireResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionAcquireKindV1.write(value.kind, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandIdentityV1.write(value.identity, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.write(value.claim, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionLookupScopeV1.write(value.scope, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceRecordedOperationV1.write(value.operation, into: &buf)
+        FfiConverterOptionUInt64.write(value.generation, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionAcquireResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionAcquireResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1.lower(value)
+}
+
+
 public struct CoreWorkspaceCommandAdmissionBeginRequestV1: Equatable, Hashable {
     public let runtimeIdentity: RuntimeIdentity
     public let contractVersion: UInt16
@@ -6886,64 +7121,6 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1_lower(_
 }
 
 
-public struct CoreWorkspaceCommandAdmissionDecisionResponseV1: Equatable, Hashable {
-    public let decision: CoreWorkspaceCommandAdmissionDecisionV1?
-    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
-    public let futureSchemaVersion: UInt16?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(decision: CoreWorkspaceCommandAdmissionDecisionV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
-        self.decision = decision
-        self.errorKind = errorKind
-        self.futureSchemaVersion = futureSchemaVersion
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionDecisionResponseV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionResponseV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionDecisionResponseV1 {
-        return
-            try CoreWorkspaceCommandAdmissionDecisionResponseV1(
-                decision: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDecisionV1.read(from: &buf),
-                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
-                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionDecisionResponseV1, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDecisionV1.write(value.decision, into: &buf)
-        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
-        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionDecisionResponseV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionResponseV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionDecisionResponseV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionResponseV1.lower(value)
-}
-
-
 public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Equatable, Hashable {
     public let globalOperationCount: UInt64
     public let workspaceCount: UInt64
@@ -7057,118 +7234,6 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lift
 #endif
 public func FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionMutationResponseV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionPreflightResponseV1: Equatable, Hashable {
-    public let preflight: CoreWorkspaceCommandAdmissionPreflightV1?
-    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
-    public let futureSchemaVersion: UInt16?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(preflight: CoreWorkspaceCommandAdmissionPreflightV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
-        self.preflight = preflight
-        self.errorKind = errorKind
-        self.futureSchemaVersion = futureSchemaVersion
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionPreflightResponseV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionPreflightResponseV1 {
-        return
-            try CoreWorkspaceCommandAdmissionPreflightResponseV1(
-                preflight: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionPreflightV1.read(from: &buf),
-                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
-                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionPreflightResponseV1, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionPreflightV1.write(value.preflight, into: &buf)
-        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
-        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionPreflightResponseV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionPreflightResponseV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightResponseV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionPreflightV1: Equatable, Hashable {
-    public let identity: CoreWorkspaceCommandIdentityV1
-    public let decision: CoreWorkspaceCommandAdmissionDecisionV1
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(identity: CoreWorkspaceCommandIdentityV1, decision: CoreWorkspaceCommandAdmissionDecisionV1) {
-        self.identity = identity
-        self.decision = decision
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionPreflightV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
-        return
-            try CoreWorkspaceCommandAdmissionPreflightV1(
-                identity: FfiConverterTypeCoreWorkspaceCommandIdentityV1.read(from: &buf),
-                decision: FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionPreflightV1, into buf: inout [UInt8]) {
-        FfiConverterTypeCoreWorkspaceCommandIdentityV1.write(value.identity, into: &buf)
-        FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.write(value.decision, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1_lower(_ value: CoreWorkspaceCommandAdmissionPreflightV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.lower(value)
 }
 
 
@@ -7437,6 +7502,64 @@ public func FfiConverterTypeCoreWorkspaceCommandIdentityV1_lift(_ buf: RustBuffe
 #endif
 public func FfiConverterTypeCoreWorkspaceCommandIdentityV1_lower(_ value: CoreWorkspaceCommandIdentityV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceCommandIdentityV1.lower(value)
+}
+
+
+public struct CoreWorkspaceCommandTransientFinalizationResponseV1: Equatable, Hashable {
+    public let operation: CoreWorkspaceRecordedOperationV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(operation: CoreWorkspaceRecordedOperationV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.operation = operation
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandTransientFinalizationResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandTransientFinalizationResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandTransientFinalizationResponseV1 {
+        return
+            try CoreWorkspaceCommandTransientFinalizationResponseV1(
+                operation: FfiConverterOptionTypeCoreWorkspaceRecordedOperationV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandTransientFinalizationResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceRecordedOperationV1.write(value.operation, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandTransientFinalizationResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandTransientFinalizationResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandTransientFinalizationResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandTransientFinalizationResponseV1_lower(_ value: CoreWorkspaceCommandTransientFinalizationResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandTransientFinalizationResponseV1.lower(value)
 }
 
 
@@ -14762,13 +14885,12 @@ public func FfiConverterTypeCoreTextEncodingV1_lower(_ value: CoreTextEncodingV1
 
 
 
-public enum CoreWorkspaceCommandAdmissionDecisionV1: Equatable, Hashable {
+public enum CoreWorkspaceCommandAdmissionAcquireKindV1: Equatable, Hashable {
 
-    case unseen
-    case collision(scope: CoreWorkspaceCommandAdmissionLookupScopeV1
-    )
-    case replay(scope: CoreWorkspaceCommandAdmissionLookupScopeV1, operation: CoreWorkspaceRecordedOperationV1
-    )
+    case claimed
+    case pending
+    case collision
+    case replay
 
 
 
@@ -14777,48 +14899,49 @@ public enum CoreWorkspaceCommandAdmissionDecisionV1: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionDecisionV1: Sendable {}
+extension CoreWorkspaceCommandAdmissionAcquireKindV1: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1: FfiConverterRustBuffer {
-    typealias SwiftType = CoreWorkspaceCommandAdmissionDecisionV1
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireKindV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandAdmissionAcquireKindV1
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionAcquireKindV1 {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .unseen
+        case 1: return .claimed
 
-        case 2: return .collision(scope: try FfiConverterTypeCoreWorkspaceCommandAdmissionLookupScopeV1.read(from: &buf)
-        )
+        case 2: return .pending
 
-        case 3: return .replay(scope: try FfiConverterTypeCoreWorkspaceCommandAdmissionLookupScopeV1.read(from: &buf), operation: try FfiConverterTypeCoreWorkspaceRecordedOperationV1.read(from: &buf)
-        )
+        case 3: return .collision
+
+        case 4: return .replay
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
-    public static func write(_ value: CoreWorkspaceCommandAdmissionDecisionV1, into buf: inout [UInt8]) {
+    public static func write(_ value: CoreWorkspaceCommandAdmissionAcquireKindV1, into buf: inout [UInt8]) {
         switch value {
 
 
-        case .unseen:
+        case .claimed:
             writeInt(&buf, Int32(1))
 
 
-        case let .collision(scope):
+        case .pending:
             writeInt(&buf, Int32(2))
-            FfiConverterTypeCoreWorkspaceCommandAdmissionLookupScopeV1.write(scope, into: &buf)
 
 
-        case let .replay(scope,operation):
+        case .collision:
             writeInt(&buf, Int32(3))
-            FfiConverterTypeCoreWorkspaceCommandAdmissionLookupScopeV1.write(scope, into: &buf)
-            FfiConverterTypeCoreWorkspaceRecordedOperationV1.write(operation, into: &buf)
+
+
+        case .replay:
+            writeInt(&buf, Int32(4))
 
         }
     }
@@ -14828,15 +14951,15 @@ public struct FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1: FfiConver
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.lift(buf)
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireKindV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionAcquireKindV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireKindV1.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1_lower(_ value: CoreWorkspaceCommandAdmissionDecisionV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.lower(value)
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireKindV1_lower(_ value: CoreWorkspaceCommandAdmissionAcquireKindV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireKindV1.lower(value)
 }
 
 
@@ -18187,6 +18310,30 @@ fileprivate struct FfiConverterOptionTypeCorePreparedWorkspaceSaveTransactionV1:
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandExecutionClaimV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceCommandExecutionClaimV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceCommandExecutionClaimV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCorePathMatchResolveLocationV1: FfiConverterRustBuffer {
     typealias SwiftType = CorePathMatchResolveLocationV1?
 
@@ -18251,30 +18398,6 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDiagnostic
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCoreWorkspaceCommandAdmissionDiagnosticsV1.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionPreflightV1: FfiConverterRustBuffer {
-    typealias SwiftType = CoreWorkspaceCommandAdmissionPreflightV1?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeCoreWorkspaceCommandAdmissionPreflightV1.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -18523,8 +18646,8 @@ fileprivate struct FfiConverterOptionTypeOversizeEvent: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDecisionV1: FfiConverterRustBuffer {
-    typealias SwiftType = CoreWorkspaceCommandAdmissionDecisionV1?
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionAcquireKindV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandAdmissionAcquireKindV1?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -18532,13 +18655,37 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDecisionV1
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.write(value, into: &buf)
+        FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireKindV1.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeCoreWorkspaceCommandAdmissionDecisionV1.read(from: &buf)
+        case 1: return try FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireKindV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionLookupScopeV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandAdmissionLookupScopeV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceCommandAdmissionLookupScopeV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceCommandAdmissionLookupScopeV1.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -19628,19 +19775,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_func_core_panic_forensics() != 20183) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_acquire() != 62431) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_close() != 4204) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_decision() != 65096) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_diagnostics() != 57548) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_insert_transient() != 40781) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_preflight() != 38913) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_reconcile_durable() != 47920) {
@@ -19880,10 +20021,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_command_identity_v1() != 62052) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_create_transaction_begin_v1() != 30025) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_create_transaction_begin_v1() != 34746) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_delete_transaction_begin_v1() != 6385) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_delete_transaction_begin_v1() != 16427) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_deletion_tombstone_amend_cleanup_v1() != 59701) {
@@ -19895,7 +20036,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_document_projection_v1() != 47667) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_journal_mutation_transaction_begin_v1() != 61108) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_journal_mutation_transaction_begin_v1() != 36295) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_pending_save_resolve_v1() != 12179) {
@@ -19943,7 +20084,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_projection_upsert_v1() != 32213) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_save_transaction_begin_v1() != 13003) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_save_transaction_begin_v1() != 63468) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_saved_revision_validate_v1() != 64208) {
@@ -19953,6 +20094,27 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_working_journal_validate_v1() != 62731) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_abandon() != 39917) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_close() != 1719) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_finalize_transient() != 58012) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_fingerprint() != 37471) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_generation() != 285) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_operation_id() != 38867) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_workspace_id() != 11107) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreworkspacecreateauthoritypermitv1_close() != 20785) {

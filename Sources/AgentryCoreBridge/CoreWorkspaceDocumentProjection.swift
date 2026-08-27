@@ -226,25 +226,61 @@ public enum CoreWorkspaceCommandAdmissionLookupScopeV1: Sendable, Equatable {
     case global
 }
 
-public enum CoreWorkspaceCommandAdmissionDecisionV1: Sendable, Equatable {
-    case unseen
-    case collision(scope: CoreWorkspaceCommandAdmissionLookupScopeV1)
+public enum CoreWorkspaceCommandAdmissionAcquisitionV1: Sendable {
+    case claimed(
+        identity: CoreWorkspaceCommandIdentityV1,
+        claim: CoreWorkspaceCommandExecutionClaimV1,
+        generation: UInt64
+    )
+    case pending(identity: CoreWorkspaceCommandIdentityV1, generation: UInt64)
+    case collision(
+        identity: CoreWorkspaceCommandIdentityV1,
+        scope: CoreWorkspaceCommandAdmissionLookupScopeV1?
+    )
     case replay(
+        identity: CoreWorkspaceCommandIdentityV1,
         scope: CoreWorkspaceCommandAdmissionLookupScopeV1,
         operation: CoreWorkspaceRecordedOperationV1
     )
 }
 
-public struct CoreWorkspaceCommandAdmissionPreflightV1: Sendable, Equatable {
-    public let identity: CoreWorkspaceCommandIdentityV1
-    public let decision: CoreWorkspaceCommandAdmissionDecisionV1
+public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
+    let rawClaim: AgentryUniFFIRaw.CoreWorkspaceCommandExecutionClaimV1
+    private let finalizeTransientOperation: @Sendable (CoreWorkspaceRecordedOperationV1) throws
+        -> CoreWorkspaceRecordedOperationV1
+    private let abandonOperation: @Sendable () throws -> Bool
+    private let closeOperation: @Sendable () -> Void
 
-    public init(
-        identity: CoreWorkspaceCommandIdentityV1,
-        decision: CoreWorkspaceCommandAdmissionDecisionV1
+    init(
+        rawClaim: AgentryUniFFIRaw.CoreWorkspaceCommandExecutionClaimV1,
+        finalizeTransient: @escaping @Sendable (CoreWorkspaceRecordedOperationV1) throws
+            -> CoreWorkspaceRecordedOperationV1,
+        abandon: @escaping @Sendable () throws -> Bool,
+        close: @escaping @Sendable () -> Void
     ) {
-        self.identity = identity
-        self.decision = decision
+        self.rawClaim = rawClaim
+        finalizeTransientOperation = finalizeTransient
+        abandonOperation = abandon
+        closeOperation = close
+    }
+
+    deinit {
+        closeOperation()
+    }
+
+    public func finalizeTransient(
+        operation: CoreWorkspaceRecordedOperationV1
+    ) throws -> CoreWorkspaceRecordedOperationV1 {
+        try finalizeTransientOperation(operation)
+    }
+
+    @discardableResult
+    public func abandon() throws -> Bool {
+        try abandonOperation()
+    }
+
+    public func close() {
+        closeOperation()
     }
 }
 
@@ -266,10 +302,8 @@ public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Sendable, Equatable {
 
 public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable {
     let rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1
-    private let preflightOperation: @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
-        -> CoreWorkspaceCommandAdmissionPreflightV1
-    private let decisionOperation: @Sendable (UUID, UUID, String) throws
-        -> CoreWorkspaceCommandAdmissionDecisionV1
+    private let acquireOperation: @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
+        -> CoreWorkspaceCommandAdmissionAcquisitionV1
     private let reconcileDurableOperation: @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let reconcileWorkspaceOperation: @Sendable (
@@ -277,18 +311,14 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         [CoreWorkspaceRecordedOperationV1],
         CoreWorkspaceRecordedOperationV1?
     ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1
-    private let insertTransientOperation: @Sendable (CoreWorkspaceRecordedOperationV1) throws
-        -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let diagnosticsOperation: @Sendable () throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let closeOperation: @Sendable () -> Void
 
     init(
         rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1,
-        preflight: @escaping @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
-            -> CoreWorkspaceCommandAdmissionPreflightV1,
-        decision: @escaping @Sendable (UUID, UUID, String) throws
-            -> CoreWorkspaceCommandAdmissionDecisionV1,
+        acquire: @escaping @Sendable (CoreWorkspaceCommandIdentityRequestV1) throws
+            -> CoreWorkspaceCommandAdmissionAcquisitionV1,
         reconcileDurable: @escaping @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
             -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         reconcileWorkspace: @escaping @Sendable (
@@ -296,17 +326,13 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
             [CoreWorkspaceRecordedOperationV1],
             CoreWorkspaceRecordedOperationV1?
         ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
-        insertTransient: @escaping @Sendable (CoreWorkspaceRecordedOperationV1) throws
-            -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         close: @escaping @Sendable () -> Void
     ) {
         self.rawAdmission = rawAdmission
-        preflightOperation = preflight
-        decisionOperation = decision
+        acquireOperation = acquire
         reconcileDurableOperation = reconcileDurable
         reconcileWorkspaceOperation = reconcileWorkspace
-        insertTransientOperation = insertTransient
         diagnosticsOperation = diagnostics
         closeOperation = close
     }
@@ -315,18 +341,10 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         closeOperation()
     }
 
-    public func preflight(
+    public func acquire(
         _ request: CoreWorkspaceCommandIdentityRequestV1
-    ) throws -> CoreWorkspaceCommandAdmissionPreflightV1 {
-        try preflightOperation(request)
-    }
-
-    public func decision(
-        workspaceID: UUID,
-        operationID: UUID,
-        fingerprint: String
-    ) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
-        try decisionOperation(workspaceID, operationID, fingerprint)
+    ) throws -> CoreWorkspaceCommandAdmissionAcquisitionV1 {
+        try acquireOperation(request)
     }
 
     @discardableResult
@@ -343,13 +361,6 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         deletedOperation: CoreWorkspaceRecordedOperationV1?
     ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
         try reconcileWorkspaceOperation(workspaceID, operations, deletedOperation)
-    }
-
-    @discardableResult
-    public func insertTransient(
-        operation: CoreWorkspaceRecordedOperationV1
-    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
-        try insertTransientOperation(operation)
     }
 
     public func diagnostics() throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
@@ -1023,7 +1034,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1042,7 +1053,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
             documentBytes: documentBytes,
-            commandAdmission: commandAdmission
+            commandClaim: commandClaim
         )
     }
 
@@ -1051,7 +1062,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1066,7 +1077,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveCatalogBytes: effectiveCatalogBytes,
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
-            commandAdmission: commandAdmission
+            commandClaim: commandClaim
         )
     }
 
@@ -1076,7 +1087,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1093,7 +1104,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
             diskDocumentBytes: diskDocumentBytes,
-            commandAdmission: commandAdmission
+            commandClaim: commandClaim
         )
     }
 
@@ -1103,7 +1114,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1120,7 +1131,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
             diskDocumentBytes: diskDocumentBytes,
-            commandAdmission: commandAdmission
+            commandClaim: commandClaim
         )
     }
 
@@ -1411,7 +1422,7 @@ extension CoreRuntimeTransport {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         throw CoreTransportError.unexpected("workspace create transaction transport is unavailable")
     }
@@ -1422,7 +1433,7 @@ extension CoreRuntimeTransport {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         throw CoreTransportError.unexpected("workspace delete transaction transport is unavailable")
     }
@@ -1434,7 +1445,7 @@ extension CoreRuntimeTransport {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         throw CoreTransportError.unexpected("workspace journal mutation transaction transport is unavailable")
     }
@@ -1446,7 +1457,7 @@ extension CoreRuntimeTransport {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandAdmission: CorePreparedWorkspaceCommandAdmissionV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         throw CoreTransportError.unexpected("workspace save transaction transport is unavailable")
     }

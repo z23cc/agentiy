@@ -135,12 +135,14 @@ struct DomainPersistenceWorkspaceRefresh {
 struct DomainPersistenceWorkingCommit {
     let journal: DomainWorkingJournal
     let catalogRevision: UInt64
+    let commandAdmissionFinalizationReconciled: Bool
 }
 
 struct DomainPersistenceSavedCommit {
     let journal: DomainWorkingJournal
     let catalogRevision: UInt64
     let revisionSidecarMissing: Bool
+    let commandAdmissionFinalizationReconciled: Bool
 }
 
 struct DomainPersistenceDeleteCommit {
@@ -834,7 +836,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -848,7 +850,7 @@ package struct DomainPersistenceCoordinator {
                 operation: operation,
                 now: now,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
     }
@@ -878,7 +880,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -890,7 +892,7 @@ package struct DomainPersistenceCoordinator {
                 operation: operation,
                 now: now,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
     }
@@ -904,7 +906,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -919,7 +921,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
     }
@@ -933,7 +935,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -948,7 +950,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
     }
@@ -962,7 +964,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -977,7 +979,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
     }
@@ -992,7 +994,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -1008,7 +1010,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
     }
@@ -1020,7 +1022,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceDeleteCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -1033,7 +1035,7 @@ package struct DomainPersistenceCoordinator {
                 operation: operation,
                 now: now,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
     }
@@ -1604,7 +1606,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -1658,7 +1660,7 @@ package struct DomainPersistenceCoordinator {
                     contextRevisions: contextRevisions,
                     operation: operation,
                     updatedAt: now,
-                    commandAdmission: commandAdmission
+                    commandClaim: commandClaim
                 )
                 defer { transaction.close() }
 
@@ -1683,6 +1685,7 @@ package struct DomainPersistenceCoordinator {
                 var directive = try transaction.nextDirective()
                 var authorityReceipt: DomainWorkspaceCreateCommitReceipt?
                 var catalogAuthorityEstablished = false
+                var commandAdmissionFinalizationReconciled = true
                 do {
                     createTransactionLoop: while true {
                         switch directive {
@@ -1789,6 +1792,7 @@ package struct DomainPersistenceCoordinator {
                                     }
                                 } catch {
                                     authorityReceipt = attachedReceipt
+                                    commandAdmissionFinalizationReconciled = false
                                 }
                                 break createTransactionLoop
                             } catch {
@@ -1837,7 +1841,8 @@ package struct DomainPersistenceCoordinator {
                 return DomainPersistenceSavedCommit(
                     journal: authorityReceipt.committedJournal.journal,
                     catalogRevision: authorityReceipt.catalog.catalog.revision,
-                    revisionSidecarMissing: false
+                    revisionSidecarMissing: false,
+                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
                 )
             }
         }
@@ -1852,10 +1857,11 @@ package struct DomainPersistenceCoordinator {
         revisionOperationID: UUID?,
         now: Date,
         diskDocumentBytes: Data?,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
-        finalization: DomainWorkspaceJournalMutationFinalization
+        finalization: DomainWorkspaceJournalMutationFinalization,
+        commandAdmissionFinalizationReconciled: Bool
     ) {
         let rawJournalBytes: Data? = switch snapshot.raw {
         case .absent: nil
@@ -1870,7 +1876,7 @@ package struct DomainPersistenceCoordinator {
             revisionOperationID: revisionOperationID,
             updatedAt: now,
             diskDocumentBytes: diskDocumentBytes,
-            commandAdmission: commandAdmission
+            commandClaim: commandClaim
         )
         defer { transaction.close() }
 
@@ -1916,10 +1922,11 @@ package struct DomainPersistenceCoordinator {
 
         func activatedOutcome() -> (
             receipt: DomainWorkspaceJournalMutationCommitReceipt,
-            finalization: DomainWorkspaceJournalMutationFinalization
+            finalization: DomainWorkspaceJournalMutationFinalization,
+            commandAdmissionFinalizationReconciled: Bool
         )? {
             guard let activatedReceipt, let activatedFinalization else { return nil }
-            return (activatedReceipt, activatedFinalization)
+            return (activatedReceipt, activatedFinalization, true)
         }
 
         while true {
@@ -1958,7 +1965,7 @@ package struct DomainPersistenceCoordinator {
                             writtenDigest: validation.contentDigest
                         ))
                     } catch {
-                        return (authorityReceipt, postAuthoritySuccessFinalization)
+                        return (authorityReceipt, postAuthoritySuccessFinalization, false)
                     }
                 } catch {
                     let physicalError = error
@@ -1997,7 +2004,7 @@ package struct DomainPersistenceCoordinator {
                         ))
                     } catch {
                         guard let activatedReceipt else { throw error }
-                        return (activatedReceipt, postAuthoritySuccessFinalization)
+                        return (activatedReceipt, postAuthoritySuccessFinalization, false)
                     }
                 } catch {
                     let physicalError = error
@@ -2009,8 +2016,8 @@ package struct DomainPersistenceCoordinator {
                             error: physicalError
                         ))
                     } catch {
-                        guard let outcome = activatedOutcome() else { throw physicalError }
-                        return outcome
+                        guard let activatedReceipt, let activatedFinalization else { throw physicalError }
+                        return (activatedReceipt, activatedFinalization, false)
                     }
                 }
 
@@ -2021,7 +2028,7 @@ package struct DomainPersistenceCoordinator {
                 guard receiptsMatch(receipt, outcome.receipt),
                       finalization == outcome.finalization
                 else { return outcome }
-                return (receipt, finalization)
+                return (receipt, finalization, true)
 
             case let .failed(failure):
                 if let outcome = activatedOutcome() { return outcome }
@@ -2049,7 +2056,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2063,7 +2070,7 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 validator: validator
             )
-            let receipt = try executeJournalMutationTransaction(
+            let result = try executeJournalMutationTransaction(
                 validator: validator,
                 snapshot: snapshot,
                 document: document,
@@ -2076,11 +2083,12 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandAdmission: commandAdmission
-            ).receipt
+                commandClaim: commandClaim
+            )
             return DomainPersistenceWorkingCommit(
-                journal: receipt.committedJournal.journal,
-                catalogRevision: receipt.catalogRevision
+                journal: result.receipt.committedJournal.journal,
+                catalogRevision: result.receipt.catalogRevision,
+                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
             )
         }
     }
@@ -2095,7 +2103,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2109,7 +2117,7 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 validator: validator
             )
-            let receipt = try executeJournalMutationTransaction(
+            let result = try executeJournalMutationTransaction(
                 validator: validator,
                 snapshot: snapshot,
                 document: document,
@@ -2128,11 +2136,12 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandAdmission: commandAdmission
-            ).receipt
+                commandClaim: commandClaim
+            )
             return DomainPersistenceWorkingCommit(
-                journal: receipt.committedJournal.journal,
-                catalogRevision: receipt.catalogRevision
+                journal: result.receipt.committedJournal.journal,
+                catalogRevision: result.receipt.catalogRevision,
+                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
             )
         }
     }
@@ -2147,7 +2156,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2177,18 +2186,20 @@ package struct DomainPersistenceCoordinator {
                 updatedAt: now,
                 catalogRevision: catalogRevision,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
             defer { transaction.close() }
 
             func commit(
                 _ receipt: DomainWorkspaceSaveCommitReceipt,
-                finalization: DomainWorkspaceSaveFinalization
+                finalization: DomainWorkspaceSaveFinalization,
+                commandAdmissionFinalizationReconciled: Bool = true
             ) -> DomainPersistenceSavedCommit {
                 DomainPersistenceSavedCommit(
                     journal: receipt.committedJournal.journal,
                     catalogRevision: receipt.catalogRevision,
-                    revisionSidecarMissing: finalization == .revisionSidecarMissing
+                    revisionSidecarMissing: finalization == .revisionSidecarMissing,
+                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
                 )
             }
 
@@ -2237,9 +2248,15 @@ package struct DomainPersistenceCoordinator {
                     && lhs.savedRevision.canonicalBytes == rhs.savedRevision.canonicalBytes
             }
 
-            func activatedCommit() -> DomainPersistenceSavedCommit? {
+            func activatedCommit(
+                commandAdmissionFinalizationReconciled: Bool = true
+            ) -> DomainPersistenceSavedCommit? {
                 guard let activatedReceipt, let activatedFinalization else { return nil }
-                return commit(activatedReceipt, finalization: activatedFinalization)
+                return commit(
+                    activatedReceipt,
+                    finalization: activatedFinalization,
+                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
+                )
             }
 
             while true {
@@ -2313,7 +2330,8 @@ package struct DomainPersistenceCoordinator {
                         } catch {
                             return commit(
                                 authorityReceipt,
-                                finalization: postAuthoritySuccessFinalization
+                                finalization: postAuthoritySuccessFinalization,
+                                commandAdmissionFinalizationReconciled: false
                             )
                         }
                     } catch {
@@ -2360,7 +2378,9 @@ package struct DomainPersistenceCoordinator {
                                 writtenDigest: validation.contentDigest
                             ))
                         } catch {
-                            guard let committed = activatedCommit() else { throw error }
+                            guard let committed = activatedCommit(
+                                commandAdmissionFinalizationReconciled: false
+                            ) else { throw error }
                             return committed
                         }
                     } catch {
@@ -2373,7 +2393,9 @@ package struct DomainPersistenceCoordinator {
                                 error: physicalError
                             ))
                         } catch {
-                            if let committed = activatedCommit() { return committed }
+                            if let committed = activatedCommit(
+                                commandAdmissionFinalizationReconciled: false
+                            ) { return committed }
                             throw physicalError
                         }
                     }
@@ -2401,7 +2423,9 @@ package struct DomainPersistenceCoordinator {
                                 writtenDigest: validation.contentDigest
                             ))
                         } catch {
-                            guard let committed = activatedCommit() else { throw error }
+                            guard let committed = activatedCommit(
+                                commandAdmissionFinalizationReconciled: false
+                            ) else { throw error }
                             return committed
                         }
                     } catch {
@@ -2414,7 +2438,9 @@ package struct DomainPersistenceCoordinator {
                                 error: physicalError
                             ))
                         } catch {
-                            if let committed = activatedCommit() { return committed }
+                            if let committed = activatedCommit(
+                                commandAdmissionFinalizationReconciled: false
+                            ) { return committed }
                             throw physicalError
                         }
                     }
@@ -2458,7 +2484,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2492,7 +2518,7 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: operationID,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
             let revisionSidecarMissing: Bool = switch result.finalization {
             case .finalized: false
@@ -2501,7 +2527,8 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceSavedCommit(
                 journal: result.receipt.committedJournal.journal,
                 catalogRevision: result.receipt.catalogRevision,
-                revisionSidecarMissing: revisionSidecarMissing
+                revisionSidecarMissing: revisionSidecarMissing,
+                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
             )
         }
     }
@@ -2517,7 +2544,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2531,7 +2558,7 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 validator: validator
             )
-            let receipt = try executeJournalMutationTransaction(
+            let result = try executeJournalMutationTransaction(
                 validator: validator,
                 snapshot: snapshot,
                 document: document,
@@ -2551,11 +2578,12 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandAdmission: commandAdmission
-            ).receipt
+                commandClaim: commandClaim
+            )
             return DomainPersistenceWorkingCommit(
-                journal: receipt.committedJournal.journal,
-                catalogRevision: receipt.catalogRevision
+                journal: result.receipt.committedJournal.journal,
+                catalogRevision: result.receipt.catalogRevision,
+                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
             )
         }
     }
@@ -2568,7 +2596,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceDeleteCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2597,7 +2625,7 @@ package struct DomainPersistenceCoordinator {
                     expectedCatalogRevision: requestedCatalogRevision,
                     operation: operation,
                     deletedAt: now,
-                    commandAdmission: commandAdmission
+                    commandClaim: commandClaim
                 )
                 defer { transaction.close() }
 

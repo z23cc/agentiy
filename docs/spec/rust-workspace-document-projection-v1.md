@@ -1326,3 +1326,66 @@ transaction finalization.
   loss, or malformed receipts; command publication and outcome behavior remain unchanged.
 - Focused Runtime/FFI/Bridge/Domain authority, source-guard, codegen, product-build, style, guardrail, formatting,
   and diff checks pass.
+
+## P5-7c amendment — claim-bound command admission and terminal authority
+
+P5-7c makes the prepared Rust command-admission capability the sole owner of process-lifetime command execution
+claims as well as durable replay/collision state. One atomic acquire computes the canonical command identity,
+consults terminal receipts, and returns exactly one of claimed, matching-pending, replay, or collision. A claimed
+receipt carries an opaque exact-authority execution claim with a monotonically increasing generation; every
+transient or durable terminal effect must finalize through that exact claim. Swift no longer stores operation-keyed
+pending entries, compares pending fingerprints, or resumes operation waiters. A matching duplicate only performs a
+bounded cancellable delay after Rust reports pending and then re-acquires; notification or delay never authorizes
+execution and never substitutes for a fresh Rust decision.
+
+Claims are process-local, bounded, and invisible to replay until terminal. Every SHA-256 command fingerprint and
+recorded digest is canonical lowercase hexadecimal; uppercase or otherwise non-canonical seed and terminal receipts
+fail closed rather than changing an exact replay into a collision. The prepared authority rejects claim creation at
+capacity before mutation, preserves live claims and transaction bindings across durable reconciliation,
+and never resets claim generations while open. Every acquire, transient finalization, durable transaction bind,
+release, and finalization validates the exact prepared authority, operation identity, fingerprint, and generation.
+An abandoned generation cannot finalize after the same operation is claimed again, closing the ABA hole. Close
+rejects new claims and transient terminals, but an already authoritative durable transaction retains enough exact
+binding state to establish its receipt before teardown.
+
+Create, delete, working-journal, and save transactions bind their derived single operation effect to the exact
+execution claim rather than to the prepared capability as a whole. A command effect without a claim, a claim without
+one exact matching effect, a mismatched or stale claim, and concurrent bindings of the same claim are invalid. A
+pre-authority transaction failure releases the binding back to the claim; the authority owner may retry or safely
+abandon it. The first successful durable authority action atomically finalizes both the P5-7b reservation and the
+claim. Cancellation after physical authority cannot erase or replace that terminal receipt. If reporting the
+post-authority admission finalization fails, the committed/partial-success result carries an explicit unreconciled
+status to Swift; Swift preserves physical success, quarantines admission, and projects
+`workspace_command_admission_receipt_missing`. Transaction `close` remains only a best-effort cleanup and may not
+silently convert that status back to success.
+
+Transient command outcomes finalize atomically through the claim: Rust validates the complete recorded operation,
+inserts the exact process-global replay receipt, removes the matching claim, and returns the authoritative receipt in
+one lock transition. Swift constructs the unchanged outward outcome only after validating that receipt. Runtime loss,
+malformed receipt, stale claim, or terminal-finalization failure quarantines admission and projects read-only; semantic
+request rejection and claim-capacity exhaustion remain isolated to the current invocation. The generic standalone
+`decision` and unbound `insertTransient` production seams are retired.
+
+Cancellation before Rust acquire remains an unrecorded retryable invocation cancellation. Cancellation while Rust
+reports a matching pending claim cancels only that caller's delay, not the owner. After claim acquisition and before
+physical authority, cancellation is acknowledged only at a safe persistence boundary and then abandons that exact
+generation; after physical authority the durable result wins. This phase deliberately does not implement the charter's
+generic runtime-wide `cancelOperation`, logical-operation tombstone window, Tokio task registry, deadlines, or terminal
+event stream; those remain a later cross-domain runtime phase and may not reinterpret this attempt-scoped workspace
+cancellation as an operation-wide tombstone.
+
+### P5-7c done-when
+
+- Rust tests cover atomic claim/replay/pending/collision, bounded capacity, transient first-terminal behavior,
+  pre-authority abandon, exact-claim durable bind/release/finalize, reconciliation while claimed/bound, close,
+  generation ABA, and post-authority runtime loss.
+- Typed UniFFI and Bridge receipts reject partial shapes, mismatched identities/fingerprints/generations, stale claims,
+  and transaction effects not bound to their exact claim; raw claim handles do not escape the Bridge.
+- Production matching duplicates delay and re-acquire after Rust pending; Swift contains no operation-keyed pending
+  dictionary, waiter continuation array, pending fingerprint decision, or cached unseen result.
+- Swift transient paths contain no independent admission insert; all command-backed durable transactions receive the
+  exact execution claim, while recovery and non-command transactions remain explicitly unbound.
+- Cancellation before acquire and before authority remains unrecorded and retryable, while authority already made
+  durable always returns the established receipt; external `DomainCommandOutcome` behavior is unchanged.
+- Focused Runtime/FFI/Bridge/Domain race, lifecycle, authority, source-guard, codegen, product-build, style, guardrail,
+  formatting, and diff checks pass.

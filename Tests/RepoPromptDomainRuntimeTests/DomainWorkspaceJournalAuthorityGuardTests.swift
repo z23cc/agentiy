@@ -66,7 +66,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "finalization: postAuthoritySuccessFinalization",
             "activatedFinalization = postAuthorityFailureFinalization",
             "func activatedOutcome()",
-            "func activatedCommit()",
+            "func activatedCommit(",
             "var expectedActionID: UInt64 = 1",
             "guard actionID == expectedActionID, activatedReceipt == nil",
             "guard receiptsMatch(receipt, outcome.receipt)",
@@ -431,27 +431,36 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertFalse(runtime.contains("DomainWorkspaceRustCommandIdentityObserver"))
         XCTAssertFalse(runtime.contains("workspaceCommandIdentityProjector"))
         for required in [
-            "preflight = try resolveCommandPreflight(commandIdentityInput)",
-            "return try commandAdmission.preflight(input)",
-            "actor turn, so an unseen receipt cannot miss a completed pending admission",
+            "acquisition = try resolveCommandAcquisition(commandIdentityInput)",
+            "return try commandAdmission.acquire(input)",
+            "case let .claimed(receiptFingerprint, claim)",
+            "case let .pending(receiptFingerprint, _)",
+            "try await Task.sleep(for: .milliseconds(1))",
             "continue admissionReservation",
-            "if preflight.decision != .unseen",
-            "decision: preflight.decision",
+            "case let .replay(receiptFingerprint, scope, operation)",
             "fingerprint: fingerprint",
             "unrecordedCommandIdentityRejection("
         ] {
-            XCTAssertTrue(authority.contains(required), "Missing Rust admission boundary: \(required)")
+            XCTAssertTrue(authority.contains(required), "Missing Rust acquisition boundary: \(required)")
         }
         for retired in [
             "resolveCommandIdentity(",
-            "validator.commandIdentity(input)"
+            "resolveCommandPreflight(",
+            "preflight =",
+            "pendingCommandAdmissions",
+            "PendingCommandAdmission",
+            "commandAdmission.preflight(",
+            "commandAdmission.decision("
         ] {
-            XCTAssertFalse(authority.contains(retired), "Split production preflight remains: \(retired)")
+            XCTAssertFalse(authority.contains(retired), "Split production admission remains: \(retired)")
         }
         XCTAssertTrue(adapter.contains("func commandIdentity("))
         XCTAssertTrue(adapter.contains("core.commandIdentity("))
-        XCTAssertTrue(adapter.contains("func preflight("))
-        XCTAssertTrue(adapter.contains("core.preflight("))
+        XCTAssertTrue(adapter.contains("func acquire("))
+        XCTAssertTrue(adapter.contains("switch try core.acquire(request)"))
+        XCTAssertFalse(adapter.contains("func preflight("))
+        XCTAssertFalse(adapter.contains("core.preflight("))
+        XCTAssertFalse(adapter.contains("core.decision("))
     }
 
     func testCommandReplayAndCollisionProductionAdmissionFinalizesWithRustTransactions() throws {
@@ -468,19 +477,29 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             ),
             encoding: .utf8
         )
+        let persistence = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainPersistence.swift"
+            ),
+            encoding: .utf8
+        )
 
         for required in [
             "private var commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?",
-            "let admission = commandAdmission",
-            "decision = preflight.decision",
-            "private var pendingCommandAdmissions: [UUID: PendingCommandAdmission]",
+            "var acquiredClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?",
+            "private func resolveCommandAcquisition(",
+            "return try commandAdmission.acquire(input)",
             "private func reconcileCommandAdmission(",
             "commandAdmission.reconcileDurable(durable)",
-            "commandAdmission: commandAdmission",
             "private func reconcileCommandAdmissionWorkspace(",
+            "finalizeTransientOutcome(",
+            "_ = try commandClaim.finalizeTransient(",
+            "commandClaim: commandClaim",
+            "recordCommandAdmissionFinalization(",
+            "workspace_command_admission_receipt_missing",
             "refreshed.deletedOperation"
         ] {
-            XCTAssertTrue(authority.contains(required), "Missing prepared Rust admission: \(required)")
+            XCTAssertTrue(authority.contains(required), "Missing claim-bound Rust admission: \(required)")
         }
         for retired in [
             "BoundedDomainOperationIndex",
@@ -492,7 +511,11 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "globalOperations",
             "swiftCommandAdmissionDecision",
             "registerPersistedCommandAdmissionOperation(",
+            "registerTransientCommandAdmissionOperation(",
             "removeCommandAdmissionWorkspace(",
+            "pendingCommandAdmissions",
+            "PendingCommandAdmission",
+            "recordTransientOutcome(",
             "decision = try admission.decision("
         ] {
             XCTAssertFalse(authority.contains(retired), "Retired Swift admission lookup remains: \(retired)")
@@ -519,16 +542,35 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         )
         for required in [
             "struct PreparedCommandAdmission: Sendable",
+            "struct PreparedExecutionClaim: Sendable",
             "core.beginCommandAdmission(",
-            "core.preflight(",
-            "core.decision(",
+            "switch try core.acquire(request)",
             "core.reconcileDurable(",
             "core.reconcileWorkspace(",
-            "core.insertTransient(",
+            "core.finalizeTransient(",
             "transactionBinding",
             "reconcileAdmissionFinalization("
         ] {
             XCTAssertTrue(adapter.contains(required), "Missing Rust admission adapter: \(required)")
+        }
+        for required in [
+            "let commandAdmissionFinalizationReconciled: Bool",
+            "commandAdmissionFinalizationReconciled: false",
+            "commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled"
+        ] {
+            XCTAssertTrue(
+                persistence.contains(required),
+                "Missing post-authority admission finalization signal: \(required)"
+            )
+        }
+        for retired in [
+            "core.preflight(",
+            "core.decision(",
+            "core.insertTransient(",
+            "func preflight(",
+            "func decision("
+        ] {
+            XCTAssertFalse(adapter.contains(retired), "Retired admission adapter remains: \(retired)")
         }
     }
 

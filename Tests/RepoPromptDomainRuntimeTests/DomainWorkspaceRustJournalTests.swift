@@ -223,142 +223,164 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         XCTAssertEqual(try prepared.commandIdentity(reversed), fingerprints[4])
     }
 
-    func testPreparedCommandAdmissionRoundTripsCompleteDomainReceipt() async throws {
+    func testPreparedCommandAdmissionRoundTripsClaimBoundDomainReceipt() async throws {
         let workspaceID = UUID()
-        let operationID = UUID()
         let revisions = DomainRevisionState(
             workingRevision: 3,
             savedRevision: 2,
             dirtyRevision: 3
         )
-        let outcome = DomainCommandOutcome(
-            operationID: operationID,
-            disposition: .applied,
-            before: nil,
-            after: revisions,
-            catalogRevision: 7,
-            resultingDigest: String(repeating: "a", count: 64)
-        )
-        let operation = DomainRecordedOperation(
+        let seededOperation = DomainRecordedOperation(
             fingerprint: String(repeating: "f", count: 64),
             recordedAt: Date(timeIntervalSinceReferenceDate: 42.5),
-            outcome: outcome
+            outcome: DomainCommandOutcome(
+                operationID: UUID(),
+                disposition: .applied,
+                before: nil,
+                after: revisions,
+                catalogRevision: 7,
+                resultingDigest: String(repeating: "a", count: 64)
+            )
         )
         let service = AgentryCoreService()
         defer { Task { await service.shutdown() } }
         let validator = try await DomainWorkspaceRustJournal.prepare(coreService: service)
         let admission = try validator.beginCommandAdmission(records: [
-            .init(workspaceID: workspaceID, operation: operation),
+            .init(workspaceID: workspaceID, operation: seededOperation),
         ])
         defer { admission.close() }
+        XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
 
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: operationID,
-                fingerprint: operation.fingerprint
-            ),
-            .replay(scope: .workspace, operation: operation)
-        )
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: operationID,
-                fingerprint: String(repeating: "e", count: 64)
-            ),
-            .collision(scope: .workspace)
-        )
-
-        let preflightEnvelope = DomainWorkspaceCommandEnvelope(
+        let transientEnvelope = DomainWorkspaceCommandEnvelope(
             operationID: UUID(),
             expectedCatalogRevision: 7,
             expectedWorkspaceRevision: 3,
             origin: .standalone,
             command: .saveWorkspaceDocument(workspaceID: workspaceID)
         )
-        let preflightInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(preflightEnvelope))
-        let unseenPreflight = try admission.preflight(preflightInput)
-        XCTAssertEqual(unseenPreflight.decision, .unseen)
-        let preflightOperation = DomainRecordedOperation(
-            fingerprint: unseenPreflight.fingerprint,
+        let transientInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(transientEnvelope))
+        let transientFingerprint: String
+        let transientClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+        let transientGeneration: UInt64
+        switch try admission.acquire(transientInput) {
+        case let .claimed(fingerprint, claim):
+            transientFingerprint = fingerprint
+            transientClaim = claim
+        default:
+            return XCTFail("Expected initial execution claim")
+        }
+        switch try admission.acquire(transientInput) {
+        case let .pending(fingerprint, generation):
+            XCTAssertEqual(fingerprint, transientFingerprint)
+            transientGeneration = generation
+        default:
+            return XCTFail("Expected matching execution to remain pending")
+        }
+        XCTAssertGreaterThan(transientGeneration, 0)
+        let collisionEnvelope = DomainWorkspaceCommandEnvelope(
+            operationID: transientEnvelope.operationID,
+            expectedCatalogRevision: 7,
+            expectedWorkspaceRevision: 3,
+            origin: .externalReload,
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
+        )
+        let collisionInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(collisionEnvelope))
+        switch try admission.acquire(collisionInput) {
+        case let .collision(fingerprint, scope):
+            XCTAssertNotEqual(fingerprint, transientFingerprint)
+            XCTAssertNil(scope)
+        default:
+            XCTFail("Expected in-flight operation identity collision")
+        }
+
+        let transientOperation = DomainRecordedOperation(
+            fingerprint: transientFingerprint,
             recordedAt: Date(timeIntervalSinceReferenceDate: 43),
             outcome: DomainCommandOutcome(
-                operationID: preflightEnvelope.operationID,
-                disposition: .unchanged,
+                operationID: transientEnvelope.operationID,
+                disposition: .conflict,
                 before: revisions,
                 after: revisions,
                 catalogRevision: 7,
+                resultingDigest: nil,
+                errorCode: .stateConflict,
+                diagnostic: "transient"
+            )
+        )
+        XCTAssertEqual(
+            try transientClaim.finalizeTransient(operation: transientOperation),
+            transientOperation
+        )
+        switch try admission.acquire(transientInput) {
+        case let .replay(fingerprint, scope, operation):
+            XCTAssertEqual(fingerprint, transientFingerprint)
+            XCTAssertEqual(scope, .global)
+            XCTAssertEqual(operation, transientOperation)
+        default:
+            XCTFail("Expected transient claim finalization to replay globally")
+        }
+
+        let durableEnvelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            expectedCatalogRevision: 8,
+            expectedWorkspaceRevision: 3,
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
+        )
+        let durableInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(durableEnvelope))
+        let durableFingerprint: String
+        let durableClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+        switch try admission.acquire(durableInput) {
+        case let .claimed(fingerprint, claim):
+            durableFingerprint = fingerprint
+            durableClaim = claim
+        default:
+            return XCTFail("Expected durable execution claim")
+        }
+        let durableOperation = DomainRecordedOperation(
+            fingerprint: durableFingerprint,
+            recordedAt: Date(timeIntervalSinceReferenceDate: 44),
+            outcome: DomainCommandOutcome(
+                operationID: durableEnvelope.operationID,
+                disposition: .unchanged,
+                before: revisions,
+                after: revisions,
+                catalogRevision: 8,
                 resultingDigest: nil
             )
         )
         _ = try admission.reconcileWorkspace(
             workspaceID: workspaceID,
-            operations: [operation, preflightOperation],
+            operations: [durableOperation],
             deletedOperation: nil
         )
-        XCTAssertEqual(
-            try admission.preflight(preflightInput).decision,
-            .replay(scope: .workspace, operation: preflightOperation)
-        )
+        XCTAssertFalse(try durableClaim.abandon())
+        switch try admission.acquire(durableInput) {
+        case let .replay(fingerprint, scope, operation):
+            XCTAssertEqual(fingerprint, durableFingerprint)
+            XCTAssertEqual(scope, .workspace)
+            XCTAssertEqual(operation, durableOperation)
+        default:
+            XCTFail("Expected reconciled receipt to replay in workspace scope")
+        }
 
-        let transient = DomainRecordedOperation(
-            fingerprint: String(repeating: "d", count: 64),
-            recordedAt: Date(timeIntervalSinceReferenceDate: 43.5),
-            outcome: DomainCommandOutcome(
-                operationID: UUID(),
-                disposition: .applied,
-                before: revisions,
-                after: revisions,
-                catalogRevision: 7,
-                resultingDigest: String(repeating: "b", count: 64)
-            )
-        )
-        _ = try admission.insertTransient(operation: transient)
-        let durableReplacement = DomainRecordedOperation(
-            fingerprint: String(repeating: "c", count: 64),
-            recordedAt: Date(timeIntervalSinceReferenceDate: 44.5),
-            outcome: DomainCommandOutcome(
-                operationID: UUID(),
-                disposition: .unchanged,
-                before: revisions,
-                after: revisions,
-                catalogRevision: 8,
-                resultingDigest: String(repeating: "b", count: 64)
-            )
-        )
-        _ = try admission.reconcileDurable([
-            .init(workspaceID: workspaceID, operation: durableReplacement),
+        let reconciled = try admission.reconcileDurable([
+            .init(workspaceID: workspaceID, operation: durableOperation),
         ])
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: transient.operationID,
-                fingerprint: transient.fingerprint
-            ),
-            .replay(scope: .global, operation: transient)
-        )
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: durableReplacement.operationID,
-                fingerprint: durableReplacement.fingerprint
-            ),
-            .replay(scope: .workspace, operation: durableReplacement)
-        )
-
+        XCTAssertEqual(reconciled.globalOperationCount, 3)
+        XCTAssertEqual(reconciled.workspaceOperationCount, 1)
         _ = try admission.reconcileWorkspace(
             workspaceID: workspaceID,
             operations: [],
             deletedOperation: nil
         )
-        XCTAssertEqual(
-            try admission.decision(
-                workspaceID: workspaceID,
-                operationID: operationID,
-                fingerprint: operation.fingerprint
-            ),
-            .replay(scope: .global, operation: operation)
-        )
+        switch try admission.acquire(durableInput) {
+        case let .replay(_, scope, operation):
+            XCTAssertEqual(scope, .global)
+            XCTAssertEqual(operation, durableOperation)
+        default:
+            XCTFail("Removing workspace scope must retain global replay")
+        }
         admission.close()
         XCTAssertThrowsError(try admission.diagnostics()) { error in
             XCTAssertEqual(
@@ -656,7 +678,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         }
     }
 
-    func testProductionDeduplicationAndCollisionUseInjectedRustIdentity() async throws {
+    func testInjectedResolverCannotOverrideProductionRustAdmissionIdentity() async throws {
         let directory = temporaryDirectory(name: "command-identity-authority")
         defer { try? FileManager.default.removeItem(at: directory) }
         let resolver = CommandIdentityAuthorityResolverScript(steps: [
@@ -679,8 +701,8 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         XCTAssertEqual(first.disposition, .invalid)
         XCTAssertEqual(first.errorCode, .workspaceUnavailable)
         let second = await runtime.workspaceStore.execute(envelope)
-        XCTAssertEqual(second.disposition, .invalid)
-        XCTAssertEqual(second.errorCode, .operationIDCollision)
+        XCTAssertEqual(second.disposition, .deduplicated)
+        XCTAssertEqual(second.errorCode, .workspaceUnavailable)
         let invocationCount = await resolver.invocationCount
         XCTAssertEqual(invocationCount, 2)
         _ = await runtime.shutdown()

@@ -22,6 +22,7 @@ pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1: usize = 4096;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1: usize = 65_536;
+pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_CLAIM_COUNT_V1: usize = 4_096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceCommandOriginV1 {
@@ -365,6 +366,38 @@ pub enum WorkspaceCommandAdmissionDecisionV1 {
 pub struct WorkspaceCommandAdmissionPreflightV1 {
     pub identity: WorkspaceCommandIdentityV1,
     pub decision: WorkspaceCommandAdmissionDecisionV1,
+}
+
+#[derive(Debug)]
+pub enum WorkspaceCommandAdmissionAcquireV1 {
+    Claimed {
+        identity: WorkspaceCommandIdentityV1,
+        claim: WorkspaceCommandExecutionClaimV1,
+    },
+    Pending {
+        identity: WorkspaceCommandIdentityV1,
+        generation: u64,
+    },
+    Collision {
+        identity: WorkspaceCommandIdentityV1,
+        scope: Option<WorkspaceCommandAdmissionLookupScopeV1>,
+    },
+    Replay {
+        identity: WorkspaceCommandIdentityV1,
+        scope: WorkspaceCommandAdmissionLookupScopeV1,
+        operation: WorkspaceRecordedOperationV1,
+    },
+}
+
+impl WorkspaceCommandAdmissionAcquireV1 {
+    pub fn identity(&self) -> &WorkspaceCommandIdentityV1 {
+        match self {
+            Self::Claimed { identity, .. }
+            | Self::Pending { identity, .. }
+            | Self::Collision { identity, .. }
+            | Self::Replay { identity, .. } => identity,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -744,18 +777,125 @@ impl WorkspaceCommandAdmissionFinalizationV1 {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceCommandExecutionClaimStateV1 {
+    workspace_id: String,
+    fingerprint: String,
+    generation: u64,
+    reservation_id: Option<u64>,
+}
+
 #[derive(Debug)]
 struct WorkspaceCommandAdmissionInnerV1 {
     state: Option<WorkspaceCommandAdmissionStateV1>,
+    claims: BTreeMap<String, WorkspaceCommandExecutionClaimStateV1>,
     reservations: BTreeMap<u64, WorkspaceCommandAdmissionFinalizationV1>,
+    next_claim_generation: u64,
     next_reservation_id: u64,
     closed: bool,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceCommandExecutionClaimV1 {
+    inner: Arc<Mutex<WorkspaceCommandAdmissionInnerV1>>,
+    workspace_id: String,
+    operation_id: String,
+    fingerprint: String,
+    generation: u64,
+}
+
+impl WorkspaceCommandExecutionClaimV1 {
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn finalize_transient(
+        &self,
+        mut operation: WorkspaceRecordedOperationV1,
+    ) -> Result<WorkspaceRecordedOperationV1, WorkspaceWorkingJournalError> {
+        validate_and_canonicalize_recorded_operation(&mut operation)?;
+        if operation.operation_id != self.operation_id || operation.fingerprint != self.fingerprint
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let current = inner
+            .claims
+            .get(&self.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if current.workspace_id != self.workspace_id
+            || current.fingerprint != self.fingerprint
+            || current.generation != self.generation
+            || current.reservation_id.is_some()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let mut projected = inner
+            .state
+            .as_ref()
+            .cloned()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        for effect in inner.reservations.values() {
+            effect.apply_reservation_projection(&mut projected)?;
+        }
+        projected.insert(None, operation.clone())?;
+        let state = inner
+            .state
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        state.insert(None, operation.clone())?;
+        inner.claims.remove(&self.operation_id);
+        Ok(operation)
+    }
+
+    pub fn abandon(&self) -> Result<bool, WorkspaceWorkingJournalError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let Some(current) = inner.claims.get(&self.operation_id) else {
+            return Ok(false);
+        };
+        if current.workspace_id != self.workspace_id
+            || current.fingerprint != self.fingerprint
+            || current.generation != self.generation
+        {
+            return Ok(false);
+        }
+        if current.reservation_id.is_some() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        inner.claims.remove(&self.operation_id);
+        if inner.closed && inner.claims.is_empty() && inner.reservations.is_empty() {
+            inner.state.take();
+        }
+        Ok(true)
+    }
 }
 
 #[derive(Debug)]
 pub struct WorkspaceCommandAdmissionReservationV1 {
     inner: Arc<Mutex<WorkspaceCommandAdmissionInnerV1>>,
     reservation_id: u64,
+    claim: Option<(String, u64)>,
     active: bool,
 }
 
@@ -772,6 +912,17 @@ impl WorkspaceCommandAdmissionReservationV1 {
             .get(&self.reservation_id)
             .cloned()
             .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if let Some((operation_id, generation)) = &self.claim {
+            let current = inner
+                .claims
+                .get(operation_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+            if current.generation != *generation
+                || current.reservation_id != Some(self.reservation_id)
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        }
         let mut replacement = inner
             .state
             .as_ref()
@@ -781,8 +932,11 @@ impl WorkspaceCommandAdmissionReservationV1 {
         let diagnostics = replacement.diagnostics();
         inner.state = Some(replacement);
         inner.reservations.remove(&self.reservation_id);
+        if let Some((operation_id, _)) = &self.claim {
+            inner.claims.remove(operation_id);
+        }
         self.active = false;
-        if inner.closed && inner.reservations.is_empty() {
+        if inner.closed && inner.claims.is_empty() && inner.reservations.is_empty() {
             inner.state.take();
         }
         Ok(diagnostics)
@@ -798,7 +952,16 @@ impl WorkspaceCommandAdmissionReservationV1 {
         }
         if let Ok(mut inner) = self.inner.lock() {
             inner.reservations.remove(&self.reservation_id);
-            if inner.closed && inner.reservations.is_empty() {
+            if let Some((operation_id, generation)) = &self.claim {
+                if let Some(current) = inner.claims.get_mut(operation_id) {
+                    if current.generation == *generation
+                        && current.reservation_id == Some(self.reservation_id)
+                    {
+                        current.reservation_id = None;
+                    }
+                }
+            }
+            if inner.closed && inner.claims.is_empty() && inner.reservations.is_empty() {
                 inner.state.take();
             }
         }
@@ -817,6 +980,27 @@ pub struct PreparedWorkspaceCommandAdmissionV1 {
     inner: Arc<Mutex<WorkspaceCommandAdmissionInnerV1>>,
 }
 
+fn reconcile_workspace_command_execution_claims_v1(
+    claims: &BTreeMap<String, WorkspaceCommandExecutionClaimStateV1>,
+    replacement: &WorkspaceCommandAdmissionStateV1,
+) -> Result<Vec<String>, WorkspaceWorkingJournalError> {
+    let mut terminalized_claims = Vec::new();
+    for (operation_id, claim) in claims {
+        match replacement.decision(&claim.workspace_id, operation_id, &claim.fingerprint) {
+            WorkspaceCommandAdmissionDecisionV1::Unseen => {}
+            WorkspaceCommandAdmissionDecisionV1::Collision { .. } => {
+                return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+            }
+            WorkspaceCommandAdmissionDecisionV1::Replay { .. } => {
+                if claim.reservation_id.is_none() {
+                    terminalized_claims.push(operation_id.clone());
+                }
+            }
+        }
+    }
+    Ok(terminalized_claims)
+}
+
 impl PreparedWorkspaceCommandAdmissionV1 {
     pub fn prepare(
         seed: &[WorkspaceCommandAdmissionSeedRecordV1],
@@ -824,7 +1008,9 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         Ok(Self {
             inner: Arc::new(Mutex::new(WorkspaceCommandAdmissionInnerV1 {
                 state: Some(WorkspaceCommandAdmissionStateV1::from_seed(seed)?),
+                claims: BTreeMap::new(),
                 reservations: BTreeMap::new(),
+                next_claim_generation: 1,
                 next_reservation_id: 1,
                 closed: false,
             })),
@@ -844,11 +1030,16 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         if state.closed {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
+        let terminalized_claims =
+            reconcile_workspace_command_execution_claims_v1(&state.claims, &replacement)?;
         let mut projected = replacement.clone();
         for effect in state.reservations.values() {
             effect.apply_reservation_projection(&mut projected)?;
         }
         state.state = Some(replacement);
+        for operation_id in terminalized_claims {
+            state.claims.remove(&operation_id);
+        }
         Ok(diagnostics)
     }
 
@@ -896,12 +1087,96 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         )?;
         replacement.require_reconstructible_size()?;
         let diagnostics = replacement.diagnostics();
+        let terminalized_claims =
+            reconcile_workspace_command_execution_claims_v1(&state.claims, &replacement)?;
         let mut projected = replacement.clone();
         for effect in state.reservations.values() {
             effect.apply_reservation_projection(&mut projected)?;
         }
         state.state = Some(replacement);
+        for operation_id in terminalized_claims {
+            state.claims.remove(&operation_id);
+        }
         Ok(diagnostics)
+    }
+
+    pub fn acquire(
+        &self,
+        request: WorkspaceCommandIdentityRequestV1,
+    ) -> Result<WorkspaceCommandAdmissionAcquireV1, WorkspaceWorkingJournalError> {
+        let operation_id = canonical_uuid(&request.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let identity = workspace_command_identity_v1(request)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let admission = inner
+            .state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        match admission.decision(&identity.workspace_id, &operation_id, &identity.fingerprint) {
+            WorkspaceCommandAdmissionDecisionV1::Replay { scope, operation } => {
+                return Ok(WorkspaceCommandAdmissionAcquireV1::Replay {
+                    identity,
+                    scope,
+                    operation,
+                });
+            }
+            WorkspaceCommandAdmissionDecisionV1::Collision { scope } => {
+                return Ok(WorkspaceCommandAdmissionAcquireV1::Collision {
+                    identity,
+                    scope: Some(scope),
+                });
+            }
+            WorkspaceCommandAdmissionDecisionV1::Unseen => {}
+        }
+        if let Some(claim) = inner.claims.get(&operation_id) {
+            if claim.workspace_id == identity.workspace_id
+                && claim.fingerprint == identity.fingerprint
+            {
+                return Ok(WorkspaceCommandAdmissionAcquireV1::Pending {
+                    identity,
+                    generation: claim.generation,
+                });
+            }
+            return Ok(WorkspaceCommandAdmissionAcquireV1::Collision {
+                identity,
+                scope: None,
+            });
+        }
+        if inner.claims.len() >= MAXIMUM_WORKSPACE_COMMAND_ADMISSION_CLAIM_COUNT_V1 {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: inner.claims.len() + 1,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_CLAIM_COUNT_V1,
+            });
+        }
+        let generation = inner.next_claim_generation;
+        inner.next_claim_generation = generation
+            .checked_add(1)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        inner.claims.insert(
+            operation_id.clone(),
+            WorkspaceCommandExecutionClaimStateV1 {
+                workspace_id: identity.workspace_id.clone(),
+                fingerprint: identity.fingerprint.clone(),
+                generation,
+                reservation_id: None,
+            },
+        );
+        Ok(WorkspaceCommandAdmissionAcquireV1::Claimed {
+            claim: WorkspaceCommandExecutionClaimV1 {
+                inner: Arc::clone(&self.inner),
+                workspace_id: identity.workspace_id.clone(),
+                operation_id,
+                fingerprint: identity.fingerprint.clone(),
+                generation,
+            },
+            identity,
+        })
     }
 
     pub fn preflight(
@@ -1015,11 +1290,16 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             }
         }
         let diagnostics = replacement.diagnostics();
+        let terminalized_claims =
+            reconcile_workspace_command_execution_claims_v1(&inner.claims, &replacement)?;
         let mut projected = replacement.clone();
         for effect in inner.reservations.values() {
             effect.apply_reservation_projection(&mut projected)?;
         }
         inner.state = Some(replacement);
+        for operation_id in terminalized_claims {
+            inner.claims.remove(&operation_id);
+        }
         Ok(diagnostics)
     }
 
@@ -1118,6 +1398,82 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
     }
 
+    pub fn bind_claim(
+        &self,
+        claim: &WorkspaceCommandExecutionClaimV1,
+        effect: WorkspaceCommandAdmissionFinalizationV1,
+    ) -> Result<WorkspaceCommandAdmissionReservationV1, WorkspaceWorkingJournalError> {
+        if !Arc::ptr_eq(&self.inner, &claim.inner) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let (effect_workspace_id, effect_operation) = match &effect {
+            WorkspaceCommandAdmissionFinalizationV1::Workspace {
+                workspace_id,
+                operation,
+            }
+            | WorkspaceCommandAdmissionFinalizationV1::Delete {
+                workspace_id,
+                operation,
+            } => (workspace_id, operation),
+        };
+        let effect_workspace_id = canonical_uuid(effect_workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let effect_operation_id = canonical_uuid(&effect_operation.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if effect_workspace_id != claim.workspace_id
+            || effect_operation_id != claim.operation_id
+            || effect_operation.fingerprint != claim.fingerprint
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let current = inner
+            .claims
+            .get(&claim.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if current.workspace_id != claim.workspace_id
+            || current.fingerprint != claim.fingerprint
+            || current.generation != claim.generation
+            || current.reservation_id.is_some()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let mut projected = inner
+            .state
+            .as_ref()
+            .cloned()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        for pending in inner.reservations.values() {
+            if pending.conflicts_with(&effect) {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            pending.apply_reservation_projection(&mut projected)?;
+        }
+        effect.apply_reservation_projection(&mut projected)?;
+        let reservation_id = inner.next_reservation_id;
+        inner.next_reservation_id = reservation_id
+            .checked_add(1)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        inner.reservations.insert(reservation_id, effect);
+        inner
+            .claims
+            .get_mut(&claim.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?
+            .reservation_id = Some(reservation_id);
+        Ok(WorkspaceCommandAdmissionReservationV1 {
+            inner: Arc::clone(&self.inner),
+            reservation_id,
+            claim: Some((claim.operation_id.clone(), claim.generation)),
+            active: true,
+        })
+    }
+
     pub fn reserve(
         &self,
         effect: WorkspaceCommandAdmissionFinalizationV1,
@@ -1150,6 +1506,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         Ok(WorkspaceCommandAdmissionReservationV1 {
             inner: Arc::clone(&self.inner),
             reservation_id,
+            claim: None,
             active: true,
         })
     }
@@ -1157,7 +1514,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
     pub fn close(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.closed = true;
-            if inner.reservations.is_empty() {
+            if inner.claims.is_empty() && inner.reservations.is_empty() {
                 inner.state.take();
             }
         }
@@ -4860,7 +5217,10 @@ fn valid_file_url(value: &str) -> bool {
 }
 
 fn is_sha256_digest(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn valid_foundation_date(value: &Value) -> bool {
@@ -5113,6 +5473,380 @@ mod tests {
             admission.preflight(command_identity_request(WorkspaceCommandKindV1::Save)),
             Err(WorkspaceWorkingJournalError::InvalidTransaction)
         );
+    }
+
+    #[test]
+    fn command_admission_acquire_is_atomic_for_pending_collision_and_transient_replay() {
+        let admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
+        let request = command_identity_request(WorkspaceCommandKindV1::Save);
+        let (identity, claim) = match admission.acquire(request.clone()).expect("initial acquire") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { identity, claim } => (identity, claim),
+            other => panic!("expected claimed acquisition, got {other:?}"),
+        };
+        assert_eq!(claim.operation_id(), OPERATION_ID);
+        assert_eq!(claim.fingerprint(), identity.fingerprint);
+        assert!(matches!(
+            admission.acquire(request.clone()).expect("matching acquire"),
+            WorkspaceCommandAdmissionAcquireV1::Pending {
+                generation,
+                ..
+            } if generation == claim.generation()
+        ));
+
+        let mut collision_request = request.clone();
+        collision_request.origin = WorkspaceCommandOriginV1::Standalone;
+        assert!(matches!(
+            admission
+                .acquire(collision_request)
+                .expect("collision acquire"),
+            WorkspaceCommandAdmissionAcquireV1::Collision { scope: None, .. }
+        ));
+
+        let operation = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: identity.fingerprint,
+            recorded_at: 1.0,
+            disposition: "invalid".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 0,
+            resulting_digest: None,
+            error_code: Some("workspace_unavailable".to_owned()),
+            diagnostic: Some("workspace_not_found".to_owned()),
+        };
+        assert_eq!(
+            claim
+                .finalize_transient(operation.clone())
+                .expect("finalize transient claim"),
+            operation
+        );
+        assert!(!claim.abandon().expect("terminal claim is already absent"));
+        assert!(matches!(
+            admission.acquire(request).expect("replay acquire"),
+            WorkspaceCommandAdmissionAcquireV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: replayed,
+                ..
+            } if replayed == operation
+        ));
+    }
+
+    #[test]
+    fn command_admission_close_fences_transient_but_allows_bound_finalization() {
+        let admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
+        let request = command_identity_request(WorkspaceCommandKindV1::Save);
+        let (identity, claim) = match admission.acquire(request).expect("acquire transient claim") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { identity, claim } => (identity, claim),
+            other => panic!("expected claim, got {other:?}"),
+        };
+        let transient = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: identity.fingerprint,
+            recorded_at: 1.5,
+            disposition: "conflict".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 0,
+            resulting_digest: None,
+            error_code: Some("state_conflict".to_owned()),
+            diagnostic: Some("catalog_revision_mismatch".to_owned()),
+        };
+        admission.close();
+        assert_eq!(
+            claim.finalize_transient(transient),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        assert!(claim.abandon().expect("closed transient claim cleanup"));
+
+        let durable_admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("durable admission");
+        let (durable_identity, durable_claim) = match durable_admission
+            .acquire(command_identity_request(WorkspaceCommandKindV1::Save))
+            .expect("acquire durable claim")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { identity, claim } => (identity, claim),
+            other => panic!("expected durable claim, got {other:?}"),
+        };
+        let durable_operation = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: durable_identity.fingerprint,
+            recorded_at: 1.75,
+            disposition: "applied".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 1,
+            resulting_digest: None,
+            error_code: None,
+            diagnostic: None,
+        };
+        let mut reservation = durable_admission
+            .bind_claim(
+                &durable_claim,
+                WorkspaceCommandAdmissionFinalizationV1::Workspace {
+                    workspace_id: WORKSPACE_ID.to_owned(),
+                    operation: durable_operation,
+                },
+            )
+            .expect("bind durable claim");
+        durable_admission.close();
+        reservation
+            .finalize()
+            .expect("bound finalization survives admission close");
+        assert!(
+            !durable_claim
+                .abandon()
+                .expect("bound finalization terminalized claim")
+        );
+    }
+
+    #[test]
+    fn command_admission_rejects_noncanonical_uppercase_digests() {
+        let mut seeded = admission_operation(OPERATION_ID.to_owned(), 'a', 1.0);
+        seeded.fingerprint = seeded.fingerprint.to_ascii_uppercase();
+        assert!(matches!(
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[
+                WorkspaceCommandAdmissionSeedRecordV1 {
+                    workspace_id: Some(WORKSPACE_ID.to_owned()),
+                    operation: seeded,
+                },
+            ]),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        ));
+
+        let admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
+        let request = command_identity_request(WorkspaceCommandKindV1::Save);
+        let (identity, claim) = match admission.acquire(request.clone()).expect("acquire claim") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { identity, claim } => (identity, claim),
+            other => panic!("expected claim, got {other:?}"),
+        };
+        let generation = claim.generation();
+        let uppercase = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: identity.fingerprint.to_ascii_uppercase(),
+            recorded_at: 1.5,
+            disposition: "invalid".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 0,
+            resulting_digest: None,
+            error_code: Some("workspace_unavailable".to_owned()),
+            diagnostic: Some("workspace_not_found".to_owned()),
+        };
+        assert_eq!(
+            claim.finalize_transient(uppercase),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        assert!(matches!(
+            admission.acquire(request).expect("claim remains active"),
+            WorkspaceCommandAdmissionAcquireV1::Pending {
+                generation: pending_generation,
+                ..
+            } if pending_generation == generation
+        ));
+        assert!(claim.abandon().expect("cleanup claim"));
+    }
+
+    #[test]
+    fn command_admission_claim_generation_fences_aba_and_binds_exactly_once() {
+        let admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
+        let request = command_identity_request(WorkspaceCommandKindV1::Save);
+        let (identity, stale_claim) = match admission
+            .acquire(request.clone())
+            .expect("first acquire")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { identity, claim } => (identity, claim),
+            other => panic!("expected first claim, got {other:?}"),
+        };
+        let stale_generation = stale_claim.generation();
+        assert!(stale_claim.abandon().expect("abandon first claim"));
+        let current_claim = match admission.acquire(request).expect("second acquire") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected replacement claim, got {other:?}"),
+        };
+        assert!(current_claim.generation() > stale_generation);
+
+        let operation = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: identity.fingerprint,
+            recorded_at: 2.0,
+            disposition: "applied".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 2,
+            resulting_digest: None,
+            error_code: None,
+            diagnostic: None,
+        };
+        assert_eq!(
+            stale_claim.finalize_transient(operation.clone()),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        let mut effect_operation = operation.clone();
+        effect_operation.operation_id = OPERATION_ID.to_uppercase();
+        let effect = WorkspaceCommandAdmissionFinalizationV1::Workspace {
+            workspace_id: WORKSPACE_ID.to_uppercase(),
+            operation: effect_operation,
+        };
+        assert!(matches!(
+            admission.bind_claim(&stale_claim, effect.clone()),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        ));
+        let reservation = admission
+            .bind_claim(&current_claim, effect.clone())
+            .expect("bind current claim");
+        assert!(matches!(
+            admission.bind_claim(&current_claim, effect.clone()),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        ));
+        reservation.cancel();
+
+        let mut rebound = admission
+            .bind_claim(&current_claim, effect)
+            .expect("rebind after cancellation");
+        rebound.finalize().expect("finalize rebound claim");
+        assert!(
+            !current_claim
+                .abandon()
+                .expect("finalized claim is already absent")
+        );
+        assert!(matches!(
+            admission
+                .decision(WORKSPACE_ID, OPERATION_ID, &operation.fingerprint)
+                .expect("finalized decision"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
+                operation: replayed,
+            } if replayed == operation
+        ));
+    }
+
+    #[test]
+    fn command_admission_reconcile_terminalizes_unbound_claim_and_rejects_collision_atomically() {
+        let admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
+        let request = command_identity_request(WorkspaceCommandKindV1::Save);
+        let (identity, claim) = match admission.acquire(request.clone()).expect("acquire claim") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { identity, claim } => (identity, claim),
+            other => panic!("expected claim, got {other:?}"),
+        };
+        let operation = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: identity.fingerprint,
+            recorded_at: 3.0,
+            disposition: "applied".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 3,
+            resulting_digest: None,
+            error_code: None,
+            diagnostic: None,
+        };
+        admission
+            .reconcile_durable(&[WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some(WORKSPACE_ID.to_owned()),
+                operation: operation.clone(),
+            }])
+            .expect("reconcile exact durable receipt");
+        assert!(
+            !claim
+                .abandon()
+                .expect("reconcile terminalized the unbound claim")
+        );
+        assert!(matches!(
+            admission.acquire(request).expect("reconciled replay"),
+            WorkspaceCommandAdmissionAcquireV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
+                operation: replayed,
+                ..
+            } if replayed == operation
+        ));
+
+        let collision_admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("collision admission");
+        let collision_request = command_identity_request(WorkspaceCommandKindV1::Save);
+        let collision_claim = match collision_admission
+            .acquire(collision_request.clone())
+            .expect("collision claim")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected collision claim, got {other:?}"),
+        };
+        let mut conflicting = operation;
+        conflicting.fingerprint = "f".repeat(64);
+        assert_eq!(
+            collision_admission.reconcile_workspace(
+                WORKSPACE_ID,
+                std::slice::from_ref(&conflicting),
+                None
+            ),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        assert!(matches!(
+            collision_admission
+                .acquire(collision_request)
+                .expect("claim remains after failed reconcile"),
+            WorkspaceCommandAdmissionAcquireV1::Pending {
+                generation,
+                ..
+            } if generation == collision_claim.generation()
+        ));
+        assert!(collision_claim.abandon().expect("cleanup collision claim"));
+    }
+
+    #[test]
+    fn command_admission_claim_validation_precedes_finalization_mutation() {
+        let admission =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
+        let (identity, claim) = match admission
+            .acquire(command_identity_request(WorkspaceCommandKindV1::Save))
+            .expect("acquire claim")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { identity, claim } => (identity, claim),
+            other => panic!("expected claim, got {other:?}"),
+        };
+        let operation = WorkspaceRecordedOperationV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            fingerprint: identity.fingerprint,
+            recorded_at: 4.0,
+            disposition: "applied".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 4,
+            resulting_digest: None,
+            error_code: None,
+            diagnostic: None,
+        };
+        let mut reservation = admission
+            .bind_claim(
+                &claim,
+                WorkspaceCommandAdmissionFinalizationV1::Workspace {
+                    workspace_id: WORKSPACE_ID.to_owned(),
+                    operation: operation.clone(),
+                },
+            )
+            .expect("bind claim");
+        {
+            let mut inner = claim.inner.lock().expect("claim state lock");
+            inner
+                .claims
+                .get_mut(OPERATION_ID)
+                .expect("claim state")
+                .generation += 1;
+        }
+        assert_eq!(
+            reservation.finalize(),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        assert!(matches!(
+            admission
+                .decision(WORKSPACE_ID, OPERATION_ID, &operation.fingerprint)
+                .expect("failed finalization stayed invisible"),
+            WorkspaceCommandAdmissionDecisionV1::Unseen
+        ));
     }
 
     #[test]

@@ -1011,22 +1011,12 @@ pub enum CoreWorkspaceCommandAdmissionLookupScopeV1 {
     Global,
 }
 
-#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
-pub enum CoreWorkspaceCommandAdmissionDecisionV1 {
-    Unseen,
-    Collision {
-        scope: CoreWorkspaceCommandAdmissionLookupScopeV1,
-    },
-    Replay {
-        scope: CoreWorkspaceCommandAdmissionLookupScopeV1,
-        operation: CoreWorkspaceRecordedOperationV1,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionPreflightV1 {
-    pub identity: CoreWorkspaceCommandIdentityV1,
-    pub decision: CoreWorkspaceCommandAdmissionDecisionV1,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceCommandAdmissionAcquireKindV1 {
+    Claimed,
+    Pending,
+    Collision,
+    Replay,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
@@ -1094,40 +1084,6 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLooku
         match value {
             runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1::Workspace => Self::Workspace,
             runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1::Global => Self::Global,
-        }
-    }
-}
-
-impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1>
-    for CoreWorkspaceCommandAdmissionDecisionV1
-{
-    fn from(
-        value: runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1,
-    ) -> Self {
-        match value {
-            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1::Unseen => Self::Unseen,
-            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1::Collision { scope } => {
-                Self::Collision { scope: scope.into() }
-            }
-            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1::Replay { scope, operation } => {
-                Self::Replay {
-                    scope: scope.into(),
-                    operation: operation.into(),
-                }
-            }
-        }
-    }
-}
-
-impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionPreflightV1>
-    for CoreWorkspaceCommandAdmissionPreflightV1
-{
-    fn from(
-        value: runtime::workspace_persistence_journal::WorkspaceCommandAdmissionPreflightV1,
-    ) -> Self {
-        Self {
-            identity: value.identity.into(),
-            decision: value.decision.into(),
         }
     }
 }

@@ -116,12 +116,6 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
-    private struct PendingCommandAdmission {
-        let workspaceID: UUID?
-        let fingerprint: String
-        var waiters: [CheckedContinuation<Void, Never>] = []
-    }
-
     private struct WorkspaceRecord {
         var document: DomainWorkspaceDocument
         var savedDigest: String
@@ -148,7 +142,6 @@ actor DomainWorkspaceContextAuthority {
     /// never persist ephemeral/test workspaces. A later command invalidates the overlay.
     private var readRegistrations: [UUID: DomainWorkspaceSnapshot] = [:]
     private var unavailableWorkspaces: [UUID: DomainPersistenceBootstrap.UnavailableWorkspace] = [:]
-    private var pendingCommandAdmissions: [UUID: PendingCommandAdmission] = [:]
     private var health: DomainAuthorityHealth = .writable
     private var mutationAccessSnapshot: DomainWorkspaceMutationAccessSnapshot
     private var catalogRevision: UInt64 = 0
@@ -402,21 +395,12 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_command_identity_workspace_missing"
             )
         }
-        var fingerprint = ""
-        admissionReservation: while true {
-            let preflight: DomainWorkspaceCommandAdmissionPreflight
+        if let commandIdentityResolver {
             do {
                 try Task.checkCancellation()
-                if commandIdentityResolver == nil {
-                    // This bounded synchronous call and the reservation check below execute in one
-                    // actor turn, so an unseen receipt cannot miss a completed pending admission.
-                    preflight = try resolveCommandPreflight(commandIdentityInput)
-                } else {
-                    preflight = try await resolveInjectedCommandPreflight(
-                        commandIdentityInput,
-                        workspaceID: workspaceID
-                    )
-                }
+                // Tests may delay or fail before the authoritative acquire, but the injected
+                // fingerprint is never used for a production identity or admission decision.
+                _ = try await commandIdentityResolver(commandIdentityInput)
                 try Task.checkCancellation()
             } catch is CancellationError {
                 return unrecordedCommandIdentityRejection(
@@ -425,7 +409,31 @@ actor DomainWorkspaceContextAuthority {
                     errorCode: .cancelled,
                     diagnostic: "workspace_command_identity_cancelled"
                 )
-            } catch let error as DomainWorkspaceCommandAdmissionPreflightError {
+            } catch {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_identity_rust_unavailable"
+                )
+            }
+        }
+        var fingerprint = ""
+        var acquiredClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
+        admissionReservation: while true {
+            let acquisition: DomainWorkspaceCommandAdmissionAcquisition
+            do {
+                try Task.checkCancellation()
+                acquisition = try resolveCommandAcquisition(commandIdentityInput)
+                try Task.checkCancellation()
+            } catch is CancellationError {
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .failed,
+                    errorCode: .cancelled,
+                    diagnostic: "workspace_command_identity_cancelled"
+                )
+            } catch let error as DomainWorkspaceCommandAdmissionError {
                 switch error {
                 case .invalidInput:
                     return unrecordedCommandIdentityRejection(
@@ -452,6 +460,7 @@ actor DomainWorkspaceContextAuthority {
                     )
                 }
             } catch {
+                quarantineCommandAdmission()
                 return unrecordedCommandIdentityRejection(
                     envelope,
                     disposition: .readOnly,
@@ -459,45 +468,52 @@ actor DomainWorkspaceContextAuthority {
                     diagnostic: "workspace_command_identity_rust_unavailable"
                 )
             }
-            guard isLowercaseSHA256(preflight.fingerprint) else {
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_identity_receipt_invalid"
-                )
-            }
-            fingerprint = preflight.fingerprint
-            if let pending = pendingCommandAdmissions[envelope.operationID] {
-                guard pending.workspaceID == workspaceID,
-                      pending.fingerprint == fingerprint
-                else {
-                    return collisionOutcome(
-                        envelope.operationID,
-                        workspace: records[workspaceID].map(makeSnapshot)
+            switch acquisition {
+            case let .claimed(receiptFingerprint, claim):
+                fingerprint = receiptFingerprint
+                acquiredClaim = claim
+                break admissionReservation
+            case let .pending(receiptFingerprint, _):
+                guard isLowercaseSHA256(receiptFingerprint) else {
+                    quarantineCommandAdmission()
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_identity_receipt_invalid"
                     )
                 }
-                await withCheckedContinuation { continuation in
-                    guard var current = pendingCommandAdmissions[envelope.operationID],
-                          current.workspaceID == workspaceID,
-                          current.fingerprint == fingerprint
-                    else {
-                        continuation.resume()
-                        return
-                    }
-                    current.waiters.append(continuation)
-                    pendingCommandAdmissions[envelope.operationID] = current
+                do {
+                    try await Task.sleep(for: .milliseconds(1))
+                } catch {
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .failed,
+                        errorCode: .cancelled,
+                        diagnostic: "workspace_command_identity_cancelled"
+                    )
                 }
-                // The command that owned the reservation may have durably committed while this
-                // waiter slept. Reissue the atomic Rust preflight rather than reusing an unseen
-                // decision captured before the wait.
                 continue admissionReservation
-            }
-            if preflight.decision != .unseen {
+            case let .collision(receiptFingerprint, scope):
+                guard isLowercaseSHA256(receiptFingerprint) else {
+                    quarantineCommandAdmission()
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .readOnly,
+                        errorCode: .runtimeReadOnlyDegraded,
+                        diagnostic: "workspace_command_identity_receipt_invalid"
+                    )
+                }
+                return collisionOutcome(
+                    envelope.operationID,
+                    workspace: scope == .global ? nil : records[workspaceID].map(makeSnapshot)
+                )
+            case let .replay(receiptFingerprint, scope, operation):
                 guard let recorded = await recordedOutcome(
                     for: envelope,
-                    fingerprint: fingerprint,
-                    decision: preflight.decision,
+                    fingerprint: receiptFingerprint,
+                    scope: scope,
+                    operation: operation,
                     permit: permit
                 ) else {
                     quarantineCommandAdmission()
@@ -510,72 +526,68 @@ actor DomainWorkspaceContextAuthority {
                 }
                 return recorded
             }
-            if commandAdmissionIsCorrupt {
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_admission_receipt_missing"
-                )
-            }
-            if pendingCommandAdmissions[envelope.operationID] != nil {
-                continue admissionReservation
-            }
-            pendingCommandAdmissions[envelope.operationID] = PendingCommandAdmission(
-                workspaceID: workspaceID,
-                fingerprint: fingerprint
+        }
+        guard let commandClaim = acquiredClaim,
+              isLowercaseSHA256(fingerprint)
+        else {
+            quarantineCommandAdmission()
+            return unrecordedCommandIdentityRejection(
+                envelope,
+                disposition: .readOnly,
+                errorCode: .runtimeReadOnlyDegraded,
+                diagnostic: "workspace_command_identity_receipt_invalid"
             )
-            break
         }
         defer {
-            finishPendingCommandAdmission(
-                operationID: envelope.operationID,
-                workspaceID: workspaceID,
-                fingerprint: fingerprint
-            )
+            _ = try? commandClaim.abandon()
         }
         if let document = commandDocument(envelope.command),
            let diagnostic = invalidDocumentDiagnostic(document)
         {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .invalid,
                 errorCode: .invalidDocument,
                 diagnostic: diagnostic
             )
         }
         if rejectsEphemeralPersistence(envelope.command) {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .invalid,
                 errorCode: .invalidDocument,
                 diagnostic: "ephemeral_workspace_not_persistable"
             )
         }
         if unavailableWorkspaces[workspaceID] != nil {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .readOnly,
                 errorCode: .runtimeReadOnlyDegraded,
                 diagnostic: "workspace_document_unavailable"
             )
         }
         guard health.acceptsMutations else {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .readOnly,
                 errorCode: .runtimeReadOnlyDegraded,
                 diagnostic: "runtime_authority_not_writable"
             )
         }
         if let expected = envelope.expectedCatalogRevision, expected != catalogRevision {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .conflict,
                 errorCode: .stateConflict,
                 diagnostic: "catalog_revision_mismatch"
@@ -588,6 +600,7 @@ actor DomainWorkspaceContextAuthority {
                 document,
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 permit: permit
             )
         case let .replaceWorkingDocument(document):
@@ -595,6 +608,7 @@ actor DomainWorkspaceContextAuthority {
                 document,
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 permit: permit
             )
         case let .saveWorkspaceDocument(workspaceID):
@@ -602,6 +616,7 @@ actor DomainWorkspaceContextAuthority {
                 workspaceID,
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 permit: permit
             )
         case let .resolveExternalConflict(workspaceID, acceptExternal, protectedAgentIdentities):
@@ -611,6 +626,7 @@ actor DomainWorkspaceContextAuthority {
                 protectedAgentIdentities: protectedAgentIdentities,
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 permit: permit
             )
         case let .deleteWorkspace(workspaceID):
@@ -618,6 +634,7 @@ actor DomainWorkspaceContextAuthority {
                 workspaceID,
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 permit: permit
             )
         }
@@ -650,30 +667,6 @@ actor DomainWorkspaceContextAuthority {
         default:
             break
         }
-    }
-
-    private func finishPendingCommandAdmission(
-        operationID: UUID,
-        workspaceID: UUID?,
-        fingerprint: String
-    ) {
-        guard let pending = pendingCommandAdmissions[operationID],
-              pending.workspaceID == workspaceID,
-              pending.fingerprint == fingerprint
-        else { return }
-        pendingCommandAdmissions.removeValue(forKey: operationID)
-        for waiter in pending.waiters {
-            waiter.resume()
-        }
-    }
-
-    private var commandAdmissionIsCorrupt: Bool {
-        if case let .degradedReadOnly(reason) = health,
-           reason == "workspace_command_admission_receipt_missing"
-        {
-            return true
-        }
-        return false
     }
 
     private func rejectsEphemeralPersistence(_ command: DomainWorkspaceCommand) -> Bool {
@@ -716,36 +709,13 @@ actor DomainWorkspaceContextAuthority {
         return nil
     }
 
-    private func resolveCommandPreflight(
+    private func resolveCommandAcquisition(
         _ input: DomainWorkspaceCommandIdentityInput
-    ) throws -> DomainWorkspaceCommandAdmissionPreflight {
+    ) throws -> DomainWorkspaceCommandAdmissionAcquisition {
         guard let commandAdmission else {
-            throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
+            throw DomainWorkspaceCommandAdmissionError.unavailable
         }
-        return try commandAdmission.preflight(input)
-    }
-
-    private func resolveInjectedCommandPreflight(
-        _ input: DomainWorkspaceCommandIdentityInput,
-        workspaceID: UUID
-    ) async throws -> DomainWorkspaceCommandAdmissionPreflight {
-        guard let commandIdentityResolver else {
-            throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
-        }
-        // Deterministic tests may override only identity computation. Production never enters this
-        // split seam and always uses the synchronous prepared preflight above.
-        let fingerprint = try await commandIdentityResolver(input)
-        guard let commandAdmission else {
-            throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
-        }
-        return DomainWorkspaceCommandAdmissionPreflight(
-            fingerprint: fingerprint,
-            decision: try commandAdmission.decision(
-                workspaceID: workspaceID,
-                operationID: input.operationID,
-                fingerprint: fingerprint
-            )
-        )
+        return try commandAdmission.acquire(input)
     }
 
     private func isLowercaseSHA256(_ value: String) -> Bool {
@@ -801,19 +771,13 @@ actor DomainWorkspaceContextAuthority {
         commandAdmission = nil
     }
 
-    @discardableResult
-    private func registerTransientCommandAdmissionOperation(
-        _ operation: DomainRecordedOperation
-    ) -> Bool {
-        guard let commandAdmission else { return false }
-        do {
-            _ = try commandAdmission.insertTransient(
-                operation: operation
-            )
-            return true
-        } catch {
-            return false
-        }
+    private func recordCommandAdmissionFinalization(
+        _ reconciled: Bool,
+        workspaceID: UUID?
+    ) {
+        guard !reconciled else { return }
+        quarantineCommandAdmission()
+        markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
     }
 
     private func markCommandAdmissionReceiptMissing(workspaceID: UUID?) {
@@ -854,29 +818,40 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
-    private func recordedOutcome(
+    private func recordedOutcomeAfterReconciliation(
         for envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome? {
-        guard let workspaceID = envelope.workspaceID,
-              let input = DomainWorkspaceCommandIdentityInput(envelope),
+        guard let input = DomainWorkspaceCommandIdentityInput(envelope),
               let admission = commandAdmission
-        else {
-            return unrecordedCommandIdentityRejection(
-                envelope,
-                disposition: .readOnly,
-                errorCode: .runtimeReadOnlyDegraded,
-                diagnostic: "workspace_command_admission_rust_unavailable"
-            )
-        }
-        let decision: DomainWorkspaceCommandAdmissionDecision
+        else { return nil }
         do {
-            let preflight = try admission.preflight(input)
-            guard preflight.fingerprint == fingerprint else {
-                throw DomainWorkspaceCommandAdmissionPreflightError.invalidReceipt
+            switch try admission.acquire(input) {
+            case let .replay(receiptFingerprint, scope, operation):
+                guard receiptFingerprint == fingerprint else {
+                    throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+                }
+                return await recordedOutcome(
+                    for: envelope,
+                    fingerprint: fingerprint,
+                    scope: scope,
+                    operation: operation,
+                    permit: permit
+                )
+            case .pending:
+                return nil
+            case let .claimed(_, claim):
+                _ = try? claim.abandon()
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+            case let .collision(_, scope):
+                return collisionOutcome(
+                    envelope.operationID,
+                    workspace: scope == .global
+                        ? nil
+                        : envelope.workspaceID.flatMap { records[$0].map(makeSnapshot) }
+                )
             }
-            decision = preflight.decision
         } catch {
             quarantineCommandAdmission()
             return unrecordedCommandIdentityRejection(
@@ -886,18 +861,13 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_command_admission_rust_unavailable"
             )
         }
-        return await recordedOutcome(
-            for: envelope,
-            fingerprint: fingerprint,
-            decision: decision,
-            permit: permit
-        )
     }
 
     private func recordedOutcome(
         for envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
-        decision: DomainWorkspaceCommandAdmissionDecision,
+        scope: DomainWorkspaceCommandAdmissionLookupScope,
+        operation prior: DomainRecordedOperation,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome? {
         guard let workspaceID = envelope.workspaceID else {
@@ -908,70 +878,60 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_command_admission_receipt_invalid"
             )
         }
-        switch decision {
-        case .unseen:
-            return nil
-        case let .collision(scope):
-            let workspace = scope == .workspace
-                ? records[workspaceID].map(makeSnapshot)
-                : nil
-            return collisionOutcome(envelope.operationID, workspace: workspace)
-        case let .replay(scope, prior):
-            guard prior.operationID == envelope.operationID,
-                  prior.fingerprint == fingerprint
-            else {
-                quarantineCommandAdmission()
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_admission_receipt_invalid"
-                )
-            }
-            let record = records[workspaceID]
-            if scope == .workspace, record == nil {
-                quarantineCommandAdmission()
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_admission_scope_invalid"
-                )
-            }
-            if (prior.disposition == .applied || prior.disposition == .unchanged),
-               case let .createWorkspace(document) = envelope.command
-            {
-                do {
-                    catalogRevision = try await max(
-                        catalogRevision,
-                        persistence.repairRecoveredCreate(
-                            document: document,
-                            now: Date(),
-                            permit: permit
-                        )
-                    )
-                } catch {
-                    return persistenceFailureOutcome(envelope, record: record, error: error)
-                }
-            }
-            if scope == .workspace, let record {
-                publish(
-                    kind: .operationDeduplicated,
-                    workspaceID: workspaceID,
-                    contextID: nil,
-                    operationID: envelope.operationID,
-                    origin: envelope.origin,
-                    revisions: record.revisions,
-                    diagnostic: nil
-                )
-            }
-            invalidateReadRegistrationIfSuperseded(
-                workspaceID: workspaceID,
-                disposition: prior.disposition,
-                resultingDigest: prior.resultingDigest
+        guard prior.operationID == envelope.operationID,
+              prior.fingerprint == fingerprint
+        else {
+            quarantineCommandAdmission()
+            return unrecordedCommandIdentityRejection(
+                envelope,
+                disposition: .readOnly,
+                errorCode: .runtimeReadOnlyDegraded,
+                diagnostic: "workspace_command_admission_receipt_invalid"
             )
-            return prior.outcome(workspace: record.map(makeSnapshot))
         }
+        let record = records[workspaceID]
+        if scope == .workspace, record == nil {
+            quarantineCommandAdmission()
+            return unrecordedCommandIdentityRejection(
+                envelope,
+                disposition: .readOnly,
+                errorCode: .runtimeReadOnlyDegraded,
+                diagnostic: "workspace_command_admission_scope_invalid"
+            )
+        }
+        if (prior.disposition == .applied || prior.disposition == .unchanged),
+           case let .createWorkspace(document) = envelope.command
+        {
+            do {
+                catalogRevision = try await max(
+                    catalogRevision,
+                    persistence.repairRecoveredCreate(
+                        document: document,
+                        now: Date(),
+                        permit: permit
+                    )
+                )
+            } catch {
+                return persistenceFailureOutcome(envelope, record: record, error: error)
+            }
+        }
+        if scope == .workspace, let record {
+            publish(
+                kind: .operationDeduplicated,
+                workspaceID: workspaceID,
+                contextID: nil,
+                operationID: envelope.operationID,
+                origin: envelope.origin,
+                revisions: record.revisions,
+                diagnostic: nil
+            )
+        }
+        invalidateReadRegistrationIfSuperseded(
+            workspaceID: workspaceID,
+            disposition: prior.disposition,
+            resultingDigest: prior.resultingDigest
+        )
+        return prior.outcome(workspace: record.map(makeSnapshot))
     }
 
     @discardableResult
@@ -1737,17 +1697,16 @@ actor DomainWorkspaceContextAuthority {
         _ document: DomainWorkspaceDocument,
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
         await acquireCatalogMutation()
         defer { releaseCatalogMutation() }
-        if let recorded = await recordedOutcome(for: envelope, fingerprint: fingerprint, permit: permit) {
-            return recorded
-        }
         if let expected = envelope.expectedCatalogRevision, expected != catalogRevision {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .conflict,
                 errorCode: .stateConflict,
                 diagnostic: "catalog_revision_mismatch"
@@ -1755,20 +1714,22 @@ actor DomainWorkspaceContextAuthority {
         }
         if let existing = records[document.workspaceID] {
             if existing.document.contentDigest == document.contentDigest {
-                return await unchangedOutcome(envelope, fingerprint: fingerprint, record: existing, permit: permit)
+                return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: existing, permit: permit)
             }
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .conflict,
                 errorCode: .stateConflict,
                 diagnostic: "workspace_already_exists"
             )
         }
         guard envelope.expectedWorkspaceRevision == nil || envelope.expectedWorkspaceRevision == 0 else {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .conflict,
                 errorCode: .stateConflict,
                 diagnostic: "workspace_does_not_exist_at_expected_revision"
@@ -1796,14 +1757,6 @@ actor DomainWorkspaceContextAuthority {
             outcome: provisional
         )
         do {
-            guard let commandAdmission else {
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_admission_rust_unavailable"
-                )
-            }
             let persisted = try await persistence.persistCreated(
                 document: document,
                 expectedCatalogRevision: envelope.expectedCatalogRevision ?? catalogRevision,
@@ -1812,7 +1765,7 @@ actor DomainWorkspaceContextAuthority {
                 operation: recorded,
                 now: recorded.recordedAt,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
             catalogRevision = persisted.catalogRevision
             let record = WorkspaceRecord(
@@ -1827,6 +1780,10 @@ actor DomainWorkspaceContextAuthority {
                 fileMetadata: .missing
             )
             records[document.workspaceID] = record
+            recordCommandAdmissionFinalization(
+                persisted.commandAdmissionFinalizationReconciled,
+                workspaceID: document.workspaceID
+            )
             let outcome = DomainCommandOutcome(
                 operationID: envelope.operationID,
                 disposition: .applied,
@@ -1853,16 +1810,21 @@ actor DomainWorkspaceContextAuthority {
                     workspaceID: document.workspaceID,
                     fileURL: document.fileURL
                 )
-                return DomainCommandOutcome(
-                    operationID: envelope.operationID,
-                    disposition: .conflict,
-                    before: nil,
-                    after: records[document.workspaceID]?.revisions,
-                    catalogRevision: catalogRevision,
-                    resultingDigest: records[document.workspaceID]?.document.contentDigest,
-                    errorCode: .stateConflict,
-                    diagnostic: "durable_create_conflict",
-                    workspace: records[document.workspaceID].map(makeSnapshot)
+                return finalizeTransientOutcome(
+                    DomainCommandOutcome(
+                        operationID: envelope.operationID,
+                        disposition: .conflict,
+                        before: nil,
+                        after: records[document.workspaceID]?.revisions,
+                        catalogRevision: catalogRevision,
+                        resultingDigest: records[document.workspaceID]?.document.contentDigest,
+                        errorCode: .stateConflict,
+                        diagnostic: "durable_create_conflict",
+                        workspace: records[document.workspaceID].map(makeSnapshot)
+                    ),
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
                 )
             }
             return persistenceFailureOutcome(envelope, record: nil, error: error)
@@ -1875,38 +1837,44 @@ actor DomainWorkspaceContextAuthority {
         _ workspaceID: UUID,
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
         await acquireCatalogMutation()
         defer { releaseCatalogMutation() }
-        if let recorded = await recordedOutcome(for: envelope, fingerprint: fingerprint, permit: permit) {
-            return recorded
-        }
         if let expected = envelope.expectedCatalogRevision, expected != catalogRevision {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .conflict,
                 errorCode: .stateConflict,
                 diagnostic: "catalog_revision_mismatch"
             )
         }
         guard let record = records[workspaceID] else {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .invalid,
                 errorCode: .workspaceUnavailable,
                 diagnostic: "workspace_not_found"
             )
         }
         guard record.health.acceptsMutations else {
-            return healthRejectionOutcome(envelope, fingerprint: fingerprint, record: record)
+            return healthRejectionOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record)
         }
         if let expected = envelope.expectedWorkspaceRevision,
            expected != record.revisions.workingRevision
         {
-            return conflictOutcome(envelope, record: record, diagnostic: "workspace_revision_mismatch")
+            return finalizeConflictOutcome(
+                envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim,
+                record: record,
+                diagnostic: "workspace_revision_mismatch"
+            )
         }
         let provisional = DomainCommandOutcome(
             operationID: envelope.operationID,
@@ -1922,14 +1890,6 @@ actor DomainWorkspaceContextAuthority {
             outcome: provisional
         )
         do {
-            guard let commandAdmission else {
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_admission_rust_unavailable"
-                )
-            }
             let deleted = try await persistence.persistDeleted(
                 document: record.document,
                 expectedWorkspaceRevision: record.revisions.workingRevision,
@@ -1937,15 +1897,15 @@ actor DomainWorkspaceContextAuthority {
                 operation: operation,
                 now: operation.recordedAt,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
             records.removeValue(forKey: workspaceID)
             catalogRevision = deleted.catalogRevision
             let cleanupDiagnostic = deleted.tombstone.operation.diagnostic
-            if !deleted.commandAdmissionFinalizationReconciled {
-                quarantineCommandAdmission()
-                markCommandAdmissionReceiptMissing(workspaceID: nil)
-            }
+            recordCommandAdmissionFinalization(
+                deleted.commandAdmissionFinalizationReconciled,
+                workspaceID: nil
+            )
             let outcome = DomainCommandOutcome(
                 operationID: envelope.operationID,
                 disposition: .applied,
@@ -1972,16 +1932,21 @@ actor DomainWorkspaceContextAuthority {
                     workspaceID: workspaceID,
                     fileURL: record.document.fileURL
                 )
-                return DomainCommandOutcome(
-                    operationID: envelope.operationID,
-                    disposition: .conflict,
-                    before: record.revisions,
-                    after: records[workspaceID]?.revisions,
-                    catalogRevision: catalogRevision,
-                    resultingDigest: records[workspaceID]?.document.contentDigest,
-                    errorCode: .stateConflict,
-                    diagnostic: "durable_delete_conflict",
-                    workspace: records[workspaceID].map(makeSnapshot)
+                return finalizeTransientOutcome(
+                    DomainCommandOutcome(
+                        operationID: envelope.operationID,
+                        disposition: .conflict,
+                        before: record.revisions,
+                        after: records[workspaceID]?.revisions,
+                        catalogRevision: catalogRevision,
+                        resultingDigest: records[workspaceID]?.document.contentDigest,
+                        errorCode: .stateConflict,
+                        diagnostic: "durable_delete_conflict",
+                        workspace: records[workspaceID].map(makeSnapshot)
+                    ),
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
                 )
             }
             return persistenceFailureOutcome(envelope, record: record, error: error)
@@ -1994,12 +1959,14 @@ actor DomainWorkspaceContextAuthority {
         _ document: DomainWorkspaceDocument,
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
         guard document.workspaceID == envelope.workspaceID else {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .invalid,
                 errorCode: .invalidDocument,
                 diagnostic: "workspace_identity_mismatch"
@@ -2010,21 +1977,29 @@ actor DomainWorkspaceContextAuthority {
         while let current = records[document.workspaceID] {
             var record = current
             guard record.health.acceptsMutations else {
-                return healthRejectionOutcome(envelope, fingerprint: fingerprint, record: record)
+                return healthRejectionOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record)
             }
             if !isDurableReplay,
                let expected = envelope.expectedWorkspaceRevision,
                expected != record.revisions.workingRevision
             {
-                return conflictOutcome(envelope, record: record, diagnostic: "workspace_revision_mismatch")
+                return finalizeConflictOutcome(
+                    envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
+                    record: record,
+                    diagnostic: "workspace_revision_mismatch"
+                )
             }
             let changedContextIDs = Self.changedContextIDs(from: record.document, to: document)
             if let expectedContext = envelope.expectedContextRevision {
                 guard changedContextIDs.count == 1,
                       let changedContextID = changedContextIDs.first
                 else {
-                    return conflictOutcome(
+                    return finalizeConflictOutcome(
                         envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         record: record,
                         diagnostic: isDurableReplay
                             ? "context_revision_scope_mismatch_after_refresh"
@@ -2034,11 +2009,17 @@ actor DomainWorkspaceContextAuthority {
                 if !isDurableReplay,
                    expectedContext != record.contextRevisions[changedContextID]?.workingRevision
                 {
-                    return conflictOutcome(envelope, record: record, diagnostic: "context_revision_mismatch")
+                    return finalizeConflictOutcome(
+                        envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim,
+                        record: record,
+                        diagnostic: "context_revision_mismatch"
+                    )
                 }
             }
             guard record.document.contentDigest != document.contentDigest else {
-                return await unchangedOutcome(envelope, fingerprint: fingerprint, record: record, permit: permit)
+                return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record, permit: permit)
             }
 
             let changedContextID = changedContextIDs.count == 1 ? changedContextIDs.first : nil
@@ -2068,14 +2049,6 @@ actor DomainWorkspaceContextAuthority {
             let operations = record.operations + [recorded]
             let persisted: DomainPersistenceWorkingCommit
             do {
-                guard let commandAdmission else {
-                    return unrecordedCommandIdentityRejection(
-                        envelope,
-                        disposition: .readOnly,
-                        errorCode: .runtimeReadOnlyDegraded,
-                        diagnostic: "workspace_command_admission_rust_unavailable"
-                    )
-                }
                 persisted = try await persistence.persistWorking(
                     document: document,
                     expectedRevision: before.workingRevision,
@@ -2085,7 +2058,7 @@ actor DomainWorkspaceContextAuthority {
                     operations: operations,
                     now: recorded.recordedAt,
                     permit: permit,
-                    commandAdmission: commandAdmission
+                    commandClaim: commandClaim
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
             } catch let error as DomainPersistenceError {
@@ -2094,7 +2067,7 @@ actor DomainWorkspaceContextAuthority {
                         workspaceID: document.workspaceID,
                         fileURL: document.fileURL
                     )
-                    if let replayed = await recordedOutcome(
+                    if let replayed = await recordedOutcomeAfterReconciliation(
                         for: envelope,
                         fingerprint: fingerprint,
                         permit: permit
@@ -2113,16 +2086,21 @@ actor DomainWorkspaceContextAuthority {
                         continue
                     }
                     let refreshed = records[document.workspaceID]
-                    return DomainCommandOutcome(
-                        operationID: envelope.operationID,
-                        disposition: .conflict,
-                        before: before,
-                        after: refreshed?.revisions,
-                        catalogRevision: catalogRevision,
-                        resultingDigest: refreshed?.document.contentDigest,
-                        errorCode: .stateConflict,
-                        diagnostic: "durable_workspace_revision_mismatch_after_replay",
-                        workspace: refreshed.map(makeSnapshot)
+                    return finalizeTransientOutcome(
+                        DomainCommandOutcome(
+                            operationID: envelope.operationID,
+                            disposition: .conflict,
+                            before: before,
+                            after: refreshed?.revisions,
+                            catalogRevision: catalogRevision,
+                            resultingDigest: refreshed?.document.contentDigest,
+                            errorCode: .stateConflict,
+                            diagnostic: "durable_workspace_revision_mismatch_after_replay",
+                            workspace: refreshed.map(makeSnapshot)
+                        ),
+                        envelope: envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim
                     )
                 }
                 return persistenceFailureOutcome(envelope, record: record, error: error)
@@ -2135,6 +2113,10 @@ actor DomainWorkspaceContextAuthority {
             record.contextTombstones = persisted.journal.contextTombstones
             record.operations = persisted.journal.operations
             records[document.workspaceID] = record
+            recordCommandAdmissionFinalization(
+                persisted.commandAdmissionFinalizationReconciled,
+                workspaceID: document.workspaceID
+            )
             let applied = DomainCommandOutcome(
                 operationID: envelope.operationID,
                 disposition: .applied,
@@ -2157,9 +2139,10 @@ actor DomainWorkspaceContextAuthority {
             return applied
         }
 
-        return recordTransientOutcome(
+        return finalizeTransientOutcome(
             envelope: envelope,
             fingerprint: fingerprint,
+            commandClaim: commandClaim,
             disposition: .invalid,
             errorCode: .workspaceUnavailable,
             diagnostic: "workspace_requires_explicit_create_command"
@@ -2170,31 +2153,39 @@ actor DomainWorkspaceContextAuthority {
         _ workspaceID: UUID,
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit,
         validateExpectedRevision: Bool = true,
         allowsCASRecovery: Bool = true,
         allowsExternalRecovery: Bool = true
     ) async -> DomainCommandOutcome {
         guard var record = records[workspaceID] else {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .invalid,
                 errorCode: .workspaceUnavailable,
                 diagnostic: "workspace_not_found"
             )
         }
         guard record.health.acceptsMutations else {
-            return healthRejectionOutcome(envelope, fingerprint: fingerprint, record: record)
+            return healthRejectionOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record)
         }
         if validateExpectedRevision,
            let expected = envelope.expectedWorkspaceRevision,
            expected != record.revisions.workingRevision
         {
-            return conflictOutcome(envelope, record: record, diagnostic: "workspace_revision_mismatch")
+            return finalizeConflictOutcome(
+                envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim,
+                record: record,
+                diagnostic: "workspace_revision_mismatch"
+            )
         }
         guard record.revisions.dirtyRevision != nil else {
-            return await unchangedOutcome(envelope, fingerprint: fingerprint, record: record, permit: permit)
+            return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record, permit: permit)
         }
         let before = record.revisions
         let after = DomainRevisionState(
@@ -2213,14 +2204,6 @@ actor DomainWorkspaceContextAuthority {
         let recorded = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: Date(), outcome: provisional)
         let operations = record.operations + [recorded]
         do {
-            guard let commandAdmission else {
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_admission_rust_unavailable"
-                )
-            }
             let saved = try await persistence.persistSaved(
                 document: record.document,
                 expectedWorkingRevision: before.workingRevision,
@@ -2230,7 +2213,7 @@ actor DomainWorkspaceContextAuthority {
                 operations: operations,
                 now: recorded.recordedAt,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
             catalogRevision = max(catalogRevision, saved.catalogRevision)
             record.savedDigest = saved.journal.savedDigest
@@ -2238,6 +2221,10 @@ actor DomainWorkspaceContextAuthority {
             record.contextRevisions = saved.journal.contextRevisions
             record.operations = saved.journal.operations
             records[workspaceID] = record
+            recordCommandAdmissionFinalization(
+                saved.commandAdmissionFinalizationReconciled,
+                workspaceID: workspaceID
+            )
         } catch let error as DomainPersistenceError {
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
@@ -2245,8 +2232,10 @@ actor DomainWorkspaceContextAuthority {
                     fileURL: record.document.fileURL
                 )
                 guard allowsCASRecovery else {
-                    return conflictOutcome(
+                    return finalizeConflictOutcome(
                         envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         record: records[workspaceID] ?? record,
                         diagnostic: "durable_save_revision_mismatch_after_replay"
                     )
@@ -2261,14 +2250,17 @@ actor DomainWorkspaceContextAuthority {
                         workspaceID,
                         envelope: envelope,
                         fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         permit: permit,
                         validateExpectedRevision: false,
                         allowsCASRecovery: false,
                         allowsExternalRecovery: allowsExternalRecovery
                     )
                 case .recoveryPending:
-                    return conflictOutcome(
+                    return finalizeConflictOutcome(
                         envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         record: records[workspaceID] ?? record,
                         diagnostic: "durable_save_revision_replay_pending"
                     )
@@ -2276,6 +2268,7 @@ actor DomainWorkspaceContextAuthority {
                     return healthRejectionOutcome(
                         envelope,
                         fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         record: records[workspaceID] ?? record
                     )
                 }
@@ -2284,8 +2277,10 @@ actor DomainWorkspaceContextAuthority {
                 return persistenceFailureOutcome(envelope, record: record, error: error)
             }
             guard allowsExternalRecovery else {
-                return conflictOutcome(
+                return finalizeConflictOutcome(
                     envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
                     record: record,
                     diagnostic: "external_document_changed_during_recovered_save"
                 )
@@ -2304,8 +2299,10 @@ actor DomainWorkspaceContextAuthority {
                   current.savedDigest == observedSavedDigest,
                   current.fileMetadata == observedMetadata
             else {
-                return conflictOutcome(
+                return finalizeConflictOutcome(
                     envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
                     record: records[workspaceID] ?? record,
                     diagnostic: "external_document_changed_during_save_recovery"
                 )
@@ -2325,14 +2322,17 @@ actor DomainWorkspaceContextAuthority {
                         workspaceID,
                         envelope: envelope,
                         fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         permit: permit,
                         validateExpectedRevision: false,
                         allowsCASRecovery: allowsCASRecovery,
                         allowsExternalRecovery: false
                     )
                 case .recoveryPending:
-                    return conflictOutcome(
+                    return finalizeConflictOutcome(
                         envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         record: records[workspaceID] ?? record,
                         diagnostic: "external_document_rebase_pending"
                     )
@@ -2340,6 +2340,7 @@ actor DomainWorkspaceContextAuthority {
                     return healthRejectionOutcome(
                         envelope,
                         fingerprint: fingerprint,
+                        commandClaim: commandClaim,
                         record: records[workspaceID] ?? record
                     )
                 }
@@ -2357,12 +2358,14 @@ actor DomainWorkspaceContextAuthority {
                     revisions: current.revisions,
                     diagnostic: "external_workspace_decode_failed"
                 )
-                return healthRejectionOutcome(envelope, fingerprint: fingerprint, record: current)
+                return healthRejectionOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: current)
             case let .unchanged(metadata), let .missing(metadata):
                 current.fileMetadata = metadata
                 records[workspaceID] = current
-                return conflictOutcome(
+                return finalizeConflictOutcome(
                     envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
                     record: current,
                     diagnostic: "external_document_changed_during_save_recovery"
                 )
@@ -2404,15 +2407,17 @@ actor DomainWorkspaceContextAuthority {
         protectedAgentIdentities: [DomainProtectedAgentIdentity],
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
         guard var record = records[workspaceID],
               case .externalConflict = record.health,
               let external = record.externalDocument
         else {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .invalid,
                 errorCode: .workspaceUnavailable,
                 diagnostic: "workspace_has_no_external_conflict"
@@ -2422,7 +2427,13 @@ actor DomainWorkspaceContextAuthority {
         if let expected = envelope.expectedWorkspaceRevision,
            expected != before.workingRevision
         {
-            return conflictOutcome(envelope, record: record, diagnostic: "workspace_revision_mismatch")
+            return finalizeConflictOutcome(
+                envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim,
+                record: record,
+                diagnostic: "workspace_revision_mismatch"
+            )
         }
         if acceptExternal,
            let diagnostic = Self.protectedAgentIdentityConflict(
@@ -2431,9 +2442,10 @@ actor DomainWorkspaceContextAuthority {
                callerClaims: protectedAgentIdentities
            )
         {
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .conflict,
                 errorCode: .protectedAgentIdentityConflict,
                 diagnostic: diagnostic
@@ -2458,19 +2470,12 @@ actor DomainWorkspaceContextAuthority {
         )
         let operation = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: now, outcome: provisional)
         let operations = record.operations + [operation]
+        var commandAdmissionFinalizationReconciled = true
         do {
             if acceptExternal {
                 let contextRevisions = Dictionary(uniqueKeysWithValues: external.metadata.contexts.map {
                     ($0.identity.contextID, after)
                 })
-                guard let commandAdmission else {
-                    return unrecordedCommandIdentityRejection(
-                        envelope,
-                        disposition: .readOnly,
-                        errorCode: .runtimeReadOnlyDegraded,
-                        diagnostic: "workspace_command_admission_rust_unavailable"
-                    )
-                }
                 let persisted = try await persistence.persistExternalReload(
                     document: external,
                     expectedRevision: before.workingRevision,
@@ -2480,7 +2485,7 @@ actor DomainWorkspaceContextAuthority {
                     operations: operations,
                     now: now,
                     permit: permit,
-                    commandAdmission: commandAdmission
+                    commandClaim: commandClaim
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
                 record.document = external
@@ -2488,15 +2493,8 @@ actor DomainWorkspaceContextAuthority {
                 record.revisions = persisted.journal.revisions
                 record.contextRevisions = persisted.journal.contextRevisions
                 record.operations = persisted.journal.operations
+                commandAdmissionFinalizationReconciled = persisted.commandAdmissionFinalizationReconciled
             } else {
-                guard let commandAdmission else {
-                    return unrecordedCommandIdentityRejection(
-                        envelope,
-                        disposition: .readOnly,
-                        errorCode: .runtimeReadOnlyDegraded,
-                        diagnostic: "workspace_command_admission_rust_unavailable"
-                    )
-                }
                 let persisted = try await persistence.persistConflictRebase(
                     document: record.document,
                     externalSavedDigest: external.contentDigest,
@@ -2507,12 +2505,13 @@ actor DomainWorkspaceContextAuthority {
                     operations: operations,
                     now: now,
                     permit: permit,
-                    commandAdmission: commandAdmission
+                    commandClaim: commandClaim
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
                 record.savedDigest = persisted.journal.savedDigest
                 record.revisions = persisted.journal.revisions
                 record.operations = persisted.journal.operations
+                commandAdmissionFinalizationReconciled = persisted.commandAdmissionFinalizationReconciled
             }
         } catch let error as DomainPersistenceError {
             if case .stateConflict = error {
@@ -2521,16 +2520,21 @@ actor DomainWorkspaceContextAuthority {
                     fileURL: record.document.fileURL
                 )
                 let refreshed = records[workspaceID]
-                return DomainCommandOutcome(
-                    operationID: envelope.operationID,
-                    disposition: .conflict,
-                    before: before,
-                    after: refreshed?.revisions,
-                    catalogRevision: catalogRevision,
-                    resultingDigest: refreshed?.document.contentDigest,
-                    errorCode: .stateConflict,
-                    diagnostic: "durable_workspace_revision_mismatch",
-                    workspace: refreshed.map(makeSnapshot)
+                return finalizeTransientOutcome(
+                    DomainCommandOutcome(
+                        operationID: envelope.operationID,
+                        disposition: .conflict,
+                        before: before,
+                        after: refreshed?.revisions,
+                        catalogRevision: catalogRevision,
+                        resultingDigest: refreshed?.document.contentDigest,
+                        errorCode: .stateConflict,
+                        diagnostic: "durable_workspace_revision_mismatch",
+                        workspace: refreshed.map(makeSnapshot)
+                    ),
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
                 )
             }
             return persistenceFailureOutcome(envelope, record: record, error: error)
@@ -2540,6 +2544,10 @@ actor DomainWorkspaceContextAuthority {
         record.health = .writable
         record.externalDocument = nil
         records[workspaceID] = record
+        recordCommandAdmissionFinalization(
+            commandAdmissionFinalizationReconciled,
+            workspaceID: workspaceID
+        )
         let outcome = DomainCommandOutcome(
             operationID: envelope.operationID,
             disposition: .applied,
@@ -2760,6 +2768,7 @@ actor DomainWorkspaceContextAuthority {
     private func healthRejectionOutcome(
         _ envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         record: WorkspaceRecord
     ) -> DomainCommandOutcome {
         let disposition: DomainCommandDisposition
@@ -2767,9 +2776,10 @@ actor DomainWorkspaceContextAuthority {
         let diagnostic: String
         switch record.health {
         case .writable:
-            return recordTransientOutcome(
+            return finalizeTransientOutcome(
                 envelope: envelope,
                 fingerprint: fingerprint,
+                commandClaim: commandClaim,
                 disposition: .failed,
                 errorCode: .persistenceFailure,
                 diagnostic: "unexpected_writable_health_rejection"
@@ -2787,9 +2797,10 @@ actor DomainWorkspaceContextAuthority {
             errorCode = .workspaceUnavailable
             diagnostic = "workspace_removed"
         }
-        return recordTransientOutcome(
+        return finalizeTransientOutcome(
             envelope: envelope,
             fingerprint: fingerprint,
+            commandClaim: commandClaim,
             disposition: disposition,
             errorCode: errorCode,
             diagnostic: diagnostic
@@ -2857,27 +2868,35 @@ actor DomainWorkspaceContextAuthority {
         return nil
     }
 
-    private func conflictOutcome(
+    private func finalizeConflictOutcome(
         _ envelope: DomainWorkspaceCommandEnvelope,
+        fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         record: WorkspaceRecord,
         diagnostic: String
     ) -> DomainCommandOutcome {
-        DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .conflict,
-            before: record.revisions,
-            after: record.revisions,
-            catalogRevision: catalogRevision,
-            resultingDigest: record.document.contentDigest,
-            errorCode: .stateConflict,
-            diagnostic: diagnostic,
-            workspace: makeSnapshot(record)
+        finalizeTransientOutcome(
+            DomainCommandOutcome(
+                operationID: envelope.operationID,
+                disposition: .conflict,
+                before: record.revisions,
+                after: record.revisions,
+                catalogRevision: catalogRevision,
+                resultingDigest: record.document.contentDigest,
+                errorCode: .stateConflict,
+                diagnostic: diagnostic,
+                workspace: makeSnapshot(record)
+            ),
+            envelope: envelope,
+            fingerprint: fingerprint,
+            commandClaim: commandClaim
         )
     }
 
     private func unchangedOutcome(
         _ envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         record original: WorkspaceRecord,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
@@ -2897,25 +2916,21 @@ actor DomainWorkspaceContextAuthority {
             outcome: outcome
         )
         do {
-            guard let commandAdmission else {
-                return unrecordedCommandIdentityRejection(
-                    envelope,
-                    disposition: .readOnly,
-                    errorCode: .runtimeReadOnlyDegraded,
-                    diagnostic: "workspace_command_admission_rust_unavailable"
-                )
-            }
             let persisted = try await persistence.persistUnchanged(
                 document: record.document,
                 expectedRevision: record.revisions.workingRevision,
                 operation: operation,
                 now: operation.recordedAt,
                 permit: permit,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
             catalogRevision = max(catalogRevision, persisted.catalogRevision)
             record.operations = persisted.journal.operations
             records[record.document.workspaceID] = record
+            recordCommandAdmissionFinalization(
+                persisted.commandAdmissionFinalizationReconciled,
+                workspaceID: record.document.workspaceID
+            )
             return outcome
         } catch {
             return persistenceFailureOutcome(envelope, record: record, error: error)
@@ -3013,9 +3028,10 @@ actor DomainWorkspaceContextAuthority {
         )
     }
 
-    private func recordTransientOutcome(
+    private func finalizeTransientOutcome(
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         disposition: DomainCommandDisposition,
         errorCode: DomainCommandErrorCode,
         diagnostic: String
@@ -3032,13 +3048,29 @@ actor DomainWorkspaceContextAuthority {
             diagnostic: diagnostic,
             workspace: workspace
         )
-        if !registerTransientCommandAdmissionOperation(
-            DomainRecordedOperation(
-                fingerprint: fingerprint,
-                recordedAt: Date(),
-                outcome: outcome
+        return finalizeTransientOutcome(
+            outcome,
+            envelope: envelope,
+            fingerprint: fingerprint,
+            commandClaim: commandClaim
+        )
+    }
+
+    private func finalizeTransientOutcome(
+        _ outcome: DomainCommandOutcome,
+        envelope: DomainWorkspaceCommandEnvelope,
+        fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+    ) -> DomainCommandOutcome {
+        do {
+            _ = try commandClaim.finalizeTransient(
+                operation: DomainRecordedOperation(
+                    fingerprint: fingerprint,
+                    recordedAt: Date(),
+                    outcome: outcome
+                )
             )
-        ) {
+        } catch {
             markCommandAdmissionReceiptMissing(workspaceID: envelope.workspaceID)
         }
         return outcome

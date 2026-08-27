@@ -107,21 +107,18 @@ enum DomainWorkspaceCommandAdmissionLookupScope: Sendable, Equatable {
     case global
 }
 
-enum DomainWorkspaceCommandAdmissionDecision: Sendable, Equatable {
-    case unseen
-    case collision(scope: DomainWorkspaceCommandAdmissionLookupScope)
+enum DomainWorkspaceCommandAdmissionAcquisition: Sendable {
+    case claimed(fingerprint: String, claim: DomainWorkspaceRustJournal.PreparedExecutionClaim)
+    case pending(fingerprint: String, generation: UInt64)
+    case collision(fingerprint: String, scope: DomainWorkspaceCommandAdmissionLookupScope?)
     case replay(
+        fingerprint: String,
         scope: DomainWorkspaceCommandAdmissionLookupScope,
         operation: DomainRecordedOperation
     )
 }
 
-struct DomainWorkspaceCommandAdmissionPreflight: Sendable, Equatable {
-    let fingerprint: String
-    let decision: DomainWorkspaceCommandAdmissionDecision
-}
-
-enum DomainWorkspaceCommandAdmissionPreflightError: Error, Sendable, Equatable {
+enum DomainWorkspaceCommandAdmissionError: Error, Sendable, Equatable {
     case invalidInput
     case invalidReceipt
     case unavailable
@@ -1032,6 +1029,55 @@ enum DomainWorkspaceRustJournal {
         }
     }
 
+    struct PreparedExecutionClaim: Sendable {
+        private let core: CoreWorkspaceCommandExecutionClaimV1
+        private let validator: PreparedValidator
+
+        fileprivate init(
+            core: CoreWorkspaceCommandExecutionClaimV1,
+            validator: PreparedValidator
+        ) {
+            self.core = core
+            self.validator = validator
+        }
+
+        fileprivate var transactionBinding: CoreWorkspaceCommandExecutionClaimV1 {
+            core
+        }
+
+        func finalizeTransient(
+            operation: DomainRecordedOperation
+        ) throws -> DomainRecordedOperation {
+            do {
+                let finalized = try core.finalizeTransient(
+                    operation: validator.coreRecordedOperation(operation)
+                )
+                let materialized = try validator.materializeRecordedOperation(finalized)
+                guard materialized == operation else {
+                    throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+                }
+                return materialized
+            } catch let error as DomainWorkspaceCommandAdmissionError {
+                throw error
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        @discardableResult
+        func abandon() throws -> Bool {
+            do {
+                return try core.abandon()
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func close() {
+            core.close()
+        }
+    }
+
     struct PreparedCommandAdmission: Sendable {
         private let core: CorePreparedWorkspaceCommandAdmissionV1
         private let validator: PreparedValidator
@@ -1044,35 +1090,42 @@ enum DomainWorkspaceRustJournal {
             self.validator = validator
         }
 
-        fileprivate var transactionBinding: CorePreparedWorkspaceCommandAdmissionV1 {
-            core
-        }
-
-        func preflight(
+        func acquire(
             _ input: DomainWorkspaceCommandIdentityInput
-        ) throws -> DomainWorkspaceCommandAdmissionPreflight {
+        ) throws -> DomainWorkspaceCommandAdmissionAcquisition {
             let request = validator.coreCommandIdentityRequest(input)
             do {
-                let receipt = try core.preflight(request)
-                guard receipt.identity.workspaceID == request.workspaceID,
-                      receipt.identity.commandKind == request.commandKind,
-                      PreparedValidator.isSHA256Digest(receipt.identity.fingerprint)
-                else {
-                    throw DomainWorkspaceCommandAdmissionPreflightError.invalidReceipt
-                }
-                let decision = try validator.materializeCommandAdmissionDecision(receipt.decision)
-                if case let .replay(_, operation) = decision {
-                    guard operation.operationID == input.operationID,
-                          operation.fingerprint == receipt.identity.fingerprint
+                switch try core.acquire(request) {
+                case let .claimed(identity, claim, _):
+                    try validator.validateCommandAdmissionIdentity(identity, request: request)
+                    return .claimed(
+                        fingerprint: identity.fingerprint,
+                        claim: PreparedExecutionClaim(core: claim, validator: validator)
+                    )
+                case let .pending(identity, generation):
+                    try validator.validateCommandAdmissionIdentity(identity, request: request)
+                    return .pending(fingerprint: identity.fingerprint, generation: generation)
+                case let .collision(identity, scope):
+                    try validator.validateCommandAdmissionIdentity(identity, request: request)
+                    return .collision(
+                        fingerprint: identity.fingerprint,
+                        scope: scope.map(validator.materializeCommandAdmissionScope)
+                    )
+                case let .replay(identity, scope, operation):
+                    try validator.validateCommandAdmissionIdentity(identity, request: request)
+                    let recorded = try validator.materializeRecordedOperation(operation)
+                    guard recorded.operationID == input.operationID,
+                          recorded.fingerprint == identity.fingerprint
                     else {
-                        throw DomainWorkspaceCommandAdmissionPreflightError.invalidReceipt
+                        throw DomainWorkspaceCommandAdmissionError.invalidReceipt
                     }
+                    return .replay(
+                        fingerprint: identity.fingerprint,
+                        scope: validator.materializeCommandAdmissionScope(scope),
+                        operation: recorded
+                    )
                 }
-                return DomainWorkspaceCommandAdmissionPreflight(
-                    fingerprint: receipt.identity.fingerprint,
-                    decision: decision
-                )
-            } catch let error as DomainWorkspaceCommandAdmissionPreflightError {
+            } catch let error as DomainWorkspaceCommandAdmissionError {
                 throw error
             } catch let error as CoreWorkspaceWorkingJournalValidationError {
                 switch error {
@@ -1080,28 +1133,12 @@ enum DomainWorkspaceRustJournal {
                      .invalidIdentity,
                      .invalidFileURL,
                      .invalidDigest:
-                    throw DomainWorkspaceCommandAdmissionPreflightError.invalidInput
+                    throw DomainWorkspaceCommandAdmissionError.invalidInput
                 default:
-                    throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
+                    throw DomainWorkspaceCommandAdmissionError.unavailable
                 }
             } catch {
-                throw DomainWorkspaceCommandAdmissionPreflightError.unavailable
-            }
-        }
-
-        func decision(
-            workspaceID: UUID,
-            operationID: UUID,
-            fingerprint: String
-        ) throws -> DomainWorkspaceCommandAdmissionDecision {
-            do {
-                return try validator.materializeCommandAdmissionDecision(core.decision(
-                    workspaceID: workspaceID,
-                    operationID: operationID,
-                    fingerprint: fingerprint
-                ))
-            } catch {
-                throw validator.mapCommandAdmissionError(error)
+                throw DomainWorkspaceCommandAdmissionError.unavailable
             }
         }
 
@@ -1130,21 +1167,6 @@ enum DomainWorkspaceRustJournal {
                         workspaceID: workspaceID,
                         operations: operations.map(validator.coreRecordedOperation),
                         deletedOperation: deletedOperation.map(validator.coreRecordedOperation)
-                    )
-                )
-            } catch {
-                throw validator.mapCommandAdmissionError(error)
-            }
-        }
-
-        @discardableResult
-        func insertTransient(
-            operation: DomainRecordedOperation
-        ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
-            do {
-                return validator.materializeCommandAdmissionDiagnostics(
-                    try core.insertTransient(
-                        operation: validator.coreRecordedOperation(operation)
                     )
                 )
             } catch {
@@ -1321,23 +1343,19 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        fileprivate func materializeCommandAdmissionDecision(
-            _ decision: CoreWorkspaceCommandAdmissionDecisionV1
-        ) throws -> DomainWorkspaceCommandAdmissionDecision {
-            switch decision {
-            case .unseen:
-                return .unseen
-            case let .collision(scope):
-                return .collision(scope: materializeCommandAdmissionScope(scope))
-            case let .replay(scope, operation):
-                return .replay(
-                    scope: materializeCommandAdmissionScope(scope),
-                    operation: try materializeRecordedOperation(operation)
-                )
+        fileprivate func validateCommandAdmissionIdentity(
+            _ identity: CoreWorkspaceCommandIdentityV1,
+            request: CoreWorkspaceCommandIdentityRequestV1
+        ) throws {
+            guard identity.workspaceID == request.workspaceID,
+                  identity.commandKind == request.commandKind,
+                  Self.isSHA256Digest(identity.fingerprint)
+            else {
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
             }
         }
 
-        private func materializeCommandAdmissionScope(
+        fileprivate func materializeCommandAdmissionScope(
             _ scope: CoreWorkspaceCommandAdmissionLookupScopeV1
         ) -> DomainWorkspaceCommandAdmissionLookupScope {
             switch scope {
@@ -1346,7 +1364,7 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
-        private func materializeRecordedOperation(
+        fileprivate func materializeRecordedOperation(
             _ operation: CoreWorkspaceRecordedOperationV1
         ) throws -> DomainRecordedOperation {
             guard let disposition = DomainCommandDisposition(rawValue: operation.disposition) else {
@@ -1573,7 +1591,7 @@ enum DomainWorkspaceRustJournal {
             contextRevisions: [UUID: DomainRevisionState],
             operation: DomainRecordedOperation,
             updatedAt: Date,
-            commandAdmission: PreparedCommandAdmission
+            commandClaim: PreparedExecutionClaim
         ) throws -> PreparedCreateTransaction {
             try beginCreateTransaction(
                 rawCatalogBytes: rawCatalogBytes,
@@ -1596,7 +1614,7 @@ enum DomainWorkspaceRustJournal {
                 ),
                 expectedOperation: operation,
                 isRecovery: false,
-                commandAdmission: commandAdmission
+                commandClaim: commandClaim
             )
         }
 
@@ -1627,7 +1645,7 @@ enum DomainWorkspaceRustJournal {
                 ),
                 expectedOperation: nil,
                 isRecovery: true,
-                commandAdmission: nil
+                commandClaim: nil
             )
         }
 
@@ -1640,7 +1658,7 @@ enum DomainWorkspaceRustJournal {
             request: CreateTransactionRequest,
             expectedOperation: DomainRecordedOperation?,
             isRecovery: Bool,
-            commandAdmission: PreparedCommandAdmission?
+            commandClaim: PreparedExecutionClaim?
         ) throws -> PreparedCreateTransaction {
             do {
                 let transaction = try core.beginCreateTransaction(
@@ -1650,7 +1668,7 @@ enum DomainWorkspaceRustJournal {
                     effectiveJournalBytes: effectiveJournal?.canonicalBytes,
                     requestBytes: try encode(request),
                     documentBytes: document.documentBytes,
-                    commandAdmission: commandAdmission?.transactionBinding
+                    commandClaim: commandClaim?.transactionBinding
                 )
                 return PreparedCreateTransaction(
                     core: transaction,
@@ -1685,7 +1703,7 @@ enum DomainWorkspaceRustJournal {
             expectedCatalogRevision: UInt64,
             operation: DomainRecordedOperation,
             deletedAt: Date,
-            commandAdmission: PreparedCommandAdmission
+            commandClaim: PreparedExecutionClaim
         ) throws -> PreparedDeleteTransaction {
             do {
                 let request = DeleteTransactionRequest(
@@ -1701,7 +1719,7 @@ enum DomainWorkspaceRustJournal {
                     effectiveCatalogBytes: effectiveCatalog.canonicalBytes,
                     effectiveJournalBytes: effectiveJournal.canonicalBytes,
                     requestBytes: try encode(request),
-                    commandAdmission: commandAdmission.transactionBinding
+                    commandClaim: commandClaim.transactionBinding
                 )
                 return PreparedDeleteTransaction(
                     core: transaction,
@@ -1746,7 +1764,7 @@ enum DomainWorkspaceRustJournal {
             revisionOperationID: UUID?,
             updatedAt: Date,
             diskDocumentBytes: Data?,
-            commandAdmission: PreparedCommandAdmission?
+            commandClaim: PreparedExecutionClaim?
         ) throws -> PreparedJournalMutationTransaction {
             do {
                 let request = JournalMutationTransactionRequest(
@@ -1762,7 +1780,7 @@ enum DomainWorkspaceRustJournal {
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
                     diskDocumentBytes: diskDocumentBytes,
-                    commandAdmission: commandAdmission?.transactionBinding
+                    commandClaim: commandClaim?.transactionBinding
                 )
                 return PreparedJournalMutationTransaction(
                     core: transaction,
@@ -1808,7 +1826,7 @@ enum DomainWorkspaceRustJournal {
             updatedAt: Date,
             catalogRevision: UInt64,
             diskDocumentBytes: Data?,
-            commandAdmission: PreparedCommandAdmission
+            commandClaim: PreparedExecutionClaim
         ) throws -> PreparedSaveTransaction {
             do {
                 let request = SaveTransactionRequest(
@@ -1831,7 +1849,7 @@ enum DomainWorkspaceRustJournal {
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
                     diskDocumentBytes: diskDocumentBytes,
-                    commandAdmission: commandAdmission.transactionBinding
+                    commandClaim: commandClaim.transactionBinding
                 )
                 return PreparedSaveTransaction(
                     core: transaction,
