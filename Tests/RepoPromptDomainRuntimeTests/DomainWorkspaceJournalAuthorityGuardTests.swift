@@ -31,14 +31,18 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "Data(contentsOf: revisionURL(",
             "tombstoneRecordingCleanupWarnings(",
             "prepareJournalCandidate(",
-            "Self.trimmedOperations("
+            "Self.trimmedOperations(",
+            "planJournalTransition(",
+            "authorityReceipt.savedRevision == nil",
+            "return (activatedReceipt, .finalized)",
+            "return (activatedReceipt, .revisionSidecarMissing)"
         ] {
             XCTAssertFalse(source.contains(forbidden), "Swift journal authority returned: \(forbidden)")
         }
         for required in [
             "private func readRawJournalSnapshot(",
             "validator.validateSynchronously(",
-            "private func planJournalTransition(",
+            "validator.seedWorkingJournal(",
             "private func replaceJournal(",
             "validator.beginCreateTransaction(",
             "validator.beginCreateRecoveryTransaction(",
@@ -57,8 +61,18 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "validator.requireRuntimeAvailability()",
             "validator.planDeletionTombstone(",
             "private func readSavedRevisionSnapshot(",
-            "case let .writeSavedRevision(actionID, validation):",
-            "authorityReceipt.savedRevision == nil",
+            "postAuthoritySuccessFinalization",
+            "postAuthorityFailureFinalization",
+            "finalization: postAuthoritySuccessFinalization",
+            "activatedFinalization = postAuthorityFailureFinalization",
+            "func activatedOutcome()",
+            "func activatedCommit()",
+            "var expectedActionID: UInt64 = 1",
+            "guard actionID == expectedActionID, activatedReceipt == nil",
+            "guard receiptsMatch(receipt, outcome.receipt)",
+            "guard receiptsMatch(receipt, activatedReceipt)",
+            "if let outcome = activatedOutcome() { return outcome }",
+            "if let committed = activatedCommit() { return committed }",
             "validation.canonicalBytes",
             "plannedTombstone.canonicalBytes",
             "cleanupPlan.canonicalBytes",
@@ -68,11 +82,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             XCTAssertTrue(source.contains(required), "Missing Rust journal boundary: \(required)")
         }
         XCTAssertEqual(
-            source.components(separatedBy: "planJournalTransition(").count - 1,
-            2,
-            "Only seed/recovery composition plus the single helper may use the generic Rust planner"
+            source.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
+            1,
+            "Only the typed Rust seed adapter may materialize a missing production journal"
         )
-        XCTAssertTrue(source.contains(".seed("), "Missing Rust seed transition")
         for transition in [
             ".unchanged(",
             ".working(",
@@ -91,6 +104,125 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         let transactionAuthority = source[transactionStart.lowerBound ..< unchangedStart.lowerBound]
         XCTAssertTrue(transactionAuthority.contains("transaction.acquireAuthorityPermit()"))
         XCTAssertTrue(transactionAuthority.contains("case let .writeJournal("))
+    }
+
+    func testProductionMissingJournalSeedUsesDedicatedRustScalarEndpoint() throws {
+        let root = repositoryRoot()
+        let adapter = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+            ),
+            encoding: .utf8
+        )
+        let persistence = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainPersistence.swift"
+            ),
+            encoding: .utf8
+        )
+
+        for forbidden in [
+            "struct DomainWorkspaceWorkingJournalTransitionPlan",
+            "func planTransition(",
+            "core.planTransition(",
+            "plan.committed",
+            "plan.primary"
+        ] {
+            XCTAssertFalse(adapter.contains(forbidden), "Swift seed planning authority returned: \(forbidden)")
+        }
+        for required in [
+            "func seedWorkingJournal(",
+            "core.seedWorkingJournal(seedRequestBytes: seedRequestBytes)",
+            "expectedWorkspaceID: workspaceID",
+            "expectedFileURL: fileURL"
+        ] {
+            XCTAssertTrue(adapter.contains(required), "Missing dedicated Rust seed boundary: \(required)")
+        }
+        XCTAssertEqual(
+            persistence.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
+            1,
+            "Only the missing-journal path may invoke the dedicated Rust seed endpoint"
+        )
+    }
+
+    func testGenericWorkingJournalPlannerIsRuntimeInternalOnly() throws {
+        let root = repositoryRoot()
+        let transportSources = [
+            "rust/crates/ffi/src/api.rs",
+            "rust/crates/ffi/src/types.rs",
+            "Sources/AgentryCoreBridge/CoreBridge.swift",
+            "Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift"
+        ]
+        let retiredSymbols = [
+            "workspace_working_journal_plan_transition_v1",
+            "workspaceWorkingJournalPlanTransitionV1",
+            "CoreWorkspaceWorkingJournalTransitionRequestV1",
+            "CoreWorkspaceWorkingJournalTransitionResponseV1",
+            "CoreWorkspaceWorkingJournalTransitionPlanV1",
+            "func planTransition("
+        ]
+        for relativePath in transportSources {
+            let source = try String(
+                contentsOf: root.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for symbol in retiredSymbols {
+                XCTAssertFalse(
+                    source.contains(symbol),
+                    "Retired generic planner surface returned in \(relativePath): \(symbol)"
+                )
+            }
+        }
+
+        let runtime = try String(
+            contentsOf: root.appendingPathComponent(
+                "rust/crates/runtime/src/workspace_persistence_journal.rs"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(runtime.contains("fn plan_workspace_working_journal_transition_v1("))
+        XCTAssertFalse(runtime.contains("pub fn plan_workspace_working_journal_transition_v1("))
+        XCTAssertTrue(runtime.contains("pub fn seed_workspace_working_journal_v1("))
+    }
+
+    func testGenericWorkspaceCatalogPlannerIsRuntimeInternalOnly() throws {
+        let root = repositoryRoot()
+        let transportSources = [
+            "rust/crates/ffi/src/api.rs",
+            "rust/crates/ffi/src/types.rs",
+            "Sources/AgentryCoreBridge/CoreBridge.swift",
+            "Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift",
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+        ]
+        let retiredSymbols = [
+            "workspace_catalog_plan_transition_v1",
+            "workspaceCatalogPlanTransitionV1",
+            "CoreWorkspaceCatalogTransitionRequestV1",
+            "func planCatalogTransition(",
+            "DomainWorkspaceCatalogTransition"
+        ]
+        for relativePath in transportSources {
+            let source = try String(
+                contentsOf: root.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            for symbol in retiredSymbols {
+                XCTAssertFalse(
+                    source.contains(symbol),
+                    "Retired generic catalog planner returned in \(relativePath): \(symbol)"
+                )
+            }
+        }
+
+        let runtime = try String(
+            contentsOf: root.appendingPathComponent(
+                "rust/crates/runtime/src/workspace_persistence_journal.rs"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(runtime.contains("fn plan_workspace_catalog_transition_v1("))
+        XCTAssertFalse(runtime.contains("pub fn plan_workspace_catalog_transition_v1("))
+        XCTAssertTrue(runtime.contains("pub fn seed_workspace_catalog_v1("))
     }
 
     func testProductionCatalogStateMachineIsRustOwnedWithOnePhysicalWriteBoundary() throws {
@@ -127,21 +259,20 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "directory_fsync_failed_",
             "validator.validateCatalog(",
             "validator.validateDeletionTombstone(",
-            "validator.planCatalogTransition(",
+            "validator.seedCatalog(",
             "validator.beginCreateTransaction(",
             "validator.beginCreateRecoveryTransaction(",
             "validator.beginDeleteTransaction(",
             "createTransactionLoop: while true",
             "deleteTransactionLoop: while true",
-            "private func recoverInterruptedCreates(",
-            "transition: .seed("
+            "private func recoverInterruptedCreates("
         ] {
             XCTAssertTrue(source.contains(required), "Missing Rust catalog boundary: \(required)")
         }
         XCTAssertEqual(
-            source.components(separatedBy: "validator.planCatalogTransition(").count - 1,
+            source.components(separatedBy: "validator.seedCatalog(").count - 1,
             1,
-            "Only shared load/migration seed remains on the generic Rust catalog planner"
+            "Only shared load/migration may invoke the dedicated Rust catalog seed endpoint"
         )
         XCTAssertTrue(
             source.contains("let catalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)"),

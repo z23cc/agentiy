@@ -1873,6 +1873,30 @@ package struct DomainPersistenceCoordinator {
 
         var directive = try transaction.nextDirective()
         var activatedReceipt: DomainWorkspaceJournalMutationCommitReceipt?
+        var activatedFinalization: DomainWorkspaceJournalMutationFinalization?
+        var expectedActionID: UInt64 = 1
+
+        func receiptsMatch(
+            _ lhs: DomainWorkspaceJournalMutationCommitReceipt,
+            _ rhs: DomainWorkspaceJournalMutationCommitReceipt
+        ) -> Bool {
+            lhs.workspaceID == rhs.workspaceID
+                && lhs.requestDigest == rhs.requestDigest
+                && lhs.catalogRevision == rhs.catalogRevision
+                && lhs.committedJournal.contentDigest == rhs.committedJournal.contentDigest
+                && lhs.committedJournal.canonicalBytes == rhs.committedJournal.canonicalBytes
+                && lhs.savedRevision?.contentDigest == rhs.savedRevision?.contentDigest
+                && lhs.savedRevision?.canonicalBytes == rhs.savedRevision?.canonicalBytes
+        }
+
+        func activatedOutcome() -> (
+            receipt: DomainWorkspaceJournalMutationCommitReceipt,
+            finalization: DomainWorkspaceJournalMutationFinalization
+        )? {
+            guard let activatedReceipt, let activatedFinalization else { return nil }
+            return (activatedReceipt, activatedFinalization)
+        }
+
         while true {
             switch directive {
             case let .writeJournal(
@@ -1880,8 +1904,13 @@ package struct DomainPersistenceCoordinator {
                 expectedRawDigest,
                 validation,
                 logicalExpectedRevision,
-                authorityReceipt
+                authorityReceipt,
+                postAuthoritySuccessFinalization
             ):
+                guard actionID == expectedActionID, activatedReceipt == nil else {
+                    if let outcome = activatedOutcome() { return outcome }
+                    throw DomainPersistenceError.corruptJournal
+                }
                 do {
                     let authorityPermit = try transaction.acquireAuthorityPermit()
                     defer { authorityPermit.close() }
@@ -1896,18 +1925,15 @@ package struct DomainPersistenceCoordinator {
                         validator: validator
                     )
                     activatedReceipt = authorityReceipt
+                    activatedFinalization = postAuthoritySuccessFinalization
+                    expectedActionID += 1
                     do {
                         directive = try transaction.report(.success(
                             actionID: actionID,
                             writtenDigest: validation.contentDigest
                         ))
                     } catch {
-                        return (
-                            authorityReceipt,
-                            authorityReceipt.savedRevision == nil
-                                ? .finalized
-                                : .revisionSidecarMissing
-                        )
+                        return (authorityReceipt, postAuthoritySuccessFinalization)
                     }
                 } catch {
                     let physicalError = error
@@ -1922,12 +1948,23 @@ package struct DomainPersistenceCoordinator {
                     if case .failed = directive { throw physicalError }
                 }
 
-            case let .writeSavedRevision(actionID, validation):
+            case let .writeSavedRevision(
+                actionID,
+                validation,
+                postAuthoritySuccessFinalization,
+                postAuthorityFailureFinalization
+            ):
+                guard actionID == expectedActionID, activatedReceipt != nil else {
+                    if let outcome = activatedOutcome() { return outcome }
+                    throw DomainPersistenceError.corruptJournal
+                }
                 do {
                     try DomainPersistenceLock.atomicWrite(
                         validation.canonicalBytes,
                         to: revisionURL(document.workspaceID)
                     )
+                    activatedFinalization = postAuthoritySuccessFinalization
+                    expectedActionID += 1
                     do {
                         directive = try transaction.report(.success(
                             actionID: actionID,
@@ -1935,25 +1972,34 @@ package struct DomainPersistenceCoordinator {
                         ))
                     } catch {
                         guard let activatedReceipt else { throw error }
-                        return (activatedReceipt, .finalized)
+                        return (activatedReceipt, postAuthoritySuccessFinalization)
                     }
                 } catch {
                     let physicalError = error
+                    activatedFinalization = postAuthorityFailureFinalization
+                    expectedActionID += 1
                     do {
                         directive = try transaction.report(failureReport(
                             actionID: actionID,
                             error: physicalError
                         ))
                     } catch {
-                        guard let activatedReceipt else { throw physicalError }
-                        return (activatedReceipt, .revisionSidecarMissing)
+                        guard let outcome = activatedOutcome() else { throw physicalError }
+                        return outcome
                     }
                 }
 
             case let .committed(receipt, finalization):
+                guard let outcome = activatedOutcome() else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                guard receiptsMatch(receipt, outcome.receipt),
+                      finalization == outcome.finalization
+                else { return outcome }
                 return (receipt, finalization)
 
             case let .failed(failure):
+                if let outcome = activatedOutcome() { return outcome }
                 switch failure {
                 case .cancelled:
                     throw DomainPersistenceError.cancelled
@@ -2105,12 +2151,13 @@ package struct DomainPersistenceCoordinator {
             defer { transaction.close() }
 
             func commit(
-                _ receipt: DomainWorkspaceSaveCommitReceipt
+                _ receipt: DomainWorkspaceSaveCommitReceipt,
+                finalization: DomainWorkspaceSaveFinalization
             ) -> DomainPersistenceSavedCommit {
                 DomainPersistenceSavedCommit(
                     journal: receipt.committedJournal.journal,
                     catalogRevision: receipt.catalogRevision,
-                    revisionSidecarMissing: false
+                    revisionSidecarMissing: finalization == .revisionSidecarMissing
                 )
             }
 
@@ -2141,6 +2188,29 @@ package struct DomainPersistenceCoordinator {
 
             var directive = try transaction.nextDirective()
             var activatedReceipt: DomainWorkspaceSaveCommitReceipt?
+            var activatedFinalization: DomainWorkspaceSaveFinalization?
+            var expectedActionID: UInt64 = 1
+
+            func receiptsMatch(
+                _ lhs: DomainWorkspaceSaveCommitReceipt,
+                _ rhs: DomainWorkspaceSaveCommitReceipt
+            ) -> Bool {
+                lhs.workspaceID == rhs.workspaceID
+                    && lhs.operationID == rhs.operationID
+                    && lhs.requestDigest == rhs.requestDigest
+                    && lhs.catalogRevision == rhs.catalogRevision
+                    && lhs.documentDigest == rhs.documentDigest
+                    && lhs.committedJournal.contentDigest == rhs.committedJournal.contentDigest
+                    && lhs.committedJournal.canonicalBytes == rhs.committedJournal.canonicalBytes
+                    && lhs.savedRevision.contentDigest == rhs.savedRevision.contentDigest
+                    && lhs.savedRevision.canonicalBytes == rhs.savedRevision.canonicalBytes
+            }
+
+            func activatedCommit() -> DomainPersistenceSavedCommit? {
+                guard let activatedReceipt, let activatedFinalization else { return nil }
+                return commit(activatedReceipt, finalization: activatedFinalization)
+            }
+
             while true {
                 switch directive {
                 case let .writePendingJournal(
@@ -2149,6 +2219,10 @@ package struct DomainPersistenceCoordinator {
                     validation,
                     logicalExpectedRevision
                 ):
+                    guard actionID == expectedActionID, activatedReceipt == nil else {
+                        if let committed = activatedCommit() { return committed }
+                        throw DomainPersistenceError.corruptJournal
+                    }
                     do {
                         _ = try replaceJournal(
                             expected: rawSnapshot(digest: expectedRawDigest),
@@ -2160,6 +2234,7 @@ package struct DomainPersistenceCoordinator {
                             logicalExpectedRevision: logicalExpectedRevision,
                             validator: validator
                         )
+                        expectedActionID += 1
                         directive = try transaction.report(.success(
                             actionID: actionID,
                             writtenDigest: validation.contentDigest
@@ -2181,8 +2256,13 @@ package struct DomainPersistenceCoordinator {
                     actionID,
                     bytes,
                     contentDigest,
-                    authorityReceipt
+                    authorityReceipt,
+                    postAuthoritySuccessFinalization
                 ):
+                    guard actionID == expectedActionID, activatedReceipt == nil else {
+                        if let committed = activatedCommit() { return committed }
+                        throw DomainPersistenceError.corruptJournal
+                    }
                     guard bytes == document.documentBytes else {
                         throw DomainPersistenceError.corruptJournal
                     }
@@ -2192,13 +2272,18 @@ package struct DomainPersistenceCoordinator {
                         // authority write. Once atomicWrite returns, no later failure may report a
                         // false failed save.
                         activatedReceipt = authorityReceipt
+                        activatedFinalization = postAuthoritySuccessFinalization
+                        expectedActionID += 1
                         do {
                             directive = try transaction.report(.success(
                                 actionID: actionID,
                                 writtenDigest: contentDigest
                             ))
                         } catch {
-                            return commit(authorityReceipt)
+                            return commit(
+                                authorityReceipt,
+                                finalization: postAuthoritySuccessFinalization
+                            )
                         }
                     } catch {
                         let physicalError = error
@@ -2217,8 +2302,14 @@ package struct DomainPersistenceCoordinator {
                     actionID,
                     expectedRawDigest,
                     validation,
-                    logicalExpectedRevision
+                    logicalExpectedRevision,
+                    postAuthoritySuccessFinalization,
+                    postAuthorityFailureFinalization
                 ):
+                    guard actionID == expectedActionID, activatedReceipt != nil else {
+                        if let committed = activatedCommit() { return committed }
+                        throw DomainPersistenceError.corruptJournal
+                    }
                     do {
                         _ = try replaceJournal(
                             expected: rawSnapshot(digest: expectedRawDigest),
@@ -2230,50 +2321,84 @@ package struct DomainPersistenceCoordinator {
                             logicalExpectedRevision: logicalExpectedRevision,
                             validator: validator
                         )
-                        directive = try transaction.report(.success(
-                            actionID: actionID,
-                            writtenDigest: validation.contentDigest
-                        ))
+                        activatedFinalization = postAuthoritySuccessFinalization
+                        expectedActionID += 1
+                        do {
+                            directive = try transaction.report(.success(
+                                actionID: actionID,
+                                writtenDigest: validation.contentDigest
+                            ))
+                        } catch {
+                            guard let committed = activatedCommit() else { throw error }
+                            return committed
+                        }
                     } catch {
                         let physicalError = error
+                        activatedFinalization = postAuthorityFailureFinalization
+                        expectedActionID += 1
                         do {
                             directive = try transaction.report(failureReport(
                                 actionID: actionID,
                                 error: physicalError
                             ))
                         } catch {
-                            if let activatedReceipt { return commit(activatedReceipt) }
+                            if let committed = activatedCommit() { return committed }
                             throw physicalError
                         }
                     }
 
-                case let .writeSavedRevision(actionID, validation):
+                case let .writeSavedRevision(
+                    actionID,
+                    validation,
+                    postAuthoritySuccessFinalization,
+                    postAuthorityFailureFinalization
+                ):
+                    guard actionID == expectedActionID, activatedReceipt != nil else {
+                        if let committed = activatedCommit() { return committed }
+                        throw DomainPersistenceError.corruptJournal
+                    }
                     do {
                         try DomainPersistenceLock.atomicWrite(
                             validation.canonicalBytes,
                             to: revisionURL(document.workspaceID)
                         )
-                        directive = try transaction.report(.success(
-                            actionID: actionID,
-                            writtenDigest: validation.contentDigest
-                        ))
+                        activatedFinalization = postAuthoritySuccessFinalization
+                        expectedActionID += 1
+                        do {
+                            directive = try transaction.report(.success(
+                                actionID: actionID,
+                                writtenDigest: validation.contentDigest
+                            ))
+                        } catch {
+                            guard let committed = activatedCommit() else { throw error }
+                            return committed
+                        }
                     } catch {
                         let physicalError = error
+                        activatedFinalization = postAuthorityFailureFinalization
+                        expectedActionID += 1
                         do {
                             directive = try transaction.report(failureReport(
                                 actionID: actionID,
                                 error: physicalError
                             ))
                         } catch {
-                            if let activatedReceipt { return commit(activatedReceipt) }
+                            if let committed = activatedCommit() { return committed }
                             throw physicalError
                         }
                     }
 
-                case let .committed(receipt, _):
-                    return commit(receipt)
+                case let .committed(receipt, finalization):
+                    guard let activatedReceipt, let activatedFinalization else {
+                        throw DomainPersistenceError.corruptJournal
+                    }
+                    guard receiptsMatch(receipt, activatedReceipt),
+                          finalization == activatedFinalization
+                    else { return commit(activatedReceipt, finalization: activatedFinalization) }
+                    return commit(receipt, finalization: finalization)
 
                 case let .failed(failure):
+                    if let committed = activatedCommit() { return committed }
                     switch failure {
                     case .cancelled:
                         throw DomainPersistenceError.cancelled
@@ -2839,32 +2964,6 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    private func planJournalTransition(
-        current: DomainWorkingJournal?,
-        transition: DomainWorkspaceWorkingJournalTransition,
-        documentBytes: Data? = nil,
-        validator: DomainWorkspaceRustJournal.PreparedValidator
-    ) throws -> (primary: PreparedJournalCandidate, committed: PreparedJournalCandidate?) {
-        let plan = try validator.planTransition(
-            current: current,
-            transition: transition,
-            documentBytes: documentBytes
-        )
-        func candidate(
-            _ validation: DomainWorkspaceWorkingJournalValidation
-        ) -> PreparedJournalCandidate {
-            PreparedJournalCandidate(
-                journal: validation.journal,
-                canonicalBytes: validation.canonicalBytes,
-                contentDigest: validation.contentDigest
-            )
-        }
-        return (
-            primary: candidate(plan.primary),
-            committed: plan.committed.map(candidate)
-        )
-    }
-
     @discardableResult
     private func replaceJournal(
         expected: RawJournalSnapshot,
@@ -3002,31 +3101,20 @@ package struct DomainPersistenceCoordinator {
                 digest: savedDigest,
                 validator: validator
             )
-            let plan = try planJournalTransition(
-                current: nil,
-                transition: .seed(
-                    workspaceID: document.workspaceID,
-                    fileURL: document.fileURL,
-                    revisions: revisions,
-                    savedDigest: savedDigest,
-                    contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
-                        ($0.identity.contextID, $0.contentDigest)
-                    }),
-                    updatedAt: identity.createdAt
-                ),
-                validator: validator
+            let validation = try validator.seedWorkingJournal(
+                workspaceID: document.workspaceID,
+                fileURL: document.fileURL,
+                revisions: revisions,
+                savedDigest: savedDigest,
+                contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
+                    ($0.identity.contextID, $0.contentDigest)
+                }),
+                updatedAt: identity.createdAt
             )
-            guard plan.committed == nil else {
-                throw DomainPersistenceError.writeFailed("working_journal_transition_invalid")
-            }
             return ValidatedJournalSnapshot(
                 raw: raw,
-                effectiveJournal: plan.primary.journal,
-                effectiveValidation: DomainWorkspaceWorkingJournalValidation(
-                    journal: plan.primary.journal,
-                    canonicalBytes: plan.primary.canonicalBytes,
-                    contentDigest: plan.primary.contentDigest
-                )
+                effectiveJournal: validation.journal,
+                effectiveValidation: validation
             )
         case let .present(_, bytes):
             let stored = try validator.validateSynchronously(
@@ -3256,9 +3344,9 @@ package struct DomainPersistenceCoordinator {
         }
         return ValidatedCatalogSnapshot(
             raw: .absent,
-            validation: try validator.planCatalogTransition(
-                current: nil,
-                transition: .seed(entries: legacyCatalogEntries(), updatedAt: now)
+            validation: try validator.seedCatalog(
+                entries: legacyCatalogEntries(),
+                updatedAt: now
             )
         )
     }

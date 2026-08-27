@@ -105,29 +105,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let preparedValidated = try await Task.detached {
             try prepared.validate(bytes)
         }.value
-        let transitionDocument = Data("{\"id\":\"\(workspaceID.uuidString)\"}".utf8)
         let operationID = UUID()
-        let transition = try JSONSerialization.data(withJSONObject: [
-            "kind": "create",
-            "workspaceID": workspaceID.uuidString,
-            "fileURL": journal.fileURL.absoluteString,
-            "contextRevisions": [],
-            "contextDigests": [],
-            "operation": [
-                "operationID": operationID.uuidString,
-                "fingerprint": String(repeating: "c", count: 64),
-                "recordedAt": 43.0,
-                "disposition": "applied",
-                "catalogRevision": 1
-            ],
-            "operationID": operationID.uuidString,
-            "updatedAt": 43.0
-        ], options: [.sortedKeys])
-        let planned = try prepared.planTransition(
-            currentJournalBytes: nil,
-            transitionBytes: transition,
-            documentBytes: transitionDocument
-        )
         let documentDigest = String(repeating: "d", count: 64)
         let savedRevisionRequest = try JSONSerialization.data(withJSONObject: [
             "workspaceID": workspaceID.uuidString,
@@ -163,14 +141,19 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             ]],
             "updatedAt": 45.0
         ], options: [.sortedKeys])
-        let catalog = try prepared.planCatalogTransition(
-            currentCatalogBytes: nil,
-            transitionBytes: catalogTransition
-        )
+        let catalog = try prepared.seedCatalog(seedRequestBytes: catalogTransition)
         let validatedCatalog = try prepared.validateCatalog(catalog.canonicalBytes)
+        let nonSeedCatalogRequest = try JSONSerialization.data(withJSONObject: [
+            "kind": "upsert",
+            "expectedCatalogRevision": 0,
+            "workspaceID": workspaceID.uuidString,
+            "fileURL": journal.fileURL.absoluteString,
+            "updatedAt": 46.0
+        ], options: [.sortedKeys])
+        XCTAssertThrowsError(try prepared.seedCatalog(seedRequestBytes: nonSeedCatalogRequest)) {
+            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
+        }
 
-        XCTAssertNotNil(planned.committed)
-        XCTAssertEqual(planned.primary.workspaceID, workspaceID)
         XCTAssertEqual(savedRevision, validatedSavedRevision)
         XCTAssertEqual(savedRevision.workspaceID, workspaceID)
         XCTAssertEqual(savedRevision.operationID, operationID)
@@ -211,6 +194,46 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             )
         }
         _ = try await bridge.close()
+    }
+
+    func testRealCoreDedicatedWorkingJournalSeedIsDeterministicAndRuntimeFenced() async throws {
+        let workspaceID = UUID()
+        let contextID = UUID()
+        let seed = try JSONSerialization.data(withJSONObject: [
+            "kind": "seed",
+            "workspaceID": workspaceID.uuidString,
+            "fileURL": "file:///tmp/Workspace.json",
+            "revisions": [
+                "workingRevision": 0,
+                "savedRevision": 0
+            ],
+            "savedDigest": String(repeating: "a", count: 64),
+            "contextDigests": [
+                contextID.uuidString,
+                String(repeating: "b", count: 64)
+            ],
+            "updatedAt": 42.0
+        ], options: [.sortedKeys])
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+
+        let dedicated = try prepared.seedWorkingJournal(seedRequestBytes: seed)
+        let repeated = try prepared.seedWorkingJournal(seedRequestBytes: seed)
+        XCTAssertEqual(dedicated, repeated)
+        XCTAssertEqual(dedicated.workspaceID, workspaceID)
+        XCTAssertEqual(dedicated.contentDigest.count, 64)
+        XCTAssertThrowsError(try prepared.seedWorkingJournal(seedRequestBytes: Data(
+            repeating: 0,
+            count: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes + 1
+        ))) {
+            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .inputTooLarge)
+        }
+
+        _ = try await bridge.close()
+        XCTAssertThrowsError(try prepared.seedWorkingJournal(seedRequestBytes: seed)) {
+            XCTAssertEqual($0 as? CoreTransportError, .runtimeStopped)
+        }
     }
 
     func testRealCoreSaveTransactionRetainsCommitAfterRuntimeStopsAtDocumentAuthority() async throws {
@@ -280,7 +303,18 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let pendingBytes: Data
         let pendingDigest: String
         switch try transaction.nextDirective() {
-        case let .action(actionID, _, .writePendingJournal, _, bytes, digest, _, nil):
+        case let .action(
+            actionID,
+            _,
+            .writePendingJournal,
+            _,
+            bytes,
+            digest,
+            _,
+            nil,
+            nil,
+            nil
+        ):
             XCTAssertEqual(actionID, 1)
             pendingBytes = bytes
             pendingDigest = digest
@@ -305,7 +339,18 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
 
         let documentDigest: String
         switch try transaction.report(.success(actionID: 1, writtenDigest: pendingDigest)) {
-        case let .action(actionID, _, .publishWorkspaceDocument, _, bytes, digest, _, receipt):
+        case let .action(
+            actionID,
+            _,
+            .publishWorkspaceDocument,
+            _,
+            bytes,
+            digest,
+            _,
+            receipt,
+            .pendingJournalRetained,
+            nil
+        ):
             XCTAssertEqual(actionID, 2)
             XCTAssertEqual(bytes, document)
             XCTAssertEqual(receipt?.workspaceID, workspaceID)
@@ -323,7 +368,18 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         ))
         let committedActionID: UInt64
         switch committedJournal {
-        case let .action(actionID, _, .writeCommittedJournal, _, _, _, _, _):
+        case let .action(
+            actionID,
+            _,
+            .writeCommittedJournal,
+            _,
+            _,
+            _,
+            _,
+            _,
+            .revisionSidecarMissing,
+            .pendingJournalRetained
+        ):
             committedActionID = actionID
         default:
             return XCTFail("document authority was lost after runtime shutdown")
@@ -397,7 +453,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             diskDocumentBytes: document
         )
         let rejectedActionCandidate: (UInt64, String)? = switch try rejected.nextDirective() {
-        case let .action(actionID, _, .writeJournal, _, _, digest, _, _):
+        case let .action(actionID, _, .writeJournal, _, _, digest, _, _, _, _):
             (actionID, digest)
         default:
             nil
@@ -431,9 +487,13 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             _,
             digest,
             logicalExpectedRevision,
-            receipt
+            receipt,
+            postAuthoritySuccessFinalization,
+            postAuthorityFailureFinalization
         ):
             XCTAssertEqual(logicalExpectedRevision, 0)
+            XCTAssertEqual(postAuthoritySuccessFinalization, .revisionSidecarMissing)
+            XCTAssertNil(postAuthorityFailureFinalization)
             XCTAssertEqual(receipt?.workspaceID, workspaceID)
             XCTAssertEqual(receipt?.catalogRevision, 9)
             XCTAssertNotNil(receipt?.savedRevision)
@@ -448,7 +508,18 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             actionID: journalActionID,
             writtenDigest: journalDigest
         )) {
-        case let .action(actionID, _, .writeSavedRevision, nil, _, _, nil, nil):
+        case let .action(
+            actionID,
+            _,
+            .writeSavedRevision,
+            nil,
+            _,
+            _,
+            nil,
+            nil,
+            .finalized,
+            .revisionSidecarMissing
+        ):
             revisionActionID = actionID
         default:
             return XCTFail("expected saved-revision directive")
@@ -501,10 +572,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "entries": [],
             "updatedAt": 100.0
         ], options: [.sortedKeys])
-        let catalog = try prepared.planCatalogTransition(
-            currentCatalogBytes: nil,
-            transitionBytes: seed
-        )
+        let catalog = try prepared.seedCatalog(seedRequestBytes: seed)
         let revisions: [String: Any] = [
             "workingRevision": 1,
             "savedRevision": 1
@@ -641,10 +709,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             ]],
             "updatedAt": 40.5
         ], options: [.sortedKeys])
-        let catalog = try prepared.planCatalogTransition(
-            currentCatalogBytes: nil,
-            transitionBytes: seed
-        )
+        let catalog = try prepared.seedCatalog(seedRequestBytes: seed)
         let request = try JSONSerialization.data(withJSONObject: [
             "expectedWorkspaceID": workspaceID.uuidString,
             "expectedFileURL": fileURL.absoluteString,
@@ -668,10 +733,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "entries": [],
             "updatedAt": 40.5
         ], options: [.sortedKeys])
-        let emptyCatalog = try prepared.planCatalogTransition(
-            currentCatalogBytes: nil,
-            transitionBytes: emptySeed
-        )
+        let emptyCatalog = try prepared.seedCatalog(seedRequestBytes: emptySeed)
         XCTAssertThrowsError(try prepared.beginDeleteTransaction(
             rawCatalogBytes: emptyCatalog.canonicalBytes,
             effectiveCatalogBytes: emptyCatalog.canonicalBytes,
@@ -688,10 +750,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             ]],
             "updatedAt": 40.5
         ], options: [.sortedKeys])
-        let mismatchedURLCatalog = try prepared.planCatalogTransition(
-            currentCatalogBytes: nil,
-            transitionBytes: mismatchedURLSeed
-        )
+        let mismatchedURLCatalog = try prepared.seedCatalog(seedRequestBytes: mismatchedURLSeed)
         XCTAssertThrowsError(try prepared.beginDeleteTransaction(
             rawCatalogBytes: mismatchedURLCatalog.canonicalBytes,
             effectiveCatalogBytes: mismatchedURLCatalog.canonicalBytes,

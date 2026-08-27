@@ -77,19 +77,6 @@ public enum CoreWorkspaceWorkingJournalValidationError: Error, Sendable, Equatab
     case invalidTransaction
 }
 
-public struct CoreWorkspaceWorkingJournalTransitionPlanV1: Sendable, Equatable {
-    public let primary: CoreWorkspaceWorkingJournalValidationV1
-    public let committed: CoreWorkspaceWorkingJournalValidationV1?
-
-    public init(
-        primary: CoreWorkspaceWorkingJournalValidationV1,
-        committed: CoreWorkspaceWorkingJournalValidationV1?
-    ) {
-        self.primary = primary
-        self.committed = committed
-    }
-}
-
 public struct CoreWorkspaceCatalogValidationV1: Sendable, Equatable {
     public let catalogVersion: UInt16
     public let revision: UInt64
@@ -206,7 +193,9 @@ public enum CoreWorkspaceJournalMutationDirectiveV1: Sendable, Equatable {
         canonicalBytes: Data,
         contentDigest: String,
         logicalExpectedRevision: UInt64?,
-        authorityReceipt: CoreWorkspaceJournalMutationCommitReceiptV1?
+        authorityReceipt: CoreWorkspaceJournalMutationCommitReceiptV1?,
+        postAuthoritySuccessFinalization: CoreWorkspaceJournalMutationFinalizationV1?,
+        postAuthorityFailureFinalization: CoreWorkspaceJournalMutationFinalizationV1?
     )
     case committed(
         receipt: CoreWorkspaceJournalMutationCommitReceiptV1,
@@ -277,7 +266,9 @@ public enum CoreWorkspaceSaveDirectiveV1: Sendable, Equatable {
         canonicalBytes: Data,
         contentDigest: String,
         logicalExpectedRevision: UInt64?,
-        authorityReceipt: CoreWorkspaceSaveCommitReceiptV1?
+        authorityReceipt: CoreWorkspaceSaveCommitReceiptV1?,
+        postAuthoritySuccessFinalization: CoreWorkspaceSaveFinalizationV1?,
+        postAuthorityFailureFinalization: CoreWorkspaceSaveFinalizationV1?
     )
     case committed(
         receipt: CoreWorkspaceSaveCommitReceiptV1,
@@ -645,19 +636,15 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         )
     }
 
-    public func planCatalogTransition(
-        currentCatalogBytes: Data?,
-        transitionBytes: Data
+    public func seedCatalog(
+        seedRequestBytes: Data
     ) throws -> CoreWorkspaceCatalogValidationV1 {
-        guard currentCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
-              transitionBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes
-        else {
+        guard seedRequestBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes else {
             throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
         }
-        return try context.transport.workspaceCatalogPlanTransitionV1(
+        return try context.transport.workspaceCatalogSeedV1(
             identity: context.identity,
-            currentCatalogBytes: currentCatalogBytes,
-            transitionBytes: transitionBytes
+            seedRequestBytes: seedRequestBytes
         )
     }
 
@@ -820,24 +807,18 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         )
     }
 
-    public func planTransition(
-        currentJournalBytes: Data?,
-        transitionBytes: Data,
-        documentBytes: Data?
-    ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1 {
-        guard currentJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
-              transitionBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
-              documentBytes?.count ?? 0 <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
-        else {
+    public func seedWorkingJournal(
+        seedRequestBytes: Data
+    ) throws -> CoreWorkspaceWorkingJournalValidationV1 {
+        guard seedRequestBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes else {
             throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
         }
-        return try context.transport.workspaceWorkingJournalPlanTransitionV1(
+        return try context.transport.workspaceWorkingJournalSeedV1(
             identity: context.identity,
-            currentJournalBytes: currentJournalBytes,
-            transitionBytes: transitionBytes,
-            documentBytes: documentBytes
+            seedRequestBytes: seedRequestBytes
         )
     }
+
 }
 
 public extension CoreComputeClient {
@@ -1054,12 +1035,11 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("workspace catalog validation transport is unavailable")
     }
 
-    func workspaceCatalogPlanTransitionV1(
+    func workspaceCatalogSeedV1(
         identity: CoreRuntimeIdentity,
-        currentCatalogBytes: Data?,
-        transitionBytes: Data
+        seedRequestBytes: Data
     ) throws -> CoreWorkspaceCatalogValidationV1 {
-        throw CoreTransportError.unexpected("workspace catalog transition transport is unavailable")
+        throw CoreTransportError.unexpected("workspace catalog seed transport is unavailable")
     }
 
     func workspaceWorkingJournalValidateV1(
@@ -1069,13 +1049,11 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("workspace working journal transport is unavailable")
     }
 
-    func workspaceWorkingJournalPlanTransitionV1(
+    func workspaceWorkingJournalSeedV1(
         identity: CoreRuntimeIdentity,
-        currentJournalBytes: Data?,
-        transitionBytes: Data,
-        documentBytes: Data?
-    ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1 {
-        throw CoreTransportError.unexpected("workspace working journal transition transport is unavailable")
+        seedRequestBytes: Data
+    ) throws -> CoreWorkspaceWorkingJournalValidationV1 {
+        throw CoreTransportError.unexpected("workspace working journal seed transport is unavailable")
     }
 
     func workspaceCreateTransactionBeginV1(

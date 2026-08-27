@@ -129,103 +129,56 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         }
     }
 
-    func testPreparedValidatorPlansCreateAndPendingRecoveryWithRustOwnedBytes() async throws {
+    func testPreparedValidatorSeedsMissingJournalWithRustOwnedScalarValidation() async throws {
         let workspaceID = UUID()
         let contextID = UUID()
-        let operationID = UUID()
-        let fileURL = URL(fileURLWithPath: "/tmp/Planned-\(workspaceID.uuidString).json")
-        let documentBytes = try JSONSerialization.data(withJSONObject: [
-            "id": workspaceID.uuidString,
-            "schemaVersion": 1,
-            "composeTabs": [["id": contextID.uuidString]]
-        ], options: [.sortedKeys])
-        let dirty = DomainRevisionState(
-            workingRevision: 1,
-            savedRevision: 0,
-            dirtyRevision: 1
-        )
-        let operation = DomainRecordedOperation(
-            fingerprint: String(repeating: "c", count: 64),
-            recordedAt: Date(timeIntervalSinceReferenceDate: 11),
-            outcome: DomainCommandOutcome(
-                operationID: operationID,
-                disposition: .applied,
-                before: nil,
-                after: dirty,
-                catalogRevision: 1,
-                resultingDigest: DomainContentDigest.sha256(documentBytes)
-            )
-        )
+        let fileURL = URL(fileURLWithPath: "/tmp/Seeded-\(workspaceID.uuidString).json")
+        let savedDigest = String(repeating: "a", count: 64)
+        let contextDigests = [contextID: String(repeating: "b", count: 64)]
+        let updatedAt = Date(timeIntervalSinceReferenceDate: 12)
         let service = AgentryCoreService()
         defer { Task { await service.shutdown() } }
         let prepared = try await DomainWorkspaceRustJournal.prepare(coreService: service)
 
-        let create = try prepared.planTransition(
-            current: nil,
-            transition: .create(
-                workspaceID: workspaceID,
-                fileURL: fileURL,
-                contextRevisions: [contextID: dirty],
-                contextDigests: [contextID: String(repeating: "b", count: 64)],
-                operation: operation,
-                operationID: operationID,
-                updatedAt: Date(timeIntervalSinceReferenceDate: 12)
-            ),
-            documentBytes: documentBytes
+        let seeded = try prepared.seedWorkingJournal(
+            workspaceID: workspaceID,
+            fileURL: fileURL,
+            revisions: .initial,
+            savedDigest: savedDigest,
+            contextDigests: contextDigests,
+            updatedAt: updatedAt
         )
-        let committed = try XCTUnwrap(create.committed)
-        XCTAssertEqual(create.primary.journal.revisions, dirty)
-        XCTAssertEqual(create.primary.journal.pendingSave?.operationID, operationID)
-        XCTAssertEqual(committed.journal.revisions.savedRevision, 1)
-        XCTAssertNil(committed.journal.pendingSave)
-        XCTAssertNil(committed.journal.workingDocument)
-
-        let recovered = try prepared.planTransition(
-            current: create.primary.journal,
-            transition: .recoverPending(expectedWorkspaceID: workspaceID)
+        let repeated = try prepared.seedWorkingJournal(
+            workspaceID: workspaceID,
+            fileURL: fileURL,
+            revisions: .initial,
+            savedDigest: savedDigest,
+            contextDigests: contextDigests,
+            updatedAt: updatedAt
         )
-        XCTAssertNil(recovered.committed)
-        XCTAssertEqual(recovered.primary.canonicalBytes, committed.canonicalBytes)
 
-        XCTAssertThrowsError(try prepared.planTransition(
-            current: committed.journal,
-            transition: .conflictRebase(
-                expectedRevisions: committed.journal.revisions,
-                newRevisions: DomainRevisionState(
-                    workingRevision: 3,
-                    savedRevision: 1,
-                    dirtyRevision: 3
-                ),
-                externalSavedDigest: DomainContentDigest.sha256(documentBytes),
-                contextRevisions: committed.journal.contextRevisions,
-                contextDigests: committed.journal.contextDigests,
-                contextTombstones: [:],
-                operations: committed.journal.operations,
-                updatedAt: Date(timeIntervalSinceReferenceDate: 13)
+        XCTAssertEqual(seeded.journal, repeated.journal)
+        XCTAssertEqual(seeded.canonicalBytes, repeated.canonicalBytes)
+        XCTAssertEqual(seeded.contentDigest, repeated.contentDigest)
+        XCTAssertEqual(seeded.journal.workspaceID, workspaceID)
+        XCTAssertEqual(seeded.journal.fileURL, fileURL)
+        XCTAssertEqual(seeded.journal.revisions, .initial)
+        XCTAssertEqual(seeded.journal.savedDigest, savedDigest)
+        XCTAssertEqual(seeded.journal.contextDigests, contextDigests)
+        XCTAssertNil(seeded.journal.pendingSave)
+        XCTAssertNil(seeded.journal.workingDocument)
+
+        XCTAssertThrowsError(try prepared.seedWorkingJournal(
+            workspaceID: workspaceID,
+            fileURL: fileURL,
+            revisions: DomainRevisionState(
+                workingRevision: 0,
+                savedRevision: 1,
+                dirtyRevision: nil
             ),
-            documentBytes: documentBytes
-        )) { error in
-            XCTAssertEqual(error as? DomainPersistenceError, .invalidWorkspaceDocument)
-        }
-
-        XCTAssertThrowsError(try prepared.planTransition(
-            current: committed.journal,
-            transition: .conflictRebase(
-                expectedRevisions: committed.journal.revisions,
-                newRevisions: committed.journal.revisions,
-                externalSavedDigest: DomainContentDigest.sha256(documentBytes),
-                contextRevisions: [
-                    contextID: DomainRevisionState(
-                        workingRevision: 0,
-                        savedRevision: 1,
-                        dirtyRevision: nil
-                    )
-                ],
-                contextDigests: committed.journal.contextDigests,
-                contextTombstones: [:],
-                operations: committed.journal.operations,
-                updatedAt: Date(timeIntervalSinceReferenceDate: 14)
-            )
+            savedDigest: savedDigest,
+            contextDigests: contextDigests,
+            updatedAt: updatedAt
         )) { error in
             XCTAssertEqual(
                 error as? DomainPersistenceError,
@@ -315,142 +268,28 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         XCTAssertEqual(warningTombstone.tombstone.operation.operationID, operationID)
     }
 
-    func testPreparedValidatorPlansAndValidatesRustOwnedCatalogTransitions() async throws {
+    func testPreparedValidatorSeedsAndValidatesRustOwnedCatalog() async throws {
         let workspaceID = UUID()
-        let otherWorkspaceID = UUID()
         let fileURL = URL(fileURLWithPath: "/tmp/Catalog-\(workspaceID.uuidString).json")
-        let otherFileURL = URL(fileURLWithPath: "/tmp/Catalog-\(otherWorkspaceID.uuidString).json")
         let seedTime = Date(timeIntervalSinceReferenceDate: 30)
+        let entries: [DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.Entry] = [
+            .init(workspaceID: workspaceID, fileURL: fileURL)
+        ]
         let service = AgentryCoreService()
         defer { Task { await service.shutdown() } }
         let prepared = try await DomainWorkspaceRustJournal.prepare(coreService: service)
 
-        let seed = try prepared.planCatalogTransition(
-            current: nil,
-            transition: .seed(
-                entries: [.init(workspaceID: otherWorkspaceID, fileURL: otherFileURL)],
-                updatedAt: seedTime
-            )
-        )
+        let seed = try prepared.seedCatalog(entries: entries, updatedAt: seedTime)
+        let repeated = try prepared.seedCatalog(entries: entries, updatedAt: seedTime)
         XCTAssertEqual(seed.catalog.revision, 0)
-        XCTAssertEqual(seed.catalog.entries.map(\.workspaceID), [otherWorkspaceID])
+        XCTAssertEqual(seed.catalog.entries, entries)
         XCTAssertEqual(seed.catalog.deletions, [])
+        XCTAssertEqual(seed.canonicalBytes, repeated.canonicalBytes)
+        XCTAssertEqual(seed.contentDigest, repeated.contentDigest)
         XCTAssertEqual(
             try prepared.validateCatalog(seed.canonicalBytes).catalog,
             seed.catalog
         )
-
-        let inserted = try prepared.planCatalogTransition(
-            current: seed,
-            transition: .upsert(
-                expectedCatalogRevision: 0,
-                workspaceID: workspaceID,
-                fileURL: fileURL,
-                updatedAt: seedTime.addingTimeInterval(1)
-            )
-        )
-        XCTAssertEqual(inserted.catalog.revision, 1)
-        XCTAssertEqual(
-            inserted.catalog.entries.map(\.workspaceID.uuidString),
-            [workspaceID, otherWorkspaceID].map(\.uuidString).sorted()
-        )
-
-        let operation = DomainRecordedOperation(
-            fingerprint: String(repeating: "e", count: 64),
-            recordedAt: seedTime.addingTimeInterval(2),
-            outcome: .init(
-                operationID: UUID(),
-                disposition: .applied,
-                before: .initial,
-                after: nil,
-                catalogRevision: 2,
-                resultingDigest: nil
-            )
-        )
-        let plannedTombstone = try prepared.planDeletionTombstone(
-            workspaceID: workspaceID,
-            fileURL: fileURL,
-            operation: operation,
-            deletedAt: seedTime.addingTimeInterval(2)
-        )
-        XCTAssertEqual(
-            try prepared.validateDeletionTombstone(plannedTombstone.canonicalBytes).tombstone,
-            plannedTombstone.tombstone
-        )
-        let deleted = try prepared.planCatalogTransition(
-            current: inserted,
-            transition: .delete(
-                expectedCatalogRevision: 1,
-                tombstone: plannedTombstone.tombstone,
-                updatedAt: seedTime.addingTimeInterval(2)
-            )
-        )
-        XCTAssertEqual(deleted.catalog.revision, 2)
-        XCTAssertFalse(deleted.catalog.entries.contains { $0.workspaceID == workspaceID })
-        XCTAssertEqual(deleted.catalog.deletions, [plannedTombstone.tombstone])
-
-        let recreated = try prepared.planCatalogTransition(
-            current: deleted,
-            transition: .upsert(
-                expectedCatalogRevision: 2,
-                workspaceID: workspaceID,
-                fileURL: fileURL,
-                updatedAt: seedTime.addingTimeInterval(3)
-            )
-        )
-        XCTAssertEqual(recreated.catalog.revision, 3)
-        XCTAssertFalse(recreated.catalog.deletions?.contains { $0.workspaceID == workspaceID } == true)
-
-        let recoverySeed = try prepared.planCatalogTransition(
-            current: nil,
-            transition: .seed(entries: [], updatedAt: seedTime)
-        )
-        let recovered = try prepared.planCatalogTransition(
-            current: recoverySeed,
-            transition: .recoverCreate(
-                expectedCatalogRevision: 0,
-                workspaceID: workspaceID,
-                fileURL: fileURL,
-                updatedAt: seedTime.addingTimeInterval(4)
-            )
-        )
-        XCTAssertEqual(recovered.catalog.revision, 1)
-        XCTAssertEqual(recovered.catalog.entries.map(\.workspaceID), [workspaceID])
-
-        let maximumRevisionBytes = Data(
-            "{\"deletions\":[],\"entries\":[],\"revision\":18446744073709551615,\"updatedAt\":30,\"version\":1}"
-                .utf8
-        )
-        let maximumRevision = try prepared.validateCatalog(maximumRevisionBytes)
-        XCTAssertThrowsError(try prepared.planCatalogTransition(
-            current: maximumRevision,
-            transition: .upsert(
-                expectedCatalogRevision: .max,
-                workspaceID: workspaceID,
-                fileURL: fileURL,
-                updatedAt: seedTime.addingTimeInterval(5)
-            )
-        )) { error in
-            XCTAssertEqual(
-                error as? DomainPersistenceError,
-                .writeFailed("workspace_catalog_transition_invalid")
-            )
-        }
-
-        XCTAssertThrowsError(try prepared.planCatalogTransition(
-            current: inserted,
-            transition: .upsert(
-                expectedCatalogRevision: 99,
-                workspaceID: UUID(),
-                fileURL: URL(fileURLWithPath: "/tmp/stale.json"),
-                updatedAt: seedTime.addingTimeInterval(5)
-            )
-        )) { error in
-            XCTAssertEqual(
-                error as? DomainPersistenceError,
-                .writeFailed("workspace_catalog_transition_invalid")
-            )
-        }
     }
 
     func testPreparedValidatorFailsClosedAfterItsExactRuntimeStops() async throws {

@@ -13,7 +13,7 @@ use crate::types::{
     CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
-    CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogTransitionRequestV1,
+    CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
     CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCreateDirectiveV1,
     CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
     CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
@@ -22,9 +22,7 @@ use crate::types::{
     CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
     CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspaceSaveActionReportV1,
     CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
-    CoreWorkspaceWorkingJournalTransitionRequestV1,
-    CoreWorkspaceWorkingJournalTransitionResponseV1,
-    CoreWorkspaceWorkingJournalValidationErrorKindV1,
+    CoreWorkspaceWorkingJournalSeedRequestV1, CoreWorkspaceWorkingJournalValidationErrorKindV1,
     CoreWorkspaceWorkingJournalValidationRequestV1,
     CoreWorkspaceWorkingJournalValidationResponseV1, DrainBatch, FolderSuffixRequest, HostResponse,
     InventoryComposedSnapshotHandleV1, InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1,
@@ -1075,10 +1073,10 @@ impl CoreRuntime {
         })
     }
 
-    pub fn workspace_working_journal_plan_transition_v1(
+    pub fn workspace_working_journal_seed_v1(
         &self,
-        request: CoreWorkspaceWorkingJournalTransitionRequestV1,
-    ) -> Result<CoreWorkspaceWorkingJournalTransitionResponseV1, CoreError> {
+        request: CoreWorkspaceWorkingJournalSeedRequestV1,
+    ) -> Result<CoreWorkspaceWorkingJournalValidationResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             self.validate_identity(&request.runtime_identity)?;
@@ -1087,20 +1085,18 @@ impl CoreRuntime {
             {
                 return Err(CoreError::InvalidArgument);
             }
-            Ok(match runtime::workspace_persistence_journal::plan_workspace_working_journal_transition_v1(
-                request.current_journal_bytes.as_deref(),
-                &request.transition_bytes,
-                request.document_bytes.as_deref(),
+            Ok(match runtime::workspace_persistence_journal::seed_workspace_working_journal_v1(
+                &request.seed_request_bytes,
             ) {
-                Ok(plan) => CoreWorkspaceWorkingJournalTransitionResponseV1 {
-                    plan: Some(plan.into()),
+                Ok(validation) => CoreWorkspaceWorkingJournalValidationResponseV1 {
+                    validation: Some(validation.into()),
                     error_kind: None,
                     future_schema_version: None,
                 },
                 Err(error) => {
                     let (error_kind, future_schema_version) = workspace_journal_error(error);
-                    CoreWorkspaceWorkingJournalTransitionResponseV1 {
-                        plan: None,
+                    CoreWorkspaceWorkingJournalValidationResponseV1 {
+                        validation: None,
                         error_kind: Some(error_kind),
                         future_schema_version,
                     }
@@ -1381,18 +1377,17 @@ impl CoreRuntime {
         })
     }
 
-    pub fn workspace_catalog_plan_transition_v1(
+    pub fn workspace_catalog_seed_v1(
         &self,
-        request: CoreWorkspaceCatalogTransitionRequestV1,
+        request: CoreWorkspaceCatalogSeedRequestV1,
     ) -> Result<CoreWorkspaceCatalogResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
             Ok(workspace_catalog_response(
-                runtime::workspace_persistence_journal::plan_workspace_catalog_transition_v1(
-                    request.current_catalog_bytes.as_deref(),
-                    &request.transition_bytes,
+                runtime::workspace_persistence_journal::seed_workspace_catalog_v1(
+                    &request.seed_request_bytes,
                 ),
             ))
         })
@@ -3413,46 +3408,47 @@ mod tests {
     }
 
     #[test]
-    fn workspace_working_journal_transition_export_returns_primary_and_committed_candidates() {
+    fn workspace_working_journal_seed_export_returns_one_canonical_validation() {
         let (core, identity, _) = initialized_core();
-        let document = br#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#;
-        let transition = br#"{
-            "kind":"create",
+        let seed = br#"{
+            "kind":"seed",
             "workspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "fileURL":"file:///tmp/Workspace.json",
-            "contextRevisions":[],
+            "revisions":{"workingRevision":0,"savedRevision":0},
+            "savedDigest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "contextDigests":[],
-            "operation":{
-                "operationID":"66666666-7777-8888-9999-aaaaaaaaaaaa",
-                "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                "recordedAt":42.0,
-                "disposition":"applied",
-                "catalogRevision":1
-            },
-            "operationID":"66666666-7777-8888-9999-aaaaaaaaaaaa",
             "updatedAt":42.0
         }"#;
         let response = core
-            .workspace_working_journal_plan_transition_v1(
-                CoreWorkspaceWorkingJournalTransitionRequestV1 {
-                    runtime_identity: identity,
-                    contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
-                    current_journal_bytes: None,
-                    transition_bytes: transition.to_vec(),
-                    document_bytes: Some(document.to_vec()),
-                },
-            )
-            .expect("working journal transition");
+            .workspace_working_journal_seed_v1(CoreWorkspaceWorkingJournalSeedRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+                seed_request_bytes: seed.to_vec(),
+            })
+            .expect("working journal seed");
         assert_eq!(response.error_kind, None);
-        let plan = response.plan.expect("transition plan");
+        let validation = response.validation.expect("seed validation");
         assert_eq!(
-            plan.primary.workspace_id,
+            validation.workspace_id,
             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         );
-        assert!(plan.committed.is_some());
-        assert_ne!(
-            plan.primary.content_digest,
-            plan.committed.expect("committed").content_digest
+        assert_eq!(validation.content_digest.len(), 64);
+
+        let non_seed = br#"{
+            "kind":"recoverPending",
+            "expectedWorkspaceID":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        }"#;
+        let invalid = core
+            .workspace_working_journal_seed_v1(CoreWorkspaceWorkingJournalSeedRequestV1 {
+                runtime_identity: identity,
+                contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+                seed_request_bytes: non_seed.to_vec(),
+            })
+            .expect("semantic seed error");
+        assert_eq!(invalid.validation, None);
+        assert_eq!(
+            invalid.error_kind,
+            Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTransaction)
         );
     }
 
@@ -3536,11 +3532,10 @@ mod tests {
             "updatedAt":46.0
         }"#;
         let catalog = core
-            .workspace_catalog_plan_transition_v1(CoreWorkspaceCatalogTransitionRequestV1 {
+            .workspace_catalog_seed_v1(CoreWorkspaceCatalogSeedRequestV1 {
                 runtime_identity: identity.clone(),
                 contract_version: contract,
-                current_catalog_bytes: None,
-                transition_bytes: seed_transition.to_vec(),
+                seed_request_bytes: seed_transition.to_vec(),
             })
             .expect("catalog seed")
             .validation

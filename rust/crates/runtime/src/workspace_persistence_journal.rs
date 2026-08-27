@@ -141,9 +141,9 @@ struct WorkspaceRecordedOperationV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspaceWorkingJournalTransitionPlanV1 {
-    pub primary: WorkspaceWorkingJournalValidationV1,
-    pub committed: Option<WorkspaceWorkingJournalValidationV1>,
+struct WorkspaceWorkingJournalTransitionPlanV1 {
+    primary: WorkspaceWorkingJournalValidationV1,
+    committed: Option<WorkspaceWorkingJournalValidationV1>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -305,6 +305,8 @@ pub enum WorkspaceJournalMutationDirectiveV1 {
         content_digest: String,
         logical_expected_revision: Option<u64>,
         authority_receipt: Option<WorkspaceJournalMutationCommitReceiptV1>,
+        post_authority_success_finalization: Option<WorkspaceJournalMutationFinalizationV1>,
+        post_authority_failure_finalization: Option<WorkspaceJournalMutationFinalizationV1>,
     },
     Committed {
         receipt: WorkspaceJournalMutationCommitReceiptV1,
@@ -363,6 +365,8 @@ pub enum WorkspaceSaveDirectiveV1 {
         content_digest: String,
         logical_expected_revision: Option<u64>,
         authority_receipt: Option<WorkspaceSaveCommitReceiptV1>,
+        post_authority_success_finalization: Option<WorkspaceSaveFinalizationV1>,
+        post_authority_failure_finalization: Option<WorkspaceSaveFinalizationV1>,
     },
     Committed {
         receipt: WorkspaceSaveCommitReceiptV1,
@@ -1106,6 +1110,12 @@ impl WorkspaceJournalMutationTransactionStateV1 {
                     content_digest: self.committed.content_digest.clone(),
                     logical_expected_revision: Some(self.expected_working_revision),
                     authority_receipt: Some(self.receipt.clone()),
+                    post_authority_success_finalization: Some(if self.saved_revision.is_some() {
+                        WorkspaceJournalMutationFinalizationV1::RevisionSidecarMissing
+                    } else {
+                        WorkspaceJournalMutationFinalizationV1::Finalized
+                    }),
+                    post_authority_failure_finalization: None,
                 })
             }
             WorkspaceJournalMutationStageV1::SavedRevision => {
@@ -1122,6 +1132,12 @@ impl WorkspaceJournalMutationTransactionStateV1 {
                     content_digest: saved_revision.content_digest.clone(),
                     logical_expected_revision: None,
                     authority_receipt: None,
+                    post_authority_success_finalization: Some(
+                        WorkspaceJournalMutationFinalizationV1::Finalized,
+                    ),
+                    post_authority_failure_finalization: Some(
+                        WorkspaceJournalMutationFinalizationV1::RevisionSidecarMissing,
+                    ),
                 })
             }
             WorkspaceJournalMutationStageV1::Terminal => self
@@ -1286,6 +1302,22 @@ impl WorkspaceSaveTransactionStateV1 {
         logical_expected_revision: Option<u64>,
         authority_receipt: Option<WorkspaceSaveCommitReceiptV1>,
     ) -> WorkspaceSaveDirectiveV1 {
+        let (post_authority_success_finalization, post_authority_failure_finalization) = match kind
+        {
+            WorkspaceSaveActionKindV1::WritePendingJournal => (None, None),
+            WorkspaceSaveActionKindV1::PublishWorkspaceDocument => (
+                Some(WorkspaceSaveFinalizationV1::PendingJournalRetained),
+                None,
+            ),
+            WorkspaceSaveActionKindV1::WriteCommittedJournal => (
+                Some(WorkspaceSaveFinalizationV1::RevisionSidecarMissing),
+                Some(WorkspaceSaveFinalizationV1::PendingJournalRetained),
+            ),
+            WorkspaceSaveActionKindV1::WriteSavedRevision => (
+                Some(WorkspaceSaveFinalizationV1::Finalized),
+                Some(WorkspaceSaveFinalizationV1::RevisionSidecarMissing),
+            ),
+        };
         WorkspaceSaveDirectiveV1::Action {
             action_id,
             request_digest: self.request_digest.clone(),
@@ -1295,6 +1327,8 @@ impl WorkspaceSaveTransactionStateV1 {
             content_digest,
             logical_expected_revision,
             authority_receipt,
+            post_authority_success_finalization,
+            post_authority_failure_finalization,
         }
     }
 
@@ -2537,7 +2571,32 @@ fn delete_transaction_request_digest(
     format!("{:x}", hasher.finalize())
 }
 
-pub fn plan_workspace_working_journal_transition_v1(
+pub fn seed_workspace_working_journal_v1(
+    seed_request_bytes: &[u8],
+) -> Result<WorkspaceWorkingJournalValidationV1, WorkspaceWorkingJournalError> {
+    if seed_request_bytes.len() > MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1 {
+        return Err(WorkspaceWorkingJournalError::InputTooLarge {
+            actual: seed_request_bytes.len(),
+            maximum: MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1,
+        });
+    }
+    let request: WorkspaceWorkingJournalTransitionRequestV1 =
+        serde_json::from_slice(seed_request_bytes)
+            .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    if !matches!(
+        request,
+        WorkspaceWorkingJournalTransitionRequestV1::Seed { .. }
+    ) {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    let plan = plan_workspace_working_journal_transition_v1(None, seed_request_bytes, None)?;
+    if plan.committed.is_some() {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    Ok(plan.primary)
+}
+
+fn plan_workspace_working_journal_transition_v1(
     current_journal_bytes: Option<&[u8]>,
     transition_bytes: &[u8],
     document_bytes: Option<&[u8]>,
@@ -3228,7 +3287,20 @@ pub fn validate_workspace_catalog_v1(
     canonicalize_catalog(catalog)
 }
 
-pub fn plan_workspace_catalog_transition_v1(
+pub fn seed_workspace_catalog_v1(
+    seed_request_bytes: &[u8],
+) -> Result<WorkspaceCatalogValidationV1, WorkspaceWorkingJournalError> {
+    require_metadata_input_bound(seed_request_bytes)?;
+    let request: WorkspaceCatalogTransitionRequestV1 =
+        serde_json::from_slice(seed_request_bytes)
+            .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    if !matches!(request, WorkspaceCatalogTransitionRequestV1::Seed { .. }) {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    plan_workspace_catalog_transition_v1(None, seed_request_bytes)
+}
+
+fn plan_workspace_catalog_transition_v1(
     current_catalog_bytes: Option<&[u8]>,
     transition_bytes: &[u8],
 ) -> Result<WorkspaceCatalogValidationV1, WorkspaceWorkingJournalError> {
@@ -4009,6 +4081,9 @@ mod tests {
                     content_digest,
                     authority_receipt: Some(receipt),
                     logical_expected_revision: Some(0),
+                    post_authority_success_finalization:
+                        Some(WorkspaceJournalMutationFinalizationV1::Finalized),
+                    post_authority_failure_finalization: None,
                     ..
                 } => (action_id, content_digest, receipt),
                 other => panic!("unexpected working directive: {other:?}"),
@@ -4063,6 +4138,9 @@ mod tests {
                     kind: WorkspaceJournalMutationActionKindV1::WriteJournal,
                     content_digest,
                     authority_receipt: Some(receipt),
+                    post_authority_success_finalization:
+                        Some(WorkspaceJournalMutationFinalizationV1::RevisionSidecarMissing),
+                    post_authority_failure_finalization: None,
                     ..
                 } => (action_id, content_digest, receipt),
                 other => panic!("unexpected external directive: {other:?}"),
@@ -4091,6 +4169,10 @@ mod tests {
                 action_id,
                 kind: WorkspaceJournalMutationActionKindV1::WriteSavedRevision,
                 authority_receipt: None,
+                post_authority_success_finalization:
+                    Some(WorkspaceJournalMutationFinalizationV1::Finalized),
+                post_authority_failure_finalization:
+                    Some(WorkspaceJournalMutationFinalizationV1::RevisionSidecarMissing),
                 ..
             } => action_id,
             other => panic!("unexpected revision directive: {other:?}"),
@@ -4670,6 +4752,8 @@ mod tests {
                 expected_raw_journal_digest,
                 content_digest,
                 authority_receipt,
+                post_authority_success_finalization,
+                post_authority_failure_finalization,
                 ..
             } => {
                 assert_eq!(
@@ -4677,6 +4761,8 @@ mod tests {
                     Some(format!("{:x}", Sha256::digest(&raw)))
                 );
                 assert!(authority_receipt.is_none());
+                assert_eq!(post_authority_success_finalization, None);
+                assert_eq!(post_authority_failure_finalization, None);
                 (action_id, content_digest)
             }
             other => panic!("unexpected pending directive: {other:?}"),
@@ -4693,6 +4779,9 @@ mod tests {
                 kind: WorkspaceSaveActionKindV1::PublishWorkspaceDocument,
                 content_digest,
                 authority_receipt: Some(receipt),
+                post_authority_success_finalization:
+                    Some(WorkspaceSaveFinalizationV1::PendingJournalRetained),
+                post_authority_failure_finalization: None,
                 ..
             } => (action_id, content_digest, receipt),
             other => panic!("unexpected document directive: {other:?}"),
@@ -4712,6 +4801,10 @@ mod tests {
             WorkspaceSaveDirectiveV1::Action {
                 action_id,
                 kind: WorkspaceSaveActionKindV1::WriteCommittedJournal,
+                post_authority_success_finalization:
+                    Some(WorkspaceSaveFinalizationV1::RevisionSidecarMissing),
+                post_authority_failure_finalization:
+                    Some(WorkspaceSaveFinalizationV1::PendingJournalRetained),
                 ..
             } => action_id,
             other => panic!("unexpected committed journal directive: {other:?}"),
@@ -4821,6 +4914,10 @@ mod tests {
             directive,
             WorkspaceSaveDirectiveV1::Action {
                 kind: WorkspaceSaveActionKindV1::WriteSavedRevision,
+                post_authority_success_finalization: Some(WorkspaceSaveFinalizationV1::Finalized),
+                post_authority_failure_finalization: Some(
+                    WorkspaceSaveFinalizationV1::RevisionSidecarMissing
+                ),
                 ..
             }
         ));
@@ -4986,6 +5083,43 @@ mod tests {
                 Some(malformed),
             ),
             Err(WorkspaceWorkingJournalError::InvalidWorkingDocument)
+        );
+    }
+
+    #[test]
+    fn dedicated_seed_matches_generic_plan_and_rejects_non_seed_requests() {
+        let seed_request = serde_json::json!({
+            "kind": "seed",
+            "workspaceID": WORKSPACE_ID,
+            "fileURL": "file:///tmp/Workspace.json",
+            "revisions": revision(0, 0, None),
+            "savedDigest": format!("{:x}", Sha256::digest(document("saved"))),
+            "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
+            "updatedAt": 10.0
+        });
+        let seed_bytes = serde_json::to_vec(&seed_request).expect("seed request");
+        let dedicated = seed_workspace_working_journal_v1(&seed_bytes).expect("dedicated seed");
+        let generic = plan_workspace_working_journal_transition_v1(None, &seed_bytes, None)
+            .expect("generic seed plan");
+        assert_eq!(dedicated, generic.primary);
+        assert!(generic.committed.is_none());
+        assert_eq!(
+            seed_workspace_working_journal_v1(&seed_bytes).expect("repeat seed"),
+            dedicated
+        );
+
+        let non_seed = serde_json::to_vec(&serde_json::json!({
+            "kind": "recoverPending",
+            "expectedWorkspaceID": WORKSPACE_ID
+        }))
+        .expect("non-seed request");
+        assert_eq!(
+            seed_workspace_working_journal_v1(&non_seed),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        assert_eq!(
+            seed_workspace_working_journal_v1(b"not-json"),
+            Err(WorkspaceWorkingJournalError::Malformed)
         );
     }
 
@@ -5243,11 +5377,13 @@ mod tests {
             ],
             "updatedAt": 10.0
         });
-        let seed = plan_workspace_catalog_transition_v1(
-            None,
-            &serde_json::to_vec(&seed_request).expect("seed request"),
-        )
-        .expect("seed catalog");
+        let seed_request_bytes = serde_json::to_vec(&seed_request).expect("seed request");
+        let seed = seed_workspace_catalog_v1(&seed_request_bytes).expect("seed catalog");
+        assert_eq!(
+            seed,
+            plan_workspace_catalog_transition_v1(None, &seed_request_bytes)
+                .expect("internal generic seed")
+        );
         assert_eq!(seed.revision, 0);
         assert_eq!(seed.entry_count, 2);
         assert_eq!(seed.deletion_count, 0);
@@ -5267,9 +5403,14 @@ mod tests {
             "fileURL": "file:///tmp/A-recreated.json",
             "updatedAt": 11.0
         });
+        let upsert_request_bytes = serde_json::to_vec(&upsert_request).expect("upsert request");
+        assert_eq!(
+            seed_workspace_catalog_v1(&upsert_request_bytes),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
         let upsert = plan_workspace_catalog_transition_v1(
             Some(&seed.canonical_bytes),
-            &serde_json::to_vec(&upsert_request).expect("upsert request"),
+            &upsert_request_bytes,
         )
         .expect("upsert catalog");
         let upserted: WorkspaceCatalogV1 =

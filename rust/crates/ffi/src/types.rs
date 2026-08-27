@@ -885,11 +885,10 @@ pub struct CoreWorkspaceCatalogValidationRequestV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCatalogTransitionRequestV1 {
+pub struct CoreWorkspaceCatalogSeedRequestV1 {
     pub runtime_identity: RuntimeIdentity,
     pub contract_version: u16,
-    pub current_catalog_bytes: Option<Vec<u8>>,
-    pub transition_bytes: Vec<u8>,
+    pub seed_request_bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -917,33 +916,18 @@ pub struct CoreWorkspaceWorkingJournalValidationRequestV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceWorkingJournalSeedRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub seed_request_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceWorkingJournalValidationV1 {
     pub workspace_id: String,
     pub journal_version: u16,
     pub content_digest: String,
     pub canonical_bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceWorkingJournalTransitionRequestV1 {
-    pub runtime_identity: RuntimeIdentity,
-    pub contract_version: u16,
-    pub current_journal_bytes: Option<Vec<u8>>,
-    pub transition_bytes: Vec<u8>,
-    pub document_bytes: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceWorkingJournalTransitionPlanV1 {
-    pub primary: CoreWorkspaceWorkingJournalValidationV1,
-    pub committed: Option<CoreWorkspaceWorkingJournalValidationV1>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceWorkingJournalTransitionResponseV1 {
-    pub plan: Option<CoreWorkspaceWorkingJournalTransitionPlanV1>,
-    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
-    pub future_schema_version: Option<u16>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -1034,6 +1018,8 @@ pub enum CoreWorkspaceJournalMutationDirectiveV1 {
         content_digest: String,
         logical_expected_revision: Option<u64>,
         authority_receipt: Option<CoreWorkspaceJournalMutationCommitReceiptV1>,
+        post_authority_success_finalization: Option<CoreWorkspaceJournalMutationFinalizationV1>,
+        post_authority_failure_finalization: Option<CoreWorkspaceJournalMutationFinalizationV1>,
     },
     Committed {
         receipt: CoreWorkspaceJournalMutationCommitReceiptV1,
@@ -1090,6 +1076,8 @@ pub enum CoreWorkspaceSaveDirectiveV1 {
         content_digest: String,
         logical_expected_revision: Option<u64>,
         authority_receipt: Option<CoreWorkspaceSaveCommitReceiptV1>,
+        post_authority_success_finalization: Option<CoreWorkspaceSaveFinalizationV1>,
+        post_authority_failure_finalization: Option<CoreWorkspaceSaveFinalizationV1>,
     },
     Committed {
         receipt: CoreWorkspaceSaveCommitReceiptV1,
@@ -1294,19 +1282,6 @@ impl From<runtime::workspace_persistence_journal::WorkspaceWorkingJournalValidat
     }
 }
 
-impl From<runtime::workspace_persistence_journal::WorkspaceWorkingJournalTransitionPlanV1>
-    for CoreWorkspaceWorkingJournalTransitionPlanV1
-{
-    fn from(
-        value: runtime::workspace_persistence_journal::WorkspaceWorkingJournalTransitionPlanV1,
-    ) -> Self {
-        Self {
-            primary: value.primary.into(),
-            committed: value.committed.map(Into::into),
-        }
-    }
-}
-
 impl From<runtime::workspace_persistence_journal::WorkspaceJournalMutationCommitReceiptV1>
     for CoreWorkspaceJournalMutationCommitReceiptV1
 {
@@ -1342,6 +1317,8 @@ impl From<runtime::workspace_persistence_journal::WorkspaceJournalMutationDirect
                 content_digest,
                 logical_expected_revision,
                 authority_receipt,
+                post_authority_success_finalization,
+                post_authority_failure_finalization,
             } => Self::Action {
                 action_id,
                 request_digest,
@@ -1351,6 +1328,10 @@ impl From<runtime::workspace_persistence_journal::WorkspaceJournalMutationDirect
                 content_digest,
                 logical_expected_revision,
                 authority_receipt: authority_receipt.map(Into::into),
+                post_authority_success_finalization: post_authority_success_finalization
+                    .map(Into::into),
+                post_authority_failure_finalization: post_authority_failure_finalization
+                    .map(Into::into),
             },
             RuntimeDirective::Committed {
                 receipt,
@@ -1427,6 +1408,8 @@ impl From<runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1>
                 content_digest,
                 logical_expected_revision,
                 authority_receipt,
+                post_authority_success_finalization,
+                post_authority_failure_finalization,
             } => Self::Action {
                 action_id,
                 request_digest,
@@ -1436,6 +1419,10 @@ impl From<runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1>
                 content_digest,
                 logical_expected_revision,
                 authority_receipt: authority_receipt.map(Into::into),
+                post_authority_success_finalization: post_authority_success_finalization
+                    .map(Into::into),
+                post_authority_failure_finalization: post_authority_failure_finalization
+                    .map(Into::into),
             },
             RuntimeDirective::Committed {
                 receipt,

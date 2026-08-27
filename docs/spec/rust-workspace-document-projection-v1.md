@@ -882,3 +882,120 @@ specialized prepared transactions.
   `replaceJournal` composition has zero callers for these four mutation kinds.
 - Existing working/save/external-reload/conflict/cancellation/restart/lease-handoff regressions plus focused
   Rust, FFI, Bridge, DomainRuntime, codegen, product-build, style, guardrail, and diff checks pass.
+
+## P5-5h amendment — Rust-owned post-authority finalization verdicts
+
+P5-5h removes the last Swift semantic inference from prepared working-journal and save finalization. Every
+Rust action now carries optional `postAuthoritySuccessFinalization` and
+`postAuthorityFailureFinalization` verdicts. Pre-authority actions carry neither. The document/journal
+authority action carries the exact committed fallback for a physical success whose report cannot be
+returned, and later post-authority journal/revision actions carry both success and failure verdicts. Swift
+selects only by the physical I/O fact it directly owns; it no longer derives finalization from receipt
+shape, action kind, or whether a saved-revision receipt is present.
+
+The verdict matrix is closed in Rust. A working-journal authority write without a revision sidecar
+finalizes immediately; external reload retains `revisionSidecarMissing` until its sidecar succeeds. A save
+document write retains the pending journal, committed-journal success advances to
+`revisionSidecarMissing`, committed-journal failure retains the pending journal, and saved-revision
+success/failure yields `finalized`/`revisionSidecarMissing`. Bridge and DomainRuntime validate that exact
+matrix before exposing a typed directive. Domain execution additionally requires the closed action order,
+rejects terminal success before a physical authority point, and compares the terminal receipt/finalization
+with the already activated Rust receipt/verdict. After authority, a malformed terminal or failed directive
+falls back only to that previously attached Rust verdict, so transport drift cannot create a false retry.
+
+Missing production journals also stop using the generic transition-plan tuple in `DomainPersistence`.
+The typed `seedWorkingJournal` adapter submits the seed policy to Rust and returns exactly one validated
+canonical journal. Swift retains the storage lease, bounded descriptor reads, file locks, raw-digest CAS,
+atomic replacement, and error translation; Rust remains the sole planner and finalization authority.
+
+### P5-5h done-when
+
+- Rust tests assert the complete pre/post-authority verdict matrix and its agreement with terminal reports.
+- Real FFI and Bridge tests preserve every verdict across generated bindings and after exact-runtime stop.
+- Production `DomainPersistence` contains no generic `planJournalTransition` helper and no receipt-shape or
+  hard-coded post-authority finalization inference.
+- Existing save, working, external-reload, conflict-rebase, restart, cancellation, and lease-handoff
+  regressions plus focused Rust, FFI, Bridge, DomainRuntime, codegen, product-build, style, guardrail, and
+  diff checks pass.
+
+## P5-5i amendment — dedicated Rust missing-journal seed authority
+
+P5-5i removes the final production Domain consumer of the generic working-journal transition-plan tuple.
+The exact-runtime Rust seed operation accepts the established bounded `kind: seed` request, rejects every
+other transition kind, reuses the canonical generic seed implementation, and returns exactly one
+`WorkspaceWorkingJournalValidationV1`. Rust therefore owns both seed semantics and the invariant that a
+missing-journal seed has no secondary committed candidate.
+
+`DomainPersistence` continues to supply factual workspace identity, file URL, revision state, saved digest,
+context digests, and timestamp. Its typed adapter now calls only the scalar seed endpoint and validates the
+returned identity, URL, canonical bytes, and digest. DomainRuntime no longer exposes or consumes a generic
+`primary`/`committed` journal plan. The lower-level Core generic planner remains available only for
+compatibility and differential testing; it has no production Domain caller.
+
+Seeding remains preparatory and establishes no filesystem authority. Swift retains the storage lease,
+bounded descriptor reads, locks, raw-digest CAS, atomic replacement, and selection of Rust-provided
+post-authority verdicts from physical I/O success or failure. A stopped runtime, malformed/oversized seed,
+or invalid seed state fails before any specialized transaction or journal write begins.
+
+### P5-5i done-when
+
+- Rust tests prove dedicated seed output is byte-identical to the generic seed primary, deterministic, and
+  rejects malformed and non-seed requests.
+- Real FFI and Bridge tests cover canonical seed output, input bounds, generic differential parity, and the
+  exact-runtime shutdown fence.
+- `DomainWorkspaceRustJournal` contains no generic transition-plan type, `planTransition` adapter, or
+  `primary`/`committed` interpretation; `DomainPersistence` retains exactly one typed seed caller.
+- Existing missing-journal/bootstrap/save/recovery regressions plus focused Rust, FFI, Bridge,
+  DomainRuntime, codegen, product-build, style, guardrail, and diff checks pass.
+
+## P5-5j amendment — generic journal planner transport retirement
+
+P5-5j removes the generic working-journal transition planner from the Rust FFI contract and Swift Bridge.
+After P5-5i there are no production or Domain test callers: missing-journal seed uses its scalar Rust
+endpoint, while create, recovery, save, and journal mutations use their specialized exact-runtime prepared
+transactions. The former generic request/plan/response records and `planTransition` prepared-validator API
+therefore no longer express a supported cross-language authority boundary.
+
+The generic planner implementation remains private inside the Rust journal module. Dedicated seed and
+prepared transaction constructors reuse it to produce canonical candidates, so there is still one
+transition algorithm and no behavior fork. Its Rust unit tests retain all-kind coverage and seed
+differential parity; cross-language tests now exercise only supported typed operations. Removing the
+transport surface does not change storage lease ownership, physical I/O, CAS, action sequencing, or
+post-authority finalization.
+
+### P5-5j done-when
+
+- The generic planner function and plan type are private to the Rust journal module and retain their existing
+  unit coverage.
+- UniFFI, generated C/Swift bindings, Core transport, and prepared validator expose no generic journal
+  transition planner records or method.
+- Production Domain source and tests use only validation, scalar seed, metadata/catalog operations, pending
+  recovery, and specialized prepared transactions.
+- FFI export tests, real Bridge tests, Domain source guards, deterministic codegen, product build, style,
+  guardrails, Rust formatting, and diff checks pass.
+
+## P5-5k amendment — dedicated catalog seed and generic planner transport retirement
+
+P5-5k removes the final production use of the generic workspace-catalog transition planner. Missing-catalog
+bootstrap and legacy migration now submit only a typed seed request through `seedCatalog`; Rust rejects any
+non-seed transition before returning a canonical revision-zero catalog. Create/recreate, recovery, and delete
+continue to use their specialized prepared transactions, so no mutable catalog policy requires a generic
+Swift-visible planner.
+
+The generic catalog transition enum and planner remain private inside the Rust journal module because the
+prepared transaction constructors reuse the same upsert, delete, and recovery algorithm. UniFFI and the
+Swift Bridge expose only catalog validation and scalar seed operations. DomainRuntime no longer defines a
+catalog transition enum or interprets transition-specific receipts; it verifies the dedicated seed's
+revision, timestamp, entries, deletion set, canonical bytes, and digest before the existing lease-backed
+physical publication path can use it.
+
+### P5-5k done-when
+
+- The generic catalog planner is private to Rust and retains seed/upsert/delete/recovery, revision-overflow,
+  duplicate-identity, URL, and timestamp unit coverage.
+- UniFFI, generated C/Swift bindings, Core transport, and prepared validator expose no generic catalog
+  transition request or method; the scalar seed endpoint is exact-runtime fenced and bounded.
+- `DomainPersistence` has exactly one catalog seed caller, used only for missing-catalog bootstrap/migration;
+  all catalog mutations remain specialized prepared transactions.
+- Real FFI/Bridge seed tests, Domain seed/authority/source-guard regressions, deterministic codegen, product
+  build, style, guardrails, Rust formatting, and diff checks pass.

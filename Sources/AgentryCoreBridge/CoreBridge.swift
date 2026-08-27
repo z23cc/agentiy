@@ -175,21 +175,18 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         catalogBytes: Data
     ) throws -> CoreWorkspaceCatalogValidationV1
-    func workspaceCatalogPlanTransitionV1(
+    func workspaceCatalogSeedV1(
         identity: CoreRuntimeIdentity,
-        currentCatalogBytes: Data?,
-        transitionBytes: Data
+        seedRequestBytes: Data
     ) throws -> CoreWorkspaceCatalogValidationV1
     func workspaceWorkingJournalValidateV1(
         identity: CoreRuntimeIdentity,
         journalBytes: Data
     ) throws -> CoreWorkspaceWorkingJournalValidationV1
-    func workspaceWorkingJournalPlanTransitionV1(
+    func workspaceWorkingJournalSeedV1(
         identity: CoreRuntimeIdentity,
-        currentJournalBytes: Data?,
-        transitionBytes: Data,
-        documentBytes: Data?
-    ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1
+        seedRequestBytes: Data
+    ) throws -> CoreWorkspaceWorkingJournalValidationV1
     func workspaceCreateTransactionBeginV1(
         identity: CoreRuntimeIdentity,
         rawCatalogBytes: Data?,
@@ -1098,17 +1095,15 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    func workspaceCatalogPlanTransitionV1(
+    func workspaceCatalogSeedV1(
         identity: CoreRuntimeIdentity,
-        currentCatalogBytes: Data?,
-        transitionBytes: Data
+        seedRequestBytes: Data
     ) throws -> CoreWorkspaceCatalogValidationV1 {
         do {
-            let response = try runtime.workspaceCatalogPlanTransitionV1(request: .init(
+            let response = try runtime.workspaceCatalogSeedV1(request: .init(
                 runtimeIdentity: Self.rawIdentity(identity),
                 contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
-                currentCatalogBytes: currentCatalogBytes,
-                transitionBytes: transitionBytes
+                seedRequestBytes: seedRequestBytes
             ))
             return try Self.workspaceCatalogValidation(response)
         } catch let error as CoreWorkspaceWorkingJournalValidationError {
@@ -1261,24 +1256,20 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    func workspaceWorkingJournalPlanTransitionV1(
+    func workspaceWorkingJournalSeedV1(
         identity: CoreRuntimeIdentity,
-        currentJournalBytes: Data?,
-        transitionBytes: Data,
-        documentBytes: Data?
-    ) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1 {
+        seedRequestBytes: Data
+    ) throws -> CoreWorkspaceWorkingJournalValidationV1 {
         do {
-            let response = try runtime.workspaceWorkingJournalPlanTransitionV1(request: .init(
+            let response = try runtime.workspaceWorkingJournalSeedV1(request: .init(
                 runtimeIdentity: Self.rawIdentity(identity),
                 contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
-                currentJournalBytes: currentJournalBytes,
-                transitionBytes: transitionBytes,
-                documentBytes: documentBytes
+                seedRequestBytes: seedRequestBytes
             ))
             if let errorKind = response.errorKind {
-                guard response.plan == nil else {
+                guard response.validation == nil else {
                     throw CoreTransportError.unexpected(
-                        "workspace working journal transition response contains success and error"
+                        "workspace working journal seed response contains success and error"
                     )
                 }
                 throw try Self.workspaceWorkingJournalValidationError(
@@ -1287,23 +1278,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
             guard response.futureSchemaVersion == nil,
-                  let result = response.plan
+                  let result = response.validation
             else {
                 throw CoreTransportError.unexpected(
-                    "workspace working journal transition receipt is invalid"
+                    "workspace working journal seed receipt is invalid"
                 )
             }
-            let primary = try Self.workspaceWorkingJournalValidation(result.primary)
-            let committed = try result.committed.map(Self.workspaceWorkingJournalValidation)
-            guard committed == nil || committed?.workspaceID == primary.workspaceID else {
-                throw CoreTransportError.unexpected(
-                    "workspace working journal transition identities differ"
-                )
-            }
-            return CoreWorkspaceWorkingJournalTransitionPlanV1(
-                primary: primary,
-                committed: committed
-            )
+            return try Self.workspaceWorkingJournalValidation(result)
         } catch let error as CoreWorkspaceWorkingJournalValidationError {
             throw error
         } catch {
@@ -1881,7 +1862,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             canonicalBytes,
             contentDigest,
             logicalExpectedRevision,
-            authorityReceipt
+            authorityReceipt,
+            postAuthoritySuccessFinalization,
+            postAuthorityFailureFinalization
         ):
             guard isSHA256(requestDigest),
                   isSHA256(contentDigest),
@@ -1898,13 +1881,23 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             case .writeSavedRevision: .writeSavedRevision
             }
             let receipt = try authorityReceipt.map(workspaceJournalMutationCommitReceipt)
+            let successFinalization = postAuthoritySuccessFinalization.map(
+                workspaceJournalMutationFinalization
+            )
+            let failureFinalization = postAuthorityFailureFinalization.map(
+                workspaceJournalMutationFinalization
+            )
             switch mappedKind {
             case .writeJournal:
                 guard let receipt,
                       logicalExpectedRevision != nil,
                       receipt.requestDigest == requestDigest,
                       receipt.committedJournal.canonicalBytes == canonicalBytes,
-                      receipt.committedJournal.contentDigest == contentDigest
+                      receipt.committedJournal.contentDigest == contentDigest,
+                      successFinalization == (
+                          receipt.savedRevision == nil ? .finalized : .revisionSidecarMissing
+                      ),
+                      failureFinalization == nil
                 else {
                     throw CoreTransportError.unexpected(
                         "workspace journal mutation authority action is invalid"
@@ -1913,7 +1906,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             case .writeSavedRevision:
                 guard receipt == nil,
                       expectedRawJournalDigest == nil,
-                      logicalExpectedRevision == nil
+                      logicalExpectedRevision == nil,
+                      successFinalization == .finalized,
+                      failureFinalization == .revisionSidecarMissing
                 else {
                     throw CoreTransportError.unexpected(
                         "workspace journal mutation sidecar action is invalid"
@@ -1928,19 +1923,26 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 canonicalBytes: canonicalBytes,
                 contentDigest: contentDigest,
                 logicalExpectedRevision: logicalExpectedRevision,
-                authorityReceipt: receipt
+                authorityReceipt: receipt,
+                postAuthoritySuccessFinalization: successFinalization,
+                postAuthorityFailureFinalization: failureFinalization
             )
         case let .committed(receipt, finalization):
-            let mapped: CoreWorkspaceJournalMutationFinalizationV1 = switch finalization {
-            case .finalized: .finalized
-            case .revisionSidecarMissing: .revisionSidecarMissing
-            }
             return .committed(
                 receipt: try workspaceJournalMutationCommitReceipt(receipt),
-                finalization: mapped
+                finalization: workspaceJournalMutationFinalization(finalization)
             )
         case let .failed(failure):
             return .failed(try workspaceSaveFailure(failure))
+        }
+    }
+
+    private static func workspaceJournalMutationFinalization(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceJournalMutationFinalizationV1
+    ) -> CoreWorkspaceJournalMutationFinalizationV1 {
+        switch value {
+        case .finalized: .finalized
+        case .revisionSidecarMissing: .revisionSidecarMissing
         }
     }
 
@@ -2002,7 +2004,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             canonicalBytes,
             contentDigest,
             logicalExpectedRevision,
-            authorityReceipt
+            authorityReceipt,
+            postAuthoritySuccessFinalization,
+            postAuthorityFailureFinalization
         ):
             guard isSHA256(requestDigest),
                   isSHA256(contentDigest),
@@ -2019,8 +2023,25 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             case .writeSavedRevision: .writeSavedRevision
             }
             let receipt = try authorityReceipt.map(workspaceSaveCommitReceipt)
+            let successFinalization = postAuthoritySuccessFinalization.map(
+                workspaceSaveFinalization
+            )
+            let failureFinalization = postAuthorityFailureFinalization.map(
+                workspaceSaveFinalization
+            )
             let requiresAuthorityReceipt = mappedKind == .publishWorkspaceDocument
+            let expectedFinalizations: (
+                CoreWorkspaceSaveFinalizationV1?,
+                CoreWorkspaceSaveFinalizationV1?
+            ) = switch mappedKind {
+            case .writePendingJournal: (nil, nil)
+            case .publishWorkspaceDocument: (.pendingJournalRetained, nil)
+            case .writeCommittedJournal: (.revisionSidecarMissing, .pendingJournalRetained)
+            case .writeSavedRevision: (.finalized, .revisionSidecarMissing)
+            }
             guard (receipt != nil) == requiresAuthorityReceipt,
+                  successFinalization == expectedFinalizations.0,
+                  failureFinalization == expectedFinalizations.1,
                   mappedKind == .publishWorkspaceDocument
                   ? canonicalBytes.count <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
                   : true
@@ -2035,20 +2056,27 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 canonicalBytes: canonicalBytes,
                 contentDigest: contentDigest,
                 logicalExpectedRevision: logicalExpectedRevision,
-                authorityReceipt: receipt
+                authorityReceipt: receipt,
+                postAuthoritySuccessFinalization: successFinalization,
+                postAuthorityFailureFinalization: failureFinalization
             )
         case let .committed(receipt, finalization):
-            let mapped: CoreWorkspaceSaveFinalizationV1 = switch finalization {
-            case .finalized: .finalized
-            case .pendingJournalRetained: .pendingJournalRetained
-            case .revisionSidecarMissing: .revisionSidecarMissing
-            }
             return .committed(
                 receipt: try workspaceSaveCommitReceipt(receipt),
-                finalization: mapped
+                finalization: workspaceSaveFinalization(finalization)
             )
         case let .failed(failure):
             return .failed(try workspaceSaveFailure(failure))
+        }
+    }
+
+    private static func workspaceSaveFinalization(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceSaveFinalizationV1
+    ) -> CoreWorkspaceSaveFinalizationV1 {
+        switch value {
+        case .finalized: .finalized
+        case .pendingJournalRetained: .pendingJournalRetained
+        case .revisionSidecarMissing: .revisionSidecarMissing
         }
     }
 

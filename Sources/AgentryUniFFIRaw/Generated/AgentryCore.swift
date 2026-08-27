@@ -1442,7 +1442,7 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func tryDrain(subscriptionId: SubscriptionId, maxEvents: UInt32, maxBytes: UInt64) throws  -> DrainBatch
 
-    func workspaceCatalogPlanTransitionV1(request: CoreWorkspaceCatalogTransitionRequestV1) throws  -> CoreWorkspaceCatalogResponseV1
+    func workspaceCatalogSeedV1(request: CoreWorkspaceCatalogSeedRequestV1) throws  -> CoreWorkspaceCatalogResponseV1
 
     func workspaceCatalogValidateV1(request: CoreWorkspaceCatalogValidationRequestV1) throws  -> CoreWorkspaceCatalogResponseV1
 
@@ -1494,7 +1494,7 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceSavedRevisionValidateV1(request: CoreWorkspacePersistenceMetadataRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
-    func workspaceWorkingJournalPlanTransitionV1(request: CoreWorkspaceWorkingJournalTransitionRequestV1) throws  -> CoreWorkspaceWorkingJournalTransitionResponseV1
+    func workspaceWorkingJournalSeedV1(request: CoreWorkspaceWorkingJournalSeedRequestV1) throws  -> CoreWorkspaceWorkingJournalValidationResponseV1
 
     func workspaceWorkingJournalValidateV1(request: CoreWorkspaceWorkingJournalValidationRequestV1) throws  -> CoreWorkspaceWorkingJournalValidationResponseV1
 
@@ -2284,12 +2284,12 @@ open func tryDrain(subscriptionId: SubscriptionId, maxEvents: UInt32, maxBytes: 
 })
 }
 
-open func workspaceCatalogPlanTransitionV1(request: CoreWorkspaceCatalogTransitionRequestV1)throws  -> CoreWorkspaceCatalogResponseV1  {
+open func workspaceCatalogSeedV1(request: CoreWorkspaceCatalogSeedRequestV1)throws  -> CoreWorkspaceCatalogResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceCatalogResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_coreruntime_workspace_catalog_plan_transition_v1(
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_catalog_seed_v1(
             self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceCatalogTransitionRequestV1_lower(request),uniffiCallStatus
+        FfiConverterTypeCoreWorkspaceCatalogSeedRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -2556,12 +2556,12 @@ open func workspaceSavedRevisionValidateV1(request: CoreWorkspacePersistenceMeta
 })
 }
 
-open func workspaceWorkingJournalPlanTransitionV1(request: CoreWorkspaceWorkingJournalTransitionRequestV1)throws  -> CoreWorkspaceWorkingJournalTransitionResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceWorkingJournalTransitionResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+open func workspaceWorkingJournalSeedV1(request: CoreWorkspaceWorkingJournalSeedRequestV1)throws  -> CoreWorkspaceWorkingJournalValidationResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceWorkingJournalValidationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_coreruntime_workspace_working_journal_plan_transition_v1(
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_working_journal_seed_v1(
             self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceWorkingJournalTransitionRequestV1_lower(request),uniffiCallStatus
+        FfiConverterTypeCoreWorkspaceWorkingJournalSeedRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -6354,19 +6354,17 @@ public func FfiConverterTypeCoreWorkspaceCatalogResponseV1_lower(_ value: CoreWo
 }
 
 
-public struct CoreWorkspaceCatalogTransitionRequestV1: Equatable, Hashable {
+public struct CoreWorkspaceCatalogSeedRequestV1: Equatable, Hashable {
     public let runtimeIdentity: RuntimeIdentity
     public let contractVersion: UInt16
-    public let currentCatalogBytes: Data?
-    public let transitionBytes: Data
+    public let seedRequestBytes: Data
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, currentCatalogBytes: Data?, transitionBytes: Data) {
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, seedRequestBytes: Data) {
         self.runtimeIdentity = runtimeIdentity
         self.contractVersion = contractVersion
-        self.currentCatalogBytes = currentCatalogBytes
-        self.transitionBytes = transitionBytes
+        self.seedRequestBytes = seedRequestBytes
     }
 
 
@@ -6375,28 +6373,26 @@ public struct CoreWorkspaceCatalogTransitionRequestV1: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension CoreWorkspaceCatalogTransitionRequestV1: Sendable {}
+extension CoreWorkspaceCatalogSeedRequestV1: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeCoreWorkspaceCatalogTransitionRequestV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCatalogTransitionRequestV1 {
+public struct FfiConverterTypeCoreWorkspaceCatalogSeedRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCatalogSeedRequestV1 {
         return
-            try CoreWorkspaceCatalogTransitionRequestV1(
+            try CoreWorkspaceCatalogSeedRequestV1(
                 runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
                 contractVersion: FfiConverterUInt16.read(from: &buf),
-                currentCatalogBytes: FfiConverterOptionData.read(from: &buf),
-                transitionBytes: FfiConverterData.read(from: &buf)
+                seedRequestBytes: FfiConverterData.read(from: &buf)
         )
     }
 
-    public static func write(_ value: CoreWorkspaceCatalogTransitionRequestV1, into buf: inout [UInt8]) {
+    public static func write(_ value: CoreWorkspaceCatalogSeedRequestV1, into buf: inout [UInt8]) {
         FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
         FfiConverterUInt16.write(value.contractVersion, into: &buf)
-        FfiConverterOptionData.write(value.currentCatalogBytes, into: &buf)
-        FfiConverterData.write(value.transitionBytes, into: &buf)
+        FfiConverterData.write(value.seedRequestBytes, into: &buf)
     }
 }
 
@@ -6404,15 +6400,15 @@ public struct FfiConverterTypeCoreWorkspaceCatalogTransitionRequestV1: FfiConver
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceCatalogTransitionRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCatalogTransitionRequestV1 {
-    return try FfiConverterTypeCoreWorkspaceCatalogTransitionRequestV1.lift(buf)
+public func FfiConverterTypeCoreWorkspaceCatalogSeedRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCatalogSeedRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceCatalogSeedRequestV1.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceCatalogTransitionRequestV1_lower(_ value: CoreWorkspaceCatalogTransitionRequestV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCatalogTransitionRequestV1.lower(value)
+public func FfiConverterTypeCoreWorkspaceCatalogSeedRequestV1_lower(_ value: CoreWorkspaceCatalogSeedRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCatalogSeedRequestV1.lower(value)
 }
 
 
@@ -9608,75 +9604,17 @@ public func FfiConverterTypeCoreWorkspaceSaveTransactionRequestV1_lower(_ value:
 }
 
 
-public struct CoreWorkspaceWorkingJournalTransitionPlanV1: Equatable, Hashable {
-    public let primary: CoreWorkspaceWorkingJournalValidationV1
-    public let committed: CoreWorkspaceWorkingJournalValidationV1?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(primary: CoreWorkspaceWorkingJournalValidationV1, committed: CoreWorkspaceWorkingJournalValidationV1?) {
-        self.primary = primary
-        self.committed = committed
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceWorkingJournalTransitionPlanV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceWorkingJournalTransitionPlanV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1 {
-        return
-            try CoreWorkspaceWorkingJournalTransitionPlanV1(
-                primary: FfiConverterTypeCoreWorkspaceWorkingJournalValidationV1.read(from: &buf),
-                committed: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationV1.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceWorkingJournalTransitionPlanV1, into buf: inout [UInt8]) {
-        FfiConverterTypeCoreWorkspaceWorkingJournalValidationV1.write(value.primary, into: &buf)
-        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationV1.write(value.committed, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceWorkingJournalTransitionPlanV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceWorkingJournalTransitionPlanV1 {
-    return try FfiConverterTypeCoreWorkspaceWorkingJournalTransitionPlanV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceWorkingJournalTransitionPlanV1_lower(_ value: CoreWorkspaceWorkingJournalTransitionPlanV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceWorkingJournalTransitionPlanV1.lower(value)
-}
-
-
-public struct CoreWorkspaceWorkingJournalTransitionRequestV1: Equatable, Hashable {
+public struct CoreWorkspaceWorkingJournalSeedRequestV1: Equatable, Hashable {
     public let runtimeIdentity: RuntimeIdentity
     public let contractVersion: UInt16
-    public let currentJournalBytes: Data?
-    public let transitionBytes: Data
-    public let documentBytes: Data?
+    public let seedRequestBytes: Data
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, currentJournalBytes: Data?, transitionBytes: Data, documentBytes: Data?) {
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, seedRequestBytes: Data) {
         self.runtimeIdentity = runtimeIdentity
         self.contractVersion = contractVersion
-        self.currentJournalBytes = currentJournalBytes
-        self.transitionBytes = transitionBytes
-        self.documentBytes = documentBytes
+        self.seedRequestBytes = seedRequestBytes
     }
 
 
@@ -9685,30 +9623,26 @@ public struct CoreWorkspaceWorkingJournalTransitionRequestV1: Equatable, Hashabl
 }
 
 #if compiler(>=6)
-extension CoreWorkspaceWorkingJournalTransitionRequestV1: Sendable {}
+extension CoreWorkspaceWorkingJournalSeedRequestV1: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeCoreWorkspaceWorkingJournalTransitionRequestV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceWorkingJournalTransitionRequestV1 {
+public struct FfiConverterTypeCoreWorkspaceWorkingJournalSeedRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceWorkingJournalSeedRequestV1 {
         return
-            try CoreWorkspaceWorkingJournalTransitionRequestV1(
+            try CoreWorkspaceWorkingJournalSeedRequestV1(
                 runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
                 contractVersion: FfiConverterUInt16.read(from: &buf),
-                currentJournalBytes: FfiConverterOptionData.read(from: &buf),
-                transitionBytes: FfiConverterData.read(from: &buf),
-                documentBytes: FfiConverterOptionData.read(from: &buf)
+                seedRequestBytes: FfiConverterData.read(from: &buf)
         )
     }
 
-    public static func write(_ value: CoreWorkspaceWorkingJournalTransitionRequestV1, into buf: inout [UInt8]) {
+    public static func write(_ value: CoreWorkspaceWorkingJournalSeedRequestV1, into buf: inout [UInt8]) {
         FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
         FfiConverterUInt16.write(value.contractVersion, into: &buf)
-        FfiConverterOptionData.write(value.currentJournalBytes, into: &buf)
-        FfiConverterData.write(value.transitionBytes, into: &buf)
-        FfiConverterOptionData.write(value.documentBytes, into: &buf)
+        FfiConverterData.write(value.seedRequestBytes, into: &buf)
     }
 }
 
@@ -9716,73 +9650,15 @@ public struct FfiConverterTypeCoreWorkspaceWorkingJournalTransitionRequestV1: Ff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceWorkingJournalTransitionRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceWorkingJournalTransitionRequestV1 {
-    return try FfiConverterTypeCoreWorkspaceWorkingJournalTransitionRequestV1.lift(buf)
+public func FfiConverterTypeCoreWorkspaceWorkingJournalSeedRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceWorkingJournalSeedRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceWorkingJournalSeedRequestV1.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceWorkingJournalTransitionRequestV1_lower(_ value: CoreWorkspaceWorkingJournalTransitionRequestV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceWorkingJournalTransitionRequestV1.lower(value)
-}
-
-
-public struct CoreWorkspaceWorkingJournalTransitionResponseV1: Equatable, Hashable {
-    public let plan: CoreWorkspaceWorkingJournalTransitionPlanV1?
-    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
-    public let futureSchemaVersion: UInt16?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(plan: CoreWorkspaceWorkingJournalTransitionPlanV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
-        self.plan = plan
-        self.errorKind = errorKind
-        self.futureSchemaVersion = futureSchemaVersion
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceWorkingJournalTransitionResponseV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceWorkingJournalTransitionResponseV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceWorkingJournalTransitionResponseV1 {
-        return
-            try CoreWorkspaceWorkingJournalTransitionResponseV1(
-                plan: FfiConverterOptionTypeCoreWorkspaceWorkingJournalTransitionPlanV1.read(from: &buf),
-                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
-                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceWorkingJournalTransitionResponseV1, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeCoreWorkspaceWorkingJournalTransitionPlanV1.write(value.plan, into: &buf)
-        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
-        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceWorkingJournalTransitionResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceWorkingJournalTransitionResponseV1 {
-    return try FfiConverterTypeCoreWorkspaceWorkingJournalTransitionResponseV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceWorkingJournalTransitionResponseV1_lower(_ value: CoreWorkspaceWorkingJournalTransitionResponseV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceWorkingJournalTransitionResponseV1.lower(value)
+public func FfiConverterTypeCoreWorkspaceWorkingJournalSeedRequestV1_lower(_ value: CoreWorkspaceWorkingJournalSeedRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceWorkingJournalSeedRequestV1.lower(value)
 }
 
 
@@ -14329,7 +14205,7 @@ public func FfiConverterTypeCoreWorkspaceJournalMutationActionKindV1_lower(_ val
 
 public enum CoreWorkspaceJournalMutationDirectiveV1: Equatable, Hashable {
 
-    case action(actionId: UInt64, requestDigest: String, kind: CoreWorkspaceJournalMutationActionKindV1, expectedRawJournalDigest: String?, canonicalBytes: Data, contentDigest: String, logicalExpectedRevision: UInt64?, authorityReceipt: CoreWorkspaceJournalMutationCommitReceiptV1?
+    case action(actionId: UInt64, requestDigest: String, kind: CoreWorkspaceJournalMutationActionKindV1, expectedRawJournalDigest: String?, canonicalBytes: Data, contentDigest: String, logicalExpectedRevision: UInt64?, authorityReceipt: CoreWorkspaceJournalMutationCommitReceiptV1?, postAuthoritySuccessFinalization: CoreWorkspaceJournalMutationFinalizationV1?, postAuthorityFailureFinalization: CoreWorkspaceJournalMutationFinalizationV1?
     )
     case committed(receipt: CoreWorkspaceJournalMutationCommitReceiptV1, finalization: CoreWorkspaceJournalMutationFinalizationV1
     )
@@ -14356,7 +14232,7 @@ public struct FfiConverterTypeCoreWorkspaceJournalMutationDirectiveV1: FfiConver
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .action(actionId: try FfiConverterUInt64.read(from: &buf), requestDigest: try FfiConverterString.read(from: &buf), kind: try FfiConverterTypeCoreWorkspaceJournalMutationActionKindV1.read(from: &buf), expectedRawJournalDigest: try FfiConverterOptionString.read(from: &buf), canonicalBytes: try FfiConverterData.read(from: &buf), contentDigest: try FfiConverterString.read(from: &buf), logicalExpectedRevision: try FfiConverterOptionUInt64.read(from: &buf), authorityReceipt: try FfiConverterOptionTypeCoreWorkspaceJournalMutationCommitReceiptV1.read(from: &buf)
+        case 1: return .action(actionId: try FfiConverterUInt64.read(from: &buf), requestDigest: try FfiConverterString.read(from: &buf), kind: try FfiConverterTypeCoreWorkspaceJournalMutationActionKindV1.read(from: &buf), expectedRawJournalDigest: try FfiConverterOptionString.read(from: &buf), canonicalBytes: try FfiConverterData.read(from: &buf), contentDigest: try FfiConverterString.read(from: &buf), logicalExpectedRevision: try FfiConverterOptionUInt64.read(from: &buf), authorityReceipt: try FfiConverterOptionTypeCoreWorkspaceJournalMutationCommitReceiptV1.read(from: &buf), postAuthoritySuccessFinalization: try FfiConverterOptionTypeCoreWorkspaceJournalMutationFinalizationV1.read(from: &buf), postAuthorityFailureFinalization: try FfiConverterOptionTypeCoreWorkspaceJournalMutationFinalizationV1.read(from: &buf)
         )
 
         case 2: return .committed(receipt: try FfiConverterTypeCoreWorkspaceJournalMutationCommitReceiptV1.read(from: &buf), finalization: try FfiConverterTypeCoreWorkspaceJournalMutationFinalizationV1.read(from: &buf)
@@ -14373,7 +14249,7 @@ public struct FfiConverterTypeCoreWorkspaceJournalMutationDirectiveV1: FfiConver
         switch value {
 
 
-        case let .action(actionId,requestDigest,kind,expectedRawJournalDigest,canonicalBytes,contentDigest,logicalExpectedRevision,authorityReceipt):
+        case let .action(actionId,requestDigest,kind,expectedRawJournalDigest,canonicalBytes,contentDigest,logicalExpectedRevision,authorityReceipt,postAuthoritySuccessFinalization,postAuthorityFailureFinalization):
             writeInt(&buf, Int32(1))
             FfiConverterUInt64.write(actionId, into: &buf)
             FfiConverterString.write(requestDigest, into: &buf)
@@ -14383,6 +14259,8 @@ public struct FfiConverterTypeCoreWorkspaceJournalMutationDirectiveV1: FfiConver
             FfiConverterString.write(contentDigest, into: &buf)
             FfiConverterOptionUInt64.write(logicalExpectedRevision, into: &buf)
             FfiConverterOptionTypeCoreWorkspaceJournalMutationCommitReceiptV1.write(authorityReceipt, into: &buf)
+            FfiConverterOptionTypeCoreWorkspaceJournalMutationFinalizationV1.write(postAuthoritySuccessFinalization, into: &buf)
+            FfiConverterOptionTypeCoreWorkspaceJournalMutationFinalizationV1.write(postAuthorityFailureFinalization, into: &buf)
 
 
         case let .committed(receipt,finalization):
@@ -14945,7 +14823,7 @@ public func FfiConverterTypeCoreWorkspaceSaveActionReportV1_lower(_ value: CoreW
 
 public enum CoreWorkspaceSaveDirectiveV1: Equatable, Hashable {
 
-    case action(actionId: UInt64, requestDigest: String, kind: CoreWorkspaceSaveActionKindV1, expectedRawJournalDigest: String?, canonicalBytes: Data, contentDigest: String, logicalExpectedRevision: UInt64?, authorityReceipt: CoreWorkspaceSaveCommitReceiptV1?
+    case action(actionId: UInt64, requestDigest: String, kind: CoreWorkspaceSaveActionKindV1, expectedRawJournalDigest: String?, canonicalBytes: Data, contentDigest: String, logicalExpectedRevision: UInt64?, authorityReceipt: CoreWorkspaceSaveCommitReceiptV1?, postAuthoritySuccessFinalization: CoreWorkspaceSaveFinalizationV1?, postAuthorityFailureFinalization: CoreWorkspaceSaveFinalizationV1?
     )
     case committed(receipt: CoreWorkspaceSaveCommitReceiptV1, finalization: CoreWorkspaceSaveFinalizationV1
     )
@@ -14972,7 +14850,7 @@ public struct FfiConverterTypeCoreWorkspaceSaveDirectiveV1: FfiConverterRustBuff
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .action(actionId: try FfiConverterUInt64.read(from: &buf), requestDigest: try FfiConverterString.read(from: &buf), kind: try FfiConverterTypeCoreWorkspaceSaveActionKindV1.read(from: &buf), expectedRawJournalDigest: try FfiConverterOptionString.read(from: &buf), canonicalBytes: try FfiConverterData.read(from: &buf), contentDigest: try FfiConverterString.read(from: &buf), logicalExpectedRevision: try FfiConverterOptionUInt64.read(from: &buf), authorityReceipt: try FfiConverterOptionTypeCoreWorkspaceSaveCommitReceiptV1.read(from: &buf)
+        case 1: return .action(actionId: try FfiConverterUInt64.read(from: &buf), requestDigest: try FfiConverterString.read(from: &buf), kind: try FfiConverterTypeCoreWorkspaceSaveActionKindV1.read(from: &buf), expectedRawJournalDigest: try FfiConverterOptionString.read(from: &buf), canonicalBytes: try FfiConverterData.read(from: &buf), contentDigest: try FfiConverterString.read(from: &buf), logicalExpectedRevision: try FfiConverterOptionUInt64.read(from: &buf), authorityReceipt: try FfiConverterOptionTypeCoreWorkspaceSaveCommitReceiptV1.read(from: &buf), postAuthoritySuccessFinalization: try FfiConverterOptionTypeCoreWorkspaceSaveFinalizationV1.read(from: &buf), postAuthorityFailureFinalization: try FfiConverterOptionTypeCoreWorkspaceSaveFinalizationV1.read(from: &buf)
         )
 
         case 2: return .committed(receipt: try FfiConverterTypeCoreWorkspaceSaveCommitReceiptV1.read(from: &buf), finalization: try FfiConverterTypeCoreWorkspaceSaveFinalizationV1.read(from: &buf)
@@ -14989,7 +14867,7 @@ public struct FfiConverterTypeCoreWorkspaceSaveDirectiveV1: FfiConverterRustBuff
         switch value {
 
 
-        case let .action(actionId,requestDigest,kind,expectedRawJournalDigest,canonicalBytes,contentDigest,logicalExpectedRevision,authorityReceipt):
+        case let .action(actionId,requestDigest,kind,expectedRawJournalDigest,canonicalBytes,contentDigest,logicalExpectedRevision,authorityReceipt,postAuthoritySuccessFinalization,postAuthorityFailureFinalization):
             writeInt(&buf, Int32(1))
             FfiConverterUInt64.write(actionId, into: &buf)
             FfiConverterString.write(requestDigest, into: &buf)
@@ -14999,6 +14877,8 @@ public struct FfiConverterTypeCoreWorkspaceSaveDirectiveV1: FfiConverterRustBuff
             FfiConverterString.write(contentDigest, into: &buf)
             FfiConverterOptionUInt64.write(logicalExpectedRevision, into: &buf)
             FfiConverterOptionTypeCoreWorkspaceSaveCommitReceiptV1.write(authorityReceipt, into: &buf)
+            FfiConverterOptionTypeCoreWorkspaceSaveFinalizationV1.write(postAuthoritySuccessFinalization, into: &buf)
+            FfiConverterOptionTypeCoreWorkspaceSaveFinalizationV1.write(postAuthorityFailureFinalization, into: &buf)
 
 
         case let .committed(receipt,finalization):
@@ -16956,30 +16836,6 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceSaveCommitReceiptV1: FfiCo
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeCoreWorkspaceWorkingJournalTransitionPlanV1: FfiConverterRustBuffer {
-    typealias SwiftType = CoreWorkspaceWorkingJournalTransitionPlanV1?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeCoreWorkspaceWorkingJournalTransitionPlanV1.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeCoreWorkspaceWorkingJournalTransitionPlanV1.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceWorkingJournalValidationV1?
 
@@ -17100,6 +16956,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceJournalMutationDirectiveV1
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceJournalMutationFinalizationV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceJournalMutationFinalizationV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceJournalMutationFinalizationV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceJournalMutationFinalizationV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspacePendingSaveRecoveryV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspacePendingSaveRecoveryV1?
 
@@ -17140,6 +17020,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceSaveDirectiveV1: FfiConver
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCoreWorkspaceSaveDirectiveV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceSaveFinalizationV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSaveFinalizationV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceSaveFinalizationV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceSaveFinalizationV1.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -18199,7 +18103,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_try_drain() != 27207) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_catalog_plan_transition_v1() != 53554) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_catalog_seed_v1() != 5094) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_catalog_validate_v1() != 25594) {
@@ -18277,7 +18181,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_saved_revision_validate_v1() != 64208) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_working_journal_plan_transition_v1() != 29331) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_working_journal_seed_v1() != 65157) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_working_journal_validate_v1() != 62731) {
