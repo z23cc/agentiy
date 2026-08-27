@@ -692,15 +692,19 @@ package actor DomainWorkspaceMutationAccess {
         observedContendingOwner = nil
     }
 
-    package func finishDrainAndRelease() async {
-        if state != .draining, state != .released {
-            beginDrain()
-        }
+    package func waitForDrain() async {
         while !activePermitIDs.isEmpty {
             await withCheckedContinuation { continuation in
                 permitDrainWaiters.append(continuation)
             }
         }
+    }
+
+    package func finishDrainAndRelease() async {
+        if state != .draining, state != .released {
+            beginDrain()
+        }
+        await waitForDrain()
         guard state != .released else { return }
         owner = nil
         transition(to: .released)

@@ -978,6 +978,155 @@ pub struct CoreWorkspaceCommandIdentityResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceRecordedOperationV1 {
+    pub operation_id: String,
+    pub fingerprint: String,
+    pub recorded_at: f64,
+    pub disposition: String,
+    pub before: Option<CoreWorkspaceProjectionRevisionStateV1>,
+    pub after: Option<CoreWorkspaceProjectionRevisionStateV1>,
+    pub catalog_revision: u64,
+    pub resulting_digest: Option<String>,
+    pub error_code: Option<String>,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionSeedRecordV1 {
+    pub workspace_id: Option<String>,
+    pub operation: CoreWorkspaceRecordedOperationV1,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionBeginRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub records: Vec<CoreWorkspaceCommandAdmissionSeedRecordV1>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceCommandAdmissionLookupScopeV1 {
+    Workspace,
+    Global,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceCommandAdmissionDecisionV1 {
+    Unseen,
+    Collision {
+        scope: CoreWorkspaceCommandAdmissionLookupScopeV1,
+    },
+    Replay {
+        scope: CoreWorkspaceCommandAdmissionLookupScopeV1,
+        operation: CoreWorkspaceRecordedOperationV1,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionDiagnosticsV1 {
+    pub global_operation_count: u64,
+    pub workspace_count: u64,
+    pub workspace_operation_count: u64,
+}
+
+impl From<CoreWorkspaceRecordedOperationV1>
+    for runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1
+{
+    fn from(value: CoreWorkspaceRecordedOperationV1) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            fingerprint: value.fingerprint,
+            recorded_at: value.recorded_at,
+            disposition: value.disposition,
+            before: value.before.map(Into::into),
+            after: value.after.map(Into::into),
+            catalog_revision: value.catalog_revision,
+            resulting_digest: value.resulting_digest,
+            error_code: value.error_code,
+            diagnostic: value.diagnostic,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1>
+    for CoreWorkspaceRecordedOperationV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            fingerprint: value.fingerprint,
+            recorded_at: value.recorded_at,
+            disposition: value.disposition,
+            before: value.before.map(Into::into),
+            after: value.after.map(Into::into),
+            catalog_revision: value.catalog_revision,
+            resulting_digest: value.resulting_digest,
+            error_code: value.error_code,
+            diagnostic: value.diagnostic,
+        }
+    }
+}
+
+impl From<CoreWorkspaceCommandAdmissionSeedRecordV1>
+    for runtime::workspace_persistence_journal::WorkspaceCommandAdmissionSeedRecordV1
+{
+    fn from(value: CoreWorkspaceCommandAdmissionSeedRecordV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            operation: value.operation.into(),
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1>
+    for CoreWorkspaceCommandAdmissionLookupScopeV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1,
+    ) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1::Workspace => Self::Workspace,
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1::Global => Self::Global,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1>
+    for CoreWorkspaceCommandAdmissionDecisionV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1,
+    ) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1::Unseen => Self::Unseen,
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1::Collision { scope } => {
+                Self::Collision { scope: scope.into() }
+            }
+            runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1::Replay { scope, operation } => {
+                Self::Replay {
+                    scope: scope.into(),
+                    operation: operation.into(),
+                }
+            }
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDiagnosticsV1>
+    for CoreWorkspaceCommandAdmissionDiagnosticsV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDiagnosticsV1,
+    ) -> Self {
+        Self {
+            global_operation_count: value.global_operation_count as u64,
+            workspace_count: value.workspace_count as u64,
+            workspace_operation_count: value.workspace_operation_count as u64,
+        }
+    }
+}
+
 impl From<CoreWorkspaceCommandOriginV1>
     for runtime::workspace_persistence_journal::WorkspaceCommandOriginV1
 {

@@ -127,6 +127,7 @@ struct DomainPersistenceBootstrap {
 struct DomainPersistenceWorkspaceRefresh {
     let workspace: DomainPersistenceBootstrap.Workspace?
     let workspaceIsDeleted: Bool
+    let deletedOperation: DomainRecordedOperation?
     let health: DomainAuthorityHealth
     let catalogRevision: UInt64
 }
@@ -1096,6 +1097,7 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceWorkspaceRefresh(
                 workspace: nil,
                 workspaceIsDeleted: false,
+                deletedOperation: nil,
                 health: .degradedReadOnly(reason: "workspace_catalog_probe_failed"),
                 catalogRevision: 0
             )
@@ -1115,6 +1117,7 @@ package struct DomainPersistenceCoordinator {
                     validator: validator
                 )?.workspace,
                 workspaceIsDeleted: false,
+                deletedOperation: nil,
                 health: .writable,
                 catalogRevision: 0
             )
@@ -1129,12 +1132,14 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceWorkspaceRefresh(
                 workspace: nil,
                 workspaceIsDeleted: false,
+                deletedOperation: nil,
                 health: .degradedReadOnly(reason: catalogDegradedReason(error)),
                 catalogRevision: 0
             )
         }
         let catalog = validation.catalog
-        let isDeleted = (catalog.deletions ?? []).contains { $0.workspaceID == workspaceID }
+        let deletion = (catalog.deletions ?? []).first { $0.workspaceID == workspaceID }
+        let isDeleted = deletion != nil
         let fileURL = catalog.entries.first(where: { $0.workspaceID == workspaceID })?.fileURL
             ?? fallbackFileURL
         let workspace: DomainPersistenceBootstrap.Workspace? = if isDeleted {
@@ -1149,6 +1154,7 @@ package struct DomainPersistenceCoordinator {
         return DomainPersistenceWorkspaceRefresh(
             workspace: workspace,
             workspaceIsDeleted: isDeleted,
+            deletedOperation: deletion?.operation,
             health: .writable,
             catalogRevision: catalog.revision
         )

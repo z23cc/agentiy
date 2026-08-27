@@ -788,6 +788,36 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         )
     }
 
+    func testConflictRefreshCarriesAuthoritativeDeletionOperation() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let operationID = UUID()
+        let deleted = await runtime.workspaceStore.execute(.init(
+            operationID: operationID,
+            expectedCatalogRevision: 0,
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .deleteWorkspace(workspaceID: fixture.workspaceID)
+        ))
+        XCTAssertEqual(deleted.disposition, .applied)
+
+        let persistence = DomainPersistenceCoordinator(
+            configuration: runtime.configuration,
+            identity: runtime.identity
+        )
+        let refresh = await persistence.refreshWorkspace(
+            workspaceID: fixture.workspaceID,
+            fallbackFileURL: fixture.workspaceFile
+        )
+        let refreshed = try XCTUnwrap(refresh)
+        XCTAssertTrue(refreshed.workspaceIsDeleted)
+        XCTAssertNil(refreshed.workspace)
+        XCTAssertEqual(refreshed.deletedOperation?.operationID, operationID)
+        XCTAssertEqual(refreshed.deletedOperation?.disposition, .applied)
+    }
+
     func testDeletePreservesArtifactsWhenCatalogDirectorySyncIsIndeterminate() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
@@ -955,6 +985,34 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         try await restarted.start()
         let restartedDuplicate = await restarted.workspaceStore.execute(handoffEnvelope)
         XCTAssertEqual(restartedDuplicate.disposition, .deduplicated)
+    }
+
+    func testConcurrentMatchingOperationIDHasSingleExecutorAndDurableReplay() async throws {
+        let fixture = try Fixture.make(includeWorkspace: false)
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let envelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            expectedCatalogRevision: 0,
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .createWorkspace(try fixture.document(prompt: "single executor"))
+        )
+
+        async let first = runtime.workspaceStore.execute(envelope)
+        async let second = runtime.workspaceStore.execute(envelope)
+        let outcomes = await [first, second]
+
+        XCTAssertEqual(outcomes.filter { $0.disposition == .applied }.count, 1)
+        XCTAssertEqual(outcomes.filter { $0.disposition == .deduplicated }.count, 1)
+        XCTAssertEqual(outcomes[0].resultingDigest, outcomes[1].resultingDigest)
+        let restarted = fixture.runtime(runtimeID: UUID(), generation: 2)
+        _ = await runtime.shutdown()
+        try await restarted.start()
+        let durableReplay = await restarted.workspaceStore.execute(envelope)
+        XCTAssertEqual(durableReplay.disposition, .deduplicated)
+        _ = await restarted.shutdown()
     }
 
     func testContextCASFailsClosedWhenOneCommandChangesMultipleContexts() async throws {
@@ -1589,51 +1647,6 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             command: .replaceWorkingDocument(windowA)
         ))
         XCTAssertEqual(replay.disposition, .deduplicated)
-    }
-
-    func testBoundedOperationIndexEvictsOldestDeterministicallyAtScales() {
-        func operation(_ ordinal: Int) -> DomainRecordedOperation {
-            DomainRecordedOperation(
-                fingerprint: "fingerprint-\(ordinal)",
-                recordedAt: Date(timeIntervalSince1970: TimeInterval(ordinal)),
-                outcome: DomainCommandOutcome(
-                    operationID: UUID(),
-                    disposition: .applied,
-                    before: nil,
-                    after: nil,
-                    catalogRevision: 0,
-                    resultingDigest: nil
-                )
-            )
-        }
-
-        for scale in [1, 10, 100] {
-            let capacity = 10
-            var index = BoundedDomainOperationIndex(capacity: capacity)
-            var inserted: [DomainRecordedOperation] = []
-            for ordinal in 0 ..< scale {
-                let recorded = operation(ordinal)
-                inserted.append(recorded)
-                index.insert(recorded)
-            }
-            XCTAssertEqual(index.count, min(scale, capacity), "scale \(scale)")
-            for retained in inserted.suffix(capacity) {
-                XCTAssertEqual(
-                    index[retained.operationID]?.fingerprint,
-                    retained.fingerprint,
-                    "scale \(scale) retains the newest \(capacity) operations"
-                )
-            }
-            for evicted in inserted.dropLast(capacity) {
-                XCTAssertNil(index[evicted.operationID], "scale \(scale) evicts oldest first")
-            }
-        }
-
-        // replace(with:) trims to the newest entries by recorded time, matching the
-        // durable journal trim, so bootstrap and reload adoption stay bounded too.
-        var replaced = BoundedDomainOperationIndex(capacity: 10)
-        replaced.replace(with: (0 ..< 100).map(operation))
-        XCTAssertEqual(replaced.count, 10)
     }
 
     func testUnavailableWorkspaceDegradesOnlyItselfAndRecoversWhenDocumentReturns() async throws {

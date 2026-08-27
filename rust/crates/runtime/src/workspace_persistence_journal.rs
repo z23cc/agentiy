@@ -1,8 +1,8 @@
 //! P5-5a workspace working-journal compatibility and validation boundary.
 //!
-//! The physical file and lease remain Swift-owned. This module is deliberately stateless: it
-//! validates the complete V1 artifact with bounded input and emits deterministic JSON for bridge
-//! compatibility. Embedded document semantics remain a later recovery/degradation policy boundary.
+//! The physical file and lease remain Swift-owned. Artifact validators and planners emit deterministic
+//! bounded JSON; the prepared command-admission capability retains only a bounded process-lifetime index
+//! reconstructed from those validated receipts. Embedded document semantics remain a separate boundary.
 
 use crate::workspace_context::{
     MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1, WorkspaceProjectionRevisionState,
@@ -11,7 +11,7 @@ use crate::workspace_context::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 
@@ -19,6 +19,9 @@ pub const WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1: u16 = 1;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1: usize = 128 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_OPERATION_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
+pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1: usize = 4096;
+pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1: usize = 256;
+pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1: usize = 65_536;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceCommandOriginV1 {
@@ -324,20 +327,476 @@ struct WorkspacePendingSaveV1 {
     document_digest: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkspaceRecordedOperationV1 {
+pub struct WorkspaceRecordedOperationV1 {
     #[serde(rename = "operationID")]
-    operation_id: String,
-    fingerprint: String,
-    recorded_at: f64,
-    disposition: String,
-    before: Option<WorkspaceProjectionRevisionState>,
-    after: Option<WorkspaceProjectionRevisionState>,
-    catalog_revision: u64,
-    resulting_digest: Option<String>,
-    error_code: Option<String>,
-    diagnostic: Option<String>,
+    pub operation_id: String,
+    pub fingerprint: String,
+    pub recorded_at: f64,
+    pub disposition: String,
+    pub before: Option<WorkspaceProjectionRevisionState>,
+    pub after: Option<WorkspaceProjectionRevisionState>,
+    pub catalog_revision: u64,
+    pub resulting_digest: Option<String>,
+    pub error_code: Option<String>,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceCommandAdmissionLookupScopeV1 {
+    Workspace,
+    Global,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkspaceCommandAdmissionDecisionV1 {
+    Unseen,
+    Collision {
+        scope: WorkspaceCommandAdmissionLookupScopeV1,
+    },
+    Replay {
+        scope: WorkspaceCommandAdmissionLookupScopeV1,
+        operation: WorkspaceRecordedOperationV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceCommandAdmissionSeedRecordV1 {
+    /// `Some` seeds both the exact workspace index and the global index. `None` is global-only.
+    pub workspace_id: Option<String>,
+    pub operation: WorkspaceRecordedOperationV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandAdmissionDiagnosticsV1 {
+    pub global_operation_count: usize,
+    pub workspace_count: usize,
+    pub workspace_operation_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct BoundedWorkspaceCommandOperationIndexV1 {
+    capacity: usize,
+    values: BTreeMap<String, WorkspaceRecordedOperationV1>,
+    order: VecDeque<String>,
+}
+
+impl BoundedWorkspaceCommandOperationIndexV1 {
+    fn empty(capacity: usize) -> Self {
+        Self {
+            capacity,
+            values: BTreeMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn from_records(
+        capacity: usize,
+        records: Vec<WorkspaceRecordedOperationV1>,
+    ) -> Result<Self, WorkspaceWorkingJournalError> {
+        let mut distinct = BTreeMap::<String, WorkspaceRecordedOperationV1>::new();
+        for mut operation in records {
+            validate_and_canonicalize_recorded_operation(&mut operation)?;
+            match distinct.get(&operation.operation_id) {
+                Some(existing) if existing == &operation => continue,
+                Some(existing)
+                    if existing
+                        .recorded_at
+                        .total_cmp(&operation.recorded_at)
+                        .is_eq() =>
+                {
+                    return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+                }
+                Some(existing) if existing.recorded_at > operation.recorded_at => continue,
+                _ => {}
+            }
+            distinct.insert(operation.operation_id.clone(), operation);
+        }
+        let mut records = distinct.into_values().collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.recorded_at
+                .total_cmp(&right.recorded_at)
+                .then_with(|| left.operation_id.cmp(&right.operation_id))
+        });
+        let retained_from = records.len().saturating_sub(capacity);
+        let mut index = Self::empty(capacity);
+        for operation in records.into_iter().skip(retained_from) {
+            index.insert(operation);
+        }
+        Ok(index)
+    }
+
+    fn insert(&mut self, operation: WorkspaceRecordedOperationV1) {
+        let operation_id = operation.operation_id.clone();
+        if let Some(existing) = self.values.get_mut(&operation_id) {
+            *existing = operation;
+            return;
+        }
+        self.values.insert(operation_id.clone(), operation);
+        self.order.push_back(operation_id);
+        while self.values.len() > self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.values.remove(&evicted);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn get(&self, operation_id: &str) -> Option<&WorkspaceRecordedOperationV1> {
+        self.values.get(operation_id)
+    }
+
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    fn records(&self) -> Vec<WorkspaceRecordedOperationV1> {
+        self.values.values().cloned().collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceCommandAdmissionStateV1 {
+    global: BoundedWorkspaceCommandOperationIndexV1,
+    workspaces: BTreeMap<String, BoundedWorkspaceCommandOperationIndexV1>,
+}
+
+impl WorkspaceCommandAdmissionStateV1 {
+    fn from_seed(
+        seed: &[WorkspaceCommandAdmissionSeedRecordV1],
+    ) -> Result<Self, WorkspaceWorkingJournalError> {
+        if seed.len() > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1 {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: seed.len(),
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+            });
+        }
+        let mut global = Vec::with_capacity(seed.len());
+        let mut workspace_records = BTreeMap::<String, Vec<WorkspaceRecordedOperationV1>>::new();
+        for record in seed {
+            let mut operation = record.operation.clone();
+            validate_and_canonicalize_recorded_operation(&mut operation)?;
+            global.push(operation.clone());
+            if let Some(workspace_id) = &record.workspace_id {
+                let workspace_id = canonical_uuid(workspace_id)
+                    .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+                workspace_records
+                    .entry(workspace_id)
+                    .or_default()
+                    .push(operation);
+            }
+        }
+        let global = BoundedWorkspaceCommandOperationIndexV1::from_records(
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1,
+            global,
+        )?;
+        let workspaces = workspace_records
+            .into_iter()
+            .map(|(workspace_id, records)| {
+                Ok((
+                    workspace_id,
+                    BoundedWorkspaceCommandOperationIndexV1::from_records(
+                        MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1,
+                        records,
+                    )?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, WorkspaceWorkingJournalError>>()?;
+        let state = Self { global, workspaces };
+        state.require_reconstructible_size()?;
+        Ok(state)
+    }
+
+    fn decision(
+        &self,
+        workspace_id: &str,
+        operation_id: &str,
+        fingerprint: &str,
+    ) -> WorkspaceCommandAdmissionDecisionV1 {
+        fn classify(
+            operation: &WorkspaceRecordedOperationV1,
+            fingerprint: &str,
+            scope: WorkspaceCommandAdmissionLookupScopeV1,
+        ) -> WorkspaceCommandAdmissionDecisionV1 {
+            if operation.fingerprint == fingerprint {
+                WorkspaceCommandAdmissionDecisionV1::Replay {
+                    scope,
+                    operation: operation.clone(),
+                }
+            } else {
+                WorkspaceCommandAdmissionDecisionV1::Collision { scope }
+            }
+        }
+
+        if let Some(operation) = self
+            .workspaces
+            .get(workspace_id)
+            .and_then(|index| index.get(operation_id))
+        {
+            return classify(
+                operation,
+                fingerprint,
+                WorkspaceCommandAdmissionLookupScopeV1::Workspace,
+            );
+        }
+        if let Some(operation) = self.global.get(operation_id) {
+            return classify(
+                operation,
+                fingerprint,
+                WorkspaceCommandAdmissionLookupScopeV1::Global,
+            );
+        }
+        WorkspaceCommandAdmissionDecisionV1::Unseen
+    }
+
+    fn insert(
+        &mut self,
+        workspace_id: Option<String>,
+        mut operation: WorkspaceRecordedOperationV1,
+    ) -> Result<(), WorkspaceWorkingJournalError> {
+        validate_and_canonicalize_recorded_operation(&mut operation)?;
+        let workspace_id = workspace_id
+            .map(|workspace_id| {
+                canonical_uuid(&workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)
+            })
+            .transpose()?;
+        let operation_id = &operation.operation_id;
+        if self
+            .global
+            .get(operation_id)
+            .is_some_and(|existing| existing != &operation)
+            || workspace_id.as_ref().is_some_and(|workspace_id| {
+                self.workspaces
+                    .get(workspace_id)
+                    .and_then(|index| index.get(operation_id))
+                    .is_some_and(|existing| existing != &operation)
+            })
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+        let global_growth = usize::from(
+            self.global.get(operation_id).is_none() && self.global.len() < self.global.capacity,
+        );
+        let workspace_growth = workspace_id
+            .as_ref()
+            .map(|workspace_id| {
+                self.workspaces.get(workspace_id).map_or(1, |index| {
+                    usize::from(index.get(operation_id).is_none() && index.len() < index.capacity)
+                })
+            })
+            .unwrap_or(0);
+        let projected_count = self
+            .stored_operation_count()
+            .checked_add(global_growth)
+            .and_then(|count| count.checked_add(workspace_growth))
+            .ok_or(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: usize::MAX,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+            })?;
+        if projected_count > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1 {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: projected_count,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+            });
+        }
+        self.global.insert(operation.clone());
+        if let Some(workspace_id) = workspace_id {
+            self.workspaces
+                .entry(workspace_id)
+                .or_insert_with(|| {
+                    BoundedWorkspaceCommandOperationIndexV1::empty(
+                        MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1,
+                    )
+                })
+                .insert(operation);
+        }
+        Ok(())
+    }
+
+    fn stored_operation_count(&self) -> usize {
+        self.global.len()
+            + self
+                .workspaces
+                .values()
+                .map(BoundedWorkspaceCommandOperationIndexV1::len)
+                .sum::<usize>()
+    }
+
+    fn require_reconstructible_size(&self) -> Result<(), WorkspaceWorkingJournalError> {
+        let actual = self.stored_operation_count();
+        if actual > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1 {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+            });
+        }
+        Ok(())
+    }
+
+    fn diagnostics(&self) -> WorkspaceCommandAdmissionDiagnosticsV1 {
+        WorkspaceCommandAdmissionDiagnosticsV1 {
+            global_operation_count: self.global.len(),
+            workspace_count: self.workspaces.len(),
+            workspace_operation_count: self
+                .workspaces
+                .values()
+                .map(BoundedWorkspaceCommandOperationIndexV1::len)
+                .sum(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PreparedWorkspaceCommandAdmissionV1 {
+    inner: Mutex<Option<WorkspaceCommandAdmissionStateV1>>,
+}
+
+impl PreparedWorkspaceCommandAdmissionV1 {
+    pub fn prepare(
+        seed: &[WorkspaceCommandAdmissionSeedRecordV1],
+    ) -> Result<Self, WorkspaceWorkingJournalError> {
+        Ok(Self {
+            inner: Mutex::new(Some(WorkspaceCommandAdmissionStateV1::from_seed(seed)?)),
+        })
+    }
+
+    pub fn replace(
+        &self,
+        seed: &[WorkspaceCommandAdmissionSeedRecordV1],
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let replacement = WorkspaceCommandAdmissionStateV1::from_seed(seed)?;
+        let diagnostics = replacement.diagnostics();
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let current = state
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        *current = replacement;
+        Ok(diagnostics)
+    }
+
+    /// Atomically replaces durable workspace indexes while retaining process-lifetime global
+    /// command receipts. This prevents a lease handoff or catalog CAS refresh from erasing an
+    /// already-admitted global identity that has not yet appeared in the durable reconstruction.
+    pub fn reconcile_durable(
+        &self,
+        seed: &[WorkspaceCommandAdmissionSeedRecordV1],
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let mut replacement = WorkspaceCommandAdmissionStateV1::from_seed(seed)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let current = state
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+
+        let mut durable_operations = replacement.global.records();
+        durable_operations.extend(
+            replacement
+                .workspaces
+                .values()
+                .flat_map(BoundedWorkspaceCommandOperationIndexV1::records),
+        );
+        for operation in &durable_operations {
+            if current
+                .global
+                .get(&operation.operation_id)
+                .is_some_and(|existing| existing != operation)
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+            }
+        }
+        let mut merged_global = replacement.global.records();
+        merged_global.extend(current.global.records());
+        replacement.global = BoundedWorkspaceCommandOperationIndexV1::from_records(
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1,
+            merged_global,
+        )?;
+        replacement.require_reconstructible_size()?;
+        let diagnostics = replacement.diagnostics();
+        *current = replacement;
+        Ok(diagnostics)
+    }
+
+    pub fn decision(
+        &self,
+        workspace_id: &str,
+        operation_id: &str,
+        fingerprint: &str,
+    ) -> Result<WorkspaceCommandAdmissionDecisionV1, WorkspaceWorkingJournalError> {
+        let workspace_id =
+            canonical_uuid(workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let operation_id =
+            canonical_uuid(operation_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if !is_sha256_digest(fingerprint) {
+            return Err(WorkspaceWorkingJournalError::InvalidDigest);
+        }
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let state = state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        Ok(state.decision(&workspace_id, &operation_id, fingerprint))
+    }
+
+    pub fn insert(
+        &self,
+        workspace_id: Option<String>,
+        operation: WorkspaceRecordedOperationV1,
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let state = state
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        state.insert(workspace_id, operation)?;
+        Ok(state.diagnostics())
+    }
+
+    pub fn remove_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let workspace_id =
+            canonical_uuid(workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let state = state
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        state.workspaces.remove(&workspace_id);
+        Ok(state.diagnostics())
+    }
+
+    pub fn diagnostics(
+        &self,
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        state
+            .as_ref()
+            .map(WorkspaceCommandAdmissionStateV1::diagnostics)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
+    }
+
+    pub fn close(&self) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.take();
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4077,6 +4536,476 @@ mod tests {
             accept_external,
             protected_agent_identities: Vec::new(),
         }
+    }
+
+    fn admission_operation(
+        operation_id: String,
+        fingerprint: char,
+        recorded_at: f64,
+    ) -> WorkspaceRecordedOperationV1 {
+        WorkspaceRecordedOperationV1 {
+            operation_id,
+            fingerprint: fingerprint.to_string().repeat(64),
+            recorded_at,
+            disposition: "applied".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: recorded_at as u64,
+            resulting_digest: None,
+            error_code: None,
+            diagnostic: None,
+        }
+    }
+
+    fn indexed_operation(index: usize, fingerprint: char) -> WorkspaceRecordedOperationV1 {
+        admission_operation(
+            format!("00000000-0000-0000-0000-{index:012x}"),
+            fingerprint,
+            index as f64,
+        )
+    }
+
+    #[test]
+    fn command_admission_prefers_workspace_then_global_and_retains_global_after_remove() {
+        let local = admission_operation(OPERATION_ID.to_owned(), 'a', 1.0);
+        let global_only = indexed_operation(2, 'b');
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&[
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some(WORKSPACE_ID.to_owned()),
+                operation: local.clone(),
+            },
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: None,
+                operation: global_only.clone(),
+            },
+        ])
+        .expect("prepared admission");
+
+        assert_eq!(
+            admission
+                .decision(WORKSPACE_ID, OPERATION_ID, &"a".repeat(64))
+                .expect("local replay"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
+                operation: local.clone(),
+            }
+        );
+        assert_eq!(
+            admission
+                .decision(WORKSPACE_ID, OPERATION_ID, &"c".repeat(64))
+                .expect("local collision"),
+            WorkspaceCommandAdmissionDecisionV1::Collision {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
+            }
+        );
+        assert_eq!(
+            admission
+                .decision(
+                    WORKSPACE_ID,
+                    &global_only.operation_id,
+                    &global_only.fingerprint,
+                )
+                .expect("global replay"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: global_only,
+            }
+        );
+        assert_eq!(
+            admission
+                .decision(
+                    WORKSPACE_ID,
+                    &indexed_operation(3, 'd').operation_id,
+                    &"d".repeat(64)
+                )
+                .expect("unseen"),
+            WorkspaceCommandAdmissionDecisionV1::Unseen
+        );
+
+        let removed = admission
+            .remove_workspace(WORKSPACE_ID)
+            .expect("remove local index");
+        assert_eq!(removed.workspace_count, 0);
+        assert_eq!(
+            admission
+                .decision(WORKSPACE_ID, OPERATION_ID, &"a".repeat(64))
+                .expect("global retained replay"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: local,
+            }
+        );
+    }
+
+    #[test]
+    fn command_admission_seed_is_deterministic_and_enforces_both_capacities() {
+        let global_seed = (0..=MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1)
+            .rev()
+            .map(|index| WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: None,
+                operation: indexed_operation(index, 'a'),
+            })
+            .collect::<Vec<_>>();
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&global_seed)
+            .expect("global capacity seed");
+        assert_eq!(
+            admission
+                .diagnostics()
+                .expect("diagnostics")
+                .global_operation_count,
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1
+        );
+        assert_eq!(
+            admission
+                .decision(
+                    WORKSPACE_ID,
+                    &indexed_operation(0, 'a').operation_id,
+                    &"a".repeat(64)
+                )
+                .expect("evicted oldest"),
+            WorkspaceCommandAdmissionDecisionV1::Unseen
+        );
+
+        let local_seed = (0..=MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1)
+            .map(|index| WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some(WORKSPACE_ID.to_owned()),
+                operation: indexed_operation(index, 'b'),
+            })
+            .collect::<Vec<_>>();
+        let local = PreparedWorkspaceCommandAdmissionV1::prepare(&local_seed)
+            .expect("workspace capacity seed");
+        let diagnostics = local.diagnostics().expect("local diagnostics");
+        assert_eq!(diagnostics.workspace_count, 1);
+        assert_eq!(
+            diagnostics.workspace_operation_count,
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1
+        );
+        let evicted_local = indexed_operation(0, 'b');
+        assert_eq!(
+            local
+                .decision(
+                    WORKSPACE_ID,
+                    &evicted_local.operation_id,
+                    &evicted_local.fingerprint,
+                )
+                .expect("evicted local falls back globally"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: evicted_local,
+            }
+        );
+
+        let duplicate_id = indexed_operation(9_999, 'c').operation_id;
+        let older = admission_operation(duplicate_id.clone(), 'c', 1.0);
+        let newer = admission_operation(duplicate_id.clone(), 'd', 2.0);
+        let duplicate = PreparedWorkspaceCommandAdmissionV1::prepare(&[
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: None,
+                operation: newer.clone(),
+            },
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: None,
+                operation: older,
+            },
+        ])
+        .expect("duplicate deterministic seed");
+        assert_eq!(
+            duplicate
+                .decision(WORKSPACE_ID, &duplicate_id, &newer.fingerprint)
+                .expect("newest duplicate"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: newer,
+            }
+        );
+    }
+
+    #[test]
+    fn command_admission_collapses_duplicates_before_capacity_and_rejects_ambiguous_ties() {
+        let duplicated_seed = (0..MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1)
+            .flat_map(|index| {
+                let operation = indexed_operation(index, 'e');
+                [
+                    WorkspaceCommandAdmissionSeedRecordV1 {
+                        workspace_id: None,
+                        operation: operation.clone(),
+                    },
+                    WorkspaceCommandAdmissionSeedRecordV1 {
+                        workspace_id: None,
+                        operation,
+                    },
+                ]
+            })
+            .collect::<Vec<_>>();
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&duplicated_seed)
+            .expect("duplicates collapse before capacity");
+        assert_eq!(
+            admission
+                .diagnostics()
+                .expect("diagnostics")
+                .global_operation_count,
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1
+        );
+        let oldest = indexed_operation(0, 'e');
+        assert!(matches!(
+            admission
+                .decision(WORKSPACE_ID, &oldest.operation_id, &oldest.fingerprint)
+                .expect("oldest retained"),
+            WorkspaceCommandAdmissionDecisionV1::Replay { .. }
+        ));
+
+        let first = admission_operation(indexed_operation(9_998, 'f').operation_id, 'f', 7.0);
+        let mut conflicting = first.clone();
+        conflicting.fingerprint = "0".repeat(64);
+        for seed in [
+            vec![first.clone(), conflicting.clone()],
+            vec![conflicting.clone(), first.clone()],
+        ] {
+            assert!(matches!(
+                PreparedWorkspaceCommandAdmissionV1::prepare(
+                    &seed
+                        .into_iter()
+                        .map(|operation| WorkspaceCommandAdmissionSeedRecordV1 {
+                            workspace_id: None,
+                            operation,
+                        })
+                        .collect::<Vec<_>>()
+                ),
+                Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+            ));
+        }
+    }
+
+    #[test]
+    fn command_admission_live_insert_respects_reconstructible_total_atomically() {
+        let seed = (0..240usize)
+            .flat_map(|workspace| {
+                let workspace_id = format!("00000000-0000-0000-0000-{workspace:012x}");
+                (0..MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1).map(
+                    move |offset| WorkspaceCommandAdmissionSeedRecordV1 {
+                        workspace_id: Some(workspace_id.clone()),
+                        operation: indexed_operation(
+                            workspace
+                                * MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1
+                                + offset,
+                            'a',
+                        ),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&seed)
+            .expect("maximum reconstructible admission");
+        let before = admission.diagnostics().expect("before diagnostics");
+        assert_eq!(
+            before.global_operation_count + before.workspace_operation_count,
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1
+        );
+        let overflow = indexed_operation(seed.len() + 1, 'b');
+        assert!(matches!(
+            admission.insert(
+                Some("ffffffff-ffff-ffff-ffff-ffffffffffff".to_owned()),
+                overflow
+            ),
+            Err(WorkspaceWorkingJournalError::InputTooLarge { .. })
+        ));
+        assert_eq!(admission.diagnostics().expect("after diagnostics"), before);
+    }
+
+    #[test]
+    fn command_admission_replace_insert_failure_and_close_are_atomic() {
+        let original = indexed_operation(1, 'a');
+        let replacement = indexed_operation(2, 'b');
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&[
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some(WORKSPACE_ID.to_owned()),
+                operation: original.clone(),
+            },
+        ])
+        .expect("prepared admission");
+        let before = admission.diagnostics().expect("before diagnostics");
+        assert_eq!(
+            admission.insert(Some("not-a-uuid".to_owned()), replacement.clone()),
+            Err(WorkspaceWorkingJournalError::InvalidIdentity)
+        );
+        assert_eq!(
+            admission.diagnostics().expect("after invalid insert"),
+            before
+        );
+
+        let mut malformed = replacement.clone();
+        malformed.fingerprint = "bad".to_owned();
+        assert_eq!(
+            admission.insert(None, malformed),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        assert_eq!(
+            admission.diagnostics().expect("after malformed insert"),
+            before
+        );
+
+        let mut conflicting = original.clone();
+        conflicting.fingerprint = "f".repeat(64);
+        assert_eq!(
+            admission.insert(Some(WORKSPACE_ID.to_owned()), conflicting),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        assert_eq!(
+            admission.diagnostics().expect("after conflicting insert"),
+            before
+        );
+
+        let replacement_seed = [WorkspaceCommandAdmissionSeedRecordV1 {
+            workspace_id: None,
+            operation: replacement.clone(),
+        }];
+        assert_eq!(
+            admission.replace(&replacement_seed).expect("replace"),
+            WorkspaceCommandAdmissionDiagnosticsV1 {
+                global_operation_count: 1,
+                workspace_count: 0,
+                workspace_operation_count: 0,
+            }
+        );
+        assert_eq!(
+            admission
+                .decision(
+                    WORKSPACE_ID,
+                    &replacement.operation_id,
+                    &replacement.fingerprint
+                )
+                .expect("replacement replay"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: replacement,
+            }
+        );
+
+        admission.close();
+        admission.close();
+        assert_eq!(
+            admission.diagnostics(),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        assert_eq!(
+            admission.replace(&replacement_seed),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+    }
+
+    #[test]
+    fn command_admission_durable_reconcile_preserves_global_and_replaces_workspaces_atomically() {
+        let retained_global = indexed_operation(1, 'a');
+        let removed_workspace = indexed_operation(2, 'b');
+        let replacement_workspace = indexed_operation(3, 'c');
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&[
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: None,
+                operation: retained_global.clone(),
+            },
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some(WORKSPACE_ID.to_owned()),
+                operation: removed_workspace.clone(),
+            },
+        ])
+        .expect("prepared admission");
+        admission
+            .reconcile_durable(&[WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some(WORKSPACE_ID.to_owned()),
+                operation: replacement_workspace.clone(),
+            }])
+            .expect("durable reconcile");
+
+        assert_eq!(
+            admission
+                .decision(
+                    WORKSPACE_ID,
+                    &retained_global.operation_id,
+                    &retained_global.fingerprint
+                )
+                .expect("retained global decision"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: retained_global.clone(),
+            }
+        );
+        assert_eq!(
+            admission
+                .decision(
+                    WORKSPACE_ID,
+                    &removed_workspace.operation_id,
+                    &removed_workspace.fingerprint
+                )
+                .expect("removed workspace decision"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: removed_workspace,
+            }
+        );
+        assert_eq!(
+            admission
+                .decision(
+                    WORKSPACE_ID,
+                    &replacement_workspace.operation_id,
+                    &replacement_workspace.fingerprint
+                )
+                .expect("replacement workspace decision"),
+            WorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
+                operation: replacement_workspace,
+            }
+        );
+
+        let mut conflicting = retained_global;
+        conflicting.fingerprint = "f".repeat(64);
+        let before = admission.diagnostics().expect("before conflict");
+        assert_eq!(
+            admission.reconcile_durable(&[WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: None,
+                operation: conflicting,
+            }]),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        assert_eq!(admission.diagnostics().expect("after conflict"), before);
+    }
+
+    #[test]
+    fn command_admission_restart_reconstruction_is_equivalent() {
+        let seed = [
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some(WORKSPACE_ID.to_owned()),
+                operation: indexed_operation(1, 'a'),
+            },
+            WorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: None,
+                operation: indexed_operation(2, 'b'),
+            },
+        ];
+        let first = PreparedWorkspaceCommandAdmissionV1::prepare(&seed).expect("first runtime");
+        let restarted =
+            PreparedWorkspaceCommandAdmissionV1::prepare(&seed).expect("restarted runtime");
+        for operation in [&seed[0].operation, &seed[1].operation] {
+            assert_eq!(
+                first
+                    .decision(
+                        WORKSPACE_ID,
+                        &operation.operation_id,
+                        &operation.fingerprint
+                    )
+                    .expect("first decision"),
+                restarted
+                    .decision(
+                        WORKSPACE_ID,
+                        &operation.operation_id,
+                        &operation.fingerprint
+                    )
+                    .expect("restarted decision")
+            );
+        }
+        assert_eq!(
+            first.diagnostics().expect("first diagnostics"),
+            restarted.diagnostics().expect("restart diagnostics")
+        );
     }
 
     #[test]

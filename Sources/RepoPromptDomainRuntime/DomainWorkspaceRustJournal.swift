@@ -1,6 +1,127 @@
 import AgentryCoreBridge
 import Foundation
 
+package typealias DomainWorkspaceCommandIdentityResolver = @Sendable (
+    DomainWorkspaceCommandIdentityInput
+) async throws -> String
+
+package struct DomainWorkspaceCommandIdentityInput: Sendable, Equatable {
+    package static let maximumProtectedAgentIdentityCount =
+        CoreWorkspaceCommandIdentityRequestV1.maximumProtectedAgentIdentities
+    package static let maximumRetainedBytes = 32 * 1024 * 1024
+
+    package enum Command: Sendable, Equatable {
+        case create(workspaceID: UUID, fileURL: URL, contentDigest: String)
+        case replace(workspaceID: UUID, fileURL: URL, contentDigest: String)
+        case save(workspaceID: UUID)
+        case delete(workspaceID: UUID)
+        case resolveExternalConflict(
+            workspaceID: UUID,
+            acceptExternal: Bool,
+            protectedAgentIdentities: [DomainProtectedAgentIdentity]
+        )
+    }
+
+    package let operationID: UUID
+    package let expectedCatalogRevision: UInt64?
+    package let expectedWorkspaceRevision: UInt64?
+    package let expectedContextRevision: UInt64?
+    package let origin: DomainCommandOrigin
+    package let command: Command
+
+    package init?(_ envelope: DomainWorkspaceCommandEnvelope) {
+        let command: Command
+        switch envelope.command {
+        case let .createWorkspace(document):
+            command = .create(
+                workspaceID: document.workspaceID,
+                fileURL: document.fileURL,
+                contentDigest: document.contentDigest
+            )
+        case let .replaceWorkingDocument(document):
+            command = .replace(
+                workspaceID: document.workspaceID,
+                fileURL: document.fileURL,
+                contentDigest: document.contentDigest
+            )
+        case let .saveWorkspaceDocument(workspaceID):
+            command = .save(workspaceID: workspaceID)
+        case let .deleteWorkspace(workspaceID):
+            command = .delete(workspaceID: workspaceID)
+        case let .resolveExternalConflict(workspaceID, acceptExternal, protectedAgentIdentities):
+            guard protectedAgentIdentities.count <= Self.maximumProtectedAgentIdentityCount else {
+                return nil
+            }
+            command = .resolveExternalConflict(
+                workspaceID: workspaceID,
+                acceptExternal: acceptExternal,
+                protectedAgentIdentities: protectedAgentIdentities
+            )
+        }
+        operationID = envelope.operationID
+        expectedCatalogRevision = envelope.expectedCatalogRevision
+        expectedWorkspaceRevision = envelope.expectedWorkspaceRevision
+        expectedContextRevision = envelope.expectedContextRevision
+        origin = envelope.origin
+        self.command = command
+    }
+
+    package var estimatedRetainedBytes: Int? {
+        // The compact identity retains no workspace/context document Data. Charge fixed value/array
+        // storage plus every variable string and bounded protected-identity entry with checked math.
+        var total = 512
+        func add(_ count: Int) -> Bool {
+            let next = total.addingReportingOverflow(count)
+            guard !next.overflow else { return false }
+            total = next.partialValue
+            return true
+        }
+        func add(_ value: String) -> Bool {
+            add(value.utf8.count)
+        }
+        func add(_ identities: [DomainProtectedAgentIdentity]) -> Bool {
+            let bytes = identities.count.multipliedReportingOverflow(by: 96)
+            return !bytes.overflow && add(bytes.partialValue)
+        }
+
+        switch command {
+        case let .create(_, fileURL, contentDigest),
+             let .replace(_, fileURL, contentDigest):
+            guard add(fileURL.absoluteString), add(contentDigest) else { return nil }
+        case .save, .delete:
+            break
+        case let .resolveExternalConflict(_, _, protectedAgentIdentities):
+            guard add(protectedAgentIdentities) else { return nil }
+        }
+        return total
+    }
+}
+
+struct DomainWorkspaceCommandAdmissionSeedRecord: Sendable {
+    let workspaceID: UUID?
+    let operation: DomainRecordedOperation
+}
+
+enum DomainWorkspaceCommandAdmissionLookupScope: Sendable, Equatable {
+    case workspace
+    case global
+}
+
+enum DomainWorkspaceCommandAdmissionDecision: Sendable, Equatable {
+    case unseen
+    case collision(scope: DomainWorkspaceCommandAdmissionLookupScope)
+    case replay(
+        scope: DomainWorkspaceCommandAdmissionLookupScope,
+        operation: DomainRecordedOperation
+    )
+}
+
+struct DomainWorkspaceCommandAdmissionDiagnostics: Sendable, Equatable {
+    let globalOperationCount: UInt64
+    let workspaceCount: UInt64
+    let workspaceOperationCount: UInt64
+}
+
 struct DomainWorkspaceWorkingJournalValidation: Sendable {
     let journal: DomainWorkingJournal
     let canonicalBytes: Data
@@ -884,6 +1005,90 @@ enum DomainWorkspaceRustJournal {
         }
     }
 
+    struct PreparedCommandAdmission: Sendable {
+        private let core: CorePreparedWorkspaceCommandAdmissionV1
+        private let validator: PreparedValidator
+
+        fileprivate init(
+            core: CorePreparedWorkspaceCommandAdmissionV1,
+            validator: PreparedValidator
+        ) {
+            self.core = core
+            self.validator = validator
+        }
+
+        func decision(
+            workspaceID: UUID,
+            operationID: UUID,
+            fingerprint: String
+        ) throws -> DomainWorkspaceCommandAdmissionDecision {
+            do {
+                return try validator.materializeCommandAdmissionDecision(core.decision(
+                    workspaceID: workspaceID,
+                    operationID: operationID,
+                    fingerprint: fingerprint
+                ))
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        @discardableResult
+        func reconcileDurable(
+            _ records: [DomainWorkspaceCommandAdmissionSeedRecord]
+        ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
+            do {
+                return validator.materializeCommandAdmissionDiagnostics(
+                    try core.reconcileDurable(records.map(validator.coreCommandAdmissionSeedRecord))
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        @discardableResult
+        func insert(
+            workspaceID: UUID?,
+            operation: DomainRecordedOperation
+        ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
+            do {
+                return validator.materializeCommandAdmissionDiagnostics(
+                    try core.insert(
+                        workspaceID: workspaceID,
+                        operation: validator.coreRecordedOperation(operation)
+                    )
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        @discardableResult
+        func removeWorkspace(
+            _ workspaceID: UUID
+        ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
+            do {
+                return validator.materializeCommandAdmissionDiagnostics(
+                    try core.removeWorkspace(workspaceID)
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func diagnostics() throws -> DomainWorkspaceCommandAdmissionDiagnostics {
+            do {
+                return validator.materializeCommandAdmissionDiagnostics(try core.diagnostics())
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func close() {
+            core.close()
+        }
+    }
+
     struct PreparedValidator: Sendable {
         private let core: CorePreparedWorkspaceWorkingJournalValidatorV1
 
@@ -894,7 +1099,16 @@ enum DomainWorkspaceRustJournal {
         func commandIdentity(
             _ envelope: DomainWorkspaceCommandEnvelope
         ) throws -> String {
-            let origin: CoreWorkspaceCommandOriginV1 = switch envelope.origin {
+            guard let input = DomainWorkspaceCommandIdentityInput(envelope) else {
+                throw DomainPersistenceError.writeFailed("working_journal_too_large")
+            }
+            return try commandIdentity(input)
+        }
+
+        func commandIdentity(
+            _ input: DomainWorkspaceCommandIdentityInput
+        ) throws -> String {
+            let origin: CoreWorkspaceCommandOriginV1 = switch input.origin {
             case let .appPresentation(windowID):
                 .appPresentation(windowID: Int64(windowID))
             case let .appMCP(connectionID):
@@ -911,14 +1125,14 @@ enum DomainWorkspaceRustJournal {
                 contentDigest: String?,
                 acceptExternal: Bool?,
                 protectedAgentIdentities: [CoreWorkspaceProtectedAgentIdentityV1]
-            ) = switch envelope.command {
-            case let .createWorkspace(document):
-                (.create, document.workspaceID, document.fileURL, document.contentDigest, nil, [])
-            case let .replaceWorkingDocument(document):
-                (.replace, document.workspaceID, document.fileURL, document.contentDigest, nil, [])
-            case let .saveWorkspaceDocument(workspaceID):
+            ) = switch input.command {
+            case let .create(workspaceID, fileURL, contentDigest):
+                (.create, workspaceID, fileURL, contentDigest, nil, [])
+            case let .replace(workspaceID, fileURL, contentDigest):
+                (.replace, workspaceID, fileURL, contentDigest, nil, [])
+            case let .save(workspaceID):
                 (.save, workspaceID, nil, nil, nil, [])
-            case let .deleteWorkspace(workspaceID):
+            case let .delete(workspaceID):
                 (.delete, workspaceID, nil, nil, nil, [])
             case let .resolveExternalConflict(workspaceID, acceptExternal, protectedAgentIdentities):
                 (
@@ -943,10 +1157,10 @@ enum DomainWorkspaceRustJournal {
             }
             do {
                 let identity = try core.commandIdentity(CoreWorkspaceCommandIdentityRequestV1(
-                    operationID: envelope.operationID,
-                    expectedCatalogRevision: envelope.expectedCatalogRevision,
-                    expectedWorkspaceRevision: envelope.expectedWorkspaceRevision,
-                    expectedContextRevision: envelope.expectedContextRevision,
+                    operationID: input.operationID,
+                    expectedCatalogRevision: input.expectedCatalogRevision,
+                    expectedWorkspaceRevision: input.expectedWorkspaceRevision,
+                    expectedContextRevision: input.expectedContextRevision,
                     origin: origin,
                     commandKind: command.kind,
                     workspaceID: command.workspaceID,
@@ -971,6 +1185,139 @@ enum DomainWorkspaceRustJournal {
             value.utf8.count == 64 && value.utf8.allSatisfy { byte in
                 (48 ... 57).contains(byte) || (65 ... 70).contains(byte) || (97 ... 102).contains(byte)
             }
+        }
+
+        func beginCommandAdmission(
+            records: [DomainWorkspaceCommandAdmissionSeedRecord]
+        ) throws -> PreparedCommandAdmission {
+            do {
+                return PreparedCommandAdmission(
+                    core: try core.beginCommandAdmission(
+                        records: records.map(coreCommandAdmissionSeedRecord)
+                    ),
+                    validator: self
+                )
+            } catch {
+                throw mapCommandAdmissionError(error)
+            }
+        }
+
+        fileprivate func coreCommandAdmissionSeedRecord(
+            _ record: DomainWorkspaceCommandAdmissionSeedRecord
+        ) -> CoreWorkspaceCommandAdmissionSeedRecordV1 {
+            .init(
+                workspaceID: record.workspaceID,
+                operation: coreRecordedOperation(record.operation)
+            )
+        }
+
+        fileprivate func coreRecordedOperation(
+            _ operation: DomainRecordedOperation
+        ) -> CoreWorkspaceRecordedOperationV1 {
+            .init(
+                operationID: operation.operationID,
+                fingerprint: operation.fingerprint,
+                recordedAt: operation.recordedAt.timeIntervalSinceReferenceDate,
+                disposition: operation.disposition.rawValue,
+                before: operation.before.map(coreRevisionState),
+                after: operation.after.map(coreRevisionState),
+                catalogRevision: operation.catalogRevision,
+                resultingDigest: operation.resultingDigest,
+                errorCode: operation.errorCode?.rawValue,
+                diagnostic: operation.diagnostic
+            )
+        }
+
+        private func coreRevisionState(
+            _ state: DomainRevisionState
+        ) -> CoreWorkspaceProjectionRevisionState {
+            .init(
+                workingRevision: state.workingRevision,
+                savedRevision: state.savedRevision,
+                dirtyRevision: state.dirtyRevision
+            )
+        }
+
+        fileprivate func materializeCommandAdmissionDecision(
+            _ decision: CoreWorkspaceCommandAdmissionDecisionV1
+        ) throws -> DomainWorkspaceCommandAdmissionDecision {
+            switch decision {
+            case .unseen:
+                return .unseen
+            case let .collision(scope):
+                return .collision(scope: materializeCommandAdmissionScope(scope))
+            case let .replay(scope, operation):
+                return .replay(
+                    scope: materializeCommandAdmissionScope(scope),
+                    operation: try materializeRecordedOperation(operation)
+                )
+            }
+        }
+
+        private func materializeCommandAdmissionScope(
+            _ scope: CoreWorkspaceCommandAdmissionLookupScopeV1
+        ) -> DomainWorkspaceCommandAdmissionLookupScope {
+            switch scope {
+            case .workspace: .workspace
+            case .global: .global
+            }
+        }
+
+        private func materializeRecordedOperation(
+            _ operation: CoreWorkspaceRecordedOperationV1
+        ) throws -> DomainRecordedOperation {
+            guard let disposition = DomainCommandDisposition(rawValue: operation.disposition) else {
+                throw DomainPersistenceError.corruptJournal
+            }
+            let errorCode: DomainCommandErrorCode?
+            if let rawErrorCode = operation.errorCode {
+                guard let value = DomainCommandErrorCode(rawValue: rawErrorCode) else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                errorCode = value
+            } else {
+                errorCode = nil
+            }
+            let outcome = DomainCommandOutcome(
+                operationID: operation.operationID,
+                disposition: disposition,
+                before: operation.before.map(domainRevisionState),
+                after: operation.after.map(domainRevisionState),
+                catalogRevision: operation.catalogRevision,
+                resultingDigest: operation.resultingDigest,
+                errorCode: errorCode,
+                diagnostic: operation.diagnostic,
+                workspace: nil
+            )
+            return DomainRecordedOperation(
+                fingerprint: operation.fingerprint,
+                recordedAt: Date(timeIntervalSinceReferenceDate: operation.recordedAt),
+                outcome: outcome
+            )
+        }
+
+        private func domainRevisionState(
+            _ state: CoreWorkspaceProjectionRevisionState
+        ) -> DomainRevisionState {
+            DomainRevisionState(
+                workingRevision: state.workingRevision,
+                savedRevision: state.savedRevision,
+                dirtyRevision: state.dirtyRevision
+            )
+        }
+
+        fileprivate func materializeCommandAdmissionDiagnostics(
+            _ diagnostics: CoreWorkspaceCommandAdmissionDiagnosticsV1
+        ) -> DomainWorkspaceCommandAdmissionDiagnostics {
+            DomainWorkspaceCommandAdmissionDiagnostics(
+                globalOperationCount: diagnostics.globalOperationCount,
+                workspaceCount: diagnostics.workspaceCount,
+                workspaceOperationCount: diagnostics.workspaceOperationCount
+            )
+        }
+
+        fileprivate func mapCommandAdmissionError(_ error: Error) -> DomainPersistenceError {
+            map(error)
         }
 
         func validateSavedRevision(

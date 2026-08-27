@@ -391,7 +391,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         )
     }
 
-    func testCommandIdentityCandidateDoesNotPrematurelyReplaceSwiftMutationAdmission() throws {
+    func testCommandIdentityProductionAdmissionUsesRustWithSwiftOnlyAsObserverOracle() throws {
         let root = repositoryRoot()
         let authority = try String(
             contentsOf: root.appendingPathComponent(
@@ -408,15 +408,92 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
 
         XCTAssertEqual(
             authority.components(separatedBy: "envelope.fingerprint").count - 1,
-            3,
-            "P5-6a remains comparison-only; Swift must retain all production identity reads"
+            1,
+            "The sole Swift fingerprint read must remain the differential observer oracle"
         )
-        XCTAssertFalse(
-            authority.contains("commandIdentity("),
-            "Rust parity candidate must not become production admission before the cutover gate"
+        XCTAssertFalse(authority.contains("fingerprint: envelope.fingerprint"))
+        for required in [
+            "fingerprint = try await resolveCommandIdentity(commandIdentityInput)",
+            "fingerprint: fingerprint",
+            "authoritativeRustFingerprint: fingerprint",
+            "unrecordedCommandIdentityRejection("
+        ] {
+            XCTAssertTrue(authority.contains(required), "Missing Rust admission boundary: \(required)")
+        }
+        XCTAssertEqual(
+            authority.components(
+                separatedBy: "commandIdentityObservationSink.observe("
+            ).count - 1,
+            1,
+            "The admitted command path must submit exactly one non-suspending parity observation"
         )
+        XCTAssertFalse(authority.contains("await commandIdentityObservationSink"))
         XCTAssertTrue(adapter.contains("func commandIdentity("))
         XCTAssertTrue(adapter.contains("core.commandIdentity("))
+    }
+
+    func testCommandReplayAndCollisionProductionAdmissionUsesPreparedRustIndex() throws {
+        let root = repositoryRoot()
+        let authority = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
+            ),
+            encoding: .utf8
+        )
+        let adapter = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+            ),
+            encoding: .utf8
+        )
+
+        for required in [
+            "private var commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?",
+            "let admission = commandAdmission",
+            "decision = try admission.decision(",
+            "private var pendingCommandAdmissions: [UUID: PendingCommandAdmission]",
+            "private func reconcileCommandAdmission(",
+            "commandAdmission.reconcileDurable(durable)",
+            "registerPersistedCommandAdmissionOperation(",
+            "refreshed.deletedOperation",
+            "removeCommandAdmissionWorkspace(workspaceID)"
+        ] {
+            XCTAssertTrue(authority.contains(required), "Missing prepared Rust admission: \(required)")
+        }
+        for retired in [
+            "BoundedDomainOperationIndex",
+            "BoundedDomainOperationSeedBuffer",
+            "globalOperationSeeds",
+            "ensureCommandAdmission",
+            "rebuildCommandAdmission",
+            "operationIndex",
+            "globalOperations",
+            "swiftCommandAdmissionDecision"
+        ] {
+            XCTAssertFalse(authority.contains(retired), "Retired Swift admission lookup remains: \(retired)")
+        }
+        XCTAssertFalse(
+            authority.contains("?? recorded"),
+            "A committed transaction must never synthesize a missing Rust operation receipt"
+        )
+        XCTAssertFalse(
+            authority.contains("?? operation"),
+            "A committed transaction must fail closed on a missing Rust operation receipt"
+        )
+        XCTAssertFalse(
+            adapter.contains("try core.replace("),
+            "Complete admission replacement must not remain exposed through the Domain adapter"
+        )
+        for required in [
+            "struct PreparedCommandAdmission: Sendable",
+            "core.beginCommandAdmission(",
+            "core.decision(",
+            "core.reconcileDurable(",
+            "core.insert(",
+            "core.removeWorkspace("
+        ] {
+            XCTAssertTrue(adapter.contains(required), "Missing Rust admission adapter: \(required)")
+        }
     }
 
     private func repositoryRoot() -> URL {

@@ -1055,3 +1055,169 @@ Swift oracle.
 - Real-Core Domain differential fixtures match the frozen Swift fingerprint for every command/origin family.
 - Production command execution remains Swift-authoritative and source guards prevent accidental candidate
   use as mutation admission before the P5-6 cutover gate is explicitly closed.
+
+## P5-6b amendment — bounded command-identity comparison observer
+
+P5-6b arms the P5-6a candidate on the common admitted workspace-command path without changing command
+behavior. Immediately after the existing Swift authority computes and times its operation fingerprint, it
+submits the immutable command envelope, fingerprint, and elapsed time to a synchronous, non-suspending
+observation sink. The sink copies only the compact identity fields Rust requires; it never retains workspace
+or context document bytes. It never calls Rust, awaits work, acquires a mutation permit, or influences
+deduplication, collision handling,
+persistence, disposition, or publication. A stopped, saturated, or unavailable observer only records a
+dropped/error sample; Swift remains the sole production mutation authority.
+
+The observer owns one serial worker and a bounded FIFO. Production limits are 64 pending commands, 64 MiB of
+combined active-plus-pending compact identity input, 32 MiB per command, and 256 protected identities.
+Variable URL/digest bytes and the bounded fixed-field identity array are charged with checked arithmetic;
+workspace metadata, workspace document `Data`, and context document `Data` are absent from the queued type.
+When capacity is exhausted, the oldest pending sample is discarded; an active comparison is never evicted. One
+`bufferingNewest(1)` wake signal coalesces scheduling only—the exact FIFO and all bounds remain under the
+observer lock. Shutdown first closes mutation admission and waits for every already-issued command permit to
+finish. It then atomically closes observer ingress, counts pending/active cancellation and later rejected
+observations as dropped, cancels and awaits the worker, and rejects later observations.
+
+The worker invokes the exact-runtime Rust prepared capability on detached work and compares its value with the
+Swift fingerprint captured at admission. No second Swift fingerprint implementation exists in the observer.
+Only aggregate, privacy-safe dimensions are emitted: command kind, origin family, result, input-size bucket,
+and latency bucket. Operation/workspace/context identities, paths, raw fingerprints, document bytes, and
+content digests never enter metrics. A read-only evidence snapshot exposes matched, mismatched, failed,
+dropped, completed, and aggregate Swift/Rust timing counters. It can report behavioral parity only after an
+explicit positive caller-supplied minimum completed-sample floor; zero can never establish parity. It never
+selects a performance threshold or flips production authority automatically.
+
+### P5-6b done-when
+
+- The authority path performs one non-suspending observation after its existing Swift fingerprint read and
+  contains no Rust call, await, retry, or outcome dependency.
+- Deterministic tests cover match, mismatch, Rust failure, count/byte pressure, oversized commands, shutdown,
+  active cancellation, and observation while the projector is suspended.
+- Runtime lifecycle starts the observer before commands are admitted and cancels/awaits it during drain;
+  injected projectors remain available for exact tests without enabling a Swift fallback.
+- Metrics and evidence contain no command identity, UUID, URL, digest, raw bytes, or other workspace content;
+  the production cutover gate remains explicitly closed.
+- Focused DomainRuntime tests, source guards, product build, style, guardrails, and diff checks pass.
+
+## P5-6c amendment — Rust command-identity production authority
+
+P5-6c promotes the immutable command identity from comparison candidate to the production mutation-admission
+input. After the storage mutation permit is admitted, DomainRuntime constructs the bounded compact identity
+input and awaits the exact-runtime Rust prepared capability before any deduplication, collision lookup,
+validation, revision fence, or persistence planning. The returned lowercase SHA-256 fingerprint is the only
+fingerprint passed to operation lookup and every durable or transient ledger record. Invalid compact input,
+Rust/runtime failure, cancellation, or an invalid receipt rejects the command without recording its operation
+ID; Swift fingerprinting is never a fallback.
+
+The existing bounded observer remains temporarily armed as a differential oracle. Only after Rust succeeds,
+Swift computes the frozen legacy fingerprint and submits both completed values and their measured latencies to
+the non-suspending observer. That precomputed-authority fast path performs no second Rust call; it can affect
+only privacy-safe parity metrics. Queue pressure, observer shutdown, mismatch, or Swift-oracle failure cannot
+change the Rust fingerprint or command outcome. The legacy Swift implementation remains solely for this
+bounded comparison and is not consulted by deduplication, collision handling, persistence, or publication.
+
+This slice does not yet move the durable operation ledger lookup into Rust. The 4,096-entry global index and
+256-entry per-workspace index remain Swift-owned projections of Rust-validated journal/catalog records. The
+next admission slice must move lookup, restart reconstruction, and collision/dedup receipt selection behind a
+bounded Rust state protocol before those Swift indexes can be deleted.
+
+### P5-6c done-when
+
+- The common app/headless command path obtains one exact-runtime Rust fingerprint before operation lookup and
+  uses that exact value for create, replace, save, delete, conflict resolution, and transient ledger writes.
+- Rust failure, cancellation, invalid compact input, and malformed receipts reject without a Swift fallback or
+  retained operation ID, so a later healthy runtime may retry the same envelope.
+- The comparison observer accepts a precomputed Rust authority result without issuing a duplicate Rust call;
+  its mismatches, failures, drops, and lifecycle remain diagnostics-only.
+- Deterministic tests inject divergent Rust/Swift identities and prove deduplication/collision follows Rust,
+  plus fail-closed retry and observer no-second-call behavior.
+- Source guards, focused command/authority/runtime tests, product build, style, guardrails, and diff checks pass.
+
+## P5-6d amendment — prepared Rust operation-admission index
+
+P5-6d moves durable replay and operation-ID collision lookup behind one exact-runtime prepared Rust
+capability. A newly prepared index is seeded atomically from the already Rust-validated live workspace
+operation ledgers plus catalog deletion operations. Rust canonicalizes and validates every operation receipt,
+derives the bounded 4,096-entry global index and each bounded 256-entry workspace index, and applies the
+frozen lookup order: exact workspace first, then global. A matching fingerprint returns the complete prior
+receipt and its lookup scope, a different fingerprint returns collision, and an absent operation returns
+unseen. No caller may synthesize a deduplicated receipt from partial fields.
+
+The prepared capability supports bounded insert, complete replacement, workspace-index removal, diagnostics,
+and idempotent close. Global-only transient/deletion records never enter a workspace index; durable live
+workspace receipts enter both. Removing a workspace drops only its local index because the established global
+process-lifetime collision fence retains prior workspace operations until normal bounded eviction. Complete
+replacement first collapses exact duplicate operation receipts, then deterministically sorts distinct IDs by
+recorded timestamp and operation UUID, retains the newest bounded suffix, and reconstructs the same state after
+restart. A duplicate ID with different timestamps retains the newest receipt; conflicting receipts tied on the
+same timestamp are rejected in either input order. The global index plus all workspace indexes may retain at
+most 65,536 receipts, and a live insert preflights that aggregate fence before mutating either index.
+
+Every operation revalidates the captured Rust runtime identity and lifecycle. Closed, stopped, stale, malformed,
+oversized, or internally inconsistent state fails closed without mutating the index. DomainRuntime now uses the
+Rust decision as its production replay/collision authority. A synchronous operation-ID reservation is installed
+before the first persistence suspension, so actor reentrancy cannot admit two unseen executions; matching
+waiters retry the Rust durable lookup after the owner finishes, while a different fingerprint collides
+immediately. A committed transaction must return its exact authoritative operation receipt. Missing or
+mismatched receipts never fall back to a Swift provisional value: the physical commit remains successful, but
+mutation admission is quarantined and projected read-only.
+
+### P5-6d done-when
+
+- Rust tests cover workspace-first lookup, global fallback, matching replay, collision, unseen, deterministic
+  seed order, duplicate collapse before capacity, ambiguous duplicate rejection in both input orders, per-index
+  and 65,536 aggregate capacity fences, atomic overflow rejection, global-only insertion, workspace removal,
+  replacement, malformed receipts, close, and restart reconstruction.
+- Typed UniFFI and Bridge preserve the complete prior receipt and lookup scope under exact runtime identity;
+  no JSON or partial-receipt fallback crosses the authority boundary.
+- Domain bootstrap/reconciliation replaces the whole Rust index from Rust-validated durable state before
+  mutation admission; every successful/transient ledger update is mirrored synchronously or quarantines the
+  capability for complete rebuild before the next lookup.
+- Production deduplication/collision and receipt selection use only the Rust decision. Swift global/workspace
+  operation indexes and lookup code are absent; a non-queryable 4,096-entry seed buffer exists only to rebuild
+  the exact-runtime Rust capability after quarantine while preserving process-lifetime transient fences.
+- Focused Rust/FFI/Bridge/Domain restart, collision, capacity, lifecycle, source-guard, product-build, style,
+  guardrail, formatting, and diff checks pass.
+
+## P5-6e amendment — Swift admission lookup retirement
+
+P5-6e removes the final Swift replay/collision lookup and every per-workspace operation index. Workspace
+records retain their Rust-validated journal operations only as persistence state. The sole remaining global
+projection is an ordered, bounded reconstruction seed buffer: it exposes no operation-ID lookup and cannot
+answer replay or collision. Rust remains the only production decision authority before persistence, after CAS
+refresh, after workspace removal, and across lease reconciliation.
+
+The seed buffer retains at most 4,096 complete receipts and feeds only complete prepared-capability replacement.
+Every actual receipt update is synchronously inserted into Rust; any Rust mutation failure quarantines the
+capability and the next admission must rebuild the complete Rust state or remain read-only. Source guards ban
+the retired Swift index type, fields, subscripts, and differential lookup helper.
+
+## P5-6f amendment — durable Rust admission reconciliation
+
+P5-6f removes the final Swift-owned command-admission reconstruction buffer. The prepared Rust capability now
+accepts one atomic durable reconciliation: it validates and reconstructs the complete durable workspace index
+set, merges it with the existing process-lifetime global collision fence, re-applies deterministic global and
+aggregate capacity limits, and publishes the replacement only after every check succeeds. A durable receipt
+that conflicts with an already-admitted global identity rejects the reconciliation without changing either
+index.
+
+Swift constructs only the transient typed payload obtained from the current Rust-validated catalog tombstones
+and workspace journals; it retains no global receipt cache and cannot answer, sort, trim, or repair operation
+identity state. Lease acquisition performs durable reconciliation before mutation admission. Later catalog
+reloads reconcile the exact durable workspace set while Rust preserves global transient receipts. Targeted CAS
+refresh submits the exact refreshed workspace operations or authoritative deletion receipt; missing receipts,
+invalid state, capacity failure, and runtime loss quarantine admission and project read-only rather than
+rebuilding or inferring locally.
+
+### P5-6f done-when
+
+- Rust tests prove process-global receipts survive durable reconciliation, durable workspace indexes are
+  replaced exactly, conflicting reconciliation is atomic, capacity remains bounded, and close/runtime fences
+  still fail closed.
+- Typed UniFFI, Bridge, and Domain adapters expose durable reconciliation without JSON or partial receipt
+  reconstruction.
+- `BoundedDomainOperationSeedBuffer`, `globalOperationSeeds`, lazy admission creation, and complete Swift
+  replacement are absent from production source.
+- Lease acquisition, catalog reload, CAS workspace refresh, and CAS deletion preserve replay/collision behavior;
+  the deletion delta is taken from the Rust-validated catalog tombstone rather than synthesized in Swift.
+- Focused Rust/FFI/Bridge/Domain authority, source-guard, codegen, product-build, style, guardrail, formatting,
+  and diff checks pass.

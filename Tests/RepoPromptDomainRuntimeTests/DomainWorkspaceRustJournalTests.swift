@@ -189,6 +189,115 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         XCTAssertEqual(try prepared.commandIdentity(reversed), envelopes[4].fingerprint)
     }
 
+    func testPreparedCommandAdmissionRoundTripsCompleteDomainReceipt() async throws {
+        let workspaceID = UUID()
+        let operationID = UUID()
+        let revisions = DomainRevisionState(
+            workingRevision: 3,
+            savedRevision: 2,
+            dirtyRevision: 3
+        )
+        let outcome = DomainCommandOutcome(
+            operationID: operationID,
+            disposition: .applied,
+            before: nil,
+            after: revisions,
+            catalogRevision: 7,
+            resultingDigest: String(repeating: "a", count: 64)
+        )
+        let operation = DomainRecordedOperation(
+            fingerprint: String(repeating: "f", count: 64),
+            recordedAt: Date(timeIntervalSinceReferenceDate: 42.5),
+            outcome: outcome
+        )
+        let service = AgentryCoreService()
+        defer { Task { await service.shutdown() } }
+        let validator = try await DomainWorkspaceRustJournal.prepare(coreService: service)
+        let admission = try validator.beginCommandAdmission(records: [
+            .init(workspaceID: workspaceID, operation: operation),
+        ])
+        defer { admission.close() }
+
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: operationID,
+                fingerprint: operation.fingerprint
+            ),
+            .replay(scope: .workspace, operation: operation)
+        )
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: operationID,
+                fingerprint: String(repeating: "e", count: 64)
+            ),
+            .collision(scope: .workspace)
+        )
+
+        let transient = DomainRecordedOperation(
+            fingerprint: String(repeating: "d", count: 64),
+            recordedAt: Date(timeIntervalSinceReferenceDate: 43.5),
+            outcome: DomainCommandOutcome(
+                operationID: UUID(),
+                disposition: .applied,
+                before: revisions,
+                after: revisions,
+                catalogRevision: 7,
+                resultingDigest: String(repeating: "b", count: 64)
+            )
+        )
+        _ = try admission.insert(workspaceID: nil, operation: transient)
+        let durableReplacement = DomainRecordedOperation(
+            fingerprint: String(repeating: "c", count: 64),
+            recordedAt: Date(timeIntervalSinceReferenceDate: 44.5),
+            outcome: DomainCommandOutcome(
+                operationID: UUID(),
+                disposition: .unchanged,
+                before: revisions,
+                after: revisions,
+                catalogRevision: 8,
+                resultingDigest: String(repeating: "b", count: 64)
+            )
+        )
+        _ = try admission.reconcileDurable([
+            .init(workspaceID: workspaceID, operation: durableReplacement),
+        ])
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: transient.operationID,
+                fingerprint: transient.fingerprint
+            ),
+            .replay(scope: .global, operation: transient)
+        )
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: durableReplacement.operationID,
+                fingerprint: durableReplacement.fingerprint
+            ),
+            .replay(scope: .workspace, operation: durableReplacement)
+        )
+
+        _ = try admission.removeWorkspace(workspaceID)
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: operationID,
+                fingerprint: operation.fingerprint
+            ),
+            .replay(scope: .global, operation: operation)
+        )
+        admission.close()
+        XCTAssertThrowsError(try admission.diagnostics()) { error in
+            XCTAssertEqual(
+                error as? DomainPersistenceError,
+                .writeFailed("workspace_save_transaction_invalid")
+            )
+        }
+    }
+
     func testPreparedValidatorRunsSynchronouslyAndMatchesAsyncBoundary() async throws {
         let workspaceID = UUID()
         let fileURL = URL(fileURLWithPath: "/tmp/Prepared-\(workspaceID.uuidString).json")

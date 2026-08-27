@@ -174,6 +174,159 @@ public struct CoreWorkspaceCommandIdentityV1: Sendable, Equatable {
     }
 }
 
+public struct CoreWorkspaceRecordedOperationV1: Sendable, Equatable {
+    public let operationID: UUID
+    public let fingerprint: String
+    public let recordedAt: TimeInterval
+    public let disposition: String
+    public let before: CoreWorkspaceProjectionRevisionState?
+    public let after: CoreWorkspaceProjectionRevisionState?
+    public let catalogRevision: UInt64
+    public let resultingDigest: String?
+    public let errorCode: String?
+    public let diagnostic: String?
+
+    public init(
+        operationID: UUID,
+        fingerprint: String,
+        recordedAt: TimeInterval,
+        disposition: String,
+        before: CoreWorkspaceProjectionRevisionState?,
+        after: CoreWorkspaceProjectionRevisionState?,
+        catalogRevision: UInt64,
+        resultingDigest: String?,
+        errorCode: String?,
+        diagnostic: String?
+    ) {
+        self.operationID = operationID
+        self.fingerprint = fingerprint
+        self.recordedAt = recordedAt
+        self.disposition = disposition
+        self.before = before
+        self.after = after
+        self.catalogRevision = catalogRevision
+        self.resultingDigest = resultingDigest
+        self.errorCode = errorCode
+        self.diagnostic = diagnostic
+    }
+}
+
+public struct CoreWorkspaceCommandAdmissionSeedRecordV1: Sendable, Equatable {
+    public let workspaceID: UUID?
+    public let operation: CoreWorkspaceRecordedOperationV1
+
+    public init(workspaceID: UUID?, operation: CoreWorkspaceRecordedOperationV1) {
+        self.workspaceID = workspaceID
+        self.operation = operation
+    }
+}
+
+public enum CoreWorkspaceCommandAdmissionLookupScopeV1: Sendable, Equatable {
+    case workspace
+    case global
+}
+
+public enum CoreWorkspaceCommandAdmissionDecisionV1: Sendable, Equatable {
+    case unseen
+    case collision(scope: CoreWorkspaceCommandAdmissionLookupScopeV1)
+    case replay(
+        scope: CoreWorkspaceCommandAdmissionLookupScopeV1,
+        operation: CoreWorkspaceRecordedOperationV1
+    )
+}
+
+public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Sendable, Equatable {
+    public let globalOperationCount: UInt64
+    public let workspaceCount: UInt64
+    public let workspaceOperationCount: UInt64
+
+    public init(
+        globalOperationCount: UInt64,
+        workspaceCount: UInt64,
+        workspaceOperationCount: UInt64
+    ) {
+        self.globalOperationCount = globalOperationCount
+        self.workspaceCount = workspaceCount
+        self.workspaceOperationCount = workspaceOperationCount
+    }
+}
+
+public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable {
+    private let decisionOperation: @Sendable (UUID, UUID, String) throws
+        -> CoreWorkspaceCommandAdmissionDecisionV1
+    private let reconcileDurableOperation: @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
+        -> CoreWorkspaceCommandAdmissionDiagnosticsV1
+    private let insertOperation: @Sendable (UUID?, CoreWorkspaceRecordedOperationV1) throws
+        -> CoreWorkspaceCommandAdmissionDiagnosticsV1
+    private let removeWorkspaceOperation: @Sendable (UUID) throws
+        -> CoreWorkspaceCommandAdmissionDiagnosticsV1
+    private let diagnosticsOperation: @Sendable () throws
+        -> CoreWorkspaceCommandAdmissionDiagnosticsV1
+    private let closeOperation: @Sendable () -> Void
+
+    init(
+        decision: @escaping @Sendable (UUID, UUID, String) throws
+            -> CoreWorkspaceCommandAdmissionDecisionV1,
+        reconcileDurable: @escaping @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
+            -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
+        insert: @escaping @Sendable (UUID?, CoreWorkspaceRecordedOperationV1) throws
+            -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
+        removeWorkspace: @escaping @Sendable (UUID) throws
+            -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
+        diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
+        close: @escaping @Sendable () -> Void
+    ) {
+        decisionOperation = decision
+        reconcileDurableOperation = reconcileDurable
+        insertOperation = insert
+        removeWorkspaceOperation = removeWorkspace
+        diagnosticsOperation = diagnostics
+        closeOperation = close
+    }
+
+    deinit {
+        closeOperation()
+    }
+
+    public func decision(
+        workspaceID: UUID,
+        operationID: UUID,
+        fingerprint: String
+    ) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
+        try decisionOperation(workspaceID, operationID, fingerprint)
+    }
+
+    @discardableResult
+    public func reconcileDurable(
+        _ records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
+    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
+        try reconcileDurableOperation(records)
+    }
+
+    @discardableResult
+    public func insert(
+        workspaceID: UUID?,
+        operation: CoreWorkspaceRecordedOperationV1
+    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
+        try insertOperation(workspaceID, operation)
+    }
+
+    @discardableResult
+    public func removeWorkspace(
+        _ workspaceID: UUID
+    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
+        try removeWorkspaceOperation(workspaceID)
+    }
+
+    public func diagnostics() throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
+        try diagnosticsOperation()
+    }
+
+    public func close() {
+        closeOperation()
+    }
+}
+
 public struct CoreWorkspaceCatalogValidationV1: Sendable, Equatable {
     public let catalogVersion: UInt16
     public let revision: UInt64
@@ -691,6 +844,18 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         )
     }
 
+    public func beginCommandAdmission(
+        records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
+    ) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
+        guard records.count <= 65_536 else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceCommandAdmissionBeginV1(
+            identity: context.identity,
+            records: records
+        )
+    }
+
     public func validateSavedRevision(
         _ artifactBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
@@ -999,6 +1164,13 @@ extension CoreRuntimeTransport {
         request _: CoreWorkspaceCommandIdentityRequestV1
     ) throws -> CoreWorkspaceCommandIdentityV1 {
         throw CoreTransportError.unexpected("workspace-command-identity-v1 transport is unavailable")
+    }
+
+    func workspaceCommandAdmissionBeginV1(
+        identity _: CoreRuntimeIdentity,
+        records _: [CoreWorkspaceCommandAdmissionSeedRecordV1]
+    ) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
+        throw CoreTransportError.unexpected("workspace-command-admission-v1 transport is unavailable")
     }
 
     func workspaceProjectionOpenScopeV1(

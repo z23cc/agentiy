@@ -14,7 +14,9 @@ use crate::types::{
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
-    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandIdentityRequestV1,
+    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionBeginRequestV1,
+    CoreWorkspaceCommandAdmissionDecisionV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
+    CoreWorkspaceCommandAdmissionSeedRecordV1, CoreWorkspaceCommandIdentityRequestV1,
     CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCreateDirectiveV1,
     CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
     CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDeletionTombstoneCleanupRequestV1,
@@ -22,9 +24,9 @@ use crate::types::{
     CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
     CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
     CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
-    CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
-    CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceWorkingJournalSeedRequestV1,
-    CoreWorkspaceWorkingJournalValidationErrorKindV1,
+    CoreWorkspaceRecordedOperationV1, CoreWorkspaceSaveActionReportV1,
+    CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
+    CoreWorkspaceWorkingJournalSeedRequestV1, CoreWorkspaceWorkingJournalValidationErrorKindV1,
     CoreWorkspaceWorkingJournalValidationRequestV1,
     CoreWorkspaceWorkingJournalValidationResponseV1, DrainBatch, FolderSuffixRequest, HostResponse,
     InventoryComposedSnapshotHandleV1, InventoryComposedSnapshotRequestV1, InventoryDeltaCommandV1,
@@ -119,6 +121,131 @@ impl LeafCancellation {
                 Err(CoreError::RuntimeStopped)
             }
         })
+    }
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionBeginResponseV1 {
+    pub admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionDecisionResponseV1 {
+    pub decision: Option<CoreWorkspaceCommandAdmissionDecisionV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionMutationResponseV1 {
+    pub diagnostics: Option<CoreWorkspaceCommandAdmissionDiagnosticsV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(uniffi::Object)]
+pub struct CorePreparedWorkspaceCommandAdmissionV1 {
+    inner: runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1,
+    runtime: Weak<runtime::CoreRuntime>,
+    identity: runtime::RuntimeIdentity,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for CorePreparedWorkspaceCommandAdmissionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorePreparedWorkspaceCommandAdmissionV1")
+            .finish_non_exhaustive()
+    }
+}
+
+impl CorePreparedWorkspaceCommandAdmissionV1 {
+    fn require_live_runtime(&self) -> Result<(), CoreError> {
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if runtime.identity() != &self.identity {
+            return Err(CoreError::StaleRuntimeIdentity);
+        }
+        if runtime.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
+        }
+    }
+}
+
+#[uniffi::export]
+impl CorePreparedWorkspaceCommandAdmissionV1 {
+    pub fn decision(
+        &self,
+        workspace_id: String,
+        operation_id: String,
+        fingerprint: String,
+    ) -> Result<CoreWorkspaceCommandAdmissionDecisionResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(workspace_command_admission_decision_response(
+                self.inner
+                    .decision(&workspace_id, &operation_id, &fingerprint),
+            ))
+        })
+    }
+
+    pub fn reconcile_durable(
+        &self,
+        records: Vec<CoreWorkspaceCommandAdmissionSeedRecordV1>,
+    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let records = records.into_iter().map(Into::into).collect::<Vec<_>>();
+            Ok(workspace_command_admission_mutation_response(
+                self.inner.reconcile_durable(&records),
+            ))
+        })
+    }
+
+    pub fn insert(
+        &self,
+        workspace_id: Option<String>,
+        operation: CoreWorkspaceRecordedOperationV1,
+    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(workspace_command_admission_mutation_response(
+                self.inner.insert(workspace_id, operation.into()),
+            ))
+        })
+    }
+
+    pub fn remove_workspace(
+        &self,
+        workspace_id: String,
+    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(workspace_command_admission_mutation_response(
+                self.inner.remove_workspace(&workspace_id),
+            ))
+        })
+    }
+
+    pub fn diagnostics(
+        &self,
+    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(workspace_command_admission_mutation_response(
+                self.inner.diagnostics(),
+            ))
+        })
+    }
+
+    pub fn close(&self) {
+        let _ = self.panic_guard.call(|| {
+            self.inner.close();
+            Ok::<(), CoreError>(())
+        });
     }
 }
 
@@ -1018,6 +1145,44 @@ impl CoreRuntime {
                     let (error_kind, future_schema_version) = workspace_journal_error(error);
                     CoreWorkspaceCommandIdentityResponseV1 {
                         identity: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
+        })
+    }
+
+    pub fn workspace_command_admission_begin_v1(
+        &self,
+        request: CoreWorkspaceCommandAdmissionBeginRequestV1,
+    ) -> Result<CoreWorkspaceCommandAdmissionBeginResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            let records = request
+                .records
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>();
+            Ok(match runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1::prepare(
+                &records,
+            ) {
+                Ok(admission) => CoreWorkspaceCommandAdmissionBeginResponseV1 {
+                    admission: Some(Arc::new(CorePreparedWorkspaceCommandAdmissionV1 {
+                        inner: admission,
+                        runtime: Arc::downgrade(&self.inner),
+                        identity,
+                        panic_guard: Arc::clone(&self.panic_guard),
+                    })),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceCommandAdmissionBeginResponseV1 {
+                        admission: None,
                         error_kind: Some(error_kind),
                         future_schema_version,
                     }
@@ -2968,6 +3133,52 @@ fn workspace_metadata_response(
     }
 }
 
+fn workspace_command_admission_decision_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDecisionV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceCommandAdmissionDecisionResponseV1 {
+    match result {
+        Ok(decision) => CoreWorkspaceCommandAdmissionDecisionResponseV1 {
+            decision: Some(decision.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceCommandAdmissionDecisionResponseV1 {
+                decision: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
+fn workspace_command_admission_mutation_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDiagnosticsV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceCommandAdmissionMutationResponseV1 {
+    match result {
+        Ok(diagnostics) => CoreWorkspaceCommandAdmissionMutationResponseV1 {
+            diagnostics: Some(diagnostics.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceCommandAdmissionMutationResponseV1 {
+                diagnostics: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
 fn workspace_journal_mutation_directive_response(
     result: Result<
         runtime::workspace_persistence_journal::WorkspaceJournalMutationDirectiveV1,
@@ -3431,6 +3642,127 @@ mod tests {
         assert_eq!(
             core.workspace_command_identity_v1(wrong_contract),
             Err(CoreError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn workspace_command_admission_export_is_typed_bounded_and_runtime_fenced() {
+        let (core, identity, _) = initialized_core();
+        let operation = CoreWorkspaceRecordedOperationV1 {
+            operation_id: "66666666-7777-8888-9999-aaaaaaaaaaaa".to_owned(),
+            fingerprint: "f".repeat(64),
+            recorded_at: 42.5,
+            disposition: "applied".to_owned(),
+            before: None,
+            after: None,
+            catalog_revision: 7,
+            resulting_digest: Some("a".repeat(64)),
+            error_code: None,
+            diagnostic: None,
+        };
+        let response = core
+            .workspace_command_admission_begin_v1(CoreWorkspaceCommandAdmissionBeginRequestV1 {
+                runtime_identity: identity.clone(),
+                contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+                records: vec![CoreWorkspaceCommandAdmissionSeedRecordV1 {
+                    workspace_id: Some(
+                        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                    ),
+                    operation: operation.clone(),
+                }],
+            })
+            .expect("command admission begin");
+        assert_eq!(response.error_kind, None);
+        let admission = response.admission.expect("prepared admission");
+
+        let replay = admission
+            .decision(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                operation.operation_id.clone(),
+                operation.fingerprint.clone(),
+            )
+            .expect("typed replay");
+        assert_eq!(
+            replay.decision,
+            Some(CoreWorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace,
+                operation: operation.clone(),
+            })
+        );
+        let collision = admission
+            .decision(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                operation.operation_id.clone(),
+                "e".repeat(64),
+            )
+            .expect("typed collision");
+        assert_eq!(
+            collision.decision,
+            Some(CoreWorkspaceCommandAdmissionDecisionV1::Collision {
+                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Workspace,
+            })
+        );
+
+        let transient = CoreWorkspaceRecordedOperationV1 {
+            operation_id: "77777777-8888-9999-aaaa-bbbbbbbbbbbb".to_owned(),
+            fingerprint: "d".repeat(64),
+            ..operation.clone()
+        };
+        admission
+            .insert(None, transient.clone())
+            .expect("transient insert");
+        let durable = CoreWorkspaceRecordedOperationV1 {
+            operation_id: "88888888-9999-aaaa-bbbb-cccccccccccc".to_owned(),
+            fingerprint: "c".repeat(64),
+            ..operation.clone()
+        };
+        let reconciled = admission
+            .reconcile_durable(vec![CoreWorkspaceCommandAdmissionSeedRecordV1 {
+                workspace_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned()),
+                operation: durable,
+            }])
+            .expect("durable reconcile");
+        let reconciled = reconciled.diagnostics.expect("reconciled diagnostics");
+        assert_eq!(reconciled.global_operation_count, 3);
+        assert_eq!(reconciled.workspace_operation_count, 1);
+        assert_eq!(
+            admission
+                .decision(
+                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                    transient.operation_id.clone(),
+                    transient.fingerprint.clone(),
+                )
+                .expect("retained global")
+                .decision,
+            Some(CoreWorkspaceCommandAdmissionDecisionV1::Replay {
+                scope: crate::types::CoreWorkspaceCommandAdmissionLookupScopeV1::Global,
+                operation: transient,
+            })
+        );
+
+        let malformed = CoreWorkspaceRecordedOperationV1 {
+            operation_id: "not-a-uuid".to_owned(),
+            ..operation
+        };
+        let rejected = admission
+            .insert(None, malformed)
+            .expect("semantic error response");
+        assert_eq!(rejected.diagnostics, None);
+        assert_eq!(
+            rejected.error_kind,
+            Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidOperationLedger)
+        );
+        let diagnostics = admission.diagnostics().expect("unchanged diagnostics");
+        assert_eq!(diagnostics.diagnostics, Some(reconciled));
+
+        core.begin_shutdown(identity).expect("shutdown");
+        assert_eq!(
+            admission.decision(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                "66666666-7777-8888-9999-aaaaaaaaaaaa".to_owned(),
+                "f".repeat(64),
+            ),
+            Err(CoreError::RuntimeStopped)
         );
     }
 

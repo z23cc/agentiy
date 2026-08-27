@@ -106,6 +106,116 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         _ = try await bridge.close()
     }
 
+    func testRealCoreProvidesPreparedWorkspaceCommandAdmission() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let workspaceID = UUID()
+        let operationID = UUID()
+        let operation = CoreWorkspaceRecordedOperationV1(
+            operationID: operationID,
+            fingerprint: String(repeating: "f", count: 64),
+            recordedAt: 42.5,
+            disposition: "applied",
+            before: nil,
+            after: CoreWorkspaceProjectionRevisionState(
+                workingRevision: 1,
+                savedRevision: 0,
+                dirtyRevision: 1
+            ),
+            catalogRevision: 7,
+            resultingDigest: String(repeating: "a", count: 64),
+            errorCode: nil,
+            diagnostic: nil
+        )
+        let admission = try prepared.beginCommandAdmission(records: [
+            .init(workspaceID: workspaceID, operation: operation),
+        ])
+        defer { admission.close() }
+
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: operationID,
+                fingerprint: operation.fingerprint
+            ),
+            .replay(scope: .workspace, operation: operation)
+        )
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: operationID,
+                fingerprint: String(repeating: "e", count: 64)
+            ),
+            .collision(scope: .workspace)
+        )
+        XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
+
+        let transient = CoreWorkspaceRecordedOperationV1(
+            operationID: UUID(),
+            fingerprint: String(repeating: "d", count: 64),
+            recordedAt: 43.5,
+            disposition: "conflict",
+            before: nil,
+            after: nil,
+            catalogRevision: 7,
+            resultingDigest: nil,
+            errorCode: "state_conflict",
+            diagnostic: "transient"
+        )
+        _ = try admission.insert(workspaceID: nil, operation: transient)
+        let durableReplacement = CoreWorkspaceRecordedOperationV1(
+            operationID: UUID(),
+            fingerprint: String(repeating: "c", count: 64),
+            recordedAt: 44.5,
+            disposition: "unchanged",
+            before: nil,
+            after: nil,
+            catalogRevision: 8,
+            resultingDigest: nil,
+            errorCode: nil,
+            diagnostic: nil
+        )
+        _ = try admission.reconcileDurable([
+            .init(workspaceID: workspaceID, operation: durableReplacement),
+        ])
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: transient.operationID,
+                fingerprint: transient.fingerprint
+            ),
+            .replay(scope: .global, operation: transient)
+        )
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: durableReplacement.operationID,
+                fingerprint: durableReplacement.fingerprint
+            ),
+            .replay(scope: .workspace, operation: durableReplacement)
+        )
+
+        _ = try admission.removeWorkspace(workspaceID)
+        XCTAssertEqual(
+            try admission.decision(
+                workspaceID: workspaceID,
+                operationID: operationID,
+                fingerprint: operation.fingerprint
+            ),
+            .replay(scope: .global, operation: operation)
+        )
+
+        admission.close()
+        XCTAssertThrowsError(try admission.diagnostics()) { error in
+            XCTAssertEqual(
+                error as? CoreWorkspaceWorkingJournalValidationError,
+                .invalidTransaction
+            )
+        }
+        _ = try await bridge.close()
+    }
+
     func testRealCoreValidatesFoundationWorkspaceWorkingJournalV1Shape() async throws {
         let workspaceID = UUID()
         let contextID = UUID()

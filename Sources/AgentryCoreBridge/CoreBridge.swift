@@ -159,6 +159,10 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         request: CoreWorkspaceCommandIdentityRequestV1
     ) throws -> CoreWorkspaceCommandIdentityV1
+    func workspaceCommandAdmissionBeginV1(
+        identity: CoreRuntimeIdentity,
+        records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
+    ) throws -> CorePreparedWorkspaceCommandAdmissionV1
     func workspaceSavedRevisionValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1120,6 +1124,111 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 workspaceID: workspaceID,
                 commandKind: commandKind,
                 fingerprint: value.fingerprint
+            )
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func workspaceCommandAdmissionBeginV1(
+        identity: CoreRuntimeIdentity,
+        records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
+    ) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
+        let rawRecords = records.map(Self.rawWorkspaceCommandAdmissionSeedRecord)
+        do {
+            let response = try runtime.workspaceCommandAdmissionBeginV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                records: rawRecords
+            ))
+            if let errorKind = response.errorKind {
+                guard response.admission == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace command admission response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let rawAdmission = response.admission
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace command admission response is invalid"
+                )
+            }
+            return CorePreparedWorkspaceCommandAdmissionV1(
+                decision: { workspaceID, operationID, fingerprint in
+                    do {
+                        return try Self.workspaceCommandAdmissionDecision(
+                            rawAdmission.decision(
+                                workspaceId: workspaceID.uuidString,
+                                operationId: operationID.uuidString,
+                                fingerprint: fingerprint
+                            )
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                reconcileDurable: { durable in
+                    do {
+                        return try Self.workspaceCommandAdmissionDiagnostics(
+                            rawAdmission.reconcileDurable(
+                                records: durable.map(Self.rawWorkspaceCommandAdmissionSeedRecord)
+                            )
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                insert: { workspaceID, operation in
+                    do {
+                        return try Self.workspaceCommandAdmissionDiagnostics(
+                            rawAdmission.insert(
+                                workspaceId: workspaceID?.uuidString,
+                                operation: Self.rawWorkspaceRecordedOperation(operation)
+                            )
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                removeWorkspace: { workspaceID in
+                    do {
+                        return try Self.workspaceCommandAdmissionDiagnostics(
+                            rawAdmission.removeWorkspace(workspaceId: workspaceID.uuidString)
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                diagnostics: {
+                    do {
+                        return try Self.workspaceCommandAdmissionDiagnostics(
+                            rawAdmission.diagnostics()
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
+                close: {
+                    rawAdmission.close()
+                }
             )
         } catch let error as CoreWorkspaceWorkingJournalValidationError {
             throw error
@@ -2253,6 +2362,182 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 documentDigest: documentDigest
             )
         }
+    }
+
+    private static func rawWorkspaceCommandAdmissionSeedRecord(
+        _ value: CoreWorkspaceCommandAdmissionSeedRecordV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionSeedRecordV1 {
+        .init(
+            workspaceId: value.workspaceID?.uuidString,
+            operation: rawWorkspaceRecordedOperation(value.operation)
+        )
+    }
+
+    private static func rawWorkspaceRecordedOperation(
+        _ value: CoreWorkspaceRecordedOperationV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceRecordedOperationV1 {
+        .init(
+            operationId: value.operationID.uuidString,
+            fingerprint: value.fingerprint,
+            recordedAt: value.recordedAt,
+            disposition: value.disposition,
+            before: value.before.map(rawWorkspaceRevisionState),
+            after: value.after.map(rawWorkspaceRevisionState),
+            catalogRevision: value.catalogRevision,
+            resultingDigest: value.resultingDigest,
+            errorCode: value.errorCode,
+            diagnostic: value.diagnostic
+        )
+    }
+
+    private static func rawWorkspaceRevisionState(
+        _ value: CoreWorkspaceProjectionRevisionState
+    ) -> AgentryUniFFIRaw.CoreWorkspaceProjectionRevisionStateV1 {
+        .init(
+            workingRevision: value.workingRevision,
+            savedRevision: value.savedRevision,
+            dirtyRevision: value.dirtyRevision
+        )
+    }
+
+    private static func workspaceCommandAdmissionDecision(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionDecisionResponseV1
+    ) throws -> CoreWorkspaceCommandAdmissionDecisionV1 {
+        if let errorKind = response.errorKind {
+            guard response.decision == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace command admission decision contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let decision = response.decision
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace command admission decision is invalid"
+            )
+        }
+        return switch decision {
+        case .unseen:
+            .unseen
+        case let .collision(scope):
+            .collision(scope: workspaceCommandAdmissionScope(scope))
+        case let .replay(scope, operation):
+            .replay(
+                scope: workspaceCommandAdmissionScope(scope),
+                operation: try workspaceRecordedOperation(operation)
+            )
+        }
+    }
+
+    private static func workspaceCommandAdmissionDiagnostics(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionMutationResponseV1
+    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
+        if let errorKind = response.errorKind {
+            guard response.diagnostics == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace command admission mutation contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let diagnostics = response.diagnostics
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace command admission diagnostics are invalid"
+            )
+        }
+        let total = diagnostics.globalOperationCount.addingReportingOverflow(
+            diagnostics.workspaceOperationCount
+        )
+        guard diagnostics.globalOperationCount <= 4_096,
+              diagnostics.workspaceCount <= diagnostics.workspaceOperationCount,
+              diagnostics.workspaceOperationCount <= 65_536,
+              !total.overflow,
+              total.partialValue <= 65_536
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace command admission diagnostics are invalid"
+            )
+        }
+        return CoreWorkspaceCommandAdmissionDiagnosticsV1(
+            globalOperationCount: diagnostics.globalOperationCount,
+            workspaceCount: diagnostics.workspaceCount,
+            workspaceOperationCount: diagnostics.workspaceOperationCount
+        )
+    }
+
+    private static func workspaceCommandAdmissionScope(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionLookupScopeV1
+    ) -> CoreWorkspaceCommandAdmissionLookupScopeV1 {
+        switch value {
+        case .workspace: .workspace
+        case .global: .global
+        }
+    }
+
+    private static func workspaceRecordedOperation(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceRecordedOperationV1
+    ) throws -> CoreWorkspaceRecordedOperationV1 {
+        let validDispositions = Set([
+            "applied", "unchanged", "conflict", "readOnly", "invalid", "failed", "deduplicated",
+        ])
+        let validErrorCodes = Set([
+            "state_conflict", "runtime_read_only_degraded", "workspace_external_conflict",
+            "workspace_read_only_degraded", "protected_agent_identity_conflict",
+            "operation_id_collision", "workspace_unavailable", "invalid_document",
+            "persistence_failure", "lock_timed_out", "cancelled",
+        ])
+        guard let operationID = UUID(uuidString: value.operationId),
+              isSHA256(value.fingerprint),
+              value.recordedAt.isFinite,
+              validDispositions.contains(value.disposition),
+              value.resultingDigest.map(isSHA256) ?? true,
+              value.errorCode.map(validErrorCodes.contains) ?? true,
+              value.before.map(workspaceRevisionStateIsValid) ?? true,
+              value.after.map(workspaceRevisionStateIsValid) ?? true
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace command admission operation receipt is invalid"
+            )
+        }
+        return CoreWorkspaceRecordedOperationV1(
+            operationID: operationID,
+            fingerprint: value.fingerprint,
+            recordedAt: value.recordedAt,
+            disposition: value.disposition,
+            before: value.before.map(workspaceRevisionState),
+            after: value.after.map(workspaceRevisionState),
+            catalogRevision: value.catalogRevision,
+            resultingDigest: value.resultingDigest,
+            errorCode: value.errorCode,
+            diagnostic: value.diagnostic
+        )
+    }
+
+    private static func workspaceRevisionState(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceProjectionRevisionStateV1
+    ) -> CoreWorkspaceProjectionRevisionState {
+        .init(
+            workingRevision: value.workingRevision,
+            savedRevision: value.savedRevision,
+            dirtyRevision: value.dirtyRevision
+        )
+    }
+
+    private static func workspaceRevisionStateIsValid(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceProjectionRevisionStateV1
+    ) -> Bool {
+        value.savedRevision <= value.workingRevision
+            && (value.dirtyRevision == nil || value.dirtyRevision == value.workingRevision)
     }
 
     private static func isSHA256(_ value: String) -> Bool {
