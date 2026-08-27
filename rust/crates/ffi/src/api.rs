@@ -14,7 +14,8 @@ use crate::types::{
     CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
-    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCreateDirectiveV1,
+    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandIdentityRequestV1,
+    CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCreateDirectiveV1,
     CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
     CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDeletionTombstoneCleanupRequestV1,
     CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
@@ -977,6 +978,51 @@ impl CoreRuntime {
             runtime::workspace_context::project_workspace_document_v1(&request.document_bytes)
                 .map(Into::into)
                 .map_err(|_| CoreError::InvalidArgument)
+        })
+    }
+
+    pub fn workspace_command_identity_v1(
+        &self,
+        request: CoreWorkspaceCommandIdentityRequestV1,
+    ) -> Result<CoreWorkspaceCommandIdentityResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            self.validate_identity(&request.runtime_identity)?;
+            require_workspace_persistence_contract(request.contract_version)?;
+            let result = runtime::workspace_persistence_journal::workspace_command_identity_v1(
+                runtime::workspace_persistence_journal::WorkspaceCommandIdentityRequestV1 {
+                    operation_id: request.operation_id,
+                    expected_catalog_revision: request.expected_catalog_revision,
+                    expected_workspace_revision: request.expected_workspace_revision,
+                    expected_context_revision: request.expected_context_revision,
+                    origin: request.origin.into(),
+                    command_kind: request.command_kind.into(),
+                    workspace_id: request.workspace_id,
+                    file_url: request.file_url,
+                    content_digest: request.content_digest,
+                    accept_external: request.accept_external,
+                    protected_agent_identities: request
+                        .protected_agent_identities
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                },
+            );
+            Ok(match result {
+                Ok(identity) => CoreWorkspaceCommandIdentityResponseV1 {
+                    identity: Some(identity.into()),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceCommandIdentityResponseV1 {
+                        identity: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
         })
     }
 
@@ -3186,6 +3232,7 @@ mod tests {
     use super::*;
     use crate::types::{
         CoreApplyEditsSubjectRequestV1, CoreCodeMapSourceKindV1, CoreCodeMapSubjectRequestV1,
+        CoreWorkspaceCommandKindV1, CoreWorkspaceCommandOriginV1,
         CoreWorkspaceProjectionPublicationEventV1, CoreWorkspaceProjectionPublicationKindV1,
         InventoryApplyOutcomeV1, InventoryRejectionReasonV1,
     };
@@ -3336,6 +3383,55 @@ mod tests {
                 document_bytes: b"[]".to_vec(),
             });
         assert_eq!(invalid_document, Err(CoreError::InvalidArgument));
+    }
+
+    #[test]
+    fn workspace_command_identity_export_is_exact_runtime_fenced_and_typed() {
+        let (core, identity, _) = initialized_core();
+        let request = CoreWorkspaceCommandIdentityRequestV1 {
+            runtime_identity: identity.clone(),
+            contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+            operation_id: "66666666-7777-8888-9999-aaaaaaaaaaaa".to_owned(),
+            expected_catalog_revision: None,
+            expected_workspace_revision: None,
+            expected_context_revision: None,
+            origin: CoreWorkspaceCommandOriginV1::AppPresentation { window_id: 42 },
+            command_kind: CoreWorkspaceCommandKindV1::Create,
+            workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+            file_url: Some("file:///tmp/Workspace.json".to_owned()),
+            content_digest: Some("f".repeat(64)),
+            accept_external: None,
+            protected_agent_identities: Vec::new(),
+        };
+        let response = core
+            .workspace_command_identity_v1(request.clone())
+            .expect("command identity");
+        assert_eq!(response.error_kind, None);
+        let command = response.identity.expect("identity receipt");
+        assert_eq!(command.command_kind, CoreWorkspaceCommandKindV1::Create);
+        assert_eq!(command.workspace_id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert_eq!(
+            command.fingerprint,
+            "4a06f1cb575766d8be224014ef503c41ccd40d82a94521be142f4746cbd4b9f0"
+        );
+
+        let mut contradictory = request.clone();
+        contradictory.accept_external = Some(false);
+        let invalid = core
+            .workspace_command_identity_v1(contradictory)
+            .expect("semantic error response");
+        assert_eq!(invalid.identity, None);
+        assert_eq!(
+            invalid.error_kind,
+            Some(CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidTransaction)
+        );
+
+        let mut wrong_contract = request;
+        wrong_contract.contract_version = 99;
+        assert_eq!(
+            core.workspace_command_identity_v1(wrong_contract),
+            Err(CoreError::InvalidArgument)
+        );
     }
 
     #[test]

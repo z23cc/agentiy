@@ -916,6 +916,151 @@ pub struct CoreWorkspaceCatalogResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceCommandOriginV1 {
+    AppPresentation { window_id: i64 },
+    AppMcp { connection_id: Option<String> },
+    Standalone,
+    ExternalReload,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceCommandKindV1 {
+    Create,
+    Replace,
+    Save,
+    Delete,
+    ResolveExternalConflict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceTabLocationV1 {
+    Composed,
+    Stashed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceProtectedAgentIdentityV1 {
+    pub tab_id: String,
+    pub location: CoreWorkspaceTabLocationV1,
+    pub active_agent_session_id: Option<String>,
+    pub is_pinned: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandIdentityRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub operation_id: String,
+    pub expected_catalog_revision: Option<u64>,
+    pub expected_workspace_revision: Option<u64>,
+    pub expected_context_revision: Option<u64>,
+    pub origin: CoreWorkspaceCommandOriginV1,
+    pub command_kind: CoreWorkspaceCommandKindV1,
+    pub workspace_id: String,
+    pub file_url: Option<String>,
+    pub content_digest: Option<String>,
+    pub accept_external: Option<bool>,
+    pub protected_agent_identities: Vec<CoreWorkspaceProtectedAgentIdentityV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandIdentityV1 {
+    pub workspace_id: String,
+    pub command_kind: CoreWorkspaceCommandKindV1,
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandIdentityResponseV1 {
+    pub identity: Option<CoreWorkspaceCommandIdentityV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+impl From<CoreWorkspaceCommandOriginV1>
+    for runtime::workspace_persistence_journal::WorkspaceCommandOriginV1
+{
+    fn from(value: CoreWorkspaceCommandOriginV1) -> Self {
+        match value {
+            CoreWorkspaceCommandOriginV1::AppPresentation { window_id } => {
+                Self::AppPresentation { window_id }
+            }
+            CoreWorkspaceCommandOriginV1::AppMcp { connection_id } => {
+                Self::AppMcp { connection_id }
+            }
+            CoreWorkspaceCommandOriginV1::Standalone => Self::Standalone,
+            CoreWorkspaceCommandOriginV1::ExternalReload => Self::ExternalReload,
+        }
+    }
+}
+
+impl From<CoreWorkspaceCommandKindV1>
+    for runtime::workspace_persistence_journal::WorkspaceCommandKindV1
+{
+    fn from(value: CoreWorkspaceCommandKindV1) -> Self {
+        match value {
+            CoreWorkspaceCommandKindV1::Create => Self::Create,
+            CoreWorkspaceCommandKindV1::Replace => Self::Replace,
+            CoreWorkspaceCommandKindV1::Save => Self::Save,
+            CoreWorkspaceCommandKindV1::Delete => Self::Delete,
+            CoreWorkspaceCommandKindV1::ResolveExternalConflict => Self::ResolveExternalConflict,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandKindV1>
+    for CoreWorkspaceCommandKindV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceCommandKindV1) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceCommandKindV1::Create => Self::Create,
+            runtime::workspace_persistence_journal::WorkspaceCommandKindV1::Replace => Self::Replace,
+            runtime::workspace_persistence_journal::WorkspaceCommandKindV1::Save => Self::Save,
+            runtime::workspace_persistence_journal::WorkspaceCommandKindV1::Delete => Self::Delete,
+            runtime::workspace_persistence_journal::WorkspaceCommandKindV1::ResolveExternalConflict => {
+                Self::ResolveExternalConflict
+            }
+        }
+    }
+}
+
+impl From<CoreWorkspaceTabLocationV1>
+    for runtime::workspace_persistence_journal::WorkspaceTabLocationV1
+{
+    fn from(value: CoreWorkspaceTabLocationV1) -> Self {
+        match value {
+            CoreWorkspaceTabLocationV1::Composed => Self::Composed,
+            CoreWorkspaceTabLocationV1::Stashed => Self::Stashed,
+        }
+    }
+}
+
+impl From<CoreWorkspaceProtectedAgentIdentityV1>
+    for runtime::workspace_persistence_journal::WorkspaceProtectedAgentIdentityV1
+{
+    fn from(value: CoreWorkspaceProtectedAgentIdentityV1) -> Self {
+        Self {
+            tab_id: value.tab_id,
+            location: value.location.into(),
+            active_agent_session_id: value.active_agent_session_id,
+            is_pinned: value.is_pinned,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandIdentityV1>
+    for CoreWorkspaceCommandIdentityV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceCommandIdentityV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            command_kind: value.command_kind.into(),
+            fingerprint: value.fingerprint,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceWorkingJournalValidationRequestV1 {
     pub runtime_identity: RuntimeIdentity,

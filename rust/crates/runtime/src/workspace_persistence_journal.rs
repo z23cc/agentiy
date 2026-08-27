@@ -18,6 +18,60 @@ use std::sync::Mutex;
 pub const WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1: u16 = 1;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1: usize = 128 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_OPERATION_COUNT_V1: usize = 256;
+pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceCommandOriginV1 {
+    AppPresentation { window_id: i64 },
+    AppMcp { connection_id: Option<String> },
+    Standalone,
+    ExternalReload,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceCommandKindV1 {
+    Create,
+    Replace,
+    Save,
+    Delete,
+    ResolveExternalConflict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum WorkspaceTabLocationV1 {
+    Composed,
+    Stashed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceProtectedAgentIdentityV1 {
+    pub tab_id: String,
+    pub location: WorkspaceTabLocationV1,
+    pub active_agent_session_id: Option<String>,
+    pub is_pinned: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandIdentityRequestV1 {
+    pub operation_id: String,
+    pub expected_catalog_revision: Option<u64>,
+    pub expected_workspace_revision: Option<u64>,
+    pub expected_context_revision: Option<u64>,
+    pub origin: WorkspaceCommandOriginV1,
+    pub command_kind: WorkspaceCommandKindV1,
+    pub workspace_id: String,
+    pub file_url: Option<String>,
+    pub content_digest: Option<String>,
+    pub accept_external: Option<bool>,
+    pub protected_agent_identities: Vec<WorkspaceProtectedAgentIdentityV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandIdentityV1 {
+    pub workspace_id: String,
+    pub command_kind: WorkspaceCommandKindV1,
+    pub fingerprint: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceWorkingJournalValidationV1 {
@@ -96,6 +150,152 @@ impl fmt::Display for WorkspaceWorkingJournalError {
 }
 
 impl std::error::Error for WorkspaceWorkingJournalError {}
+
+pub fn workspace_command_identity_v1(
+    request: WorkspaceCommandIdentityRequestV1,
+) -> Result<WorkspaceCommandIdentityV1, WorkspaceWorkingJournalError> {
+    fn foundation_uuid(value: &str) -> Result<String, WorkspaceWorkingJournalError> {
+        canonical_uuid(value)
+            .map(|canonical| canonical.to_ascii_uppercase())
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)
+    }
+
+    fn optional_revision(value: Option<u64>) -> String {
+        value.map_or_else(|| "nil".to_owned(), |revision| revision.to_string())
+    }
+
+    let operation_id = foundation_uuid(&request.operation_id)?;
+    let workspace_id = canonical_uuid(&request.workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let workspace_component = workspace_id.to_ascii_uppercase();
+    let origin = match request.origin {
+        WorkspaceCommandOriginV1::AppPresentation { window_id } => {
+            format!("presentation:{window_id}")
+        }
+        WorkspaceCommandOriginV1::AppMcp { connection_id } => format!(
+            "app-mcp:{}",
+            connection_id
+                .as_deref()
+                .map(foundation_uuid)
+                .transpose()?
+                .unwrap_or_else(|| "nil".to_owned())
+        ),
+        WorkspaceCommandOriginV1::Standalone => "standalone".to_owned(),
+        WorkspaceCommandOriginV1::ExternalReload => "external-reload".to_owned(),
+    };
+
+    let mut components = vec![
+        operation_id,
+        optional_revision(request.expected_catalog_revision),
+        optional_revision(request.expected_workspace_revision),
+        optional_revision(request.expected_context_revision),
+        origin,
+    ];
+
+    match request.command_kind {
+        WorkspaceCommandKindV1::Create | WorkspaceCommandKindV1::Replace => {
+            let file_url = request
+                .file_url
+                .filter(|value| valid_file_url(value))
+                .ok_or(WorkspaceWorkingJournalError::InvalidFileUrl)?;
+            let content_digest = request
+                .content_digest
+                .filter(|value| is_sha256_digest(value))
+                .ok_or(WorkspaceWorkingJournalError::InvalidDigest)?;
+            if request.accept_external.is_some() || !request.protected_agent_identities.is_empty() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            components.extend([
+                match request.command_kind {
+                    WorkspaceCommandKindV1::Create => "create".to_owned(),
+                    WorkspaceCommandKindV1::Replace => "replace".to_owned(),
+                    _ => unreachable!(),
+                },
+                workspace_component,
+                file_url,
+                content_digest,
+            ]);
+        }
+        WorkspaceCommandKindV1::Save | WorkspaceCommandKindV1::Delete => {
+            if request.file_url.is_some()
+                || request.content_digest.is_some()
+                || request.accept_external.is_some()
+                || !request.protected_agent_identities.is_empty()
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            components.extend([
+                match request.command_kind {
+                    WorkspaceCommandKindV1::Save => "save".to_owned(),
+                    WorkspaceCommandKindV1::Delete => "delete".to_owned(),
+                    _ => unreachable!(),
+                },
+                workspace_component,
+            ]);
+        }
+        WorkspaceCommandKindV1::ResolveExternalConflict => {
+            if request.file_url.is_some() || request.content_digest.is_some() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            let accept_external = request
+                .accept_external
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+            if request.protected_agent_identities.len()
+                > MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1
+            {
+                return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                    actual: request.protected_agent_identities.len(),
+                    maximum: MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1,
+                });
+            }
+            let mut protected = request
+                .protected_agent_identities
+                .into_iter()
+                .map(|identity| {
+                    Ok((
+                        identity.location,
+                        foundation_uuid(&identity.tab_id)?,
+                        identity
+                            .active_agent_session_id
+                            .as_deref()
+                            .map(foundation_uuid)
+                            .transpose()?,
+                        identity.is_pinned,
+                    ))
+                })
+                .collect::<Result<Vec<_>, WorkspaceWorkingJournalError>>()?;
+            protected
+                .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+            components.extend([
+                "resolve".to_owned(),
+                workspace_component,
+                if accept_external { "external" } else { "local" }.to_owned(),
+            ]);
+            for (location, tab_id, session_id, is_pinned) in protected {
+                components.extend([
+                    match location {
+                        WorkspaceTabLocationV1::Composed => "composed".to_owned(),
+                        WorkspaceTabLocationV1::Stashed => "stashed".to_owned(),
+                    },
+                    tab_id,
+                    session_id.unwrap_or_else(|| "nil".to_owned()),
+                    if is_pinned { "pinned" } else { "unpinned" }.to_owned(),
+                ]);
+            }
+        }
+    }
+
+    let canonical = components
+        .into_iter()
+        .map(|component| format!("{}:{component}", component.len()))
+        .collect::<Vec<_>>()
+        .join("|");
+    Ok(WorkspaceCommandIdentityV1 {
+        workspace_id,
+        command_kind: request.command_kind,
+        fingerprint: format!("{:x}", Sha256::digest(canonical.as_bytes())),
+    })
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3851,6 +4051,150 @@ mod tests {
     const WORKSPACE_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     const CONTEXT_ID: &str = "11111111-2222-3333-4444-555555555555";
     const OPERATION_ID: &str = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+
+    fn command_identity_request(
+        command_kind: WorkspaceCommandKindV1,
+    ) -> WorkspaceCommandIdentityRequestV1 {
+        let (file_url, content_digest, accept_external) = match command_kind {
+            WorkspaceCommandKindV1::Create | WorkspaceCommandKindV1::Replace => (
+                Some("file:///tmp/Workspace.json".to_owned()),
+                Some("f".repeat(64)),
+                None,
+            ),
+            WorkspaceCommandKindV1::ResolveExternalConflict => (None, None, Some(true)),
+            WorkspaceCommandKindV1::Save | WorkspaceCommandKindV1::Delete => (None, None, None),
+        };
+        WorkspaceCommandIdentityRequestV1 {
+            operation_id: OPERATION_ID.to_owned(),
+            expected_catalog_revision: None,
+            expected_workspace_revision: None,
+            expected_context_revision: None,
+            origin: WorkspaceCommandOriginV1::AppPresentation { window_id: 42 },
+            command_kind,
+            workspace_id: WORKSPACE_ID.to_owned(),
+            file_url,
+            content_digest,
+            accept_external,
+            protected_agent_identities: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn command_identity_matches_frozen_swift_encoding() {
+        let identity =
+            workspace_command_identity_v1(command_identity_request(WorkspaceCommandKindV1::Create))
+                .expect("command identity");
+        assert_eq!(identity.workspace_id, WORKSPACE_ID);
+        assert_eq!(identity.command_kind, WorkspaceCommandKindV1::Create);
+        assert_eq!(
+            identity.fingerprint,
+            "4a06f1cb575766d8be224014ef503c41ccd40d82a94521be142f4746cbd4b9f0"
+        );
+    }
+
+    #[test]
+    fn command_identity_covers_all_shapes_and_stable_protected_order() {
+        let kinds = [
+            WorkspaceCommandKindV1::Create,
+            WorkspaceCommandKindV1::Replace,
+            WorkspaceCommandKindV1::Save,
+            WorkspaceCommandKindV1::Delete,
+        ];
+        let fingerprints = kinds
+            .into_iter()
+            .map(|kind| {
+                let mut request = command_identity_request(kind);
+                request.origin = match kind {
+                    WorkspaceCommandKindV1::Create => WorkspaceCommandOriginV1::AppMcp {
+                        connection_id: Some("12345678-1234-1234-1234-123456789abc".to_owned()),
+                    },
+                    WorkspaceCommandKindV1::Replace => WorkspaceCommandOriginV1::AppMcp {
+                        connection_id: None,
+                    },
+                    WorkspaceCommandKindV1::Save => WorkspaceCommandOriginV1::Standalone,
+                    WorkspaceCommandKindV1::Delete => WorkspaceCommandOriginV1::ExternalReload,
+                    WorkspaceCommandKindV1::ResolveExternalConflict => unreachable!(),
+                };
+                request.expected_catalog_revision = Some(7);
+                request.expected_workspace_revision = Some(8);
+                request.expected_context_revision = Some(9);
+                workspace_command_identity_v1(request)
+                    .expect("valid command")
+                    .fingerprint
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(fingerprints.len(), kinds.len());
+
+        let first = WorkspaceProtectedAgentIdentityV1 {
+            tab_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".to_owned(),
+            location: WorkspaceTabLocationV1::Stashed,
+            active_agent_session_id: None,
+            is_pinned: false,
+        };
+        let second = WorkspaceProtectedAgentIdentityV1 {
+            tab_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+            location: WorkspaceTabLocationV1::Composed,
+            active_agent_session_id: Some("abcdefab-cdef-abcd-efab-cdefabcdefab".to_owned()),
+            is_pinned: true,
+        };
+        let mut forward = command_identity_request(WorkspaceCommandKindV1::ResolveExternalConflict);
+        forward.protected_agent_identities = vec![first.clone(), second.clone()];
+        let mut reversed =
+            command_identity_request(WorkspaceCommandKindV1::ResolveExternalConflict);
+        reversed.protected_agent_identities = vec![second, first];
+        assert_eq!(
+            workspace_command_identity_v1(forward)
+                .expect("forward")
+                .fingerprint,
+            workspace_command_identity_v1(reversed)
+                .expect("reversed")
+                .fingerprint
+        );
+    }
+
+    #[test]
+    fn command_identity_rejects_invalid_or_contradictory_shape() {
+        let mut invalid_identity = command_identity_request(WorkspaceCommandKindV1::Save);
+        invalid_identity.operation_id = "not-a-uuid".to_owned();
+        assert_eq!(
+            workspace_command_identity_v1(invalid_identity),
+            Err(WorkspaceWorkingJournalError::InvalidIdentity)
+        );
+
+        let mut invalid_digest = command_identity_request(WorkspaceCommandKindV1::Create);
+        invalid_digest.content_digest = Some("not-a-digest".to_owned());
+        assert_eq!(
+            workspace_command_identity_v1(invalid_digest),
+            Err(WorkspaceWorkingJournalError::InvalidDigest)
+        );
+
+        let mut contradictory = command_identity_request(WorkspaceCommandKindV1::Delete);
+        contradictory.accept_external = Some(false);
+        assert_eq!(
+            workspace_command_identity_v1(contradictory),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+
+        let mut oversized =
+            command_identity_request(WorkspaceCommandKindV1::ResolveExternalConflict);
+        oversized.protected_agent_identities = vec![
+            WorkspaceProtectedAgentIdentityV1 {
+                tab_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+                location: WorkspaceTabLocationV1::Composed,
+                active_agent_session_id: None,
+                is_pinned: false,
+            };
+            MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1
+                + 1
+        ];
+        assert_eq!(
+            workspace_command_identity_v1(oversized),
+            Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1 + 1,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1,
+            })
+        );
+    }
 
     fn document(prompt: &str) -> Vec<u8> {
         document_for_workspace(WORKSPACE_ID, prompt)

@@ -83,6 +83,112 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         }
     }
 
+    func testPreparedCommandIdentityMatchesFrozenSwiftOracleForEveryCommandAndOrigin() async throws {
+        let workspaceID = UUID()
+        let fileURL = URL(fileURLWithPath: "/tmp/CommandIdentity-\(workspaceID.uuidString).json")
+        func document(_ marker: String) -> DomainWorkspaceDocument {
+            DomainWorkspaceDocument(
+                workspaceID: workspaceID,
+                fileURL: fileURL,
+                documentBytes: Data(marker.utf8),
+                metadata: DomainWorkspaceMetadata(
+                    workspaceID: workspaceID,
+                    schemaVersion: 1,
+                    name: "Workspace",
+                    repoPaths: [],
+                    customStoragePath: nil,
+                    isSystemWorkspace: false,
+                    isHiddenInMenus: false,
+                    isEphemeral: false,
+                    activeContextID: nil,
+                    contexts: []
+                )
+            )
+        }
+        let protected = [
+            DomainProtectedAgentIdentity(
+                tabID: try XCTUnwrap(UUID(
+                    uuidString: "ffffffff-ffff-ffff-ffff-ffffffffffff"
+                )),
+                location: .stashed,
+                activeAgentSessionID: nil,
+                isPinned: false
+            ),
+            DomainProtectedAgentIdentity(
+                tabID: try XCTUnwrap(UUID(
+                    uuidString: "00000000-0000-0000-0000-000000000001"
+                )),
+                location: .composed,
+                activeAgentSessionID: try XCTUnwrap(UUID(
+                    uuidString: "abcdefab-cdef-abcd-efab-cdefabcdefab"
+                )),
+                isPinned: true
+            )
+        ]
+        let envelopes = [
+            DomainWorkspaceCommandEnvelope(
+                operationID: UUID(),
+                expectedCatalogRevision: nil,
+                expectedWorkspaceRevision: nil,
+                expectedContextRevision: nil,
+                origin: .appPresentation(windowID: 42),
+                command: .createWorkspace(document("create"))
+            ),
+            DomainWorkspaceCommandEnvelope(
+                operationID: UUID(),
+                expectedCatalogRevision: 7,
+                expectedWorkspaceRevision: 8,
+                expectedContextRevision: 9,
+                origin: .appMCP(connectionID: UUID()),
+                command: .replaceWorkingDocument(document("replace"))
+            ),
+            DomainWorkspaceCommandEnvelope(
+                operationID: UUID(),
+                expectedWorkspaceRevision: 3,
+                origin: .appMCP(connectionID: nil),
+                command: .saveWorkspaceDocument(workspaceID: workspaceID)
+            ),
+            DomainWorkspaceCommandEnvelope(
+                operationID: UUID(),
+                expectedCatalogRevision: 4,
+                expectedWorkspaceRevision: 5,
+                origin: .standalone,
+                command: .deleteWorkspace(workspaceID: workspaceID)
+            ),
+            DomainWorkspaceCommandEnvelope(
+                operationID: UUID(),
+                expectedWorkspaceRevision: 6,
+                expectedContextRevision: 7,
+                origin: .externalReload,
+                command: .resolveExternalConflict(
+                    workspaceID: workspaceID,
+                    acceptExternal: false,
+                    protectedAgentIdentities: protected
+                )
+            )
+        ]
+        let service = AgentryCoreService()
+        defer { Task { await service.shutdown() } }
+        let prepared = try await DomainWorkspaceRustJournal.prepare(coreService: service)
+
+        for envelope in envelopes {
+            XCTAssertEqual(try prepared.commandIdentity(envelope), envelope.fingerprint)
+        }
+        let reversed = DomainWorkspaceCommandEnvelope(
+            operationID: envelopes[4].operationID,
+            expectedWorkspaceRevision: 6,
+            expectedContextRevision: 7,
+            origin: .externalReload,
+            command: .resolveExternalConflict(
+                workspaceID: workspaceID,
+                acceptExternal: false,
+                protectedAgentIdentities: Array(protected.reversed())
+            )
+        )
+        XCTAssertEqual(reversed.fingerprint, envelopes[4].fingerprint)
+        XCTAssertEqual(try prepared.commandIdentity(reversed), envelopes[4].fingerprint)
+    }
+
     func testPreparedValidatorRunsSynchronouslyAndMatchesAsyncBoundary() async throws {
         let workspaceID = UUID()
         let fileURL = URL(fileURLWithPath: "/tmp/Prepared-\(workspaceID.uuidString).json")

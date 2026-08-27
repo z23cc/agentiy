@@ -391,6 +391,34 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         )
     }
 
+    func testCommandIdentityCandidateDoesNotPrematurelyReplaceSwiftMutationAdmission() throws {
+        let root = repositoryRoot()
+        let authority = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
+            ),
+            encoding: .utf8
+        )
+        let adapter = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(
+            authority.components(separatedBy: "envelope.fingerprint").count - 1,
+            3,
+            "P5-6a remains comparison-only; Swift must retain all production identity reads"
+        )
+        XCTAssertFalse(
+            authority.contains("commandIdentity("),
+            "Rust parity candidate must not become production admission before the cutover gate"
+        )
+        XCTAssertTrue(adapter.contains("func commandIdentity("))
+        XCTAssertTrue(adapter.contains("core.commandIdentity("))
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

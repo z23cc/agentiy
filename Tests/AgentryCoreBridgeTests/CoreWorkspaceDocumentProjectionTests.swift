@@ -72,6 +72,40 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         _ = try await bridge.close()
     }
 
+    func testRealCoreComputesTypedWorkspaceCommandIdentity() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let identity = try prepared.commandIdentity(CoreWorkspaceCommandIdentityRequestV1(
+            operationID: try XCTUnwrap(UUID(
+                uuidString: "66666666-7777-8888-9999-aaaaaaaaaaaa"
+            )),
+            expectedCatalogRevision: nil,
+            expectedWorkspaceRevision: nil,
+            expectedContextRevision: nil,
+            origin: .appPresentation(windowID: 42),
+            commandKind: .create,
+            workspaceID: try XCTUnwrap(UUID(
+                uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            )),
+            fileURL: URL(fileURLWithPath: "/tmp/Workspace.json"),
+            contentDigest: String(repeating: "f", count: 64),
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        ))
+
+        XCTAssertEqual(identity.commandKind, .create)
+        XCTAssertEqual(
+            identity.workspaceID.uuidString,
+            "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        )
+        XCTAssertEqual(
+            identity.fingerprint,
+            "4a06f1cb575766d8be224014ef503c41ccd40d82a94521be142f4746cbd4b9f0"
+        )
+        _ = try await bridge.close()
+    }
+
     func testRealCoreValidatesFoundationWorkspaceWorkingJournalV1Shape() async throws {
         let workspaceID = UUID()
         let contextID = UUID()

@@ -155,6 +155,10 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         documentBytes: Data
     ) throws -> CoreWorkspaceDocumentProjectionV1
+    func workspaceCommandIdentityV1(
+        identity: CoreRuntimeIdentity,
+        request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceCommandIdentityV1
     func workspaceSavedRevisionValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1028,6 +1032,100 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             activeContextID: optionalUUID(value.activeContextId),
             contexts: contexts
         )
+    }
+
+    func workspaceCommandIdentityV1(
+        identity: CoreRuntimeIdentity,
+        request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceCommandIdentityV1 {
+        let rawOrigin: AgentryUniFFIRaw.CoreWorkspaceCommandOriginV1 = switch request.origin {
+        case let .appPresentation(windowID):
+            .appPresentation(windowId: windowID)
+        case let .appMCP(connectionID):
+            .appMcp(connectionId: connectionID?.uuidString)
+        case .standalone:
+            .standalone
+        case .externalReload:
+            .externalReload
+        }
+        let rawKind: AgentryUniFFIRaw.CoreWorkspaceCommandKindV1 = switch request.commandKind {
+        case .create: .create
+        case .replace: .replace
+        case .save: .save
+        case .delete: .delete
+        case .resolveExternalConflict: .resolveExternalConflict
+        }
+        let rawProtected = request.protectedAgentIdentities.map { protected in
+            let location: AgentryUniFFIRaw.CoreWorkspaceTabLocationV1 = switch protected.location {
+            case .composed: .composed
+            case .stashed: .stashed
+            }
+            return AgentryUniFFIRaw.CoreWorkspaceProtectedAgentIdentityV1(
+                tabId: protected.tabID.uuidString,
+                location: location,
+                activeAgentSessionId: protected.activeAgentSessionID?.uuidString,
+                isPinned: protected.isPinned
+            )
+        }
+        do {
+            let response = try runtime.workspaceCommandIdentityV1(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                operationId: request.operationID.uuidString,
+                expectedCatalogRevision: request.expectedCatalogRevision,
+                expectedWorkspaceRevision: request.expectedWorkspaceRevision,
+                expectedContextRevision: request.expectedContextRevision,
+                origin: rawOrigin,
+                commandKind: rawKind,
+                workspaceId: request.workspaceID.uuidString,
+                fileUrl: request.fileURL?.absoluteString,
+                contentDigest: request.contentDigest,
+                acceptExternal: request.acceptExternal,
+                protectedAgentIdentities: rawProtected
+            ))
+            if let errorKind = response.errorKind {
+                guard response.identity == nil else {
+                    throw CoreTransportError.unexpected(
+                        "workspace command identity response contains success and error"
+                    )
+                }
+                throw try Self.workspaceWorkingJournalValidationError(
+                    errorKind,
+                    futureSchemaVersion: response.futureSchemaVersion
+                )
+            }
+            guard response.futureSchemaVersion == nil,
+                  let value = response.identity,
+                  let workspaceID = UUID(uuidString: value.workspaceId),
+                  workspaceID == request.workspaceID,
+                  Self.isSHA256(value.fingerprint)
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace command identity receipt is invalid"
+                )
+            }
+            let commandKind: CoreWorkspaceCommandKindV1 = switch value.commandKind {
+            case .create: .create
+            case .replace: .replace
+            case .save: .save
+            case .delete: .delete
+            case .resolveExternalConflict: .resolveExternalConflict
+            }
+            guard commandKind == request.commandKind else {
+                throw CoreTransportError.unexpected(
+                    "workspace command identity kind does not match request"
+                )
+            }
+            return CoreWorkspaceCommandIdentityV1(
+                workspaceID: workspaceID,
+                commandKind: commandKind,
+                fingerprint: value.fingerprint
+            )
+        } catch let error as CoreWorkspaceWorkingJournalValidationError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
     }
 
     func workspaceSavedRevisionValidateV1(

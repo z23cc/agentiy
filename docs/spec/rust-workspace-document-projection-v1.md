@@ -1027,3 +1027,31 @@ Pending-save resolution remains a supported production recovery boundary and is 
   pending-save recovery remains unchanged.
 - Focused Rust/FFI/Bridge/Domain delete, restart, metadata, source-guard, codegen, product-build, style,
   guardrail, formatting, and diff checks pass.
+
+## P5-6a amendment — Rust workspace-command identity parity candidate
+
+P5-6a starts the mutation-authority cutover at the immutable operation-identity boundary. Rust accepts one
+bounded typed command-identity request covering the five established workspace commands, the four command
+origins, every expected revision fence, and the protected-agent identity set. It validates UUID, digest,
+file-URL, optional-field, and cardinality shape; applies the frozen sort and length-prefixed UTF-8 encoding;
+and returns the canonical workspace identity plus the SHA-256 operation fingerprint used for durable
+collision and deduplication decisions.
+
+This slice is comparison-only. Swift remains the sole production command admission and mutation authority,
+keeps its existing fingerprint implementation as the parity oracle, and performs no Rust-backed write. The
+candidate is exact-runtime fenced and available only through the prepared persistence capability so stopped
+or replaced runtimes fail closed. A later slice must arm a bounded observer, register performance and
+behavioral parity evidence, and explicitly flip the common app/headless command path before deleting the
+Swift oracle.
+
+### P5-6a done-when
+
+- Rust covers create, replace, save, delete, and external-conflict resolution; app-presentation, app-MCP,
+  standalone, and external-reload origins; nil/non-nil revision fences; and protected-identity stable order.
+- Invalid UUIDs, digests, file URLs, contradictory optional fields, and oversized protected-identity sets fail
+  closed without producing a fingerprint.
+- Typed UniFFI, generated bindings, Bridge, and Domain prepared-validator adapters preserve the request and
+  receipt without a second fingerprint implementation.
+- Real-Core Domain differential fixtures match the frozen Swift fingerprint for every command/origin family.
+- Production command execution remains Swift-authoritative and source guards prevent accidental candidate
+  use as mutation admission before the P5-6 cutover gate is explicitly closed.

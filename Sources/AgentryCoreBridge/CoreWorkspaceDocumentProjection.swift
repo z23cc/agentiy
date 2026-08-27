@@ -77,6 +77,103 @@ public enum CoreWorkspaceWorkingJournalValidationError: Error, Sendable, Equatab
     case invalidTransaction
 }
 
+public enum CoreWorkspaceCommandOriginV1: Sendable, Equatable {
+    case appPresentation(windowID: Int64)
+    case appMCP(connectionID: UUID?)
+    case standalone
+    case externalReload
+}
+
+public enum CoreWorkspaceCommandKindV1: Sendable, Equatable {
+    case create
+    case replace
+    case save
+    case delete
+    case resolveExternalConflict
+}
+
+public enum CoreWorkspaceTabLocationV1: Sendable, Equatable {
+    case composed
+    case stashed
+}
+
+public struct CoreWorkspaceProtectedAgentIdentityV1: Sendable, Equatable {
+    public let tabID: UUID
+    public let location: CoreWorkspaceTabLocationV1
+    public let activeAgentSessionID: UUID?
+    public let isPinned: Bool
+
+    public init(
+        tabID: UUID,
+        location: CoreWorkspaceTabLocationV1,
+        activeAgentSessionID: UUID?,
+        isPinned: Bool
+    ) {
+        self.tabID = tabID
+        self.location = location
+        self.activeAgentSessionID = activeAgentSessionID
+        self.isPinned = isPinned
+    }
+}
+
+public struct CoreWorkspaceCommandIdentityRequestV1: Sendable, Equatable {
+    public static let maximumProtectedAgentIdentities = 256
+
+    public let operationID: UUID
+    public let expectedCatalogRevision: UInt64?
+    public let expectedWorkspaceRevision: UInt64?
+    public let expectedContextRevision: UInt64?
+    public let origin: CoreWorkspaceCommandOriginV1
+    public let commandKind: CoreWorkspaceCommandKindV1
+    public let workspaceID: UUID
+    public let fileURL: URL?
+    public let contentDigest: String?
+    public let acceptExternal: Bool?
+    public let protectedAgentIdentities: [CoreWorkspaceProtectedAgentIdentityV1]
+
+    public init(
+        operationID: UUID,
+        expectedCatalogRevision: UInt64?,
+        expectedWorkspaceRevision: UInt64?,
+        expectedContextRevision: UInt64?,
+        origin: CoreWorkspaceCommandOriginV1,
+        commandKind: CoreWorkspaceCommandKindV1,
+        workspaceID: UUID,
+        fileURL: URL?,
+        contentDigest: String?,
+        acceptExternal: Bool?,
+        protectedAgentIdentities: [CoreWorkspaceProtectedAgentIdentityV1]
+    ) {
+        self.operationID = operationID
+        self.expectedCatalogRevision = expectedCatalogRevision
+        self.expectedWorkspaceRevision = expectedWorkspaceRevision
+        self.expectedContextRevision = expectedContextRevision
+        self.origin = origin
+        self.commandKind = commandKind
+        self.workspaceID = workspaceID
+        self.fileURL = fileURL
+        self.contentDigest = contentDigest
+        self.acceptExternal = acceptExternal
+        self.protectedAgentIdentities = protectedAgentIdentities
+    }
+}
+
+public struct CoreWorkspaceCommandIdentityV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let commandKind: CoreWorkspaceCommandKindV1
+    public let fingerprint: String
+
+    public init(
+        workspaceID: UUID,
+        commandKind: CoreWorkspaceCommandKindV1,
+        fingerprint: String
+    ) {
+        self.workspaceID = workspaceID
+        self.commandKind = commandKind
+        self.fingerprint = fingerprint
+    }
+}
+
 public struct CoreWorkspaceCatalogValidationV1: Sendable, Equatable {
     public let catalogVersion: UInt16
     public let revision: UInt64
@@ -580,6 +677,20 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         self.context = context
     }
 
+    public func commandIdentity(
+        _ request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceCommandIdentityV1 {
+        guard request.protectedAgentIdentities.count
+            <= CoreWorkspaceCommandIdentityRequestV1.maximumProtectedAgentIdentities
+        else {
+            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
+        }
+        return try context.transport.workspaceCommandIdentityV1(
+            identity: context.identity,
+            request: request
+        )
+    }
+
     public func validateSavedRevision(
         _ artifactBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
@@ -883,6 +994,13 @@ public extension CoreComputeClient {
 }
 
 extension CoreRuntimeTransport {
+    func workspaceCommandIdentityV1(
+        identity _: CoreRuntimeIdentity,
+        request _: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceCommandIdentityV1 {
+        throw CoreTransportError.unexpected("workspace-command-identity-v1 transport is unavailable")
+    }
+
     func workspaceProjectionOpenScopeV1(
         identity: CoreRuntimeIdentity,
         config: AgentryUniFFIRaw.CoreWorkspaceProjectionScopeConfigV1

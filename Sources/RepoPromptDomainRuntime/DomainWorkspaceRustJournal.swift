@@ -891,6 +891,88 @@ enum DomainWorkspaceRustJournal {
             self.core = core
         }
 
+        func commandIdentity(
+            _ envelope: DomainWorkspaceCommandEnvelope
+        ) throws -> String {
+            let origin: CoreWorkspaceCommandOriginV1 = switch envelope.origin {
+            case let .appPresentation(windowID):
+                .appPresentation(windowID: Int64(windowID))
+            case let .appMCP(connectionID):
+                .appMCP(connectionID: connectionID)
+            case .standalone:
+                .standalone
+            case .externalReload:
+                .externalReload
+            }
+            let command: (
+                kind: CoreWorkspaceCommandKindV1,
+                workspaceID: UUID,
+                fileURL: URL?,
+                contentDigest: String?,
+                acceptExternal: Bool?,
+                protectedAgentIdentities: [CoreWorkspaceProtectedAgentIdentityV1]
+            ) = switch envelope.command {
+            case let .createWorkspace(document):
+                (.create, document.workspaceID, document.fileURL, document.contentDigest, nil, [])
+            case let .replaceWorkingDocument(document):
+                (.replace, document.workspaceID, document.fileURL, document.contentDigest, nil, [])
+            case let .saveWorkspaceDocument(workspaceID):
+                (.save, workspaceID, nil, nil, nil, [])
+            case let .deleteWorkspace(workspaceID):
+                (.delete, workspaceID, nil, nil, nil, [])
+            case let .resolveExternalConflict(workspaceID, acceptExternal, protectedAgentIdentities):
+                (
+                    .resolveExternalConflict,
+                    workspaceID,
+                    nil,
+                    nil,
+                    acceptExternal,
+                    protectedAgentIdentities.map { identity in
+                        let location: CoreWorkspaceTabLocationV1 = switch identity.location {
+                        case .composed: .composed
+                        case .stashed: .stashed
+                        }
+                        return CoreWorkspaceProtectedAgentIdentityV1(
+                            tabID: identity.tabID,
+                            location: location,
+                            activeAgentSessionID: identity.activeAgentSessionID,
+                            isPinned: identity.isPinned
+                        )
+                    }
+                )
+            }
+            do {
+                let identity = try core.commandIdentity(CoreWorkspaceCommandIdentityRequestV1(
+                    operationID: envelope.operationID,
+                    expectedCatalogRevision: envelope.expectedCatalogRevision,
+                    expectedWorkspaceRevision: envelope.expectedWorkspaceRevision,
+                    expectedContextRevision: envelope.expectedContextRevision,
+                    origin: origin,
+                    commandKind: command.kind,
+                    workspaceID: command.workspaceID,
+                    fileURL: command.fileURL,
+                    contentDigest: command.contentDigest,
+                    acceptExternal: command.acceptExternal,
+                    protectedAgentIdentities: command.protectedAgentIdentities
+                ))
+                guard identity.workspaceID == command.workspaceID,
+                      identity.commandKind == command.kind,
+                      Self.isSHA256Digest(identity.fingerprint)
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                return identity.fingerprint
+            } catch {
+                throw map(error)
+            }
+        }
+
+        private static func isSHA256Digest(_ value: String) -> Bool {
+            value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+                (48 ... 57).contains(byte) || (65 ... 70).contains(byte) || (97 ... 102).contains(byte)
+            }
+        }
+
         func validateSavedRevision(
             _ bytes: Data,
             expectedWorkspaceID: UUID,
