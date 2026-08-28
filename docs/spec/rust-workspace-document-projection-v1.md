@@ -1516,3 +1516,72 @@ cleanup-warning text remain unchanged.
   sidecar cleanup diagnostic, without serving as a command-commit fallback.
 - Focused Runtime/FFI/Bridge/Domain authority, replay, cleanup, lifecycle, source-guard, codegen, product-build, style,
   guardrail, formatting, and diff checks pass.
+
+## P5-7f amendment — artifact-bound durable admission recovery
+
+P5-7f removes the last Swift-owned durable receipt reconstruction path. Bootstrap, complete catalog reload, and a
+single-workspace external-CAS refresh now submit only bounded canonical catalog, working-journal, and optional deletion
+sidecar bytes that were produced by the existing Rust validators. The same prepared Rust admission capability parses
+those artifacts again, derives every workspace/global replay receipt, validates their catalog relationships, enforces
+capacity, and publishes one atomic replacement. Swift retains the storage lease, bounded physical reads, semantic
+workspace projection, filesystem/routing ownership, and degraded-health presentation, but it cannot flatten
+`DomainRecordedOperation`, attach a workspace ID to a receipt, or provide an operation-bearing reconciliation input.
+
+A full recovery is authorized by one canonical catalog artifact. It contains exactly one journal evidence record for
+each active catalog entry and one sidecar evidence record for each authoritative deletion; `nil` journal bytes mean
+the already-supported **confirmed-absent** journal and empty ledger, while `nil` sidecar bytes mean the catalog
+tombstone is used unchanged. Journal evidence has three physical-read states before the Rust boundary: confirmed
+absent, validated present canonical bytes, and unavailable. Unavailable (malformed, future, oversized, identity-invalid,
+or unreadable) evidence never crosses as `nil`, never authorizes an empty receipt set, and makes that recovery
+read-only without mutating an already-established admission capability. A present journal must match the catalog
+workspace ID and file URL. A present sidecar must match the
+catalog tombstone in schema, workspace, URL, deletion time, operation ID, fingerprint, disposition, revisions,
+digests, and error code; only the P5-7e `artifact_cleanup_incomplete: ` diagnostic may differ. Accepted noncanonical
+JSON is represented by the validator's canonical bytes before it crosses the recovery boundary. Malformed,
+oversized, duplicate, missing, extra, or relationship-invalid recovery evidence fails before admission mutation.
+Legacy/catalog-absent discovery may use the existing Rust catalog seed as in-memory recovery evidence; this phase adds
+no durable schema or implicit filesystem migration.
+
+The prepared admission retains the accepted catalog revision, canonical digest, active-entry relationship, and
+the complete canonical deletion relationship (not only its workspace/file URL pair). Full recovery may replace every
+durable workspace index while retaining process-lifetime global receipts, exact live claims, bound reservations, both
+independent ABA generations, and lifecycle mirrors.
+Recovered receipts may terminalize only an exact unbound claim. A fingerprint collision, reservation projection
+failure, or capacity error rejects the complete candidate without changing state. Same-revision recovery requires
+the same canonical catalog digest; lower revisions are stale. Recovery never resets generation counters and never
+uses the generic runtime registry as a second replay authority.
+
+Target recovery carries the exact canonical catalog snapshot plus evidence for one workspace. The new catalog may be
+identical, or its active/deleted relationship may differ from the last accepted catalog only for that target. Any
+non-target entry change or any non-target tombstone field change returns full-recovery-required without mutation. An
+active target derives its ledger only from the matching journal; a deleted target derives its global receipt only from
+the catalog tombstone plus an exact optional sidecar. A workspace absent from both catalog sets is not inferred to be
+deleted. Rust applies target recovery before Swift publishes the refreshed semantic record or deletion, so actor state
+and replay authority never expose a mixed catalog generation.
+
+Bootstrap constructs the prepared admission directly from one successful full artifact recovery; there is no
+observable empty-admission window. Later full and target recoveries are exact-runtime-fenced synchronous mutations of
+that same capability. Runtime shutdown, stale identity, or closed capability quarantines mutation admission. Semantic
+artifact failure remains isolated to recovery and does not rewrite an already-established `DomainCommandOutcome`.
+Post-authority receipt failure continues to use `workspace_command_admission_receipt_missing`; recovery failure is a
+separate read-only condition and cannot fall back to Swift reconstruction. Durable schemas, command results,
+publication order, storage leases, and physical I/O remain unchanged.
+
+### P5-7f done-when
+
+- Rust tests cover canonical/noncanonical equivalence, full and target artifact derivation, catalog/journal/sidecar
+  relationship mismatches, absent journal/sidecar behavior, cleanup-diagnostic replay, stale and unrelated catalog
+  snapshots, capacity/collision atomicity, process-global retention, exact unbound and bound claims, reservations,
+  close, runtime fences, and generation ABA preservation.
+- UniFFI and Bridge accept only catalog/journal/tombstone byte evidence and typed recovery receipts; no operation array,
+  deleted operation, raw claim, or independently decisive registry crosses the recovery boundary.
+- Production removes `CoreWorkspaceCommandAdmissionSeedRecordV1`, `DomainWorkspaceCommandAdmissionSeedRecord`,
+  begin-from-records, `reconcileDurable`, `reconcileWorkspace`, `durableCommandAdmissionRecords`,
+  `reconcileCommandAdmission`, and `reconcileCommandAdmissionWorkspace` together.
+- Persistence retains canonical validation bytes from the same bounded reads used for semantic projection. Full and
+  targeted recovery complete before writable actor membership changes are published; unavailable artifacts preserve
+  the existing degraded read-only behavior without being treated as authoritative empty receipt sets.
+- Restart and external-CAS tests prove exact journal replay and authoritative deletion cleanup replay, while malformed
+  artifacts and non-target catalog changes cause no partial mutation or writable intermediate state.
+- Focused Runtime/FFI/Bridge/Domain recovery, authority, replay, lifecycle, source-guard, codegen, product-build, style,
+  guardrail, formatting, and diff checks pass.

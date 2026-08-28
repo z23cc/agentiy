@@ -21,7 +21,8 @@ pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_OPERATION_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1: usize = 4096;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_WORKSPACE_OPERATION_COUNT_V1: usize = 256;
-pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1: usize = 65_536;
+pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1: usize = 65_536;
+pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1: usize = 256 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_COMMAND_ADMISSION_CLAIM_COUNT_V1: usize = 4_096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,6 +102,8 @@ pub enum WorkspaceWorkingJournalError {
     InvalidPendingSave,
     InvalidTimestamp,
     ExternalDocumentConflict,
+    StaleRecoverySnapshot,
+    FullRecoveryRequired,
     InvalidTransaction,
 }
 
@@ -145,6 +148,12 @@ impl fmt::Display for WorkspaceWorkingJournalError {
             Self::InvalidTimestamp => formatter.write_str("workspace journal timestamp is invalid"),
             Self::ExternalDocumentConflict => {
                 formatter.write_str("workspace document changed outside the transaction")
+            }
+            Self::StaleRecoverySnapshot => {
+                formatter.write_str("workspace admission recovery snapshot is stale")
+            }
+            Self::FullRecoveryRequired => {
+                formatter.write_str("workspace admission full recovery is required")
             }
             Self::InvalidTransaction => {
                 formatter.write_str("workspace save transaction is invalid")
@@ -401,12 +410,51 @@ impl WorkspaceCommandAdmissionAcquireV1 {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorkspaceCommandAdmissionSeedRecordV1 {
-    /// `Some` seeds both the exact workspace index and the global index. `None` is global-only.
-    pub workspace_id: Option<String>,
-    pub operation: WorkspaceRecordedOperationV1,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandAdmissionJournalRecoveryV1 {
+    pub workspace_id: String,
+    /// `None` is the existing absent-journal empty ledger, not a failed read.
+    pub canonical_bytes: Option<Vec<u8>>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandAdmissionDeletionRecoveryV1 {
+    pub workspace_id: String,
+    /// `None` selects the authoritative catalog tombstone unchanged.
+    pub canonical_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandAdmissionRecoveryV1 {
+    pub catalog_bytes: Vec<u8>,
+    pub journals: Vec<WorkspaceCommandAdmissionJournalRecoveryV1>,
+    pub deletion_sidecars: Vec<WorkspaceCommandAdmissionDeletionRecoveryV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandAdmissionTargetRecoveryV1 {
+    pub catalog_bytes: Vec<u8>,
+    pub workspace_id: String,
+    pub journal_bytes: Option<Vec<u8>>,
+    pub deletion_sidecar_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandAdmissionRecoveryReceiptV1 {
+    pub catalog_revision: u64,
+    pub catalog_digest: String,
+    pub target_workspace_id: Option<String>,
+    pub diagnostics: WorkspaceCommandAdmissionDiagnosticsV1,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WorkspaceCommandAdmissionRecoveredRecordV1 {
+    workspace_id: Option<String>,
+    operation: WorkspaceRecordedOperationV1,
+}
+
+#[cfg(test)]
+type WorkspaceCommandAdmissionSeedRecordV1 = WorkspaceCommandAdmissionRecoveredRecordV1;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceCommandAdmissionFinalizationV1 {
@@ -538,18 +586,18 @@ struct WorkspaceCommandAdmissionStateV1 {
 }
 
 impl WorkspaceCommandAdmissionStateV1 {
-    fn from_seed(
-        seed: &[WorkspaceCommandAdmissionSeedRecordV1],
+    fn from_records(
+        records: &[WorkspaceCommandAdmissionRecoveredRecordV1],
     ) -> Result<Self, WorkspaceWorkingJournalError> {
-        if seed.len() > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1 {
+        if records.len() > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1 {
             return Err(WorkspaceWorkingJournalError::InputTooLarge {
-                actual: seed.len(),
-                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+                actual: records.len(),
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1,
             });
         }
-        let mut global = Vec::with_capacity(seed.len());
+        let mut global = Vec::with_capacity(records.len());
         let mut workspace_records = BTreeMap::<String, Vec<WorkspaceRecordedOperationV1>>::new();
-        for record in seed {
+        for record in records {
             let mut operation = record.operation.clone();
             validate_and_canonicalize_recorded_operation(&mut operation)?;
             global.push(operation.clone());
@@ -667,12 +715,12 @@ impl WorkspaceCommandAdmissionStateV1 {
             .and_then(|count| count.checked_add(workspace_growth))
             .ok_or(WorkspaceWorkingJournalError::InputTooLarge {
                 actual: usize::MAX,
-                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1,
             })?;
-        if projected_count > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1 {
+        if projected_count > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1 {
             return Err(WorkspaceWorkingJournalError::InputTooLarge {
                 actual: projected_count,
-                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1,
             });
         }
         self.global.insert(operation.clone());
@@ -700,10 +748,10 @@ impl WorkspaceCommandAdmissionStateV1 {
 
     fn require_reconstructible_size(&self) -> Result<(), WorkspaceWorkingJournalError> {
         let actual = self.stored_operation_count();
-        if actual > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1 {
+        if actual > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1 {
             return Err(WorkspaceWorkingJournalError::InputTooLarge {
                 actual,
-                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1,
             });
         }
         Ok(())
@@ -789,6 +837,7 @@ struct WorkspaceCommandExecutionClaimStateV1 {
 #[derive(Debug)]
 struct WorkspaceCommandAdmissionInnerV1 {
     state: Option<WorkspaceCommandAdmissionStateV1>,
+    catalog_binding: Option<WorkspaceCommandAdmissionCatalogBindingV1>,
     claims: BTreeMap<String, WorkspaceCommandExecutionClaimStateV1>,
     reservations: BTreeMap<u64, WorkspaceCommandAdmissionFinalizationV1>,
     next_claim_generation: u64,
@@ -1038,6 +1087,301 @@ impl Drop for WorkspaceCommandAdmissionReservationV1 {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceCommandAdmissionCatalogBindingV1 {
+    revision: u64,
+    digest: String,
+    entries: BTreeMap<String, String>,
+    deletions: BTreeMap<String, Vec<u8>>,
+}
+
+impl WorkspaceCommandAdmissionCatalogBindingV1 {
+    fn relationships_match_except(&self, other: &Self, target_workspace_id: &str) -> bool {
+        let mut current_entries = self.entries.clone();
+        let mut next_entries = other.entries.clone();
+        let mut current_deletions = self.deletions.clone();
+        let mut next_deletions = other.deletions.clone();
+        current_entries.remove(target_workspace_id);
+        next_entries.remove(target_workspace_id);
+        current_deletions.remove(target_workspace_id);
+        next_deletions.remove(target_workspace_id);
+        current_entries == next_entries && current_deletions == next_deletions
+    }
+}
+
+fn checked_recovery_bytes<'a>(
+    catalog_bytes: &'a [u8],
+    artifacts: impl Iterator<Item = Option<&'a [u8]>>,
+) -> Result<(), WorkspaceWorkingJournalError> {
+    let mut total = catalog_bytes.len();
+    for bytes in artifacts.flatten() {
+        total =
+            total
+                .checked_add(bytes.len())
+                .ok_or(WorkspaceWorkingJournalError::InputTooLarge {
+                    actual: usize::MAX,
+                    maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1,
+                })?;
+        if total > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1 {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: total,
+                maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validated_recovery_catalog(
+    bytes: &[u8],
+) -> Result<
+    (
+        WorkspaceCatalogValidationV1,
+        WorkspaceCatalogV1,
+        WorkspaceCommandAdmissionCatalogBindingV1,
+    ),
+    WorkspaceWorkingJournalError,
+> {
+    let validation = validate_workspace_catalog_v1(bytes)?;
+    let catalog: WorkspaceCatalogV1 = serde_json::from_slice(&validation.canonical_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let entries = catalog
+        .entries
+        .iter()
+        .map(|entry| (entry.workspace_id.clone(), entry.file_url.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let deletions = catalog
+        .deletions
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|tombstone| {
+            serde_json::to_vec(tombstone)
+                .map(|identity| (tombstone.workspace_id.clone(), identity))
+                .map_err(|_| WorkspaceWorkingJournalError::Malformed)
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let binding = WorkspaceCommandAdmissionCatalogBindingV1 {
+        revision: validation.revision,
+        digest: validation.content_digest.clone(),
+        entries,
+        deletions,
+    };
+    Ok((validation, catalog, binding))
+}
+
+fn recovered_journal_records(
+    workspace_id: &str,
+    expected_file_url: &str,
+    bytes: Option<&[u8]>,
+) -> Result<Vec<WorkspaceCommandAdmissionRecoveredRecordV1>, WorkspaceWorkingJournalError> {
+    let Some(bytes) = bytes else {
+        return Ok(Vec::new());
+    };
+    let validation = validate_workspace_working_journal_v1(bytes)?;
+    let journal: WorkspaceWorkingJournalV1 = serde_json::from_slice(&validation.canonical_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    if journal.workspace_id != workspace_id {
+        return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+    }
+    if journal.file_url != expected_file_url {
+        return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+    }
+    Ok(journal
+        .operations
+        .into_iter()
+        .map(|operation| WorkspaceCommandAdmissionRecoveredRecordV1 {
+            workspace_id: Some(workspace_id.to_owned()),
+            operation,
+        })
+        .collect())
+}
+
+fn deletion_diagnostic_matches(candidate: &Option<String>, authoritative: &Option<String>) -> bool {
+    if candidate == authoritative {
+        return true;
+    }
+    candidate.as_deref().is_some_and(|value| {
+        const PREFIX: &str = "artifact_cleanup_incomplete: ";
+        value.starts_with(PREFIX) && value.len() > PREFIX.len()
+    })
+}
+
+fn recovered_deletion_record(
+    authoritative: &WorkspaceDeletionTombstoneV1,
+    sidecar_bytes: Option<&[u8]>,
+) -> Result<WorkspaceCommandAdmissionRecoveredRecordV1, WorkspaceWorkingJournalError> {
+    let operation = if let Some(sidecar_bytes) = sidecar_bytes {
+        let validation = validate_workspace_deletion_tombstone_v1(sidecar_bytes)?;
+        let sidecar: WorkspaceDeletionTombstoneV1 =
+            serde_json::from_slice(&validation.canonical_bytes)
+                .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+        let mut normalized_sidecar = sidecar.clone();
+        let diagnostic = normalized_sidecar.operation.diagnostic.clone();
+        normalized_sidecar.operation.diagnostic = authoritative.operation.diagnostic.clone();
+        if normalized_sidecar.version != authoritative.version
+            || normalized_sidecar.workspace_id != authoritative.workspace_id
+            || normalized_sidecar.file_url != authoritative.file_url
+            || normalized_sidecar.deleted_at != authoritative.deleted_at
+            || normalized_sidecar.operation != authoritative.operation
+            || !deletion_diagnostic_matches(&diagnostic, &authoritative.operation.diagnostic)
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+        sidecar.operation
+    } else {
+        authoritative.operation.clone()
+    };
+    Ok(WorkspaceCommandAdmissionRecoveredRecordV1 {
+        workspace_id: None,
+        operation,
+    })
+}
+
+fn derive_full_recovery(
+    recovery: &WorkspaceCommandAdmissionRecoveryV1,
+) -> Result<
+    (
+        WorkspaceCommandAdmissionStateV1,
+        WorkspaceCommandAdmissionCatalogBindingV1,
+    ),
+    WorkspaceWorkingJournalError,
+> {
+    if recovery.journals.len() > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1
+        || recovery.deletion_sidecars.len()
+            > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1
+    {
+        return Err(WorkspaceWorkingJournalError::InputTooLarge {
+            actual: recovery
+                .journals
+                .len()
+                .max(recovery.deletion_sidecars.len()),
+            maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1,
+        });
+    }
+    checked_recovery_bytes(
+        &recovery.catalog_bytes,
+        recovery
+            .journals
+            .iter()
+            .map(|artifact| artifact.canonical_bytes.as_deref())
+            .chain(
+                recovery
+                    .deletion_sidecars
+                    .iter()
+                    .map(|artifact| artifact.canonical_bytes.as_deref()),
+            ),
+    )?;
+    let (_, catalog, binding) = validated_recovery_catalog(&recovery.catalog_bytes)?;
+    let mut journals = BTreeMap::new();
+    for artifact in &recovery.journals {
+        let workspace_id = canonical_uuid(&artifact.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if journals
+            .insert(workspace_id, artifact.canonical_bytes.as_deref())
+            .is_some()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+    }
+    let mut sidecars = BTreeMap::new();
+    for artifact in &recovery.deletion_sidecars {
+        let workspace_id = canonical_uuid(&artifact.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if sidecars
+            .insert(workspace_id, artifact.canonical_bytes.as_deref())
+            .is_some()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+    }
+    if journals.keys().ne(binding.entries.keys()) || sidecars.keys().ne(binding.deletions.keys()) {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    let mut records = Vec::new();
+    for entry in &catalog.entries {
+        records.extend(recovered_journal_records(
+            &entry.workspace_id,
+            &entry.file_url,
+            journals.get(&entry.workspace_id).copied().flatten(),
+        )?);
+    }
+    for deletion in catalog.deletions.as_deref().unwrap_or_default() {
+        records.push(recovered_deletion_record(
+            deletion,
+            sidecars.get(&deletion.workspace_id).copied().flatten(),
+        )?);
+    }
+    Ok((
+        WorkspaceCommandAdmissionStateV1::from_records(&records)?,
+        binding,
+    ))
+}
+
+fn derive_target_recovery(
+    recovery: &WorkspaceCommandAdmissionTargetRecoveryV1,
+) -> Result<
+    (
+        Vec<WorkspaceCommandAdmissionRecoveredRecordV1>,
+        WorkspaceCommandAdmissionCatalogBindingV1,
+        String,
+        bool,
+    ),
+    WorkspaceWorkingJournalError,
+> {
+    checked_recovery_bytes(
+        &recovery.catalog_bytes,
+        [
+            recovery.journal_bytes.as_deref(),
+            recovery.deletion_sidecar_bytes.as_deref(),
+        ]
+        .into_iter(),
+    )?;
+    let (_, catalog, binding) = validated_recovery_catalog(&recovery.catalog_bytes)?;
+    let workspace_id = canonical_uuid(&recovery.workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    if let Some(entry) = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.workspace_id == workspace_id)
+    {
+        if recovery.deletion_sidecar_bytes.is_some() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        return Ok((
+            recovered_journal_records(
+                &workspace_id,
+                &entry.file_url,
+                recovery.journal_bytes.as_deref(),
+            )?,
+            binding,
+            workspace_id,
+            false,
+        ));
+    }
+    if let Some(deletion) = catalog
+        .deletions
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|deletion| deletion.workspace_id == workspace_id)
+    {
+        if recovery.journal_bytes.is_some() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        return Ok((
+            vec![recovered_deletion_record(
+                deletion,
+                recovery.deletion_sidecar_bytes.as_deref(),
+            )?],
+            binding,
+            workspace_id,
+            true,
+        ));
+    }
+    Err(WorkspaceWorkingJournalError::FullRecoveryRequired)
+}
+
 #[derive(Debug)]
 pub struct PreparedWorkspaceCommandAdmissionV1 {
     inner: Arc<Mutex<WorkspaceCommandAdmissionInnerV1>>,
@@ -1065,12 +1409,42 @@ fn reconcile_workspace_command_execution_claims_v1(
 }
 
 impl PreparedWorkspaceCommandAdmissionV1 {
-    pub fn prepare(
+    pub fn prepare_from_recovery(
+        recovery: &WorkspaceCommandAdmissionRecoveryV1,
+    ) -> Result<(Self, WorkspaceCommandAdmissionRecoveryReceiptV1), WorkspaceWorkingJournalError>
+    {
+        let (state, catalog_binding) = derive_full_recovery(recovery)?;
+        let diagnostics = state.diagnostics();
+        let receipt = WorkspaceCommandAdmissionRecoveryReceiptV1 {
+            catalog_revision: catalog_binding.revision,
+            catalog_digest: catalog_binding.digest.clone(),
+            target_workspace_id: None,
+            diagnostics,
+        };
+        Ok((
+            Self {
+                inner: Arc::new(Mutex::new(WorkspaceCommandAdmissionInnerV1 {
+                    state: Some(state),
+                    catalog_binding: Some(catalog_binding),
+                    claims: BTreeMap::new(),
+                    reservations: BTreeMap::new(),
+                    next_claim_generation: 1,
+                    next_reservation_id: 1,
+                    closed: false,
+                })),
+            },
+            receipt,
+        ))
+    }
+
+    #[cfg(test)]
+    fn prepare(
         seed: &[WorkspaceCommandAdmissionSeedRecordV1],
     ) -> Result<Self, WorkspaceWorkingJournalError> {
         Ok(Self {
             inner: Arc::new(Mutex::new(WorkspaceCommandAdmissionInnerV1 {
-                state: Some(WorkspaceCommandAdmissionStateV1::from_seed(seed)?),
+                state: Some(WorkspaceCommandAdmissionStateV1::from_records(seed)?),
+                catalog_binding: None,
                 claims: BTreeMap::new(),
                 reservations: BTreeMap::new(),
                 next_claim_generation: 1,
@@ -1081,13 +1455,81 @@ impl PreparedWorkspaceCommandAdmissionV1 {
     }
 
     /// Atomically replaces durable workspace indexes while retaining process-lifetime global
-    /// command receipts. This prevents a lease handoff or catalog CAS refresh from erasing an
-    /// already-admitted global identity that has not yet appeared in the durable reconstruction.
-    pub fn reconcile_durable(
+    /// command receipts, exact claims, and bound reservations.
+    pub fn apply_full_recovery(
+        &self,
+        recovery: &WorkspaceCommandAdmissionRecoveryV1,
+    ) -> Result<WorkspaceCommandAdmissionRecoveryReceiptV1, WorkspaceWorkingJournalError> {
+        let (mut replacement, catalog_binding) = derive_full_recovery(recovery)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if state.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        if let Some(current_binding) = &state.catalog_binding {
+            if catalog_binding.revision < current_binding.revision
+                || (catalog_binding.revision == current_binding.revision
+                    && catalog_binding.digest != current_binding.digest)
+            {
+                return Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot);
+            }
+        }
+        let current = state
+            .state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+
+        let mut durable_operations = replacement.global.records();
+        durable_operations.extend(
+            replacement
+                .workspaces
+                .values()
+                .flat_map(BoundedWorkspaceCommandOperationIndexV1::records),
+        );
+        for operation in &durable_operations {
+            if current
+                .global
+                .get(&operation.operation_id)
+                .is_some_and(|existing| existing != operation)
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+            }
+        }
+        let mut merged_global = replacement.global.records();
+        merged_global.extend(current.global.records());
+        replacement.global = BoundedWorkspaceCommandOperationIndexV1::from_records(
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_GLOBAL_OPERATION_COUNT_V1,
+            merged_global,
+        )?;
+        replacement.require_reconstructible_size()?;
+        let diagnostics = replacement.diagnostics();
+        let terminalized_claims =
+            reconcile_workspace_command_execution_claims_v1(&state.claims, &replacement)?;
+        let mut projected = replacement.clone();
+        for effect in state.reservations.values() {
+            effect.apply_reservation_projection(&mut projected)?;
+        }
+        state.state = Some(replacement);
+        state.catalog_binding = Some(catalog_binding.clone());
+        for operation_id in terminalized_claims {
+            state.claims.remove(&operation_id);
+        }
+        Ok(WorkspaceCommandAdmissionRecoveryReceiptV1 {
+            catalog_revision: catalog_binding.revision,
+            catalog_digest: catalog_binding.digest,
+            target_workspace_id: None,
+            diagnostics,
+        })
+    }
+
+    #[cfg(test)]
+    fn reconcile_durable(
         &self,
         seed: &[WorkspaceCommandAdmissionSeedRecordV1],
     ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
-        let mut replacement = WorkspaceCommandAdmissionStateV1::from_seed(seed)?;
+        let mut replacement = WorkspaceCommandAdmissionStateV1::from_records(seed)?;
         let mut state = self
             .inner
             .lock()
@@ -1099,7 +1541,6 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .state
             .as_ref()
             .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-
         let mut durable_operations = replacement.global.records();
         durable_operations.extend(
             replacement
@@ -1216,7 +1657,64 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         })
     }
 
-    pub fn reconcile_workspace(
+    pub fn apply_target_recovery(
+        &self,
+        recovery: &WorkspaceCommandAdmissionTargetRecoveryV1,
+    ) -> Result<WorkspaceCommandAdmissionRecoveryReceiptV1, WorkspaceWorkingJournalError> {
+        let (records, catalog_binding, workspace_id, _) = derive_target_recovery(recovery)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let current_binding = inner
+            .catalog_binding
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::FullRecoveryRequired)?;
+        if catalog_binding.revision < current_binding.revision
+            || (catalog_binding.revision == current_binding.revision
+                && catalog_binding.digest != current_binding.digest)
+        {
+            return Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot);
+        }
+        if catalog_binding.revision > current_binding.revision
+            && !current_binding.relationships_match_except(&catalog_binding, &workspace_id)
+        {
+            return Err(WorkspaceWorkingJournalError::FullRecoveryRequired);
+        }
+        let mut replacement = inner
+            .state
+            .as_ref()
+            .cloned()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        replacement.workspaces.remove(&workspace_id);
+        for record in records {
+            replacement.insert(record.workspace_id, record.operation)?;
+        }
+        let diagnostics = replacement.diagnostics();
+        let terminalized_claims =
+            reconcile_workspace_command_execution_claims_v1(&inner.claims, &replacement)?;
+        let mut projected = replacement.clone();
+        for effect in inner.reservations.values() {
+            effect.apply_reservation_projection(&mut projected)?;
+        }
+        inner.state = Some(replacement);
+        inner.catalog_binding = Some(catalog_binding.clone());
+        for operation_id in terminalized_claims {
+            inner.claims.remove(&operation_id);
+        }
+        Ok(WorkspaceCommandAdmissionRecoveryReceiptV1 {
+            catalog_revision: catalog_binding.revision,
+            catalog_digest: catalog_binding.digest,
+            target_workspace_id: Some(workspace_id),
+            diagnostics,
+        })
+    }
+
+    #[cfg(test)]
+    fn reconcile_workspace(
         &self,
         workspace_id: &str,
         operations: &[WorkspaceRecordedOperationV1],
@@ -1275,9 +1773,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         let mut normalized_replacement = replacement_operation.clone();
         normalized_replacement.diagnostic = expected_operation.diagnostic.clone();
         if normalized_replacement != expected_operation
-            || replacement_diagnostic
-                .as_ref()
-                .is_some_and(|diagnostic| !diagnostic.starts_with("artifact_cleanup_incomplete: "))
+            || !deletion_diagnostic_matches(&replacement_diagnostic, &expected_operation.diagnostic)
         {
             return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
         }
@@ -1534,7 +2030,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         &self,
         seed: &[WorkspaceCommandAdmissionSeedRecordV1],
     ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
-        let replacement = WorkspaceCommandAdmissionStateV1::from_seed(seed)?;
+        let replacement = WorkspaceCommandAdmissionStateV1::from_records(seed)?;
         let diagnostics = replacement.diagnostics();
         let mut inner = self
             .inner
@@ -5466,6 +5962,7 @@ mod tests {
     const WORKSPACE_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     const CONTEXT_ID: &str = "11111111-2222-3333-4444-555555555555";
     const OPERATION_ID: &str = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+    const OTHER_WORKSPACE_ID: &str = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
 
     fn command_identity_request(
         command_kind: WorkspaceCommandKindV1,
@@ -5519,6 +6016,165 @@ mod tests {
             fingerprint,
             index as f64,
         )
+    }
+
+    #[test]
+    fn command_admission_artifact_recovery_binds_catalog_and_preserves_global_replay() {
+        let initial_catalog = catalog_bytes(0);
+        let initial = WorkspaceCommandAdmissionRecoveryV1 {
+            catalog_bytes: initial_catalog.clone(),
+            journals: vec![WorkspaceCommandAdmissionJournalRecoveryV1 {
+                workspace_id: WORKSPACE_ID.to_owned(),
+                canonical_bytes: Some(journal_bytes(None)),
+            }],
+            deletion_sidecars: Vec::new(),
+        };
+        let (admission, receipt) =
+            PreparedWorkspaceCommandAdmissionV1::prepare_from_recovery(&initial)
+                .expect("artifact recovery prepares admission");
+        assert_eq!(receipt.catalog_revision, 0);
+        assert_eq!(receipt.target_workspace_id, None);
+        assert_eq!(receipt.diagnostics.global_operation_count, 1);
+        assert_eq!(receipt.diagnostics.workspace_operation_count, 1);
+
+        let empty_target = WorkspaceCommandAdmissionTargetRecoveryV1 {
+            catalog_bytes: initial_catalog,
+            workspace_id: WORKSPACE_ID.to_owned(),
+            journal_bytes: None,
+            deletion_sidecar_bytes: None,
+        };
+        let target_receipt = admission
+            .apply_target_recovery(&empty_target)
+            .expect("target recovery");
+        assert_eq!(
+            target_receipt.target_workspace_id.as_deref(),
+            Some(WORKSPACE_ID)
+        );
+        assert_eq!(target_receipt.diagnostics.global_operation_count, 1);
+        assert_eq!(target_receipt.diagnostics.workspace_operation_count, 0);
+
+        let advanced = WorkspaceCommandAdmissionTargetRecoveryV1 {
+            catalog_bytes: catalog_bytes(1),
+            workspace_id: WORKSPACE_ID.to_owned(),
+            journal_bytes: Some(journal_bytes(None)),
+            deletion_sidecar_bytes: None,
+        };
+        admission
+            .apply_target_recovery(&advanced)
+            .expect("higher catalog revision with the same relationship");
+        assert!(matches!(
+            admission.apply_target_recovery(&empty_target),
+            Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot)
+        ));
+
+        let removed_target = WorkspaceCommandAdmissionTargetRecoveryV1 {
+            catalog_bytes: serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "revision": 2,
+                "entries": [],
+                "deletions": [],
+                "updatedAt": 3.0
+            }))
+            .expect("removed catalog"),
+            workspace_id: WORKSPACE_ID.to_owned(),
+            journal_bytes: None,
+            deletion_sidecar_bytes: None,
+        };
+        assert!(matches!(
+            admission.apply_target_recovery(&removed_target),
+            Err(WorkspaceWorkingJournalError::FullRecoveryRequired)
+        ));
+        assert_eq!(
+            admission
+                .diagnostics()
+                .expect("unchanged diagnostics")
+                .workspace_operation_count,
+            1,
+            "failed target recovery must be atomic"
+        );
+    }
+
+    #[test]
+    fn command_admission_target_recovery_rejects_non_target_tombstone_change() {
+        let initial_catalog =
+            catalog_with_non_target_deletion(1, "77777777-8888-9999-aaaa-bbbbbbbbbbbb");
+        let initial = WorkspaceCommandAdmissionRecoveryV1 {
+            catalog_bytes: initial_catalog,
+            journals: vec![WorkspaceCommandAdmissionJournalRecoveryV1 {
+                workspace_id: WORKSPACE_ID.to_owned(),
+                canonical_bytes: Some(journal_bytes(None)),
+            }],
+            deletion_sidecars: vec![WorkspaceCommandAdmissionDeletionRecoveryV1 {
+                workspace_id: OTHER_WORKSPACE_ID.to_owned(),
+                canonical_bytes: None,
+            }],
+        };
+        let (admission, _) = PreparedWorkspaceCommandAdmissionV1::prepare_from_recovery(&initial)
+            .expect("initial artifact recovery");
+        let before = admission.diagnostics().expect("initial diagnostics");
+
+        let changed_non_target = WorkspaceCommandAdmissionTargetRecoveryV1 {
+            catalog_bytes: catalog_with_non_target_deletion(
+                2,
+                "88888888-9999-aaaa-bbbb-cccccccccccc",
+            ),
+            workspace_id: WORKSPACE_ID.to_owned(),
+            journal_bytes: Some(journal_bytes(None)),
+            deletion_sidecar_bytes: None,
+        };
+        assert!(matches!(
+            admission.apply_target_recovery(&changed_non_target),
+            Err(WorkspaceWorkingJournalError::FullRecoveryRequired)
+        ));
+        assert_eq!(
+            admission.diagnostics().expect("unchanged diagnostics"),
+            before,
+            "non-target relationship rejection must be atomic"
+        );
+    }
+
+    #[test]
+    fn command_admission_deletion_sidecar_requires_exact_or_cleanup_diagnostic() {
+        let catalog: WorkspaceCatalogV1 =
+            serde_json::from_slice(&create_catalog_bytes(1, true)).expect("catalog");
+        let mut authoritative = catalog
+            .deletions
+            .expect("deletions")
+            .into_iter()
+            .next()
+            .expect("tombstone");
+        authoritative.operation.diagnostic = Some("catalog-authoritative".to_owned());
+
+        let exact = serde_json::to_vec(&authoritative).expect("exact sidecar");
+        assert_eq!(
+            recovered_deletion_record(&authoritative, Some(&exact))
+                .expect("exact authoritative diagnostic")
+                .operation
+                .diagnostic
+                .as_deref(),
+            Some("catalog-authoritative")
+        );
+
+        let mut missing = authoritative.clone();
+        missing.operation.diagnostic = None;
+        let missing = serde_json::to_vec(&missing).expect("missing diagnostic sidecar");
+        assert!(matches!(
+            recovered_deletion_record(&authoritative, Some(&missing)),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        ));
+
+        let mut cleanup = authoritative.clone();
+        cleanup.operation.diagnostic =
+            Some("artifact_cleanup_incomplete: workspace document: denied".to_owned());
+        let cleanup = serde_json::to_vec(&cleanup).expect("cleanup sidecar");
+        assert_eq!(
+            recovered_deletion_record(&authoritative, Some(&cleanup))
+                .expect("cleanup diagnostic override")
+                .operation
+                .diagnostic
+                .as_deref(),
+            Some("artifact_cleanup_incomplete: workspace document: denied")
+        );
     }
 
     #[test]
@@ -6207,7 +6863,7 @@ mod tests {
         let before = admission.diagnostics().expect("before diagnostics");
         assert_eq!(
             before.global_operation_count + before.workspace_operation_count,
-            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_SEED_RECORD_COUNT_V1
+            MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1
         );
         let overflow = indexed_operation(seed.len() + 1, 'b');
         assert!(matches!(
@@ -6938,6 +7594,33 @@ mod tests {
             "updatedAt": 2.75
         }))
         .expect("catalog")
+    }
+
+    fn catalog_with_non_target_deletion(catalog_revision: u64, operation_id: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "revision": catalog_revision,
+            "entries": [{
+                "workspaceID": WORKSPACE_ID,
+                "fileURL": "file:///tmp/Workspace.json"
+            }],
+            "deletions": [{
+                "version": 1,
+                "workspaceID": OTHER_WORKSPACE_ID,
+                "fileURL": "file:///tmp/OtherWorkspace.json",
+                "operation": {
+                    "operationID": operation_id,
+                    "fingerprint": format!("{:x}", Sha256::digest(operation_id.as_bytes())),
+                    "recordedAt": 1.0,
+                    "disposition": "applied",
+                    "before": revision(1, 1, None),
+                    "catalogRevision": 1
+                },
+                "deletedAt": 1.0
+            }],
+            "updatedAt": 2.75
+        }))
+        .expect("catalog with non-target deletion")
     }
 
     fn delete_request(working_revision: u64, catalog_revision: u64) -> Vec<u8> {

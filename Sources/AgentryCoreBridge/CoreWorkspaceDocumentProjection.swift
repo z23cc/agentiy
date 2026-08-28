@@ -74,6 +74,8 @@ public enum CoreWorkspaceWorkingJournalValidationError: Error, Sendable, Equatab
     case invalidPendingSave
     case invalidTimestamp
     case externalDocumentConflict
+    case staleRecoverySnapshot
+    case fullRecoveryRequired
     case invalidTransaction
 }
 
@@ -211,13 +213,58 @@ public struct CoreWorkspaceRecordedOperationV1: Sendable, Equatable {
     }
 }
 
-public struct CoreWorkspaceCommandAdmissionSeedRecordV1: Sendable, Equatable {
-    public let workspaceID: UUID?
-    public let operation: CoreWorkspaceRecordedOperationV1
+public struct CoreWorkspaceCommandAdmissionJournalRecoveryV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let canonicalBytes: Data?
 
-    public init(workspaceID: UUID?, operation: CoreWorkspaceRecordedOperationV1) {
+    public init(workspaceID: UUID, canonicalBytes: Data?) {
         self.workspaceID = workspaceID
-        self.operation = operation
+        self.canonicalBytes = canonicalBytes
+    }
+}
+
+public struct CoreWorkspaceCommandAdmissionDeletionRecoveryV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let canonicalBytes: Data?
+
+    public init(workspaceID: UUID, canonicalBytes: Data?) {
+        self.workspaceID = workspaceID
+        self.canonicalBytes = canonicalBytes
+    }
+}
+
+public struct CoreWorkspaceCommandAdmissionRecoveryV1: Sendable, Equatable {
+    public let catalogBytes: Data
+    public let journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1]
+    public let deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
+
+    public init(
+        catalogBytes: Data,
+        journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1],
+        deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
+    ) {
+        self.catalogBytes = catalogBytes
+        self.journals = journals
+        self.deletionSidecars = deletionSidecars
+    }
+}
+
+public struct CoreWorkspaceCommandAdmissionTargetRecoveryV1: Sendable, Equatable {
+    public let catalogBytes: Data
+    public let workspaceID: UUID
+    public let journalBytes: Data?
+    public let deletionSidecarBytes: Data?
+
+    public init(
+        catalogBytes: Data,
+        workspaceID: UUID,
+        journalBytes: Data?,
+        deletionSidecarBytes: Data?
+    ) {
+        self.catalogBytes = catalogBytes
+        self.workspaceID = workspaceID
+        self.journalBytes = journalBytes
+        self.deletionSidecarBytes = deletionSidecarBytes
     }
 }
 
@@ -315,18 +362,47 @@ public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Sendable, Equatable {
     }
 }
 
+public struct CoreWorkspaceCommandAdmissionRecoveryReceiptV1: Sendable, Equatable {
+    public let catalogRevision: UInt64
+    public let catalogDigest: String
+    public let targetWorkspaceID: UUID?
+    public let diagnostics: CoreWorkspaceCommandAdmissionDiagnosticsV1
+
+    public init(
+        catalogRevision: UInt64,
+        catalogDigest: String,
+        targetWorkspaceID: UUID?,
+        diagnostics: CoreWorkspaceCommandAdmissionDiagnosticsV1
+    ) {
+        self.catalogRevision = catalogRevision
+        self.catalogDigest = catalogDigest
+        self.targetWorkspaceID = targetWorkspaceID
+        self.diagnostics = diagnostics
+    }
+}
+
+public struct CorePreparedWorkspaceCommandAdmissionBeginV1: Sendable {
+    public let admission: CorePreparedWorkspaceCommandAdmissionV1
+    public let receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1
+
+    public init(
+        admission: CorePreparedWorkspaceCommandAdmissionV1,
+        receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1
+    ) {
+        self.admission = admission
+        self.receipt = receipt
+    }
+}
+
 public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable {
     let rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1
     private let acquireOperation: @Sendable (CoreWorkspaceCommandIdentityRequestV1, UInt64?) throws
         -> CoreWorkspaceCommandAdmissionAcquisitionV1
     private let cancelOperation: @Sendable (OperationID) throws -> CoreCancellation
-    private let reconcileDurableOperation: @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
-        -> CoreWorkspaceCommandAdmissionDiagnosticsV1
-    private let reconcileWorkspaceOperation: @Sendable (
-        UUID,
-        [CoreWorkspaceRecordedOperationV1],
-        CoreWorkspaceRecordedOperationV1?
-    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1
+    private let fullRecoveryOperation: @Sendable (CoreWorkspaceCommandAdmissionRecoveryV1) throws
+        -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1
+    private let targetRecoveryOperation: @Sendable (CoreWorkspaceCommandAdmissionTargetRecoveryV1) throws
+        -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1
     private let diagnosticsOperation: @Sendable () throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let closeOperation: @Sendable () -> Void
@@ -336,21 +412,18 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         acquire: @escaping @Sendable (CoreWorkspaceCommandIdentityRequestV1, UInt64?) throws
             -> CoreWorkspaceCommandAdmissionAcquisitionV1,
         cancel: @escaping @Sendable (OperationID) throws -> CoreCancellation,
-        reconcileDurable: @escaping @Sendable ([CoreWorkspaceCommandAdmissionSeedRecordV1]) throws
-            -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
-        reconcileWorkspace: @escaping @Sendable (
-            UUID,
-            [CoreWorkspaceRecordedOperationV1],
-            CoreWorkspaceRecordedOperationV1?
-        ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
+        applyFullRecovery: @escaping @Sendable (CoreWorkspaceCommandAdmissionRecoveryV1) throws
+            -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
+        applyTargetRecovery: @escaping @Sendable (CoreWorkspaceCommandAdmissionTargetRecoveryV1) throws
+            -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
         diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         close: @escaping @Sendable () -> Void
     ) {
         self.rawAdmission = rawAdmission
         acquireOperation = acquire
         cancelOperation = cancel
-        reconcileDurableOperation = reconcileDurable
-        reconcileWorkspaceOperation = reconcileWorkspace
+        fullRecoveryOperation = applyFullRecovery
+        targetRecoveryOperation = applyTargetRecovery
         diagnosticsOperation = diagnostics
         closeOperation = close
     }
@@ -372,19 +445,17 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
     }
 
     @discardableResult
-    public func reconcileDurable(
-        _ records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
-    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
-        try reconcileDurableOperation(records)
+    public func applyFullRecovery(
+        _ recovery: CoreWorkspaceCommandAdmissionRecoveryV1
+    ) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
+        try fullRecoveryOperation(recovery)
     }
 
     @discardableResult
-    public func reconcileWorkspace(
-        workspaceID: UUID,
-        operations: [CoreWorkspaceRecordedOperationV1],
-        deletedOperation: CoreWorkspaceRecordedOperationV1?
-    ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
-        try reconcileWorkspaceOperation(workspaceID, operations, deletedOperation)
+    public func applyTargetRecovery(
+        _ recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1
+    ) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
+        try targetRecoveryOperation(recovery)
     }
 
     public func diagnostics() throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
@@ -994,14 +1065,16 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
     }
 
     public func beginCommandAdmission(
-        records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
-    ) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
-        guard records.count <= 65_536 else {
+        recovery: CoreWorkspaceCommandAdmissionRecoveryV1
+    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1 {
+        guard recovery.journals.count <= 65_536,
+              recovery.deletionSidecars.count <= 65_536
+        else {
             throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
         }
         return try context.transport.workspaceCommandAdmissionBeginV1(
             identity: context.identity,
-            records: records
+            recovery: recovery
         )
     }
 
@@ -1306,8 +1379,8 @@ extension CoreRuntimeTransport {
 
     func workspaceCommandAdmissionBeginV1(
         identity _: CoreRuntimeIdentity,
-        records _: [CoreWorkspaceCommandAdmissionSeedRecordV1]
-    ) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
+        recovery _: CoreWorkspaceCommandAdmissionRecoveryV1
+    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1 {
         throw CoreTransportError.unexpected("workspace-command-admission-v1 transport is unavailable")
     }
 

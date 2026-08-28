@@ -97,6 +97,30 @@ enum DomainExternalDocumentProbe {
     case cancelled
 }
 
+enum DomainWorkspaceCommandAdmissionJournalEvidence: Sendable, Equatable {
+    case absent
+    case present(Data)
+    case unavailable
+
+    var canonicalBytes: Data? {
+        switch self {
+        case .absent, .unavailable:
+            nil
+        case let .present(bytes):
+            bytes
+        }
+    }
+
+    var isAvailable: Bool {
+        switch self {
+        case .absent, .present:
+            true
+        case .unavailable:
+            false
+        }
+    }
+}
+
 struct DomainPersistenceBootstrap {
     struct Workspace {
         let document: DomainWorkspaceDocument
@@ -105,6 +129,7 @@ struct DomainPersistenceBootstrap {
         let contextRevisions: [UUID: DomainRevisionState]
         let contextTombstones: [UUID: UInt64]
         let operations: [DomainRecordedOperation]
+        let admissionJournalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence
         let health: DomainAuthorityHealth
         let fileMetadata: DomainFileMetadata
     }
@@ -118,8 +143,8 @@ struct DomainPersistenceBootstrap {
 
     let workspaces: [Workspace]
     let unavailableWorkspaces: [UnavailableWorkspace]
-    let deletedOperations: [DomainRecordedOperation]
     let deletedWorkspaceIDs: Set<UUID>
+    let admissionRecovery: DomainWorkspaceCommandAdmissionRecovery?
     let health: DomainAuthorityHealth
     let catalogRevision: UInt64
 }
@@ -127,7 +152,7 @@ struct DomainPersistenceBootstrap {
 struct DomainPersistenceWorkspaceRefresh {
     let workspace: DomainPersistenceBootstrap.Workspace?
     let workspaceIsDeleted: Bool
-    let deletedOperation: DomainRecordedOperation?
+    let admissionRecovery: DomainWorkspaceCommandAdmissionTargetRecovery?
     let health: DomainAuthorityHealth
     let catalogRevision: UInt64
 }
@@ -155,6 +180,8 @@ struct DomainPersistenceDeleteCommit {
 enum DomainPersistenceError: Error, Equatable {
     case stateConflict(expected: UInt64, actual: UInt64)
     case externalDocumentConflict
+    case admissionRecoveryStale
+    case admissionFullRecoveryRequired
     case futureJournal(Int)
     case corruptJournal
     case operationIDCollision
@@ -600,8 +627,8 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceBootstrap(
                 workspaces: [],
                 unavailableWorkspaces: [],
-                deletedOperations: [],
                 deletedWorkspaceIDs: [],
+                admissionRecovery: nil,
                 health: .degradedReadOnly(reason: reason),
                 catalogRevision: 0
             )
@@ -1074,25 +1101,6 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
-    func reloadWorkspace(
-        workspaceID: UUID,
-        fileURL: URL
-    ) async -> DomainPersistenceBootstrap.Workspace? {
-        do {
-            let validator = try await prepareJournalValidator()
-            return try await DomainBlockingIO.run { cancellation in
-                try cancellation.check()
-                return try blockingWorker(cancellation).loadWorkspace(
-                    workspaceID: workspaceID,
-                    fileURL: fileURL,
-                    validator: validator
-                )?.workspace
-            }
-        } catch {
-            return nil
-        }
-    }
-
     func refreshWorkspace(
         workspaceID: UUID,
         fallbackFileURL: URL
@@ -1115,7 +1123,7 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceWorkspaceRefresh(
                 workspace: nil,
                 workspaceIsDeleted: false,
-                deletedOperation: nil,
+                admissionRecovery: nil,
                 health: .degradedReadOnly(reason: "workspace_catalog_probe_failed"),
                 catalogRevision: 0
             )
@@ -1127,22 +1135,17 @@ package struct DomainPersistenceCoordinator {
         fallbackFileURL: URL,
         validator: DomainWorkspaceRustJournal.PreparedValidator
     ) throws -> DomainPersistenceWorkspaceRefresh {
-        guard let catalogData = try readCatalogBytes() else {
-            return DomainPersistenceWorkspaceRefresh(
-                workspace: try loadWorkspace(
-                    workspaceID: workspaceID,
-                    fileURL: fallbackFileURL,
-                    validator: validator
-                )?.workspace,
-                workspaceIsDeleted: false,
-                deletedOperation: nil,
-                health: .writable,
-                catalogRevision: 0
-            )
-        }
         let validation: DomainWorkspaceCatalogValidation
         do {
-            validation = try validator.validateCatalog(catalogData)
+            if let catalogData = try readCatalogBytes() {
+                validation = try validator.validateCatalog(catalogData)
+            } else {
+                validation = try seedLegacyCatalog(
+                    entries: legacyCatalogEntries(),
+                    updatedAt: Date(timeIntervalSinceReferenceDate: 0),
+                    validator: validator
+                )
+            }
         } catch {
             if isJournalInfrastructureFailure(error) {
                 throw error
@@ -1150,16 +1153,16 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceWorkspaceRefresh(
                 workspace: nil,
                 workspaceIsDeleted: false,
-                deletedOperation: nil,
+                admissionRecovery: nil,
                 health: .degradedReadOnly(reason: catalogDegradedReason(error)),
                 catalogRevision: 0
             )
         }
         let catalog = validation.catalog
+        let entry = catalog.entries.first { $0.workspaceID == workspaceID }
         let deletion = (catalog.deletions ?? []).first { $0.workspaceID == workspaceID }
         let isDeleted = deletion != nil
-        let fileURL = catalog.entries.first(where: { $0.workspaceID == workspaceID })?.fileURL
-            ?? fallbackFileURL
+        let fileURL = entry?.fileURL ?? fallbackFileURL
         let workspace: DomainPersistenceBootstrap.Workspace? = if isDeleted {
             nil
         } else {
@@ -1169,11 +1172,73 @@ package struct DomainPersistenceCoordinator {
                 validator: validator
             )?.workspace
         }
+
+        let journalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence
+        var recoveryUnavailableReason: String?
+        if let entry, !isDeleted {
+            if let workspace {
+                journalEvidence = workspace.admissionJournalEvidence
+                if !journalEvidence.isAvailable {
+                    recoveryUnavailableReason = "working_journal_recovery_unavailable"
+                }
+            } else {
+                switch loadJournal(
+                    workspaceID: entry.workspaceID,
+                    expectedFileURL: entry.fileURL,
+                    validator: validator
+                ) {
+                case let .success(journal?):
+                    journalEvidence = .present(journal.canonicalBytes)
+                case .success(nil):
+                    journalEvidence = .absent
+                case let .failure(error):
+                    if isJournalInfrastructureFailure(error) {
+                        throw error
+                    }
+                    journalEvidence = .unavailable
+                    recoveryUnavailableReason = journalDegradedReason(error)
+                }
+            }
+        } else {
+            journalEvidence = .absent
+        }
+
+        var deletionSidecarBytes: Data?
+        if let deletion {
+            switch try readOptionalMetadataSnapshot(at: deletionURL(workspaceID)) {
+            case .absent:
+                break
+            case .oversized:
+                try validator.requireRuntimeAvailability()
+            case let .present(data):
+                do {
+                    let sidecar = try validator.validateDeletionTombstone(data)
+                    if deletionSidecar(sidecar.tombstone, matches: deletion) {
+                        deletionSidecarBytes = sidecar.canonicalBytes
+                    }
+                } catch {
+                    if isJournalInfrastructureFailure(error) {
+                        throw error
+                    }
+                }
+            }
+        }
+        let admissionRecovery: DomainWorkspaceCommandAdmissionTargetRecovery? =
+            recoveryUnavailableReason == nil && (entry != nil || deletion != nil)
+                ? DomainWorkspaceCommandAdmissionTargetRecovery(
+                    catalogBytes: validation.canonicalBytes,
+                    catalogRevision: catalog.revision,
+                    catalogDigest: validation.contentDigest,
+                    workspaceID: workspaceID,
+                    journalBytes: journalEvidence.canonicalBytes,
+                    deletionSidecarBytes: deletionSidecarBytes
+                )
+                : nil
         return DomainPersistenceWorkspaceRefresh(
             workspace: workspace,
             workspaceIsDeleted: isDeleted,
-            deletedOperation: deletion?.operation,
-            health: .writable,
+            admissionRecovery: admissionRecovery,
+            health: recoveryUnavailableReason.map { .degradedReadOnly(reason: $0) } ?? .writable,
             catalogRevision: catalog.revision
         )
     }
@@ -1186,23 +1251,21 @@ package struct DomainPersistenceCoordinator {
             try recoverInterruptedCreates(validator: validator, permit: permit)
         }
         var globalHealth: DomainAuthorityHealth = .writable
-        let catalog: RuntimeWorkspaceCatalog?
+        var catalogValidation: DomainWorkspaceCatalogValidation?
         do {
             if let data = try readCatalogBytes() {
-                catalog = try validator.validateCatalog(data).catalog
-            } else {
-                catalog = nil
+                catalogValidation = try validator.validateCatalog(data)
             }
         } catch {
             if isJournalInfrastructureFailure(error) {
                 throw error
             }
-            catalog = nil
             globalHealth = .degradedReadOnly(reason: catalogDegradedReason(error))
         }
+        let catalog = catalogValidation?.catalog
 
         let authoritativeTombstones = catalog?.deletions ?? []
-        var sidecarTombstonesByWorkspaceID = [UUID: DomainDeletionTombstone]()
+        var sidecarTombstonesByWorkspaceID = [UUID: DomainWorkspaceDeletionTombstoneValidation]()
         for authoritative in authoritativeTombstones {
             switch try readOptionalMetadataSnapshot(at: deletionURL(authoritative.workspaceID)) {
             case .absent:
@@ -1211,8 +1274,8 @@ package struct DomainPersistenceCoordinator {
                 try validator.requireRuntimeAvailability()
             case let .present(data):
                 do {
-                    let sidecar = try validator.validateDeletionTombstone(data).tombstone
-                    if deletionSidecar(sidecar, matches: authoritative) {
+                    let sidecar = try validator.validateDeletionTombstone(data)
+                    if deletionSidecar(sidecar.tombstone, matches: authoritative) {
                         sidecarTombstonesByWorkspaceID[authoritative.workspaceID] = sidecar
                     }
                 } catch {
@@ -1225,7 +1288,7 @@ package struct DomainPersistenceCoordinator {
         // The catalog alone is deletion authority. A bounded exact-identity sidecar may replace
         // only the cleanup diagnostic of an already-authoritative tombstone.
         let deletionTombstones = authoritativeTombstones.map { authoritative in
-            sidecarTombstonesByWorkspaceID[authoritative.workspaceID] ?? authoritative
+            sidecarTombstonesByWorkspaceID[authoritative.workspaceID]?.tombstone ?? authoritative
         }.sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
         let deletedIDs = Set(deletionTombstones.map(\.workspaceID))
 
@@ -1239,11 +1302,25 @@ package struct DomainPersistenceCoordinator {
                 return DomainPersistenceBootstrap(
                     workspaces: [],
                     unavailableWorkspaces: [],
-                    deletedOperations: deletionTombstones.map(\.operation),
                     deletedWorkspaceIDs: deletedIDs,
+                    admissionRecovery: nil,
                     health: .degradedReadOnly(reason: "workspace_index_decode_failed"),
                     catalogRevision: 0
                 )
+            }
+        }
+        if catalogValidation == nil, globalHealth == .writable {
+            do {
+                catalogValidation = try seedLegacyCatalog(
+                    entries: entries,
+                    updatedAt: Date(timeIntervalSinceReferenceDate: 0),
+                    validator: validator
+                )
+            } catch {
+                if isJournalInfrastructureFailure(error) {
+                    throw error
+                }
+                globalHealth = .degradedReadOnly(reason: "workspace_catalog_transition_invalid")
             }
         }
 
@@ -1282,13 +1359,73 @@ package struct DomainPersistenceCoordinator {
             }
         }
 
+        let admissionRecovery: DomainWorkspaceCommandAdmissionRecovery?
+        if globalHealth == .writable, let effectiveCatalog = catalogValidation {
+            let loadedByWorkspaceID = Dictionary(uniqueKeysWithValues: loaded.map {
+                ($0.document.workspaceID, $0)
+            })
+            var journals: [DomainWorkspaceCommandAdmissionJournalRecovery] = []
+            var recoveryEvidenceAvailable = true
+            for entry in effectiveCatalog.catalog.entries.sorted(by: {
+                $0.workspaceID.uuidString < $1.workspaceID.uuidString
+            }) {
+                let evidence: DomainWorkspaceCommandAdmissionJournalEvidence
+                if let workspace = loadedByWorkspaceID[entry.workspaceID] {
+                    evidence = workspace.admissionJournalEvidence
+                } else {
+                    switch loadJournal(
+                    workspaceID: entry.workspaceID,
+                    expectedFileURL: entry.fileURL,
+                    validator: validator
+                ) {
+                    case let .success(validation?):
+                        evidence = .present(validation.canonicalBytes)
+                    case .success(nil):
+                        evidence = .absent
+                    case let .failure(error):
+                        if isJournalInfrastructureFailure(error) {
+                            throw error
+                        }
+                        evidence = .unavailable
+                    }
+                }
+                recoveryEvidenceAvailable = recoveryEvidenceAvailable && evidence.isAvailable
+                journals.append(.init(
+                    workspaceID: entry.workspaceID,
+                    canonicalBytes: evidence.canonicalBytes
+                ))
+            }
+            let deletionSidecars = (effectiveCatalog.catalog.deletions ?? [])
+                .sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
+                .map { deletion in
+                    DomainWorkspaceCommandAdmissionDeletionRecovery(
+                        workspaceID: deletion.workspaceID,
+                        canonicalBytes: sidecarTombstonesByWorkspaceID[deletion.workspaceID]?.canonicalBytes
+                    )
+                }
+            if recoveryEvidenceAvailable {
+                admissionRecovery = DomainWorkspaceCommandAdmissionRecovery(
+                    catalogBytes: effectiveCatalog.canonicalBytes,
+                    catalogRevision: effectiveCatalog.catalog.revision,
+                    catalogDigest: effectiveCatalog.contentDigest,
+                    journals: journals,
+                    deletionSidecars: deletionSidecars
+                )
+            } else {
+                admissionRecovery = nil
+                globalHealth = .degradedReadOnly(reason: "working_journal_recovery_unavailable")
+            }
+        } else {
+            admissionRecovery = nil
+        }
+
         return DomainPersistenceBootstrap(
             workspaces: loaded,
             unavailableWorkspaces: unavailable,
-            deletedOperations: deletionTombstones.map(\.operation),
             deletedWorkspaceIDs: deletedIDs,
+            admissionRecovery: admissionRecovery,
             health: globalHealth,
-            catalogRevision: catalog?.revision ?? 0
+            catalogRevision: catalogValidation?.catalog.revision ?? 0
         )
     }
 
@@ -1346,7 +1483,9 @@ package struct DomainPersistenceCoordinator {
                      .operationIDCollision,
                      .invalidWorkspaceDocument:
                     continue
-                case .cancelled,
+                case .admissionRecoveryStale,
+                     .admissionFullRecoveryRequired,
+                     .cancelled,
                      .runtimeShutdownRequested,
                      .lockTimedOut,
                      .mutationPermitInvalid,
@@ -1465,7 +1604,8 @@ package struct DomainPersistenceCoordinator {
         }
         func degradedSavedWorkspace(
             reason: String,
-            journal: DomainWorkingJournal? = nil
+            journal: DomainWorkingJournal? = nil,
+            admissionJournalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence = .unavailable
         ) -> (workspace: DomainPersistenceBootstrap.Workspace, degradedReason: String?)? {
             guard let savedDocument else { return nil }
             let savedRevision = journal?.revisions.savedRevision ?? 0
@@ -1483,6 +1623,7 @@ package struct DomainPersistenceCoordinator {
                 }),
                 contextTombstones: journal?.contextTombstones ?? [:],
                 operations: journal?.operations ?? [],
+                admissionJournalEvidence: admissionJournalEvidence,
                 health: .degradedReadOnly(reason: reason),
                 fileMetadata: observedMetadata
             ), reason)
@@ -1490,6 +1631,7 @@ package struct DomainPersistenceCoordinator {
 
         switch loadJournal(
             workspaceID: workspaceID,
+            expectedFileURL: fileURL,
             validator: validator
         ) {
         case let .success(validation?):
@@ -1516,6 +1658,7 @@ package struct DomainPersistenceCoordinator {
                         contextRevisions: recoveredJournal.contextRevisions,
                         contextTombstones: recoveredJournal.contextTombstones,
                         operations: recoveredJournal.operations,
+                        admissionJournalEvidence: .present(recovered.validation.canonicalBytes),
                         health: .writable,
                         fileMetadata: trustedMetadata(matching: recoveredJournal.savedDigest)
                     ), nil)
@@ -1526,7 +1669,8 @@ package struct DomainPersistenceCoordinator {
                 }
                 return degradedSavedWorkspace(
                     reason: "working_journal_recovery_failed",
-                    journal: journal
+                    journal: journal,
+                    admissionJournalEvidence: .present(validation.canonicalBytes)
                 )
             }
             if let workingBytes = journal.workingDocument {
@@ -1537,7 +1681,8 @@ package struct DomainPersistenceCoordinator {
                 ) else {
                     return degradedSavedWorkspace(
                         reason: "working_document_decode_failed",
-                        journal: journal
+                        journal: journal,
+                        admissionJournalEvidence: .present(validation.canonicalBytes)
                     )
                 }
                 return (.init(
@@ -1547,6 +1692,7 @@ package struct DomainPersistenceCoordinator {
                     contextRevisions: journal.contextRevisions,
                     contextTombstones: journal.contextTombstones,
                     operations: journal.operations,
+                    admissionJournalEvidence: .present(validation.canonicalBytes),
                     health: .writable,
                     fileMetadata: trustedMetadata(matching: journal.savedDigest)
                 ), nil)
@@ -1559,6 +1705,7 @@ package struct DomainPersistenceCoordinator {
                 contextRevisions: journal.contextRevisions,
                 contextTombstones: journal.contextTombstones,
                 operations: journal.operations,
+                admissionJournalEvidence: .present(validation.canonicalBytes),
                 health: .writable,
                 fileMetadata: trustedMetadata(matching: journal.savedDigest)
             ), nil)
@@ -1578,6 +1725,7 @@ package struct DomainPersistenceCoordinator {
                 }),
                 contextTombstones: [:],
                 operations: [],
+                admissionJournalEvidence: .absent,
                 health: .writable,
                 fileMetadata: observedMetadata
             ), nil)
@@ -3418,6 +3566,14 @@ package struct DomainPersistenceCoordinator {
         return bytes
     }
 
+    private func seedLegacyCatalog(
+        entries: [RuntimeWorkspaceCatalog.Entry],
+        updatedAt: Date,
+        validator: DomainWorkspaceRustJournal.PreparedValidator
+    ) throws -> DomainWorkspaceCatalogValidation {
+        try validator.seedCatalog(entries: entries, updatedAt: updatedAt)
+    }
+
     private func loadCurrentCatalog(
         now: Date,
         validator: DomainWorkspaceRustJournal.PreparedValidator
@@ -3433,9 +3589,10 @@ package struct DomainPersistenceCoordinator {
         }
         return ValidatedCatalogSnapshot(
             raw: .absent,
-            validation: try validator.seedCatalog(
+            validation: try seedLegacyCatalog(
                 entries: legacyCatalogEntries(),
-                updatedAt: now
+                updatedAt: now,
+                validator: validator
             )
         )
     }

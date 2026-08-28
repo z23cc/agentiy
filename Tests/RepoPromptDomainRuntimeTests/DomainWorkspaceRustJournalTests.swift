@@ -239,15 +239,18 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 before: nil,
                 after: revisions,
                 catalogRevision: 7,
-                resultingDigest: String(repeating: "a", count: 64)
+                resultingDigest: DomainContentDigest.sha256(Data())
             )
         )
         let service = AgentryCoreService()
         defer { Task { await service.shutdown() } }
         let validator = try await DomainWorkspaceRustJournal.prepare(coreService: service)
-        let admission = try validator.beginCommandAdmission(records: [
-            .init(workspaceID: workspaceID, operation: seededOperation),
-        ])
+        let fileURL = URL(fileURLWithPath: "/tmp/Admission-\(workspaceID).json")
+        let initialRecovery = try domainCommandAdmissionRecovery(
+            validator: validator,
+            workspaces: [(workspaceID, fileURL, [seededOperation])]
+        )
+        let admission = try validator.beginCommandAdmission(recovery: initialRecovery)
         defer { admission.close() }
         XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
 
@@ -350,11 +353,19 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 resultingDigest: nil
             )
         )
-        _ = try admission.reconcileWorkspace(
-            workspaceID: workspaceID,
-            operations: [durableOperation],
-            deletedOperation: nil
+        let durableRecovery = try domainCommandAdmissionRecovery(
+            validator: validator,
+            workspaces: [(workspaceID, fileURL, [durableOperation])]
         )
+        let targetReceipt = try admission.applyTargetRecovery(.init(
+            catalogBytes: durableRecovery.catalogBytes,
+            catalogRevision: durableRecovery.catalogRevision,
+            catalogDigest: durableRecovery.catalogDigest,
+            workspaceID: workspaceID,
+            journalBytes: durableRecovery.journals[0].canonicalBytes,
+            deletionSidecarBytes: nil
+        ))
+        XCTAssertEqual(targetReceipt.targetWorkspaceID, workspaceID)
         XCTAssertFalse(try durableClaim.abandon())
         switch try admission.acquire(durableInput) {
         case let .replay(fingerprint, scope, operation):
@@ -365,16 +376,21 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             XCTFail("Expected reconciled receipt to replay in workspace scope")
         }
 
-        let reconciled = try admission.reconcileDurable([
-            .init(workspaceID: workspaceID, operation: durableOperation),
-        ])
-        XCTAssertEqual(reconciled.globalOperationCount, 3)
-        XCTAssertEqual(reconciled.workspaceOperationCount, 1)
-        _ = try admission.reconcileWorkspace(
-            workspaceID: workspaceID,
-            operations: [],
-            deletedOperation: nil
+        let reconciled = try admission.applyFullRecovery(durableRecovery)
+        XCTAssertEqual(reconciled.diagnostics.globalOperationCount, 3)
+        XCTAssertEqual(reconciled.diagnostics.workspaceOperationCount, 1)
+        let emptyRecovery = try domainCommandAdmissionRecovery(
+            validator: validator,
+            workspaces: [(workspaceID, fileURL, [])]
         )
+        _ = try admission.applyTargetRecovery(.init(
+            catalogBytes: emptyRecovery.catalogBytes,
+            catalogRevision: emptyRecovery.catalogRevision,
+            catalogDigest: emptyRecovery.catalogDigest,
+            workspaceID: workspaceID,
+            journalBytes: emptyRecovery.journals[0].canonicalBytes,
+            deletionSidecarBytes: nil
+        ))
         switch try admission.acquire(durableInput) {
         case let .replay(_, scope, operation):
             XCTAssertEqual(scope, .global)
@@ -396,7 +412,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         let service = AgentryCoreService()
         defer { Task { await service.shutdown() } }
         let validator = try await DomainWorkspaceRustJournal.prepare(coreService: service)
-        let admission = try validator.beginCommandAdmission(records: [])
+        let admission = try beginDomainCommandAdmission(validator: validator)
         defer { admission.close() }
         let envelope = DomainWorkspaceCommandEnvelope(
             operationID: UUID(),
@@ -727,7 +743,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             entries: [.init(workspaceID: workspaceID, fileURL: fileURL)],
             updatedAt: now
         )
-        let admission = try validator.beginCommandAdmission(records: [])
+        let admission = try beginDomainCommandAdmission(validator: validator)
         defer { admission.close() }
         let envelope = DomainWorkspaceCommandEnvelope(
             operationID: operationID,
@@ -1049,6 +1065,68 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         }
         return false
     }
+}
+
+private func domainCommandAdmissionRecovery(
+    validator: DomainWorkspaceRustJournal.PreparedValidator,
+    workspaces: [(workspaceID: UUID, fileURL: URL, operations: [DomainRecordedOperation])] = []
+) throws -> DomainWorkspaceCommandAdmissionRecovery {
+    let entries = workspaces.map {
+        DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.Entry(
+            workspaceID: $0.workspaceID,
+            fileURL: $0.fileURL
+        )
+    }
+    let catalog = try validator.seedCatalog(
+        entries: entries,
+        updatedAt: Date(timeIntervalSinceReferenceDate: 0)
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let journals = try workspaces.map { workspace in
+        let revisions = workspace.operations.last?.after ?? DomainRevisionState(
+            workingRevision: 0,
+            savedRevision: 0,
+            dirtyRevision: nil
+        )
+        let journal = DomainWorkingJournal(
+            workspaceID: workspace.workspaceID,
+            fileURL: workspace.fileURL,
+            revisions: revisions,
+            savedDigest: String(repeating: "a", count: 64),
+            workingDocument: revisions.dirtyRevision == nil ? nil : Data(),
+            contextRevisions: [:],
+            contextDigests: [:],
+            contextTombstones: [:],
+            operations: workspace.operations,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 0)
+        )
+        let validation = try validator.validateSynchronously(
+            encoder.encode(journal),
+            expectedWorkspaceID: workspace.workspaceID,
+            expectedFileURL: workspace.fileURL
+        )
+        return DomainWorkspaceCommandAdmissionJournalRecovery(
+            workspaceID: workspace.workspaceID,
+            canonicalBytes: validation.canonicalBytes
+        )
+    }
+    return DomainWorkspaceCommandAdmissionRecovery(
+        catalogBytes: catalog.canonicalBytes,
+        catalogRevision: catalog.catalog.revision,
+        catalogDigest: catalog.contentDigest,
+        journals: journals,
+        deletionSidecars: []
+    )
+}
+
+private func beginDomainCommandAdmission(
+    validator: DomainWorkspaceRustJournal.PreparedValidator,
+    workspaces: [(workspaceID: UUID, fileURL: URL, operations: [DomainRecordedOperation])] = []
+) throws -> DomainWorkspaceRustJournal.PreparedCommandAdmission {
+    try validator.beginCommandAdmission(
+        recovery: domainCommandAdmissionRecovery(validator: validator, workspaces: workspaces)
+    )
 }
 
 private enum CommandIdentityAuthorityTestError: Error {

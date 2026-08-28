@@ -163,8 +163,8 @@ protocol CoreRuntimeTransport: Sendable {
     ) throws -> CoreWorkspaceCommandIdentityV1
     func workspaceCommandAdmissionBeginV1(
         identity: CoreRuntimeIdentity,
-        records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
-    ) throws -> CorePreparedWorkspaceCommandAdmissionV1
+        recovery: CoreWorkspaceCommandAdmissionRecoveryV1
+    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1
     func workspaceSavedRevisionValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1078,17 +1078,16 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
 
     func workspaceCommandAdmissionBeginV1(
         identity: CoreRuntimeIdentity,
-        records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
-    ) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
-        let rawRecords = records.map(Self.rawWorkspaceCommandAdmissionSeedRecord)
+        recovery: CoreWorkspaceCommandAdmissionRecoveryV1
+    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1 {
         do {
             let response = try runtime.workspaceCommandAdmissionBeginV1(request: .init(
                 runtimeIdentity: Self.rawIdentity(identity),
                 contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
-                records: rawRecords
+                recovery: Self.rawWorkspaceCommandAdmissionRecovery(recovery)
             ))
             if let errorKind = response.errorKind {
-                guard response.admission == nil else {
+                guard response.admission == nil, response.receipt == nil else {
                     throw CoreTransportError.unexpected(
                         "workspace command admission response contains success and error"
                     )
@@ -1099,13 +1098,14 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
             guard response.futureSchemaVersion == nil,
-                  let rawAdmission = response.admission
+                  let rawAdmission = response.admission,
+                  let rawReceipt = response.receipt
             else {
                 throw CoreTransportError.unexpected(
                     "workspace command admission response is invalid"
                 )
             }
-            return CorePreparedWorkspaceCommandAdmissionV1(
+            let admission = CorePreparedWorkspaceCommandAdmissionV1(
                 rawAdmission: rawAdmission,
                 acquire: { request, deadlineUnixMilliseconds in
                     do {
@@ -1128,12 +1128,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 cancel: { operationID in
                     try self.cancel(identity: identity, operationID: operationID)
                 },
-                reconcileDurable: { durable in
+                applyFullRecovery: { recovery in
                     do {
-                        return try Self.workspaceCommandAdmissionDiagnostics(
-                            rawAdmission.reconcileDurable(
-                                records: durable.map(Self.rawWorkspaceCommandAdmissionSeedRecord)
-                            )
+                        return try Self.workspaceCommandAdmissionRecoveryResponse(
+                            rawAdmission.applyFullRecovery(
+                                recovery: Self.rawWorkspaceCommandAdmissionRecovery(recovery)
+                            ),
+                            expectedTarget: nil
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
                         throw error
@@ -1141,14 +1142,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
-                reconcileWorkspace: { workspaceID, operations, deletedOperation in
+                applyTargetRecovery: { recovery in
                     do {
-                        return try Self.workspaceCommandAdmissionDiagnostics(
-                            rawAdmission.reconcileWorkspace(
-                                workspaceId: workspaceID.uuidString,
-                                operations: operations.map(Self.rawWorkspaceRecordedOperation),
-                                deletedOperation: deletedOperation.map(Self.rawWorkspaceRecordedOperation)
-                            )
+                        return try Self.workspaceCommandAdmissionRecoveryResponse(
+                            rawAdmission.applyTargetRecovery(
+                                recovery: Self.rawWorkspaceCommandAdmissionTargetRecovery(recovery)
+                            ),
+                            expectedTarget: recovery.workspaceID
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
                         throw error
@@ -1170,6 +1170,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 close: {
                     rawAdmission.close()
                 }
+            )
+            return CorePreparedWorkspaceCommandAdmissionBeginV1(
+                admission: admission,
+                receipt: try Self.workspaceCommandAdmissionRecoveryReceipt(
+                    rawReceipt,
+                    expectedTarget: nil
+                )
             )
         } catch let error as CoreWorkspaceWorkingJournalValidationError {
             throw error
@@ -2456,12 +2463,28 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    private static func rawWorkspaceCommandAdmissionSeedRecord(
-        _ value: CoreWorkspaceCommandAdmissionSeedRecordV1
-    ) -> AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionSeedRecordV1 {
+    private static func rawWorkspaceCommandAdmissionRecovery(
+        _ value: CoreWorkspaceCommandAdmissionRecoveryV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionRecoveryV1 {
         .init(
-            workspaceId: value.workspaceID?.uuidString,
-            operation: rawWorkspaceRecordedOperation(value.operation)
+            catalogBytes: value.catalogBytes,
+            journals: value.journals.map {
+                .init(workspaceId: $0.workspaceID.uuidString, canonicalBytes: $0.canonicalBytes)
+            },
+            deletionSidecars: value.deletionSidecars.map {
+                .init(workspaceId: $0.workspaceID.uuidString, canonicalBytes: $0.canonicalBytes)
+            }
+        )
+    }
+
+    private static func rawWorkspaceCommandAdmissionTargetRecovery(
+        _ value: CoreWorkspaceCommandAdmissionTargetRecoveryV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+        .init(
+            catalogBytes: value.catalogBytes,
+            workspaceId: value.workspaceID.uuidString,
+            journalBytes: value.journalBytes,
+            deletionSidecarBytes: value.deletionSidecarBytes
         )
     }
 
@@ -2639,6 +2662,68 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    private static func workspaceCommandAdmissionRecoveryResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionRecoveryResponseV1,
+        expectedTarget: UUID?
+    ) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
+        if let errorKind = response.errorKind {
+            guard response.receipt == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace command admission recovery contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let receipt = response.receipt
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace command admission recovery receipt is invalid"
+            )
+        }
+        return try workspaceCommandAdmissionRecoveryReceipt(
+            receipt,
+            expectedTarget: expectedTarget
+        )
+    }
+
+    private static func workspaceCommandAdmissionRecoveryReceipt(
+        _ receipt: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
+        expectedTarget: UUID?
+    ) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
+        let targetWorkspaceID: UUID?
+        if let rawTarget = receipt.targetWorkspaceId {
+            guard let parsed = UUID(uuidString: rawTarget) else {
+                throw CoreTransportError.unexpected(
+                    "workspace command admission recovery target is invalid"
+                )
+            }
+            targetWorkspaceID = parsed
+        } else {
+            targetWorkspaceID = nil
+        }
+        guard targetWorkspaceID == expectedTarget,
+              isSHA256(receipt.catalogDigest)
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace command admission recovery receipt does not match request"
+            )
+        }
+        return try CoreWorkspaceCommandAdmissionRecoveryReceiptV1(
+            catalogRevision: receipt.catalogRevision,
+            catalogDigest: receipt.catalogDigest,
+            targetWorkspaceID: targetWorkspaceID,
+            diagnostics: workspaceCommandAdmissionDiagnostics(.init(
+                diagnostics: receipt.diagnostics,
+                errorKind: nil,
+                futureSchemaVersion: nil
+            ))
+        )
+    }
+
     private static func workspaceCommandAdmissionDiagnostics(
         _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionMutationResponseV1
     ) throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
@@ -2811,6 +2896,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .invalidPendingSave: .invalidPendingSave
         case .invalidTimestamp: .invalidTimestamp
         case .externalDocumentConflict: .externalDocumentConflict
+        case .staleRecoverySnapshot: .staleRecoverySnapshot
+        case .fullRecoveryRequired: .fullRecoveryRequired
         case .invalidTransaction: .invalidTransaction
         }
     }

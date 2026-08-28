@@ -788,7 +788,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         )
     }
 
-    func testConflictRefreshCarriesAuthoritativeDeletionOperation() async throws {
+    func testConflictRefreshCarriesAuthoritativeDeletionArtifactRecovery() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
         let runtime = fixture.runtime()
@@ -814,8 +814,13 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         let refreshed = try XCTUnwrap(refresh)
         XCTAssertTrue(refreshed.workspaceIsDeleted)
         XCTAssertNil(refreshed.workspace)
-        XCTAssertEqual(refreshed.deletedOperation?.operationID, operationID)
-        XCTAssertEqual(refreshed.deletedOperation?.disposition, .applied)
+        let recovery = try XCTUnwrap(refreshed.admissionRecovery)
+        XCTAssertEqual(recovery.workspaceID, fixture.workspaceID)
+        XCTAssertNil(recovery.journalBytes)
+        let sidecarBytes = try XCTUnwrap(recovery.deletionSidecarBytes)
+        let tombstone = try JSONDecoder().decode(DomainDeletionTombstone.self, from: sidecarBytes)
+        XCTAssertEqual(tombstone.operation.operationID, operationID)
+        XCTAssertEqual(tombstone.operation.disposition, .applied)
     }
 
     func testDeletePreservesArtifactsWhenCatalogDirectorySyncIsIndeterminate() async throws {
@@ -1577,6 +1582,57 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(rejected.disposition, .readOnly)
     }
 
+    func testMalformedJournalIsUnavailableAdmissionEvidenceNotAbsentLedger() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+        let document = try fixture.document(prompt: "journal evidence")
+        let working = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(document)
+        ))
+        XCTAssertEqual(working.disposition, .applied)
+        _ = await runtime.shutdown()
+
+        let journalURL = try XCTUnwrap(
+            try allFiles(below: fixture.storageRoot.appendingPathComponent("DomainRuntime"))
+                .first {
+                    $0.path.contains("working-journals")
+                        && $0.lastPathComponent == "\(fixture.workspaceID.uuidString).json"
+                }
+        )
+        try Data("{\"version\":1".utf8).write(to: journalURL, options: .atomic)
+
+        let persistence = DomainPersistenceCoordinator(
+            configuration: runtime.configuration,
+            identity: runtime.identity
+        )
+        let bootstrap = await persistence.bootstrap()
+        XCTAssertNil(bootstrap.admissionRecovery)
+        XCTAssertEqual(
+            bootstrap.health,
+            .degradedReadOnly(reason: "working_journal_recovery_unavailable")
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(bootstrap.workspaces.first).admissionJournalEvidence,
+            .unavailable
+        )
+
+        let refreshed = await persistence.refreshWorkspace(
+            workspaceID: fixture.workspaceID,
+            fallbackFileURL: fixture.workspaceFile
+        )
+        let refresh = try XCTUnwrap(refreshed)
+        XCTAssertNil(refresh.admissionRecovery)
+        XCTAssertEqual(
+            refresh.health,
+            .degradedReadOnly(reason: "working_journal_recovery_unavailable")
+        )
+    }
+
     func testFutureJournalDegradesToReadOnlyWithoutDiscardingSavedDocument() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
@@ -1604,12 +1660,16 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         try await restarted.start()
         let runtimeSnapshot = await restarted.snapshot()
         let workspace = await restarted.workspaceStore.snapshot().workspaces.first
-        // Workspace-scoped damage must not brick the whole runtime: the catalog stays
-        // writable while the damaged workspace alone rejects mutations.
-        XCTAssertEqual(runtimeSnapshot.lifecycle, .ready)
-        XCTAssertEqual(runtimeSnapshot.workspaceHealth, .writable)
+        // The saved semantic document remains isolated and readable, but a future journal may hide
+        // process-global operation IDs. Admission therefore quarantines mutation globally rather
+        // than fabricating an authoritative empty ledger for this workspace.
+        XCTAssertEqual(runtimeSnapshot.lifecycle, .degraded)
+        XCTAssertEqual(
+            runtimeSnapshot.workspaceHealth,
+            .degradedReadOnly(reason: "working_journal_recovery_unavailable")
+        )
         XCTAssertEqual(workspace?.document.documentBytes, try Data(contentsOf: fixture.workspaceFile))
-        XCTAssertFalse(workspace?.health.acceptsMutations ?? true)
+        XCTAssertEqual(workspace?.health, .degradedReadOnly(reason: "future_working_journal"))
         let rejected = try await restarted.workspaceStore.execute(.init(
             operationID: UUID(),
             expectedWorkspaceRevision: workspace?.revisions.workingRevision,
@@ -1617,8 +1677,8 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             command: .replaceWorkingDocument(fixture.document(prompt: "must not apply"))
         ))
         XCTAssertEqual(rejected.disposition, .readOnly)
-        XCTAssertEqual(rejected.errorCode, .workspaceReadOnlyDegraded)
-        XCTAssertEqual(rejected.diagnostic, workspace?.health.reason)
+        XCTAssertEqual(rejected.errorCode, .runtimeReadOnlyDegraded)
+        XCTAssertEqual(rejected.diagnostic, "canonical_storage_reconciliation_failed")
     }
 
     func testTwoWindowCaptureRevisionConflictPreventsLostUpdate() async throws {

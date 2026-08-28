@@ -16,7 +16,8 @@ use crate::types::{
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
     CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionAcquireKindV1,
     CoreWorkspaceCommandAdmissionBeginRequestV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
-    CoreWorkspaceCommandAdmissionLookupScopeV1, CoreWorkspaceCommandAdmissionSeedRecordV1,
+    CoreWorkspaceCommandAdmissionLookupScopeV1, CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
+    CoreWorkspaceCommandAdmissionRecoveryV1, CoreWorkspaceCommandAdmissionTargetRecoveryV1,
     CoreWorkspaceCommandIdentityRequestV1, CoreWorkspaceCommandIdentityResponseV1,
     CoreWorkspaceCommandIdentityV1, CoreWorkspaceCommandLifecycleDirectiveV1,
     CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
@@ -129,6 +130,14 @@ impl LeafCancellation {
 #[derive(Debug, uniffi::Record)]
 pub struct CoreWorkspaceCommandAdmissionBeginResponseV1 {
     pub admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+    pub receipt: Option<CoreWorkspaceCommandAdmissionRecoveryReceiptV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
+    pub receipt: Option<CoreWorkspaceCommandAdmissionRecoveryReceiptV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
 }
@@ -355,34 +364,26 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
         })
     }
 
-    pub fn reconcile_durable(
+    pub fn apply_full_recovery(
         &self,
-        records: Vec<CoreWorkspaceCommandAdmissionSeedRecordV1>,
-    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        recovery: CoreWorkspaceCommandAdmissionRecoveryV1,
+    ) -> Result<CoreWorkspaceCommandAdmissionRecoveryResponseV1, CoreError> {
         self.panic_guard.call(|| {
             self.require_live_runtime()?;
-            let records = records.into_iter().map(Into::into).collect::<Vec<_>>();
-            Ok(workspace_command_admission_mutation_response(
-                self.inner.reconcile_durable(&records),
+            Ok(workspace_command_admission_recovery_response(
+                self.inner.apply_full_recovery(&recovery.into()),
             ))
         })
     }
 
-    pub fn reconcile_workspace(
+    pub fn apply_target_recovery(
         &self,
-        workspace_id: String,
-        operations: Vec<CoreWorkspaceRecordedOperationV1>,
-        deleted_operation: Option<CoreWorkspaceRecordedOperationV1>,
-    ) -> Result<CoreWorkspaceCommandAdmissionMutationResponseV1, CoreError> {
+        recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1,
+    ) -> Result<CoreWorkspaceCommandAdmissionRecoveryResponseV1, CoreError> {
         self.panic_guard.call(|| {
             self.require_live_runtime()?;
-            let operations = operations.into_iter().map(Into::into).collect::<Vec<_>>();
-            Ok(workspace_command_admission_mutation_response(
-                self.inner.reconcile_workspace(
-                    &workspace_id,
-                    &operations,
-                    deleted_operation.map(Into::into),
-                ),
+            Ok(workspace_command_admission_recovery_response(
+                self.inner.apply_target_recovery(&recovery.into()),
             ))
         })
     }
@@ -1877,21 +1878,18 @@ impl CoreRuntime {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
-            let records = request
-                .records
-                .into_iter()
-                .map(Into::into)
-                .collect::<Vec<_>>();
-            Ok(match runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1::prepare(
-                &records,
+            let recovery = request.recovery.into();
+            Ok(match runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1::prepare_from_recovery(
+                &recovery,
             ) {
-                Ok(admission) => CoreWorkspaceCommandAdmissionBeginResponseV1 {
+                Ok((admission, receipt)) => CoreWorkspaceCommandAdmissionBeginResponseV1 {
                     admission: Some(Arc::new(CorePreparedWorkspaceCommandAdmissionV1 {
                         inner: Arc::new(admission),
                         runtime: Arc::downgrade(&self.inner),
                         identity,
                         panic_guard: Arc::clone(&self.panic_guard),
                     })),
+                    receipt: Some(receipt.into()),
                     error_kind: None,
                     future_schema_version: None,
                 },
@@ -1899,6 +1897,7 @@ impl CoreRuntime {
                     let (error_kind, future_schema_version) = workspace_journal_error(error);
                     CoreWorkspaceCommandAdmissionBeginResponseV1 {
                         admission: None,
+                        receipt: None,
                         error_kind: Some(error_kind),
                         future_schema_version,
                     }
@@ -1984,6 +1983,14 @@ impl CoreRuntime {
                         ),
                         JournalError::ExternalDocumentConflict => (
                             CoreWorkspaceWorkingJournalValidationErrorKindV1::ExternalDocumentConflict,
+                            None,
+                        ),
+                        JournalError::StaleRecoverySnapshot => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::StaleRecoverySnapshot,
+                            None,
+                        ),
+                        JournalError::FullRecoveryRequired => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::FullRecoveryRequired,
                             None,
                         ),
                         JournalError::InvalidTransaction => (
@@ -4134,6 +4141,29 @@ fn workspace_command_transient_finalization_response(
     }
 }
 
+fn workspace_command_admission_recovery_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionRecoveryReceiptV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
+    match result {
+        Ok(receipt) => CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
+            receipt: Some(receipt.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
+                receipt: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
+}
+
 fn workspace_command_admission_mutation_response(
     result: Result<
         runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDiagnosticsV1,
@@ -4311,6 +4341,14 @@ fn workspace_journal_error(
         ),
         JournalError::ExternalDocumentConflict => (
             CoreWorkspaceWorkingJournalValidationErrorKindV1::ExternalDocumentConflict,
+            None,
+        ),
+        JournalError::StaleRecoverySnapshot => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::StaleRecoverySnapshot,
+            None,
+        ),
+        JournalError::FullRecoveryRequired => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::FullRecoveryRequired,
             None,
         ),
         JournalError::InvalidTransaction => (
@@ -4639,19 +4677,65 @@ mod tests {
             error_code: None,
             diagnostic: None,
         };
+        let catalog_bytes = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "revision": 7,
+            "entries": [{
+                "workspaceID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "fileURL": "file:///tmp/Workspace.json"
+            }],
+            "deletions": [],
+            "updatedAt": 42.5
+        }))
+        .expect("catalog bytes");
+        let journal_bytes = |operations: &[CoreWorkspaceRecordedOperationV1]| {
+            let operations = operations
+                .iter()
+                .cloned()
+                .map(runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1::from)
+                .map(|operation| serde_json::to_value(operation).expect("operation json"))
+                .collect::<Vec<_>>();
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "workspaceID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "fileURL": "file:///tmp/Workspace.json",
+                "revisions": {"workingRevision": 0, "savedRevision": 0},
+                "savedDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "contextRevisions": [],
+                "contextDigests": [],
+                "contextTombstones": [],
+                "operations": operations,
+                "updatedAt": 42.5
+            }))
+            .expect("journal bytes")
+        };
+        let recovery = |operations: &[CoreWorkspaceRecordedOperationV1]| {
+            CoreWorkspaceCommandAdmissionRecoveryV1 {
+                catalog_bytes: catalog_bytes.clone(),
+                journals: vec![
+                    crate::types::CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
+                        workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                        canonical_bytes: Some(journal_bytes(operations)),
+                    },
+                ],
+                deletion_sidecars: Vec::new(),
+            }
+        };
         let response = core
             .workspace_command_admission_begin_v1(CoreWorkspaceCommandAdmissionBeginRequestV1 {
                 runtime_identity: identity.clone(),
                 contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
-                records: vec![CoreWorkspaceCommandAdmissionSeedRecordV1 {
-                    workspace_id: Some(
-                        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                    ),
-                    operation: operation.clone(),
-                }],
+                recovery: recovery(std::slice::from_ref(&operation)),
             })
             .expect("command admission begin");
         assert_eq!(response.error_kind, None);
+        assert_eq!(
+            response
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.catalog_revision),
+            Some(7)
+        );
         let admission = response.admission.expect("prepared admission");
 
         let preflight_request = CoreWorkspaceCommandIdentityRequestV1 {
@@ -4751,12 +4835,11 @@ mod tests {
         };
         let active_managed_before_reconcile = core.inner.active_managed_operation_count();
         let reconciled = admission
-            .reconcile_durable(vec![CoreWorkspaceCommandAdmissionSeedRecordV1 {
-                workspace_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned()),
-                operation: durable,
-            }])
-            .expect("durable reconcile");
-        let reconciled = reconciled.diagnostics.expect("reconciled diagnostics");
+            .apply_full_recovery(recovery(std::slice::from_ref(&durable)))
+            .expect("durable artifact recovery")
+            .receipt
+            .expect("recovery receipt")
+            .diagnostics;
         assert!(!durable_claim.abandon().expect("reconciled claim cleanup"));
         assert_eq!(
             core.inner.active_managed_operation_count(),
@@ -4899,15 +4982,17 @@ mod tests {
             ..operation.clone()
         };
         let reconciled = admission
-            .reconcile_workspace(
-                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                Vec::new(),
-                Some(tombstone.clone()),
-            )
-            .expect("targeted delete reconcile")
-            .diagnostics
-            .expect("targeted diagnostics");
-        assert_eq!(reconciled.workspace_operation_count, 0);
+            .apply_target_recovery(CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+                catalog_bytes: catalog_bytes.clone(),
+                workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                journal_bytes: Some(journal_bytes(std::slice::from_ref(&tombstone))),
+                deletion_sidecar_bytes: None,
+            })
+            .expect("targeted artifact recovery")
+            .receipt
+            .expect("target recovery receipt")
+            .diagnostics;
+        assert_eq!(reconciled.workspace_operation_count, 1);
         assert_eq!(reconciled.global_operation_count, 6);
 
         let mut malformed_request = preflight_request.clone();

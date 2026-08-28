@@ -653,13 +653,13 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
 
     func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMillis: UInt64?) throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1
 
+    func applyFullRecovery(recovery: CoreWorkspaceCommandAdmissionRecoveryV1) throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1
+
+    func applyTargetRecovery(recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1) throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1
+
     func close()
 
     func diagnostics() throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
-
-    func reconcileDurable(records: [CoreWorkspaceCommandAdmissionSeedRecordV1]) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
-
-    func reconcileWorkspace(workspaceId: String, operations: [CoreWorkspaceRecordedOperationV1], deletedOperation: CoreWorkspaceRecordedOperationV1?) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
 
 }
 open class CorePreparedWorkspaceCommandAdmissionV1: CorePreparedWorkspaceCommandAdmissionV1Protocol, @unchecked Sendable {
@@ -726,6 +726,26 @@ open func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMi
 })
 }
 
+open func applyFullRecovery(recovery: CoreWorkspaceCommandAdmissionRecoveryV1)throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_apply_full_recovery(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1_lower(recovery),uniffiCallStatus
+    )
+})
+}
+
+open func applyTargetRecovery(recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1)throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_apply_target_recovery(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1_lower(recovery),uniffiCallStatus
+    )
+})
+}
+
 open func close()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_close(
@@ -739,28 +759,6 @@ open func diagnostics()throws  -> CoreWorkspaceCommandAdmissionMutationResponseV
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_diagnostics(
             self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-
-open func reconcileDurable(records: [CoreWorkspaceCommandAdmissionSeedRecordV1])throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_reconcile_durable(
-            self.uniffiCloneHandle(),
-        FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionSeedRecordV1.lower(records),uniffiCallStatus
-    )
-})
-}
-
-open func reconcileWorkspace(workspaceId: String, operations: [CoreWorkspaceRecordedOperationV1], deletedOperation: CoreWorkspaceRecordedOperationV1?)throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_reconcile_workspace(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(workspaceId),
-        FfiConverterSequenceTypeCoreWorkspaceRecordedOperationV1.lower(operations),
-        FfiConverterOptionTypeCoreWorkspaceRecordedOperationV1.lower(deletedOperation),uniffiCallStatus
     )
 })
 }
@@ -7064,14 +7062,14 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1_lower
 public struct CoreWorkspaceCommandAdmissionBeginRequestV1: Equatable, Hashable {
     public let runtimeIdentity: RuntimeIdentity
     public let contractVersion: UInt16
-    public let records: [CoreWorkspaceCommandAdmissionSeedRecordV1]
+    public let recovery: CoreWorkspaceCommandAdmissionRecoveryV1
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, records: [CoreWorkspaceCommandAdmissionSeedRecordV1]) {
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, recovery: CoreWorkspaceCommandAdmissionRecoveryV1) {
         self.runtimeIdentity = runtimeIdentity
         self.contractVersion = contractVersion
-        self.records = records
+        self.recovery = recovery
     }
 
 
@@ -7092,14 +7090,14 @@ public struct FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1: FfiCo
             try CoreWorkspaceCommandAdmissionBeginRequestV1(
                 runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
                 contractVersion: FfiConverterUInt16.read(from: &buf),
-                records: FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionSeedRecordV1.read(from: &buf)
+                recovery: FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.read(from: &buf)
         )
     }
 
     public static func write(_ value: CoreWorkspaceCommandAdmissionBeginRequestV1, into buf: inout [UInt8]) {
         FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
         FfiConverterUInt16.write(value.contractVersion, into: &buf)
-        FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionSeedRecordV1.write(value.records, into: &buf)
+        FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.write(value.recovery, into: &buf)
     }
 }
 
@@ -7121,13 +7119,15 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1_lower(_ 
 
 public struct CoreWorkspaceCommandAdmissionBeginResponseV1 {
     public let admission: CorePreparedWorkspaceCommandAdmissionV1?
+    public let receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
     public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
     public let futureSchemaVersion: UInt16?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(admission: CorePreparedWorkspaceCommandAdmissionV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+    public init(admission: CorePreparedWorkspaceCommandAdmissionV1?, receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
         self.admission = admission
+        self.receipt = receipt
         self.errorKind = errorKind
         self.futureSchemaVersion = futureSchemaVersion
     }
@@ -7149,6 +7149,7 @@ public struct FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1: FfiC
         return
             try CoreWorkspaceCommandAdmissionBeginResponseV1(
                 admission: FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.read(from: &buf),
+                receipt: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.read(from: &buf),
                 errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
                 futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
         )
@@ -7156,6 +7157,7 @@ public struct FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1: FfiC
 
     public static func write(_ value: CoreWorkspaceCommandAdmissionBeginResponseV1, into buf: inout [UInt8]) {
         FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.write(value.admission, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.write(value.receipt, into: &buf)
         FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
         FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
     }
@@ -7174,6 +7176,60 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1_lift(_ 
 #endif
 public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionBeginResponseV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceCommandAdmissionDeletionRecoveryV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let canonicalBytes: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, canonicalBytes: Data?) {
+        self.workspaceId = workspaceId
+        self.canonicalBytes = canonicalBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionDeletionRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionDeletionRecoveryV1 {
+        return
+            try CoreWorkspaceCommandAdmissionDeletionRecoveryV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                canonicalBytes: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionDeletionRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterOptionData.write(value.canonicalBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionDeletionRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionDeletionRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.lower(value)
 }
 
 
@@ -7235,6 +7291,60 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionDiagnosticsV1_lower(_ v
 }
 
 
+public struct CoreWorkspaceCommandAdmissionJournalRecoveryV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let canonicalBytes: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, canonicalBytes: Data?) {
+        self.workspaceId = workspaceId
+        self.canonicalBytes = canonicalBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionJournalRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
+        return
+            try CoreWorkspaceCommandAdmissionJournalRecoveryV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                canonicalBytes: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionJournalRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterOptionData.write(value.canonicalBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionJournalRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.lower(value)
+}
+
+
 public struct CoreWorkspaceCommandAdmissionMutationResponseV1: Equatable, Hashable {
     public let diagnostics: CoreWorkspaceCommandAdmissionDiagnosticsV1?
     public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
@@ -7293,15 +7403,19 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lowe
 }
 
 
-public struct CoreWorkspaceCommandAdmissionSeedRecordV1: Equatable, Hashable {
-    public let workspaceId: String?
-    public let operation: CoreWorkspaceRecordedOperationV1
+public struct CoreWorkspaceCommandAdmissionRecoveryReceiptV1: Equatable, Hashable {
+    public let catalogRevision: UInt64
+    public let catalogDigest: String
+    public let targetWorkspaceId: String?
+    public let diagnostics: CoreWorkspaceCommandAdmissionDiagnosticsV1
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceId: String?, operation: CoreWorkspaceRecordedOperationV1) {
-        self.workspaceId = workspaceId
-        self.operation = operation
+    public init(catalogRevision: UInt64, catalogDigest: String, targetWorkspaceId: String?, diagnostics: CoreWorkspaceCommandAdmissionDiagnosticsV1) {
+        self.catalogRevision = catalogRevision
+        self.catalogDigest = catalogDigest
+        self.targetWorkspaceId = targetWorkspaceId
+        self.diagnostics = diagnostics
     }
 
 
@@ -7310,24 +7424,28 @@ public struct CoreWorkspaceCommandAdmissionSeedRecordV1: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionSeedRecordV1: Sendable {}
+extension CoreWorkspaceCommandAdmissionRecoveryReceiptV1: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionSeedRecordV1 {
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
         return
-            try CoreWorkspaceCommandAdmissionSeedRecordV1(
-                workspaceId: FfiConverterOptionString.read(from: &buf),
-                operation: FfiConverterTypeCoreWorkspaceRecordedOperationV1.read(from: &buf)
+            try CoreWorkspaceCommandAdmissionRecoveryReceiptV1(
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                catalogDigest: FfiConverterString.read(from: &buf),
+                targetWorkspaceId: FfiConverterOptionString.read(from: &buf),
+                diagnostics: FfiConverterTypeCoreWorkspaceCommandAdmissionDiagnosticsV1.read(from: &buf)
         )
     }
 
-    public static func write(_ value: CoreWorkspaceCommandAdmissionSeedRecordV1, into buf: inout [UInt8]) {
-        FfiConverterOptionString.write(value.workspaceId, into: &buf)
-        FfiConverterTypeCoreWorkspaceRecordedOperationV1.write(value.operation, into: &buf)
+    public static func write(_ value: CoreWorkspaceCommandAdmissionRecoveryReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterString.write(value.catalogDigest, into: &buf)
+        FfiConverterOptionString.write(value.targetWorkspaceId, into: &buf)
+        FfiConverterTypeCoreWorkspaceCommandAdmissionDiagnosticsV1.write(value.diagnostics, into: &buf)
     }
 }
 
@@ -7335,15 +7453,193 @@ public struct FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1: FfiConv
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionSeedRecordV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1.lift(buf)
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1_lower(_ value: CoreWorkspaceCommandAdmissionSeedRecordV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1.lower(value)
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1_lower(_ value: CoreWorkspaceCommandAdmissionRecoveryReceiptV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.lower(value)
+}
+
+
+public struct CoreWorkspaceCommandAdmissionRecoveryResponseV1: Equatable, Hashable {
+    public let receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.receipt = receipt
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionRecoveryResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
+        return
+            try CoreWorkspaceCommandAdmissionRecoveryResponseV1(
+                receipt: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionRecoveryResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.write(value.receipt, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionRecoveryResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceCommandAdmissionRecoveryV1: Equatable, Hashable {
+    public let catalogBytes: Data
+    public let journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1]
+    public let deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(catalogBytes: Data, journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1], deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]) {
+        self.catalogBytes = catalogBytes
+        self.journals = journals
+        self.deletionSidecars = deletionSidecars
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionRecoveryV1 {
+        return
+            try CoreWorkspaceCommandAdmissionRecoveryV1(
+                catalogBytes: FfiConverterData.read(from: &buf),
+                journals: FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.read(from: &buf),
+                deletionSidecars: FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.catalogBytes, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.write(value.journals, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.write(value.deletionSidecars, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.lower(value)
+}
+
+
+public struct CoreWorkspaceCommandAdmissionTargetRecoveryV1: Equatable, Hashable {
+    public let catalogBytes: Data
+    public let workspaceId: String
+    public let journalBytes: Data?
+    public let deletionSidecarBytes: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(catalogBytes: Data, workspaceId: String, journalBytes: Data?, deletionSidecarBytes: Data?) {
+        self.catalogBytes = catalogBytes
+        self.workspaceId = workspaceId
+        self.journalBytes = journalBytes
+        self.deletionSidecarBytes = deletionSidecarBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandAdmissionTargetRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+        return
+            try CoreWorkspaceCommandAdmissionTargetRecoveryV1(
+                catalogBytes: FfiConverterData.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf),
+                journalBytes: FfiConverterOptionData.read(from: &buf),
+                deletionSidecarBytes: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandAdmissionTargetRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.catalogBytes, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterOptionData.write(value.journalBytes, into: &buf)
+        FfiConverterOptionData.write(value.deletionSidecarBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionTargetRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1.lower(value)
 }
 
 
@@ -16918,6 +17214,8 @@ public enum CoreWorkspaceWorkingJournalValidationErrorKindV1: Equatable, Hashabl
     case invalidPendingSave
     case invalidTimestamp
     case externalDocumentConflict
+    case staleRecoverySnapshot
+    case fullRecoveryRequired
     case invalidTransaction
 
 
@@ -16968,7 +17266,11 @@ public struct FfiConverterTypeCoreWorkspaceWorkingJournalValidationErrorKindV1: 
 
         case 14: return .externalDocumentConflict
 
-        case 15: return .invalidTransaction
+        case 15: return .staleRecoverySnapshot
+
+        case 16: return .fullRecoveryRequired
+
+        case 17: return .invalidTransaction
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -17034,8 +17336,16 @@ public struct FfiConverterTypeCoreWorkspaceWorkingJournalValidationErrorKindV1: 
             writeInt(&buf, Int32(14))
 
 
-        case .invalidTransaction:
+        case .staleRecoverySnapshot:
             writeInt(&buf, Int32(15))
+
+
+        case .fullRecoveryRequired:
+            writeInt(&buf, Int32(16))
+
+
+        case .invalidTransaction:
+            writeInt(&buf, Int32(17))
 
         }
     }
@@ -18627,6 +18937,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDiagnostic
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandIdentityV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceCommandIdentityV1?
 
@@ -19556,23 +19890,48 @@ fileprivate struct FfiConverterSequenceTypeCoreSearchScoreCandidateV1: FfiConver
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionSeedRecordV1: FfiConverterRustBuffer {
-    typealias SwiftType = [CoreWorkspaceCommandAdmissionSeedRecordV1]
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
 
-    public static func write(_ value: [CoreWorkspaceCommandAdmissionSeedRecordV1], into buf: inout [UInt8]) {
+    public static func write(_ value: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1], into buf: inout [UInt8]) {
         let len = Int32(value.count)
         writeInt(&buf, len)
         for item in value {
-            FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1.write(item, into: &buf)
+            FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.write(item, into: &buf)
         }
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceCommandAdmissionSeedRecordV1] {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceCommandAdmissionDeletionRecoveryV1] {
         let len: Int32 = try readInt(&buf)
-        var seq = [CoreWorkspaceCommandAdmissionSeedRecordV1]()
+        var seq = [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]()
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeCoreWorkspaceCommandAdmissionSeedRecordV1.read(from: &buf))
+            seq.append(try FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceCommandAdmissionJournalRecoveryV1]
+
+    public static func write(_ value: [CoreWorkspaceCommandAdmissionJournalRecoveryV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceCommandAdmissionJournalRecoveryV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceCommandAdmissionJournalRecoveryV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.read(from: &buf))
         }
         return seq
     }
@@ -19698,31 +20057,6 @@ fileprivate struct FfiConverterSequenceTypeCoreWorkspaceProtectedAgentIdentityV1
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCoreWorkspaceProtectedAgentIdentityV1.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeCoreWorkspaceRecordedOperationV1: FfiConverterRustBuffer {
-    typealias SwiftType = [CoreWorkspaceRecordedOperationV1]
-
-    public static func write(_ value: [CoreWorkspaceRecordedOperationV1], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeCoreWorkspaceRecordedOperationV1.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceRecordedOperationV1] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [CoreWorkspaceRecordedOperationV1]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeCoreWorkspaceRecordedOperationV1.read(from: &buf))
         }
         return seq
     }
@@ -19999,16 +20333,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_acquire() != 13547) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_apply_full_recovery() != 24596) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_apply_target_recovery() != 23115) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_close() != 4204) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_diagnostics() != 57548) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_reconcile_durable() != 47920) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_reconcile_workspace() != 56610) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_acquire_authority_permit() != 47881) {

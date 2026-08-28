@@ -984,17 +984,38 @@ pub struct CoreWorkspaceRecordedOperationV1 {
     pub diagnostic: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionSeedRecordV1 {
-    pub workspace_id: Option<String>,
-    pub operation: CoreWorkspaceRecordedOperationV1,
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
+    pub workspace_id: String,
+    pub canonical_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionDeletionRecoveryV1 {
+    pub workspace_id: String,
+    pub canonical_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionRecoveryV1 {
+    pub catalog_bytes: Vec<u8>,
+    pub journals: Vec<CoreWorkspaceCommandAdmissionJournalRecoveryV1>,
+    pub deletion_sidecars: Vec<CoreWorkspaceCommandAdmissionDeletionRecoveryV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+    pub catalog_bytes: Vec<u8>,
+    pub workspace_id: String,
+    pub journal_bytes: Option<Vec<u8>>,
+    pub deletion_sidecar_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceCommandAdmissionBeginRequestV1 {
     pub runtime_identity: RuntimeIdentity,
     pub contract_version: u16,
-    pub records: Vec<CoreWorkspaceCommandAdmissionSeedRecordV1>,
+    pub recovery: CoreWorkspaceCommandAdmissionRecoveryV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -1024,6 +1045,14 @@ pub struct CoreWorkspaceCommandAdmissionDiagnosticsV1 {
     pub global_operation_count: u64,
     pub workspace_count: u64,
     pub workspace_operation_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
+    pub catalog_revision: u64,
+    pub catalog_digest: String,
+    pub target_workspace_id: Option<String>,
+    pub diagnostics: CoreWorkspaceCommandAdmissionDiagnosticsV1,
 }
 
 impl From<CoreWorkspaceRecordedOperationV1>
@@ -1064,13 +1093,41 @@ impl From<runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1>
     }
 }
 
-impl From<CoreWorkspaceCommandAdmissionSeedRecordV1>
-    for runtime::workspace_persistence_journal::WorkspaceCommandAdmissionSeedRecordV1
+impl From<CoreWorkspaceCommandAdmissionRecoveryV1>
+    for runtime::workspace_persistence_journal::WorkspaceCommandAdmissionRecoveryV1
 {
-    fn from(value: CoreWorkspaceCommandAdmissionSeedRecordV1) -> Self {
+    fn from(value: CoreWorkspaceCommandAdmissionRecoveryV1) -> Self {
         Self {
+            catalog_bytes: value.catalog_bytes,
+            journals: value
+                .journals
+                .into_iter()
+                .map(|artifact| runtime::workspace_persistence_journal::WorkspaceCommandAdmissionJournalRecoveryV1 {
+                    workspace_id: artifact.workspace_id,
+                    canonical_bytes: artifact.canonical_bytes,
+                })
+                .collect(),
+            deletion_sidecars: value
+                .deletion_sidecars
+                .into_iter()
+                .map(|artifact| runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDeletionRecoveryV1 {
+                    workspace_id: artifact.workspace_id,
+                    canonical_bytes: artifact.canonical_bytes,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<CoreWorkspaceCommandAdmissionTargetRecoveryV1>
+    for runtime::workspace_persistence_journal::WorkspaceCommandAdmissionTargetRecoveryV1
+{
+    fn from(value: CoreWorkspaceCommandAdmissionTargetRecoveryV1) -> Self {
+        Self {
+            catalog_bytes: value.catalog_bytes,
             workspace_id: value.workspace_id,
-            operation: value.operation.into(),
+            journal_bytes: value.journal_bytes,
+            deletion_sidecar_bytes: value.deletion_sidecar_bytes,
         }
     }
 }
@@ -1084,6 +1141,21 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLooku
         match value {
             runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1::Workspace => Self::Workspace,
             runtime::workspace_persistence_journal::WorkspaceCommandAdmissionLookupScopeV1::Global => Self::Global,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionRecoveryReceiptV1>
+    for CoreWorkspaceCommandAdmissionRecoveryReceiptV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandAdmissionRecoveryReceiptV1,
+    ) -> Self {
+        Self {
+            catalog_revision: value.catalog_revision,
+            catalog_digest: value.catalog_digest,
+            target_workspace_id: value.target_workspace_id,
+            diagnostics: value.diagnostics.into(),
         }
     }
 }
@@ -1503,6 +1575,8 @@ pub enum CoreWorkspaceWorkingJournalValidationErrorKindV1 {
     InvalidPendingSave,
     InvalidTimestamp,
     ExternalDocumentConflict,
+    StaleRecoverySnapshot,
+    FullRecoveryRequired,
     InvalidTransaction,
 }
 

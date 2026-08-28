@@ -774,44 +774,19 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
-    private func durableCommandAdmissionRecords(
-        deletedOperations: [DomainRecordedOperation]
-    ) -> [DomainWorkspaceCommandAdmissionSeedRecord]? {
-        var durable = deletedOperations.map {
-            DomainWorkspaceCommandAdmissionSeedRecord(workspaceID: nil, operation: $0)
-        }
-        for workspaceID in records.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
-            guard let record = records[workspaceID] else { continue }
-            let nextCount = durable.count.addingReportingOverflow(record.operations.count)
-            guard !nextCount.overflow, nextCount.partialValue <= 65_536 else { return nil }
-            durable.append(contentsOf: record.operations.map {
-                DomainWorkspaceCommandAdmissionSeedRecord(
-                    workspaceID: workspaceID,
-                    operation: $0
-                )
-            })
-        }
-        return durable
-    }
-
-    private func reconcileCommandAdmission(
-        deletedOperations: [DomainRecordedOperation]
+    private func applyCommandAdmissionRecovery(
+        _ recovery: DomainWorkspaceCommandAdmissionRecovery
     ) -> Bool {
-        guard let validator = commandIdentityValidator,
-              let durable = durableCommandAdmissionRecords(
-                  deletedOperations: deletedOperations
-              )
-        else {
-            return false
-        }
+        guard let validator = commandIdentityValidator else { return false }
         do {
             if let commandAdmission {
-                _ = try commandAdmission.reconcileDurable(durable)
+                _ = try commandAdmission.applyFullRecovery(recovery)
             } else {
-                commandAdmission = try validator.beginCommandAdmission(records: durable)
+                commandAdmission = try validator.beginCommandAdmission(recovery: recovery)
             }
             return true
         } catch {
+            quarantineCommandAdmission()
             return false
         }
     }
@@ -850,20 +825,15 @@ actor DomainWorkspaceContextAuthority {
     }
 
     @discardableResult
-    private func reconcileCommandAdmissionWorkspace(
-        workspaceID: UUID,
-        operations: [DomainRecordedOperation],
-        deletedOperation: DomainRecordedOperation?
+    private func applyCommandAdmissionTargetRecovery(
+        _ recovery: DomainWorkspaceCommandAdmissionTargetRecovery
     ) -> Bool {
         guard let commandAdmission else { return false }
         do {
-            _ = try commandAdmission.reconcileWorkspace(
-                workspaceID: workspaceID,
-                operations: operations,
-                deletedOperation: deletedOperation
-            )
+            _ = try commandAdmission.applyTargetRecovery(recovery)
             return true
         } catch {
+            quarantineCommandAdmission()
             return false
         }
     }
@@ -1050,7 +1020,11 @@ actor DomainWorkspaceContextAuthority {
         }
         guard !Task.isCancelled else { return false }
         let durableCatalog = await persistence.bootstrap(permit: permit)
-        guard !Task.isCancelled, durableCatalog.health.acceptsMutations else { return false }
+        guard !Task.isCancelled,
+              durableCatalog.health.acceptsMutations,
+              let admissionRecovery = durableCatalog.admissionRecovery,
+              applyCommandAdmissionRecovery(admissionRecovery)
+        else { return false }
 
         health = durableCatalog.health
         catalogRevision = durableCatalog.catalogRevision
@@ -1060,9 +1034,6 @@ actor DomainWorkspaceContextAuthority {
         records = Dictionary(uniqueKeysWithValues: durableCatalog.workspaces.map { workspace in
             (workspace.document.workspaceID, makeRecord(from: workspace))
         })
-        guard reconcileCommandAdmission(
-            deletedOperations: durableCatalog.deletedOperations
-        ) else { return false }
         let reload = await reloadExternalChangesAdmitted(permit: permit)
         guard reload.completedSuccessfully,
               !Task.isCancelled,
@@ -1078,8 +1049,6 @@ actor DomainWorkspaceContextAuthority {
         guard !Task.isCancelled else { return .incomplete }
         var changed = false
         var recoveryPending = false
-        var admissionNeedsReconcile = false
-        var durableDeletedOperations: [DomainRecordedOperation] = []
 
         let observedCatalogRevision: UInt64?
         do {
@@ -1112,10 +1081,29 @@ actor DomainWorkspaceContextAuthority {
             let durableCatalog = await persistence.bootstrap(permit: permit)
             guard !Task.isCancelled else { return .incomplete }
             let previousHealth = health
+            guard durableCatalog.health.acceptsMutations else {
+                health = durableCatalog.health
+                catalogRevision = max(catalogRevision, durableCatalog.catalogRevision)
+                if previousHealth != health {
+                    publish(
+                        kind: .degraded,
+                        workspaceID: nil,
+                        contextID: nil,
+                        operationID: nil,
+                        revisions: nil,
+                        diagnostic: "workspace_catalog_degraded"
+                    )
+                }
+                return .incomplete
+            }
+            guard let admissionRecovery = durableCatalog.admissionRecovery,
+                  applyCommandAdmissionRecovery(admissionRecovery)
+            else {
+                markCommandAdmissionReceiptMissing(workspaceID: nil)
+                return .incomplete
+            }
             health = durableCatalog.health
             catalogRevision = max(catalogRevision, durableCatalog.catalogRevision)
-            durableDeletedOperations = durableCatalog.deletedOperations
-            admissionNeedsReconcile = true
             for workspaceID in durableCatalog.deletedWorkspaceIDs.sorted(by: {
                 $0.uuidString < $1.uuidString
             }) {
@@ -1175,17 +1163,23 @@ actor DomainWorkspaceContextAuthority {
             $0.uuidString < $1.uuidString
         }) {
             guard let unavailable = unavailableWorkspaces[workspaceID] else { continue }
-            let recovered = await persistence.reloadWorkspace(
+            let refreshed = await persistence.refreshWorkspace(
                 workspaceID: workspaceID,
-                fileURL: unavailable.fileURL
+                fallbackFileURL: unavailable.fileURL
             )
             guard unavailableWorkspaces[workspaceID]?.fileMetadata == unavailable.fileMetadata,
-                  let recovered,
-                  recovered.health.acceptsMutations
+                  let refreshed,
+                  refreshed.health.acceptsMutations,
+                  !refreshed.workspaceIsDeleted,
+                  let recovered = refreshed.workspace,
+                  recovered.health.acceptsMutations,
+                  let admissionRecovery = refreshed.admissionRecovery,
+                  applyCommandAdmissionTargetRecovery(admissionRecovery)
             else {
                 recoveryPending = true
                 continue
             }
+            catalogRevision = max(catalogRevision, refreshed.catalogRevision)
             records[workspaceID] = makeRecord(from: recovered)
             readRegistrations.removeValue(forKey: workspaceID)
             unavailableWorkspaces.removeValue(forKey: workspaceID)
@@ -1210,12 +1204,20 @@ actor DomainWorkspaceContextAuthority {
                 // sidecar state is repaired. Saved-file-scoped ("external_*") degradation is
                 // recovered by the metadata probe below instead, so a journal-backed reload
                 // cannot flip health back to writable while the saved document is still bad.
-                let recovered = await persistence.reloadWorkspace(
+                let refreshed = await persistence.refreshWorkspace(
                     workspaceID: workspaceID,
-                    fileURL: current.document.fileURL
+                    fallbackFileURL: current.document.fileURL
                 )
                 guard records[workspaceID]?.revisions == current.revisions else { continue }
-                if let recovered, recovered.health.acceptsMutations {
+                if let refreshed,
+                   refreshed.health.acceptsMutations,
+                   !refreshed.workspaceIsDeleted,
+                   let recovered = refreshed.workspace,
+                   recovered.health.acceptsMutations,
+                   let admissionRecovery = refreshed.admissionRecovery,
+                   applyCommandAdmissionTargetRecovery(admissionRecovery)
+                {
+                    catalogRevision = max(catalogRevision, refreshed.catalogRevision)
                     current = makeRecord(from: recovered)
                     records[workspaceID] = current
                     readRegistrations.removeValue(forKey: workspaceID)
@@ -1347,11 +1349,6 @@ actor DomainWorkspaceContextAuthority {
             }
         }
 
-        if changed || admissionNeedsReconcile {
-            guard reconcileCommandAdmission(
-                deletedOperations: durableDeletedOperations
-            ) else { return .incomplete }
-        }
         guard commandAdmission != nil else { return .incomplete }
         if changed { return .completed(.changed) }
         return .completed(recoveryPending ? .recoveryPending : .unchanged)
@@ -2830,21 +2827,17 @@ actor DomainWorkspaceContextAuthority {
             workspaceID: workspaceID,
             fallbackFileURL: fileURL
         ) else { return }
+        guard let admissionRecovery = refreshed.admissionRecovery,
+              applyCommandAdmissionTargetRecovery(admissionRecovery)
+        else {
+            markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
+            return
+        }
         health = refreshed.health
         catalogRevision = max(catalogRevision, refreshed.catalogRevision)
         if refreshed.workspaceIsDeleted {
             records.removeValue(forKey: workspaceID)
             unavailableWorkspaces.removeValue(forKey: workspaceID)
-            guard let deletedOperation = refreshed.deletedOperation,
-                  reconcileCommandAdmissionWorkspace(
-                      workspaceID: workspaceID,
-                      operations: [],
-                      deletedOperation: deletedOperation
-                  )
-            else {
-                markCommandAdmissionReceiptMissing(workspaceID: nil)
-                return
-            }
             return
         }
         guard let workspace = refreshed.workspace else {
@@ -2852,14 +2845,6 @@ actor DomainWorkspaceContextAuthority {
                 previous.health = .degradedReadOnly(reason: "workspace_document_unavailable")
                 records[workspaceID] = previous
             }
-            return
-        }
-        guard reconcileCommandAdmissionWorkspace(
-            workspaceID: workspaceID,
-            operations: workspace.operations,
-            deletedOperation: nil
-        ) else {
-            markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
             return
         }
         let canPreserveConflict = previous?.document.contentDigest == workspace.document.contentDigest

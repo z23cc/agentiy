@@ -97,9 +97,38 @@ package struct DomainWorkspaceCommandIdentityInput: Sendable, Equatable {
     }
 }
 
-struct DomainWorkspaceCommandAdmissionSeedRecord: Sendable {
-    let workspaceID: UUID?
-    let operation: DomainRecordedOperation
+struct DomainWorkspaceCommandAdmissionJournalRecovery: Sendable, Equatable {
+    let workspaceID: UUID
+    let canonicalBytes: Data?
+}
+
+struct DomainWorkspaceCommandAdmissionDeletionRecovery: Sendable, Equatable {
+    let workspaceID: UUID
+    let canonicalBytes: Data?
+}
+
+struct DomainWorkspaceCommandAdmissionRecovery: Sendable, Equatable {
+    let catalogBytes: Data
+    let catalogRevision: UInt64
+    let catalogDigest: String
+    let journals: [DomainWorkspaceCommandAdmissionJournalRecovery]
+    let deletionSidecars: [DomainWorkspaceCommandAdmissionDeletionRecovery]
+}
+
+struct DomainWorkspaceCommandAdmissionTargetRecovery: Sendable, Equatable {
+    let catalogBytes: Data
+    let catalogRevision: UInt64
+    let catalogDigest: String
+    let workspaceID: UUID
+    let journalBytes: Data?
+    let deletionSidecarBytes: Data?
+}
+
+struct DomainWorkspaceCommandAdmissionRecoveryReceipt: Sendable, Equatable {
+    let catalogRevision: UInt64
+    let catalogDigest: String
+    let targetWorkspaceID: UUID?
+    let diagnostics: DomainWorkspaceCommandAdmissionDiagnostics
 }
 
 enum DomainWorkspaceCommandAdmissionLookupScope: Sendable, Equatable {
@@ -1304,12 +1333,18 @@ enum DomainWorkspaceRustJournal {
         }
 
         @discardableResult
-        func reconcileDurable(
-            _ records: [DomainWorkspaceCommandAdmissionSeedRecord]
-        ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
+        func applyFullRecovery(
+            _ recovery: DomainWorkspaceCommandAdmissionRecovery
+        ) throws -> DomainWorkspaceCommandAdmissionRecoveryReceipt {
             do {
-                return validator.materializeCommandAdmissionDiagnostics(
-                    try core.reconcileDurable(records.map(validator.coreCommandAdmissionSeedRecord))
+                let receipt = try core.applyFullRecovery(
+                    validator.coreCommandAdmissionRecovery(recovery)
+                )
+                return try validator.materializeCommandAdmissionRecoveryReceipt(
+                    receipt,
+                    expectedCatalogRevision: recovery.catalogRevision,
+                    expectedCatalogDigest: recovery.catalogDigest,
+                    expectedTargetWorkspaceID: nil
                 )
             } catch {
                 throw validator.mapCommandAdmissionError(error)
@@ -1317,18 +1352,18 @@ enum DomainWorkspaceRustJournal {
         }
 
         @discardableResult
-        func reconcileWorkspace(
-            workspaceID: UUID,
-            operations: [DomainRecordedOperation],
-            deletedOperation: DomainRecordedOperation?
-        ) throws -> DomainWorkspaceCommandAdmissionDiagnostics {
+        func applyTargetRecovery(
+            _ recovery: DomainWorkspaceCommandAdmissionTargetRecovery
+        ) throws -> DomainWorkspaceCommandAdmissionRecoveryReceipt {
             do {
-                return validator.materializeCommandAdmissionDiagnostics(
-                    try core.reconcileWorkspace(
-                        workspaceID: workspaceID,
-                        operations: operations.map(validator.coreRecordedOperation),
-                        deletedOperation: deletedOperation.map(validator.coreRecordedOperation)
-                    )
+                let receipt = try core.applyTargetRecovery(
+                    validator.coreCommandAdmissionTargetRecovery(recovery)
+                )
+                return try validator.materializeCommandAdmissionRecoveryReceipt(
+                    receipt,
+                    expectedCatalogRevision: recovery.catalogRevision,
+                    expectedCatalogDigest: recovery.catalogDigest,
+                    expectedTargetWorkspaceID: recovery.workspaceID
                 )
             } catch {
                 throw validator.mapCommandAdmissionError(error)
@@ -1454,13 +1489,20 @@ enum DomainWorkspaceRustJournal {
         }
 
         func beginCommandAdmission(
-            records: [DomainWorkspaceCommandAdmissionSeedRecord]
+            recovery: DomainWorkspaceCommandAdmissionRecovery
         ) throws -> PreparedCommandAdmission {
             do {
+                let begin = try core.beginCommandAdmission(
+                    recovery: coreCommandAdmissionRecovery(recovery)
+                )
+                _ = try materializeCommandAdmissionRecoveryReceipt(
+                    begin.receipt,
+                    expectedCatalogRevision: recovery.catalogRevision,
+                    expectedCatalogDigest: recovery.catalogDigest,
+                    expectedTargetWorkspaceID: nil
+                )
                 return PreparedCommandAdmission(
-                    core: try core.beginCommandAdmission(
-                        records: records.map(coreCommandAdmissionSeedRecord)
-                    ),
+                    core: begin.admission,
                     validator: self
                 )
             } catch {
@@ -1468,12 +1510,28 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
-        fileprivate func coreCommandAdmissionSeedRecord(
-            _ record: DomainWorkspaceCommandAdmissionSeedRecord
-        ) -> CoreWorkspaceCommandAdmissionSeedRecordV1 {
+        fileprivate func coreCommandAdmissionRecovery(
+            _ recovery: DomainWorkspaceCommandAdmissionRecovery
+        ) -> CoreWorkspaceCommandAdmissionRecoveryV1 {
             .init(
-                workspaceID: record.workspaceID,
-                operation: coreRecordedOperation(record.operation)
+                catalogBytes: recovery.catalogBytes,
+                journals: recovery.journals.map {
+                    .init(workspaceID: $0.workspaceID, canonicalBytes: $0.canonicalBytes)
+                },
+                deletionSidecars: recovery.deletionSidecars.map {
+                    .init(workspaceID: $0.workspaceID, canonicalBytes: $0.canonicalBytes)
+                }
+            )
+        }
+
+        fileprivate func coreCommandAdmissionTargetRecovery(
+            _ recovery: DomainWorkspaceCommandAdmissionTargetRecovery
+        ) -> CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+            .init(
+                catalogBytes: recovery.catalogBytes,
+                workspaceID: recovery.workspaceID,
+                journalBytes: recovery.journalBytes,
+                deletionSidecarBytes: recovery.deletionSidecarBytes
             )
         }
 
@@ -1575,6 +1633,27 @@ enum DomainWorkspaceRustJournal {
                 globalOperationCount: diagnostics.globalOperationCount,
                 workspaceCount: diagnostics.workspaceCount,
                 workspaceOperationCount: diagnostics.workspaceOperationCount
+            )
+        }
+
+        fileprivate func materializeCommandAdmissionRecoveryReceipt(
+            _ receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
+            expectedCatalogRevision: UInt64,
+            expectedCatalogDigest: String,
+            expectedTargetWorkspaceID: UUID?
+        ) throws -> DomainWorkspaceCommandAdmissionRecoveryReceipt {
+            guard receipt.catalogRevision == expectedCatalogRevision,
+                  receipt.catalogDigest == expectedCatalogDigest,
+                  Self.isSHA256Digest(receipt.catalogDigest),
+                  receipt.targetWorkspaceID == expectedTargetWorkspaceID
+            else {
+                throw DomainPersistenceError.corruptJournal
+            }
+            return DomainWorkspaceCommandAdmissionRecoveryReceipt(
+                catalogRevision: receipt.catalogRevision,
+                catalogDigest: receipt.catalogDigest,
+                targetWorkspaceID: receipt.targetWorkspaceID,
+                diagnostics: materializeCommandAdmissionDiagnostics(receipt.diagnostics)
             )
         }
 
@@ -3037,6 +3116,10 @@ enum DomainWorkspaceRustJournal {
                 return .corruptJournal
             case .externalDocumentConflict:
                 return .externalDocumentConflict
+            case .staleRecoverySnapshot:
+                return .admissionRecoveryStale
+            case .fullRecoveryRequired:
+                return .admissionFullRecoveryRequired
             case .invalidTransaction:
                 return .writeFailed("workspace_save_transaction_invalid")
             }

@@ -123,13 +123,18 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
                 dirtyRevision: 1
             ),
             catalogRevision: 7,
-            resultingDigest: String(repeating: "a", count: 64),
+            resultingDigest: SHA256.hash(data: Data()).map { String(format: "%02x", $0) }.joined(),
             errorCode: nil,
             diagnostic: nil
         )
-        let admission = try prepared.beginCommandAdmission(records: [
-            .init(workspaceID: workspaceID, operation: seededOperation),
-        ])
+        let fileURL = URL(fileURLWithPath: "/tmp/Admission-\(workspaceID).json")
+        let initialRecovery = try commandAdmissionRecovery(
+            prepared: prepared,
+            workspaces: [(workspaceID, fileURL, [seededOperation])]
+        )
+        let admission = try prepared.beginCommandAdmission(
+            recovery: initialRecovery
+        ).admission
         defer { admission.close() }
         XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
 
@@ -268,11 +273,17 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             errorCode: nil,
             diagnostic: nil
         )
-        _ = try admission.reconcileWorkspace(
-            workspaceID: workspaceID,
-            operations: [durableOperation],
-            deletedOperation: nil
+        let durableRecovery = try commandAdmissionRecovery(
+            prepared: prepared,
+            workspaces: [(workspaceID, fileURL, [durableOperation])]
         )
+        let targetReceipt = try admission.applyTargetRecovery(.init(
+            catalogBytes: durableRecovery.catalogBytes,
+            workspaceID: workspaceID,
+            journalBytes: durableRecovery.journals[0].canonicalBytes,
+            deletionSidecarBytes: nil
+        ))
+        XCTAssertEqual(targetReceipt.targetWorkspaceID, workspaceID)
         XCTAssertFalse(try durableClaim.abandon())
         switch try admission.acquire(durableRequest) {
         case let .replay(identity, scope, operation):
@@ -283,16 +294,19 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             XCTFail("Expected reconciled durable receipt to replay in workspace scope")
         }
 
-        let reconciled = try admission.reconcileDurable([
-            .init(workspaceID: workspaceID, operation: durableOperation),
-        ])
-        XCTAssertEqual(reconciled.globalOperationCount, 3)
-        XCTAssertEqual(reconciled.workspaceOperationCount, 1)
-        _ = try admission.reconcileWorkspace(
-            workspaceID: workspaceID,
-            operations: [],
-            deletedOperation: nil
+        let reconciled = try admission.applyFullRecovery(durableRecovery)
+        XCTAssertEqual(reconciled.diagnostics.globalOperationCount, 3)
+        XCTAssertEqual(reconciled.diagnostics.workspaceOperationCount, 1)
+        let emptyRecovery = try commandAdmissionRecovery(
+            prepared: prepared,
+            workspaces: [(workspaceID, fileURL, [])]
         )
+        _ = try admission.applyTargetRecovery(.init(
+            catalogBytes: emptyRecovery.catalogBytes,
+            workspaceID: workspaceID,
+            journalBytes: emptyRecovery.journals[0].canonicalBytes,
+            deletionSidecarBytes: nil
+        ))
         switch try admission.acquire(durableRequest) {
         case let .replay(_, scope, operation):
             XCTAssertEqual(scope, .global)
@@ -312,7 +326,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let bridge = try await AgentryCoreBridge.start()
         let client = try await bridge.computeClient()
         let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
-        let admission = try prepared.beginCommandAdmission(records: [])
+        let admission = try beginCommandAdmission(prepared: prepared)
         defer { admission.close() }
         let workspaceID = UUID()
         let operationID = UUID()
@@ -606,7 +620,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let client = try await bridge.computeClient()
         let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
         let effective = try prepared.validate(rawJournal)
-        let admission = try prepared.beginCommandAdmission(records: [])
+        let admission = try beginCommandAdmission(prepared: prepared)
         defer { admission.close() }
         let (commandIdentity, commandClaim) = try acquireCommandExecutionClaim(
             from: admission,
@@ -942,7 +956,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "updatedAt": 100.0
         ], options: [.sortedKeys])
         let catalog = try prepared.seedCatalog(seedRequestBytes: seed)
-        let admission = try prepared.beginCommandAdmission(records: [])
+        let admission = try beginCommandAdmission(prepared: prepared)
         defer { admission.close() }
         let (commandIdentity, commandClaim) = try acquireCommandExecutionClaim(
             from: admission,
@@ -1121,7 +1135,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let client = try await bridge.computeClient()
         let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
         let effectiveJournal = try prepared.validate(rawJournal)
-        let admission = try prepared.beginCommandAdmission(records: [])
+        let admission = try beginCommandAdmission(prepared: prepared)
         defer { admission.close() }
         let (commandIdentity, commandClaim) = try acquireCommandExecutionClaim(
             from: admission,
@@ -1624,6 +1638,70 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
     }
 }
 
+private func commandAdmissionRecovery(
+    prepared: CorePreparedWorkspaceWorkingJournalValidatorV1,
+    workspaces: [(workspaceID: UUID, fileURL: URL, operations: [CoreWorkspaceRecordedOperationV1])] = []
+) throws -> CoreWorkspaceCommandAdmissionRecoveryV1 {
+    let seed = try JSONSerialization.data(withJSONObject: [
+        "kind": "seed",
+        "entries": workspaces.map { workspace in
+            [
+                "workspaceID": workspace.workspaceID.uuidString,
+                "fileURL": workspace.fileURL.absoluteString,
+            ]
+        },
+        "updatedAt": 0.0,
+    ], options: [.sortedKeys])
+    let catalog = try prepared.seedCatalog(seedRequestBytes: seed)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let journals = try workspaces.map { workspace in
+        let revisions = workspace.operations.last?.after.map {
+            JournalRevisionFixture(
+                workingRevision: $0.workingRevision,
+                savedRevision: $0.savedRevision,
+                dirtyRevision: $0.dirtyRevision
+            )
+        } ?? JournalRevisionFixture(
+            workingRevision: 0,
+            savedRevision: 0,
+            dirtyRevision: nil
+        )
+        let journal = JournalFixture(
+            version: 1,
+            workspaceID: workspace.workspaceID,
+            fileURL: workspace.fileURL,
+            revisions: revisions,
+            savedDigest: String(repeating: "a", count: 64),
+            workingDocument: revisions.dirtyRevision == nil ? nil : Data(),
+            contextRevisions: [:],
+            contextDigests: [:],
+            contextTombstones: [:],
+            operations: workspace.operations.map(JournalOperationFixture.init),
+            pendingSave: nil,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 0)
+        )
+        return CoreWorkspaceCommandAdmissionJournalRecoveryV1(
+            workspaceID: workspace.workspaceID,
+            canonicalBytes: try prepared.validate(encoder.encode(journal)).canonicalBytes
+        )
+    }
+    return CoreWorkspaceCommandAdmissionRecoveryV1(
+        catalogBytes: catalog.canonicalBytes,
+        journals: journals,
+        deletionSidecars: []
+    )
+}
+
+private func beginCommandAdmission(
+    prepared: CorePreparedWorkspaceWorkingJournalValidatorV1,
+    workspaces: [(workspaceID: UUID, fileURL: URL, operations: [CoreWorkspaceRecordedOperationV1])] = []
+) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
+    try prepared.beginCommandAdmission(
+        recovery: commandAdmissionRecovery(prepared: prepared, workspaces: workspaces)
+    ).admission
+}
+
 private struct JournalRevisionFixture: Codable, Equatable {
     let workingRevision: UInt64
     let savedRevision: UInt64
@@ -1640,7 +1718,37 @@ private struct JournalOperationFixture: Codable, Equatable {
     let fingerprint: String
     let recordedAt: Date
     let disposition: String
+    let before: JournalRevisionFixture?
+    let after: JournalRevisionFixture?
     let catalogRevision: UInt64
+    let resultingDigest: String?
+    let errorCode: String?
+    let diagnostic: String?
+
+    init(_ operation: CoreWorkspaceRecordedOperationV1) {
+        operationID = operation.operationID
+        fingerprint = operation.fingerprint
+        recordedAt = Date(timeIntervalSinceReferenceDate: operation.recordedAt)
+        disposition = operation.disposition
+        before = operation.before.map {
+            JournalRevisionFixture(
+                workingRevision: $0.workingRevision,
+                savedRevision: $0.savedRevision,
+                dirtyRevision: $0.dirtyRevision
+            )
+        }
+        after = operation.after.map {
+            JournalRevisionFixture(
+                workingRevision: $0.workingRevision,
+                savedRevision: $0.savedRevision,
+                dirtyRevision: $0.dirtyRevision
+            )
+        }
+        catalogRevision = operation.catalogRevision
+        resultingDigest = operation.resultingDigest
+        errorCode = operation.errorCode
+        diagnostic = operation.diagnostic
+    }
 }
 
 private struct JournalFixture: Codable, Equatable {

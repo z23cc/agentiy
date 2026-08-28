@@ -510,15 +510,17 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "var acquiredClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?",
             "private func resolveCommandAcquisition(",
             "return try commandAdmission.acquire(input)",
-            "private func reconcileCommandAdmission(",
-            "commandAdmission.reconcileDurable(durable)",
-            "private func reconcileCommandAdmissionWorkspace(",
+            "private func applyCommandAdmissionRecovery(",
+            "commandAdmission.applyFullRecovery(recovery)",
+            "private func applyCommandAdmissionTargetRecovery(",
+            "commandAdmission.applyTargetRecovery(recovery)",
+            "durableCatalog.admissionRecovery",
+            "refreshed.admissionRecovery",
             "finalizeTransientOutcome(",
             "_ = try commandClaim.finalizeTransient(",
             "commandClaim: commandClaim",
             "recordCommandAdmissionFinalization(",
-            "workspace_command_admission_receipt_missing",
-            "refreshed.deletedOperation"
+            "workspace_command_admission_receipt_missing"
         ] {
             XCTAssertTrue(authority.contains(required), "Missing claim-bound Rust admission: \(required)")
         }
@@ -537,7 +539,12 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "pendingCommandAdmissions",
             "PendingCommandAdmission",
             "recordTransientOutcome(",
-            "decision = try admission.decision("
+            "decision = try admission.decision(",
+            "durableCommandAdmissionRecords(",
+            "reconcileCommandAdmission(",
+            "reconcileCommandAdmissionWorkspace(",
+            "deletedOperations",
+            "deletedOperation"
         ] {
             XCTAssertFalse(authority.contains(retired), "Retired Swift admission lookup remains: \(retired)")
         }
@@ -565,9 +572,11 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "struct PreparedCommandAdmission: Sendable",
             "struct PreparedExecutionClaim: Sendable",
             "core.beginCommandAdmission(",
+            "recovery: coreCommandAdmissionRecovery(recovery)",
             "switch try core.acquire(",
-            "core.reconcileDurable(",
-            "core.reconcileWorkspace(",
+            "core.applyFullRecovery(",
+            "core.applyTargetRecovery(",
+            "materializeCommandAdmissionRecoveryReceipt(",
             "core.finalizeTransient(",
             "transactionBinding",
             "func finishCommandAuthority(",
@@ -576,6 +585,13 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             XCTAssertTrue(adapter.contains(required), "Missing Rust admission adapter: \(required)")
         }
         for required in [
+            "enum DomainWorkspaceCommandAdmissionJournalEvidence",
+            "let admissionJournalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence",
+            "recoveryEvidenceAvailable = recoveryEvidenceAvailable && evidence.isAvailable",
+            "let admissionRecovery: DomainWorkspaceCommandAdmissionRecovery?",
+            "var journals: [DomainWorkspaceCommandAdmissionJournalRecovery]",
+            "DomainWorkspaceCommandAdmissionDeletionRecovery(",
+            "catalogBytes: effectiveCatalog.canonicalBytes",
             "let commandFinalization: DomainWorkspaceCommandFinalization",
             "commandFinalization: transaction.finishCommandAuthority()",
             "commandFinalization: result.commandFinalization",
@@ -586,6 +602,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
                 "Missing transaction-owned command finalization signal: \(required)"
             )
         }
+        XCTAssertFalse(
+            persistence.contains("let admissionJournalBytes: Data?"),
+            "Unavailable journal evidence must not collapse into authoritative absence"
+        )
         for retired in [
             "commandAdmissionFinalizationReconciled",
             "reconcileAdmissionFinalization(",
@@ -599,7 +619,11 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "core.decision(",
             "core.insertTransient(",
             "func preflight(",
-            "func decision("
+            "func decision(",
+            "DomainWorkspaceCommandAdmissionSeedRecord",
+            "coreCommandAdmissionSeedRecord(",
+            "func reconcileDurable(",
+            "func reconcileWorkspace("
         ] {
             XCTAssertFalse(adapter.contains(retired), "Retired admission adapter remains: \(retired)")
         }
