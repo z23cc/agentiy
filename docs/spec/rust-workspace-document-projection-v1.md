@@ -1585,3 +1585,86 @@ publication order, storage leases, and physical I/O remain unchanged.
   artifacts and non-target catalog changes cause no partial mutation or writable intermediate state.
 - Focused Runtime/FFI/Bridge/Domain recovery, authority, replay, lifecycle, source-guard, codegen, product-build, style,
   guardrail, formatting, and diff checks pass.
+
+## P5-7g amendment — artifact-bound semantic workspace recovery and membership publication
+
+P5-7g removes the remaining parallel Swift semantic-recovery decision path after P5-7f. One exact-runtime prepared
+Rust recovery candidate consumes the canonical catalog, working-journal, and deletion-sidecar evidence already used
+for command-admission recovery plus bounded saved-document and saved-revision physical-read evidence. It derives both
+the durable replay replacement and a complete immutable semantic projection from that single artifact set. Swift
+retains the storage lease, bounded physical reads and writes, filesystem metadata and raw-byte CAS, paths and routing
+overlays, actor subscriber ownership, degraded-health presentation, and event sequencing; it may no longer choose the
+recovery document source, reconstruct revision/context tables, infer active/deleted membership, or correlate an
+independently materialized workspace with an admission-recovery result.
+
+Every optional recovery artifact is represented as an explicit closed state: confirmed `absent`, bounded `present`
+bytes, or `unavailable` with a stable physical reason. Cancellation aborts collection and never becomes unavailable
+evidence. A catalog entry has exactly one journal, saved-document, and saved-revision evidence row; a catalog deletion
+has exactly one optional sidecar evidence row. Full recovery rejects duplicate, missing, extra, active/deleted-overlap,
+or relationship-invalid rows. Target recovery binds one workspace to the exact catalog snapshot and returns
+full-recovery-required for any non-target relationship change. `unavailable` never means an empty journal ledger or a
+missing saved document.
+
+Rust revalidates every present artifact and derives an ordered active, unavailable, or deleted row. An active row
+contains the exact selected document bytes and digest, saved digest, workspace and context revision authority,
+context tombstones, journal operations needed only for subsequent physical journal mutation, stable health, and any
+external-document conflict. A no-journal active entry uses a valid saved document plus its matching saved-revision
+record or the established revision-zero default when that sidecar is confirmed absent. A valid dirty journal selects
+its working document; a valid clean journal selects the matching saved document and deterministically advances clean
+revision authority when the saved bytes changed externally. An invalid, future, oversized, identity-invalid, or
+unreadable journal may expose a valid saved-document fallback only as a degraded row and quarantines new admission;
+it never erases an established process-global receipt. Catalog tombstones remain deletion authority and an optional
+sidecar may change only the existing `artifact_cleanup_incomplete: ` diagnostic.
+
+Pending-save recovery is also Rust-owned. The pending document digest must match the journal working document. A
+saved document matching the pending digest proves the save committed and clears working/pending state while promoting
+saved revisions; saved bytes matching the prior saved digest prove it did not commit and retain the working state;
+other valid saved bytes produce the existing external-conflict row. Whenever recovery changes canonical journal state,
+the candidate returns an exact-digest journal rewrite directive. Swift applies that directive under the existing
+mutation permit and journal lock, recollects the physical evidence, and prepares once more before writable commit. No
+new durable schema or implicit path migration is introduced.
+
+Preparation performs every fallible parse, relationship check, capacity check, document materialization, and semantic
+projection calculation without mutating admission state. The resulting single-use candidate exposes an immutable
+full projection or one target directive (`upsert`, `delete`, `unavailable`, or `noChange`) plus a lowercase SHA-256
+projection digest. Commit rechecks the exact runtime, candidate lifecycle, catalog binding, live claims, reservations,
+lifecycle mirrors, process-global receipts, capacity, collision fences, and both ABA generations. It then atomically
+installs the P5-7f admission replacement, preserves it with quarantine when evidence may hide a ledger, or rejects
+without mutation. The commit receipt repeats the exact candidate/catalog/projection digests and disposition; Swift may
+install only a pre-materialized Domain projection matching that receipt.
+
+Initial bootstrap obtains the prepared admission and semantic projection from the same successful commit, so there is
+no empty-admission or mixed-membership window. Full and target reload materialize all Swift value conversions and file
+metadata before commit. After successful synchronous commit, `DomainWorkspaceContextAuthority` applies only dictionary
+and property assignments in the same actor turn, without an `await`, cancellation check, parser, catalog lookup,
+document choice, or recoverable branch between commit and installation. Event diffing remains presentation bookkeeping
+and cannot reinterpret a Rust row. The existing P5-4 projection observer consumes the installed snapshot downstream;
+its independent cursor/checkpoint convergence is observable but never authorizes, rejects, or rolls back recovery.
+
+A physically unreadable or invalid catalog, candidate capacity/collision failure, stale runtime, closed admission, or
+non-target target drift leaves both admission and actor membership unchanged (or produces the established empty
+read-only bootstrap when no prior actor state exists). Journal evidence that may hide receipts preserves the live
+admission state but quarantines new acquire while exact bound transactions remain able to converge. Saved-document or
+saved-revision failure is isolated to the affected semantic row when ledger evidence is complete. `DomainCommandOutcome`,
+durable V1 schemas, physical transaction ordering, post-authority first-terminal behavior, replay receipts, storage
+lease ownership, publication sequence, and external diagnostics remain unchanged.
+
+### P5-7g done-when
+
+- Rust tests cover full/target evidence relationships; clean, dirty, absent, invalid, future, and unavailable journals;
+  saved-document and saved-revision absence/unavailability/mismatch; pending-save committed/uncommitted/conflict repair;
+  exact revisions, context tombstones, deletion-sidecar precedence, deterministic ordering, and projection digests.
+- Prepared recovery tests prove side-effect-free preview, single-use commit/close, initial admission construction,
+  process-global receipt retention, live unbound/bound claims and reservations, quarantine, capacity/collision atomicity,
+  stale/closed runtime rejection, and independent generation/ABA preservation.
+- UniFFI and Bridge expose only typed physical evidence, immutable semantic projections, journal rewrite directives,
+  and digest-bound commit receipts; no raw claim, operation-bearing recovery input, or independently decisive semantic
+  workspace crosses the boundary.
+- Persistence recovery returns only bounded physical evidence plus Swift-owned file metadata and applies only exact-
+  digest Rust journal repair directives. Production recovery contains no `loadWorkspace` document-authority choice,
+  pending-save semantic resolver, separate deleted-ID inference, or workspace/admission-result correlation.
+- Bootstrap, full reload, and target refresh perform prepare, optional repair/reprepare, commit, and non-suspending actor
+  installation. Failures are atomic; exact replay and external-CAS behavior remain unchanged; P5-4 observes the installed
+  state only after publication.
+- Focused Runtime/FFI/Bridge/Domain recovery, authority, restart, CAS, lifecycle, source-guard, codegen, product-build,
+  style, guardrail, formatting, and diff checks pass.

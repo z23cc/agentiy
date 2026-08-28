@@ -304,7 +304,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "try validateBeforeReplace?()",
             "directory_fsync_failed_",
             "validator.validateCatalog(",
-            "validator.validateDeletionTombstone(",
+            "validator.prepareInitialSemanticRecovery(",
             "validator.seedCatalog(",
             "validator.beginCreateTransaction(",
             "validator.beginCreateRecoveryTransaction(",
@@ -321,8 +321,12 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "Only shared load/migration may invoke the dedicated Rust catalog seed endpoint"
         )
         XCTAssertTrue(
-            source.contains("let catalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)"),
+            source.contains("let catalogSnapshot = try loadCurrentCatalog("),
             "Migration must reuse the guarded Rust catalog seed path"
+        )
+        XCTAssertTrue(
+            source.contains("now: Date(timeIntervalSinceReferenceDate: 0)"),
+            "Catalog-absent migration must persist one process-independent seed identity"
         )
         let migrationStart = try XCTUnwrap(source.range(of: "private func ensureLazyMigration("))
         let lockHelperStart = try XCTUnwrap(source.range(
@@ -334,7 +338,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             of: "withLock(at: lockDirectory.appendingPathComponent(\"workspace-catalog.lock\"))"
         ))
         let migrationCatalogLoad = try XCTUnwrap(migration.range(
-            of: "let catalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)"
+            of: "let catalogSnapshot = try loadCurrentCatalog("
         ))
         XCTAssertLessThan(migrationCatalogLock.lowerBound, migrationCatalogLoad.lowerBound)
         let createStart = try XCTUnwrap(source.range(of: "private func persistCreatedBlocking("))
@@ -510,12 +514,12 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "var acquiredClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?",
             "private func resolveCommandAcquisition(",
             "return try commandAdmission.acquire(input)",
-            "private func applyCommandAdmissionRecovery(",
-            "commandAdmission.applyFullRecovery(recovery)",
-            "private func applyCommandAdmissionTargetRecovery(",
-            "commandAdmission.applyTargetRecovery(recovery)",
-            "durableCatalog.admissionRecovery",
-            "refreshed.admissionRecovery",
+            "loaded.semanticRecovery",
+            "let preview = loaded.semanticPreview",
+            "let commit = try recovery.commit(expected: preview)",
+            "try installSemanticRecoveryAuthority(commit)",
+            "let semanticRecovery = durableCatalog.semanticRecovery",
+            "let semanticRecovery = refreshed.semanticRecovery",
             "finalizeTransientOutcome(",
             "_ = try commandClaim.finalizeTransient(",
             "commandClaim: commandClaim",
@@ -544,7 +548,12 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "reconcileCommandAdmission(",
             "reconcileCommandAdmissionWorkspace(",
             "deletedOperations",
-            "deletedOperation"
+            "deletedOperation",
+            "private func applyCommandAdmissionRecovery(",
+            "private func applyCommandAdmissionTargetRecovery(",
+            "commandAdmission.applyFullRecovery(",
+            "commandAdmission.applyTargetRecovery(",
+            ".admissionRecovery"
         ] {
             XCTAssertFalse(authority.contains(retired), "Retired Swift admission lookup remains: \(retired)")
         }
@@ -571,12 +580,13 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for required in [
             "struct PreparedCommandAdmission: Sendable",
             "struct PreparedExecutionClaim: Sendable",
-            "core.beginCommandAdmission(",
-            "recovery: coreCommandAdmissionRecovery(recovery)",
-            "switch try core.acquire(",
-            "core.applyFullRecovery(",
-            "core.applyTargetRecovery(",
+            "struct PreparedSemanticRecovery: Sendable",
+            "core.prepareInitialSemanticRecovery(",
+            "core.prepareSemanticFullRecovery(",
+            "core.prepareSemanticTargetRecovery(",
+            "materializeSemanticRecoveryPreview(",
             "materializeCommandAdmissionRecoveryReceipt(",
+            "switch try core.acquire(",
             "core.finalizeTransient(",
             "transactionBinding",
             "func finishCommandAuthority(",
@@ -587,11 +597,13 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for required in [
             "enum DomainWorkspaceCommandAdmissionJournalEvidence",
             "let admissionJournalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence",
-            "recoveryEvidenceAvailable = recoveryEvidenceAvailable && evidence.isAvailable",
-            "let admissionRecovery: DomainWorkspaceCommandAdmissionRecovery?",
-            "var journals: [DomainWorkspaceCommandAdmissionJournalRecovery]",
-            "DomainWorkspaceCommandAdmissionDeletionRecovery(",
-            "catalogBytes: effectiveCatalog.canonicalBytes",
+            "let semanticRecovery: DomainWorkspaceRustJournal.PreparedSemanticRecovery?",
+            "let semanticPreview: DomainWorkspaceSemanticRecoveryPreview?",
+            "semanticFullRecoveryEvidence(",
+            "semanticTargetRecoveryEvidence(",
+            "readSemanticRecoveryArtifact(",
+            "applySemanticJournalRewrites(",
+            "expectedArtifactDigest",
             "let commandFinalization: DomainWorkspaceCommandFinalization",
             "commandFinalization: transaction.finishCommandAuthority()",
             "commandFinalization: result.commandFinalization",
@@ -609,7 +621,15 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for retired in [
             "commandAdmissionFinalizationReconciled",
             "reconcileAdmissionFinalization(",
-            "amendDeletionTombstoneCleanup("
+            "amendDeletionTombstoneCleanup(",
+            "struct DomainWorkspaceCommandAdmissionRecovery ",
+            "struct DomainWorkspaceCommandAdmissionTargetRecovery ",
+            "func beginCommandAdmission(",
+            "func applyFullRecovery(",
+            "func applyTargetRecovery(",
+            "core.beginCommandAdmission(",
+            "core.applyFullRecovery(",
+            "core.applyTargetRecovery("
         ] {
             XCTAssertFalse(adapter.contains(retired), "Retired durable closeout remains: \(retired)")
             XCTAssertFalse(persistence.contains(retired), "Retired durable closeout remains: \(retired)")

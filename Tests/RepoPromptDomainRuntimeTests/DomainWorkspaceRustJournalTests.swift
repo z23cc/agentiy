@@ -246,11 +246,10 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         defer { Task { await service.shutdown() } }
         let validator = try await DomainWorkspaceRustJournal.prepare(coreService: service)
         let fileURL = URL(fileURLWithPath: "/tmp/Admission-\(workspaceID).json")
-        let initialRecovery = try domainCommandAdmissionRecovery(
+        let admission = try beginDomainCommandAdmission(
             validator: validator,
             workspaces: [(workspaceID, fileURL, [seededOperation])]
         )
-        let admission = try validator.beginCommandAdmission(recovery: initialRecovery)
         defer { admission.close() }
         XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
 
@@ -353,19 +352,24 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 resultingDigest: nil
             )
         )
-        let durableRecovery = try domainCommandAdmissionRecovery(
+        let durableRecovery = try domainSemanticRecovery(
             validator: validator,
             workspaces: [(workspaceID, fileURL, [durableOperation])]
         )
-        let targetReceipt = try admission.applyTargetRecovery(.init(
+        let durableEvidence = try XCTUnwrap(durableRecovery.workspaces.first)
+        let targetRecovery = try admission.prepareSemanticTargetRecovery(.init(
             catalogBytes: durableRecovery.catalogBytes,
             catalogRevision: durableRecovery.catalogRevision,
             catalogDigest: durableRecovery.catalogDigest,
             workspaceID: workspaceID,
-            journalBytes: durableRecovery.journals[0].canonicalBytes,
-            deletionSidecarBytes: nil
+            journal: durableEvidence.journal,
+            savedDocument: durableEvidence.savedDocument,
+            savedRevision: durableEvidence.savedRevision,
+            deletionSidecar: .absent
         ))
-        XCTAssertEqual(targetReceipt.targetWorkspaceID, workspaceID)
+        let targetPreview = try targetRecovery.preview()
+        let targetCommit = try targetRecovery.commit(expected: targetPreview)
+        XCTAssertEqual(targetCommit.targetWorkspaceID, workspaceID)
         XCTAssertFalse(try durableClaim.abandon())
         switch try admission.acquire(durableInput) {
         case let .replay(fingerprint, scope, operation):
@@ -376,21 +380,29 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             XCTFail("Expected reconciled receipt to replay in workspace scope")
         }
 
-        let reconciled = try admission.applyFullRecovery(durableRecovery)
+        let fullRecovery = try admission.prepareSemanticFullRecovery(durableRecovery)
+        let fullPreview = try fullRecovery.preview()
+        let fullCommit = try fullRecovery.commit(expected: fullPreview)
+        let reconciled = try XCTUnwrap(fullCommit.admissionReceipt)
         XCTAssertEqual(reconciled.diagnostics.globalOperationCount, 3)
         XCTAssertEqual(reconciled.diagnostics.workspaceOperationCount, 1)
-        let emptyRecovery = try domainCommandAdmissionRecovery(
+        let emptyRecovery = try domainSemanticRecovery(
             validator: validator,
             workspaces: [(workspaceID, fileURL, [])]
         )
-        _ = try admission.applyTargetRecovery(.init(
+        let emptyEvidence = try XCTUnwrap(emptyRecovery.workspaces.first)
+        let emptyTargetRecovery = try admission.prepareSemanticTargetRecovery(.init(
             catalogBytes: emptyRecovery.catalogBytes,
             catalogRevision: emptyRecovery.catalogRevision,
             catalogDigest: emptyRecovery.catalogDigest,
             workspaceID: workspaceID,
-            journalBytes: emptyRecovery.journals[0].canonicalBytes,
-            deletionSidecarBytes: nil
+            journal: emptyEvidence.journal,
+            savedDocument: emptyEvidence.savedDocument,
+            savedRevision: emptyEvidence.savedRevision,
+            deletionSidecar: .absent
         ))
+        let emptyPreview = try emptyTargetRecovery.preview()
+        _ = try emptyTargetRecovery.commit(expected: emptyPreview)
         switch try admission.acquire(durableInput) {
         case let .replay(_, scope, operation):
             XCTAssertEqual(scope, .global)
@@ -1067,10 +1079,10 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
     }
 }
 
-private func domainCommandAdmissionRecovery(
+private func domainSemanticRecovery(
     validator: DomainWorkspaceRustJournal.PreparedValidator,
     workspaces: [(workspaceID: UUID, fileURL: URL, operations: [DomainRecordedOperation])] = []
-) throws -> DomainWorkspaceCommandAdmissionRecovery {
+) throws -> DomainWorkspaceSemanticFullRecovery {
     let entries = workspaces.map {
         DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.Entry(
             workspaceID: $0.workspaceID,
@@ -1106,17 +1118,19 @@ private func domainCommandAdmissionRecovery(
             expectedWorkspaceID: workspace.workspaceID,
             expectedFileURL: workspace.fileURL
         )
-        return DomainWorkspaceCommandAdmissionJournalRecovery(
+        return DomainWorkspaceSemanticRecoveryEvidence(
             workspaceID: workspace.workspaceID,
-            canonicalBytes: validation.canonicalBytes
+            journal: .present(validation.canonicalBytes),
+            savedDocument: .absent,
+            savedRevision: .absent
         )
     }
-    return DomainWorkspaceCommandAdmissionRecovery(
+    return DomainWorkspaceSemanticFullRecovery(
         catalogBytes: catalog.canonicalBytes,
         catalogRevision: catalog.catalog.revision,
         catalogDigest: catalog.contentDigest,
-        journals: journals,
-        deletionSidecars: []
+        workspaces: journals,
+        deletions: []
     )
 }
 
@@ -1124,9 +1138,12 @@ private func beginDomainCommandAdmission(
     validator: DomainWorkspaceRustJournal.PreparedValidator,
     workspaces: [(workspaceID: UUID, fileURL: URL, operations: [DomainRecordedOperation])] = []
 ) throws -> DomainWorkspaceRustJournal.PreparedCommandAdmission {
-    try validator.beginCommandAdmission(
-        recovery: domainCommandAdmissionRecovery(validator: validator, workspaces: workspaces)
+    let recovery = try validator.prepareInitialSemanticRecovery(
+        domainSemanticRecovery(validator: validator, workspaces: workspaces)
     )
+    let preview = try recovery.preview()
+    let commit = try recovery.commit(expected: preview)
+    return try XCTUnwrap(commit.admission)
 }
 
 private enum CommandIdentityAuthorityTestError: Error {

@@ -131,6 +131,7 @@ struct DomainPersistenceBootstrap {
         let operations: [DomainRecordedOperation]
         let admissionJournalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence
         let health: DomainAuthorityHealth
+        let externalDocument: DomainWorkspaceDocument?
         let fileMetadata: DomainFileMetadata
     }
 
@@ -144,17 +145,21 @@ struct DomainPersistenceBootstrap {
     let workspaces: [Workspace]
     let unavailableWorkspaces: [UnavailableWorkspace]
     let deletedWorkspaceIDs: Set<UUID>
-    let admissionRecovery: DomainWorkspaceCommandAdmissionRecovery?
     let health: DomainAuthorityHealth
     let catalogRevision: UInt64
+    let semanticRecovery: DomainWorkspaceRustJournal.PreparedSemanticRecovery?
+    let semanticPreview: DomainWorkspaceSemanticRecoveryPreview?
 }
 
 struct DomainPersistenceWorkspaceRefresh {
     let workspace: DomainPersistenceBootstrap.Workspace?
+    let unavailableWorkspace: DomainPersistenceBootstrap.UnavailableWorkspace?
     let workspaceIsDeleted: Bool
-    let admissionRecovery: DomainWorkspaceCommandAdmissionTargetRecovery?
+    let workspaceIsNoChange: Bool
     let health: DomainAuthorityHealth
     let catalogRevision: UInt64
+    let semanticRecovery: DomainWorkspaceRustJournal.PreparedSemanticRecovery?
+    let semanticPreview: DomainWorkspaceSemanticRecoveryPreview?
 }
 
 struct DomainPersistenceWorkingCommit {
@@ -607,7 +612,8 @@ package struct DomainPersistenceCoordinator {
     }
 
     func bootstrap(
-        permit: DomainWorkspaceMutationPermit? = nil
+        permit: DomainWorkspaceMutationPermit? = nil,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
     ) async -> DomainPersistenceBootstrap {
         do {
             let validator = try await prepareJournalValidator()
@@ -615,7 +621,8 @@ package struct DomainPersistenceCoordinator {
                 try cancellation.check()
                 return try blockingWorker(cancellation).bootstrapBlocking(
                     validator: validator,
-                    permit: permit
+                    permit: permit,
+                    commandAdmission: commandAdmission
                 )
             }
         } catch {
@@ -628,9 +635,10 @@ package struct DomainPersistenceCoordinator {
                 workspaces: [],
                 unavailableWorkspaces: [],
                 deletedWorkspaceIDs: [],
-                admissionRecovery: nil,
                 health: .degradedReadOnly(reason: reason),
-                catalogRevision: 0
+                catalogRevision: 0,
+                semanticRecovery: nil,
+                semanticPreview: nil
             )
         }
     }
@@ -1103,7 +1111,9 @@ package struct DomainPersistenceCoordinator {
 
     func refreshWorkspace(
         workspaceID: UUID,
-        fallbackFileURL: URL
+        fallbackFileURL: URL,
+        permit: DomainWorkspaceMutationPermit? = nil,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
     ) async -> DomainPersistenceWorkspaceRefresh? {
         do {
             let validator = try await prepareJournalValidator()
@@ -1112,7 +1122,9 @@ package struct DomainPersistenceCoordinator {
                 return try blockingWorker(cancellation).refreshWorkspaceBlocking(
                     workspaceID: workspaceID,
                     fallbackFileURL: fallbackFileURL,
-                    validator: validator
+                    validator: validator,
+                    permit: permit,
+                    commandAdmission: commandAdmission
                 )
             }
         } catch DomainPersistenceError.cancelled {
@@ -1122,10 +1134,13 @@ package struct DomainPersistenceCoordinator {
         } catch {
             return DomainPersistenceWorkspaceRefresh(
                 workspace: nil,
+                unavailableWorkspace: nil,
                 workspaceIsDeleted: false,
-                admissionRecovery: nil,
+                workspaceIsNoChange: false,
                 health: .degradedReadOnly(reason: "workspace_catalog_probe_failed"),
-                catalogRevision: 0
+                catalogRevision: 0,
+                semanticRecovery: nil,
+                semanticPreview: nil
             )
         }
     }
@@ -1133,299 +1148,207 @@ package struct DomainPersistenceCoordinator {
     private func refreshWorkspaceBlocking(
         workspaceID: UUID,
         fallbackFileURL: URL,
-        validator: DomainWorkspaceRustJournal.PreparedValidator
+        validator: DomainWorkspaceRustJournal.PreparedValidator,
+        permit: DomainWorkspaceMutationPermit?,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
     ) throws -> DomainPersistenceWorkspaceRefresh {
         let validation: DomainWorkspaceCatalogValidation
         do {
-            if let catalogData = try readCatalogBytes() {
-                validation = try validator.validateCatalog(catalogData)
-            } else {
-                validation = try seedLegacyCatalog(
-                    entries: legacyCatalogEntries(),
-                    updatedAt: Date(timeIntervalSinceReferenceDate: 0),
-                    validator: validator
-                )
-            }
+            validation = try validatedSemanticRecoveryCatalog(validator: validator)
         } catch {
             if isJournalInfrastructureFailure(error) {
                 throw error
             }
             return DomainPersistenceWorkspaceRefresh(
                 workspace: nil,
+                unavailableWorkspace: nil,
                 workspaceIsDeleted: false,
-                admissionRecovery: nil,
+                workspaceIsNoChange: false,
                 health: .degradedReadOnly(reason: catalogDegradedReason(error)),
-                catalogRevision: 0
+                catalogRevision: 0,
+                semanticRecovery: nil,
+                semanticPreview: nil
             )
         }
-        let catalog = validation.catalog
-        let entry = catalog.entries.first { $0.workspaceID == workspaceID }
-        let deletion = (catalog.deletions ?? []).first { $0.workspaceID == workspaceID }
-        let isDeleted = deletion != nil
-        let fileURL = entry?.fileURL ?? fallbackFileURL
-        let workspace: DomainPersistenceBootstrap.Workspace? = if isDeleted {
-            nil
-        } else {
-            try loadWorkspace(
+        guard let commandAdmission else {
+            return DomainPersistenceWorkspaceRefresh(
+                workspace: nil,
+                unavailableWorkspace: nil,
+                workspaceIsDeleted: false,
+                workspaceIsNoChange: false,
+                health: .degradedReadOnly(reason: "workspace_command_admission_unavailable"),
+                catalogRevision: validation.catalog.revision,
+                semanticRecovery: nil,
+                semanticPreview: nil
+            )
+        }
+
+        var evidence = try semanticTargetRecoveryEvidence(
+            validation: validation,
+            workspaceID: workspaceID,
+            fallbackFileURL: fallbackFileURL
+        )
+        var prepared = try commandAdmission.prepareSemanticTargetRecovery(evidence)
+        var preview = try prepared.preview()
+        if let permit, !preview.journalRewrites.isEmpty {
+            prepared.close()
+            try applySemanticJournalRewrites(preview.journalRewrites, permit: permit)
+            evidence = try semanticTargetRecoveryEvidence(
+                validation: validation,
                 workspaceID: workspaceID,
-                fileURL: fileURL,
-                validator: validator
-            )?.workspace
-        }
-
-        let journalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence
-        var recoveryUnavailableReason: String?
-        if let entry, !isDeleted {
-            if let workspace {
-                journalEvidence = workspace.admissionJournalEvidence
-                if !journalEvidence.isAvailable {
-                    recoveryUnavailableReason = "working_journal_recovery_unavailable"
-                }
-            } else {
-                switch loadJournal(
-                    workspaceID: entry.workspaceID,
-                    expectedFileURL: entry.fileURL,
-                    validator: validator
-                ) {
-                case let .success(journal?):
-                    journalEvidence = .present(journal.canonicalBytes)
-                case .success(nil):
-                    journalEvidence = .absent
-                case let .failure(error):
-                    if isJournalInfrastructureFailure(error) {
-                        throw error
-                    }
-                    journalEvidence = .unavailable
-                    recoveryUnavailableReason = journalDegradedReason(error)
-                }
-            }
-        } else {
-            journalEvidence = .absent
-        }
-
-        var deletionSidecarBytes: Data?
-        if let deletion {
-            switch try readOptionalMetadataSnapshot(at: deletionURL(workspaceID)) {
-            case .absent:
-                break
-            case .oversized:
-                try validator.requireRuntimeAvailability()
-            case let .present(data):
-                do {
-                    let sidecar = try validator.validateDeletionTombstone(data)
-                    if deletionSidecar(sidecar.tombstone, matches: deletion) {
-                        deletionSidecarBytes = sidecar.canonicalBytes
-                    }
-                } catch {
-                    if isJournalInfrastructureFailure(error) {
-                        throw error
-                    }
-                }
+                fallbackFileURL: fallbackFileURL
+            )
+            prepared = try commandAdmission.prepareSemanticTargetRecovery(evidence)
+            preview = try prepared.preview()
+            guard preview.journalRewrites.isEmpty else {
+                prepared.close()
+                throw DomainPersistenceError.corruptJournal
             }
         }
-        let admissionRecovery: DomainWorkspaceCommandAdmissionTargetRecovery? =
-            recoveryUnavailableReason == nil && (entry != nil || deletion != nil)
-                ? DomainWorkspaceCommandAdmissionTargetRecovery(
-                    catalogBytes: validation.canonicalBytes,
-                    catalogRevision: catalog.revision,
-                    catalogDigest: validation.contentDigest,
-                    workspaceID: workspaceID,
-                    journalBytes: journalEvidence.canonicalBytes,
-                    deletionSidecarBytes: deletionSidecarBytes
-                )
-                : nil
+        guard preview.catalogRevision == validation.catalog.revision,
+              preview.catalogDigest == validation.contentDigest,
+              preview.targetWorkspaceID == workspaceID,
+              case let .target(directive) = preview.projection
+        else {
+            prepared.close()
+            throw DomainPersistenceError.corruptJournal
+        }
+
+        let workspace: DomainPersistenceBootstrap.Workspace?
+        let unavailableWorkspace: DomainPersistenceBootstrap.UnavailableWorkspace?
+        let workspaceIsDeleted: Bool
+        let workspaceIsNoChange: Bool
+        switch directive {
+        case let .upsert(active):
+            workspace = persistenceWorkspace(
+                active,
+                journalEvidence: evidence.journal,
+                savedDocumentEvidence: evidence.savedDocument
+            )
+            unavailableWorkspace = nil
+            workspaceIsDeleted = false
+            workspaceIsNoChange = false
+        case let .unavailable(row):
+            workspace = nil
+            unavailableWorkspace = .init(
+                workspaceID: row.workspaceID,
+                fileURL: row.fileURL,
+                reason: row.reason,
+                fileMetadata: fileMetadata(at: row.fileURL)
+            )
+            workspaceIsDeleted = false
+            workspaceIsNoChange = false
+        case .noChange:
+            workspace = nil
+            unavailableWorkspace = nil
+            workspaceIsDeleted = false
+            workspaceIsNoChange = true
+        case .delete:
+            workspace = nil
+            unavailableWorkspace = nil
+            workspaceIsDeleted = true
+            workspaceIsNoChange = false
+        }
         return DomainPersistenceWorkspaceRefresh(
             workspace: workspace,
-            workspaceIsDeleted: isDeleted,
-            admissionRecovery: admissionRecovery,
-            health: recoveryUnavailableReason.map { .degradedReadOnly(reason: $0) } ?? .writable,
-            catalogRevision: catalog.revision
+            unavailableWorkspace: unavailableWorkspace,
+            workspaceIsDeleted: workspaceIsDeleted,
+            workspaceIsNoChange: workspaceIsNoChange,
+            health: preview.globalHealth,
+            catalogRevision: preview.catalogRevision,
+            semanticRecovery: prepared,
+            semanticPreview: preview
         )
     }
 
     private func bootstrapBlocking(
         validator: DomainWorkspaceRustJournal.PreparedValidator,
-        permit: DomainWorkspaceMutationPermit?
+        permit: DomainWorkspaceMutationPermit?,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
     ) throws -> DomainPersistenceBootstrap {
         if let permit {
             try recoverInterruptedCreates(validator: validator, permit: permit)
         }
-        var globalHealth: DomainAuthorityHealth = .writable
-        var catalogValidation: DomainWorkspaceCatalogValidation?
+        let validation: DomainWorkspaceCatalogValidation
         do {
-            if let data = try readCatalogBytes() {
-                catalogValidation = try validator.validateCatalog(data)
-            }
+            validation = try validatedSemanticRecoveryCatalog(validator: validator)
         } catch {
             if isJournalInfrastructureFailure(error) {
                 throw error
             }
-            globalHealth = .degradedReadOnly(reason: catalogDegradedReason(error))
-        }
-        let catalog = catalogValidation?.catalog
-
-        let authoritativeTombstones = catalog?.deletions ?? []
-        var sidecarTombstonesByWorkspaceID = [UUID: DomainWorkspaceDeletionTombstoneValidation]()
-        for authoritative in authoritativeTombstones {
-            switch try readOptionalMetadataSnapshot(at: deletionURL(authoritative.workspaceID)) {
-            case .absent:
-                continue
-            case .oversized:
-                try validator.requireRuntimeAvailability()
-            case let .present(data):
-                do {
-                    let sidecar = try validator.validateDeletionTombstone(data)
-                    if deletionSidecar(sidecar.tombstone, matches: authoritative) {
-                        sidecarTombstonesByWorkspaceID[authoritative.workspaceID] = sidecar
-                    }
-                } catch {
-                    if isJournalInfrastructureFailure(error) {
-                        throw error
-                    }
-                }
-            }
-        }
-        // The catalog alone is deletion authority. A bounded exact-identity sidecar may replace
-        // only the cleanup diagnostic of an already-authoritative tombstone.
-        let deletionTombstones = authoritativeTombstones.map { authoritative in
-            sidecarTombstonesByWorkspaceID[authoritative.workspaceID]?.tombstone ?? authoritative
-        }.sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
-        let deletedIDs = Set(deletionTombstones.map(\.workspaceID))
-
-        let entries: [RuntimeWorkspaceCatalog.Entry]
-        if let catalog {
-            entries = catalog.entries.filter { !deletedIDs.contains($0.workspaceID) }
-        } else {
-            do {
-                entries = try legacyCatalogEntries().filter { !deletedIDs.contains($0.workspaceID) }
-            } catch {
-                return DomainPersistenceBootstrap(
-                    workspaces: [],
-                    unavailableWorkspaces: [],
-                    deletedWorkspaceIDs: deletedIDs,
-                    admissionRecovery: nil,
-                    health: .degradedReadOnly(reason: "workspace_index_decode_failed"),
-                    catalogRevision: 0
-                )
-            }
-        }
-        if catalogValidation == nil, globalHealth == .writable {
-            do {
-                catalogValidation = try seedLegacyCatalog(
-                    entries: entries,
-                    updatedAt: Date(timeIntervalSinceReferenceDate: 0),
-                    validator: validator
-                )
-            } catch {
-                if isJournalInfrastructureFailure(error) {
-                    throw error
-                }
-                globalHealth = .degradedReadOnly(reason: "workspace_catalog_transition_invalid")
-            }
+            return DomainPersistenceBootstrap(
+                workspaces: [],
+                unavailableWorkspaces: [],
+                deletedWorkspaceIDs: [],
+                health: .degradedReadOnly(reason: catalogDegradedReason(error)),
+                catalogRevision: 0,
+                semanticRecovery: nil,
+                semanticPreview: nil
+            )
         }
 
-        var loaded: [DomainPersistenceBootstrap.Workspace] = []
-        var unavailable: [DomainPersistenceBootstrap.UnavailableWorkspace] = []
-        var loadedIDs = Set<UUID>()
-        let entriesByWorkspaceID = Dictionary(grouping: entries, by: \.workspaceID)
-        let duplicateWorkspaceIDs = Set(entriesByWorkspaceID.compactMap { workspaceID, matchingEntries in
-            matchingEntries.count > 1 ? workspaceID : nil
+        var evidence = try semanticFullRecoveryEvidence(validation: validation)
+        var prepared = try commandAdmission?.prepareSemanticFullRecovery(evidence)
+            ?? validator.prepareInitialSemanticRecovery(evidence)
+        var preview = try prepared.preview()
+        if let permit, !preview.journalRewrites.isEmpty {
+            prepared.close()
+            try applySemanticJournalRewrites(preview.journalRewrites, permit: permit)
+            evidence = try semanticFullRecoveryEvidence(validation: validation)
+            prepared = try commandAdmission?.prepareSemanticFullRecovery(evidence)
+                ?? validator.prepareInitialSemanticRecovery(evidence)
+            preview = try prepared.preview()
+            guard preview.journalRewrites.isEmpty else {
+                prepared.close()
+                throw DomainPersistenceError.corruptJournal
+            }
+        }
+        guard preview.catalogRevision == validation.catalog.revision,
+              preview.catalogDigest == validation.contentDigest,
+              preview.targetWorkspaceID == nil,
+              case let .full(rows) = preview.projection
+        else {
+            prepared.close()
+            throw DomainPersistenceError.corruptJournal
+        }
+
+        let evidenceByWorkspaceID = Dictionary(uniqueKeysWithValues: evidence.workspaces.map {
+            ($0.workspaceID, $0)
         })
-        if !duplicateWorkspaceIDs.isEmpty {
-            globalHealth = .degradedReadOnly(reason: "duplicate_workspace_catalog_id")
-        }
-        for entry in entries {
-            guard loadedIDs.insert(entry.workspaceID).inserted else { continue }
-            if duplicateWorkspaceIDs.contains(entry.workspaceID) {
-                unavailable.append(.init(
-                    workspaceID: entry.workspaceID,
-                    fileURL: entry.fileURL,
-                    reason: "duplicate_workspace_catalog_id",
-                    fileMetadata: fileMetadata(at: entry.fileURL)
-                ))
-            } else if let result = try loadWorkspace(
-                workspaceID: entry.workspaceID,
-                fileURL: entry.fileURL,
-                validator: validator
-            ) {
-                loaded.append(result.workspace)
-            } else {
-                unavailable.append(.init(
-                    workspaceID: entry.workspaceID,
-                    fileURL: entry.fileURL,
-                    reason: "workspace_document_unavailable",
-                    fileMetadata: fileMetadata(at: entry.fileURL)
-                ))
-            }
-        }
-
-        let admissionRecovery: DomainWorkspaceCommandAdmissionRecovery?
-        if globalHealth == .writable, let effectiveCatalog = catalogValidation {
-            let loadedByWorkspaceID = Dictionary(uniqueKeysWithValues: loaded.map {
-                ($0.document.workspaceID, $0)
-            })
-            var journals: [DomainWorkspaceCommandAdmissionJournalRecovery] = []
-            var recoveryEvidenceAvailable = true
-            for entry in effectiveCatalog.catalog.entries.sorted(by: {
-                $0.workspaceID.uuidString < $1.workspaceID.uuidString
-            }) {
-                let evidence: DomainWorkspaceCommandAdmissionJournalEvidence
-                if let workspace = loadedByWorkspaceID[entry.workspaceID] {
-                    evidence = workspace.admissionJournalEvidence
-                } else {
-                    switch loadJournal(
-                    workspaceID: entry.workspaceID,
-                    expectedFileURL: entry.fileURL,
-                    validator: validator
-                ) {
-                    case let .success(validation?):
-                        evidence = .present(validation.canonicalBytes)
-                    case .success(nil):
-                        evidence = .absent
-                    case let .failure(error):
-                        if isJournalInfrastructureFailure(error) {
-                            throw error
-                        }
-                        evidence = .unavailable
-                    }
+        var workspaces: [DomainPersistenceBootstrap.Workspace] = []
+        var unavailable: [DomainPersistenceBootstrap.UnavailableWorkspace] = []
+        var deletedWorkspaceIDs = Set<UUID>()
+        for row in rows {
+            switch row {
+            case let .active(active):
+                guard let physical = evidenceByWorkspaceID[active.document.workspaceID] else {
+                    prepared.close()
+                    throw DomainPersistenceError.corruptJournal
                 }
-                recoveryEvidenceAvailable = recoveryEvidenceAvailable && evidence.isAvailable
-                journals.append(.init(
-                    workspaceID: entry.workspaceID,
-                    canonicalBytes: evidence.canonicalBytes
+                workspaces.append(persistenceWorkspace(
+                    active,
+                    journalEvidence: physical.journal,
+                    savedDocumentEvidence: physical.savedDocument
                 ))
+            case let .unavailable(row):
+                unavailable.append(.init(
+                    workspaceID: row.workspaceID,
+                    fileURL: row.fileURL,
+                    reason: row.reason,
+                    fileMetadata: fileMetadata(at: row.fileURL)
+                ))
+            case let .deleted(workspaceID, _):
+                deletedWorkspaceIDs.insert(workspaceID)
             }
-            let deletionSidecars = (effectiveCatalog.catalog.deletions ?? [])
-                .sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
-                .map { deletion in
-                    DomainWorkspaceCommandAdmissionDeletionRecovery(
-                        workspaceID: deletion.workspaceID,
-                        canonicalBytes: sidecarTombstonesByWorkspaceID[deletion.workspaceID]?.canonicalBytes
-                    )
-                }
-            if recoveryEvidenceAvailable {
-                admissionRecovery = DomainWorkspaceCommandAdmissionRecovery(
-                    catalogBytes: effectiveCatalog.canonicalBytes,
-                    catalogRevision: effectiveCatalog.catalog.revision,
-                    catalogDigest: effectiveCatalog.contentDigest,
-                    journals: journals,
-                    deletionSidecars: deletionSidecars
-                )
-            } else {
-                admissionRecovery = nil
-                globalHealth = .degradedReadOnly(reason: "working_journal_recovery_unavailable")
-            }
-        } else {
-            admissionRecovery = nil
         }
-
         return DomainPersistenceBootstrap(
-            workspaces: loaded,
+            workspaces: workspaces,
             unavailableWorkspaces: unavailable,
-            deletedWorkspaceIDs: deletedIDs,
-            admissionRecovery: admissionRecovery,
-            health: globalHealth,
-            catalogRevision: catalogValidation?.catalog.revision ?? 0
+            deletedWorkspaceIDs: deletedWorkspaceIDs,
+            health: preview.globalHealth,
+            catalogRevision: preview.catalogRevision,
+            semanticRecovery: prepared,
+            semanticPreview: preview
         )
     }
 
@@ -1545,6 +1468,234 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
+    private func validatedSemanticRecoveryCatalog(
+        validator: DomainWorkspaceRustJournal.PreparedValidator
+    ) throws -> DomainWorkspaceCatalogValidation {
+        if let data = try readCatalogBytes() {
+            return try validator.validateCatalog(data)
+        }
+        return try seedLegacyCatalog(
+            entries: legacyCatalogEntries(),
+            updatedAt: Date(timeIntervalSinceReferenceDate: 0),
+            validator: validator
+        )
+    }
+
+    private func semanticFullRecoveryEvidence(
+        validation: DomainWorkspaceCatalogValidation
+    ) throws -> DomainWorkspaceSemanticFullRecovery {
+        let workspaces = try validation.catalog.entries
+            .sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
+            .map { entry in
+                DomainWorkspaceSemanticRecoveryEvidence(
+                    workspaceID: entry.workspaceID,
+                    journal: try readSemanticRecoveryArtifact(
+                        at: journalURL(entry.workspaceID),
+                        maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                        readFailureReason: "working_journal_read_failed",
+                        oversizedReason: "working_journal_too_large"
+                    ),
+                    savedDocument: try readSemanticRecoveryArtifact(
+                        at: entry.fileURL,
+                        maximumBytes: CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes,
+                        readFailureReason: "workspace_document_read_failed",
+                        oversizedReason: "workspace_document_too_large"
+                    ),
+                    savedRevision: try readSemanticRecoveryArtifact(
+                        at: revisionURL(entry.workspaceID),
+                        maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                        readFailureReason: "saved_revision_read_failed",
+                        oversizedReason: "saved_revision_too_large"
+                    )
+                )
+            }
+        let deletions = try (validation.catalog.deletions ?? [])
+            .sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
+            .map { deletion in
+                DomainWorkspaceSemanticDeletionRecoveryEvidence(
+                    workspaceID: deletion.workspaceID,
+                    sidecar: try readSemanticRecoveryArtifact(
+                        at: deletionURL(deletion.workspaceID),
+                        maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                        readFailureReason: "deletion_tombstone_read_failed",
+                        oversizedReason: "deletion_tombstone_too_large"
+                    )
+                )
+            }
+        return DomainWorkspaceSemanticFullRecovery(
+            catalogBytes: validation.canonicalBytes,
+            catalogRevision: validation.catalog.revision,
+            catalogDigest: validation.contentDigest,
+            workspaces: workspaces,
+            deletions: deletions
+        )
+    }
+
+    private func semanticTargetRecoveryEvidence(
+        validation: DomainWorkspaceCatalogValidation,
+        workspaceID: UUID,
+        fallbackFileURL: URL
+    ) throws -> DomainWorkspaceSemanticTargetRecovery {
+        let entry = validation.catalog.entries.first { $0.workspaceID == workspaceID }
+        let deletion = (validation.catalog.deletions ?? []).first {
+            $0.workspaceID == workspaceID
+        }
+        let journal: DomainWorkspaceRecoveryArtifactEvidence
+        let savedDocument: DomainWorkspaceRecoveryArtifactEvidence
+        let savedRevision: DomainWorkspaceRecoveryArtifactEvidence
+        if let entry {
+            journal = try readSemanticRecoveryArtifact(
+                at: journalURL(workspaceID),
+                maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                readFailureReason: "working_journal_read_failed",
+                oversizedReason: "working_journal_too_large"
+            )
+            savedDocument = try readSemanticRecoveryArtifact(
+                at: entry.fileURL,
+                maximumBytes: CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes,
+                readFailureReason: "workspace_document_read_failed",
+                oversizedReason: "workspace_document_too_large"
+            )
+            savedRevision = try readSemanticRecoveryArtifact(
+                at: revisionURL(workspaceID),
+                maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                readFailureReason: "saved_revision_read_failed",
+                oversizedReason: "saved_revision_too_large"
+            )
+        } else {
+            journal = .absent
+            savedDocument = .absent
+            savedRevision = .absent
+        }
+        let deletionSidecar: DomainWorkspaceRecoveryArtifactEvidence = if deletion != nil {
+            try readSemanticRecoveryArtifact(
+                at: deletionURL(workspaceID),
+                maximumBytes: CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
+                readFailureReason: "deletion_tombstone_read_failed",
+                oversizedReason: "deletion_tombstone_too_large"
+            )
+        } else {
+            .absent
+        }
+        _ = fallbackFileURL
+        return DomainWorkspaceSemanticTargetRecovery(
+            catalogBytes: validation.canonicalBytes,
+            catalogRevision: validation.catalog.revision,
+            catalogDigest: validation.contentDigest,
+            workspaceID: workspaceID,
+            journal: journal,
+            savedDocument: savedDocument,
+            savedRevision: savedRevision,
+            deletionSidecar: deletionSidecar
+        )
+    }
+
+    private func readSemanticRecoveryArtifact(
+        at url: URL,
+        maximumBytes: Int,
+        readFailureReason: String,
+        oversizedReason: String
+    ) throws -> DomainWorkspaceRecoveryArtifactEvidence {
+        let descriptor: Int32 = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return -1 }
+            return Darwin.open(path, O_RDONLY | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else {
+            return errno == ENOENT ? .absent : .unavailable(reason: readFailureReason)
+        }
+        defer { _ = Darwin.close(descriptor) }
+
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0,
+              metadata.st_size >= 0
+        else {
+            return .unavailable(reason: readFailureReason)
+        }
+        guard UInt64(metadata.st_size) <= UInt64(maximumBytes) else {
+            return .unavailable(reason: oversizedReason)
+        }
+        var bytes = Data()
+        bytes.reserveCapacity(Int(metadata.st_size))
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            try cancellation?.check()
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            guard count >= 0 else {
+                if errno == EINTR { continue }
+                return .unavailable(reason: readFailureReason)
+            }
+            guard count > 0 else { break }
+            guard bytes.count <= maximumBytes - count else {
+                return .unavailable(reason: oversizedReason)
+            }
+            bytes.append(contentsOf: buffer[0 ..< count])
+        }
+        return .present(bytes)
+    }
+
+    private func persistenceWorkspace(
+        _ active: DomainWorkspaceSemanticActiveRecovery,
+        journalEvidence: DomainWorkspaceRecoveryArtifactEvidence,
+        savedDocumentEvidence: DomainWorkspaceRecoveryArtifactEvidence
+    ) -> DomainPersistenceBootstrap.Workspace {
+        let admissionJournalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence =
+            switch journalEvidence {
+            case .absent:
+                .absent
+            case let .present(bytes) where active.health.acceptsMutations:
+                .present(bytes)
+            case .present, .unavailable:
+                .unavailable
+            }
+        let observedMetadata = fileMetadata(at: active.document.fileURL)
+        let trustedMetadata: DomainFileMetadata = if case let .present(bytes) = savedDocumentEvidence,
+                                                     DomainContentDigest.sha256(bytes) == active.savedDigest
+        {
+            observedMetadata
+        } else {
+            .missing
+        }
+        return DomainPersistenceBootstrap.Workspace(
+            document: active.document,
+            savedDigest: active.savedDigest,
+            revisions: active.revisions,
+            contextRevisions: active.contextRevisions,
+            contextTombstones: active.contextTombstones,
+            operations: active.operations,
+            admissionJournalEvidence: admissionJournalEvidence,
+            health: active.health,
+            externalDocument: active.externalDocument,
+            fileMetadata: trustedMetadata
+        )
+    }
+
+    private func applySemanticJournalRewrites(
+        _ rewrites: [DomainWorkspaceSemanticJournalRewrite],
+        permit: DomainWorkspaceMutationPermit
+    ) throws {
+        try validateMutationPermitScope(permit)
+        for rewrite in rewrites {
+            try cancellation?.check()
+            try withLock(at: lockURL(rewrite.workspaceID)) {
+                try validateMutationPermitScope(permit)
+                let current = try readRawJournalSnapshot(workspaceID: rewrite.workspaceID)
+                guard case let .present(digest, _) = current,
+                      digest == rewrite.expectedArtifactDigest,
+                      DomainContentDigest.sha256(rewrite.replacementCanonicalBytes)
+                          == rewrite.replacementCanonicalDigest
+                else {
+                    throw DomainPersistenceError.stateConflict(expected: 0, actual: 0)
+                }
+                try writeJournalBytes(
+                    rewrite.replacementCanonicalBytes,
+                    workspaceID: rewrite.workspaceID
+                )
+            }
+        }
+    }
+
     private func isJournalInfrastructureFailure(_ error: Error) -> Bool {
         guard let persistenceError = error as? DomainPersistenceError else { return true }
         switch persistenceError {
@@ -1565,6 +1716,8 @@ package struct DomainPersistenceCoordinator {
             "future_workspace_catalog"
         case .writeFailed("workspace_catalog_too_large"):
             "workspace_catalog_too_large"
+        case .writeFailed("duplicate_workspace_catalog_id"):
+            "duplicate_workspace_catalog_id"
         default:
             "workspace_catalog_decode_failed"
         }
@@ -1581,159 +1734,6 @@ package struct DomainPersistenceCoordinator {
             return "working_journal_too_large"
         default:
             return "working_journal_decode_failed"
-        }
-    }
-
-    private func loadWorkspace(
-        workspaceID: UUID,
-        fileURL: URL,
-        validator: DomainWorkspaceRustJournal.PreparedValidator
-    ) throws -> (workspace: DomainPersistenceBootstrap.Workspace, degradedReason: String?)? {
-        let observedMetadata = fileMetadata(at: fileURL)
-        let savedBytes = try? Data(contentsOf: fileURL)
-        let savedBytesDigest = savedBytes.map(DomainContentDigest.sha256)
-        let savedDocument = savedBytes.flatMap {
-            decodeWorkspaceDocument($0, fileURL: fileURL, expectedWorkspaceID: workspaceID)
-        }
-        /// Metadata is only a trusted "no external change" fast-path baseline when the
-        /// on-disk bytes still match the journal's saved digest. Otherwise the first
-        /// external-document probe must fall back to a full read + digest comparison,
-        /// or an edit made while the runtime was down would be masked forever.
-        func trustedMetadata(matching savedDigest: String) -> DomainFileMetadata {
-            savedBytesDigest == savedDigest ? observedMetadata : .missing
-        }
-        func degradedSavedWorkspace(
-            reason: String,
-            journal: DomainWorkingJournal? = nil,
-            admissionJournalEvidence: DomainWorkspaceCommandAdmissionJournalEvidence = .unavailable
-        ) -> (workspace: DomainPersistenceBootstrap.Workspace, degradedReason: String?)? {
-            guard let savedDocument else { return nil }
-            let savedRevision = journal?.revisions.savedRevision ?? 0
-            let revisions = DomainRevisionState(
-                workingRevision: savedRevision,
-                savedRevision: savedRevision,
-                dirtyRevision: nil
-            )
-            return (.init(
-                document: savedDocument,
-                savedDigest: savedDocument.contentDigest,
-                revisions: revisions,
-                contextRevisions: Dictionary(uniqueKeysWithValues: savedDocument.metadata.contexts.map {
-                    ($0.identity.contextID, revisions)
-                }),
-                contextTombstones: journal?.contextTombstones ?? [:],
-                operations: journal?.operations ?? [],
-                admissionJournalEvidence: admissionJournalEvidence,
-                health: .degradedReadOnly(reason: reason),
-                fileMetadata: observedMetadata
-            ), reason)
-        }
-
-        switch loadJournal(
-            workspaceID: workspaceID,
-            expectedFileURL: fileURL,
-            validator: validator
-        ) {
-        case let .success(validation?):
-            let journal = validation.journal
-            guard journal.workspaceID == workspaceID,
-                  journal.fileURL.standardizedFileURL == fileURL.standardizedFileURL
-            else {
-                return degradedSavedWorkspace(reason: "working_journal_identity_mismatch")
-            }
-            guard journal.version <= DomainWorkingJournal.schemaVersion else {
-                return degradedSavedWorkspace(reason: "future_working_journal")
-            }
-            do {
-                if let recovered = try resolvedPendingSave(
-                    validation,
-                    expectedWorkspaceID: workspaceID,
-                    validator: validator
-                ) {
-                    let recoveredJournal = recovered.validation.journal
-                    return (.init(
-                        document: recovered.document,
-                        savedDigest: recoveredJournal.savedDigest,
-                        revisions: recoveredJournal.revisions,
-                        contextRevisions: recoveredJournal.contextRevisions,
-                        contextTombstones: recoveredJournal.contextTombstones,
-                        operations: recoveredJournal.operations,
-                        admissionJournalEvidence: .present(recovered.validation.canonicalBytes),
-                        health: .writable,
-                        fileMetadata: trustedMetadata(matching: recoveredJournal.savedDigest)
-                    ), nil)
-                }
-            } catch {
-                if isJournalInfrastructureFailure(error) {
-                    throw error
-                }
-                return degradedSavedWorkspace(
-                    reason: "working_journal_recovery_failed",
-                    journal: journal,
-                    admissionJournalEvidence: .present(validation.canonicalBytes)
-                )
-            }
-            if let workingBytes = journal.workingDocument {
-                guard let document = decodeWorkspaceDocument(
-                    workingBytes,
-                    fileURL: fileURL,
-                    expectedWorkspaceID: workspaceID
-                ) else {
-                    return degradedSavedWorkspace(
-                        reason: "working_document_decode_failed",
-                        journal: journal,
-                        admissionJournalEvidence: .present(validation.canonicalBytes)
-                    )
-                }
-                return (.init(
-                    document: document,
-                    savedDigest: journal.savedDigest,
-                    revisions: journal.revisions,
-                    contextRevisions: journal.contextRevisions,
-                    contextTombstones: journal.contextTombstones,
-                    operations: journal.operations,
-                    admissionJournalEvidence: .present(validation.canonicalBytes),
-                    health: .writable,
-                    fileMetadata: trustedMetadata(matching: journal.savedDigest)
-                ), nil)
-            }
-            guard let savedDocument else { return nil }
-            return (.init(
-                document: savedDocument,
-                savedDigest: journal.savedDigest,
-                revisions: journal.revisions,
-                contextRevisions: journal.contextRevisions,
-                contextTombstones: journal.contextTombstones,
-                operations: journal.operations,
-                admissionJournalEvidence: .present(validation.canonicalBytes),
-                health: .writable,
-                fileMetadata: trustedMetadata(matching: journal.savedDigest)
-            ), nil)
-        case .success(nil):
-            guard let savedDocument else { return nil }
-            let revisions = try loadSavedRevision(
-                workspaceID: workspaceID,
-                digest: savedDocument.contentDigest,
-                validator: validator
-            )
-            return (.init(
-                document: savedDocument,
-                savedDigest: savedDocument.contentDigest,
-                revisions: revisions,
-                contextRevisions: Dictionary(uniqueKeysWithValues: savedDocument.metadata.contexts.map {
-                    ($0.identity.contextID, revisions)
-                }),
-                contextTombstones: [:],
-                operations: [],
-                admissionJournalEvidence: .absent,
-                health: .writable,
-                fileMetadata: observedMetadata
-            ), nil)
-        case let .failure(error):
-            if isJournalInfrastructureFailure(error) {
-                throw error
-            }
-            return degradedSavedWorkspace(reason: journalDegradedReason(error))
         }
     }
 
@@ -3200,6 +3200,10 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
+    private func writeJournalBytes(_ bytes: Data, workspaceID: UUID) throws {
+        try DomainPersistenceLock.atomicWrite(bytes, to: journalURL(workspaceID))
+    }
+
     @discardableResult
     private func replaceJournal(
         expected: RawJournalSnapshot,
@@ -3237,9 +3241,9 @@ package struct DomainPersistenceCoordinator {
                 actual: actualRevision
             )
         }
-        try DomainPersistenceLock.atomicWrite(
+        try writeJournalBytes(
             candidate.canonicalBytes,
-            to: journalURL(candidate.journal.workspaceID)
+            workspaceID: candidate.journal.workspaceID
         )
         return .present(digest: candidate.contentDigest, bytes: candidate.canonicalBytes)
     }
@@ -3691,7 +3695,13 @@ package struct DomainPersistenceCoordinator {
             try withLock(at: lockDirectory.appendingPathComponent("workspace-catalog.lock")) {
                 try validateMutationPermitScope(permit)
                 if !fileManager.fileExists(atPath: catalogURL.path) {
-                    let catalogSnapshot = try loadCurrentCatalog(now: now, validator: validator)
+                    // The catalog-absent recovery seed is a process-independent authority artifact.
+                    // Persist that exact revision-zero identity so a contended runtime does not see
+                    // a same-revision digest change when lazy migration first materializes it.
+                    let catalogSnapshot = try loadCurrentCatalog(
+                        now: Date(timeIntervalSinceReferenceDate: 0),
+                        validator: validator
+                    )
                     switch catalogSnapshot.raw {
                     case .absent:
                         _ = try writeCatalog(

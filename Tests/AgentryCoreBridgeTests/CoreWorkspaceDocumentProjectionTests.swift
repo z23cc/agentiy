@@ -128,13 +128,10 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             diagnostic: nil
         )
         let fileURL = URL(fileURLWithPath: "/tmp/Admission-\(workspaceID).json")
-        let initialRecovery = try commandAdmissionRecovery(
+        let admission = try beginCommandAdmission(
             prepared: prepared,
             workspaces: [(workspaceID, fileURL, [seededOperation])]
         )
-        let admission = try prepared.beginCommandAdmission(
-            recovery: initialRecovery
-        ).admission
         defer { admission.close() }
         XCTAssertEqual(try admission.diagnostics().globalOperationCount, 1)
 
@@ -273,17 +270,23 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             errorCode: nil,
             diagnostic: nil
         )
-        let durableRecovery = try commandAdmissionRecovery(
+        let durableRecovery = try semanticRecovery(
             prepared: prepared,
             workspaces: [(workspaceID, fileURL, [durableOperation])]
         )
-        let targetReceipt = try admission.applyTargetRecovery(.init(
+        let durableEvidence = try XCTUnwrap(durableRecovery.workspaces.first)
+        let targetRecovery = try admission.prepareSemanticTargetRecovery(.init(
             catalogBytes: durableRecovery.catalogBytes,
             workspaceID: workspaceID,
-            journalBytes: durableRecovery.journals[0].canonicalBytes,
-            deletionSidecarBytes: nil
+            journal: durableEvidence.journal,
+            savedDocument: durableEvidence.savedDocument,
+            savedRevision: durableEvidence.savedRevision,
+            deletionSidecar: .absent
         ))
-        XCTAssertEqual(targetReceipt.targetWorkspaceID, workspaceID)
+        let targetPreview = try targetRecovery.preview()
+        let targetCommit = try targetRecovery.commit()
+        XCTAssertEqual(targetCommit.targetWorkspaceID, workspaceID)
+        XCTAssertEqual(targetCommit.projectionDigest, targetPreview.projectionDigest)
         XCTAssertFalse(try durableClaim.abandon())
         switch try admission.acquire(durableRequest) {
         case let .replay(identity, scope, operation):
@@ -294,19 +297,28 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             XCTFail("Expected reconciled durable receipt to replay in workspace scope")
         }
 
-        let reconciled = try admission.applyFullRecovery(durableRecovery)
+        let fullRecovery = try admission.prepareSemanticFullRecovery(durableRecovery)
+        let fullPreview = try fullRecovery.preview()
+        let fullCommit = try fullRecovery.commit()
+        XCTAssertEqual(fullCommit.projectionDigest, fullPreview.projectionDigest)
+        let reconciled = try XCTUnwrap(fullCommit.admissionReceipt)
         XCTAssertEqual(reconciled.diagnostics.globalOperationCount, 3)
         XCTAssertEqual(reconciled.diagnostics.workspaceOperationCount, 1)
-        let emptyRecovery = try commandAdmissionRecovery(
+        let emptyRecovery = try semanticRecovery(
             prepared: prepared,
             workspaces: [(workspaceID, fileURL, [])]
         )
-        _ = try admission.applyTargetRecovery(.init(
+        let emptyEvidence = try XCTUnwrap(emptyRecovery.workspaces.first)
+        let emptyTargetRecovery = try admission.prepareSemanticTargetRecovery(.init(
             catalogBytes: emptyRecovery.catalogBytes,
             workspaceID: workspaceID,
-            journalBytes: emptyRecovery.journals[0].canonicalBytes,
-            deletionSidecarBytes: nil
+            journal: emptyEvidence.journal,
+            savedDocument: emptyEvidence.savedDocument,
+            savedRevision: emptyEvidence.savedRevision,
+            deletionSidecar: .absent
         ))
+        _ = try emptyTargetRecovery.preview()
+        _ = try emptyTargetRecovery.commit()
         switch try admission.acquire(durableRequest) {
         case let .replay(_, scope, operation):
             XCTAssertEqual(scope, .global)
@@ -1638,10 +1650,10 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
     }
 }
 
-private func commandAdmissionRecovery(
+private func semanticRecovery(
     prepared: CorePreparedWorkspaceWorkingJournalValidatorV1,
     workspaces: [(workspaceID: UUID, fileURL: URL, operations: [CoreWorkspaceRecordedOperationV1])] = []
-) throws -> CoreWorkspaceCommandAdmissionRecoveryV1 {
+) throws -> CoreWorkspaceSemanticFullRecoveryV1 {
     let seed = try JSONSerialization.data(withJSONObject: [
         "kind": "seed",
         "entries": workspaces.map { workspace in
@@ -1681,15 +1693,17 @@ private func commandAdmissionRecovery(
             pendingSave: nil,
             updatedAt: Date(timeIntervalSinceReferenceDate: 0)
         )
-        return CoreWorkspaceCommandAdmissionJournalRecoveryV1(
+        return CoreWorkspaceSemanticRecoveryEvidenceV1(
             workspaceID: workspace.workspaceID,
-            canonicalBytes: try prepared.validate(encoder.encode(journal)).canonicalBytes
+            journal: .present(try prepared.validate(encoder.encode(journal)).canonicalBytes),
+            savedDocument: .absent,
+            savedRevision: .absent
         )
     }
-    return CoreWorkspaceCommandAdmissionRecoveryV1(
+    return CoreWorkspaceSemanticFullRecoveryV1(
         catalogBytes: catalog.canonicalBytes,
-        journals: journals,
-        deletionSidecars: []
+        workspaces: journals,
+        deletions: []
     )
 }
 
@@ -1697,9 +1711,11 @@ private func beginCommandAdmission(
     prepared: CorePreparedWorkspaceWorkingJournalValidatorV1,
     workspaces: [(workspaceID: UUID, fileURL: URL, operations: [CoreWorkspaceRecordedOperationV1])] = []
 ) throws -> CorePreparedWorkspaceCommandAdmissionV1 {
-    try prepared.beginCommandAdmission(
-        recovery: commandAdmissionRecovery(prepared: prepared, workspaces: workspaces)
-    ).admission
+    let recovery = try prepared.prepareInitialSemanticRecovery(
+        semanticRecovery(prepared: prepared, workspaces: workspaces)
+    )
+    _ = try recovery.preview()
+    return try XCTUnwrap(recovery.commit().admission)
 }
 
 private struct JournalRevisionFixture: Codable, Equatable {

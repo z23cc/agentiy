@@ -97,38 +97,117 @@ package struct DomainWorkspaceCommandIdentityInput: Sendable, Equatable {
     }
 }
 
-struct DomainWorkspaceCommandAdmissionJournalRecovery: Sendable, Equatable {
-    let workspaceID: UUID
-    let canonicalBytes: Data?
-}
-
-struct DomainWorkspaceCommandAdmissionDeletionRecovery: Sendable, Equatable {
-    let workspaceID: UUID
-    let canonicalBytes: Data?
-}
-
-struct DomainWorkspaceCommandAdmissionRecovery: Sendable, Equatable {
-    let catalogBytes: Data
-    let catalogRevision: UInt64
-    let catalogDigest: String
-    let journals: [DomainWorkspaceCommandAdmissionJournalRecovery]
-    let deletionSidecars: [DomainWorkspaceCommandAdmissionDeletionRecovery]
-}
-
-struct DomainWorkspaceCommandAdmissionTargetRecovery: Sendable, Equatable {
-    let catalogBytes: Data
-    let catalogRevision: UInt64
-    let catalogDigest: String
-    let workspaceID: UUID
-    let journalBytes: Data?
-    let deletionSidecarBytes: Data?
-}
-
 struct DomainWorkspaceCommandAdmissionRecoveryReceipt: Sendable, Equatable {
     let catalogRevision: UInt64
     let catalogDigest: String
     let targetWorkspaceID: UUID?
     let diagnostics: DomainWorkspaceCommandAdmissionDiagnostics
+}
+
+enum DomainWorkspaceRecoveryArtifactEvidence: Sendable, Equatable {
+    case absent
+    case present(Data)
+    case unavailable(reason: String)
+}
+
+struct DomainWorkspaceSemanticRecoveryEvidence: Sendable, Equatable {
+    let workspaceID: UUID
+    let journal: DomainWorkspaceRecoveryArtifactEvidence
+    let savedDocument: DomainWorkspaceRecoveryArtifactEvidence
+    let savedRevision: DomainWorkspaceRecoveryArtifactEvidence
+}
+
+struct DomainWorkspaceSemanticDeletionRecoveryEvidence: Sendable, Equatable {
+    let workspaceID: UUID
+    let sidecar: DomainWorkspaceRecoveryArtifactEvidence
+}
+
+struct DomainWorkspaceSemanticFullRecovery: Sendable, Equatable {
+    let catalogBytes: Data
+    let catalogRevision: UInt64
+    let catalogDigest: String
+    let workspaces: [DomainWorkspaceSemanticRecoveryEvidence]
+    let deletions: [DomainWorkspaceSemanticDeletionRecoveryEvidence]
+}
+
+struct DomainWorkspaceSemanticTargetRecovery: Sendable, Equatable {
+    let catalogBytes: Data
+    let catalogRevision: UInt64
+    let catalogDigest: String
+    let workspaceID: UUID
+    let journal: DomainWorkspaceRecoveryArtifactEvidence
+    let savedDocument: DomainWorkspaceRecoveryArtifactEvidence
+    let savedRevision: DomainWorkspaceRecoveryArtifactEvidence
+    let deletionSidecar: DomainWorkspaceRecoveryArtifactEvidence
+}
+
+enum DomainWorkspaceSemanticRecoveryAdmissionDisposition: Sendable, Equatable {
+    case installed
+    case preserved
+    case quarantined
+}
+
+struct DomainWorkspaceSemanticActiveRecovery: Sendable, Equatable {
+    let document: DomainWorkspaceDocument
+    let savedDigest: String
+    let revisions: DomainRevisionState
+    let contextRevisions: [UUID: DomainRevisionState]
+    let contextTombstones: [UUID: UInt64]
+    let operations: [DomainRecordedOperation]
+    let health: DomainAuthorityHealth
+    let externalDocument: DomainWorkspaceDocument?
+}
+
+struct DomainWorkspaceSemanticUnavailableRecovery: Sendable, Equatable {
+    let workspaceID: UUID
+    let fileURL: URL
+    let reason: String
+}
+
+enum DomainWorkspaceSemanticRecoveryRow: Sendable, Equatable {
+    case active(DomainWorkspaceSemanticActiveRecovery)
+    case unavailable(DomainWorkspaceSemanticUnavailableRecovery)
+    case deleted(workspaceID: UUID, fileURL: URL)
+}
+
+enum DomainWorkspaceSemanticTargetDirective: Sendable, Equatable {
+    case upsert(DomainWorkspaceSemanticActiveRecovery)
+    case unavailable(DomainWorkspaceSemanticUnavailableRecovery)
+    case delete(workspaceID: UUID, fileURL: URL)
+    case noChange
+}
+
+enum DomainWorkspaceSemanticRecoveryProjection: Sendable, Equatable {
+    case full(rows: [DomainWorkspaceSemanticRecoveryRow])
+    case target(directive: DomainWorkspaceSemanticTargetDirective)
+}
+
+struct DomainWorkspaceSemanticJournalRewrite: Sendable, Equatable {
+    let workspaceID: UUID
+    let expectedArtifactDigest: String
+    let replacementCanonicalBytes: Data
+    let replacementCanonicalDigest: String
+}
+
+struct DomainWorkspaceSemanticRecoveryPreview: Sendable, Equatable {
+    let catalogRevision: UInt64
+    let catalogDigest: String
+    let targetWorkspaceID: UUID?
+    let globalHealth: DomainAuthorityHealth
+    let admissionDisposition: DomainWorkspaceSemanticRecoveryAdmissionDisposition
+    let projection: DomainWorkspaceSemanticRecoveryProjection
+    let journalRewrites: [DomainWorkspaceSemanticJournalRewrite]
+    let projectionDigest: String
+}
+
+struct DomainWorkspaceSemanticRecoveryCommit: Sendable {
+    let admission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
+    let admissionReceipt: DomainWorkspaceCommandAdmissionRecoveryReceipt?
+    let catalogRevision: UInt64
+    let catalogDigest: String
+    let targetWorkspaceID: UUID?
+    let admissionDisposition: DomainWorkspaceSemanticRecoveryAdmissionDisposition
+    let projectionDigest: String
 }
 
 enum DomainWorkspaceCommandAdmissionLookupScope: Sendable, Equatable {
@@ -1247,6 +1326,70 @@ enum DomainWorkspaceRustJournal {
         }
     }
 
+    struct PreparedSemanticRecovery: Sendable {
+        private let core: CorePreparedWorkspaceSemanticRecoveryV1
+        private let validator: PreparedValidator
+
+        fileprivate init(
+            core: CorePreparedWorkspaceSemanticRecoveryV1,
+            validator: PreparedValidator
+        ) {
+            self.core = core
+            self.validator = validator
+        }
+
+        func preview() throws -> DomainWorkspaceSemanticRecoveryPreview {
+            do {
+                return try validator.materializeSemanticRecoveryPreview(core.preview())
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func commit(
+            expected preview: DomainWorkspaceSemanticRecoveryPreview
+        ) throws -> DomainWorkspaceSemanticRecoveryCommit {
+            do {
+                let commit = try core.commit()
+                guard commit.catalogRevision == preview.catalogRevision,
+                      commit.catalogDigest == preview.catalogDigest,
+                      commit.targetWorkspaceID == preview.targetWorkspaceID,
+                      validator.materializeSemanticAdmissionDisposition(
+                          commit.admissionDisposition
+                      ) == preview.admissionDisposition,
+                      commit.projectionDigest == preview.projectionDigest
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                let receipt = try commit.admissionReceipt.map {
+                    try validator.materializeCommandAdmissionRecoveryReceipt(
+                        $0,
+                        expectedCatalogRevision: preview.catalogRevision,
+                        expectedCatalogDigest: preview.catalogDigest,
+                        expectedTargetWorkspaceID: preview.targetWorkspaceID
+                    )
+                }
+                return DomainWorkspaceSemanticRecoveryCommit(
+                    admission: commit.admission.map {
+                        PreparedCommandAdmission(core: $0, validator: validator)
+                    },
+                    admissionReceipt: receipt,
+                    catalogRevision: commit.catalogRevision,
+                    catalogDigest: commit.catalogDigest,
+                    targetWorkspaceID: commit.targetWorkspaceID,
+                    admissionDisposition: preview.admissionDisposition,
+                    projectionDigest: commit.projectionDigest
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func close() {
+            core.close()
+        }
+    }
+
     struct PreparedCommandAdmission: Sendable {
         private let core: CorePreparedWorkspaceCommandAdmissionV1
         private let validator: PreparedValidator
@@ -1332,38 +1475,30 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
-        @discardableResult
-        func applyFullRecovery(
-            _ recovery: DomainWorkspaceCommandAdmissionRecovery
-        ) throws -> DomainWorkspaceCommandAdmissionRecoveryReceipt {
+        func prepareSemanticFullRecovery(
+            _ recovery: DomainWorkspaceSemanticFullRecovery
+        ) throws -> PreparedSemanticRecovery {
             do {
-                let receipt = try core.applyFullRecovery(
-                    validator.coreCommandAdmissionRecovery(recovery)
-                )
-                return try validator.materializeCommandAdmissionRecoveryReceipt(
-                    receipt,
-                    expectedCatalogRevision: recovery.catalogRevision,
-                    expectedCatalogDigest: recovery.catalogDigest,
-                    expectedTargetWorkspaceID: nil
+                return PreparedSemanticRecovery(
+                    core: try core.prepareSemanticFullRecovery(
+                        validator.coreSemanticFullRecovery(recovery)
+                    ),
+                    validator: validator
                 )
             } catch {
                 throw validator.mapCommandAdmissionError(error)
             }
         }
 
-        @discardableResult
-        func applyTargetRecovery(
-            _ recovery: DomainWorkspaceCommandAdmissionTargetRecovery
-        ) throws -> DomainWorkspaceCommandAdmissionRecoveryReceipt {
+        func prepareSemanticTargetRecovery(
+            _ recovery: DomainWorkspaceSemanticTargetRecovery
+        ) throws -> PreparedSemanticRecovery {
             do {
-                let receipt = try core.applyTargetRecovery(
-                    validator.coreCommandAdmissionTargetRecovery(recovery)
-                )
-                return try validator.materializeCommandAdmissionRecoveryReceipt(
-                    receipt,
-                    expectedCatalogRevision: recovery.catalogRevision,
-                    expectedCatalogDigest: recovery.catalogDigest,
-                    expectedTargetWorkspaceID: recovery.workspaceID
+                return PreparedSemanticRecovery(
+                    core: try core.prepareSemanticTargetRecovery(
+                        validator.coreSemanticTargetRecovery(recovery)
+                    ),
+                    validator: validator
                 )
             } catch {
                 throw validator.mapCommandAdmissionError(error)
@@ -1488,51 +1623,67 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
-        func beginCommandAdmission(
-            recovery: DomainWorkspaceCommandAdmissionRecovery
-        ) throws -> PreparedCommandAdmission {
+        func prepareInitialSemanticRecovery(
+            _ recovery: DomainWorkspaceSemanticFullRecovery
+        ) throws -> PreparedSemanticRecovery {
             do {
-                let begin = try core.beginCommandAdmission(
-                    recovery: coreCommandAdmissionRecovery(recovery)
-                )
-                _ = try materializeCommandAdmissionRecoveryReceipt(
-                    begin.receipt,
-                    expectedCatalogRevision: recovery.catalogRevision,
-                    expectedCatalogDigest: recovery.catalogDigest,
-                    expectedTargetWorkspaceID: nil
-                )
-                return PreparedCommandAdmission(
-                    core: begin.admission,
+                return PreparedSemanticRecovery(
+                    core: try core.prepareInitialSemanticRecovery(
+                        coreSemanticFullRecovery(recovery)
+                    ),
                     validator: self
                 )
             } catch {
-                throw mapCommandAdmissionError(error)
+                throw map(error)
             }
         }
 
-        fileprivate func coreCommandAdmissionRecovery(
-            _ recovery: DomainWorkspaceCommandAdmissionRecovery
-        ) -> CoreWorkspaceCommandAdmissionRecoveryV1 {
+        fileprivate func coreSemanticFullRecovery(
+            _ recovery: DomainWorkspaceSemanticFullRecovery
+        ) -> CoreWorkspaceSemanticFullRecoveryV1 {
             .init(
                 catalogBytes: recovery.catalogBytes,
-                journals: recovery.journals.map {
-                    .init(workspaceID: $0.workspaceID, canonicalBytes: $0.canonicalBytes)
+                workspaces: recovery.workspaces.map {
+                    .init(
+                        workspaceID: $0.workspaceID,
+                        journal: coreRecoveryArtifactEvidence($0.journal),
+                        savedDocument: coreRecoveryArtifactEvidence($0.savedDocument),
+                        savedRevision: coreRecoveryArtifactEvidence($0.savedRevision)
+                    )
                 },
-                deletionSidecars: recovery.deletionSidecars.map {
-                    .init(workspaceID: $0.workspaceID, canonicalBytes: $0.canonicalBytes)
+                deletions: recovery.deletions.map {
+                    .init(
+                        workspaceID: $0.workspaceID,
+                        sidecar: coreRecoveryArtifactEvidence($0.sidecar)
+                    )
                 }
             )
         }
 
-        fileprivate func coreCommandAdmissionTargetRecovery(
-            _ recovery: DomainWorkspaceCommandAdmissionTargetRecovery
-        ) -> CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+        fileprivate func coreSemanticTargetRecovery(
+            _ recovery: DomainWorkspaceSemanticTargetRecovery
+        ) -> CoreWorkspaceSemanticTargetRecoveryV1 {
             .init(
                 catalogBytes: recovery.catalogBytes,
                 workspaceID: recovery.workspaceID,
-                journalBytes: recovery.journalBytes,
-                deletionSidecarBytes: recovery.deletionSidecarBytes
+                journal: coreRecoveryArtifactEvidence(recovery.journal),
+                savedDocument: coreRecoveryArtifactEvidence(recovery.savedDocument),
+                savedRevision: coreRecoveryArtifactEvidence(recovery.savedRevision),
+                deletionSidecar: coreRecoveryArtifactEvidence(recovery.deletionSidecar)
             )
+        }
+
+        private func coreRecoveryArtifactEvidence(
+            _ evidence: DomainWorkspaceRecoveryArtifactEvidence
+        ) -> CoreWorkspaceRecoveryArtifactEvidenceV1 {
+            switch evidence {
+            case .absent:
+                .absent
+            case let .present(bytes):
+                .present(bytes)
+            case let .unavailable(reason):
+                .unavailable(reason: reason)
+            }
         }
 
         fileprivate func coreRecordedOperation(
@@ -1624,6 +1775,135 @@ enum DomainWorkspaceRustJournal {
                 savedRevision: state.savedRevision,
                 dirtyRevision: state.dirtyRevision
             )
+        }
+
+        fileprivate func materializeSemanticRecoveryPreview(
+            _ preview: CoreWorkspaceSemanticRecoveryPreviewV1
+        ) throws -> DomainWorkspaceSemanticRecoveryPreview {
+            let projection: DomainWorkspaceSemanticRecoveryProjection = switch preview.projection {
+            case let .full(rows):
+                .full(rows: try rows.map(materializeSemanticRecoveryRow))
+            case let .target(directive):
+                .target(directive: try materializeSemanticTargetDirective(directive))
+            }
+            return DomainWorkspaceSemanticRecoveryPreview(
+                catalogRevision: preview.catalogRevision,
+                catalogDigest: preview.catalogDigest,
+                targetWorkspaceID: preview.targetWorkspaceID,
+                globalHealth: materializeSemanticHealth(preview.globalHealth),
+                admissionDisposition: materializeSemanticAdmissionDisposition(
+                    preview.admissionDisposition
+                ),
+                projection: projection,
+                journalRewrites: preview.journalRewrites.map {
+                    DomainWorkspaceSemanticJournalRewrite(
+                        workspaceID: $0.workspaceID,
+                        expectedArtifactDigest: $0.expectedArtifactDigest,
+                        replacementCanonicalBytes: $0.replacementCanonicalBytes,
+                        replacementCanonicalDigest: $0.replacementCanonicalDigest
+                    )
+                },
+                projectionDigest: preview.projectionDigest
+            )
+        }
+
+        private func materializeSemanticRecoveryRow(
+            _ row: CoreWorkspaceSemanticRecoveryRowV1
+        ) throws -> DomainWorkspaceSemanticRecoveryRow {
+            switch row {
+            case let .active(active):
+                .active(try materializeSemanticActiveRecovery(active))
+            case let .unavailable(unavailable):
+                .unavailable(materializeSemanticUnavailableRecovery(unavailable))
+            case let .deleted(workspaceID, fileURL):
+                .deleted(workspaceID: workspaceID, fileURL: fileURL)
+            }
+        }
+
+        private func materializeSemanticTargetDirective(
+            _ directive: CoreWorkspaceSemanticTargetDirectiveV1
+        ) throws -> DomainWorkspaceSemanticTargetDirective {
+            switch directive {
+            case let .upsert(active):
+                .upsert(try materializeSemanticActiveRecovery(active))
+            case let .unavailable(unavailable):
+                .unavailable(materializeSemanticUnavailableRecovery(unavailable))
+            case let .delete(workspaceID, fileURL):
+                .delete(workspaceID: workspaceID, fileURL: fileURL)
+            case .noChange:
+                .noChange
+            }
+        }
+
+        private func materializeSemanticActiveRecovery(
+            _ active: CoreWorkspaceSemanticActiveRecoveryV1
+        ) throws -> DomainWorkspaceSemanticActiveRecovery {
+            let document = try DomainWorkspaceDocument.decode(
+                documentBytes: active.documentBytes,
+                fileURL: active.fileURL
+            )
+            guard document.workspaceID == active.workspaceID,
+                  document.contentDigest == active.documentDigest
+            else {
+                throw DomainPersistenceError.corruptJournal
+            }
+            let externalDocument = try active.externalDocumentBytes.map { bytes in
+                let external = try DomainWorkspaceDocument.decode(
+                    documentBytes: bytes,
+                    fileURL: active.fileURL
+                )
+                guard external.workspaceID == active.workspaceID else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                return external
+            }
+            return DomainWorkspaceSemanticActiveRecovery(
+                document: document,
+                savedDigest: active.savedDigest,
+                revisions: domainRevisionState(active.revisions),
+                contextRevisions: Dictionary(uniqueKeysWithValues: active.contextRevisions.map {
+                    ($0.contextID, domainRevisionState($0.revisions))
+                }),
+                contextTombstones: active.contextTombstones,
+                operations: try active.operations.map(materializeRecordedOperation),
+                health: materializeSemanticHealth(active.health),
+                externalDocument: externalDocument
+            )
+        }
+
+        private func materializeSemanticUnavailableRecovery(
+            _ unavailable: CoreWorkspaceSemanticUnavailableRecoveryV1
+        ) -> DomainWorkspaceSemanticUnavailableRecovery {
+            DomainWorkspaceSemanticUnavailableRecovery(
+                workspaceID: unavailable.workspaceID,
+                fileURL: unavailable.fileURL,
+                reason: unavailable.reason
+            )
+        }
+
+        fileprivate func materializeSemanticAdmissionDisposition(
+            _ disposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1
+        ) -> DomainWorkspaceSemanticRecoveryAdmissionDisposition {
+            switch disposition {
+            case .installed: .installed
+            case .preserved: .preserved
+            case .quarantined: .quarantined
+            }
+        }
+
+        private func materializeSemanticHealth(
+            _ health: CoreWorkspaceProjectionHealth
+        ) -> DomainAuthorityHealth {
+            switch health.kind {
+            case .writable:
+                .writable
+            case .externalConflict:
+                .externalConflict(reason: health.reason ?? "external_workspace_changed")
+            case .degradedReadOnly:
+                .degradedReadOnly(reason: health.reason ?? "workspace_recovery_failed")
+            case .removed:
+                .removed
+            }
         }
 
         fileprivate func materializeCommandAdmissionDiagnostics(
@@ -1817,7 +2097,8 @@ enum DomainWorkspaceRustJournal {
                 switch mapped {
                 case .writeFailed("working_journal_too_large"):
                     throw DomainPersistenceError.writeFailed("workspace_catalog_too_large")
-                case .writeFailed("working_journal_rust_unavailable"):
+                case .writeFailed("working_journal_rust_unavailable"),
+                     .writeFailed("duplicate_workspace_catalog_id"):
                     throw mapped
                 default:
                     throw DomainPersistenceError.writeFailed("workspace_catalog_transition_invalid")
@@ -3103,6 +3384,8 @@ enum DomainWorkspaceRustJournal {
                 return .futureJournal(Int(version))
             case .inputTooLarge, .outputTooLarge:
                 return .writeFailed("working_journal_too_large")
+            case .duplicateCatalogIdentity:
+                return .writeFailed("duplicate_workspace_catalog_id")
             case .malformed,
                  .invalidIdentity,
                  .invalidFileURL,

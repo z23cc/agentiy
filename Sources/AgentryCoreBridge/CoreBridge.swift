@@ -161,10 +161,10 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         request: CoreWorkspaceCommandIdentityRequestV1
     ) throws -> CoreWorkspaceCommandIdentityV1
-    func workspaceCommandAdmissionBeginV1(
+    func workspaceSemanticInitialRecoveryPrepareV1(
         identity: CoreRuntimeIdentity,
-        recovery: CoreWorkspaceCommandAdmissionRecoveryV1
-    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1
+        recovery: CoreWorkspaceSemanticFullRecoveryV1
+    ) throws -> CorePreparedWorkspaceSemanticRecoveryV1
     func workspaceSavedRevisionValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1076,113 +1076,139 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    func workspaceCommandAdmissionBeginV1(
+    func workspaceSemanticInitialRecoveryPrepareV1(
         identity: CoreRuntimeIdentity,
-        recovery: CoreWorkspaceCommandAdmissionRecoveryV1
-    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1 {
+        recovery: CoreWorkspaceSemanticFullRecoveryV1
+    ) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
         do {
-            let response = try runtime.workspaceCommandAdmissionBeginV1(request: .init(
-                runtimeIdentity: Self.rawIdentity(identity),
-                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
-                recovery: Self.rawWorkspaceCommandAdmissionRecovery(recovery)
-            ))
-            if let errorKind = response.errorKind {
-                guard response.admission == nil, response.receipt == nil else {
-                    throw CoreTransportError.unexpected(
-                        "workspace command admission response contains success and error"
-                    )
-                }
-                throw try Self.workspaceWorkingJournalValidationError(
-                    errorKind,
-                    futureSchemaVersion: response.futureSchemaVersion
-                )
-            }
-            guard response.futureSchemaVersion == nil,
-                  let rawAdmission = response.admission,
-                  let rawReceipt = response.receipt
-            else {
-                throw CoreTransportError.unexpected(
-                    "workspace command admission response is invalid"
-                )
-            }
-            let admission = CorePreparedWorkspaceCommandAdmissionV1(
-                rawAdmission: rawAdmission,
-                acquire: { request, deadlineUnixMilliseconds in
-                    do {
-                        return try Self.workspaceCommandAdmissionAcquisition(
-                            rawAdmission.acquire(
-                                request: Self.rawWorkspaceCommandIdentityRequest(
-                                    identity: identity,
-                                    request: request
-                                ),
-                                deadlineUnixMillis: deadlineUnixMilliseconds
-                            ),
-                            request: request
-                        )
-                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
-                        throw error
-                    } catch {
-                        throw Self.workspaceCommandLifecycleError(error)
-                    }
-                },
-                cancel: { operationID in
-                    try self.cancel(identity: identity, operationID: operationID)
-                },
-                applyFullRecovery: { recovery in
-                    do {
-                        return try Self.workspaceCommandAdmissionRecoveryResponse(
-                            rawAdmission.applyFullRecovery(
-                                recovery: Self.rawWorkspaceCommandAdmissionRecovery(recovery)
-                            ),
-                            expectedTarget: nil
-                        )
-                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
-                        throw error
-                    } catch {
-                        throw Self.map(error)
-                    }
-                },
-                applyTargetRecovery: { recovery in
-                    do {
-                        return try Self.workspaceCommandAdmissionRecoveryResponse(
-                            rawAdmission.applyTargetRecovery(
-                                recovery: Self.rawWorkspaceCommandAdmissionTargetRecovery(recovery)
-                            ),
-                            expectedTarget: recovery.workspaceID
-                        )
-                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
-                        throw error
-                    } catch {
-                        throw Self.map(error)
-                    }
-                },
-                diagnostics: {
-                    do {
-                        return try Self.workspaceCommandAdmissionDiagnostics(
-                            rawAdmission.diagnostics()
-                        )
-                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
-                        throw error
-                    } catch {
-                        throw Self.map(error)
-                    }
-                },
-                close: {
-                    rawAdmission.close()
-                }
-            )
-            return CorePreparedWorkspaceCommandAdmissionBeginV1(
-                admission: admission,
-                receipt: try Self.workspaceCommandAdmissionRecoveryReceipt(
-                    rawReceipt,
-                    expectedTarget: nil
-                )
+            return try preparedWorkspaceSemanticRecovery(
+                identity: identity,
+                response: runtime.workspaceSemanticInitialRecoveryPrepareV1(request: .init(
+                    runtimeIdentity: Self.rawIdentity(identity),
+                    contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
+                    recovery: Self.rawWorkspaceSemanticFullRecovery(recovery)
+                ))
             )
         } catch let error as CoreWorkspaceWorkingJournalValidationError {
             throw error
         } catch {
             throw Self.map(error)
         }
+    }
+
+    private func preparedWorkspaceSemanticRecovery(
+        identity: CoreRuntimeIdentity,
+        response: AgentryUniFFIRaw.CoreWorkspaceSemanticRecoveryPrepareResponseV1
+    ) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+        if let errorKind = response.errorKind {
+            guard response.recovery == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic recovery prepare contains success and error"
+                )
+            }
+            throw try Self.workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let rawRecovery = response.recovery
+        else {
+            throw CoreTransportError.unexpected("workspace semantic recovery prepare is invalid")
+        }
+        return CorePreparedWorkspaceSemanticRecoveryV1(
+            rawRecovery: rawRecovery,
+            preview: {
+                do {
+                    return try Self.workspaceSemanticRecoveryPreviewResponse(rawRecovery.preview())
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            commit: {
+                do {
+                    return try self.workspaceSemanticRecoveryCommitResponse(
+                        rawRecovery.commit(),
+                        identity: identity
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            close: { rawRecovery.close() }
+        )
+    }
+
+    private func preparedWorkspaceCommandAdmission(
+        identity: CoreRuntimeIdentity,
+        rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1
+    ) -> CorePreparedWorkspaceCommandAdmissionV1 {
+        CorePreparedWorkspaceCommandAdmissionV1(
+            rawAdmission: rawAdmission,
+            acquire: { request, deadlineUnixMilliseconds in
+                do {
+                    return try Self.workspaceCommandAdmissionAcquisition(
+                        rawAdmission.acquire(
+                            request: Self.rawWorkspaceCommandIdentityRequest(
+                                identity: identity,
+                                request: request
+                            ),
+                            deadlineUnixMillis: deadlineUnixMilliseconds
+                        ),
+                        request: request
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.workspaceCommandLifecycleError(error)
+                }
+            },
+            cancel: { operationID in
+                try self.cancel(identity: identity, operationID: operationID)
+            },
+            prepareSemanticFullRecovery: { recovery in
+                do {
+                    return try self.preparedWorkspaceSemanticRecovery(
+                        identity: identity,
+                        response: rawAdmission.prepareSemanticFullRecovery(
+                            recovery: Self.rawWorkspaceSemanticFullRecovery(recovery)
+                        )
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            prepareSemanticTargetRecovery: { recovery in
+                do {
+                    return try self.preparedWorkspaceSemanticRecovery(
+                        identity: identity,
+                        response: rawAdmission.prepareSemanticTargetRecovery(
+                            recovery: Self.rawWorkspaceSemanticTargetRecovery(recovery)
+                        )
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            diagnostics: {
+                do {
+                    return try Self.workspaceCommandAdmissionDiagnostics(rawAdmission.diagnostics())
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            close: { rawAdmission.close() }
+        )
     }
 
     func workspaceSavedRevisionValidateV1(
@@ -2463,28 +2489,51 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    private static func rawWorkspaceCommandAdmissionRecovery(
-        _ value: CoreWorkspaceCommandAdmissionRecoveryV1
-    ) -> AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionRecoveryV1 {
+    private static func rawWorkspaceRecoveryArtifactEvidence(
+        _ value: CoreWorkspaceRecoveryArtifactEvidenceV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceRecoveryArtifactEvidenceV1 {
+        switch value {
+        case .absent:
+            .absent
+        case let .present(bytes):
+            .present(bytes: bytes)
+        case let .unavailable(reason):
+            .unavailable(reason: reason)
+        }
+    }
+
+    private static func rawWorkspaceSemanticFullRecovery(
+        _ value: CoreWorkspaceSemanticFullRecoveryV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceSemanticFullRecoveryV1 {
         .init(
             catalogBytes: value.catalogBytes,
-            journals: value.journals.map {
-                .init(workspaceId: $0.workspaceID.uuidString, canonicalBytes: $0.canonicalBytes)
+            workspaces: value.workspaces.map {
+                .init(
+                    workspaceId: $0.workspaceID.uuidString,
+                    journal: rawWorkspaceRecoveryArtifactEvidence($0.journal),
+                    savedDocument: rawWorkspaceRecoveryArtifactEvidence($0.savedDocument),
+                    savedRevision: rawWorkspaceRecoveryArtifactEvidence($0.savedRevision)
+                )
             },
-            deletionSidecars: value.deletionSidecars.map {
-                .init(workspaceId: $0.workspaceID.uuidString, canonicalBytes: $0.canonicalBytes)
+            deletions: value.deletions.map {
+                .init(
+                    workspaceId: $0.workspaceID.uuidString,
+                    sidecar: rawWorkspaceRecoveryArtifactEvidence($0.sidecar)
+                )
             }
         )
     }
 
-    private static func rawWorkspaceCommandAdmissionTargetRecovery(
-        _ value: CoreWorkspaceCommandAdmissionTargetRecoveryV1
-    ) -> AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+    private static func rawWorkspaceSemanticTargetRecovery(
+        _ value: CoreWorkspaceSemanticTargetRecoveryV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceSemanticTargetRecoveryV1 {
         .init(
             catalogBytes: value.catalogBytes,
             workspaceId: value.workspaceID.uuidString,
-            journalBytes: value.journalBytes,
-            deletionSidecarBytes: value.deletionSidecarBytes
+            journal: rawWorkspaceRecoveryArtifactEvidence(value.journal),
+            savedDocument: rawWorkspaceRecoveryArtifactEvidence(value.savedDocument),
+            savedRevision: rawWorkspaceRecoveryArtifactEvidence(value.savedRevision),
+            deletionSidecar: rawWorkspaceRecoveryArtifactEvidence(value.deletionSidecar)
         )
     }
 
@@ -2662,14 +2711,13 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    private static func workspaceCommandAdmissionRecoveryResponse(
-        _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionRecoveryResponseV1,
-        expectedTarget: UUID?
-    ) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
+    private static func workspaceSemanticRecoveryPreviewResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceSemanticRecoveryPreviewResponseV1
+    ) throws -> CoreWorkspaceSemanticRecoveryPreviewV1 {
         if let errorKind = response.errorKind {
-            guard response.receipt == nil else {
+            guard response.preview == nil else {
                 throw CoreTransportError.unexpected(
-                    "workspace command admission recovery contains success and error"
+                    "workspace semantic recovery preview contains success and error"
                 )
             }
             throw try workspaceWorkingJournalValidationError(
@@ -2678,16 +2726,324 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             )
         }
         guard response.futureSchemaVersion == nil,
-              let receipt = response.receipt
+              let preview = response.preview,
+              isSHA256(preview.catalogDigest),
+              isSHA256(preview.projectionDigest)
         else {
+            throw CoreTransportError.unexpected("workspace semantic recovery preview is invalid")
+        }
+        let targetWorkspaceID: UUID?
+        if let rawTarget = preview.targetWorkspaceId {
+            guard let parsed = UUID(uuidString: rawTarget) else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic recovery target is invalid"
+                )
+            }
+            targetWorkspaceID = parsed
+        } else {
+            targetWorkspaceID = nil
+        }
+        let projection = try workspaceSemanticRecoveryProjection(preview.projection)
+        switch (targetWorkspaceID, projection) {
+        case (nil, .full), (.some, .target):
+            break
+        default:
             throw CoreTransportError.unexpected(
-                "workspace command admission recovery receipt is invalid"
+                "workspace semantic recovery projection does not match target"
             )
         }
-        return try workspaceCommandAdmissionRecoveryReceipt(
-            receipt,
-            expectedTarget: expectedTarget
+        let rewrites = try preview.journalRewrites.map { rewrite in
+            guard let workspaceID = UUID(uuidString: rewrite.workspaceId),
+                  isSHA256(rewrite.expectedArtifactDigest),
+                  isSHA256(rewrite.replacementCanonicalDigest),
+                  sha256(rewrite.replacementCanonicalBytes) == rewrite.replacementCanonicalDigest
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic recovery journal rewrite is invalid"
+                )
+            }
+            return CoreWorkspaceSemanticJournalRewriteV1(
+                workspaceID: workspaceID,
+                expectedArtifactDigest: rewrite.expectedArtifactDigest,
+                replacementCanonicalBytes: rewrite.replacementCanonicalBytes,
+                replacementCanonicalDigest: rewrite.replacementCanonicalDigest
+            )
+        }
+        guard Set(rewrites.map(\.workspaceID)).count == rewrites.count else {
+            throw CoreTransportError.unexpected(
+                "workspace semantic recovery contains duplicate journal rewrites"
+            )
+        }
+        return CoreWorkspaceSemanticRecoveryPreviewV1(
+            catalogRevision: preview.catalogRevision,
+            catalogDigest: preview.catalogDigest,
+            targetWorkspaceID: targetWorkspaceID,
+            globalHealth: try workspaceSemanticRecoveryHealth(preview.globalHealth),
+            admissionDisposition: workspaceSemanticRecoveryAdmissionDisposition(
+                preview.admissionDisposition
+            ),
+            projection: projection,
+            journalRewrites: rewrites,
+            projectionDigest: preview.projectionDigest
         )
+    }
+
+    private func workspaceSemanticRecoveryCommitResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceSemanticRecoveryCommitResponseV1,
+        identity: CoreRuntimeIdentity
+    ) throws -> CoreWorkspaceSemanticRecoveryCommitV1 {
+        if let errorKind = response.errorKind {
+            guard response.admission == nil,
+                  response.admissionReceipt == nil,
+                  response.catalogRevision == nil,
+                  response.catalogDigest == nil,
+                  response.targetWorkspaceId == nil,
+                  response.admissionDisposition == nil,
+                  response.projectionDigest == nil
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic recovery commit contains success and error"
+                )
+            }
+            throw try Self.workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let catalogRevision = response.catalogRevision,
+              let catalogDigest = response.catalogDigest,
+              let rawDisposition = response.admissionDisposition,
+              let projectionDigest = response.projectionDigest,
+              Self.isSHA256(catalogDigest),
+              Self.isSHA256(projectionDigest)
+        else {
+            throw CoreTransportError.unexpected("workspace semantic recovery commit is invalid")
+        }
+        let targetWorkspaceID: UUID?
+        if let rawTarget = response.targetWorkspaceId {
+            guard let parsed = UUID(uuidString: rawTarget) else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic recovery commit target is invalid"
+                )
+            }
+            targetWorkspaceID = parsed
+        } else {
+            targetWorkspaceID = nil
+        }
+        let admissionReceipt = try response.admissionReceipt.map {
+            try Self.workspaceCommandAdmissionRecoveryReceipt(
+                $0,
+                expectedTarget: targetWorkspaceID
+            )
+        }
+        let disposition = Self.workspaceSemanticRecoveryAdmissionDisposition(rawDisposition)
+        switch disposition {
+        case .installed, .preserved:
+            guard admissionReceipt != nil else {
+                throw CoreTransportError.unexpected(
+                    "authoritative semantic recovery omitted admission receipt"
+                )
+            }
+        case .quarantined:
+            guard response.admission == nil, admissionReceipt == nil else {
+                throw CoreTransportError.unexpected(
+                    "quarantined semantic recovery returned admission authority"
+                )
+            }
+        }
+        return CoreWorkspaceSemanticRecoveryCommitV1(
+            admission: response.admission.map {
+                preparedWorkspaceCommandAdmission(identity: identity, rawAdmission: $0)
+            },
+            admissionReceipt: admissionReceipt,
+            catalogRevision: catalogRevision,
+            catalogDigest: catalogDigest,
+            targetWorkspaceID: targetWorkspaceID,
+            admissionDisposition: disposition,
+            projectionDigest: projectionDigest
+        )
+    }
+
+    private static func workspaceSemanticRecoveryProjection(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceSemanticRecoveryProjectionV1
+    ) throws -> CoreWorkspaceSemanticRecoveryProjectionV1 {
+        switch raw {
+        case let .full(rows):
+            let converted = try rows.map(workspaceSemanticRecoveryRow)
+            let workspaceIDs = converted.map { row in
+                switch row {
+                case let .active(active): active.workspaceID
+                case let .unavailable(unavailable): unavailable.workspaceID
+                case let .deleted(workspaceID, _): workspaceID
+                }
+            }
+            guard Set(workspaceIDs).count == workspaceIDs.count else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic recovery contains duplicate rows"
+                )
+            }
+            return .full(rows: converted)
+        case let .target(directive):
+            return .target(directive: try workspaceSemanticTargetDirective(directive))
+        }
+    }
+
+    private static func workspaceSemanticRecoveryRow(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceSemanticRecoveryRowV1
+    ) throws -> CoreWorkspaceSemanticRecoveryRowV1 {
+        switch raw {
+        case let .active(row):
+            .active(try workspaceSemanticActiveRecovery(row))
+        case let .unavailable(row):
+            .unavailable(try workspaceSemanticUnavailableRecovery(row))
+        case let .deleted(workspaceId, fileUrl):
+            .deleted(
+                workspaceID: try workspaceSemanticRecoveryWorkspaceID(workspaceId),
+                fileURL: try workspaceSemanticRecoveryFileURL(fileUrl)
+            )
+        }
+    }
+
+    private static func workspaceSemanticTargetDirective(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceSemanticTargetDirectiveV1
+    ) throws -> CoreWorkspaceSemanticTargetDirectiveV1 {
+        switch raw {
+        case let .upsert(row):
+            .upsert(try workspaceSemanticActiveRecovery(row))
+        case let .unavailable(row):
+            .unavailable(try workspaceSemanticUnavailableRecovery(row))
+        case let .delete(workspaceId, fileUrl):
+            .delete(
+                workspaceID: try workspaceSemanticRecoveryWorkspaceID(workspaceId),
+                fileURL: try workspaceSemanticRecoveryFileURL(fileUrl)
+            )
+        case .noChange:
+            .noChange
+        }
+    }
+
+    private static func workspaceSemanticActiveRecovery(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceSemanticActiveRecoveryV1
+    ) throws -> CoreWorkspaceSemanticActiveRecoveryV1 {
+        let workspaceID = try workspaceSemanticRecoveryWorkspaceID(raw.workspaceId)
+        let fileURL = try workspaceSemanticRecoveryFileURL(raw.fileUrl)
+        guard isSHA256(raw.documentDigest),
+              raw.documentDigest == sha256(raw.documentBytes),
+              isSHA256(raw.savedDigest),
+              workspaceRevisionStateIsValid(raw.revisions),
+              raw.contextRevisions.count <= 4_096,
+              raw.contextTombstones.count <= 4_096,
+              raw.operations.count <= 4_096
+        else {
+            throw CoreTransportError.unexpected("workspace semantic active row is invalid")
+        }
+        let contextRevisions = try raw.contextRevisions.map { context in
+            guard let contextID = UUID(uuidString: context.contextId),
+                  workspaceRevisionStateIsValid(context.revisions)
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic context revision is invalid"
+                )
+            }
+            return CoreWorkspaceSemanticContextRecoveryV1(
+                contextID: contextID,
+                revisions: workspaceRevisionState(context.revisions)
+            )
+        }
+        guard Set(contextRevisions.map(\.contextID)).count == contextRevisions.count else {
+            throw CoreTransportError.unexpected(
+                "workspace semantic context revisions contain duplicates"
+            )
+        }
+        var contextTombstones: [UUID: UInt64] = [:]
+        for tombstone in raw.contextTombstones {
+            guard let contextID = UUID(uuidString: tombstone.contextId),
+                  contextTombstones.updateValue(tombstone.revision, forKey: contextID) == nil
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic context tombstones contain duplicates"
+                )
+            }
+        }
+        let operations = try raw.operations.map(workspaceRecordedOperation)
+        guard Set(operations.map(\.operationID)).count == operations.count else {
+            throw CoreTransportError.unexpected(
+                "workspace semantic operations contain duplicates"
+            )
+        }
+        return CoreWorkspaceSemanticActiveRecoveryV1(
+            workspaceID: workspaceID,
+            fileURL: fileURL,
+            documentBytes: raw.documentBytes,
+            documentDigest: raw.documentDigest,
+            savedDigest: raw.savedDigest,
+            revisions: workspaceRevisionState(raw.revisions),
+            contextRevisions: contextRevisions,
+            contextTombstones: contextTombstones,
+            operations: operations,
+            health: try workspaceSemanticRecoveryHealth(raw.health),
+            externalDocumentBytes: raw.externalDocumentBytes
+        )
+    }
+
+    private static func workspaceSemanticUnavailableRecovery(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceSemanticUnavailableRecoveryV1
+    ) throws -> CoreWorkspaceSemanticUnavailableRecoveryV1 {
+        guard !raw.reason.isEmpty else {
+            throw CoreTransportError.unexpected("workspace semantic unavailable reason is empty")
+        }
+        return CoreWorkspaceSemanticUnavailableRecoveryV1(
+            workspaceID: try workspaceSemanticRecoveryWorkspaceID(raw.workspaceId),
+            fileURL: try workspaceSemanticRecoveryFileURL(raw.fileUrl),
+            reason: raw.reason
+        )
+    }
+
+    private static func workspaceSemanticRecoveryWorkspaceID(_ raw: String) throws -> UUID {
+        guard let workspaceID = UUID(uuidString: raw) else {
+            throw CoreTransportError.unexpected("workspace semantic recovery identity is invalid")
+        }
+        return workspaceID
+    }
+
+    private static func workspaceSemanticRecoveryFileURL(_ raw: String) throws -> URL {
+        guard let fileURL = URL(string: raw), fileURL.isFileURL else {
+            throw CoreTransportError.unexpected("workspace semantic recovery file URL is invalid")
+        }
+        return fileURL
+    }
+
+    private static func workspaceSemanticRecoveryHealth(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceProjectionHealthV1
+    ) throws -> CoreWorkspaceProjectionHealth {
+        let kind: CoreWorkspaceProjectionHealthKind = switch raw.kind {
+        case .writable: .writable
+        case .externalConflict: .externalConflict
+        case .degradedReadOnly: .degradedReadOnly
+        case .removed: .removed
+        }
+        switch kind {
+        case .writable, .removed:
+            guard raw.reason == nil else {
+                throw CoreTransportError.unexpected("workspace semantic health reason is invalid")
+            }
+        case .externalConflict, .degradedReadOnly:
+            guard let reason = raw.reason, !reason.isEmpty else {
+                throw CoreTransportError.unexpected("workspace semantic health reason is missing")
+            }
+        }
+        return CoreWorkspaceProjectionHealth(kind: kind, reason: raw.reason)
+    }
+
+    private static func workspaceSemanticRecoveryAdmissionDisposition(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceSemanticRecoveryAdmissionDispositionV1
+    ) -> CoreWorkspaceSemanticRecoveryAdmissionDispositionV1 {
+        switch raw {
+        case .installed: .installed
+        case .preserved: .preserved
+        case .quarantined: .quarantined
+        }
     }
 
     private static func workspaceCommandAdmissionRecoveryReceipt(
@@ -2887,6 +3243,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
         case .invalidIdentity: .invalidIdentity
+        case .duplicateCatalogIdentity: .duplicateCatalogIdentity
         case .invalidFileUrl: .invalidFileURL
         case .invalidRevisionState: .invalidRevisionState
         case .invalidDigest: .invalidDigest

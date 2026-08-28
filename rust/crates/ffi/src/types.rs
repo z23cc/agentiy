@@ -984,38 +984,149 @@ pub struct CoreWorkspaceRecordedOperationV1 {
     pub diagnostic: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
-    pub workspace_id: String,
-    pub canonical_bytes: Option<Vec<u8>>,
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceRecoveryArtifactEvidenceV1 {
+    Absent,
+    Present { bytes: Vec<u8> },
+    Unavailable { reason: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionDeletionRecoveryV1 {
+pub struct CoreWorkspaceSemanticRecoveryEvidenceV1 {
     pub workspace_id: String,
-    pub canonical_bytes: Option<Vec<u8>>,
+    pub journal: CoreWorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_document: CoreWorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_revision: CoreWorkspaceRecoveryArtifactEvidenceV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionRecoveryV1 {
+pub struct CoreWorkspaceSemanticDeletionRecoveryEvidenceV1 {
+    pub workspace_id: String,
+    pub sidecar: CoreWorkspaceRecoveryArtifactEvidenceV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticFullRecoveryV1 {
     pub catalog_bytes: Vec<u8>,
-    pub journals: Vec<CoreWorkspaceCommandAdmissionJournalRecoveryV1>,
-    pub deletion_sidecars: Vec<CoreWorkspaceCommandAdmissionDeletionRecoveryV1>,
+    pub workspaces: Vec<CoreWorkspaceSemanticRecoveryEvidenceV1>,
+    pub deletions: Vec<CoreWorkspaceSemanticDeletionRecoveryEvidenceV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+pub struct CoreWorkspaceSemanticTargetRecoveryV1 {
     pub catalog_bytes: Vec<u8>,
     pub workspace_id: String,
-    pub journal_bytes: Option<Vec<u8>>,
-    pub deletion_sidecar_bytes: Option<Vec<u8>>,
+    pub journal: CoreWorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_document: CoreWorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_revision: CoreWorkspaceRecoveryArtifactEvidenceV1,
+    pub deletion_sidecar: CoreWorkspaceRecoveryArtifactEvidenceV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSemanticRecoveryAdmissionDispositionV1 {
+    Installed,
+    Preserved,
+    Quarantined,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticContextRecoveryV1 {
+    pub context_id: String,
+    pub revisions: CoreWorkspaceProjectionRevisionStateV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticContextTombstoneV1 {
+    pub context_id: String,
+    pub revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionBeginRequestV1 {
+pub struct CoreWorkspaceSemanticActiveRecoveryV1 {
+    pub workspace_id: String,
+    pub file_url: String,
+    pub document_bytes: Vec<u8>,
+    pub document_digest: String,
+    pub saved_digest: String,
+    pub revisions: CoreWorkspaceProjectionRevisionStateV1,
+    pub context_revisions: Vec<CoreWorkspaceSemanticContextRecoveryV1>,
+    pub context_tombstones: Vec<CoreWorkspaceSemanticContextTombstoneV1>,
+    pub operations: Vec<CoreWorkspaceRecordedOperationV1>,
+    pub health: CoreWorkspaceProjectionHealthV1,
+    pub external_document_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticUnavailableRecoveryV1 {
+    pub workspace_id: String,
+    pub file_url: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSemanticRecoveryRowV1 {
+    Active {
+        row: CoreWorkspaceSemanticActiveRecoveryV1,
+    },
+    Unavailable {
+        row: CoreWorkspaceSemanticUnavailableRecoveryV1,
+    },
+    Deleted {
+        workspace_id: String,
+        file_url: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSemanticTargetDirectiveV1 {
+    Upsert {
+        row: CoreWorkspaceSemanticActiveRecoveryV1,
+    },
+    Unavailable {
+        row: CoreWorkspaceSemanticUnavailableRecoveryV1,
+    },
+    Delete {
+        workspace_id: String,
+        file_url: String,
+    },
+    NoChange,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticJournalRewriteV1 {
+    pub workspace_id: String,
+    pub expected_artifact_digest: String,
+    pub replacement_canonical_bytes: Vec<u8>,
+    pub replacement_canonical_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSemanticRecoveryProjectionV1 {
+    Full {
+        rows: Vec<CoreWorkspaceSemanticRecoveryRowV1>,
+    },
+    Target {
+        directive: CoreWorkspaceSemanticTargetDirectiveV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticRecoveryPreviewV1 {
+    pub catalog_revision: u64,
+    pub catalog_digest: String,
+    pub target_workspace_id: Option<String>,
+    pub global_health: CoreWorkspaceProjectionHealthV1,
+    pub admission_disposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1,
+    pub projection: CoreWorkspaceSemanticRecoveryProjectionV1,
+    pub journal_rewrites: Vec<CoreWorkspaceSemanticJournalRewriteV1>,
+    pub projection_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticInitialRecoveryRequestV1 {
     pub runtime_identity: RuntimeIdentity,
     pub contract_version: u16,
-    pub recovery: CoreWorkspaceCommandAdmissionRecoveryV1,
+    pub recovery: CoreWorkspaceSemanticFullRecoveryV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -1093,41 +1204,229 @@ impl From<runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1>
     }
 }
 
-impl From<CoreWorkspaceCommandAdmissionRecoveryV1>
-    for runtime::workspace_persistence_journal::WorkspaceCommandAdmissionRecoveryV1
+impl From<CoreWorkspaceRecoveryArtifactEvidenceV1>
+    for runtime::workspace_persistence_journal::WorkspaceRecoveryArtifactEvidenceV1
 {
-    fn from(value: CoreWorkspaceCommandAdmissionRecoveryV1) -> Self {
+    fn from(value: CoreWorkspaceRecoveryArtifactEvidenceV1) -> Self {
+        match value {
+            CoreWorkspaceRecoveryArtifactEvidenceV1::Absent => Self::Absent,
+            CoreWorkspaceRecoveryArtifactEvidenceV1::Present { bytes } => Self::Present(bytes),
+            CoreWorkspaceRecoveryArtifactEvidenceV1::Unavailable { reason } => {
+                Self::Unavailable(reason)
+            }
+        }
+    }
+}
+
+impl From<CoreWorkspaceSemanticFullRecoveryV1>
+    for runtime::workspace_persistence_journal::WorkspaceSemanticFullRecoveryV1
+{
+    fn from(value: CoreWorkspaceSemanticFullRecoveryV1) -> Self {
         Self {
             catalog_bytes: value.catalog_bytes,
-            journals: value
-                .journals
+            workspaces: value
+                .workspaces
                 .into_iter()
-                .map(|artifact| runtime::workspace_persistence_journal::WorkspaceCommandAdmissionJournalRecoveryV1 {
-                    workspace_id: artifact.workspace_id,
-                    canonical_bytes: artifact.canonical_bytes,
+                .map(|workspace| runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryEvidenceV1 {
+                    workspace_id: workspace.workspace_id,
+                    journal: workspace.journal.into(),
+                    saved_document: workspace.saved_document.into(),
+                    saved_revision: workspace.saved_revision.into(),
                 })
                 .collect(),
-            deletion_sidecars: value
-                .deletion_sidecars
+            deletions: value
+                .deletions
                 .into_iter()
-                .map(|artifact| runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDeletionRecoveryV1 {
-                    workspace_id: artifact.workspace_id,
-                    canonical_bytes: artifact.canonical_bytes,
+                .map(|deletion| runtime::workspace_persistence_journal::WorkspaceSemanticDeletionRecoveryEvidenceV1 {
+                    workspace_id: deletion.workspace_id,
+                    sidecar: deletion.sidecar.into(),
                 })
                 .collect(),
         }
     }
 }
 
-impl From<CoreWorkspaceCommandAdmissionTargetRecoveryV1>
-    for runtime::workspace_persistence_journal::WorkspaceCommandAdmissionTargetRecoveryV1
+impl From<CoreWorkspaceSemanticTargetRecoveryV1>
+    for runtime::workspace_persistence_journal::WorkspaceSemanticTargetRecoveryV1
 {
-    fn from(value: CoreWorkspaceCommandAdmissionTargetRecoveryV1) -> Self {
+    fn from(value: CoreWorkspaceSemanticTargetRecoveryV1) -> Self {
         Self {
             catalog_bytes: value.catalog_bytes,
             workspace_id: value.workspace_id,
-            journal_bytes: value.journal_bytes,
-            deletion_sidecar_bytes: value.deletion_sidecar_bytes,
+            journal: value.journal.into(),
+            saved_document: value.saved_document.into(),
+            saved_revision: value.saved_revision.into(),
+            deletion_sidecar: value.deletion_sidecar.into(),
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryAdmissionDispositionV1>
+    for CoreWorkspaceSemanticRecoveryAdmissionDispositionV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryAdmissionDispositionV1,
+    ) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryAdmissionDispositionV1 as RuntimeDisposition;
+        match value {
+            RuntimeDisposition::Installed => Self::Installed,
+            RuntimeDisposition::Preserved => Self::Preserved,
+            RuntimeDisposition::Quarantined => Self::Quarantined,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticContextRecoveryV1>
+    for CoreWorkspaceSemanticContextRecoveryV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticContextRecoveryV1,
+    ) -> Self {
+        Self {
+            context_id: value.context_id,
+            revisions: value.revisions.into(),
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticActiveRecoveryV1>
+    for CoreWorkspaceSemanticActiveRecoveryV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticActiveRecoveryV1,
+    ) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            file_url: value.file_url,
+            document_bytes: value.document_bytes,
+            document_digest: value.document_digest,
+            saved_digest: value.saved_digest,
+            revisions: value.revisions.into(),
+            context_revisions: value
+                .context_revisions
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            context_tombstones: value
+                .context_tombstones
+                .into_iter()
+                .map(
+                    |(context_id, revision)| CoreWorkspaceSemanticContextTombstoneV1 {
+                        context_id,
+                        revision,
+                    },
+                )
+                .collect(),
+            operations: value.operations.into_iter().map(Into::into).collect(),
+            health: value.health.into(),
+            external_document_bytes: value.external_document_bytes,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticUnavailableRecoveryV1>
+    for CoreWorkspaceSemanticUnavailableRecoveryV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticUnavailableRecoveryV1,
+    ) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            file_url: value.file_url,
+            reason: value.reason,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryRowV1>
+    for CoreWorkspaceSemanticRecoveryRowV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryRowV1) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryRowV1 as RuntimeRow;
+        match value {
+            RuntimeRow::Active { row } => Self::Active { row: row.into() },
+            RuntimeRow::Unavailable { row } => Self::Unavailable { row: row.into() },
+            RuntimeRow::Deleted {
+                workspace_id,
+                file_url,
+            } => Self::Deleted {
+                workspace_id,
+                file_url,
+            },
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticTargetDirectiveV1>
+    for CoreWorkspaceSemanticTargetDirectiveV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticTargetDirectiveV1,
+    ) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSemanticTargetDirectiveV1 as RuntimeDirective;
+        match value {
+            RuntimeDirective::Upsert { row } => Self::Upsert { row: row.into() },
+            RuntimeDirective::Unavailable { row } => Self::Unavailable { row: row.into() },
+            RuntimeDirective::Delete {
+                workspace_id,
+                file_url,
+            } => Self::Delete {
+                workspace_id,
+                file_url,
+            },
+            RuntimeDirective::NoChange => Self::NoChange,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticJournalRewriteV1>
+    for CoreWorkspaceSemanticJournalRewriteV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticJournalRewriteV1,
+    ) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            expected_artifact_digest: value.expected_artifact_digest,
+            replacement_canonical_bytes: value.replacement_canonical_bytes,
+            replacement_canonical_digest: value.replacement_canonical_digest,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryProjectionV1>
+    for CoreWorkspaceSemanticRecoveryProjectionV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryProjectionV1,
+    ) -> Self {
+        use runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryProjectionV1 as RuntimeProjection;
+        match value {
+            RuntimeProjection::Full { rows } => Self::Full {
+                rows: rows.into_iter().map(Into::into).collect(),
+            },
+            RuntimeProjection::Target { directive } => Self::Target {
+                directive: directive.into(),
+            },
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryPreviewV1>
+    for CoreWorkspaceSemanticRecoveryPreviewV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceSemanticRecoveryPreviewV1,
+    ) -> Self {
+        Self {
+            catalog_revision: value.catalog_revision,
+            catalog_digest: value.catalog_digest,
+            target_workspace_id: value.target_workspace_id,
+            global_health: value.global_health.into(),
+            admission_disposition: value.admission_disposition.into(),
+            projection: value.projection.into(),
+            journal_rewrites: value.journal_rewrites.into_iter().map(Into::into).collect(),
+            projection_digest: value.projection_digest,
         }
     }
 }
@@ -1566,6 +1865,7 @@ pub enum CoreWorkspaceWorkingJournalValidationErrorKindV1 {
     Malformed,
     FutureSchema,
     InvalidIdentity,
+    DuplicateCatalogIdentity,
     InvalidFileUrl,
     InvalidRevisionState,
     InvalidDigest,

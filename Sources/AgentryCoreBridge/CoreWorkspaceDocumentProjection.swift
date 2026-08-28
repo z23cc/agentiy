@@ -65,6 +65,7 @@ public enum CoreWorkspaceWorkingJournalValidationError: Error, Sendable, Equatab
     case malformed
     case futureSchema(UInt16)
     case invalidIdentity
+    case duplicateCatalogIdentity
     case invalidFileURL
     case invalidRevisionState
     case invalidDigest
@@ -213,58 +214,192 @@ public struct CoreWorkspaceRecordedOperationV1: Sendable, Equatable {
     }
 }
 
-public struct CoreWorkspaceCommandAdmissionJournalRecoveryV1: Sendable, Equatable {
-    public let workspaceID: UUID
-    public let canonicalBytes: Data?
+public enum CoreWorkspaceRecoveryArtifactEvidenceV1: Sendable, Equatable {
+    case absent
+    case present(Data)
+    case unavailable(reason: String)
+}
 
-    public init(workspaceID: UUID, canonicalBytes: Data?) {
+public struct CoreWorkspaceSemanticRecoveryEvidenceV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let journal: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1
+
+    public init(
+        workspaceID: UUID,
+        journal: CoreWorkspaceRecoveryArtifactEvidenceV1,
+        savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1,
+        savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1
+    ) {
         self.workspaceID = workspaceID
-        self.canonicalBytes = canonicalBytes
+        self.journal = journal
+        self.savedDocument = savedDocument
+        self.savedRevision = savedRevision
     }
 }
 
-public struct CoreWorkspaceCommandAdmissionDeletionRecoveryV1: Sendable, Equatable {
+public struct CoreWorkspaceSemanticDeletionRecoveryEvidenceV1: Sendable, Equatable {
     public let workspaceID: UUID
-    public let canonicalBytes: Data?
+    public let sidecar: CoreWorkspaceRecoveryArtifactEvidenceV1
 
-    public init(workspaceID: UUID, canonicalBytes: Data?) {
+    public init(workspaceID: UUID, sidecar: CoreWorkspaceRecoveryArtifactEvidenceV1) {
         self.workspaceID = workspaceID
-        self.canonicalBytes = canonicalBytes
+        self.sidecar = sidecar
     }
 }
 
-public struct CoreWorkspaceCommandAdmissionRecoveryV1: Sendable, Equatable {
+public struct CoreWorkspaceSemanticFullRecoveryV1: Sendable, Equatable {
     public let catalogBytes: Data
-    public let journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1]
-    public let deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
+    public let workspaces: [CoreWorkspaceSemanticRecoveryEvidenceV1]
+    public let deletions: [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1]
 
     public init(
         catalogBytes: Data,
-        journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1],
-        deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
+        workspaces: [CoreWorkspaceSemanticRecoveryEvidenceV1],
+        deletions: [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1]
     ) {
         self.catalogBytes = catalogBytes
-        self.journals = journals
-        self.deletionSidecars = deletionSidecars
+        self.workspaces = workspaces
+        self.deletions = deletions
     }
 }
 
-public struct CoreWorkspaceCommandAdmissionTargetRecoveryV1: Sendable, Equatable {
+public struct CoreWorkspaceSemanticTargetRecoveryV1: Sendable, Equatable {
     public let catalogBytes: Data
     public let workspaceID: UUID
-    public let journalBytes: Data?
-    public let deletionSidecarBytes: Data?
+    public let journal: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let deletionSidecar: CoreWorkspaceRecoveryArtifactEvidenceV1
 
     public init(
         catalogBytes: Data,
         workspaceID: UUID,
-        journalBytes: Data?,
-        deletionSidecarBytes: Data?
+        journal: CoreWorkspaceRecoveryArtifactEvidenceV1,
+        savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1,
+        savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1,
+        deletionSidecar: CoreWorkspaceRecoveryArtifactEvidenceV1
     ) {
         self.catalogBytes = catalogBytes
         self.workspaceID = workspaceID
-        self.journalBytes = journalBytes
-        self.deletionSidecarBytes = deletionSidecarBytes
+        self.journal = journal
+        self.savedDocument = savedDocument
+        self.savedRevision = savedRevision
+        self.deletionSidecar = deletionSidecar
+    }
+}
+
+public enum CoreWorkspaceSemanticRecoveryAdmissionDispositionV1: Sendable, Equatable {
+    case installed
+    case preserved
+    case quarantined
+}
+
+public struct CoreWorkspaceSemanticContextRecoveryV1: Sendable, Equatable {
+    public let contextID: UUID
+    public let revisions: CoreWorkspaceProjectionRevisionState
+}
+
+public struct CoreWorkspaceSemanticActiveRecoveryV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let fileURL: URL
+    public let documentBytes: Data
+    public let documentDigest: String
+    public let savedDigest: String
+    public let revisions: CoreWorkspaceProjectionRevisionState
+    public let contextRevisions: [CoreWorkspaceSemanticContextRecoveryV1]
+    public let contextTombstones: [UUID: UInt64]
+    public let operations: [CoreWorkspaceRecordedOperationV1]
+    public let health: CoreWorkspaceProjectionHealth
+    public let externalDocumentBytes: Data?
+}
+
+public struct CoreWorkspaceSemanticUnavailableRecoveryV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let fileURL: URL
+    public let reason: String
+}
+
+public enum CoreWorkspaceSemanticRecoveryRowV1: Sendable, Equatable {
+    case active(CoreWorkspaceSemanticActiveRecoveryV1)
+    case unavailable(CoreWorkspaceSemanticUnavailableRecoveryV1)
+    case deleted(workspaceID: UUID, fileURL: URL)
+}
+
+public enum CoreWorkspaceSemanticTargetDirectiveV1: Sendable, Equatable {
+    case upsert(CoreWorkspaceSemanticActiveRecoveryV1)
+    case unavailable(CoreWorkspaceSemanticUnavailableRecoveryV1)
+    case delete(workspaceID: UUID, fileURL: URL)
+    case noChange
+}
+
+public struct CoreWorkspaceSemanticJournalRewriteV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let expectedArtifactDigest: String
+    public let replacementCanonicalBytes: Data
+    public let replacementCanonicalDigest: String
+}
+
+public enum CoreWorkspaceSemanticRecoveryProjectionV1: Sendable, Equatable {
+    case full(rows: [CoreWorkspaceSemanticRecoveryRowV1])
+    case target(directive: CoreWorkspaceSemanticTargetDirectiveV1)
+}
+
+public struct CoreWorkspaceSemanticRecoveryPreviewV1: Sendable, Equatable {
+    public let catalogRevision: UInt64
+    public let catalogDigest: String
+    public let targetWorkspaceID: UUID?
+    public let globalHealth: CoreWorkspaceProjectionHealth
+    public let admissionDisposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1
+    public let projection: CoreWorkspaceSemanticRecoveryProjectionV1
+    public let journalRewrites: [CoreWorkspaceSemanticJournalRewriteV1]
+    public let projectionDigest: String
+}
+
+public struct CoreWorkspaceSemanticRecoveryCommitV1: Sendable {
+    public let admission: CorePreparedWorkspaceCommandAdmissionV1?
+    public let admissionReceipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
+    public let catalogRevision: UInt64
+    public let catalogDigest: String
+    public let targetWorkspaceID: UUID?
+    public let admissionDisposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1
+    public let projectionDigest: String
+}
+
+public final class CorePreparedWorkspaceSemanticRecoveryV1: @unchecked Sendable {
+    let rawRecovery: AgentryUniFFIRaw.CorePreparedWorkspaceSemanticRecoveryV1
+    private let previewOperation: @Sendable () throws -> CoreWorkspaceSemanticRecoveryPreviewV1
+    private let commitOperation: @Sendable () throws -> CoreWorkspaceSemanticRecoveryCommitV1
+    private let closeOperation: @Sendable () -> Bool
+
+    init(
+        rawRecovery: AgentryUniFFIRaw.CorePreparedWorkspaceSemanticRecoveryV1,
+        preview: @escaping @Sendable () throws -> CoreWorkspaceSemanticRecoveryPreviewV1,
+        commit: @escaping @Sendable () throws -> CoreWorkspaceSemanticRecoveryCommitV1,
+        close: @escaping @Sendable () -> Bool
+    ) {
+        self.rawRecovery = rawRecovery
+        previewOperation = preview
+        commitOperation = commit
+        closeOperation = close
+    }
+
+    deinit {
+        _ = closeOperation()
+    }
+
+    public func preview() throws -> CoreWorkspaceSemanticRecoveryPreviewV1 {
+        try previewOperation()
+    }
+
+    public func commit() throws -> CoreWorkspaceSemanticRecoveryCommitV1 {
+        try commitOperation()
+    }
+
+    @discardableResult
+    public func close() -> Bool {
+        closeOperation()
     }
 }
 
@@ -381,28 +516,15 @@ public struct CoreWorkspaceCommandAdmissionRecoveryReceiptV1: Sendable, Equatabl
     }
 }
 
-public struct CorePreparedWorkspaceCommandAdmissionBeginV1: Sendable {
-    public let admission: CorePreparedWorkspaceCommandAdmissionV1
-    public let receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1
-
-    public init(
-        admission: CorePreparedWorkspaceCommandAdmissionV1,
-        receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1
-    ) {
-        self.admission = admission
-        self.receipt = receipt
-    }
-}
-
 public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable {
     let rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1
     private let acquireOperation: @Sendable (CoreWorkspaceCommandIdentityRequestV1, UInt64?) throws
         -> CoreWorkspaceCommandAdmissionAcquisitionV1
     private let cancelOperation: @Sendable (OperationID) throws -> CoreCancellation
-    private let fullRecoveryOperation: @Sendable (CoreWorkspaceCommandAdmissionRecoveryV1) throws
-        -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1
-    private let targetRecoveryOperation: @Sendable (CoreWorkspaceCommandAdmissionTargetRecoveryV1) throws
-        -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1
+    private let semanticFullRecoveryOperation: @Sendable (CoreWorkspaceSemanticFullRecoveryV1) throws
+        -> CorePreparedWorkspaceSemanticRecoveryV1
+    private let semanticTargetRecoveryOperation: @Sendable (CoreWorkspaceSemanticTargetRecoveryV1) throws
+        -> CorePreparedWorkspaceSemanticRecoveryV1
     private let diagnosticsOperation: @Sendable () throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let closeOperation: @Sendable () -> Void
@@ -412,18 +534,18 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         acquire: @escaping @Sendable (CoreWorkspaceCommandIdentityRequestV1, UInt64?) throws
             -> CoreWorkspaceCommandAdmissionAcquisitionV1,
         cancel: @escaping @Sendable (OperationID) throws -> CoreCancellation,
-        applyFullRecovery: @escaping @Sendable (CoreWorkspaceCommandAdmissionRecoveryV1) throws
-            -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
-        applyTargetRecovery: @escaping @Sendable (CoreWorkspaceCommandAdmissionTargetRecoveryV1) throws
-            -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
+        prepareSemanticFullRecovery: @escaping @Sendable (CoreWorkspaceSemanticFullRecoveryV1) throws
+            -> CorePreparedWorkspaceSemanticRecoveryV1,
+        prepareSemanticTargetRecovery: @escaping @Sendable (CoreWorkspaceSemanticTargetRecoveryV1) throws
+            -> CorePreparedWorkspaceSemanticRecoveryV1,
         diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         close: @escaping @Sendable () -> Void
     ) {
         self.rawAdmission = rawAdmission
         acquireOperation = acquire
         cancelOperation = cancel
-        fullRecoveryOperation = applyFullRecovery
-        targetRecoveryOperation = applyTargetRecovery
+        semanticFullRecoveryOperation = prepareSemanticFullRecovery
+        semanticTargetRecoveryOperation = prepareSemanticTargetRecovery
         diagnosticsOperation = diagnostics
         closeOperation = close
     }
@@ -444,18 +566,16 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         try cancelOperation(operationID)
     }
 
-    @discardableResult
-    public func applyFullRecovery(
-        _ recovery: CoreWorkspaceCommandAdmissionRecoveryV1
-    ) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
-        try fullRecoveryOperation(recovery)
+    public func prepareSemanticFullRecovery(
+        _ recovery: CoreWorkspaceSemanticFullRecoveryV1
+    ) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+        try semanticFullRecoveryOperation(recovery)
     }
 
-    @discardableResult
-    public func applyTargetRecovery(
-        _ recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1
-    ) throws -> CoreWorkspaceCommandAdmissionRecoveryReceiptV1 {
-        try targetRecoveryOperation(recovery)
+    public func prepareSemanticTargetRecovery(
+        _ recovery: CoreWorkspaceSemanticTargetRecoveryV1
+    ) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+        try semanticTargetRecoveryOperation(recovery)
     }
 
     public func diagnostics() throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
@@ -1064,15 +1184,15 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         )
     }
 
-    public func beginCommandAdmission(
-        recovery: CoreWorkspaceCommandAdmissionRecoveryV1
-    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1 {
-        guard recovery.journals.count <= 65_536,
-              recovery.deletionSidecars.count <= 65_536
+    public func prepareInitialSemanticRecovery(
+        _ recovery: CoreWorkspaceSemanticFullRecoveryV1
+    ) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+        guard recovery.workspaces.count <= 65_536,
+              recovery.deletions.count <= 65_536
         else {
             throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
         }
-        return try context.transport.workspaceCommandAdmissionBeginV1(
+        return try context.transport.workspaceSemanticInitialRecoveryPrepareV1(
             identity: context.identity,
             recovery: recovery
         )
@@ -1370,18 +1490,20 @@ public extension CoreComputeClient {
 }
 
 extension CoreRuntimeTransport {
+    func workspaceSemanticInitialRecoveryPrepareV1(
+        identity _: CoreRuntimeIdentity,
+        recovery _: CoreWorkspaceSemanticFullRecoveryV1
+    ) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+        throw CoreTransportError.unexpected(
+            "workspace-semantic-recovery-v1 transport is unavailable"
+        )
+    }
+
     func workspaceCommandIdentityV1(
         identity _: CoreRuntimeIdentity,
         request _: CoreWorkspaceCommandIdentityRequestV1
     ) throws -> CoreWorkspaceCommandIdentityV1 {
         throw CoreTransportError.unexpected("workspace-command-identity-v1 transport is unavailable")
-    }
-
-    func workspaceCommandAdmissionBeginV1(
-        identity _: CoreRuntimeIdentity,
-        recovery _: CoreWorkspaceCommandAdmissionRecoveryV1
-    ) throws -> CorePreparedWorkspaceCommandAdmissionBeginV1 {
-        throw CoreTransportError.unexpected("workspace-command-admission-v1 transport is unavailable")
     }
 
     func workspaceProjectionOpenScopeV1(

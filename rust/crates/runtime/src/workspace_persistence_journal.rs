@@ -5,7 +5,8 @@
 //! reconstructed from those validated receipts. Embedded document semantics remain a separate boundary.
 
 use crate::workspace_context::{
-    MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1, WorkspaceProjectionRevisionState,
+    MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1, WorkspaceDocumentProjection,
+    WorkspaceProjectionHealth, WorkspaceProjectionHealthKind, WorkspaceProjectionRevisionState,
     canonical_uuid, is_valid_revision_state, project_workspace_document_v1,
 };
 use serde::{Deserialize, Serialize};
@@ -93,6 +94,7 @@ pub enum WorkspaceWorkingJournalError {
     Malformed,
     FutureSchema(u16),
     InvalidIdentity,
+    DuplicateCatalogIdentity,
     InvalidFileUrl,
     InvalidRevisionState,
     InvalidDigest,
@@ -128,6 +130,9 @@ impl fmt::Display for WorkspaceWorkingJournalError {
                 )
             }
             Self::InvalidIdentity => formatter.write_str("workspace journal identity is invalid"),
+            Self::DuplicateCatalogIdentity => {
+                formatter.write_str("workspace catalog contains a duplicate identity")
+            }
             Self::InvalidFileUrl => formatter.write_str("workspace journal file URL is invalid"),
             Self::InvalidRevisionState => {
                 formatter.write_str("workspace journal revision state is invalid")
@@ -437,6 +442,157 @@ pub struct WorkspaceCommandAdmissionTargetRecoveryV1 {
     pub workspace_id: String,
     pub journal_bytes: Option<Vec<u8>>,
     pub deletion_sidecar_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceRecoveryArtifactEvidenceV1 {
+    Absent,
+    Present(Vec<u8>),
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceSemanticRecoveryEvidenceV1 {
+    pub workspace_id: String,
+    pub journal: WorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_document: WorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_revision: WorkspaceRecoveryArtifactEvidenceV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceSemanticDeletionRecoveryEvidenceV1 {
+    pub workspace_id: String,
+    pub sidecar: WorkspaceRecoveryArtifactEvidenceV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceSemanticFullRecoveryV1 {
+    pub catalog_bytes: Vec<u8>,
+    pub workspaces: Vec<WorkspaceSemanticRecoveryEvidenceV1>,
+    pub deletions: Vec<WorkspaceSemanticDeletionRecoveryEvidenceV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceSemanticTargetRecoveryV1 {
+    pub catalog_bytes: Vec<u8>,
+    pub workspace_id: String,
+    pub journal: WorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_document: WorkspaceRecoveryArtifactEvidenceV1,
+    pub saved_revision: WorkspaceRecoveryArtifactEvidenceV1,
+    pub deletion_sidecar: WorkspaceRecoveryArtifactEvidenceV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceSemanticRecoveryAdmissionDispositionV1 {
+    Installed,
+    Preserved,
+    Quarantined,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSemanticContextRecoveryV1 {
+    pub context_id: String,
+    pub revisions: WorkspaceProjectionRevisionState,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSemanticActiveRecoveryV1 {
+    pub workspace_id: String,
+    pub file_url: String,
+    pub document_bytes: Vec<u8>,
+    pub document_digest: String,
+    pub saved_digest: String,
+    pub revisions: WorkspaceProjectionRevisionState,
+    pub context_revisions: Vec<WorkspaceSemanticContextRecoveryV1>,
+    pub context_tombstones: Vec<(String, u64)>,
+    pub operations: Vec<WorkspaceRecordedOperationV1>,
+    pub health: WorkspaceProjectionHealth,
+    pub external_document_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSemanticUnavailableRecoveryV1 {
+    pub workspace_id: String,
+    pub file_url: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum WorkspaceSemanticRecoveryRowV1 {
+    Active {
+        row: WorkspaceSemanticActiveRecoveryV1,
+    },
+    Unavailable {
+        row: WorkspaceSemanticUnavailableRecoveryV1,
+    },
+    Deleted {
+        workspace_id: String,
+        file_url: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum WorkspaceSemanticTargetDirectiveV1 {
+    Upsert {
+        row: WorkspaceSemanticActiveRecoveryV1,
+    },
+    Unavailable {
+        row: WorkspaceSemanticUnavailableRecoveryV1,
+    },
+    Delete {
+        workspace_id: String,
+        file_url: String,
+    },
+    NoChange,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSemanticJournalRewriteV1 {
+    pub workspace_id: String,
+    pub expected_artifact_digest: String,
+    pub replacement_canonical_bytes: Vec<u8>,
+    pub replacement_canonical_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum WorkspaceSemanticRecoveryProjectionV1 {
+    Full {
+        rows: Vec<WorkspaceSemanticRecoveryRowV1>,
+    },
+    Target {
+        directive: WorkspaceSemanticTargetDirectiveV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceSemanticRecoveryPreviewV1 {
+    pub catalog_revision: u64,
+    pub catalog_digest: String,
+    pub target_workspace_id: Option<String>,
+    pub global_health: WorkspaceProjectionHealth,
+    pub admission_disposition: WorkspaceSemanticRecoveryAdmissionDispositionV1,
+    pub projection: WorkspaceSemanticRecoveryProjectionV1,
+    pub journal_rewrites: Vec<WorkspaceSemanticJournalRewriteV1>,
+    pub projection_digest: String,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceSemanticRecoveryCommitV1 {
+    pub admission: Option<PreparedWorkspaceCommandAdmissionV1>,
+    pub admission_receipt: Option<WorkspaceCommandAdmissionRecoveryReceiptV1>,
+    pub catalog_revision: u64,
+    pub catalog_digest: String,
+    pub target_workspace_id: Option<String>,
+    pub admission_disposition: WorkspaceSemanticRecoveryAdmissionDispositionV1,
+    pub projection_digest: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -842,6 +998,7 @@ struct WorkspaceCommandAdmissionInnerV1 {
     reservations: BTreeMap<u64, WorkspaceCommandAdmissionFinalizationV1>,
     next_claim_generation: u64,
     next_reservation_id: u64,
+    quarantined: bool,
     closed: bool,
 }
 
@@ -1382,7 +1539,1284 @@ fn derive_target_recovery(
     Err(WorkspaceWorkingJournalError::FullRecoveryRequired)
 }
 
+#[derive(Clone, Debug)]
+struct WorkspaceRecoveredDocumentV1 {
+    bytes: Vec<u8>,
+    digest: String,
+    projection: WorkspaceDocumentProjection,
+}
+
+fn workspace_recovery_document_v1(
+    evidence: &WorkspaceRecoveryArtifactEvidenceV1,
+    expected_workspace_id: &str,
+) -> Result<Result<WorkspaceRecoveredDocumentV1, String>, WorkspaceWorkingJournalError> {
+    match evidence {
+        WorkspaceRecoveryArtifactEvidenceV1::Absent => {
+            Ok(Err("workspace_document_unavailable".to_owned()))
+        }
+        WorkspaceRecoveryArtifactEvidenceV1::Unavailable(reason) => Ok(Err(if reason.is_empty() {
+            "workspace_document_unavailable".to_owned()
+        } else {
+            reason.clone()
+        })),
+        WorkspaceRecoveryArtifactEvidenceV1::Present(bytes) => {
+            if bytes.len() > MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1 {
+                return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                    actual: bytes.len(),
+                    maximum: MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+                });
+            }
+            let projection = match project_workspace_document_v1(bytes) {
+                Ok(projection) if projection.workspace_id == expected_workspace_id => projection,
+                Ok(_) => return Ok(Err("workspace_document_identity_mismatch".to_owned())),
+                Err(_) => return Ok(Err("workspace_document_decode_failed".to_owned())),
+            };
+            Ok(Ok(WorkspaceRecoveredDocumentV1 {
+                bytes: bytes.clone(),
+                digest: format!("{:x}", Sha256::digest(bytes)),
+                projection,
+            }))
+        }
+    }
+}
+
+fn workspace_recovery_health_v1(
+    kind: WorkspaceProjectionHealthKind,
+    reason: Option<String>,
+) -> WorkspaceProjectionHealth {
+    WorkspaceProjectionHealth { kind, reason }
+}
+
+fn workspace_recovery_context_revisions_v1(
+    value: &Value,
+) -> Result<Vec<WorkspaceSemanticContextRecoveryV1>, WorkspaceWorkingJournalError> {
+    let Value::Array(items) = value else {
+        return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+    };
+    if items.len() % 2 != 0 {
+        return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+    }
+    items
+        .chunks_exact(2)
+        .map(|pair| {
+            let context_id = pair[0]
+                .as_str()
+                .and_then(canonical_uuid)
+                .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?;
+            let revisions =
+                serde_json::from_value::<WorkspaceProjectionRevisionState>(pair[1].clone())
+                    .map_err(|_| WorkspaceWorkingJournalError::InvalidContextTable)?;
+            if !is_valid_revision_state(revisions) {
+                return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+            }
+            Ok(WorkspaceSemanticContextRecoveryV1 {
+                context_id,
+                revisions,
+            })
+        })
+        .collect()
+}
+
+fn workspace_recovery_context_tombstones_v1(
+    value: &Value,
+) -> Result<Vec<(String, u64)>, WorkspaceWorkingJournalError> {
+    let Value::Array(items) = value else {
+        return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+    };
+    if items.len() % 2 != 0 {
+        return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+    }
+    items
+        .chunks_exact(2)
+        .map(|pair| {
+            Ok((
+                pair[0]
+                    .as_str()
+                    .and_then(canonical_uuid)
+                    .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?,
+                pair[1]
+                    .as_u64()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?,
+            ))
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum WorkspaceRecoverySavedRevisionV1 {
+    Confirmed(u64),
+    Degraded(String),
+}
+
+fn workspace_recovery_saved_revision_v1(
+    evidence: &WorkspaceRecoveryArtifactEvidenceV1,
+    workspace_id: &str,
+    document_digest: &str,
+) -> WorkspaceRecoverySavedRevisionV1 {
+    let bytes = match evidence {
+        WorkspaceRecoveryArtifactEvidenceV1::Absent => {
+            return WorkspaceRecoverySavedRevisionV1::Confirmed(0);
+        }
+        WorkspaceRecoveryArtifactEvidenceV1::Unavailable(reason) => {
+            return WorkspaceRecoverySavedRevisionV1::Degraded(if reason.is_empty() {
+                "saved_revision_read_failed".to_owned()
+            } else {
+                reason.clone()
+            });
+        }
+        WorkspaceRecoveryArtifactEvidenceV1::Present(bytes) => bytes,
+    };
+    let Ok(validation) = validate_workspace_saved_revision_record_v1(bytes) else {
+        return WorkspaceRecoverySavedRevisionV1::Degraded(
+            "saved_revision_decode_failed".to_owned(),
+        );
+    };
+    let Ok(record) =
+        serde_json::from_slice::<WorkspaceSavedRevisionRecordV1>(&validation.canonical_bytes)
+    else {
+        return WorkspaceRecoverySavedRevisionV1::Degraded(
+            "saved_revision_decode_failed".to_owned(),
+        );
+    };
+    if record.workspace_id != workspace_id {
+        WorkspaceRecoverySavedRevisionV1::Degraded("saved_revision_identity_mismatch".to_owned())
+    } else if record.document_digest != document_digest {
+        WorkspaceRecoverySavedRevisionV1::Degraded("saved_revision_digest_mismatch".to_owned())
+    } else {
+        WorkspaceRecoverySavedRevisionV1::Confirmed(record.saved_revision)
+    }
+}
+
+fn workspace_recovery_initial_contexts_v1(
+    projection: &WorkspaceDocumentProjection,
+    revisions: WorkspaceProjectionRevisionState,
+) -> Vec<WorkspaceSemanticContextRecoveryV1> {
+    projection
+        .contexts
+        .iter()
+        .map(|context| WorkspaceSemanticContextRecoveryV1 {
+            context_id: context.context_id.clone(),
+            revisions,
+        })
+        .collect()
+}
+
+fn workspace_recovery_active_row_v1(
+    workspace_id: &str,
+    file_url: &str,
+    document: WorkspaceRecoveredDocumentV1,
+    saved_digest: String,
+    revisions: WorkspaceProjectionRevisionState,
+    context_revisions: Vec<WorkspaceSemanticContextRecoveryV1>,
+    context_tombstones: Vec<(String, u64)>,
+    operations: Vec<WorkspaceRecordedOperationV1>,
+    health: WorkspaceProjectionHealth,
+    external_document_bytes: Option<Vec<u8>>,
+) -> WorkspaceSemanticActiveRecoveryV1 {
+    WorkspaceSemanticActiveRecoveryV1 {
+        workspace_id: workspace_id.to_owned(),
+        file_url: file_url.to_owned(),
+        document_bytes: document.bytes,
+        document_digest: document.digest,
+        saved_digest,
+        revisions,
+        context_revisions,
+        context_tombstones,
+        operations,
+        health,
+        external_document_bytes,
+    }
+}
+
+fn workspace_recovery_journal_reason_v1(error: &WorkspaceWorkingJournalError) -> String {
+    match error {
+        WorkspaceWorkingJournalError::FutureSchema(_) => "future_working_journal".to_owned(),
+        WorkspaceWorkingJournalError::InputTooLarge { .. }
+        | WorkspaceWorkingJournalError::OutputTooLarge { .. } => {
+            "working_journal_too_large".to_owned()
+        }
+        WorkspaceWorkingJournalError::InvalidIdentity
+        | WorkspaceWorkingJournalError::InvalidFileUrl => {
+            "working_journal_identity_mismatch".to_owned()
+        }
+        _ => "working_journal_decode_failed".to_owned(),
+    }
+}
+
+fn workspace_recovery_fallback_row_v1(
+    workspace_id: &str,
+    file_url: &str,
+    saved_document: Result<WorkspaceRecoveredDocumentV1, String>,
+    reason: String,
+    journal: Option<&WorkspaceWorkingJournalV1>,
+) -> WorkspaceSemanticRecoveryRowV1 {
+    match saved_document {
+        Ok(document) => {
+            let saved_digest = journal
+                .map(|journal| journal.saved_digest.clone())
+                .unwrap_or_else(|| document.digest.clone());
+            let saved_revision = journal
+                .map(|journal| journal.revisions.saved_revision)
+                .unwrap_or(0);
+            let revisions = WorkspaceProjectionRevisionState {
+                working_revision: saved_revision,
+                saved_revision,
+                dirty_revision: None,
+            };
+            let context_revisions =
+                workspace_recovery_initial_contexts_v1(&document.projection, revisions);
+            WorkspaceSemanticRecoveryRowV1::Active {
+                row: workspace_recovery_active_row_v1(
+                    workspace_id,
+                    file_url,
+                    document,
+                    saved_digest,
+                    revisions,
+                    context_revisions,
+                    journal
+                        .and_then(|journal| {
+                            workspace_recovery_context_tombstones_v1(&journal.context_tombstones)
+                                .ok()
+                        })
+                        .unwrap_or_default(),
+                    journal
+                        .map(|journal| journal.operations.clone())
+                        .unwrap_or_default(),
+                    workspace_recovery_health_v1(
+                        WorkspaceProjectionHealthKind::DegradedReadOnly,
+                        Some(reason),
+                    ),
+                    None,
+                ),
+            }
+        }
+        Err(document_reason) => WorkspaceSemanticRecoveryRowV1::Unavailable {
+            row: WorkspaceSemanticUnavailableRecoveryV1 {
+                workspace_id: workspace_id.to_owned(),
+                file_url: file_url.to_owned(),
+                reason: if document_reason.is_empty() {
+                    reason
+                } else {
+                    document_reason
+                },
+            },
+        },
+    }
+}
+
+fn workspace_recovery_document_context_digests_v1(
+    document: &WorkspaceRecoveredDocumentV1,
+) -> Result<BTreeMap<String, String>, WorkspaceWorkingJournalError> {
+    let value: Value = serde_json::from_slice(&document.bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let raw_contexts = value
+        .as_object()
+        .and_then(|object| object.get("composeTabs"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut digests = BTreeMap::new();
+    for raw_context in raw_contexts {
+        let context_id = raw_context
+            .as_object()
+            .and_then(|context| context.get("id"))
+            .and_then(Value::as_str)
+            .and_then(canonical_uuid)
+            .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?;
+        let canonical_bytes =
+            serde_json::to_vec(raw_context).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+        if digests
+            .insert(context_id, format!("{:x}", Sha256::digest(canonical_bytes)))
+            .is_some()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+        }
+    }
+    Ok(digests)
+}
+
+fn workspace_recovery_context_digest_table_v1(
+    value: &Value,
+) -> Result<BTreeMap<String, String>, WorkspaceWorkingJournalError> {
+    let (_, canonical) = normalize_uuid_dictionary(value, |candidate| {
+        candidate.as_str().is_some_and(is_sha256_digest)
+    })?;
+    let pairs = canonical
+        .as_array()
+        .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?;
+    pairs
+        .chunks_exact(2)
+        .map(|pair| {
+            Ok((
+                pair[0]
+                    .as_str()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?
+                    .to_owned(),
+                pair[1]
+                    .as_str()
+                    .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?
+                    .to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn workspace_recovery_context_revisions_value_v1(
+    revisions: &BTreeMap<String, WorkspaceProjectionRevisionState>,
+) -> Result<Value, WorkspaceWorkingJournalError> {
+    let mut pairs = Vec::with_capacity(revisions.len() * 2);
+    for (context_id, revision) in revisions {
+        pairs.push(Value::String(context_id.clone()));
+        pairs.push(
+            serde_json::to_value(revision).map_err(|_| WorkspaceWorkingJournalError::Malformed)?,
+        );
+    }
+    Ok(Value::Array(pairs))
+}
+
+fn workspace_recovery_context_digests_value_v1(digests: &BTreeMap<String, String>) -> Value {
+    let mut pairs = Vec::with_capacity(digests.len() * 2);
+    for (context_id, digest) in digests {
+        pairs.push(Value::String(context_id.clone()));
+        pairs.push(Value::String(digest.clone()));
+    }
+    Value::Array(pairs)
+}
+
+fn workspace_recovery_context_tombstones_value_v1(tombstones: &BTreeMap<String, u64>) -> Value {
+    let mut pairs = Vec::with_capacity(tombstones.len() * 2);
+    for (context_id, revision) in tombstones {
+        pairs.push(Value::String(context_id.clone()));
+        pairs.push(Value::from(*revision));
+    }
+    Value::Array(pairs)
+}
+
+fn workspace_recovery_clean_external_reload_v1(
+    raw_journal_bytes: &[u8],
+    canonical_journal_bytes: &[u8],
+    journal: &WorkspaceWorkingJournalV1,
+    saved_document: &WorkspaceRecoveredDocumentV1,
+) -> Result<
+    (
+        WorkspaceWorkingJournalV1,
+        Vec<u8>,
+        WorkspaceSemanticJournalRewriteV1,
+    ),
+    WorkspaceWorkingJournalError,
+> {
+    let next_revision = journal
+        .revisions
+        .working_revision
+        .max(journal.revisions.saved_revision)
+        .checked_add(1)
+        .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
+    let previous_revisions = workspace_recovery_context_revisions_v1(&journal.context_revisions)?
+        .into_iter()
+        .map(|context| (context.context_id, context.revisions))
+        .collect::<BTreeMap<_, _>>();
+    let previous_digests = workspace_recovery_context_digest_table_v1(&journal.context_digests)?;
+    let next_digests = workspace_recovery_document_context_digests_v1(saved_document)?;
+    let mut next_revisions = BTreeMap::new();
+    for (context_id, digest) in &next_digests {
+        let revision = if previous_digests.get(context_id) == Some(digest) {
+            previous_revisions.get(context_id).copied().unwrap_or(
+                WorkspaceProjectionRevisionState {
+                    working_revision: next_revision,
+                    saved_revision: next_revision,
+                    dirty_revision: None,
+                },
+            )
+        } else {
+            WorkspaceProjectionRevisionState {
+                working_revision: next_revision,
+                saved_revision: next_revision,
+                dirty_revision: None,
+            }
+        };
+        next_revisions.insert(context_id.clone(), revision);
+    }
+    let mut tombstones = workspace_recovery_context_tombstones_v1(&journal.context_tombstones)?
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    for removed_context_id in previous_digests.keys() {
+        if !next_digests.contains_key(removed_context_id) {
+            tombstones.insert(removed_context_id.clone(), next_revision);
+        }
+    }
+    for active_context_id in next_digests.keys() {
+        tombstones.remove(active_context_id);
+    }
+    let request = WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
+        expected_working_revision: journal.revisions.working_revision,
+        new_revision: next_revision,
+        context_revisions: workspace_recovery_context_revisions_value_v1(&next_revisions)?,
+        context_digests: workspace_recovery_context_digests_value_v1(&next_digests),
+        context_tombstones: workspace_recovery_context_tombstones_value_v1(&tombstones),
+        operations: journal.operations.clone(),
+        updated_at: journal.updated_at.clone(),
+    };
+    let request_bytes =
+        serde_json::to_vec(&request).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    let plan = plan_workspace_working_journal_transition_v1(
+        Some(canonical_journal_bytes),
+        &request_bytes,
+        Some(&saved_document.bytes),
+    )?;
+    let replacement_bytes = plan.primary.canonical_bytes.clone();
+    let replacement = parse_validated_journal(&replacement_bytes)?;
+    Ok((
+        replacement,
+        replacement_bytes.clone(),
+        WorkspaceSemanticJournalRewriteV1 {
+            workspace_id: journal.workspace_id.clone(),
+            expected_artifact_digest: format!("{:x}", Sha256::digest(raw_journal_bytes)),
+            replacement_canonical_bytes: replacement_bytes,
+            replacement_canonical_digest: plan.primary.content_digest,
+        },
+    ))
+}
+
+fn derive_workspace_semantic_recovery_row_v1(
+    workspace_id: &str,
+    file_url: &str,
+    evidence: &WorkspaceSemanticRecoveryEvidenceV1,
+) -> Result<
+    (
+        WorkspaceSemanticRecoveryRowV1,
+        Option<Vec<u8>>,
+        Option<WorkspaceSemanticJournalRewriteV1>,
+        bool,
+    ),
+    WorkspaceWorkingJournalError,
+> {
+    let saved_document = workspace_recovery_document_v1(&evidence.saved_document, workspace_id)?;
+    match &evidence.journal {
+        WorkspaceRecoveryArtifactEvidenceV1::Absent => match saved_document {
+            Ok(document) => {
+                let saved_revision = workspace_recovery_saved_revision_v1(
+                    &evidence.saved_revision,
+                    workspace_id,
+                    &document.digest,
+                );
+                let (saved_revision, health) = match saved_revision {
+                    WorkspaceRecoverySavedRevisionV1::Confirmed(revision) => (
+                        revision,
+                        workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None),
+                    ),
+                    WorkspaceRecoverySavedRevisionV1::Degraded(reason) => (
+                        0,
+                        workspace_recovery_health_v1(
+                            WorkspaceProjectionHealthKind::DegradedReadOnly,
+                            Some(reason),
+                        ),
+                    ),
+                };
+                let revisions = WorkspaceProjectionRevisionState {
+                    working_revision: saved_revision,
+                    saved_revision,
+                    dirty_revision: None,
+                };
+                let context_revisions =
+                    workspace_recovery_initial_contexts_v1(&document.projection, revisions);
+                let saved_digest = document.digest.clone();
+                Ok((
+                    WorkspaceSemanticRecoveryRowV1::Active {
+                        row: workspace_recovery_active_row_v1(
+                            workspace_id,
+                            file_url,
+                            document,
+                            saved_digest,
+                            revisions,
+                            context_revisions,
+                            Vec::new(),
+                            Vec::new(),
+                            health,
+                            None,
+                        ),
+                    },
+                    None,
+                    None,
+                    true,
+                ))
+            }
+            Err(reason) => Ok((
+                WorkspaceSemanticRecoveryRowV1::Unavailable {
+                    row: WorkspaceSemanticUnavailableRecoveryV1 {
+                        workspace_id: workspace_id.to_owned(),
+                        file_url: file_url.to_owned(),
+                        reason,
+                    },
+                },
+                None,
+                None,
+                true,
+            )),
+        },
+        WorkspaceRecoveryArtifactEvidenceV1::Unavailable(reason) => Ok((
+            workspace_recovery_fallback_row_v1(
+                workspace_id,
+                file_url,
+                saved_document,
+                if reason.is_empty() {
+                    "working_journal_decode_failed".to_owned()
+                } else {
+                    reason.clone()
+                },
+                None,
+            ),
+            None,
+            None,
+            false,
+        )),
+        WorkspaceRecoveryArtifactEvidenceV1::Present(raw_bytes) => {
+            let validation = match validate_workspace_working_journal_v1(raw_bytes) {
+                Ok(validation) => validation,
+                Err(error) => {
+                    return Ok((
+                        workspace_recovery_fallback_row_v1(
+                            workspace_id,
+                            file_url,
+                            saved_document,
+                            workspace_recovery_journal_reason_v1(&error),
+                            None,
+                        ),
+                        None,
+                        None,
+                        false,
+                    ));
+                }
+            };
+            let mut journal = parse_validated_journal(&validation.canonical_bytes)?;
+            if journal.workspace_id != workspace_id || journal.file_url != file_url {
+                return Ok((
+                    workspace_recovery_fallback_row_v1(
+                        workspace_id,
+                        file_url,
+                        saved_document,
+                        "working_journal_identity_mismatch".to_owned(),
+                        None,
+                    ),
+                    None,
+                    None,
+                    false,
+                ));
+            }
+            let mut journal_bytes = validation.canonical_bytes.clone();
+            let mut rewrite = None;
+            let working_document = if let Some(encoded) = &journal.working_document {
+                match decode_base64(encoded).and_then(|bytes| {
+                    project_workspace_document_v1(&bytes)
+                        .ok()
+                        .filter(|projection| projection.workspace_id == workspace_id)
+                        .map(|projection| WorkspaceRecoveredDocumentV1 {
+                            digest: format!("{:x}", Sha256::digest(&bytes)),
+                            bytes,
+                            projection,
+                        })
+                }) {
+                    Some(document) => Some(document),
+                    None => {
+                        return Ok((
+                            workspace_recovery_fallback_row_v1(
+                                workspace_id,
+                                file_url,
+                                saved_document,
+                                "working_document_decode_failed".to_owned(),
+                                Some(&journal),
+                            ),
+                            Some(journal_bytes),
+                            rewrite,
+                            true,
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
+
+            let mut health =
+                workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None);
+            let mut external_document_bytes = None;
+            let selected_document: WorkspaceRecoveredDocumentV1;
+
+            if let Some(pending) = journal.pending_save.clone() {
+                if let Ok(saved) = saved_document.clone()
+                    && saved.digest == pending.document_digest
+                {
+                    match resolve_workspace_pending_save_v1(
+                        &validation.canonical_bytes,
+                        workspace_id,
+                        file_url,
+                        Some(&saved.bytes),
+                    )? {
+                        WorkspacePendingSaveRecoveryV1::Committed { clean_journal, .. } => {
+                            rewrite = Some(WorkspaceSemanticJournalRewriteV1 {
+                                workspace_id: workspace_id.to_owned(),
+                                expected_artifact_digest: format!(
+                                    "{:x}",
+                                    Sha256::digest(raw_bytes)
+                                ),
+                                replacement_canonical_bytes: clean_journal.canonical_bytes.clone(),
+                                replacement_canonical_digest: clean_journal.content_digest.clone(),
+                            });
+                            journal_bytes = clean_journal.canonical_bytes;
+                            journal = parse_validated_journal(&journal_bytes)?;
+                            selected_document = saved;
+                        }
+                        WorkspacePendingSaveRecoveryV1::NoPending { .. }
+                        | WorkspacePendingSaveRecoveryV1::PendingNotCommitted { .. } => {
+                            return Err(WorkspaceWorkingJournalError::InvalidPendingSave);
+                        }
+                    }
+                } else {
+                    let Some(local_document) = working_document.clone() else {
+                        return Ok((
+                            workspace_recovery_fallback_row_v1(
+                                workspace_id,
+                                file_url,
+                                saved_document,
+                                "working_journal_recovery_failed".to_owned(),
+                                Some(&journal),
+                            ),
+                            Some(journal_bytes),
+                            rewrite,
+                            true,
+                        ));
+                    };
+                    if local_document.digest != pending.document_digest {
+                        health = workspace_recovery_health_v1(
+                            WorkspaceProjectionHealthKind::DegradedReadOnly,
+                            Some("working_journal_recovery_failed".to_owned()),
+                        );
+                        selected_document = local_document;
+                    } else {
+                        match saved_document.clone() {
+                            Ok(saved) if saved.digest == pending.document_digest => {
+                                match resolve_workspace_pending_save_v1(
+                                    &validation.canonical_bytes,
+                                    workspace_id,
+                                    file_url,
+                                    Some(&saved.bytes),
+                                )? {
+                                    WorkspacePendingSaveRecoveryV1::Committed {
+                                        clean_journal,
+                                        ..
+                                    } => {
+                                        rewrite = Some(WorkspaceSemanticJournalRewriteV1 {
+                                            workspace_id: workspace_id.to_owned(),
+                                            expected_artifact_digest: format!(
+                                                "{:x}",
+                                                Sha256::digest(raw_bytes)
+                                            ),
+                                            replacement_canonical_bytes: clean_journal
+                                                .canonical_bytes
+                                                .clone(),
+                                            replacement_canonical_digest: clean_journal
+                                                .content_digest
+                                                .clone(),
+                                        });
+                                        journal_bytes = clean_journal.canonical_bytes;
+                                        journal = parse_validated_journal(&journal_bytes)?;
+                                        selected_document = saved;
+                                    }
+                                    WorkspacePendingSaveRecoveryV1::NoPending { .. }
+                                    | WorkspacePendingSaveRecoveryV1::PendingNotCommitted {
+                                        ..
+                                    } => {
+                                        return Err(
+                                            WorkspaceWorkingJournalError::InvalidPendingSave,
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(saved) if saved.digest == journal.saved_digest => {
+                                selected_document = local_document;
+                            }
+                            Ok(saved) => {
+                                journal.saved_digest = saved.digest.clone();
+                                health = workspace_recovery_health_v1(
+                                    WorkspaceProjectionHealthKind::ExternalConflict,
+                                    Some("external_workspace_changed".to_owned()),
+                                );
+                                external_document_bytes = Some(saved.bytes);
+                                selected_document = local_document;
+                            }
+                            Err(reason) => {
+                                health = workspace_recovery_health_v1(
+                                    WorkspaceProjectionHealthKind::DegradedReadOnly,
+                                    Some(reason),
+                                );
+                                selected_document = local_document;
+                            }
+                        }
+                    }
+                }
+            } else if let Some(local_document) = working_document {
+                match saved_document.clone() {
+                    Ok(saved) if saved.digest != journal.saved_digest => {
+                        journal.saved_digest = saved.digest.clone();
+                        health = workspace_recovery_health_v1(
+                            WorkspaceProjectionHealthKind::ExternalConflict,
+                            Some("external_workspace_changed".to_owned()),
+                        );
+                        external_document_bytes = Some(saved.bytes);
+                    }
+                    Err(_)
+                        if matches!(
+                            &evidence.saved_document,
+                            WorkspaceRecoveryArtifactEvidenceV1::Absent
+                        ) => {}
+                    Err(reason) => {
+                        health = workspace_recovery_health_v1(
+                            WorkspaceProjectionHealthKind::DegradedReadOnly,
+                            Some(reason),
+                        );
+                    }
+                    Ok(_) => {}
+                }
+                selected_document = local_document;
+            } else {
+                match saved_document.clone() {
+                    Ok(saved) if saved.digest == journal.saved_digest => {
+                        selected_document = saved;
+                    }
+                    Ok(saved) => {
+                        let (replacement, replacement_bytes, journal_rewrite) =
+                            workspace_recovery_clean_external_reload_v1(
+                                raw_bytes,
+                                &validation.canonical_bytes,
+                                &journal,
+                                &saved,
+                            )?;
+                        journal = replacement;
+                        journal_bytes = replacement_bytes;
+                        rewrite = Some(journal_rewrite);
+                        selected_document = saved;
+                    }
+                    Err(reason) => {
+                        return Ok((
+                            WorkspaceSemanticRecoveryRowV1::Unavailable {
+                                row: WorkspaceSemanticUnavailableRecoveryV1 {
+                                    workspace_id: workspace_id.to_owned(),
+                                    file_url: file_url.to_owned(),
+                                    reason,
+                                },
+                            },
+                            Some(journal_bytes),
+                            rewrite,
+                            true,
+                        ));
+                    }
+                }
+            }
+            let document = selected_document;
+            let context_revisions =
+                workspace_recovery_context_revisions_v1(&journal.context_revisions)?;
+            let context_tombstones =
+                workspace_recovery_context_tombstones_v1(&journal.context_tombstones)?;
+            Ok((
+                WorkspaceSemanticRecoveryRowV1::Active {
+                    row: workspace_recovery_active_row_v1(
+                        workspace_id,
+                        file_url,
+                        document,
+                        journal.saved_digest,
+                        journal.revisions,
+                        context_revisions,
+                        context_tombstones,
+                        journal.operations,
+                        health,
+                        external_document_bytes,
+                    ),
+                },
+                Some(journal_bytes),
+                rewrite,
+                true,
+            ))
+        }
+    }
+}
+
+fn checked_semantic_recovery_bytes_v1<'a>(
+    catalog_bytes: &'a [u8],
+    evidence: impl Iterator<Item = &'a WorkspaceRecoveryArtifactEvidenceV1>,
+) -> Result<(), WorkspaceWorkingJournalError> {
+    let mut total = catalog_bytes.len();
+    for artifact in evidence {
+        if let WorkspaceRecoveryArtifactEvidenceV1::Present(bytes) = artifact {
+            total = total.checked_add(bytes.len()).ok_or(
+                WorkspaceWorkingJournalError::InputTooLarge {
+                    actual: usize::MAX,
+                    maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1,
+                },
+            )?;
+            if total > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1 {
+                return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                    actual: total,
+                    maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_BYTES_V1,
+                });
+            }
+        } else if let WorkspaceRecoveryArtifactEvidenceV1::Unavailable(reason) = artifact {
+            if reason.is_empty() || reason.len() > 64 * 1024 {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn semantic_recovery_projection_digest_v1(
+    catalog_revision: u64,
+    catalog_digest: &str,
+    target_workspace_id: Option<&str>,
+    global_health: &WorkspaceProjectionHealth,
+    admission_disposition: WorkspaceSemanticRecoveryAdmissionDispositionV1,
+    projection: &WorkspaceSemanticRecoveryProjectionV1,
+    rewrites: &[WorkspaceSemanticJournalRewriteV1],
+) -> Result<String, WorkspaceWorkingJournalError> {
+    let canonical = serde_json::to_vec(&(
+        WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+        catalog_revision,
+        catalog_digest,
+        target_workspace_id,
+        global_health,
+        admission_disposition,
+        projection,
+        rewrites,
+    ))
+    .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    Ok(format!("{:x}", Sha256::digest(canonical)))
+}
+
+fn derive_semantic_full_recovery_v1(
+    recovery: &WorkspaceSemanticFullRecoveryV1,
+) -> Result<
+    (
+        WorkspaceSemanticRecoveryPreviewV1,
+        Option<WorkspaceCommandAdmissionRecoveryV1>,
+    ),
+    WorkspaceWorkingJournalError,
+> {
+    if recovery.workspaces.len() > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1
+        || recovery.deletions.len() > MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1
+    {
+        return Err(WorkspaceWorkingJournalError::InputTooLarge {
+            actual: recovery.workspaces.len().max(recovery.deletions.len()),
+            maximum: MAXIMUM_WORKSPACE_COMMAND_ADMISSION_RECOVERY_RECORD_COUNT_V1,
+        });
+    }
+    checked_semantic_recovery_bytes_v1(
+        &recovery.catalog_bytes,
+        recovery
+            .workspaces
+            .iter()
+            .flat_map(|workspace| {
+                [
+                    &workspace.journal,
+                    &workspace.saved_document,
+                    &workspace.saved_revision,
+                ]
+            })
+            .chain(recovery.deletions.iter().map(|deletion| &deletion.sidecar)),
+    )?;
+    let (_, catalog, binding) = validated_recovery_catalog(&recovery.catalog_bytes)?;
+    let mut workspaces = BTreeMap::new();
+    for evidence in &recovery.workspaces {
+        let workspace_id = canonical_uuid(&evidence.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if workspaces.insert(workspace_id, evidence).is_some() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+    }
+    let mut deletions = BTreeMap::new();
+    for evidence in &recovery.deletions {
+        let workspace_id = canonical_uuid(&evidence.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if deletions.insert(workspace_id, evidence).is_some() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+    }
+    if workspaces.keys().ne(binding.entries.keys()) || deletions.keys().ne(binding.deletions.keys())
+    {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+
+    let mut rows = Vec::with_capacity(catalog.entries.len() + binding.deletions.len());
+    let mut journals = Vec::with_capacity(catalog.entries.len());
+    let mut deletion_sidecars = Vec::with_capacity(binding.deletions.len());
+    let mut rewrites = Vec::new();
+    let mut admission_authoritative = true;
+    for entry in &catalog.entries {
+        let evidence = workspaces
+            .get(&entry.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let (row, journal_bytes, rewrite, authoritative) =
+            derive_workspace_semantic_recovery_row_v1(
+                &entry.workspace_id,
+                &entry.file_url,
+                evidence,
+            )?;
+        rows.push(row);
+        journals.push(WorkspaceCommandAdmissionJournalRecoveryV1 {
+            workspace_id: entry.workspace_id.clone(),
+            canonical_bytes: journal_bytes,
+        });
+        if let Some(rewrite) = rewrite {
+            rewrites.push(rewrite);
+        }
+        admission_authoritative &= authoritative;
+    }
+    for deletion in catalog.deletions.as_deref().unwrap_or_default() {
+        let evidence = deletions
+            .get(&deletion.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let sidecar = match &evidence.sidecar {
+            WorkspaceRecoveryArtifactEvidenceV1::Present(bytes)
+                if recovered_deletion_record(deletion, Some(bytes)).is_ok() =>
+            {
+                Some(bytes.clone())
+            }
+            WorkspaceRecoveryArtifactEvidenceV1::Present(_)
+            | WorkspaceRecoveryArtifactEvidenceV1::Absent
+            | WorkspaceRecoveryArtifactEvidenceV1::Unavailable(_) => None,
+        };
+        deletion_sidecars.push(WorkspaceCommandAdmissionDeletionRecoveryV1 {
+            workspace_id: deletion.workspace_id.clone(),
+            canonical_bytes: sidecar,
+        });
+        rows.push(WorkspaceSemanticRecoveryRowV1::Deleted {
+            workspace_id: deletion.workspace_id.clone(),
+            file_url: deletion.file_url.clone(),
+        });
+    }
+    rows.sort_by(|left, right| {
+        let left_id = match left {
+            WorkspaceSemanticRecoveryRowV1::Active { row } => &row.workspace_id,
+            WorkspaceSemanticRecoveryRowV1::Unavailable { row } => &row.workspace_id,
+            WorkspaceSemanticRecoveryRowV1::Deleted { workspace_id, .. } => workspace_id,
+        };
+        let right_id = match right {
+            WorkspaceSemanticRecoveryRowV1::Active { row } => &row.workspace_id,
+            WorkspaceSemanticRecoveryRowV1::Unavailable { row } => &row.workspace_id,
+            WorkspaceSemanticRecoveryRowV1::Deleted { workspace_id, .. } => workspace_id,
+        };
+        left_id.cmp(right_id)
+    });
+    let admission_disposition = if admission_authoritative {
+        WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
+    } else {
+        WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
+    };
+    let global_health = if admission_authoritative {
+        workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None)
+    } else {
+        workspace_recovery_health_v1(
+            WorkspaceProjectionHealthKind::DegradedReadOnly,
+            Some("working_journal_recovery_unavailable".to_owned()),
+        )
+    };
+    let projection = WorkspaceSemanticRecoveryProjectionV1::Full { rows };
+    let projection_digest = semantic_recovery_projection_digest_v1(
+        binding.revision,
+        &binding.digest,
+        None,
+        &global_health,
+        admission_disposition,
+        &projection,
+        &rewrites,
+    )?;
+    Ok((
+        WorkspaceSemanticRecoveryPreviewV1 {
+            catalog_revision: binding.revision,
+            catalog_digest: binding.digest.clone(),
+            target_workspace_id: None,
+            global_health,
+            admission_disposition,
+            projection,
+            journal_rewrites: rewrites,
+            projection_digest,
+        },
+        admission_authoritative.then_some(WorkspaceCommandAdmissionRecoveryV1 {
+            catalog_bytes: recovery.catalog_bytes.clone(),
+            journals,
+            deletion_sidecars,
+        }),
+    ))
+}
+
+fn derive_semantic_target_recovery_v1(
+    recovery: &WorkspaceSemanticTargetRecoveryV1,
+) -> Result<
+    (
+        WorkspaceSemanticRecoveryPreviewV1,
+        Option<WorkspaceCommandAdmissionTargetRecoveryV1>,
+    ),
+    WorkspaceWorkingJournalError,
+> {
+    checked_semantic_recovery_bytes_v1(
+        &recovery.catalog_bytes,
+        [
+            &recovery.journal,
+            &recovery.saved_document,
+            &recovery.saved_revision,
+            &recovery.deletion_sidecar,
+        ]
+        .into_iter(),
+    )?;
+    let (_, catalog, binding) = validated_recovery_catalog(&recovery.catalog_bytes)?;
+    let workspace_id = canonical_uuid(&recovery.workspace_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let mut rewrites = Vec::new();
+    let (directive, journal_bytes, deletion_sidecar_bytes, authoritative) = if let Some(entry) =
+        catalog
+            .entries
+            .iter()
+            .find(|entry| entry.workspace_id == workspace_id)
+    {
+        if !matches!(
+            recovery.deletion_sidecar,
+            WorkspaceRecoveryArtifactEvidenceV1::Absent
+        ) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let evidence = WorkspaceSemanticRecoveryEvidenceV1 {
+            workspace_id: workspace_id.clone(),
+            journal: recovery.journal.clone(),
+            saved_document: recovery.saved_document.clone(),
+            saved_revision: recovery.saved_revision.clone(),
+        };
+        let (row, journal_bytes, rewrite, authoritative) =
+            derive_workspace_semantic_recovery_row_v1(&workspace_id, &entry.file_url, &evidence)?;
+        if let Some(rewrite) = rewrite {
+            rewrites.push(rewrite);
+        }
+        let directive = match row {
+            WorkspaceSemanticRecoveryRowV1::Active { row } => {
+                WorkspaceSemanticTargetDirectiveV1::Upsert { row }
+            }
+            WorkspaceSemanticRecoveryRowV1::Unavailable { row } => {
+                WorkspaceSemanticTargetDirectiveV1::Unavailable { row }
+            }
+            WorkspaceSemanticRecoveryRowV1::Deleted { .. } => {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        };
+        (directive, journal_bytes, None, authoritative)
+    } else if let Some(deletion) = catalog
+        .deletions
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|deletion| deletion.workspace_id == workspace_id)
+    {
+        if !matches!(
+            recovery.journal,
+            WorkspaceRecoveryArtifactEvidenceV1::Absent
+        ) || !matches!(
+            recovery.saved_document,
+            WorkspaceRecoveryArtifactEvidenceV1::Absent
+        ) || !matches!(
+            recovery.saved_revision,
+            WorkspaceRecoveryArtifactEvidenceV1::Absent
+        ) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let sidecar = match &recovery.deletion_sidecar {
+            WorkspaceRecoveryArtifactEvidenceV1::Present(bytes)
+                if recovered_deletion_record(deletion, Some(bytes)).is_ok() =>
+            {
+                Some(bytes.clone())
+            }
+            WorkspaceRecoveryArtifactEvidenceV1::Present(_)
+            | WorkspaceRecoveryArtifactEvidenceV1::Absent
+            | WorkspaceRecoveryArtifactEvidenceV1::Unavailable(_) => None,
+        };
+        (
+            WorkspaceSemanticTargetDirectiveV1::Delete {
+                workspace_id: workspace_id.clone(),
+                file_url: deletion.file_url.clone(),
+            },
+            None,
+            sidecar,
+            true,
+        )
+    } else {
+        return Err(WorkspaceWorkingJournalError::FullRecoveryRequired);
+    };
+    let admission_disposition = if authoritative {
+        WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
+    } else {
+        WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
+    };
+    let global_health = if authoritative {
+        workspace_recovery_health_v1(WorkspaceProjectionHealthKind::Writable, None)
+    } else {
+        workspace_recovery_health_v1(
+            WorkspaceProjectionHealthKind::DegradedReadOnly,
+            Some("working_journal_recovery_unavailable".to_owned()),
+        )
+    };
+    let projection = WorkspaceSemanticRecoveryProjectionV1::Target { directive };
+    let projection_digest = semantic_recovery_projection_digest_v1(
+        binding.revision,
+        &binding.digest,
+        Some(&workspace_id),
+        &global_health,
+        admission_disposition,
+        &projection,
+        &rewrites,
+    )?;
+    Ok((
+        WorkspaceSemanticRecoveryPreviewV1 {
+            catalog_revision: binding.revision,
+            catalog_digest: binding.digest.clone(),
+            target_workspace_id: Some(workspace_id.clone()),
+            global_health,
+            admission_disposition,
+            projection,
+            journal_rewrites: rewrites,
+            projection_digest,
+        },
+        authoritative.then_some(WorkspaceCommandAdmissionTargetRecoveryV1 {
+            catalog_bytes: recovery.catalog_bytes.clone(),
+            workspace_id,
+            journal_bytes,
+            deletion_sidecar_bytes,
+        }),
+    ))
+}
+
+#[derive(Clone, Debug)]
+enum PreparedWorkspaceSemanticRecoveryModeV1 {
+    Initial {
+        admission_recovery: Option<WorkspaceCommandAdmissionRecoveryV1>,
+    },
+    Full {
+        admission: PreparedWorkspaceCommandAdmissionV1,
+        catalog_bytes: Vec<u8>,
+        admission_recovery: Option<WorkspaceCommandAdmissionRecoveryV1>,
+    },
+    Target {
+        admission: PreparedWorkspaceCommandAdmissionV1,
+        catalog_bytes: Vec<u8>,
+        admission_recovery: Option<WorkspaceCommandAdmissionTargetRecoveryV1>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct PreparedWorkspaceSemanticRecoveryStateV1 {
+    mode: Option<PreparedWorkspaceSemanticRecoveryModeV1>,
+    preview: WorkspaceSemanticRecoveryPreviewV1,
+}
+
 #[derive(Debug)]
+pub struct PreparedWorkspaceSemanticRecoveryV1 {
+    inner: Mutex<PreparedWorkspaceSemanticRecoveryStateV1>,
+}
+
+impl PreparedWorkspaceSemanticRecoveryV1 {
+    pub fn prepare_initial(
+        recovery: &WorkspaceSemanticFullRecoveryV1,
+    ) -> Result<Self, WorkspaceWorkingJournalError> {
+        let (preview, admission_recovery) = derive_semantic_full_recovery_v1(recovery)?;
+        Ok(Self {
+            inner: Mutex::new(PreparedWorkspaceSemanticRecoveryStateV1 {
+                mode: Some(PreparedWorkspaceSemanticRecoveryModeV1::Initial { admission_recovery }),
+                preview,
+            }),
+        })
+    }
+
+    pub fn preview(
+        &self,
+    ) -> Result<WorkspaceSemanticRecoveryPreviewV1, WorkspaceWorkingJournalError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.mode.is_none() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        Ok(inner.preview.clone())
+    }
+
+    pub fn commit(
+        &self,
+    ) -> Result<WorkspaceSemanticRecoveryCommitV1, WorkspaceWorkingJournalError> {
+        // Retain the candidate lock through the admission mutation so close and competing commits
+        // cannot consume or supersede the prepared digest while its effect is being installed.
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let mode = inner
+            .mode
+            .clone()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let preview = inner.preview.clone();
+        let (admission, admission_receipt) = match mode {
+            PreparedWorkspaceSemanticRecoveryModeV1::Initial { admission_recovery } => {
+                if let Some(recovery) = admission_recovery {
+                    let (admission, receipt) =
+                        PreparedWorkspaceCommandAdmissionV1::prepare_from_recovery(&recovery)?;
+                    (Some(admission), Some(receipt))
+                } else {
+                    (None, None)
+                }
+            }
+            PreparedWorkspaceSemanticRecoveryModeV1::Full {
+                admission,
+                catalog_bytes,
+                admission_recovery,
+            } => {
+                let receipt = if let Some(recovery) = &admission_recovery {
+                    Some(admission.apply_full_recovery(recovery)?)
+                } else {
+                    admission.quarantine_full_recovery(&catalog_bytes)?;
+                    None
+                };
+                (None, receipt)
+            }
+            PreparedWorkspaceSemanticRecoveryModeV1::Target {
+                admission,
+                catalog_bytes,
+                admission_recovery,
+            } => {
+                let receipt = if let Some(recovery) = &admission_recovery {
+                    Some(admission.apply_target_recovery(recovery)?)
+                } else {
+                    let target_workspace_id = preview
+                        .target_workspace_id
+                        .as_deref()
+                        .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+                    admission.quarantine_target_recovery(&catalog_bytes, target_workspace_id)?;
+                    None
+                };
+                (None, receipt)
+            }
+        };
+        inner.mode = None;
+        Ok(WorkspaceSemanticRecoveryCommitV1 {
+            admission,
+            admission_receipt,
+            catalog_revision: preview.catalog_revision,
+            catalog_digest: preview.catalog_digest,
+            target_workspace_id: preview.target_workspace_id,
+            admission_disposition: preview.admission_disposition,
+            projection_digest: preview.projection_digest,
+        })
+    }
+
+    pub fn close(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|mut inner| inner.mode.take().is_some())
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct PreparedWorkspaceCommandAdmissionV1 {
     inner: Arc<Mutex<WorkspaceCommandAdmissionInnerV1>>,
 }
@@ -1430,6 +2864,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                     reservations: BTreeMap::new(),
                     next_claim_generation: 1,
                     next_reservation_id: 1,
+                    quarantined: false,
                     closed: false,
                 })),
             },
@@ -1449,8 +2884,43 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 reservations: BTreeMap::new(),
                 next_claim_generation: 1,
                 next_reservation_id: 1,
+                quarantined: false,
                 closed: false,
             })),
+        })
+    }
+
+    pub fn prepare_semantic_full_recovery(
+        &self,
+        recovery: &WorkspaceSemanticFullRecoveryV1,
+    ) -> Result<PreparedWorkspaceSemanticRecoveryV1, WorkspaceWorkingJournalError> {
+        let (preview, admission_recovery) = derive_semantic_full_recovery_v1(recovery)?;
+        Ok(PreparedWorkspaceSemanticRecoveryV1 {
+            inner: Mutex::new(PreparedWorkspaceSemanticRecoveryStateV1 {
+                mode: Some(PreparedWorkspaceSemanticRecoveryModeV1::Full {
+                    admission: self.clone(),
+                    catalog_bytes: recovery.catalog_bytes.clone(),
+                    admission_recovery,
+                }),
+                preview,
+            }),
+        })
+    }
+
+    pub fn prepare_semantic_target_recovery(
+        &self,
+        recovery: &WorkspaceSemanticTargetRecoveryV1,
+    ) -> Result<PreparedWorkspaceSemanticRecoveryV1, WorkspaceWorkingJournalError> {
+        let (preview, admission_recovery) = derive_semantic_target_recovery_v1(recovery)?;
+        Ok(PreparedWorkspaceSemanticRecoveryV1 {
+            inner: Mutex::new(PreparedWorkspaceSemanticRecoveryStateV1 {
+                mode: Some(PreparedWorkspaceSemanticRecoveryModeV1::Target {
+                    admission: self.clone(),
+                    catalog_bytes: recovery.catalog_bytes.clone(),
+                    admission_recovery,
+                }),
+                preview,
+            }),
         })
     }
 
@@ -1513,6 +2983,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         }
         state.state = Some(replacement);
         state.catalog_binding = Some(catalog_binding.clone());
+        state.quarantined = false;
         for operation_id in terminalized_claims {
             state.claims.remove(&operation_id);
         }
@@ -1522,6 +2993,35 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             target_workspace_id: None,
             diagnostics,
         })
+    }
+
+    fn quarantine_full_recovery(
+        &self,
+        catalog_bytes: &[u8],
+    ) -> Result<(), WorkspaceWorkingJournalError> {
+        let (_, _, catalog_binding) = validated_recovery_catalog(catalog_bytes)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        if let Some(current_binding) = &inner.catalog_binding {
+            if catalog_binding.revision < current_binding.revision
+                || (catalog_binding.revision == current_binding.revision
+                    && catalog_binding.digest != current_binding.digest)
+            {
+                return Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot);
+            }
+        }
+        inner
+            .state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        inner.catalog_binding = Some(catalog_binding);
+        inner.quarantined = true;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1589,7 +3089,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if inner.closed {
+        if inner.closed || inner.quarantined {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         let admission = inner
@@ -1702,6 +3202,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         }
         inner.state = Some(replacement);
         inner.catalog_binding = Some(catalog_binding.clone());
+        inner.quarantined = false;
         for operation_id in terminalized_claims {
             inner.claims.remove(&operation_id);
         }
@@ -1711,6 +3212,50 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             target_workspace_id: Some(workspace_id),
             diagnostics,
         })
+    }
+
+    fn quarantine_target_recovery(
+        &self,
+        catalog_bytes: &[u8],
+        target_workspace_id: &str,
+    ) -> Result<(), WorkspaceWorkingJournalError> {
+        let (_, _, catalog_binding) = validated_recovery_catalog(catalog_bytes)?;
+        let workspace_id = canonical_uuid(target_workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if !catalog_binding.entries.contains_key(&workspace_id)
+            && !catalog_binding.deletions.contains_key(&workspace_id)
+        {
+            return Err(WorkspaceWorkingJournalError::FullRecoveryRequired);
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let current_binding = inner
+            .catalog_binding
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::FullRecoveryRequired)?;
+        if catalog_binding.revision < current_binding.revision
+            || (catalog_binding.revision == current_binding.revision
+                && catalog_binding.digest != current_binding.digest)
+        {
+            return Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot);
+        }
+        if catalog_binding.revision > current_binding.revision
+            && !current_binding.relationships_match_except(&catalog_binding, &workspace_id)
+        {
+            return Err(WorkspaceWorkingJournalError::FullRecoveryRequired);
+        }
+        inner
+            .state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        inner.catalog_binding = Some(catalog_binding);
+        inner.quarantined = true;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1906,7 +3451,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             .inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if inner.closed {
+        if inner.closed || inner.quarantined {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
         let mut projected = inner
@@ -5630,7 +7175,7 @@ fn normalize_catalog(
         entry.workspace_id = canonical_uuid(&entry.workspace_id)
             .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
         if !seen.insert(entry.workspace_id.clone()) {
-            return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+            return Err(WorkspaceWorkingJournalError::DuplicateCatalogIdentity);
         }
         if !valid_file_url(&entry.file_url) {
             return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
@@ -6175,6 +7720,484 @@ mod tests {
                 .as_deref(),
             Some("artifact_cleanup_incomplete: workspace document: denied")
         );
+    }
+
+    #[test]
+    fn semantic_recovery_initial_commit_binds_projection_and_admission_once() {
+        let recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Absent,
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        let candidate = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("semantic recovery candidate");
+        let preview = candidate.preview().expect("semantic preview");
+        assert_eq!(
+            preview.admission_disposition,
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
+        );
+        assert!(is_sha256_digest(&preview.projection_digest));
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full semantic projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected active semantic row");
+        };
+        assert_eq!(row.document_bytes, document("saved"));
+        assert_eq!(row.revisions.working_revision, 0);
+        assert_eq!(row.health.kind, WorkspaceProjectionHealthKind::Writable);
+
+        let commit = candidate.commit().expect("initial semantic commit");
+        assert_eq!(commit.projection_digest, preview.projection_digest);
+        let admission = commit.admission.expect("prepared admission");
+        assert_eq!(
+            admission
+                .diagnostics()
+                .expect("admission diagnostics")
+                .workspace_operation_count,
+            0
+        );
+        assert!(matches!(
+            candidate.commit(),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        ));
+    }
+
+    #[test]
+    fn semantic_recovery_unavailable_journal_quarantines_without_empty_ledger() {
+        let recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(b"{\"version\":1".to_vec()),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        let candidate = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("degraded semantic recovery candidate");
+        let preview = candidate.preview().expect("degraded semantic preview");
+        assert_eq!(
+            preview.admission_disposition,
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
+        );
+        assert_eq!(
+            preview.global_health.kind,
+            WorkspaceProjectionHealthKind::DegradedReadOnly
+        );
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full semantic projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected degraded saved fallback");
+        };
+        assert_eq!(
+            row.health.reason.as_deref(),
+            Some("working_journal_decode_failed")
+        );
+        let commit = candidate.commit().expect("quarantined semantic commit");
+        assert!(commit.admission.is_none());
+        assert!(commit.admission_receipt.is_none());
+    }
+
+    #[test]
+    fn semantic_recovery_pending_save_returns_exact_rewrite_and_clean_row() {
+        let raw = journal_bytes(None);
+        let saved = document("pending saved");
+        let save = transition(
+            serde_json::json!({
+                "kind": "save",
+                "expectedWorkingRevision": 0,
+                "operationID": OPERATION_ID,
+                "contextRevisions": [CONTEXT_ID, revision(0, 0, None)],
+                "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
+                "contextTombstones": {},
+                "operations": [operation(OPERATION_ID, 4.0, 1)],
+                "updatedAt": 4.0
+            }),
+            Some(&raw),
+            Some(&saved),
+        );
+        let recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(save.primary.canonical_bytes.clone()),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(saved.clone()),
+        );
+        let candidate = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("pending semantic recovery");
+        let preview = candidate.preview().expect("pending semantic preview");
+        assert_eq!(preview.journal_rewrites.len(), 1);
+        assert_eq!(
+            preview.journal_rewrites[0].replacement_canonical_bytes,
+            save.committed.expect("committed journal").canonical_bytes
+        );
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full semantic projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected active pending-save row");
+        };
+        assert_eq!(row.document_bytes, saved);
+        assert!(row.revisions.dirty_revision.is_none());
+        assert!(
+            candidate
+                .commit()
+                .expect("pending commit")
+                .admission
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn semantic_target_recovery_commits_only_the_bound_target_projection() {
+        let initial = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(journal_bytes(None)),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        let initial_candidate = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&initial)
+            .expect("initial semantic recovery");
+        let admission = initial_candidate
+            .commit()
+            .expect("initial semantic commit")
+            .admission
+            .expect("prepared admission");
+        let target = WorkspaceSemanticTargetRecoveryV1 {
+            catalog_bytes: catalog_bytes(1),
+            workspace_id: WORKSPACE_ID.to_owned(),
+            journal: WorkspaceRecoveryArtifactEvidenceV1::Absent,
+            saved_document: WorkspaceRecoveryArtifactEvidenceV1::Present(document("target")),
+            saved_revision: WorkspaceRecoveryArtifactEvidenceV1::Absent,
+            deletion_sidecar: WorkspaceRecoveryArtifactEvidenceV1::Absent,
+        };
+        let candidate = admission
+            .prepare_semantic_target_recovery(&target)
+            .expect("target semantic recovery");
+        let preview = candidate.preview().expect("target semantic preview");
+        let WorkspaceSemanticRecoveryProjectionV1::Target { directive } = preview.projection else {
+            panic!("expected target semantic projection");
+        };
+        let WorkspaceSemanticTargetDirectiveV1::Upsert { row } = directive else {
+            panic!("expected target upsert");
+        };
+        assert_eq!(row.document_bytes, document("target"));
+        let commit = candidate.commit().expect("target semantic commit");
+        assert_eq!(commit.target_workspace_id.as_deref(), Some(WORKSPACE_ID));
+        assert!(commit.admission.is_none());
+        assert!(commit.admission_receipt.is_some());
+    }
+
+    #[test]
+    fn semantic_recovery_clean_external_change_advances_and_rewrites() {
+        let external = document("external");
+        let recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(journal_bytes(None)),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(external.clone()),
+        );
+        let candidate = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("clean external recovery");
+        let preview = candidate.preview().expect("clean external preview");
+        assert_eq!(preview.journal_rewrites.len(), 1);
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected active row");
+        };
+        assert_eq!(row.document_bytes, external);
+        assert_eq!(row.revisions.working_revision, 1);
+        assert_eq!(row.revisions.saved_revision, 1);
+        assert_eq!(row.revisions.dirty_revision, None);
+        assert_eq!(row.health.kind, WorkspaceProjectionHealthKind::Writable);
+    }
+
+    #[test]
+    fn semantic_recovery_dirty_external_change_preserves_local_conflict() {
+        let local = document("local working");
+        let external = document("external saved");
+        let recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(journal_bytes(Some(&local))),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(external.clone()),
+        );
+        let preview = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("dirty external recovery")
+            .preview()
+            .expect("dirty external preview");
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected active conflict row");
+        };
+        assert_eq!(row.document_bytes, local);
+        assert_eq!(
+            row.external_document_bytes.as_deref(),
+            Some(external.as_slice())
+        );
+        assert_eq!(
+            row.health.kind,
+            WorkspaceProjectionHealthKind::ExternalConflict
+        );
+        assert_eq!(row.saved_digest, format!("{:x}", Sha256::digest(&external)));
+    }
+
+    #[test]
+    fn semantic_recovery_unavailable_saved_revision_degrades_only_the_row() {
+        let mut recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Absent,
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        recovery.workspaces[0].saved_revision = WorkspaceRecoveryArtifactEvidenceV1::Unavailable(
+            "saved_revision_read_failed".to_owned(),
+        );
+        let candidate = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("saved revision recovery");
+        let preview = candidate.preview().expect("saved revision preview");
+        assert_eq!(
+            preview.admission_disposition,
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
+        );
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected active degraded row");
+        };
+        assert_eq!(row.revisions.working_revision, 0);
+        assert_eq!(
+            row.health.kind,
+            WorkspaceProjectionHealthKind::DegradedReadOnly
+        );
+        assert_eq!(
+            row.health.reason.as_deref(),
+            Some("saved_revision_read_failed")
+        );
+        assert!(candidate.commit().expect("commit").admission.is_some());
+    }
+
+    #[test]
+    fn semantic_recovery_invalid_deletion_sidecar_defers_to_catalog_authority() {
+        let recovery = WorkspaceSemanticFullRecoveryV1 {
+            catalog_bytes: create_catalog_bytes(1, true),
+            workspaces: Vec::new(),
+            deletions: vec![WorkspaceSemanticDeletionRecoveryEvidenceV1 {
+                workspace_id: WORKSPACE_ID.to_owned(),
+                sidecar: WorkspaceRecoveryArtifactEvidenceV1::Present(b"{}".to_vec()),
+            }],
+        };
+        let candidate = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("catalog-authoritative deletion recovery");
+        let preview = candidate.preview().expect("deletion preview");
+        assert_eq!(
+            preview.admission_disposition,
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Installed
+        );
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full projection");
+        };
+        assert!(matches!(
+            rows[0],
+            WorkspaceSemanticRecoveryRowV1::Deleted { .. }
+        ));
+        let commit = candidate.commit().expect("deletion commit");
+        assert!(commit.admission.is_some());
+        assert_eq!(
+            commit
+                .admission_receipt
+                .expect("admission receipt")
+                .diagnostics
+                .global_operation_count,
+            1
+        );
+    }
+
+    #[test]
+    fn semantic_recovery_pending_save_distinguishes_uncommitted_and_conflict() {
+        let local = document("local pending");
+        let raw = journal_bytes(Some(&local));
+        let save = transition(
+            serde_json::json!({
+                "kind": "save",
+                "expectedWorkingRevision": 1,
+                "operationID": OPERATION_ID,
+                "contextRevisions": [CONTEXT_ID, revision(1, 0, Some(1))],
+                "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
+                "contextTombstones": {},
+                "operations": [operation(OPERATION_ID, 4.0, 1)],
+                "updatedAt": 4.0
+            }),
+            Some(&raw),
+            Some(&local),
+        );
+        let uncommitted = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(save.primary.canonical_bytes.clone()),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        let preview = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&uncommitted)
+            .expect("uncommitted pending recovery")
+            .preview()
+            .expect("uncommitted pending preview");
+        assert!(preview.journal_rewrites.is_empty());
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected active pending row");
+        };
+        assert_eq!(row.document_bytes, local);
+        assert_eq!(row.health.kind, WorkspaceProjectionHealthKind::Writable);
+
+        let external = document("third party");
+        let conflict = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(save.primary.canonical_bytes),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(external.clone()),
+        );
+        let preview = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&conflict)
+            .expect("conflict pending recovery")
+            .preview()
+            .expect("conflict pending preview");
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected active conflict row");
+        };
+        assert_eq!(
+            row.health.kind,
+            WorkspaceProjectionHealthKind::ExternalConflict
+        );
+        assert_eq!(
+            row.external_document_bytes.as_deref(),
+            Some(external.as_slice())
+        );
+    }
+
+    #[test]
+    fn semantic_recovery_identity_mismatch_never_imports_foreign_journal_state() {
+        let mut foreign: Value =
+            serde_json::from_slice(&journal_bytes(None)).expect("foreign journal json");
+        foreign["workspaceID"] = Value::String(OTHER_WORKSPACE_ID.to_owned());
+        let foreign = serde_json::to_vec(&foreign).expect("foreign journal bytes");
+        let recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(foreign),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        let preview = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+            .expect("identity mismatch recovery")
+            .preview()
+            .expect("identity mismatch preview");
+        assert_eq!(
+            preview.admission_disposition,
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
+        );
+        let WorkspaceSemanticRecoveryProjectionV1::Full { rows } = preview.projection else {
+            panic!("expected full projection");
+        };
+        let WorkspaceSemanticRecoveryRowV1::Active { row } = &rows[0] else {
+            panic!("expected degraded fallback row");
+        };
+        assert_eq!(row.revisions.working_revision, 0);
+        assert!(row.operations.is_empty());
+        assert_eq!(
+            row.health.reason.as_deref(),
+            Some("working_journal_identity_mismatch")
+        );
+    }
+
+    #[test]
+    fn semantic_recovery_candidate_commit_is_single_use_under_concurrency() {
+        let recovery = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Absent,
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        let candidate = Arc::new(
+            PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&recovery)
+                .expect("semantic candidate"),
+        );
+        let results = std::thread::scope(|scope| {
+            let first = Arc::clone(&candidate);
+            let second = Arc::clone(&candidate);
+            let first = scope.spawn(move || first.commit());
+            let second = scope.spawn(move || second.commit());
+            [
+                first.join().expect("first thread"),
+                second.join().expect("second thread"),
+            ]
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    Err(WorkspaceWorkingJournalError::InvalidTransaction)
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn semantic_recovery_quarantine_preserves_admission_and_later_unquarantines() {
+        let initial = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(journal_bytes(None)),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        let admission = PreparedWorkspaceSemanticRecoveryV1::prepare_initial(&initial)
+            .expect("initial candidate")
+            .commit()
+            .expect("initial commit")
+            .admission
+            .expect("initial admission");
+        let before = admission.diagnostics().expect("initial diagnostics");
+        let mut request = command_identity_request(WorkspaceCommandKindV1::Save);
+        request.operation_id = "99999999-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        let first_generation = match admission.acquire(request.clone()).expect("first acquire") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => {
+                let generation = claim.generation();
+                assert!(claim.abandon().expect("abandon first claim"));
+                generation
+            }
+            other => panic!("expected first claim, got {other:?}"),
+        };
+
+        let target = WorkspaceSemanticTargetRecoveryV1 {
+            catalog_bytes: catalog_bytes(1),
+            workspace_id: WORKSPACE_ID.to_owned(),
+            journal: WorkspaceRecoveryArtifactEvidenceV1::Unavailable(
+                "working_journal_read_failed".to_owned(),
+            ),
+            saved_document: WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+            saved_revision: WorkspaceRecoveryArtifactEvidenceV1::Absent,
+            deletion_sidecar: WorkspaceRecoveryArtifactEvidenceV1::Absent,
+        };
+        let target_commit = admission
+            .prepare_semantic_target_recovery(&target)
+            .expect("quarantine candidate")
+            .commit()
+            .expect("quarantine commit");
+        assert_eq!(
+            target_commit.admission_disposition,
+            WorkspaceSemanticRecoveryAdmissionDispositionV1::Quarantined
+        );
+        assert_eq!(
+            admission.diagnostics().expect("quarantined diagnostics"),
+            before
+        );
+        assert!(matches!(
+            admission.acquire(request.clone()),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        ));
+
+        let mut healed = semantic_full_recovery(
+            WorkspaceRecoveryArtifactEvidenceV1::Present(journal_bytes(None)),
+            WorkspaceRecoveryArtifactEvidenceV1::Present(document("saved")),
+        );
+        healed.catalog_bytes = catalog_bytes(1);
+        let healed_commit = admission
+            .prepare_semantic_full_recovery(&healed)
+            .expect("healed candidate")
+            .commit()
+            .expect("healed commit");
+        assert!(healed_commit.admission_receipt.is_some());
+        match admission.acquire(request).expect("acquire after healing") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => {
+                assert!(claim.generation() > first_generation);
+            }
+            other => panic!("expected healed claim, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7526,6 +9549,22 @@ mod tests {
             "updatedAt": 2.5
         }))
         .expect("journal")
+    }
+
+    fn semantic_full_recovery(
+        journal: WorkspaceRecoveryArtifactEvidenceV1,
+        saved_document: WorkspaceRecoveryArtifactEvidenceV1,
+    ) -> WorkspaceSemanticFullRecoveryV1 {
+        WorkspaceSemanticFullRecoveryV1 {
+            catalog_bytes: catalog_bytes(0),
+            workspaces: vec![WorkspaceSemanticRecoveryEvidenceV1 {
+                workspace_id: WORKSPACE_ID.to_owned(),
+                journal,
+                saved_document,
+                saved_revision: WorkspaceRecoveryArtifactEvidenceV1::Absent,
+            }],
+            deletions: Vec::new(),
+        }
     }
 
     fn revision(working: u64, saved: u64, dirty: Option<u64>) -> Value {
@@ -9187,7 +11226,7 @@ mod tests {
                 None,
                 &serde_json::to_vec(&duplicate_seed).expect("duplicate seed")
             ),
-            Err(WorkspaceWorkingJournalError::InvalidIdentity)
+            Err(WorkspaceWorkingJournalError::DuplicateCatalogIdentity)
         );
 
         let tombstone_bytes = serde_json::to_vec(&tombstone).expect("tombstone bytes");

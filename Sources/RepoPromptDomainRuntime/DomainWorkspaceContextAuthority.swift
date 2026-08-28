@@ -191,7 +191,34 @@ actor DomainWorkspaceContextAuthority {
         }
         let loaded = await task.value
         guard !didBootstrap else { return }
-        health = loaded.health
+        if let recovery = loaded.semanticRecovery,
+           let preview = loaded.semanticPreview
+        {
+            do {
+                let commit = try recovery.commit(expected: preview)
+                try installSemanticRecoveryAuthority(commit)
+            } catch {
+                recovery.close()
+                quarantineCommandAdmission()
+                health = .degradedReadOnly(reason: "workspace_semantic_recovery_failed")
+                catalogRevision = 0
+                unavailableWorkspaces = [:]
+                records = [:]
+                projectionObservationSink.observe([], source: .bootstrap)
+                didBootstrap = true
+                bootstrapTask = nil
+                publish(
+                    kind: .degraded,
+                    workspaceID: nil,
+                    contextID: nil,
+                    operationID: nil,
+                    revisions: nil,
+                    diagnostic: "workspace_semantic_recovery_failed"
+                )
+                return
+            }
+        }
+        health = health.acceptsMutations ? loaded.health : health
         catalogRevision = loaded.catalogRevision
         unavailableWorkspaces = Dictionary(uniqueKeysWithValues: loaded.unavailableWorkspaces.map {
             ($0.workspaceID, $0)
@@ -774,20 +801,32 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
-    private func applyCommandAdmissionRecovery(
-        _ recovery: DomainWorkspaceCommandAdmissionRecovery
-    ) -> Bool {
-        guard let validator = commandIdentityValidator else { return false }
-        do {
-            if let commandAdmission {
-                _ = try commandAdmission.applyFullRecovery(recovery)
-            } else {
-                commandAdmission = try validator.beginCommandAdmission(recovery: recovery)
+    private func installSemanticRecoveryAuthority(
+        _ commit: DomainWorkspaceSemanticRecoveryCommit
+    ) throws {
+        switch commit.admissionDisposition {
+        case .installed, .preserved:
+            guard commit.admissionReceipt != nil else {
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
             }
-            return true
-        } catch {
-            quarantineCommandAdmission()
-            return false
+            if let admission = commit.admission {
+                guard commandAdmission == nil else {
+                    admission.close()
+                    throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+                }
+                commandAdmission = admission
+            } else if commandAdmission == nil {
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+            }
+        case .quarantined:
+            guard commit.admission == nil, commit.admissionReceipt == nil else {
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+            }
+            // Existing admission remains alive but the Rust capability rejects new acquire until a
+            // later authoritative artifact recovery atomically clears quarantine.
+            if commandAdmission == nil {
+                return
+            }
         }
     }
 
@@ -822,20 +861,6 @@ actor DomainWorkspaceContextAuthority {
             revisions: workspaceID.flatMap { records[$0]?.revisions },
             diagnostic: "workspace_command_admission_receipt_missing"
         )
-    }
-
-    @discardableResult
-    private func applyCommandAdmissionTargetRecovery(
-        _ recovery: DomainWorkspaceCommandAdmissionTargetRecovery
-    ) -> Bool {
-        guard let commandAdmission else { return false }
-        do {
-            _ = try commandAdmission.applyTargetRecovery(recovery)
-            return true
-        } catch {
-            quarantineCommandAdmission()
-            return false
-        }
     }
 
     private func recordedOutcomeAfterReconciliation(
@@ -1019,11 +1044,23 @@ actor DomainWorkspaceContextAuthority {
             }
         }
         guard !Task.isCancelled else { return false }
-        let durableCatalog = await persistence.bootstrap(permit: permit)
+        let durableCatalog = await persistence.bootstrap(
+            permit: permit,
+            commandAdmission: commandAdmission
+        )
         guard !Task.isCancelled,
-              durableCatalog.health.acceptsMutations,
-              let admissionRecovery = durableCatalog.admissionRecovery,
-              applyCommandAdmissionRecovery(admissionRecovery)
+              let semanticRecovery = durableCatalog.semanticRecovery,
+              let semanticPreview = durableCatalog.semanticPreview
+        else { return false }
+        do {
+            let commit = try semanticRecovery.commit(expected: semanticPreview)
+            try installSemanticRecoveryAuthority(commit)
+            } catch {
+                semanticRecovery.close()
+                return false
+            }
+        guard durableCatalog.health.acceptsMutations,
+              commandAdmission != nil
         else { return false }
 
         health = durableCatalog.health
@@ -1078,68 +1115,63 @@ actor DomainWorkspaceContextAuthority {
         let catalogChanged = observedCatalogRevision.map { $0 != catalogRevision }
             ?? (catalogRevision != 0)
         if catalogChanged || !health.acceptsMutations {
-            let durableCatalog = await persistence.bootstrap(permit: permit)
-            guard !Task.isCancelled else { return .incomplete }
-            let previousHealth = health
-            guard durableCatalog.health.acceptsMutations else {
-                health = durableCatalog.health
-                catalogRevision = max(catalogRevision, durableCatalog.catalogRevision)
-                if previousHealth != health {
-                    publish(
-                        kind: .degraded,
-                        workspaceID: nil,
-                        contextID: nil,
-                        operationID: nil,
-                        revisions: nil,
-                        diagnostic: "workspace_catalog_degraded"
-                    )
-                }
-                return .incomplete
-            }
-            guard let admissionRecovery = durableCatalog.admissionRecovery,
-                  applyCommandAdmissionRecovery(admissionRecovery)
+            let durableCatalog = await persistence.bootstrap(
+                permit: permit,
+                commandAdmission: commandAdmission
+            )
+            guard !Task.isCancelled,
+                  let semanticRecovery = durableCatalog.semanticRecovery,
+                  let semanticPreview = durableCatalog.semanticPreview
             else {
                 markCommandAdmissionReceiptMissing(workspaceID: nil)
                 return .incomplete
             }
+            do {
+                let commit = try semanticRecovery.commit(expected: semanticPreview)
+                try installSemanticRecoveryAuthority(commit)
+                } catch {
+                    semanticRecovery.close()
+                    return .incomplete
+                }
+
+            let previousHealth = health
+            let previousWorkspaceIDs = Set(records.keys)
+            let nextRecords = Dictionary(uniqueKeysWithValues: durableCatalog.workspaces.map {
+                ($0.document.workspaceID, makeRecord(from: $0))
+            })
+            let nextUnavailable = Dictionary(uniqueKeysWithValues:
+                durableCatalog.unavailableWorkspaces.map { ($0.workspaceID, $0) }
+            )
+            let nextWorkspaceIDs = Set(nextRecords.keys)
             health = durableCatalog.health
-            catalogRevision = max(catalogRevision, durableCatalog.catalogRevision)
-            for workspaceID in durableCatalog.deletedWorkspaceIDs.sorted(by: {
+            catalogRevision = durableCatalog.catalogRevision
+            records = nextRecords
+            unavailableWorkspaces = nextUnavailable
+            for workspaceID in previousWorkspaceIDs.subtracting(nextWorkspaceIDs).sorted(by: {
                 $0.uuidString < $1.uuidString
             }) {
-                unavailableWorkspaces.removeValue(forKey: workspaceID)
-                if records.removeValue(forKey: workspaceID) != nil {
-                    readRegistrations.removeValue(forKey: workspaceID)
-                    changed = true
-                    publish(
-                        kind: .workspaceDeleted,
-                        workspaceID: workspaceID,
-                        contextID: nil,
-                        operationID: nil,
-                        revisions: nil,
-                        diagnostic: "external_catalog_deletion"
-                    )
-                }
-            }
-            for unavailable in durableCatalog.unavailableWorkspaces {
-                guard records[unavailable.workspaceID] == nil else { continue }
-                unavailableWorkspaces[unavailable.workspaceID] = unavailable
-                recoveryPending = true
-            }
-            for workspace in durableCatalog.workspaces
-                where records[workspace.document.workspaceID] == nil
-            {
-                let workspaceID = workspace.document.workspaceID
-                records[workspaceID] = makeRecord(from: workspace)
                 readRegistrations.removeValue(forKey: workspaceID)
-                unavailableWorkspaces.removeValue(forKey: workspaceID)
+                changed = true
+                publish(
+                    kind: .workspaceDeleted,
+                    workspaceID: workspaceID,
+                    contextID: nil,
+                    operationID: nil,
+                    revisions: nil,
+                    diagnostic: "external_catalog_deletion"
+                )
+            }
+            for workspaceID in nextWorkspaceIDs.subtracting(previousWorkspaceIDs).sorted(by: {
+                $0.uuidString < $1.uuidString
+            }) {
+                readRegistrations.removeValue(forKey: workspaceID)
                 changed = true
                 publish(
                     kind: .externalReloaded,
                     workspaceID: workspaceID,
                     contextID: nil,
                     operationID: nil,
-                    revisions: workspace.revisions,
+                    revisions: records[workspaceID]?.revisions,
                     diagnostic: "external_catalog_addition"
                 )
             }
@@ -1156,7 +1188,11 @@ actor DomainWorkspaceContextAuthority {
                         : "workspace_catalog_degraded"
                 )
             }
-            recoveryPending = recoveryPending || !health.acceptsMutations
+            changed = changed || catalogChanged
+            recoveryPending = !unavailableWorkspaces.isEmpty || !health.acceptsMutations
+            guard health.acceptsMutations, commandAdmission != nil else {
+                return .incomplete
+            }
         }
 
         for workspaceID in unavailableWorkspaces.keys.sorted(by: {
@@ -1165,32 +1201,81 @@ actor DomainWorkspaceContextAuthority {
             guard let unavailable = unavailableWorkspaces[workspaceID] else { continue }
             let refreshed = await persistence.refreshWorkspace(
                 workspaceID: workspaceID,
-                fallbackFileURL: unavailable.fileURL
+                fallbackFileURL: unavailable.fileURL,
+                permit: permit,
+                commandAdmission: commandAdmission
             )
             guard unavailableWorkspaces[workspaceID]?.fileMetadata == unavailable.fileMetadata,
                   let refreshed,
-                  refreshed.health.acceptsMutations,
-                  !refreshed.workspaceIsDeleted,
-                  let recovered = refreshed.workspace,
-                  recovered.health.acceptsMutations,
-                  let admissionRecovery = refreshed.admissionRecovery,
-                  applyCommandAdmissionTargetRecovery(admissionRecovery)
+                  let semanticRecovery = refreshed.semanticRecovery,
+                  let semanticPreview = refreshed.semanticPreview
             else {
                 recoveryPending = true
                 continue
             }
+            do {
+                let commit = try semanticRecovery.commit(expected: semanticPreview)
+                try installSemanticRecoveryAuthority(commit)
+            } catch {
+                semanticRecovery.close()
+                recoveryPending = true
+                continue
+            }
+            health = refreshed.health
             catalogRevision = max(catalogRevision, refreshed.catalogRevision)
-            records[workspaceID] = makeRecord(from: recovered)
             readRegistrations.removeValue(forKey: workspaceID)
+            if refreshed.workspaceIsDeleted {
+                records.removeValue(forKey: workspaceID)
+                unavailableWorkspaces.removeValue(forKey: workspaceID)
+                changed = true
+                publish(
+                    kind: .workspaceDeleted,
+                    workspaceID: workspaceID,
+                    contextID: nil,
+                    operationID: nil,
+                    revisions: nil,
+                    diagnostic: "external_catalog_deletion"
+                )
+                continue
+            }
+            if let nextUnavailable = refreshed.unavailableWorkspace {
+                records.removeValue(forKey: workspaceID)
+                unavailableWorkspaces[workspaceID] = nextUnavailable
+                recoveryPending = true
+                changed = true
+                publish(
+                    kind: .degraded,
+                    workspaceID: workspaceID,
+                    contextID: nil,
+                    operationID: nil,
+                    revisions: nil,
+                    diagnostic: nextUnavailable.reason
+                )
+                continue
+            }
+            if refreshed.workspaceIsNoChange {
+                recoveryPending = true
+                continue
+            }
+            guard let recovered = refreshed.workspace, commandAdmission != nil else {
+                recoveryPending = true
+                continue
+            }
+            records[workspaceID] = makeRecord(from: recovered)
             unavailableWorkspaces.removeValue(forKey: workspaceID)
             changed = true
+            recoveryPending = recoveryPending
+                || !health.acceptsMutations
+                || !recovered.health.acceptsMutations
             publish(
-                kind: .externalReloaded,
+                kind: recovered.health.acceptsMutations ? .externalReloaded : .degraded,
                 workspaceID: workspaceID,
                 contextID: nil,
                 operationID: nil,
                 revisions: recovered.revisions,
-                diagnostic: "workspace_document_recovered"
+                diagnostic: recovered.health.acceptsMutations
+                    ? "workspace_document_recovered"
+                    : recovered.health.reason
             )
         }
 
@@ -1206,34 +1291,93 @@ actor DomainWorkspaceContextAuthority {
                 // cannot flip health back to writable while the saved document is still bad.
                 let refreshed = await persistence.refreshWorkspace(
                     workspaceID: workspaceID,
-                    fallbackFileURL: current.document.fileURL
+                    fallbackFileURL: current.document.fileURL,
+                    permit: permit,
+                    commandAdmission: commandAdmission
                 )
-                guard records[workspaceID]?.revisions == current.revisions else { continue }
-                if let refreshed,
-                   refreshed.health.acceptsMutations,
-                   !refreshed.workspaceIsDeleted,
-                   let recovered = refreshed.workspace,
-                   recovered.health.acceptsMutations,
-                   let admissionRecovery = refreshed.admissionRecovery,
-                   applyCommandAdmissionTargetRecovery(admissionRecovery)
-                {
-                    catalogRevision = max(catalogRevision, refreshed.catalogRevision)
-                    current = makeRecord(from: recovered)
-                    records[workspaceID] = current
-                    readRegistrations.removeValue(forKey: workspaceID)
-                    changed = true
-                    publish(
-                        kind: .externalReloaded,
-                        workspaceID: workspaceID,
-                        contextID: nil,
-                        operationID: nil,
-                        revisions: current.revisions,
-                        diagnostic: "workspace_persistence_recovered"
-                    )
-                } else {
+                guard records[workspaceID]?.revisions == current.revisions,
+                      let refreshed,
+                      let semanticRecovery = refreshed.semanticRecovery,
+                      let semanticPreview = refreshed.semanticPreview
+                else {
                     recoveryPending = true
                     continue
                 }
+                do {
+                    let commit = try semanticRecovery.commit(expected: semanticPreview)
+                    try installSemanticRecoveryAuthority(commit)
+                } catch {
+                    semanticRecovery.close()
+                    recoveryPending = true
+                    continue
+                }
+                health = refreshed.health
+                catalogRevision = max(catalogRevision, refreshed.catalogRevision)
+                readRegistrations.removeValue(forKey: workspaceID)
+                if refreshed.workspaceIsDeleted {
+                    records.removeValue(forKey: workspaceID)
+                    unavailableWorkspaces.removeValue(forKey: workspaceID)
+                    changed = true
+                    publish(
+                        kind: .workspaceDeleted,
+                        workspaceID: workspaceID,
+                        contextID: nil,
+                        operationID: nil,
+                        revisions: nil,
+                        diagnostic: "external_catalog_deletion"
+                    )
+                    continue
+                }
+                if let nextUnavailable = refreshed.unavailableWorkspace {
+                    records.removeValue(forKey: workspaceID)
+                    unavailableWorkspaces[workspaceID] = nextUnavailable
+                    recoveryPending = true
+                    changed = true
+                    publish(
+                        kind: .degraded,
+                        workspaceID: workspaceID,
+                        contextID: nil,
+                        operationID: nil,
+                        revisions: nil,
+                        diagnostic: nextUnavailable.reason
+                    )
+                    continue
+                }
+                if refreshed.workspaceIsNoChange {
+                    recoveryPending = true
+                    continue
+                }
+                guard let recovered = refreshed.workspace, commandAdmission != nil else {
+                    recoveryPending = true
+                    continue
+                }
+                current = makeRecord(from: recovered)
+                records[workspaceID] = current
+                unavailableWorkspaces.removeValue(forKey: workspaceID)
+                changed = true
+                recoveryPending = recoveryPending
+                    || !health.acceptsMutations
+                    || !current.health.acceptsMutations
+                publish(
+                    kind: current.health.acceptsMutations ? .externalReloaded : .degraded,
+                    workspaceID: workspaceID,
+                    contextID: nil,
+                    operationID: nil,
+                    revisions: current.revisions,
+                    diagnostic: current.health.acceptsMutations
+                        ? "workspace_persistence_recovered"
+                        : current.health.reason
+                )
+            }
+            if !health.acceptsMutations {
+                recoveryPending = true
+                continue
+            }
+            if case let .degradedReadOnly(reason) = current.health,
+               !reason.hasPrefix("external_")
+            {
+                recoveryPending = true
+                continue
             }
 
             let observedRevision = current.revisions
@@ -1375,7 +1519,7 @@ actor DomainWorkspaceContextAuthority {
             health: workspaceAuthorityScope.containsWorkspaceDocument(workspace.document.fileURL)
                 ? workspace.health
                 : .degradedReadOnly(reason: "workspace_document_outside_lease_scope"),
-            externalDocument: nil,
+            externalDocument: workspace.externalDocument,
             fileMetadata: workspace.fileMetadata
         )
     }
@@ -1466,7 +1610,8 @@ actor DomainWorkspaceContextAuthority {
                 case .stateConflict:
                     await refreshAfterCASConflict(
                         workspaceID: workspaceID,
-                        fileURL: localDocument.fileURL
+                        fileURL: localDocument.fileURL,
+                        permit: permit
                     )
                     if Task.isCancelled { return .recoveryPending }
                     if attempt + 1 < Self.maximumCASRecoveryAttempts { continue }
@@ -1574,7 +1719,8 @@ actor DomainWorkspaceContextAuthority {
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: workspaceID,
-                    fileURL: localDocument.fileURL
+                    fileURL: localDocument.fileURL,
+                    permit: permit
                 )
                 return .recoveryPending
             }
@@ -1693,7 +1839,8 @@ actor DomainWorkspaceContextAuthority {
                 case .stateConflict:
                     await refreshAfterCASConflict(
                         workspaceID: workspaceID,
-                        fileURL: externalDocument.fileURL
+                        fileURL: externalDocument.fileURL,
+                        permit: permit
                     )
                     if Task.isCancelled { return .recoveryPending }
                     if attempt + 1 < Self.maximumCASRecoveryAttempts { continue }
@@ -1869,7 +2016,8 @@ actor DomainWorkspaceContextAuthority {
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: document.workspaceID,
-                    fileURL: document.fileURL
+                    fileURL: document.fileURL,
+                    permit: permit
                 )
                 return finalizeTransientOutcome(
                     DomainCommandOutcome(
@@ -2005,7 +2153,8 @@ actor DomainWorkspaceContextAuthority {
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: workspaceID,
-                    fileURL: record.document.fileURL
+                    fileURL: record.document.fileURL,
+                    permit: permit
                 )
                 return finalizeTransientOutcome(
                     DomainCommandOutcome(
@@ -2154,7 +2303,8 @@ actor DomainWorkspaceContextAuthority {
                 if case .stateConflict = error {
                     await refreshAfterCASConflict(
                         workspaceID: document.workspaceID,
-                        fileURL: document.fileURL
+                        fileURL: document.fileURL,
+                        permit: permit
                     )
                     if let replayed = await recordedOutcomeAfterReconciliation(
                         for: envelope,
@@ -2332,7 +2482,8 @@ actor DomainWorkspaceContextAuthority {
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: workspaceID,
-                    fileURL: record.document.fileURL
+                    fileURL: record.document.fileURL,
+                    permit: permit
                 )
                 guard allowsCASRecovery else {
                     return finalizeConflictOutcome(
@@ -2634,7 +2785,8 @@ actor DomainWorkspaceContextAuthority {
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: workspaceID,
-                    fileURL: record.document.fileURL
+                    fileURL: record.document.fileURL,
+                    permit: permit
                 )
                 let refreshed = records[workspaceID]
                 return finalizeTransientOutcome(
@@ -2821,52 +2973,45 @@ actor DomainWorkspaceContextAuthority {
         catalogMutationWaiters.removeFirst().resume()
     }
 
-    private func refreshAfterCASConflict(workspaceID: UUID, fileURL: URL) async {
-        let previous = records[workspaceID]
+    private func refreshAfterCASConflict(
+        workspaceID: UUID,
+        fileURL: URL,
+        permit: DomainWorkspaceMutationPermit
+    ) async {
         guard let refreshed = await persistence.refreshWorkspace(
             workspaceID: workspaceID,
-            fallbackFileURL: fileURL
-        ) else { return }
-        guard let admissionRecovery = refreshed.admissionRecovery,
-              applyCommandAdmissionTargetRecovery(admissionRecovery)
-        else {
-            markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
+            fallbackFileURL: fileURL,
+            permit: permit,
+            commandAdmission: commandAdmission
+        ),
+            let semanticRecovery = refreshed.semanticRecovery,
+            let semanticPreview = refreshed.semanticPreview
+        else { return }
+        do {
+            let commit = try semanticRecovery.commit(expected: semanticPreview)
+            try installSemanticRecoveryAuthority(commit)
+        } catch {
+            semanticRecovery.close()
             return
         }
         health = refreshed.health
         catalogRevision = max(catalogRevision, refreshed.catalogRevision)
+        readRegistrations.removeValue(forKey: workspaceID)
         if refreshed.workspaceIsDeleted {
             records.removeValue(forKey: workspaceID)
             unavailableWorkspaces.removeValue(forKey: workspaceID)
             return
         }
-        guard let workspace = refreshed.workspace else {
-            if var previous {
-                previous.health = .degradedReadOnly(reason: "workspace_document_unavailable")
-                records[workspaceID] = previous
-            }
+        if let nextUnavailable = refreshed.unavailableWorkspace {
+            records.removeValue(forKey: workspaceID)
+            unavailableWorkspaces[workspaceID] = nextUnavailable
             return
         }
-        let canPreserveConflict = previous?.document.contentDigest == workspace.document.contentDigest
-            && previous?.revisions == workspace.revisions
-        let priorConflictDocument: DomainWorkspaceDocument? = if canPreserveConflict,
-                                                                 case .externalConflict = previous?.health
-        {
-            previous?.externalDocument
-        } else {
-            nil
+        if refreshed.workspaceIsNoChange {
+            return
         }
-        records[workspaceID] = WorkspaceRecord(
-            document: workspace.document,
-            savedDigest: workspace.savedDigest,
-            revisions: workspace.revisions,
-            contextRevisions: workspace.contextRevisions,
-            contextTombstones: workspace.contextTombstones,
-            operations: workspace.operations,
-            health: priorConflictDocument == nil ? workspace.health : previous?.health ?? workspace.health,
-            externalDocument: priorConflictDocument,
-            fileMetadata: workspace.fileMetadata
-        )
+        guard let workspace = refreshed.workspace else { return }
+        records[workspaceID] = makeRecord(from: workspace)
         unavailableWorkspaces.removeValue(forKey: workspaceID)
     }
 

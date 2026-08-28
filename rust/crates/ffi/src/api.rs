@@ -15,20 +15,21 @@ use crate::types::{
     CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
     CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
     CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionAcquireKindV1,
-    CoreWorkspaceCommandAdmissionBeginRequestV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
-    CoreWorkspaceCommandAdmissionLookupScopeV1, CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
-    CoreWorkspaceCommandAdmissionRecoveryV1, CoreWorkspaceCommandAdmissionTargetRecoveryV1,
-    CoreWorkspaceCommandIdentityRequestV1, CoreWorkspaceCommandIdentityResponseV1,
-    CoreWorkspaceCommandIdentityV1, CoreWorkspaceCommandLifecycleDirectiveV1,
-    CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
-    CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
-    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
-    CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
-    CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
-    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
-    CoreWorkspacePersistenceMetadataValidationV1, CoreWorkspaceRecordedOperationV1,
-    CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
-    CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceWorkingJournalSeedRequestV1,
+    CoreWorkspaceCommandAdmissionDiagnosticsV1, CoreWorkspaceCommandAdmissionLookupScopeV1,
+    CoreWorkspaceCommandAdmissionRecoveryReceiptV1, CoreWorkspaceCommandIdentityRequestV1,
+    CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCommandIdentityV1,
+    CoreWorkspaceCommandLifecycleDirectiveV1, CoreWorkspaceCreateDirectiveV1,
+    CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
+    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
+    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceJournalMutationDirectiveV1,
+    CoreWorkspaceJournalMutationTransactionRequestV1, CoreWorkspacePendingSaveRecoveryRequestV1,
+    CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
+    CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspacePersistenceMetadataValidationV1,
+    CoreWorkspaceRecordedOperationV1, CoreWorkspaceSaveActionReportV1,
+    CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
+    CoreWorkspaceSemanticFullRecoveryV1, CoreWorkspaceSemanticInitialRecoveryRequestV1,
+    CoreWorkspaceSemanticRecoveryAdmissionDispositionV1, CoreWorkspaceSemanticRecoveryPreviewV1,
+    CoreWorkspaceSemanticTargetRecoveryV1, CoreWorkspaceWorkingJournalSeedRequestV1,
     CoreWorkspaceWorkingJournalValidationErrorKindV1,
     CoreWorkspaceWorkingJournalValidationRequestV1,
     CoreWorkspaceWorkingJournalValidationResponseV1, DrainBatch, FolderSuffixRequest, HostResponse,
@@ -128,16 +129,28 @@ impl LeafCancellation {
 }
 
 #[derive(Debug, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionBeginResponseV1 {
-    pub admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
-    pub receipt: Option<CoreWorkspaceCommandAdmissionRecoveryReceiptV1>,
+pub struct CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+    pub recovery: Option<Arc<CorePreparedWorkspaceSemanticRecoveryV1>>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
-    pub receipt: Option<CoreWorkspaceCommandAdmissionRecoveryReceiptV1>,
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticRecoveryPreviewResponseV1 {
+    pub preview: Option<CoreWorkspaceSemanticRecoveryPreviewV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CoreWorkspaceSemanticRecoveryCommitResponseV1 {
+    pub admission: Option<Arc<CorePreparedWorkspaceCommandAdmissionV1>>,
+    pub admission_receipt: Option<CoreWorkspaceCommandAdmissionRecoveryReceiptV1>,
+    pub catalog_revision: Option<u64>,
+    pub catalog_digest: Option<String>,
+    pub target_workspace_id: Option<String>,
+    pub admission_disposition: Option<CoreWorkspaceSemanticRecoveryAdmissionDispositionV1>,
+    pub projection_digest: Option<String>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
 }
@@ -313,6 +326,104 @@ impl Drop for CoreWorkspaceCommandExecutionClaimV1 {
 }
 
 #[derive(uniffi::Object)]
+pub struct CorePreparedWorkspaceSemanticRecoveryV1 {
+    inner: Arc<runtime::workspace_persistence_journal::PreparedWorkspaceSemanticRecoveryV1>,
+    runtime: Weak<runtime::CoreRuntime>,
+    identity: runtime::RuntimeIdentity,
+    panic_guard: Arc<PanicGuard>,
+}
+
+impl std::fmt::Debug for CorePreparedWorkspaceSemanticRecoveryV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorePreparedWorkspaceSemanticRecoveryV1")
+            .finish_non_exhaustive()
+    }
+}
+
+impl CorePreparedWorkspaceSemanticRecoveryV1 {
+    fn require_live_runtime(&self) -> Result<(), CoreError> {
+        let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
+        if runtime.identity() != &self.identity {
+            return Err(CoreError::StaleRuntimeIdentity);
+        }
+        if runtime.lifecycle() == runtime::LifecycleState::Running {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeStopped)
+        }
+    }
+}
+
+#[uniffi::export]
+impl CorePreparedWorkspaceSemanticRecoveryV1 {
+    pub fn preview(&self) -> Result<CoreWorkspaceSemanticRecoveryPreviewResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(match self.inner.preview() {
+                Ok(preview) => CoreWorkspaceSemanticRecoveryPreviewResponseV1 {
+                    preview: Some(preview.into()),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceSemanticRecoveryPreviewResponseV1 {
+                        preview: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
+        })
+    }
+
+    pub fn commit(&self) -> Result<CoreWorkspaceSemanticRecoveryCommitResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(match self.inner.commit() {
+                Ok(commit) => CoreWorkspaceSemanticRecoveryCommitResponseV1 {
+                    admission: commit.admission.map(|admission| {
+                        Arc::new(CorePreparedWorkspaceCommandAdmissionV1 {
+                            inner: Arc::new(admission),
+                            runtime: self.runtime.clone(),
+                            identity: self.identity.clone(),
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        })
+                    }),
+                    admission_receipt: commit.admission_receipt.map(Into::into),
+                    catalog_revision: Some(commit.catalog_revision),
+                    catalog_digest: Some(commit.catalog_digest),
+                    target_workspace_id: commit.target_workspace_id,
+                    admission_disposition: Some(commit.admission_disposition.into()),
+                    projection_digest: Some(commit.projection_digest),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceSemanticRecoveryCommitResponseV1 {
+                        admission: None,
+                        admission_receipt: None,
+                        catalog_revision: None,
+                        catalog_digest: None,
+                        target_workspace_id: None,
+                        admission_disposition: None,
+                        projection_digest: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
+        })
+    }
+
+    pub fn close(&self) -> bool {
+        self.inner.close()
+    }
+}
+
+#[derive(uniffi::Object)]
 pub struct CorePreparedWorkspaceCommandAdmissionV1 {
     inner: Arc<runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1>,
     runtime: Weak<runtime::CoreRuntime>,
@@ -364,27 +475,70 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
         })
     }
 
-    pub fn apply_full_recovery(
+    pub fn prepare_semantic_full_recovery(
         &self,
-        recovery: CoreWorkspaceCommandAdmissionRecoveryV1,
-    ) -> Result<CoreWorkspaceCommandAdmissionRecoveryResponseV1, CoreError> {
+        recovery: CoreWorkspaceSemanticFullRecoveryV1,
+    ) -> Result<CoreWorkspaceSemanticRecoveryPrepareResponseV1, CoreError> {
         self.panic_guard.call(|| {
             self.require_live_runtime()?;
-            Ok(workspace_command_admission_recovery_response(
-                self.inner.apply_full_recovery(&recovery.into()),
-            ))
+            let identity = self.identity.clone();
+            Ok(
+                match self.inner.prepare_semantic_full_recovery(&recovery.into()) {
+                    Ok(recovery) => CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+                        recovery: Some(Arc::new(CorePreparedWorkspaceSemanticRecoveryV1 {
+                            inner: Arc::new(recovery),
+                            runtime: self.runtime.clone(),
+                            identity,
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        })),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+                            recovery: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
         })
     }
 
-    pub fn apply_target_recovery(
+    pub fn prepare_semantic_target_recovery(
         &self,
-        recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1,
-    ) -> Result<CoreWorkspaceCommandAdmissionRecoveryResponseV1, CoreError> {
+        recovery: CoreWorkspaceSemanticTargetRecoveryV1,
+    ) -> Result<CoreWorkspaceSemanticRecoveryPrepareResponseV1, CoreError> {
         self.panic_guard.call(|| {
             self.require_live_runtime()?;
-            Ok(workspace_command_admission_recovery_response(
-                self.inner.apply_target_recovery(&recovery.into()),
-            ))
+            let identity = self.identity.clone();
+            Ok(
+                match self
+                    .inner
+                    .prepare_semantic_target_recovery(&recovery.into())
+                {
+                    Ok(recovery) => CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+                        recovery: Some(Arc::new(CorePreparedWorkspaceSemanticRecoveryV1 {
+                            inner: Arc::new(recovery),
+                            runtime: self.runtime.clone(),
+                            identity,
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        })),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+                            recovery: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
         })
     }
 
@@ -1870,34 +2024,31 @@ impl CoreRuntime {
         })
     }
 
-    pub fn workspace_command_admission_begin_v1(
+    pub fn workspace_semantic_initial_recovery_prepare_v1(
         &self,
-        request: CoreWorkspaceCommandAdmissionBeginRequestV1,
-    ) -> Result<CoreWorkspaceCommandAdmissionBeginResponseV1, CoreError> {
+        request: CoreWorkspaceSemanticInitialRecoveryRequestV1,
+    ) -> Result<CoreWorkspaceSemanticRecoveryPrepareResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&request.runtime_identity)?;
             require_workspace_persistence_contract(request.contract_version)?;
-            let recovery = request.recovery.into();
-            Ok(match runtime::workspace_persistence_journal::PreparedWorkspaceCommandAdmissionV1::prepare_from_recovery(
-                &recovery,
+            Ok(match runtime::workspace_persistence_journal::PreparedWorkspaceSemanticRecoveryV1::prepare_initial(
+                &request.recovery.into(),
             ) {
-                Ok((admission, receipt)) => CoreWorkspaceCommandAdmissionBeginResponseV1 {
-                    admission: Some(Arc::new(CorePreparedWorkspaceCommandAdmissionV1 {
-                        inner: Arc::new(admission),
+                Ok(recovery) => CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+                    recovery: Some(Arc::new(CorePreparedWorkspaceSemanticRecoveryV1 {
+                        inner: Arc::new(recovery),
                         runtime: Arc::downgrade(&self.inner),
                         identity,
                         panic_guard: Arc::clone(&self.panic_guard),
                     })),
-                    receipt: Some(receipt.into()),
                     error_kind: None,
                     future_schema_version: None,
                 },
                 Err(error) => {
                     let (error_kind, future_schema_version) = workspace_journal_error(error);
-                    CoreWorkspaceCommandAdmissionBeginResponseV1 {
-                        admission: None,
-                        receipt: None,
+                    CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+                        recovery: None,
                         error_kind: Some(error_kind),
                         future_schema_version,
                     }
@@ -1947,6 +2098,10 @@ impl CoreRuntime {
                         ),
                         JournalError::InvalidIdentity => (
                             CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidIdentity,
+                            None,
+                        ),
+                        JournalError::DuplicateCatalogIdentity => (
+                            CoreWorkspaceWorkingJournalValidationErrorKindV1::DuplicateCatalogIdentity,
                             None,
                         ),
                         JournalError::InvalidFileUrl => (
@@ -4141,29 +4296,6 @@ fn workspace_command_transient_finalization_response(
     }
 }
 
-fn workspace_command_admission_recovery_response(
-    result: Result<
-        runtime::workspace_persistence_journal::WorkspaceCommandAdmissionRecoveryReceiptV1,
-        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
-    >,
-) -> CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
-    match result {
-        Ok(receipt) => CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
-            receipt: Some(receipt.into()),
-            error_kind: None,
-            future_schema_version: None,
-        },
-        Err(error) => {
-            let (error_kind, future_schema_version) = workspace_journal_error(error);
-            CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
-                receipt: None,
-                error_kind: Some(error_kind),
-                future_schema_version,
-            }
-        }
-    }
-}
-
 fn workspace_command_admission_mutation_response(
     result: Result<
         runtime::workspace_persistence_journal::WorkspaceCommandAdmissionDiagnosticsV1,
@@ -4305,6 +4437,10 @@ fn workspace_journal_error(
         ),
         JournalError::InvalidIdentity => (
             CoreWorkspaceWorkingJournalValidationErrorKindV1::InvalidIdentity,
+            None,
+        ),
+        JournalError::DuplicateCatalogIdentity => (
+            CoreWorkspaceWorkingJournalValidationErrorKindV1::DuplicateCatalogIdentity,
             None,
         ),
         JournalError::InvalidFileUrl => (
@@ -4709,34 +4845,42 @@ mod tests {
             }))
             .expect("journal bytes")
         };
-        let recovery = |operations: &[CoreWorkspaceRecordedOperationV1]| {
-            CoreWorkspaceCommandAdmissionRecoveryV1 {
+        let recovery =
+            |operations: &[CoreWorkspaceRecordedOperationV1]| CoreWorkspaceSemanticFullRecoveryV1 {
                 catalog_bytes: catalog_bytes.clone(),
-                journals: vec![
-                    crate::types::CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
-                        workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                        canonical_bytes: Some(journal_bytes(operations)),
+                workspaces: vec![crate::types::CoreWorkspaceSemanticRecoveryEvidenceV1 {
+                    workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+                    journal: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Present {
+                        bytes: journal_bytes(operations),
                     },
-                ],
-                deletion_sidecars: Vec::new(),
-            }
-        };
-        let response = core
-            .workspace_command_admission_begin_v1(CoreWorkspaceCommandAdmissionBeginRequestV1 {
-                runtime_identity: identity.clone(),
-                contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
-                recovery: recovery(std::slice::from_ref(&operation)),
-            })
-            .expect("command admission begin");
-        assert_eq!(response.error_kind, None);
-        assert_eq!(
-            response
-                .receipt
-                .as_ref()
-                .map(|receipt| receipt.catalog_revision),
-            Some(7)
-        );
-        let admission = response.admission.expect("prepared admission");
+                    saved_document: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
+                    saved_revision: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
+                }],
+                deletions: Vec::new(),
+            };
+        let prepared_recovery = core
+            .workspace_semantic_initial_recovery_prepare_v1(
+                CoreWorkspaceSemanticInitialRecoveryRequestV1 {
+                    runtime_identity: identity.clone(),
+                    contract_version: runtime::workspace_persistence_journal::WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
+                    recovery: recovery(std::slice::from_ref(&operation)),
+                },
+            )
+            .expect("semantic command admission prepare")
+            .recovery
+            .expect("prepared semantic recovery");
+        let preview = prepared_recovery
+            .preview()
+            .expect("semantic recovery preview")
+            .preview
+            .expect("semantic preview");
+        let commit = prepared_recovery
+            .commit()
+            .expect("semantic recovery commit");
+        assert_eq!(commit.error_kind, None);
+        assert_eq!(commit.catalog_revision, Some(7));
+        assert_eq!(commit.projection_digest, Some(preview.projection_digest));
+        let admission = commit.admission.expect("prepared admission");
 
         let preflight_request = CoreWorkspaceCommandIdentityRequestV1 {
             runtime_identity: identity.clone(),
@@ -4834,10 +4978,20 @@ mod tests {
             ..operation.clone()
         };
         let active_managed_before_reconcile = core.inner.active_managed_operation_count();
-        let reconciled = admission
-            .apply_full_recovery(recovery(std::slice::from_ref(&durable)))
-            .expect("durable artifact recovery")
-            .receipt
+        let full_recovery = admission
+            .prepare_semantic_full_recovery(recovery(std::slice::from_ref(&durable)))
+            .expect("durable semantic recovery prepare")
+            .recovery
+            .expect("prepared durable semantic recovery");
+        let _ = full_recovery
+            .preview()
+            .expect("durable semantic recovery preview")
+            .preview
+            .expect("durable semantic preview");
+        let reconciled = full_recovery
+            .commit()
+            .expect("durable semantic recovery commit")
+            .admission_receipt
             .expect("recovery receipt")
             .diagnostics;
         assert!(!durable_claim.abandon().expect("reconciled claim cleanup"));
@@ -4981,15 +5135,29 @@ mod tests {
             fingerprint: "b".repeat(64),
             ..operation.clone()
         };
-        let reconciled = admission
-            .apply_target_recovery(CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
+        let target_recovery = admission
+            .prepare_semantic_target_recovery(CoreWorkspaceSemanticTargetRecoveryV1 {
                 catalog_bytes: catalog_bytes.clone(),
                 workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
-                journal_bytes: Some(journal_bytes(std::slice::from_ref(&tombstone))),
-                deletion_sidecar_bytes: None,
+                journal: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Present {
+                    bytes: journal_bytes(std::slice::from_ref(&tombstone)),
+                },
+                saved_document: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
+                saved_revision: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
+                deletion_sidecar: crate::types::CoreWorkspaceRecoveryArtifactEvidenceV1::Absent,
             })
-            .expect("targeted artifact recovery")
-            .receipt
+            .expect("targeted semantic recovery prepare")
+            .recovery
+            .expect("prepared target semantic recovery");
+        let _ = target_recovery
+            .preview()
+            .expect("targeted semantic recovery preview")
+            .preview
+            .expect("target semantic preview");
+        let reconciled = target_recovery
+            .commit()
+            .expect("targeted semantic recovery commit")
+            .admission_receipt
             .expect("target recovery receipt")
             .diagnostics;
         assert_eq!(reconciled.workspace_operation_count, 1);

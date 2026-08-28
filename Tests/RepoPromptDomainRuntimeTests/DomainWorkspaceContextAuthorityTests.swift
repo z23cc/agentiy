@@ -788,39 +788,123 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         )
     }
 
+    func testTargetRecoveryPublishesUnavailableMembershipAfterAdmissionCommit() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+
+        let changed = try fixture.document(prompt: "saved before target unavailable")
+        let working = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(changed)
+        ))
+        XCTAssertEqual(working.disposition, .applied)
+        let saved = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: working.after?.workingRevision,
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: fixture.workspaceID)
+        ))
+        XCTAssertEqual(saved.disposition, .applied)
+
+        let snapshot = await runtime.workspaceStore.snapshot()
+        let workspace = try XCTUnwrap(snapshot.workspaces.first)
+        let runtimeFiles = try allFiles(
+            below: fixture.storageRoot.appendingPathComponent("DomainRuntime", isDirectory: true)
+        )
+        let catalogURL = try XCTUnwrap(runtimeFiles.first {
+            $0.lastPathComponent == "workspace-catalog.json"
+        })
+        let originalCatalogBytes = try Data(contentsOf: catalogURL)
+        let catalogObject = try JSONSerialization.jsonObject(with: originalCatalogBytes)
+        let externallyReplacedBytes = try JSONSerialization.data(
+            withJSONObject: catalogObject,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        DomainPersistenceCoordinator.setCatalogReplacementTestHook(for: catalogURL) {
+            try externallyReplacedBytes.write(to: catalogURL, options: .atomic)
+        }
+        defer {
+            DomainPersistenceCoordinator.setCatalogReplacementTestHook(for: catalogURL, nil)
+        }
+        try FileManager.default.removeItem(at: fixture.workspaceFile)
+
+        let conflicted = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedCatalogRevision: snapshot.catalogRevision,
+            expectedWorkspaceRevision: workspace.revisions.workingRevision,
+            origin: .standalone,
+            command: .deleteWorkspace(workspaceID: fixture.workspaceID)
+        ))
+        XCTAssertEqual(conflicted.disposition, .conflict)
+        XCTAssertEqual(conflicted.errorCode, .stateConflict)
+        let unavailableSnapshot = await runtime.workspaceStore.snapshot()
+        XCTAssertTrue(unavailableSnapshot.workspaces.isEmpty)
+
+        try changed.documentBytes.write(to: fixture.workspaceFile, options: .atomic)
+        let activity = await runtime.workspaceStore.reloadExternalChanges()
+        XCTAssertEqual(activity, .changed)
+        let recovered = await runtime.workspaceStore.workspaceSnapshot(fixture.workspaceID)
+        XCTAssertEqual(recovered?.document.documentBytes, changed.documentBytes)
+        XCTAssertEqual(recovered?.health, .writable)
+    }
+
     func testConflictRefreshCarriesAuthoritativeDeletionArtifactRecovery() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
         let runtime = fixture.runtime()
         try await runtime.start()
         let operationID = UUID()
-        let deleted = await runtime.workspaceStore.execute(.init(
+        let deleteEnvelope = DomainWorkspaceCommandEnvelope(
             operationID: operationID,
             expectedCatalogRevision: 0,
             expectedWorkspaceRevision: 0,
             origin: .standalone,
             command: .deleteWorkspace(workspaceID: fixture.workspaceID)
-        ))
+        )
+        let deleted = await runtime.workspaceStore.execute(deleteEnvelope)
         XCTAssertEqual(deleted.disposition, .applied)
 
         let persistence = DomainPersistenceCoordinator(
             configuration: runtime.configuration,
             identity: runtime.identity
         )
+        let bootstrap = await persistence.bootstrap()
+        let initialRecovery = try XCTUnwrap(bootstrap.semanticRecovery)
+        let initialPreview = try XCTUnwrap(bootstrap.semanticPreview)
+        let initialCommit = try initialRecovery.commit(expected: initialPreview)
+        let admission = try XCTUnwrap(initialCommit.admission)
+        defer { admission.close() }
+
         let refresh = await persistence.refreshWorkspace(
             workspaceID: fixture.workspaceID,
-            fallbackFileURL: fixture.workspaceFile
+            fallbackFileURL: fixture.workspaceFile,
+            commandAdmission: admission
         )
         let refreshed = try XCTUnwrap(refresh)
         XCTAssertTrue(refreshed.workspaceIsDeleted)
         XCTAssertNil(refreshed.workspace)
-        let recovery = try XCTUnwrap(refreshed.admissionRecovery)
-        XCTAssertEqual(recovery.workspaceID, fixture.workspaceID)
-        XCTAssertNil(recovery.journalBytes)
-        let sidecarBytes = try XCTUnwrap(recovery.deletionSidecarBytes)
-        let tombstone = try JSONDecoder().decode(DomainDeletionTombstone.self, from: sidecarBytes)
-        XCTAssertEqual(tombstone.operation.operationID, operationID)
-        XCTAssertEqual(tombstone.operation.disposition, .applied)
+        let recovery = try XCTUnwrap(refreshed.semanticRecovery)
+        let preview = try XCTUnwrap(refreshed.semanticPreview)
+        guard case let .target(.delete(workspaceID, fileURL)) = preview.projection else {
+            return XCTFail("Expected authoritative deletion directive")
+        }
+        XCTAssertEqual(workspaceID, fixture.workspaceID)
+        XCTAssertEqual(fileURL.standardizedFileURL, fixture.workspaceFile.standardizedFileURL)
+        let commit = try recovery.commit(expected: preview)
+        XCTAssertEqual(commit.targetWorkspaceID, fixture.workspaceID)
+        XCTAssertEqual(commit.admissionReceipt?.targetWorkspaceID, fixture.workspaceID)
+
+        let deleteInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(deleteEnvelope))
+        guard case let .replay(_, scope, operation) = try admission.acquire(deleteInput) else {
+            return XCTFail("Expected authoritative deletion replay")
+        }
+        XCTAssertEqual(scope, .global)
+        XCTAssertEqual(operation.operationID, operationID)
+        XCTAssertEqual(operation.disposition, .applied)
     }
 
     func testDeletePreservesArtifactsWhenCatalogDirectorySyncIsIndeterminate() async throws {
@@ -1009,9 +1093,12 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         async let second = runtime.workspaceStore.execute(envelope)
         let outcomes = await [first, second]
 
-        XCTAssertEqual(outcomes.filter { $0.disposition == .applied }.count, 1)
-        XCTAssertEqual(outcomes.filter { $0.disposition == .deduplicated }.count, 1)
-        XCTAssertEqual(outcomes[0].resultingDigest, outcomes[1].resultingDigest)
+        let outcomeSummary = outcomes.map {
+            "\($0.disposition.rawValue):\($0.errorCode?.rawValue ?? "nil"):\($0.diagnostic ?? "nil")"
+        }.joined(separator: ", ")
+        XCTAssertEqual(outcomes.filter { $0.disposition == .applied }.count, 1, outcomeSummary)
+        XCTAssertEqual(outcomes.filter { $0.disposition == .deduplicated }.count, 1, outcomeSummary)
+        XCTAssertEqual(outcomes[0].resultingDigest, outcomes[1].resultingDigest, outcomeSummary)
         let restarted = fixture.runtime(runtimeID: UUID(), generation: 2)
         _ = await runtime.shutdown()
         try await restarted.start()
@@ -1582,7 +1669,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(rejected.disposition, .readOnly)
     }
 
-    func testMalformedJournalIsUnavailableAdmissionEvidenceNotAbsentLedger() async throws {
+    func testMalformedJournalQuarantinesSemanticRecoveryWithoutAbsentLedger() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
         let runtime = fixture.runtime()
@@ -1611,11 +1698,16 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             identity: runtime.identity
         )
         let bootstrap = await persistence.bootstrap()
-        XCTAssertNil(bootstrap.admissionRecovery)
+        let semanticRecovery = try XCTUnwrap(bootstrap.semanticRecovery)
+        let semanticPreview = try XCTUnwrap(bootstrap.semanticPreview)
+        XCTAssertEqual(semanticPreview.admissionDisposition, .quarantined)
         XCTAssertEqual(
             bootstrap.health,
             .degradedReadOnly(reason: "working_journal_recovery_unavailable")
         )
+        let commit = try semanticRecovery.commit(expected: semanticPreview)
+        XCTAssertNil(commit.admission)
+        XCTAssertNil(commit.admissionReceipt)
         XCTAssertEqual(
             try XCTUnwrap(bootstrap.workspaces.first).admissionJournalEvidence,
             .unavailable
@@ -1626,10 +1718,11 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             fallbackFileURL: fixture.workspaceFile
         )
         let refresh = try XCTUnwrap(refreshed)
-        XCTAssertNil(refresh.admissionRecovery)
+        XCTAssertNil(refresh.semanticRecovery)
+        XCTAssertNil(refresh.semanticPreview)
         XCTAssertEqual(
             refresh.health,
-            .degradedReadOnly(reason: "working_journal_recovery_unavailable")
+            .degradedReadOnly(reason: "workspace_command_admission_unavailable")
         )
     }
 

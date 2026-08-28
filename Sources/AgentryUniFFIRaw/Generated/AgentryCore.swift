@@ -653,13 +653,13 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
 
     func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMillis: UInt64?) throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1
 
-    func applyFullRecovery(recovery: CoreWorkspaceCommandAdmissionRecoveryV1) throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1
-
-    func applyTargetRecovery(recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1) throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1
-
     func close()
 
     func diagnostics() throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
+
+    func prepareSemanticFullRecovery(recovery: CoreWorkspaceSemanticFullRecoveryV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
+
+    func prepareSemanticTargetRecovery(recovery: CoreWorkspaceSemanticTargetRecoveryV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
 
 }
 open class CorePreparedWorkspaceCommandAdmissionV1: CorePreparedWorkspaceCommandAdmissionV1Protocol, @unchecked Sendable {
@@ -726,26 +726,6 @@ open func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMi
 })
 }
 
-open func applyFullRecovery(recovery: CoreWorkspaceCommandAdmissionRecoveryV1)throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_apply_full_recovery(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1_lower(recovery),uniffiCallStatus
-    )
-})
-}
-
-open func applyTargetRecovery(recovery: CoreWorkspaceCommandAdmissionTargetRecoveryV1)throws  -> CoreWorkspaceCommandAdmissionRecoveryResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_apply_target_recovery(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1_lower(recovery),uniffiCallStatus
-    )
-})
-}
-
 open func close()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_close(
@@ -759,6 +739,26 @@ open func diagnostics()throws  -> CoreWorkspaceCommandAdmissionMutationResponseV
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_diagnostics(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func prepareSemanticFullRecovery(recovery: CoreWorkspaceSemanticFullRecoveryV1)throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_prepare_semantic_full_recovery(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1_lower(recovery),uniffiCallStatus
+    )
+})
+}
+
+open func prepareSemanticTargetRecovery(recovery: CoreWorkspaceSemanticTargetRecoveryV1)throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_prepare_semantic_target_recovery(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceSemanticTargetRecoveryV1_lower(recovery),uniffiCallStatus
     )
 })
 }
@@ -1470,6 +1470,145 @@ public func FfiConverterTypeCorePreparedWorkspaceSaveTransactionV1_lower(_ value
 
 
 
+public protocol CorePreparedWorkspaceSemanticRecoveryV1Protocol: AnyObject, Sendable {
+
+    func close()  -> Bool
+
+    func commit() throws  -> CoreWorkspaceSemanticRecoveryCommitResponseV1
+
+    func preview() throws  -> CoreWorkspaceSemanticRecoveryPreviewResponseV1
+
+}
+open class CorePreparedWorkspaceSemanticRecoveryV1: CorePreparedWorkspaceSemanticRecoveryV1Protocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_agentry_ffi_fn_clone_corepreparedworkspacesemanticrecoveryv1(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_agentry_ffi_fn_free_corepreparedworkspacesemanticrecoveryv1(handle, $0) }
+    }
+
+
+
+
+open func close() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacesemanticrecoveryv1_close(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func commit()throws  -> CoreWorkspaceSemanticRecoveryCommitResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceSemanticRecoveryCommitResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacesemanticrecoveryv1_commit(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func preview()throws  -> CoreWorkspaceSemanticRecoveryPreviewResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacesemanticrecoveryv1_preview(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCorePreparedWorkspaceSemanticRecoveryV1: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = CorePreparedWorkspaceSemanticRecoveryV1
+
+    public static func lift(_ handle: UInt64) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+        return CorePreparedWorkspaceSemanticRecoveryV1(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: CorePreparedWorkspaceSemanticRecoveryV1) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CorePreparedWorkspaceSemanticRecoveryV1, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePreparedWorkspaceSemanticRecoveryV1_lift(_ handle: UInt64) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
+    return try FfiConverterTypeCorePreparedWorkspaceSemanticRecoveryV1.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCorePreparedWorkspaceSemanticRecoveryV1_lower(_ value: CorePreparedWorkspaceSemanticRecoveryV1) -> UInt64 {
+    return FfiConverterTypeCorePreparedWorkspaceSemanticRecoveryV1.lower(value)
+}
+
+
+
+
+
+
 public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     /**
@@ -1689,8 +1828,6 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceCatalogValidateV1(request: CoreWorkspaceCatalogValidationRequestV1) throws  -> CoreWorkspaceCatalogResponseV1
 
-    func workspaceCommandAdmissionBeginV1(request: CoreWorkspaceCommandAdmissionBeginRequestV1) throws  -> CoreWorkspaceCommandAdmissionBeginResponseV1
-
     func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandIdentityResponseV1
 
     func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceCreateTransactionBeginResponseV1
@@ -1736,6 +1873,8 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
     func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceSaveTransactionBeginResponseV1
 
     func workspaceSavedRevisionValidateV1(request: CoreWorkspacePersistenceMetadataRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
+
+    func workspaceSemanticInitialRecoveryPrepareV1(request: CoreWorkspaceSemanticInitialRecoveryRequestV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
 
     func workspaceWorkingJournalSeedV1(request: CoreWorkspaceWorkingJournalSeedRequestV1) throws  -> CoreWorkspaceWorkingJournalValidationResponseV1
 
@@ -2547,16 +2686,6 @@ open func workspaceCatalogValidateV1(request: CoreWorkspaceCatalogValidationRequ
 })
 }
 
-open func workspaceCommandAdmissionBeginV1(request: CoreWorkspaceCommandAdmissionBeginRequestV1)throws  -> CoreWorkspaceCommandAdmissionBeginResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_coreruntime_workspace_command_admission_begin_v1(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1_lower(request),uniffiCallStatus
-    )
-})
-}
-
 open func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityRequestV1)throws  -> CoreWorkspaceCommandIdentityResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceCommandIdentityResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -2799,6 +2928,16 @@ open func workspaceSavedRevisionValidateV1(request: CoreWorkspacePersistenceMeta
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_saved_revision_validate_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspacePersistenceMetadataRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+open func workspaceSemanticInitialRecoveryPrepareV1(request: CoreWorkspaceSemanticInitialRecoveryRequestV1)throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_workspace_semantic_initial_recovery_prepare_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceSemanticInitialRecoveryRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -7059,180 +7198,6 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1_lower
 }
 
 
-public struct CoreWorkspaceCommandAdmissionBeginRequestV1: Equatable, Hashable {
-    public let runtimeIdentity: RuntimeIdentity
-    public let contractVersion: UInt16
-    public let recovery: CoreWorkspaceCommandAdmissionRecoveryV1
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, recovery: CoreWorkspaceCommandAdmissionRecoveryV1) {
-        self.runtimeIdentity = runtimeIdentity
-        self.contractVersion = contractVersion
-        self.recovery = recovery
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionBeginRequestV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionBeginRequestV1 {
-        return
-            try CoreWorkspaceCommandAdmissionBeginRequestV1(
-                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
-                contractVersion: FfiConverterUInt16.read(from: &buf),
-                recovery: FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionBeginRequestV1, into buf: inout [UInt8]) {
-        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
-        FfiConverterUInt16.write(value.contractVersion, into: &buf)
-        FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.write(value.recovery, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionBeginRequestV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1_lower(_ value: CoreWorkspaceCommandAdmissionBeginRequestV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionBeginRequestV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionBeginResponseV1 {
-    public let admission: CorePreparedWorkspaceCommandAdmissionV1?
-    public let receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
-    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
-    public let futureSchemaVersion: UInt16?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(admission: CorePreparedWorkspaceCommandAdmissionV1?, receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
-        self.admission = admission
-        self.receipt = receipt
-        self.errorKind = errorKind
-        self.futureSchemaVersion = futureSchemaVersion
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionBeginResponseV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionBeginResponseV1 {
-        return
-            try CoreWorkspaceCommandAdmissionBeginResponseV1(
-                admission: FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.read(from: &buf),
-                receipt: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.read(from: &buf),
-                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
-                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionBeginResponseV1, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.write(value.admission, into: &buf)
-        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.write(value.receipt, into: &buf)
-        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
-        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionBeginResponseV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionBeginResponseV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionBeginResponseV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionDeletionRecoveryV1: Equatable, Hashable {
-    public let workspaceId: String
-    public let canonicalBytes: Data?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(workspaceId: String, canonicalBytes: Data?) {
-        self.workspaceId = workspaceId
-        self.canonicalBytes = canonicalBytes
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionDeletionRecoveryV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionDeletionRecoveryV1 {
-        return
-            try CoreWorkspaceCommandAdmissionDeletionRecoveryV1(
-                workspaceId: FfiConverterString.read(from: &buf),
-                canonicalBytes: FfiConverterOptionData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionDeletionRecoveryV1, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.workspaceId, into: &buf)
-        FfiConverterOptionData.write(value.canonicalBytes, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionDeletionRecoveryV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionDeletionRecoveryV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.lower(value)
-}
-
-
 public struct CoreWorkspaceCommandAdmissionDiagnosticsV1: Equatable, Hashable {
     public let globalOperationCount: UInt64
     public let workspaceCount: UInt64
@@ -7288,60 +7253,6 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionDiagnosticsV1_lift(_ bu
 #endif
 public func FfiConverterTypeCoreWorkspaceCommandAdmissionDiagnosticsV1_lower(_ value: CoreWorkspaceCommandAdmissionDiagnosticsV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceCommandAdmissionDiagnosticsV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionJournalRecoveryV1: Equatable, Hashable {
-    public let workspaceId: String
-    public let canonicalBytes: Data?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(workspaceId: String, canonicalBytes: Data?) {
-        self.workspaceId = workspaceId
-        self.canonicalBytes = canonicalBytes
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionJournalRecoveryV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
-        return
-            try CoreWorkspaceCommandAdmissionJournalRecoveryV1(
-                workspaceId: FfiConverterString.read(from: &buf),
-                canonicalBytes: FfiConverterOptionData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionJournalRecoveryV1, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.workspaceId, into: &buf)
-        FfiConverterOptionData.write(value.canonicalBytes, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionJournalRecoveryV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionJournalRecoveryV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.lower(value)
 }
 
 
@@ -7462,184 +7373,6 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1_lift(
 #endif
 public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1_lower(_ value: CoreWorkspaceCommandAdmissionRecoveryReceiptV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionRecoveryResponseV1: Equatable, Hashable {
-    public let receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
-    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
-    public let futureSchemaVersion: UInt16?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(receipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
-        self.receipt = receipt
-        self.errorKind = errorKind
-        self.futureSchemaVersion = futureSchemaVersion
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionRecoveryResponseV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
-        return
-            try CoreWorkspaceCommandAdmissionRecoveryResponseV1(
-                receipt: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.read(from: &buf),
-                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
-                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionRecoveryResponseV1, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.write(value.receipt, into: &buf)
-        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
-        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionRecoveryResponseV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1_lower(_ value: CoreWorkspaceCommandAdmissionRecoveryResponseV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryResponseV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionRecoveryV1: Equatable, Hashable {
-    public let catalogBytes: Data
-    public let journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1]
-    public let deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(catalogBytes: Data, journals: [CoreWorkspaceCommandAdmissionJournalRecoveryV1], deletionSidecars: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]) {
-        self.catalogBytes = catalogBytes
-        self.journals = journals
-        self.deletionSidecars = deletionSidecars
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionRecoveryV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionRecoveryV1 {
-        return
-            try CoreWorkspaceCommandAdmissionRecoveryV1(
-                catalogBytes: FfiConverterData.read(from: &buf),
-                journals: FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.read(from: &buf),
-                deletionSidecars: FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionRecoveryV1, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.catalogBytes, into: &buf)
-        FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.write(value.journals, into: &buf)
-        FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.write(value.deletionSidecars, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionRecoveryV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionRecoveryV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryV1.lower(value)
-}
-
-
-public struct CoreWorkspaceCommandAdmissionTargetRecoveryV1: Equatable, Hashable {
-    public let catalogBytes: Data
-    public let workspaceId: String
-    public let journalBytes: Data?
-    public let deletionSidecarBytes: Data?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(catalogBytes: Data, workspaceId: String, journalBytes: Data?, deletionSidecarBytes: Data?) {
-        self.catalogBytes = catalogBytes
-        self.workspaceId = workspaceId
-        self.journalBytes = journalBytes
-        self.deletionSidecarBytes = deletionSidecarBytes
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceCommandAdmissionTargetRecoveryV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
-        return
-            try CoreWorkspaceCommandAdmissionTargetRecoveryV1(
-                catalogBytes: FfiConverterData.read(from: &buf),
-                workspaceId: FfiConverterString.read(from: &buf),
-                journalBytes: FfiConverterOptionData.read(from: &buf),
-                deletionSidecarBytes: FfiConverterOptionData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceCommandAdmissionTargetRecoveryV1, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.catalogBytes, into: &buf)
-        FfiConverterString.write(value.workspaceId, into: &buf)
-        FfiConverterOptionData.write(value.journalBytes, into: &buf)
-        FfiConverterOptionData.write(value.deletionSidecarBytes, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandAdmissionTargetRecoveryV1 {
-    return try FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1_lower(_ value: CoreWorkspaceCommandAdmissionTargetRecoveryV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceCommandAdmissionTargetRecoveryV1.lower(value)
 }
 
 
@@ -11186,6 +10919,902 @@ public func FfiConverterTypeCoreWorkspaceSaveTransactionRequestV1_lift(_ buf: Ru
 #endif
 public func FfiConverterTypeCoreWorkspaceSaveTransactionRequestV1_lower(_ value: CoreWorkspaceSaveTransactionRequestV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceSaveTransactionRequestV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticActiveRecoveryV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let fileUrl: String
+    public let documentBytes: Data
+    public let documentDigest: String
+    public let savedDigest: String
+    public let revisions: CoreWorkspaceProjectionRevisionStateV1
+    public let contextRevisions: [CoreWorkspaceSemanticContextRecoveryV1]
+    public let contextTombstones: [CoreWorkspaceSemanticContextTombstoneV1]
+    public let operations: [CoreWorkspaceRecordedOperationV1]
+    public let health: CoreWorkspaceProjectionHealthV1
+    public let externalDocumentBytes: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, fileUrl: String, documentBytes: Data, documentDigest: String, savedDigest: String, revisions: CoreWorkspaceProjectionRevisionStateV1, contextRevisions: [CoreWorkspaceSemanticContextRecoveryV1], contextTombstones: [CoreWorkspaceSemanticContextTombstoneV1], operations: [CoreWorkspaceRecordedOperationV1], health: CoreWorkspaceProjectionHealthV1, externalDocumentBytes: Data?) {
+        self.workspaceId = workspaceId
+        self.fileUrl = fileUrl
+        self.documentBytes = documentBytes
+        self.documentDigest = documentDigest
+        self.savedDigest = savedDigest
+        self.revisions = revisions
+        self.contextRevisions = contextRevisions
+        self.contextTombstones = contextTombstones
+        self.operations = operations
+        self.health = health
+        self.externalDocumentBytes = externalDocumentBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticActiveRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticActiveRecoveryV1 {
+        return
+            try CoreWorkspaceSemanticActiveRecoveryV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                fileUrl: FfiConverterString.read(from: &buf),
+                documentBytes: FfiConverterData.read(from: &buf),
+                documentDigest: FfiConverterString.read(from: &buf),
+                savedDigest: FfiConverterString.read(from: &buf),
+                revisions: FfiConverterTypeCoreWorkspaceProjectionRevisionStateV1.read(from: &buf),
+                contextRevisions: FfiConverterSequenceTypeCoreWorkspaceSemanticContextRecoveryV1.read(from: &buf),
+                contextTombstones: FfiConverterSequenceTypeCoreWorkspaceSemanticContextTombstoneV1.read(from: &buf),
+                operations: FfiConverterSequenceTypeCoreWorkspaceRecordedOperationV1.read(from: &buf),
+                health: FfiConverterTypeCoreWorkspaceProjectionHealthV1.read(from: &buf),
+                externalDocumentBytes: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticActiveRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterString.write(value.fileUrl, into: &buf)
+        FfiConverterData.write(value.documentBytes, into: &buf)
+        FfiConverterString.write(value.documentDigest, into: &buf)
+        FfiConverterString.write(value.savedDigest, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionRevisionStateV1.write(value.revisions, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceSemanticContextRecoveryV1.write(value.contextRevisions, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceSemanticContextTombstoneV1.write(value.contextTombstones, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceRecordedOperationV1.write(value.operations, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionHealthV1.write(value.health, into: &buf)
+        FfiConverterOptionData.write(value.externalDocumentBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticActiveRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1_lower(_ value: CoreWorkspaceSemanticActiveRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticContextRecoveryV1: Equatable, Hashable {
+    public let contextId: String
+    public let revisions: CoreWorkspaceProjectionRevisionStateV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(contextId: String, revisions: CoreWorkspaceProjectionRevisionStateV1) {
+        self.contextId = contextId
+        self.revisions = revisions
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticContextRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticContextRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticContextRecoveryV1 {
+        return
+            try CoreWorkspaceSemanticContextRecoveryV1(
+                contextId: FfiConverterString.read(from: &buf),
+                revisions: FfiConverterTypeCoreWorkspaceProjectionRevisionStateV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticContextRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.contextId, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionRevisionStateV1.write(value.revisions, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticContextRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticContextRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticContextRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticContextRecoveryV1_lower(_ value: CoreWorkspaceSemanticContextRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticContextRecoveryV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticContextTombstoneV1: Equatable, Hashable {
+    public let contextId: String
+    public let revision: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(contextId: String, revision: UInt64) {
+        self.contextId = contextId
+        self.revision = revision
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticContextTombstoneV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticContextTombstoneV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticContextTombstoneV1 {
+        return
+            try CoreWorkspaceSemanticContextTombstoneV1(
+                contextId: FfiConverterString.read(from: &buf),
+                revision: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticContextTombstoneV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.contextId, into: &buf)
+        FfiConverterUInt64.write(value.revision, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticContextTombstoneV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticContextTombstoneV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticContextTombstoneV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticContextTombstoneV1_lower(_ value: CoreWorkspaceSemanticContextTombstoneV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticContextTombstoneV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticDeletionRecoveryEvidenceV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let sidecar: CoreWorkspaceRecoveryArtifactEvidenceV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, sidecar: CoreWorkspaceRecoveryArtifactEvidenceV1) {
+        self.workspaceId = workspaceId
+        self.sidecar = sidecar
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticDeletionRecoveryEvidenceV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticDeletionRecoveryEvidenceV1 {
+        return
+            try CoreWorkspaceSemanticDeletionRecoveryEvidenceV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                sidecar: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticDeletionRecoveryEvidenceV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.sidecar, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticDeletionRecoveryEvidenceV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1_lower(_ value: CoreWorkspaceSemanticDeletionRecoveryEvidenceV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticFullRecoveryV1: Equatable, Hashable {
+    public let catalogBytes: Data
+    public let workspaces: [CoreWorkspaceSemanticRecoveryEvidenceV1]
+    public let deletions: [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(catalogBytes: Data, workspaces: [CoreWorkspaceSemanticRecoveryEvidenceV1], deletions: [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1]) {
+        self.catalogBytes = catalogBytes
+        self.workspaces = workspaces
+        self.deletions = deletions
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticFullRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticFullRecoveryV1 {
+        return
+            try CoreWorkspaceSemanticFullRecoveryV1(
+                catalogBytes: FfiConverterData.read(from: &buf),
+                workspaces: FfiConverterSequenceTypeCoreWorkspaceSemanticRecoveryEvidenceV1.read(from: &buf),
+                deletions: FfiConverterSequenceTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticFullRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.catalogBytes, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceSemanticRecoveryEvidenceV1.write(value.workspaces, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1.write(value.deletions, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticFullRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1_lower(_ value: CoreWorkspaceSemanticFullRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticInitialRecoveryRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let recovery: CoreWorkspaceSemanticFullRecoveryV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, recovery: CoreWorkspaceSemanticFullRecoveryV1) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.recovery = recovery
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticInitialRecoveryRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticInitialRecoveryRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticInitialRecoveryRequestV1 {
+        return
+            try CoreWorkspaceSemanticInitialRecoveryRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                recovery: FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticInitialRecoveryRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterTypeCoreWorkspaceSemanticFullRecoveryV1.write(value.recovery, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticInitialRecoveryRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticInitialRecoveryRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticInitialRecoveryRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticInitialRecoveryRequestV1_lower(_ value: CoreWorkspaceSemanticInitialRecoveryRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticInitialRecoveryRequestV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticJournalRewriteV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let expectedArtifactDigest: String
+    public let replacementCanonicalBytes: Data
+    public let replacementCanonicalDigest: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, expectedArtifactDigest: String, replacementCanonicalBytes: Data, replacementCanonicalDigest: String) {
+        self.workspaceId = workspaceId
+        self.expectedArtifactDigest = expectedArtifactDigest
+        self.replacementCanonicalBytes = replacementCanonicalBytes
+        self.replacementCanonicalDigest = replacementCanonicalDigest
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticJournalRewriteV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticJournalRewriteV1 {
+        return
+            try CoreWorkspaceSemanticJournalRewriteV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                expectedArtifactDigest: FfiConverterString.read(from: &buf),
+                replacementCanonicalBytes: FfiConverterData.read(from: &buf),
+                replacementCanonicalDigest: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticJournalRewriteV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterString.write(value.expectedArtifactDigest, into: &buf)
+        FfiConverterData.write(value.replacementCanonicalBytes, into: &buf)
+        FfiConverterString.write(value.replacementCanonicalDigest, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticJournalRewriteV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1_lower(_ value: CoreWorkspaceSemanticJournalRewriteV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticRecoveryCommitResponseV1 {
+    public let admission: CorePreparedWorkspaceCommandAdmissionV1?
+    public let admissionReceipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
+    public let catalogRevision: UInt64?
+    public let catalogDigest: String?
+    public let targetWorkspaceId: String?
+    public let admissionDisposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1?
+    public let projectionDigest: String?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(admission: CorePreparedWorkspaceCommandAdmissionV1?, admissionReceipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?, catalogRevision: UInt64?, catalogDigest: String?, targetWorkspaceId: String?, admissionDisposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1?, projectionDigest: String?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.admission = admission
+        self.admissionReceipt = admissionReceipt
+        self.catalogRevision = catalogRevision
+        self.catalogDigest = catalogDigest
+        self.targetWorkspaceId = targetWorkspaceId
+        self.admissionDisposition = admissionDisposition
+        self.projectionDigest = projectionDigest
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryCommitResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryCommitResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryCommitResponseV1 {
+        return
+            try CoreWorkspaceSemanticRecoveryCommitResponseV1(
+                admission: FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.read(from: &buf),
+                admissionReceipt: FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.read(from: &buf),
+                catalogRevision: FfiConverterOptionUInt64.read(from: &buf),
+                catalogDigest: FfiConverterOptionString.read(from: &buf),
+                targetWorkspaceId: FfiConverterOptionString.read(from: &buf),
+                admissionDisposition: FfiConverterOptionTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.read(from: &buf),
+                projectionDigest: FfiConverterOptionString.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryCommitResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCorePreparedWorkspaceCommandAdmissionV1.write(value.admission, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1.write(value.admissionReceipt, into: &buf)
+        FfiConverterOptionUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterOptionString.write(value.catalogDigest, into: &buf)
+        FfiConverterOptionString.write(value.targetWorkspaceId, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.write(value.admissionDisposition, into: &buf)
+        FfiConverterOptionString.write(value.projectionDigest, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryCommitResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryCommitResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryCommitResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryCommitResponseV1_lower(_ value: CoreWorkspaceSemanticRecoveryCommitResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryCommitResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticRecoveryEvidenceV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let journal: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, journal: CoreWorkspaceRecoveryArtifactEvidenceV1, savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1, savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1) {
+        self.workspaceId = workspaceId
+        self.journal = journal
+        self.savedDocument = savedDocument
+        self.savedRevision = savedRevision
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryEvidenceV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryEvidenceV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryEvidenceV1 {
+        return
+            try CoreWorkspaceSemanticRecoveryEvidenceV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                journal: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf),
+                savedDocument: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf),
+                savedRevision: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryEvidenceV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.journal, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.savedDocument, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.savedRevision, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryEvidenceV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryEvidenceV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryEvidenceV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryEvidenceV1_lower(_ value: CoreWorkspaceSemanticRecoveryEvidenceV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryEvidenceV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+    public let recovery: CorePreparedWorkspaceSemanticRecoveryV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(recovery: CorePreparedWorkspaceSemanticRecoveryV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.recovery = recovery
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryPrepareResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+        return
+            try CoreWorkspaceSemanticRecoveryPrepareResponseV1(
+                recovery: FfiConverterOptionTypeCorePreparedWorkspaceSemanticRecoveryV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryPrepareResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCorePreparedWorkspaceSemanticRecoveryV1.write(value.recovery, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1_lower(_ value: CoreWorkspaceSemanticRecoveryPrepareResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryPrepareResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticRecoveryPreviewResponseV1: Equatable, Hashable {
+    public let preview: CoreWorkspaceSemanticRecoveryPreviewV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(preview: CoreWorkspaceSemanticRecoveryPreviewV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.preview = preview
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryPreviewResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryPreviewResponseV1 {
+        return
+            try CoreWorkspaceSemanticRecoveryPreviewResponseV1(
+                preview: FfiConverterOptionTypeCoreWorkspaceSemanticRecoveryPreviewV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryPreviewResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceSemanticRecoveryPreviewV1.write(value.preview, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryPreviewResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewResponseV1_lower(_ value: CoreWorkspaceSemanticRecoveryPreviewResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticRecoveryPreviewV1: Equatable, Hashable {
+    public let catalogRevision: UInt64
+    public let catalogDigest: String
+    public let targetWorkspaceId: String?
+    public let globalHealth: CoreWorkspaceProjectionHealthV1
+    public let admissionDisposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1
+    public let projection: CoreWorkspaceSemanticRecoveryProjectionV1
+    public let journalRewrites: [CoreWorkspaceSemanticJournalRewriteV1]
+    public let projectionDigest: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(catalogRevision: UInt64, catalogDigest: String, targetWorkspaceId: String?, globalHealth: CoreWorkspaceProjectionHealthV1, admissionDisposition: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1, projection: CoreWorkspaceSemanticRecoveryProjectionV1, journalRewrites: [CoreWorkspaceSemanticJournalRewriteV1], projectionDigest: String) {
+        self.catalogRevision = catalogRevision
+        self.catalogDigest = catalogDigest
+        self.targetWorkspaceId = targetWorkspaceId
+        self.globalHealth = globalHealth
+        self.admissionDisposition = admissionDisposition
+        self.projection = projection
+        self.journalRewrites = journalRewrites
+        self.projectionDigest = projectionDigest
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryPreviewV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryPreviewV1 {
+        return
+            try CoreWorkspaceSemanticRecoveryPreviewV1(
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                catalogDigest: FfiConverterString.read(from: &buf),
+                targetWorkspaceId: FfiConverterOptionString.read(from: &buf),
+                globalHealth: FfiConverterTypeCoreWorkspaceProjectionHealthV1.read(from: &buf),
+                admissionDisposition: FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.read(from: &buf),
+                projection: FfiConverterTypeCoreWorkspaceSemanticRecoveryProjectionV1.read(from: &buf),
+                journalRewrites: FfiConverterSequenceTypeCoreWorkspaceSemanticJournalRewriteV1.read(from: &buf),
+                projectionDigest: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryPreviewV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterString.write(value.catalogDigest, into: &buf)
+        FfiConverterOptionString.write(value.targetWorkspaceId, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionHealthV1.write(value.globalHealth, into: &buf)
+        FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.write(value.admissionDisposition, into: &buf)
+        FfiConverterTypeCoreWorkspaceSemanticRecoveryProjectionV1.write(value.projection, into: &buf)
+        FfiConverterSequenceTypeCoreWorkspaceSemanticJournalRewriteV1.write(value.journalRewrites, into: &buf)
+        FfiConverterString.write(value.projectionDigest, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryPreviewV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewV1_lower(_ value: CoreWorkspaceSemanticRecoveryPreviewV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticTargetRecoveryV1: Equatable, Hashable {
+    public let catalogBytes: Data
+    public let workspaceId: String
+    public let journal: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1
+    public let deletionSidecar: CoreWorkspaceRecoveryArtifactEvidenceV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(catalogBytes: Data, workspaceId: String, journal: CoreWorkspaceRecoveryArtifactEvidenceV1, savedDocument: CoreWorkspaceRecoveryArtifactEvidenceV1, savedRevision: CoreWorkspaceRecoveryArtifactEvidenceV1, deletionSidecar: CoreWorkspaceRecoveryArtifactEvidenceV1) {
+        self.catalogBytes = catalogBytes
+        self.workspaceId = workspaceId
+        self.journal = journal
+        self.savedDocument = savedDocument
+        self.savedRevision = savedRevision
+        self.deletionSidecar = deletionSidecar
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticTargetRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticTargetRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticTargetRecoveryV1 {
+        return
+            try CoreWorkspaceSemanticTargetRecoveryV1(
+                catalogBytes: FfiConverterData.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf),
+                journal: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf),
+                savedDocument: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf),
+                savedRevision: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf),
+                deletionSidecar: FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticTargetRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.catalogBytes, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.journal, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.savedDocument, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.savedRevision, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.write(value.deletionSidecar, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticTargetRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticTargetRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticTargetRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticTargetRecoveryV1_lower(_ value: CoreWorkspaceSemanticTargetRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticTargetRecoveryV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticUnavailableRecoveryV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let fileUrl: String
+    public let reason: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, fileUrl: String, reason: String) {
+        self.workspaceId = workspaceId
+        self.fileUrl = fileUrl
+        self.reason = reason
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticUnavailableRecoveryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticUnavailableRecoveryV1 {
+        return
+            try CoreWorkspaceSemanticUnavailableRecoveryV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                fileUrl: FfiConverterString.read(from: &buf),
+                reason: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticUnavailableRecoveryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterString.write(value.fileUrl, into: &buf)
+        FfiConverterString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticUnavailableRecoveryV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1_lower(_ value: CoreWorkspaceSemanticUnavailableRecoveryV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1.lower(value)
 }
 
 
@@ -16715,6 +17344,85 @@ public func FfiConverterTypeCoreWorkspaceProjectionPublicationKindV1_lower(_ val
 
 
 
+public enum CoreWorkspaceRecoveryArtifactEvidenceV1: Equatable, Hashable {
+
+    case absent
+    case present(bytes: Data
+    )
+    case unavailable(reason: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceRecoveryArtifactEvidenceV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceRecoveryArtifactEvidenceV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceRecoveryArtifactEvidenceV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .absent
+
+        case 2: return .present(bytes: try FfiConverterData.read(from: &buf)
+        )
+
+        case 3: return .unavailable(reason: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceRecoveryArtifactEvidenceV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .absent:
+            writeInt(&buf, Int32(1))
+
+
+        case let .present(bytes):
+            writeInt(&buf, Int32(2))
+            FfiConverterData.write(bytes, into: &buf)
+
+
+        case let .unavailable(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(reason, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceRecoveryArtifactEvidenceV1 {
+    return try FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1_lower(_ value: CoreWorkspaceRecoveryArtifactEvidenceV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceRecoveryArtifactEvidenceV1.lower(value)
+}
+
+
+
+
 public enum CoreWorkspaceSaveActionKindV1: Equatable, Hashable {
 
     case writePendingJournal
@@ -17132,6 +17840,324 @@ public func FfiConverterTypeCoreWorkspaceSaveFinalizationV1_lower(_ value: CoreW
 
 
 
+public enum CoreWorkspaceSemanticRecoveryAdmissionDispositionV1: Equatable, Hashable {
+
+    case installed
+    case preserved
+    case quarantined
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryAdmissionDispositionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticRecoveryAdmissionDispositionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryAdmissionDispositionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .installed
+
+        case 2: return .preserved
+
+        case 3: return .quarantined
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .installed:
+            writeInt(&buf, Int32(1))
+
+
+        case .preserved:
+            writeInt(&buf, Int32(2))
+
+
+        case .quarantined:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryAdmissionDispositionV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1_lower(_ value: CoreWorkspaceSemanticRecoveryAdmissionDispositionV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.lower(value)
+}
+
+
+
+
+public enum CoreWorkspaceSemanticRecoveryProjectionV1: Equatable, Hashable {
+
+    case full(rows: [CoreWorkspaceSemanticRecoveryRowV1]
+    )
+    case target(directive: CoreWorkspaceSemanticTargetDirectiveV1
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryProjectionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryProjectionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticRecoveryProjectionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryProjectionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .full(rows: try FfiConverterSequenceTypeCoreWorkspaceSemanticRecoveryRowV1.read(from: &buf)
+        )
+
+        case 2: return .target(directive: try FfiConverterTypeCoreWorkspaceSemanticTargetDirectiveV1.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryProjectionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .full(rows):
+            writeInt(&buf, Int32(1))
+            FfiConverterSequenceTypeCoreWorkspaceSemanticRecoveryRowV1.write(rows, into: &buf)
+
+
+        case let .target(directive):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeCoreWorkspaceSemanticTargetDirectiveV1.write(directive, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryProjectionV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryProjectionV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryProjectionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryProjectionV1_lower(_ value: CoreWorkspaceSemanticRecoveryProjectionV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryProjectionV1.lower(value)
+}
+
+
+
+
+public enum CoreWorkspaceSemanticRecoveryRowV1: Equatable, Hashable {
+
+    case active(row: CoreWorkspaceSemanticActiveRecoveryV1
+    )
+    case unavailable(row: CoreWorkspaceSemanticUnavailableRecoveryV1
+    )
+    case deleted(workspaceId: String, fileUrl: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticRecoveryRowV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticRecoveryRowV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticRecoveryRowV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticRecoveryRowV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .active(row: try FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1.read(from: &buf)
+        )
+
+        case 2: return .unavailable(row: try FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1.read(from: &buf)
+        )
+
+        case 3: return .deleted(workspaceId: try FfiConverterString.read(from: &buf), fileUrl: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticRecoveryRowV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .active(row):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1.write(row, into: &buf)
+
+
+        case let .unavailable(row):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1.write(row, into: &buf)
+
+
+        case let .deleted(workspaceId,fileUrl):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(workspaceId, into: &buf)
+            FfiConverterString.write(fileUrl, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryRowV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticRecoveryRowV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticRecoveryRowV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticRecoveryRowV1_lower(_ value: CoreWorkspaceSemanticRecoveryRowV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticRecoveryRowV1.lower(value)
+}
+
+
+
+
+public enum CoreWorkspaceSemanticTargetDirectiveV1: Equatable, Hashable {
+
+    case upsert(row: CoreWorkspaceSemanticActiveRecoveryV1
+    )
+    case unavailable(row: CoreWorkspaceSemanticUnavailableRecoveryV1
+    )
+    case delete(workspaceId: String, fileUrl: String
+    )
+    case noChange
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticTargetDirectiveV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticTargetDirectiveV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticTargetDirectiveV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticTargetDirectiveV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .upsert(row: try FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1.read(from: &buf)
+        )
+
+        case 2: return .unavailable(row: try FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1.read(from: &buf)
+        )
+
+        case 3: return .delete(workspaceId: try FfiConverterString.read(from: &buf), fileUrl: try FfiConverterString.read(from: &buf)
+        )
+
+        case 4: return .noChange
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticTargetDirectiveV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .upsert(row):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeCoreWorkspaceSemanticActiveRecoveryV1.write(row, into: &buf)
+
+
+        case let .unavailable(row):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeCoreWorkspaceSemanticUnavailableRecoveryV1.write(row, into: &buf)
+
+
+        case let .delete(workspaceId,fileUrl):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(workspaceId, into: &buf)
+            FfiConverterString.write(fileUrl, into: &buf)
+
+
+        case .noChange:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticTargetDirectiveV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticTargetDirectiveV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticTargetDirectiveV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticTargetDirectiveV1_lower(_ value: CoreWorkspaceSemanticTargetDirectiveV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticTargetDirectiveV1.lower(value)
+}
+
+
+
+
 public enum CoreWorkspaceTabLocationV1: Equatable, Hashable {
 
     case composed
@@ -17205,6 +18231,7 @@ public enum CoreWorkspaceWorkingJournalValidationErrorKindV1: Equatable, Hashabl
     case malformed
     case futureSchema
     case invalidIdentity
+    case duplicateCatalogIdentity
     case invalidFileUrl
     case invalidRevisionState
     case invalidDigest
@@ -17248,29 +18275,31 @@ public struct FfiConverterTypeCoreWorkspaceWorkingJournalValidationErrorKindV1: 
 
         case 5: return .invalidIdentity
 
-        case 6: return .invalidFileUrl
+        case 6: return .duplicateCatalogIdentity
 
-        case 7: return .invalidRevisionState
+        case 7: return .invalidFileUrl
 
-        case 8: return .invalidDigest
+        case 8: return .invalidRevisionState
 
-        case 9: return .invalidWorkingDocument
+        case 9: return .invalidDigest
 
-        case 10: return .invalidContextTable
+        case 10: return .invalidWorkingDocument
 
-        case 11: return .invalidOperationLedger
+        case 11: return .invalidContextTable
 
-        case 12: return .invalidPendingSave
+        case 12: return .invalidOperationLedger
 
-        case 13: return .invalidTimestamp
+        case 13: return .invalidPendingSave
 
-        case 14: return .externalDocumentConflict
+        case 14: return .invalidTimestamp
 
-        case 15: return .staleRecoverySnapshot
+        case 15: return .externalDocumentConflict
 
-        case 16: return .fullRecoveryRequired
+        case 16: return .staleRecoverySnapshot
 
-        case 17: return .invalidTransaction
+        case 17: return .fullRecoveryRequired
+
+        case 18: return .invalidTransaction
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -17300,52 +18329,56 @@ public struct FfiConverterTypeCoreWorkspaceWorkingJournalValidationErrorKindV1: 
             writeInt(&buf, Int32(5))
 
 
-        case .invalidFileUrl:
+        case .duplicateCatalogIdentity:
             writeInt(&buf, Int32(6))
 
 
-        case .invalidRevisionState:
+        case .invalidFileUrl:
             writeInt(&buf, Int32(7))
 
 
-        case .invalidDigest:
+        case .invalidRevisionState:
             writeInt(&buf, Int32(8))
 
 
-        case .invalidWorkingDocument:
+        case .invalidDigest:
             writeInt(&buf, Int32(9))
 
 
-        case .invalidContextTable:
+        case .invalidWorkingDocument:
             writeInt(&buf, Int32(10))
 
 
-        case .invalidOperationLedger:
+        case .invalidContextTable:
             writeInt(&buf, Int32(11))
 
 
-        case .invalidPendingSave:
+        case .invalidOperationLedger:
             writeInt(&buf, Int32(12))
 
 
-        case .invalidTimestamp:
+        case .invalidPendingSave:
             writeInt(&buf, Int32(13))
 
 
-        case .externalDocumentConflict:
+        case .invalidTimestamp:
             writeInt(&buf, Int32(14))
 
 
-        case .staleRecoverySnapshot:
+        case .externalDocumentConflict:
             writeInt(&buf, Int32(15))
 
 
-        case .fullRecoveryRequired:
+        case .staleRecoverySnapshot:
             writeInt(&buf, Int32(16))
 
 
-        case .invalidTransaction:
+        case .fullRecoveryRequired:
             writeInt(&buf, Int32(17))
+
+
+        case .invalidTransaction:
+            writeInt(&buf, Int32(18))
 
         }
     }
@@ -18841,6 +19874,30 @@ fileprivate struct FfiConverterOptionTypeCorePreparedWorkspaceSaveTransactionV1:
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCorePreparedWorkspaceSemanticRecoveryV1: FfiConverterRustBuffer {
+    typealias SwiftType = CorePreparedWorkspaceSemanticRecoveryV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCorePreparedWorkspaceSemanticRecoveryV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCorePreparedWorkspaceSemanticRecoveryV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceCommandExecutionClaimV1?
 
@@ -19153,6 +20210,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceSaveCommitReceiptV1: FfiCo
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceSemanticRecoveryPreviewV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticRecoveryPreviewV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceSemanticRecoveryPreviewV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceWorkingJournalValidationV1?
 
@@ -19409,6 +20490,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceSaveFinalizationV1: FfiCon
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCoreWorkspaceSaveFinalizationV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticRecoveryAdmissionDispositionV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceSemanticRecoveryAdmissionDispositionV1.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -19890,56 +20995,6 @@ fileprivate struct FfiConverterSequenceTypeCoreSearchScoreCandidateV1: FfiConver
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1: FfiConverterRustBuffer {
-    typealias SwiftType = [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]
-
-    public static func write(_ value: [CoreWorkspaceCommandAdmissionDeletionRecoveryV1], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceCommandAdmissionDeletionRecoveryV1] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [CoreWorkspaceCommandAdmissionDeletionRecoveryV1]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeCoreWorkspaceCommandAdmissionDeletionRecoveryV1.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1: FfiConverterRustBuffer {
-    typealias SwiftType = [CoreWorkspaceCommandAdmissionJournalRecoveryV1]
-
-    public static func write(_ value: [CoreWorkspaceCommandAdmissionJournalRecoveryV1], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceCommandAdmissionJournalRecoveryV1] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [CoreWorkspaceCommandAdmissionJournalRecoveryV1]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeCoreWorkspaceCommandAdmissionJournalRecoveryV1.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterSequenceTypeCoreWorkspaceContextAuthorityStateV1: FfiConverterRustBuffer {
     typealias SwiftType = [CoreWorkspaceContextAuthorityStateV1]
 
@@ -20057,6 +21112,156 @@ fileprivate struct FfiConverterSequenceTypeCoreWorkspaceProtectedAgentIdentityV1
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCoreWorkspaceProtectedAgentIdentityV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceRecordedOperationV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceRecordedOperationV1]
+
+    public static func write(_ value: [CoreWorkspaceRecordedOperationV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceRecordedOperationV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceRecordedOperationV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceRecordedOperationV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceRecordedOperationV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceSemanticContextRecoveryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceSemanticContextRecoveryV1]
+
+    public static func write(_ value: [CoreWorkspaceSemanticContextRecoveryV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceSemanticContextRecoveryV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceSemanticContextRecoveryV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceSemanticContextRecoveryV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceSemanticContextRecoveryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceSemanticContextTombstoneV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceSemanticContextTombstoneV1]
+
+    public static func write(_ value: [CoreWorkspaceSemanticContextTombstoneV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceSemanticContextTombstoneV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceSemanticContextTombstoneV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceSemanticContextTombstoneV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceSemanticContextTombstoneV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1]
+
+    public static func write(_ value: [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceSemanticDeletionRecoveryEvidenceV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceSemanticDeletionRecoveryEvidenceV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceSemanticJournalRewriteV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceSemanticJournalRewriteV1]
+
+    public static func write(_ value: [CoreWorkspaceSemanticJournalRewriteV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceSemanticJournalRewriteV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceSemanticJournalRewriteV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceSemanticRecoveryEvidenceV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceSemanticRecoveryEvidenceV1]
+
+    public static func write(_ value: [CoreWorkspaceSemanticRecoveryEvidenceV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceSemanticRecoveryEvidenceV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceSemanticRecoveryEvidenceV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceSemanticRecoveryEvidenceV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceSemanticRecoveryEvidenceV1.read(from: &buf))
         }
         return seq
     }
@@ -20215,6 +21420,31 @@ fileprivate struct FfiConverterSequenceTypeRuntimeEvent: FfiConverterRustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoreWorkspaceSemanticRecoveryRowV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreWorkspaceSemanticRecoveryRowV1]
+
+    public static func write(_ value: [CoreWorkspaceSemanticRecoveryRowV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreWorkspaceSemanticRecoveryRowV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreWorkspaceSemanticRecoveryRowV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreWorkspaceSemanticRecoveryRowV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreWorkspaceSemanticRecoveryRowV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePathClause: FfiConverterRustBuffer {
     typealias SwiftType = [PathClause]
 
@@ -20333,16 +21563,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_acquire() != 13547) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_apply_full_recovery() != 24596) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_apply_target_recovery() != 23115) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_close() != 4204) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_diagnostics() != 57548) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_prepare_semantic_full_recovery() != 4440) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_prepare_semantic_target_recovery() != 65249) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_acquire_authority_permit() != 47881) {
@@ -20406,6 +21636,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_report_action() != 48150) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesemanticrecoveryv1_close() != 14256) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesemanticrecoveryv1_commit() != 10065) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesemanticrecoveryv1_preview() != 13709) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_apply_model_and_effort() != 60825) {
@@ -20585,9 +21824,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_catalog_validate_v1() != 25594) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_command_admission_begin_v1() != 36245) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_command_identity_v1() != 62052) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20655,6 +21891,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_saved_revision_validate_v1() != 64208) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_semantic_initial_recovery_prepare_v1() != 48091) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_working_journal_seed_v1() != 65157) {
