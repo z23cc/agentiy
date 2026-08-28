@@ -35,17 +35,19 @@ pub mod workspace_persistence_journal;
 pub use config::RuntimeConfig;
 pub use identity::{ABI_EPOCH, IdentityError, RuntimeIdentity};
 pub use lifecycle::{
-    AuthorityOperationPermit, CoreRuntime, LifecycleState, RuntimeError, ShutdownReceipt,
+    AuthorityOperationPermit, CoreRuntime, LifecycleState, ManagedOperationLease, RuntimeError,
+    ShutdownReceipt,
 };
 pub use observability::{
     DiagnosticRecord, DiagnosticSeverity, drain_diagnostics, record_diagnostic,
 };
 pub use operation::{
-    AdmissionOutcome, AdmissionRequest, CancelOutcome, IdentifierError, OperationDiagnostics,
-    OperationId, OperationSnapshot, OperationState, RequestFingerprint, ScopeId, TerminalOutcome,
+    AdmissionOutcome, AdmissionRequest, CancelOutcome, IdentifierError, ManagedOperationDirective,
+    ManagedOperationStopReason, OperationDiagnostics, OperationId, OperationSnapshot,
+    OperationState, RequestFingerprint, ScopeId, TerminalOutcome,
 };
 pub use panic_forensics::{PanicRecord, install_panic_hook, recent_panics};
-pub use registry::{OperationRegistry, RegistryError};
+pub use registry::{ManagedOperationClaim, OperationRegistry, RegistryError};
 pub use search::{
     ByteRange, CompactRegexBatchResult, CompactRegexSubjectSummary, EngineKind,
     FolderSuffixRequest, JitStatus, LeafCancellation, LimitFailure, LimitPolicy, MatchPolicy,

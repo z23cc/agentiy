@@ -651,7 +651,7 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Sendable {
 
-    func acquire(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1
+    func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMillis: UInt64?) throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1
 
     func close()
 
@@ -715,12 +715,13 @@ open class CorePreparedWorkspaceCommandAdmissionV1: CorePreparedWorkspaceCommand
 
 
 
-open func acquire(request: CoreWorkspaceCommandIdentityRequestV1)throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1  {
+open func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMillis: UInt64?)throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceCommandAdmissionAcquireResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_acquire(
             self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),uniffiCallStatus
+        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),
+        FfiConverterOptionUInt64.lower(deadlineUnixMillis),uniffiCallStatus
     )
 })
 }
@@ -820,6 +821,8 @@ public protocol CorePreparedWorkspaceCreateTransactionV1Protocol: AnyObject, Sen
 
     func close()
 
+    func commandAdmissionFinalizationReconciled()  -> Bool
+
     func nextDirective() throws  -> CoreWorkspaceCreateDirectiveResponseV1
 
     func reportAction(report: CoreWorkspaceSaveActionReportV1) throws  -> CoreWorkspaceCreateDirectiveResponseV1
@@ -893,6 +896,15 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func commandAdmissionFinalizationReconciled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecreatetransactionv1_command_admission_finalization_reconciled(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
 open func nextDirective()throws  -> CoreWorkspaceCreateDirectiveResponseV1  {
@@ -970,6 +982,8 @@ public protocol CorePreparedWorkspaceDeleteTransactionV1Protocol: AnyObject, Sen
 
     func close()
 
+    func commandAdmissionFinalizationReconciled()  -> Bool
+
     func nextDirective() throws  -> CoreWorkspaceDeleteDirectiveResponseV1
 
     func reconcileAdmissionFinalization(operation: CoreWorkspaceRecordedOperationV1) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
@@ -1045,6 +1059,15 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func commandAdmissionFinalizationReconciled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacedeletetransactionv1_command_admission_finalization_reconciled(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
 open func nextDirective()throws  -> CoreWorkspaceDeleteDirectiveResponseV1  {
@@ -1132,6 +1155,8 @@ public protocol CorePreparedWorkspaceJournalMutationTransactionV1Protocol: AnyOb
 
     func close()
 
+    func commandAdmissionFinalizationReconciled()  -> Bool
+
     func nextDirective() throws  -> CoreWorkspaceJournalMutationDirectiveResponseV1
 
     func reportAction(report: CoreWorkspaceSaveActionReportV1) throws  -> CoreWorkspaceJournalMutationDirectiveResponseV1
@@ -1207,6 +1232,15 @@ open func close()  {try! rustCall() {
 }
 }
 
+open func commandAdmissionFinalizationReconciled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacejournalmutationtransactionv1_command_admission_finalization_reconciled(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
 open func nextDirective()throws  -> CoreWorkspaceJournalMutationDirectiveResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceJournalMutationDirectiveResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -1278,7 +1312,11 @@ public func FfiConverterTypeCorePreparedWorkspaceJournalMutationTransactionV1_lo
 
 public protocol CorePreparedWorkspaceSaveTransactionV1Protocol: AnyObject, Sendable {
 
+    func acquireAuthorityPermit() throws  -> CoreWorkspaceCreateAuthorityPermitV1
+
     func close()
+
+    func commandAdmissionFinalizationReconciled()  -> Bool
 
     func nextDirective() throws  -> CoreWorkspaceSaveDirectiveResponseV1
 
@@ -1338,12 +1376,30 @@ open class CorePreparedWorkspaceSaveTransactionV1: CorePreparedWorkspaceSaveTran
 
 
 
+open func acquireAuthorityPermit()throws  -> CoreWorkspaceCreateAuthorityPermitV1  {
+    return try  FfiConverterTypeCoreWorkspaceCreateAuthorityPermitV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacesavetransactionv1_acquire_authority_permit(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
 open func close()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacesavetransactionv1_close(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func commandAdmissionFinalizationReconciled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacesavetransactionv1_command_admission_finalization_reconciled(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
 open func nextDirective()throws  -> CoreWorkspaceSaveDirectiveResponseV1  {
@@ -2834,6 +2890,8 @@ public protocol CoreWorkspaceCommandExecutionClaimV1Protocol: AnyObject, Sendabl
 
     func abandon() throws  -> Bool
 
+    func checkpoint() throws  -> CoreWorkspaceCommandLifecycleDirectiveV1
+
     func close()
 
     func finalizeTransient(operation: CoreWorkspaceRecordedOperationV1) throws  -> CoreWorkspaceCommandTransientFinalizationResponseV1
@@ -2904,6 +2962,15 @@ open func abandon()throws  -> Bool  {
     return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_abandon(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func checkpoint()throws  -> CoreWorkspaceCommandLifecycleDirectiveV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandLifecycleDirectiveV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_checkpoint(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -14241,6 +14308,8 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case RuntimeStopped
     case OperationConflict
     case DeadlineExpired
+    case OperationCancelled
+    case ShutdownRequested
     case SubscriptionNotFound
     case QueueLimitExceeded
     case PayloadTooLarge
@@ -14371,97 +14440,99 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case 5: return .RuntimeStopped
         case 6: return .OperationConflict
         case 7: return .DeadlineExpired
-        case 8: return .SubscriptionNotFound
-        case 9: return .QueueLimitExceeded
-        case 10: return .PayloadTooLarge
-        case 11: return .ShutdownTimedOut
-        case 12: return .InternalPanic
-        case 13: return .PatternTooComplex
-        case 14: return .InvalidEscape
-        case 15: return .UnmatchedBrackets
-        case 16: return .UnmatchedParentheses
-        case 17: return .InvalidQuantifier
-        case 18: return .VariableLengthLookbehind
-        case 19: return .InvalidPattern
-        case 20: return .MatchLimitExceeded
-        case 21: return .DepthLimitExceeded
-        case 22: return .HeapLimitExceeded
-        case 23: return .JitUnavailable
-        case 24: return .SearchCancelled
-        case 25: return .SearchInvariant
-        case 26: return .CodeMapInvalidRequest
-        case 27: return .CodeMapServiceUnavailable
-        case 28: return .CodeMapCancelled
-        case 29: return .CodeMapInvariant
-        case 30: return .ApplyEditsInvalidParams(
+        case 8: return .OperationCancelled
+        case 9: return .ShutdownRequested
+        case 10: return .SubscriptionNotFound
+        case 11: return .QueueLimitExceeded
+        case 12: return .PayloadTooLarge
+        case 13: return .ShutdownTimedOut
+        case 14: return .InternalPanic
+        case 15: return .PatternTooComplex
+        case 16: return .InvalidEscape
+        case 17: return .UnmatchedBrackets
+        case 18: return .UnmatchedParentheses
+        case 19: return .InvalidQuantifier
+        case 20: return .VariableLengthLookbehind
+        case 21: return .InvalidPattern
+        case 22: return .MatchLimitExceeded
+        case 23: return .DepthLimitExceeded
+        case 24: return .HeapLimitExceeded
+        case 25: return .JitUnavailable
+        case 26: return .SearchCancelled
+        case 27: return .SearchInvariant
+        case 28: return .CodeMapInvalidRequest
+        case 29: return .CodeMapServiceUnavailable
+        case 30: return .CodeMapCancelled
+        case 31: return .CodeMapInvariant
+        case 32: return .ApplyEditsInvalidParams(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 31: return .ApplyEditsCancelled
-        case 32: return .ApplyEditsInvariant
-        case 33: return .ApplyEditsLossyDecodeBlocksWriteBack(
+        case 33: return .ApplyEditsCancelled
+        case 34: return .ApplyEditsInvariant
+        case 35: return .ApplyEditsLossyDecodeBlocksWriteBack(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 34: return .InventoryInvalidRequest(
+        case 36: return .InventoryInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 35: return .InventoryCancelled
-        case 36: return .InventoryInvariant
-        case 37: return .PathMatchInvalidRequest(
+        case 37: return .InventoryCancelled
+        case 38: return .InventoryInvariant
+        case 39: return .PathMatchInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 38: return .PathMatchCancelled
-        case 39: return .PathResolveInvalidRequest(
+        case 40: return .PathMatchCancelled
+        case 41: return .PathResolveInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 40: return .PathResolveCancelled
-        case 41: return .PathSearchInvalidRequest(
+        case 42: return .PathResolveCancelled
+        case 43: return .PathSearchInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 42: return .PathSearchCancelled
-        case 43: return .TokenAccountingInvalidRequest(
+        case 44: return .PathSearchCancelled
+        case 45: return .TokenAccountingInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 44: return .TokenAccountingCancelled
-        case 45: return .InventoryScopeUnknownScope
-        case 46: return .InventoryScopeUnknownRoot
-        case 47: return .InventoryScopeLifetimeMismatch
-        case 48: return .InventoryScopeNoPublishedGeneration
-        case 49: return .InventoryScopeBulkLoadUnknown
-        case 50: return .InventoryScopeBulkLoadAlreadyTerminal
-        case 51: return .InventoryScopeBulkLoadRootMismatch
-        case 52: return .InventoryHandleInvalidated(
+        case 46: return .TokenAccountingCancelled
+        case 47: return .InventoryScopeUnknownScope
+        case 48: return .InventoryScopeUnknownRoot
+        case 49: return .InventoryScopeLifetimeMismatch
+        case 50: return .InventoryScopeNoPublishedGeneration
+        case 51: return .InventoryScopeBulkLoadUnknown
+        case 52: return .InventoryScopeBulkLoadAlreadyTerminal
+        case 53: return .InventoryScopeBulkLoadRootMismatch
+        case 54: return .InventoryHandleInvalidated(
             reason: try FfiConverterTypeInventoryHandleInvalidationReasonV1.read(from: &buf)
             )
-        case 53: return .InventoryScopeInvalidRequest(
+        case 55: return .InventoryScopeInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 54: return .WorkspaceProjectionUnknownScope
-        case 55: return .WorkspaceProjectionScopeAlreadyOpen
-        case 56: return .WorkspaceProjectionScopeClosed
-        case 57: return .WorkspaceProjectionGenerationMismatch(
+        case 56: return .WorkspaceProjectionUnknownScope
+        case 57: return .WorkspaceProjectionScopeAlreadyOpen
+        case 58: return .WorkspaceProjectionScopeClosed
+        case 59: return .WorkspaceProjectionGenerationMismatch(
             expected: try FfiConverterUInt64.read(from: &buf),
             actual: try FfiConverterUInt64.read(from: &buf)
             )
-        case 58: return .WorkspaceProjectionUnknownSnapshotHandle
-        case 59: return .WorkspaceProjectionCapacityExceeded
-        case 60: return .AgentClaudeUnknownScope
-        case 61: return .AgentClaudeScopeClosed
-        case 62: return .AgentClaudeAlreadyRunning
-        case 63: return .AgentClaudeNotRunning
-        case 64: return .AgentClaudeUnknownPermissionRequest
-        case 65: return .AgentClaudeSpawnFailed(
+        case 60: return .WorkspaceProjectionUnknownSnapshotHandle
+        case 61: return .WorkspaceProjectionCapacityExceeded
+        case 62: return .AgentClaudeUnknownScope
+        case 63: return .AgentClaudeScopeClosed
+        case 64: return .AgentClaudeAlreadyRunning
+        case 65: return .AgentClaudeNotRunning
+        case 66: return .AgentClaudeUnknownPermissionRequest
+        case 67: return .AgentClaudeSpawnFailed(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 66: return .AgentClaudeReaperFailed(
+        case 68: return .AgentClaudeReaperFailed(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 67: return .AgentClaudeTransportWriteFailed(
+        case 69: return .AgentClaudeTransportWriteFailed(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 68: return .AgentClaudeInvalidRequest(
+        case 70: return .AgentClaudeInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 69: return .AgentClaudeControlResponseError(
+        case 71: return .AgentClaudeControlResponseError(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -14504,267 +14575,275 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(7))
 
 
-        case .SubscriptionNotFound:
+        case .OperationCancelled:
             writeInt(&buf, Int32(8))
 
 
-        case .QueueLimitExceeded:
+        case .ShutdownRequested:
             writeInt(&buf, Int32(9))
 
 
-        case .PayloadTooLarge:
+        case .SubscriptionNotFound:
             writeInt(&buf, Int32(10))
 
 
-        case .ShutdownTimedOut:
+        case .QueueLimitExceeded:
             writeInt(&buf, Int32(11))
 
 
-        case .InternalPanic:
+        case .PayloadTooLarge:
             writeInt(&buf, Int32(12))
 
 
-        case .PatternTooComplex:
+        case .ShutdownTimedOut:
             writeInt(&buf, Int32(13))
 
 
-        case .InvalidEscape:
+        case .InternalPanic:
             writeInt(&buf, Int32(14))
 
 
-        case .UnmatchedBrackets:
+        case .PatternTooComplex:
             writeInt(&buf, Int32(15))
 
 
-        case .UnmatchedParentheses:
+        case .InvalidEscape:
             writeInt(&buf, Int32(16))
 
 
-        case .InvalidQuantifier:
+        case .UnmatchedBrackets:
             writeInt(&buf, Int32(17))
 
 
-        case .VariableLengthLookbehind:
+        case .UnmatchedParentheses:
             writeInt(&buf, Int32(18))
 
 
-        case .InvalidPattern:
+        case .InvalidQuantifier:
             writeInt(&buf, Int32(19))
 
 
-        case .MatchLimitExceeded:
+        case .VariableLengthLookbehind:
             writeInt(&buf, Int32(20))
 
 
-        case .DepthLimitExceeded:
+        case .InvalidPattern:
             writeInt(&buf, Int32(21))
 
 
-        case .HeapLimitExceeded:
+        case .MatchLimitExceeded:
             writeInt(&buf, Int32(22))
 
 
-        case .JitUnavailable:
+        case .DepthLimitExceeded:
             writeInt(&buf, Int32(23))
 
 
-        case .SearchCancelled:
+        case .HeapLimitExceeded:
             writeInt(&buf, Int32(24))
 
 
-        case .SearchInvariant:
+        case .JitUnavailable:
             writeInt(&buf, Int32(25))
 
 
-        case .CodeMapInvalidRequest:
+        case .SearchCancelled:
             writeInt(&buf, Int32(26))
 
 
-        case .CodeMapServiceUnavailable:
+        case .SearchInvariant:
             writeInt(&buf, Int32(27))
 
 
-        case .CodeMapCancelled:
+        case .CodeMapInvalidRequest:
             writeInt(&buf, Int32(28))
 
 
-        case .CodeMapInvariant:
+        case .CodeMapServiceUnavailable:
             writeInt(&buf, Int32(29))
 
 
-        case let .ApplyEditsInvalidParams(message):
+        case .CodeMapCancelled:
             writeInt(&buf, Int32(30))
+
+
+        case .CodeMapInvariant:
+            writeInt(&buf, Int32(31))
+
+
+        case let .ApplyEditsInvalidParams(message):
+            writeInt(&buf, Int32(32))
             FfiConverterString.write(message, into: &buf)
 
 
         case .ApplyEditsCancelled:
-            writeInt(&buf, Int32(31))
+            writeInt(&buf, Int32(33))
 
 
         case .ApplyEditsInvariant:
-            writeInt(&buf, Int32(32))
+            writeInt(&buf, Int32(34))
 
 
         case let .ApplyEditsLossyDecodeBlocksWriteBack(message):
-            writeInt(&buf, Int32(33))
+            writeInt(&buf, Int32(35))
             FfiConverterString.write(message, into: &buf)
 
 
         case let .InventoryInvalidRequest(message):
-            writeInt(&buf, Int32(34))
+            writeInt(&buf, Int32(36))
             FfiConverterString.write(message, into: &buf)
 
 
         case .InventoryCancelled:
-            writeInt(&buf, Int32(35))
+            writeInt(&buf, Int32(37))
 
 
         case .InventoryInvariant:
-            writeInt(&buf, Int32(36))
-
-
-        case let .PathMatchInvalidRequest(message):
-            writeInt(&buf, Int32(37))
-            FfiConverterString.write(message, into: &buf)
-
-
-        case .PathMatchCancelled:
             writeInt(&buf, Int32(38))
 
 
-        case let .PathResolveInvalidRequest(message):
+        case let .PathMatchInvalidRequest(message):
             writeInt(&buf, Int32(39))
             FfiConverterString.write(message, into: &buf)
 
 
-        case .PathResolveCancelled:
+        case .PathMatchCancelled:
             writeInt(&buf, Int32(40))
 
 
-        case let .PathSearchInvalidRequest(message):
+        case let .PathResolveInvalidRequest(message):
             writeInt(&buf, Int32(41))
             FfiConverterString.write(message, into: &buf)
 
 
-        case .PathSearchCancelled:
+        case .PathResolveCancelled:
             writeInt(&buf, Int32(42))
 
 
-        case let .TokenAccountingInvalidRequest(message):
+        case let .PathSearchInvalidRequest(message):
             writeInt(&buf, Int32(43))
             FfiConverterString.write(message, into: &buf)
 
 
-        case .TokenAccountingCancelled:
+        case .PathSearchCancelled:
             writeInt(&buf, Int32(44))
 
 
-        case .InventoryScopeUnknownScope:
+        case let .TokenAccountingInvalidRequest(message):
             writeInt(&buf, Int32(45))
+            FfiConverterString.write(message, into: &buf)
 
 
-        case .InventoryScopeUnknownRoot:
+        case .TokenAccountingCancelled:
             writeInt(&buf, Int32(46))
 
 
-        case .InventoryScopeLifetimeMismatch:
+        case .InventoryScopeUnknownScope:
             writeInt(&buf, Int32(47))
 
 
-        case .InventoryScopeNoPublishedGeneration:
+        case .InventoryScopeUnknownRoot:
             writeInt(&buf, Int32(48))
 
 
-        case .InventoryScopeBulkLoadUnknown:
+        case .InventoryScopeLifetimeMismatch:
             writeInt(&buf, Int32(49))
 
 
-        case .InventoryScopeBulkLoadAlreadyTerminal:
+        case .InventoryScopeNoPublishedGeneration:
             writeInt(&buf, Int32(50))
 
 
-        case .InventoryScopeBulkLoadRootMismatch:
+        case .InventoryScopeBulkLoadUnknown:
             writeInt(&buf, Int32(51))
 
 
-        case let .InventoryHandleInvalidated(reason):
+        case .InventoryScopeBulkLoadAlreadyTerminal:
             writeInt(&buf, Int32(52))
+
+
+        case .InventoryScopeBulkLoadRootMismatch:
+            writeInt(&buf, Int32(53))
+
+
+        case let .InventoryHandleInvalidated(reason):
+            writeInt(&buf, Int32(54))
             FfiConverterTypeInventoryHandleInvalidationReasonV1.write(reason, into: &buf)
 
 
         case let .InventoryScopeInvalidRequest(message):
-            writeInt(&buf, Int32(53))
+            writeInt(&buf, Int32(55))
             FfiConverterString.write(message, into: &buf)
 
 
         case .WorkspaceProjectionUnknownScope:
-            writeInt(&buf, Int32(54))
-
-
-        case .WorkspaceProjectionScopeAlreadyOpen:
-            writeInt(&buf, Int32(55))
-
-
-        case .WorkspaceProjectionScopeClosed:
             writeInt(&buf, Int32(56))
 
 
-        case let .WorkspaceProjectionGenerationMismatch(expected,actual):
+        case .WorkspaceProjectionScopeAlreadyOpen:
             writeInt(&buf, Int32(57))
+
+
+        case .WorkspaceProjectionScopeClosed:
+            writeInt(&buf, Int32(58))
+
+
+        case let .WorkspaceProjectionGenerationMismatch(expected,actual):
+            writeInt(&buf, Int32(59))
             FfiConverterUInt64.write(expected, into: &buf)
             FfiConverterUInt64.write(actual, into: &buf)
 
 
         case .WorkspaceProjectionUnknownSnapshotHandle:
-            writeInt(&buf, Int32(58))
-
-
-        case .WorkspaceProjectionCapacityExceeded:
-            writeInt(&buf, Int32(59))
-
-
-        case .AgentClaudeUnknownScope:
             writeInt(&buf, Int32(60))
 
 
-        case .AgentClaudeScopeClosed:
+        case .WorkspaceProjectionCapacityExceeded:
             writeInt(&buf, Int32(61))
 
 
-        case .AgentClaudeAlreadyRunning:
+        case .AgentClaudeUnknownScope:
             writeInt(&buf, Int32(62))
 
 
-        case .AgentClaudeNotRunning:
+        case .AgentClaudeScopeClosed:
             writeInt(&buf, Int32(63))
 
 
-        case .AgentClaudeUnknownPermissionRequest:
+        case .AgentClaudeAlreadyRunning:
             writeInt(&buf, Int32(64))
 
 
-        case let .AgentClaudeSpawnFailed(message):
+        case .AgentClaudeNotRunning:
             writeInt(&buf, Int32(65))
-            FfiConverterString.write(message, into: &buf)
 
 
-        case let .AgentClaudeReaperFailed(message):
+        case .AgentClaudeUnknownPermissionRequest:
             writeInt(&buf, Int32(66))
-            FfiConverterString.write(message, into: &buf)
 
 
-        case let .AgentClaudeTransportWriteFailed(message):
+        case let .AgentClaudeSpawnFailed(message):
             writeInt(&buf, Int32(67))
             FfiConverterString.write(message, into: &buf)
 
 
-        case let .AgentClaudeInvalidRequest(message):
+        case let .AgentClaudeReaperFailed(message):
             writeInt(&buf, Int32(68))
             FfiConverterString.write(message, into: &buf)
 
 
-        case let .AgentClaudeControlResponseError(message):
+        case let .AgentClaudeTransportWriteFailed(message):
             writeInt(&buf, Int32(69))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentClaudeInvalidRequest(message):
+            writeInt(&buf, Int32(70))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentClaudeControlResponseError(message):
+            writeInt(&buf, Int32(71))
             FfiConverterString.write(message, into: &buf)
 
         }
@@ -15113,6 +15192,86 @@ public func FfiConverterTypeCoreWorkspaceCommandKindV1_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeCoreWorkspaceCommandKindV1_lower(_ value: CoreWorkspaceCommandKindV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceCommandKindV1.lower(value)
+}
+
+
+
+
+public enum CoreWorkspaceCommandLifecycleDirectiveV1: Equatable, Hashable {
+
+    case continueExecution
+    case cancelled
+    case deadlineExceeded
+    case shutdownRequested
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandLifecycleDirectiveV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandLifecycleDirectiveV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandLifecycleDirectiveV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandLifecycleDirectiveV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .continueExecution
+
+        case 2: return .cancelled
+
+        case 3: return .deadlineExceeded
+
+        case 4: return .shutdownRequested
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandLifecycleDirectiveV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .continueExecution:
+            writeInt(&buf, Int32(1))
+
+
+        case .cancelled:
+            writeInt(&buf, Int32(2))
+
+
+        case .deadlineExceeded:
+            writeInt(&buf, Int32(3))
+
+
+        case .shutdownRequested:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandLifecycleDirectiveV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandLifecycleDirectiveV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandLifecycleDirectiveV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandLifecycleDirectiveV1_lower(_ value: CoreWorkspaceCommandLifecycleDirectiveV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandLifecycleDirectiveV1.lower(value)
 }
 
 
@@ -19775,7 +19934,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_func_core_panic_forensics() != 20183) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_acquire() != 62431) {
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_acquire() != 13547) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_close() != 4204) {
@@ -19796,6 +19955,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_close() != 47899) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_command_admission_finalization_reconciled() != 13730) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_next_directive() != 14807) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -19806,6 +19968,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_close() != 1254) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_command_admission_finalization_reconciled() != 48306) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_next_directive() != 15461) {
@@ -19823,13 +19988,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_close() != 56432) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_command_admission_finalization_reconciled() != 16447) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_next_directive() != 3821) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_report_action() != 64978) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_acquire_authority_permit() != 21511) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_close() != 43264) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_command_admission_finalization_reconciled() != 29318) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_next_directive() != 42480) {
@@ -20097,6 +20271,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_abandon() != 39917) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_checkpoint() != 42844) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_close() != 1719) {

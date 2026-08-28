@@ -162,6 +162,7 @@ enum DomainPersistenceError: Error, Equatable {
     case writeFailed(String)
     case lockTimedOut
     case cancelled
+    case runtimeShutdownRequested
     case mutationPermitInvalid
     case workspaceOutsideMutationScope
 }
@@ -1346,6 +1347,7 @@ package struct DomainPersistenceCoordinator {
                      .invalidWorkspaceDocument:
                     continue
                 case .cancelled,
+                     .runtimeShutdownRequested,
                      .lockTimedOut,
                      .mutationPermitInvalid,
                      .workspaceOutsideMutationScope,
@@ -1407,7 +1409,8 @@ package struct DomainPersistenceCoordinator {
     private func isJournalInfrastructureFailure(_ error: Error) -> Bool {
         guard let persistenceError = error as? DomainPersistenceError else { return true }
         switch persistenceError {
-        case .cancelled, .writeFailed("working_journal_rust_unavailable"):
+        case .cancelled, .runtimeShutdownRequested,
+             .writeFailed("working_journal_rust_unavailable"):
             return true
         default:
             return false
@@ -1668,7 +1671,10 @@ package struct DomainPersistenceCoordinator {
                     actionID: UInt64,
                     error: Error
                 ) -> CoreWorkspaceSaveActionReportV1 {
-                    if error is CancellationError || error as? DomainPersistenceError == .cancelled {
+                    if error is CancellationError
+                                            || error as? DomainPersistenceError == .cancelled
+                                            || error as? DomainPersistenceError == .runtimeShutdownRequested
+                                        {
                         return .cancelled(actionID: actionID)
                     }
                     if case let DomainPersistenceError.stateConflict(expected, actual) = error {
@@ -1843,6 +1849,7 @@ package struct DomainPersistenceCoordinator {
                     catalogRevision: authorityReceipt.catalog.catalog.revision,
                     revisionSidecarMissing: false,
                     commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
+                        && transaction.commandAdmissionFinalizationReconciled
                 )
             }
         }
@@ -1889,7 +1896,10 @@ package struct DomainPersistenceCoordinator {
             actionID: UInt64,
             error: Error
         ) -> CoreWorkspaceSaveActionReportV1 {
-            if error is CancellationError || error as? DomainPersistenceError == .cancelled {
+            if error is CancellationError
+                                    || error as? DomainPersistenceError == .cancelled
+                                    || error as? DomainPersistenceError == .runtimeShutdownRequested
+                                {
                 return .cancelled(actionID: actionID)
             }
             if case let DomainPersistenceError.stateConflict(expected, actual) = error {
@@ -1926,7 +1936,11 @@ package struct DomainPersistenceCoordinator {
             commandAdmissionFinalizationReconciled: Bool
         )? {
             guard let activatedReceipt, let activatedFinalization else { return nil }
-            return (activatedReceipt, activatedFinalization, true)
+            return (
+                activatedReceipt,
+                activatedFinalization,
+                transaction.commandAdmissionFinalizationReconciled
+            )
         }
 
         while true {
@@ -2028,7 +2042,11 @@ package struct DomainPersistenceCoordinator {
                 guard receiptsMatch(receipt, outcome.receipt),
                       finalization == outcome.finalization
                 else { return outcome }
-                return (receipt, finalization, true)
+                return (
+                    receipt,
+                    finalization,
+                    transaction.commandAdmissionFinalizationReconciled
+                )
 
             case let .failed(failure):
                 if let outcome = activatedOutcome() { return outcome }
@@ -2200,6 +2218,7 @@ package struct DomainPersistenceCoordinator {
                     catalogRevision: receipt.catalogRevision,
                     revisionSidecarMissing: finalization == .revisionSidecarMissing,
                     commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
+                        && transaction.commandAdmissionFinalizationReconciled
                 )
             }
 
@@ -2215,7 +2234,10 @@ package struct DomainPersistenceCoordinator {
                 actionID: UInt64,
                 error: Error
             ) -> CoreWorkspaceSaveActionReportV1 {
-                if error is CancellationError || error as? DomainPersistenceError == .cancelled {
+                if error is CancellationError
+                                        || error as? DomainPersistenceError == .cancelled
+                                        || error as? DomainPersistenceError == .runtimeShutdownRequested
+                                    {
                     return .cancelled(actionID: actionID)
                 }
                 if case let DomainPersistenceError.stateConflict(expected, actual) = error {
@@ -2315,6 +2337,8 @@ package struct DomainPersistenceCoordinator {
                         throw DomainPersistenceError.corruptJournal
                     }
                     do {
+                        let authorityPermit = try transaction.acquireAuthorityPermit()
+                        defer { authorityPermit.close() }
                         try DomainPersistenceLock.atomicWrite(bytes, to: document.fileURL)
                         // Rust attached and DomainRuntime verified this receipt before the physical
                         // authority write. Once atomicWrite returns, no later failure may report a
@@ -2633,7 +2657,10 @@ package struct DomainPersistenceCoordinator {
                     actionID: UInt64,
                     error: Error
                 ) -> CoreWorkspaceSaveActionReportV1 {
-                    if error is CancellationError || error as? DomainPersistenceError == .cancelled {
+                    if error is CancellationError
+                                            || error as? DomainPersistenceError == .cancelled
+                                            || error as? DomainPersistenceError == .runtimeShutdownRequested
+                                        {
                         return .cancelled(actionID: actionID)
                     }
                     if case let DomainPersistenceError.stateConflict(expected, actual) = error {
@@ -2804,7 +2831,8 @@ package struct DomainPersistenceCoordinator {
                     try transaction.reconcileAdmissionFinalization(
                         operation: recordedTombstone.operation
                     )
-                    commandAdmissionFinalizationReconciled = true
+                    commandAdmissionFinalizationReconciled =
+                        transaction.commandAdmissionFinalizationReconciled
                 } catch {
                     // Catalog publication already established delete authority. Admission repair is
                     // isolated into the returned commit so the caller can quarantine replay without
@@ -3309,6 +3337,7 @@ package struct DomainPersistenceCoordinator {
                             )
                         } else if error is CancellationError
                             || error as? DomainPersistenceError == .cancelled
+                            || error as? DomainPersistenceError == .runtimeShutdownRequested
                         {
                             report = .cancelled(actionID: actionID)
                         } else {

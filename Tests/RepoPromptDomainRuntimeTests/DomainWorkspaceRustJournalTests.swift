@@ -269,6 +269,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         default:
             return XCTFail("Expected initial execution claim")
         }
+        XCTAssertEqual(try transientClaim.checkpoint(), .continueExecution)
         switch try admission.acquire(transientInput) {
         case let .pending(fingerprint, generation):
             XCTAssertEqual(fingerprint, transientFingerprint)
@@ -387,6 +388,114 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 error as? DomainPersistenceError,
                 .writeFailed("workspace_save_transaction_invalid")
             )
+        }
+    }
+
+    func testPreparedCommandAdmissionCarriesRuntimeCancellationAndDeadline() async throws {
+        let workspaceID = UUID()
+        let service = AgentryCoreService()
+        defer { Task { await service.shutdown() } }
+        let validator = try await DomainWorkspaceRustJournal.prepare(coreService: service)
+        let admission = try validator.beginCommandAdmission(records: [])
+        defer { admission.close() }
+        let envelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
+        )
+        let input = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(envelope))
+
+        _ = try admission.cancel(operationID: envelope.operationID)
+        switch try admission.acquire(input) {
+        case let .claimed(_, claim):
+            XCTAssertEqual(try claim.checkpoint(), .cancelled)
+            XCTAssertTrue(try claim.abandon())
+        default:
+            XCTFail("A runtime cancellation tombstone must materialize a stopped exact claim")
+        }
+
+        let racedEnvelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
+        )
+        let racedInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(racedEnvelope))
+        let racedFingerprint: String
+        let racedClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+        switch try admission.acquire(racedInput) {
+        case let .claimed(fingerprint, claim):
+            racedFingerprint = fingerprint
+            racedClaim = claim
+        default:
+            return XCTFail("Expected finalization-race claim")
+        }
+        _ = try admission.cancel(operationID: racedEnvelope.operationID)
+        let semanticOperation = DomainRecordedOperation(
+            fingerprint: racedFingerprint,
+            recordedAt: Date(),
+            outcome: DomainCommandOutcome(
+                operationID: racedEnvelope.operationID,
+                disposition: .conflict,
+                before: nil,
+                after: nil,
+                catalogRevision: 0,
+                resultingDigest: nil,
+                errorCode: .stateConflict,
+                diagnostic: "semantic_result_lost_race"
+            )
+        )
+        XCTAssertThrowsError(try racedClaim.finalizeTransient(operation: semanticOperation)) { error in
+            XCTAssertEqual(
+                error as? DomainWorkspaceCommandLifecycleFinalizationError,
+                .cancelled
+            )
+        }
+        let cancelledOperation = DomainRecordedOperation(
+            fingerprint: racedFingerprint,
+            recordedAt: Date(),
+            outcome: DomainCommandOutcome(
+                operationID: racedEnvelope.operationID,
+                disposition: .failed,
+                before: nil,
+                after: nil,
+                catalogRevision: 0,
+                resultingDigest: nil,
+                errorCode: .cancelled,
+                diagnostic: "workspace_command_identity_cancelled"
+            )
+        )
+        XCTAssertEqual(
+            try racedClaim.finalizeTransient(operation: cancelledOperation),
+            cancelledOperation
+        )
+        switch try admission.acquire(racedInput) {
+        case let .replay(_, scope, operation):
+            XCTAssertEqual(scope, .global)
+            XCTAssertEqual(operation, cancelledOperation)
+        default:
+            XCTFail("The cancellation race must establish one replay receipt")
+        }
+
+        let deadlineEnvelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
+        )
+        let deadlineInput = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(deadlineEnvelope))
+        XCTAssertThrowsError(
+            try admission.acquire(deadlineInput, deadlineUnixMilliseconds: 1)
+        ) { error in
+            XCTAssertEqual(
+                error as? DomainWorkspaceCommandAdmissionError,
+                .deadlineExceeded
+            )
+        }
+        switch try admission.acquire(deadlineInput) {
+        case let .claimed(_, claim):
+            XCTAssertEqual(try claim.checkpoint(), .continueExecution)
+            XCTAssertTrue(try claim.abandon())
+        default:
+            XCTFail("Deadline rejection must roll the exact workspace claim back")
         }
     }
 
@@ -742,7 +851,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         _ = await runtime.shutdown()
     }
 
-    func testCancellationAfterResolverSuccessDoesNotRecordOperation() async throws {
+    func testCancellationBeforeAcquireInstallsOperationWideTombstoneAndIsolatesNewIDs() async throws {
         let directory = temporaryDirectory(name: "command-identity-cancelled")
         defer { try? FileManager.default.removeItem(at: directory) }
         let resolver = CommandIdentityAuthorityCancellationResolver()
@@ -768,9 +877,18 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         XCTAssertEqual(cancelled.errorCode, .cancelled)
         XCTAssertEqual(cancelled.diagnostic, "workspace_command_identity_cancelled")
 
-        let retried = await runtime.workspaceStore.execute(envelope)
-        XCTAssertEqual(retried.disposition, .invalid)
-        XCTAssertEqual(retried.errorCode, .workspaceUnavailable)
+        let tombstoned = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(tombstoned.disposition, .failed)
+        XCTAssertEqual(tombstoned.errorCode, .cancelled)
+        XCTAssertEqual(tombstoned.diagnostic, "workspace_command_identity_cancelled")
+        let replayed = await runtime.workspaceStore.execute(envelope)
+        XCTAssertEqual(replayed.disposition, .deduplicated)
+        XCTAssertEqual(replayed.errorCode, .cancelled)
+        XCTAssertEqual(replayed.diagnostic, "workspace_command_identity_cancelled")
+
+        let isolated = await runtime.workspaceStore.execute(commandIdentityEnvelope())
+        XCTAssertEqual(isolated.disposition, .invalid)
+        XCTAssertEqual(isolated.errorCode, .workspaceUnavailable)
         _ = await runtime.shutdown()
     }
 

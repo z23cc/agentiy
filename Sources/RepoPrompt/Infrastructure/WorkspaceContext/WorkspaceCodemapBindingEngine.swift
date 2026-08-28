@@ -4166,7 +4166,8 @@ actor WorkspaceCodemapBindingEngine {
                 // invalidated.
                 return true
             case .notInitialized, .invalidIdentifier, .invalidFingerprint, .staleRuntimeIdentity,
-                 .operationConflict, .deadlineExpired, .subscriptionNotFound,
+                 .operationConflict, .deadlineExpired, .operationCancelled, .shutdownRequested,
+                 .subscriptionNotFound,
                  .queueLimitExceeded, .payloadTooLarge, .shutdownTimedOut, .invalidArgument,
                  .transportFailure:
                 return false

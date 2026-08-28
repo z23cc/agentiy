@@ -349,27 +349,42 @@ actor DomainWorkspaceContextAuthority {
 
     func execute(_ envelope: DomainWorkspaceCommandEnvelope) async -> DomainCommandOutcome {
         await bootstrap()
-        let outcome: DomainCommandOutcome
-        do {
-            outcome = try await mutationAccess.withCommandPermit { permit in
-                await self.executeAdmitted(envelope, permit: permit)
+        let cancellationAdmission = commandAdmission
+        return await withTaskCancellationHandler {
+            let outcome: DomainCommandOutcome
+            do {
+                outcome = try await mutationAccess.withCommandPermit { permit in
+                    await self.executeAdmitted(envelope, permit: permit)
+                }
+            } catch is CancellationError {
+                let snapshot = await mutationAccess.snapshot()
+                applyMutationAccessSnapshot(snapshot)
+                outcome = unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .failed,
+                    errorCode: .cancelled,
+                    diagnostic: "workspace_command_identity_cancelled"
+                )
+            } catch let DomainWorkspaceMutationAccessError.unavailable(reason) {
+                let snapshot = await mutationAccess.snapshot()
+                applyMutationAccessSnapshot(snapshot)
+                outcome = unrecordedMutationAccessRejection(envelope, reason: reason)
+            } catch {
+                let snapshot = await mutationAccess.snapshot()
+                applyMutationAccessSnapshot(snapshot)
+                outcome = unrecordedMutationAccessRejection(
+                    envelope,
+                    reason: "canonical_storage_mutation_permit_invalid"
+                )
             }
-        } catch let DomainWorkspaceMutationAccessError.unavailable(reason) {
-            let snapshot = await mutationAccess.snapshot()
-            applyMutationAccessSnapshot(snapshot)
-            outcome = unrecordedMutationAccessRejection(envelope, reason: reason)
-        } catch {
-            let snapshot = await mutationAccess.snapshot()
-            applyMutationAccessSnapshot(snapshot)
-            outcome = unrecordedMutationAccessRejection(
-                envelope,
-                reason: "canonical_storage_mutation_permit_invalid"
-            )
+            if let document = outcome.workspace?.document {
+                projectionObservationSink.observe(document, source: .commandOutcome)
+            }
+            return outcome
+        } onCancel: {
+            guard let cancellationAdmission else { return }
+            _ = try? cancellationAdmission.cancel(operationID: envelope.operationID)
         }
-        if let document = outcome.workspace?.document {
-            projectionObservationSink.observe(document, source: .commandOutcome)
-        }
-        return outcome
     }
 
     private func executeAdmitted(
@@ -425,7 +440,6 @@ actor DomainWorkspaceContextAuthority {
             do {
                 try Task.checkCancellation()
                 acquisition = try resolveCommandAcquisition(commandIdentityInput)
-                try Task.checkCancellation()
             } catch is CancellationError {
                 return unrecordedCommandIdentityRejection(
                     envelope,
@@ -449,6 +463,27 @@ actor DomainWorkspaceContextAuthority {
                         disposition: .readOnly,
                         errorCode: .runtimeReadOnlyDegraded,
                         diagnostic: "workspace_command_identity_receipt_invalid"
+                    )
+                case .capacityExceeded:
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .failed,
+                        errorCode: .persistenceFailure,
+                        diagnostic: "workspace_command_lifecycle_capacity_exceeded"
+                    )
+                case .deadlineExceeded:
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .failed,
+                        errorCode: .cancelled,
+                        diagnostic: "workspace_command_deadline_exceeded"
+                    )
+                case .shuttingDown:
+                    return unrecordedCommandIdentityRejection(
+                        envelope,
+                        disposition: .failed,
+                        errorCode: .cancelled,
+                        diagnostic: "workspace_command_runtime_shutdown"
                     )
                 case .unavailable:
                     quarantineCommandAdmission()
@@ -541,6 +576,13 @@ actor DomainWorkspaceContextAuthority {
         defer {
             _ = try? commandClaim.abandon()
         }
+        if let stopped = commandLifecycleStopOutcome(
+            envelope: envelope,
+            fingerprint: fingerprint,
+            commandClaim: commandClaim
+        ) {
+            return stopped
+        }
         if let document = commandDocument(envelope.command),
            let diagnostic = invalidDocumentDiagnostic(document)
         {
@@ -592,6 +634,14 @@ actor DomainWorkspaceContextAuthority {
                 errorCode: .stateConflict,
                 diagnostic: "catalog_revision_mismatch"
             )
+        }
+
+        if let stopped = commandLifecycleStopOutcome(
+            envelope: envelope,
+            fingerprint: fingerprint,
+            commandClaim: commandClaim
+        ) {
+            return stopped
         }
 
         let outcome: DomainCommandOutcome = switch envelope.command {
@@ -1805,6 +1855,20 @@ actor DomainWorkspaceContextAuthority {
             recordMetric(envelope: envelope, outcome: outcome, byteCount: document.documentBytes.count)
             return outcome
         } catch let error as DomainPersistenceError {
+            if case .runtimeShutdownRequested = error {
+                return finalizeLifecycleShutdown(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
+            if case .cancelled = error {
+                return finalizeLifecycleCancellation(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: document.workspaceID,
@@ -1927,6 +1991,20 @@ actor DomainWorkspaceContextAuthority {
             recordMetric(envelope: envelope, outcome: outcome, byteCount: 0)
             return outcome
         } catch let error as DomainPersistenceError {
+            if case .runtimeShutdownRequested = error {
+                return finalizeLifecycleShutdown(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
+            if case .cancelled = error {
+                return finalizeLifecycleCancellation(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: workspaceID,
@@ -2062,6 +2140,20 @@ actor DomainWorkspaceContextAuthority {
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
             } catch let error as DomainPersistenceError {
+                if case .runtimeShutdownRequested = error {
+                    return finalizeLifecycleShutdown(
+                        envelope: envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim
+                    )
+                }
+                if case .cancelled = error {
+                    return finalizeLifecycleCancellation(
+                        envelope: envelope,
+                        fingerprint: fingerprint,
+                        commandClaim: commandClaim
+                    )
+                }
                 if case .stateConflict = error {
                     await refreshAfterCASConflict(
                         workspaceID: document.workspaceID,
@@ -2226,6 +2318,20 @@ actor DomainWorkspaceContextAuthority {
                 workspaceID: workspaceID
             )
         } catch let error as DomainPersistenceError {
+            if case .runtimeShutdownRequested = error {
+                return finalizeLifecycleShutdown(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
+            if case .cancelled = error {
+                return finalizeLifecycleCancellation(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: workspaceID,
@@ -2370,10 +2476,10 @@ actor DomainWorkspaceContextAuthority {
                     diagnostic: "external_document_changed_during_save_recovery"
                 )
             case .cancelled:
-                return persistenceFailureOutcome(
-                    envelope,
-                    record: current,
-                    error: DomainPersistenceError.cancelled
+                return finalizeLifecycleCancellation(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
                 )
             }
         } catch {
@@ -2514,6 +2620,20 @@ actor DomainWorkspaceContextAuthority {
                 commandAdmissionFinalizationReconciled = persisted.commandAdmissionFinalizationReconciled
             }
         } catch let error as DomainPersistenceError {
+            if case .runtimeShutdownRequested = error {
+                return finalizeLifecycleShutdown(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
+            if case .cancelled = error {
+                return finalizeLifecycleCancellation(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim
+                )
+            }
             if case .stateConflict = error {
                 await refreshAfterCASConflict(
                     workspaceID: workspaceID,
@@ -2961,7 +3081,8 @@ actor DomainWorkspaceContextAuthority {
     ) -> DomainCommandOutcome {
         let code: DomainCommandErrorCode = switch error {
         case DomainPersistenceError.lockTimedOut: .lockTimedOut
-        case DomainPersistenceError.cancelled: .cancelled
+        case DomainPersistenceError.cancelled,
+             DomainPersistenceError.runtimeShutdownRequested: .cancelled
         case DomainPersistenceError.mutationPermitInvalid: .runtimeReadOnlyDegraded
         case DomainPersistenceError.workspaceOutsideMutationScope: .workspaceReadOnlyDegraded
         default: .persistenceFailure
@@ -3028,6 +3149,84 @@ actor DomainWorkspaceContextAuthority {
         )
     }
 
+    private func finalizeLifecycleCancellation(
+        envelope: DomainWorkspaceCommandEnvelope,
+        fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+    ) -> DomainCommandOutcome {
+        finalizeTransientOutcome(
+            envelope: envelope,
+            fingerprint: fingerprint,
+            commandClaim: commandClaim,
+            disposition: .failed,
+            errorCode: .cancelled,
+            diagnostic: "workspace_command_identity_cancelled"
+        )
+    }
+
+    private func finalizeLifecycleShutdown(
+        envelope: DomainWorkspaceCommandEnvelope,
+        fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+    ) -> DomainCommandOutcome {
+        finalizeTransientOutcome(
+            envelope: envelope,
+            fingerprint: fingerprint,
+            commandClaim: commandClaim,
+            disposition: .failed,
+            errorCode: .cancelled,
+            diagnostic: "workspace_command_runtime_shutdown"
+        )
+    }
+
+    private func commandLifecycleStopOutcome(
+        envelope: DomainWorkspaceCommandEnvelope,
+        fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+    ) -> DomainCommandOutcome? {
+        do {
+            switch try commandClaim.checkpoint() {
+            case .continueExecution:
+                return nil
+            case .cancelled:
+                return finalizeTransientOutcome(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
+                    disposition: .failed,
+                    errorCode: .cancelled,
+                    diagnostic: "workspace_command_identity_cancelled"
+                )
+            case .deadlineExceeded:
+                return finalizeTransientOutcome(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
+                    disposition: .failed,
+                    errorCode: .cancelled,
+                    diagnostic: "workspace_command_deadline_exceeded"
+                )
+            case .shutdownRequested:
+                return finalizeTransientOutcome(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
+                    disposition: .failed,
+                    errorCode: .cancelled,
+                    diagnostic: "workspace_command_runtime_shutdown"
+                )
+            }
+        } catch {
+            quarantineCommandAdmission()
+            return unrecordedCommandIdentityRejection(
+                envelope,
+                disposition: .readOnly,
+                errorCode: .runtimeReadOnlyDegraded,
+                diagnostic: "workspace_command_lifecycle_receipt_invalid"
+            )
+        }
+    }
+
     private func finalizeTransientOutcome(
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
@@ -3062,18 +3261,57 @@ actor DomainWorkspaceContextAuthority {
         fingerprint: String,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) -> DomainCommandOutcome {
+        let operation = DomainRecordedOperation(
+            fingerprint: fingerprint,
+            recordedAt: Date(),
+            outcome: outcome
+        )
         do {
-            _ = try commandClaim.finalizeTransient(
-                operation: DomainRecordedOperation(
-                    fingerprint: fingerprint,
-                    recordedAt: Date(),
-                    outcome: outcome
-                )
+            _ = try commandClaim.finalizeTransient(operation: operation)
+            return outcome
+        } catch let lifecycleError as DomainWorkspaceCommandLifecycleFinalizationError {
+            let stopped = lifecycleStoppedOutcome(
+                replacing: outcome,
+                lifecycleError: lifecycleError
             )
+            do {
+                _ = try commandClaim.finalizeTransient(
+                    operation: DomainRecordedOperation(
+                        fingerprint: fingerprint,
+                        recordedAt: Date(),
+                        outcome: stopped
+                    )
+                )
+            } catch {
+                markCommandAdmissionReceiptMissing(workspaceID: envelope.workspaceID)
+            }
+            return stopped
         } catch {
             markCommandAdmissionReceiptMissing(workspaceID: envelope.workspaceID)
+            return outcome
         }
-        return outcome
+    }
+
+    private func lifecycleStoppedOutcome(
+        replacing outcome: DomainCommandOutcome,
+        lifecycleError: DomainWorkspaceCommandLifecycleFinalizationError
+    ) -> DomainCommandOutcome {
+        let diagnostic = switch lifecycleError {
+        case .cancelled: "workspace_command_identity_cancelled"
+        case .deadlineExceeded: "workspace_command_deadline_exceeded"
+        case .shuttingDown: "workspace_command_runtime_shutdown"
+        }
+        return DomainCommandOutcome(
+            operationID: outcome.operationID,
+            disposition: .failed,
+            before: outcome.before,
+            after: outcome.after,
+            catalogRevision: outcome.catalogRevision,
+            resultingDigest: outcome.resultingDigest,
+            errorCode: .cancelled,
+            diagnostic: diagnostic,
+            workspace: outcome.workspace
+        )
     }
 
     private func recordMetric(

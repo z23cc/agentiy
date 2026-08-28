@@ -114,6 +114,22 @@ pub enum OperationState {
     Terminal(TerminalOutcome),
 }
 
+/// Runtime-lifetime stop intent for work whose body is driven outside Tokio. Workspace commands
+/// use this as a gate only; their complete recorded operation remains authoritative elsewhere.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedOperationStopReason {
+    Cancelled,
+    DeadlineExceeded,
+    ShutdownRequested,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedOperationDirective {
+    ContinueExecution,
+    Stop(ManagedOperationStopReason),
+    Terminal(TerminalOutcome),
+}
+
 impl OperationState {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Terminal(_))

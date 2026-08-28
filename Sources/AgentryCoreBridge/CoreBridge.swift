@@ -32,6 +32,8 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case runtimeStopped
     case operationConflict
     case deadlineExpired
+    case operationCancelled
+    case shutdownRequested
     case subscriptionNotFound
     case queueLimitExceeded
     case payloadTooLarge
@@ -1110,22 +1112,26 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             }
             return CorePreparedWorkspaceCommandAdmissionV1(
                 rawAdmission: rawAdmission,
-                acquire: { request in
+                acquire: { request, deadlineUnixMilliseconds in
                     do {
                         return try Self.workspaceCommandAdmissionAcquisition(
                             rawAdmission.acquire(
                                 request: Self.rawWorkspaceCommandIdentityRequest(
                                     identity: identity,
                                     request: request
-                                )
+                                ),
+                                deadlineUnixMillis: deadlineUnixMilliseconds
                             ),
                             request: request
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
                         throw error
                     } catch {
-                        throw Self.map(error)
+                        throw Self.workspaceCommandLifecycleError(error)
                     }
+                },
+                cancel: { operationID in
+                    try self.cancel(identity: identity, operationID: operationID)
                 },
                 reconcileDurable: { durable in
                     do {
@@ -1510,6 +1516,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
+                commandAdmissionFinalizationReconciled: {
+                    rawTransaction.commandAdmissionFinalizationReconciled()
+                },
                 close: {
                     rawTransaction.close()
                 }
@@ -1600,6 +1609,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
+                commandAdmissionFinalizationReconciled: {
+                    rawTransaction.commandAdmissionFinalizationReconciled()
+                },
                 close: {
                     rawTransaction.close()
                 }
@@ -1681,6 +1693,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
+                commandAdmissionFinalizationReconciled: {
+                    rawTransaction.commandAdmissionFinalizationReconciled()
+                },
                 close: {
                     rawTransaction.close()
                 }
@@ -1730,6 +1745,14 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 )
             }
             return CoreWorkspaceSaveTransactionV1(
+                acquireAuthorityPermit: {
+                    do {
+                        let permit = try rawTransaction.acquireAuthorityPermit()
+                        return CoreWorkspaceCreateAuthorityPermitV1(close: { permit.close() })
+                    } catch {
+                        throw Self.map(error)
+                    }
+                },
                 next: {
                     try Self.workspaceSaveDirective(rawTransaction.nextDirective())
                 },
@@ -1737,6 +1760,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     try Self.workspaceSaveDirective(rawTransaction.reportAction(
                         report: Self.rawWorkspaceSaveReport(report)
                     ))
+                },
+                commandAdmissionFinalizationReconciled: {
+                    rawTransaction.commandAdmissionFinalizationReconciled()
                 },
                 close: {
                     rawTransaction.close()
@@ -2486,6 +2512,18 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             }
             let claim = CoreWorkspaceCommandExecutionClaimV1(
                 rawClaim: rawClaim,
+                checkpoint: {
+                    do {
+                        return switch try rawClaim.checkpoint() {
+                        case .continueExecution: .continueExecution
+                        case .cancelled: .cancelled
+                        case .deadlineExceeded: .deadlineExceeded
+                        case .shutdownRequested: .shutdownRequested
+                        }
+                    } catch {
+                        throw workspaceCommandLifecycleError(error)
+                    }
+                },
                 finalizeTransient: { operation in
                     do {
                         let receipt = try rawClaim.finalizeTransient(
@@ -2519,7 +2557,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
                         throw error
                     } catch {
-                        throw map(error)
+                        throw workspaceCommandLifecycleError(error)
                     }
                 },
                 abandon: {
@@ -4029,6 +4067,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case .RuntimeStopped: .runtimeStopped
         case .OperationConflict: .operationConflict
         case .DeadlineExpired: .deadlineExpired
+        case .OperationCancelled: .operationCancelled
+        case .ShutdownRequested: .shutdownRequested
         case .SubscriptionNotFound: .subscriptionNotFound
         case .QueueLimitExceeded: .queueLimitExceeded
         case .PayloadTooLarge: .payloadTooLarge
@@ -4092,6 +4132,18 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .AgentClaudeTransportWriteFailed(message): .agentClaudeTransportWriteFailed(message)
         case let .AgentClaudeControlResponseError(message): .agentClaudeControlResponseError(message)
         case let .AgentClaudeInvalidRequest(message): .agentClaudeInvalidRequest(message)
+        }
+    }
+
+    private static func workspaceCommandLifecycleError(_ error: Error) -> Error {
+        let mapped = Self.map(error)
+        return switch mapped {
+        case .deadlineExpired: CoreBridgeError.deadlineExpired
+            case .operationCancelled: CoreBridgeError.operationCancelled
+            case .shutdownRequested: CoreBridgeError.shutdownRequested
+        case .queueLimitExceeded: CoreBridgeError.queueLimitExceeded
+        case .runtimeStopped: CoreBridgeError.runtimeStopped
+        default: mapped
         }
     }
 
@@ -4749,6 +4801,8 @@ public actor AgentryCoreBridge {
         case .runtimeStopped: return .runtimeStopped
         case .operationConflict: return .operationConflict
         case .deadlineExpired: return .deadlineExpired
+        case .operationCancelled: return .operationCancelled
+        case .shutdownRequested: return .shutdownRequested
         case .subscriptionNotFound: return .subscriptionNotFound
         case .queueLimitExceeded: return .queueLimitExceeded
         case .payloadTooLarge: return .payloadTooLarge

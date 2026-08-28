@@ -1389,3 +1389,83 @@ cancellation as an operation-wide tombstone.
   durable always returns the established receipt; external `DomainCommandOutcome` behavior is unchanged.
 - Focused Runtime/FFI/Bridge/Domain race, lifecycle, authority, source-guard, codegen, product-build, style, guardrail,
   formatting, and diff checks pass.
+
+## P5-7d amendment — claim-bound workspace operation lifecycle composition
+
+P5-7d composes every newly claimed workspace command with the generic Rust runtime operation lifecycle in the
+same synchronous acquisition boundary. P5-7c remains the only workspace identity, pending, replay, collision,
+claim-generation, and durable/process-lifetime receipt authority. `OperationRegistry` contributes only runtime-
+lifetime cancellation intent, cancel-before-admission tombstones, optional deadlines, shutdown intent, first-
+terminal-wins diagnostics, and the shared bounded data-lane permit. It is a lifecycle gate and terminal mirror,
+not a second workspace replay index; no generic registry state may authorize execution or replace a complete
+Rust workspace recorded operation.
+
+The prepared admission first computes the canonical workspace identity and obtains the P5-7c decision. Pending,
+replay, and collision create no generic execution entry. A newly claimed result is returned only after the same
+`CoreRuntime` attaches an exact externally-driven lifecycle claim using that canonical operation ID,
+fingerprint, workspace scope, runtime identity, and a separate monotonic lifecycle generation. A pre-existing
+cancel tombstone becomes an initial stop directive for that exact claim. Shared data-lane saturation, lifecycle
+collision, invalid deadline, or shutdown rolls the P5-7c claim back before returning and cannot quarantine a
+healthy workspace admission capability. Matching generic state without the matching exact P5-7c state is a
+split-authority invariant failure and fails closed.
+
+Swift task cancellation forwards only the operation ID and exact runtime identity through the generic
+`cancelOperation` control lane. It never calls the authority actor, computes a fingerprint, or mutates a
+workspace receipt. The claimed owner observes lifecycle state through a synchronous bounded checkpoint.
+Cancellation, deadline, and shutdown before the physical authority boundary request a stop; the first stop
+intent wins and is finalized through the exact P5-7c claim as the existing failed/cancelled outward command
+shape. A matching pending caller still delays and re-acquires; cancelling that caller expresses operation-wide
+intent and may therefore stop the shared owner. A caller-local suspended delay remains cancellable, but neither
+the delay nor its cancellation authorizes execution. This operation-wide tombstone rule explicitly supersedes the
+P5-7c attempt-scoped statements that pre-authority cancellation always abandoned the claim and remained immediately
+retryable; only cancellation before any P5-7d managed attachment remains an unrecorded retryable invocation.
+
+Create, delete, working-journal, and save transactions retain the exact lifecycle claim beside their existing
+P5-7c reservation. The existing runtime authority permit is acquired only after an atomic lifecycle
+`beginAuthority`: if a stop request wins, no physical authority action begins; if authority wins, later cancel,
+deadline, or shutdown is diagnostic only and the durable result wins. Successful or partial-success durable
+finalization first establishes the exact workspace receipt and then resolves the coarse lifecycle mirror to
+success. A lifecycle-mirror failure after the workspace receipt succeeds is reported only as unreconciled
+admission finalization; it must not replace the authoritative durable result. Transient finalization first validates
+the exact candidate receipt without changing lifecycle authority, then crosses the managed authority boundary,
+establishes the workspace receipt, and resolves the mirror to the corresponding coarse terminal. A stop that wins before that
+boundary is retried through the exact P5-7c claim as the matching cancelled/deadline receipt, while a finalization
+that wins makes any later stop diagnostic only. Failure to reconcile either side after a workspace terminal
+preserves the established outward result, quarantines workspace admission, and requires durable reconciliation
+before another execution.
+
+Externally-driven lifecycle claims consume the same bounded `CoreRuntime` data-lane capacity as Tokio tasks but
+do not spawn placeholder tasks. Replay, collision, pending, cancel control, terminal cleanup, and post-authority
+receipt publication do not require a new data-lane slot. Exact abandon removes only the matching nonterminal lifecycle
+generation; after authority admission this cleanup is permitted only when the transaction has released its
+authority permit without establishing a workspace receipt, so an isolated physical-I/O failure remains retryable.
+If cancellation raced with pre-authority abandon, the bounded cancel tombstone is preserved so a later matching
+acquisition cannot start. Workspace claim generation and lifecycle generation are independent ABA fences and
+neither may stand in for the other. Reconciliation that replaces a live P5 claim with an exact terminal receipt
+converges the retained lifecycle mirror when that composite claim is next closed; shutdown grace terminalizes
+pre-authority mirrors and, after the non-cancellable authority fence drains, detaches any unmirrored residual lease
+before the runtime may enter `Stopped`.
+
+This phase does not change `DomainCommandOutcome`, durable workspace schemas, storage-lease ownership, Swift
+filesystem locks or physical I/O, Agent interrupt/permission/shutdown semantics, or the generic scaffold
+`CoreRuntime.execute`. Generic cross-domain task adoption and a terminal event subscription remain later phases;
+P5-7d exposes only the synchronous workspace lifecycle checkpoint needed to bind the existing production command
+path without inventing a second authority. Production acquisition passes no deadline in this phase because the
+existing `DomainWorkspaceCommandEnvelope` has no deadline contract; the optional Rust/FFI deadline remains a typed,
+deterministically tested internal capability until a separate contract-first phase introduces an invocation deadline.
+
+### P5-7d done-when
+
+- Rust tests cover cancel-before-acquire, exact managed attachment, shared capacity rollback, deadline and shutdown
+  stop requests, first-stop/first-terminal wins, exact abandon, lifecycle ABA, and authority-versus-cancel races
+  without spawning a Tokio task.
+- Typed FFI and Bridge carry no raw lifecycle token, validate checkpoint shapes and exact runtime/operation/
+  fingerprint/generation identity, and retain the composite claim through every command-backed transaction.
+- Production Swift cancellation forwards through `cancelOperation`; claimed commands checkpoint before semantic
+  dispatch and physical authority, while pending waiters still re-acquire the sole P5-7c workspace decision.
+- Transient and durable workspace finalization resolve the lifecycle mirror only after the exact P5-7c receipt is
+  established; runtime loss or split state fails closed without changing the physical or outward result.
+- Source guards prove no workspace use of generic `execute`/`submit`, no second pending/replay lookup, no Swift
+  fingerprint fallback, and no unbound command transaction.
+- Focused Runtime/FFI/Bridge/Domain cancellation, deadline, shutdown, capacity, replay, race, source-guard,
+  codegen, product-build, style, guardrail, formatting, and diff checks pass.

@@ -26,6 +26,10 @@ pub enum CoreError {
     OperationConflict,
     #[error("operation deadline expired")]
     DeadlineExpired,
+    #[error("operation cancellation won before authority")]
+    OperationCancelled,
+    #[error("runtime shutdown won before authority")]
+    ShutdownRequested,
     #[error("subscription was not found")]
     SubscriptionNotFound,
     #[error("queue limit exceeded")]

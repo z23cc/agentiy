@@ -1,11 +1,11 @@
 use crate::{
-    AdmissionOutcome, AdmissionRequest, CancelOutcome, OperationDiagnostics, OperationId,
-    OperationSnapshot, OperationState, RequestFingerprint, RuntimeIdentity, ScopeId,
-    TerminalOutcome,
+    AdmissionOutcome, AdmissionRequest, CancelOutcome, ManagedOperationDirective,
+    ManagedOperationStopReason, OperationDiagnostics, OperationId, OperationSnapshot,
+    OperationState, RequestFingerprint, RuntimeIdentity, ScopeId, TerminalOutcome,
 };
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,7 +22,7 @@ impl fmt::Display for RegistryError {
         formatter.write_str(match self {
             Self::StaleRuntimeIdentity => "stale runtime identity",
             Self::OperationConflict => {
-                "operation ID collides with a different fingerprint or scope"
+                "operation ID collides with a different fingerprint, scope, or execution authority"
             }
             Self::DeadlineExpired => "operation deadline expired before admission",
             Self::InvalidDeadline => "operation deadline is outside the monotonic clock range",
@@ -33,12 +33,23 @@ impl fmt::Display for RegistryError {
 
 impl std::error::Error for RegistryError {}
 
+#[derive(Clone, Copy)]
+enum EntryKind {
+    RuntimeTask,
+    Managed {
+        generation: u64,
+        stop_reason: Option<ManagedOperationStopReason>,
+        authority_started: bool,
+    },
+}
+
 struct Entry {
     fingerprint: RequestFingerprint,
     scope: ScopeId,
     identity: RuntimeIdentity,
     state: OperationState,
     deadline: Option<Instant>,
+    kind: EntryKind,
 }
 
 struct CancelTombstone {
@@ -49,6 +60,7 @@ struct State {
     accepting: bool,
     entries: HashMap<OperationId, Entry>,
     cancel_tombstones: HashMap<OperationId, CancelTombstone>,
+    next_managed_generation: u64,
     diagnostics: OperationDiagnostics,
 }
 
@@ -56,6 +68,84 @@ pub struct OperationRegistry {
     identity: RuntimeIdentity,
     tombstone_window: Duration,
     state: Mutex<State>,
+}
+
+/// Exact runtime-lifetime attachment for work driven outside Tokio. The separate generation keeps
+/// stale lifecycle handles from detaching or resolving a later workspace execution claim.
+#[derive(Clone)]
+pub struct ManagedOperationClaim {
+    registry: Arc<OperationRegistry>,
+    operation_id: OperationId,
+    fingerprint: RequestFingerprint,
+    scope: ScopeId,
+    identity: RuntimeIdentity,
+    generation: u64,
+}
+
+impl fmt::Debug for ManagedOperationClaim {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagedOperationClaim")
+            .field("operation_id", &self.operation_id)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ManagedOperationClaim {
+    pub fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        &self.fingerprint
+    }
+
+    pub fn scope(&self) -> &ScopeId {
+        &self.scope
+    }
+
+    pub fn identity(&self) -> &RuntimeIdentity {
+        &self.identity
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn checkpoint(&self) -> Result<ManagedOperationDirective, RegistryError> {
+        self.checkpoint_at(Instant::now())
+    }
+
+    pub fn checkpoint_at(&self, now: Instant) -> Result<ManagedOperationDirective, RegistryError> {
+        self.registry.checkpoint_managed(self, now)
+    }
+
+    pub fn begin_authority(&self) -> Result<ManagedOperationDirective, RegistryError> {
+        self.begin_authority_at(Instant::now())
+    }
+
+    pub fn begin_authority_at(
+        &self,
+        now: Instant,
+    ) -> Result<ManagedOperationDirective, RegistryError> {
+        self.registry.begin_managed_authority(self, now)
+    }
+
+    pub fn resolve_terminal(
+        &self,
+        outcome: TerminalOutcome,
+    ) -> Result<OperationState, RegistryError> {
+        self.registry.resolve_managed_terminal(self, outcome)
+    }
+
+    pub fn abandon(&self) -> Result<bool, RegistryError> {
+        self.abandon_at(Instant::now())
+    }
+
+    pub fn abandon_at(&self, now: Instant) -> Result<bool, RegistryError> {
+        self.registry.abandon_managed(self, now)
+    }
 }
 
 impl OperationRegistry {
@@ -67,6 +157,7 @@ impl OperationRegistry {
                 accepting: true,
                 entries: HashMap::new(),
                 cancel_tombstones: HashMap::new(),
+                next_managed_generation: 0,
                 diagnostics: OperationDiagnostics::default(),
             }),
         }
@@ -122,6 +213,7 @@ impl OperationRegistry {
                 identity: request.runtime_identity,
                 state: state_value,
                 deadline,
+                kind: EntryKind::RuntimeTask,
             },
         );
         Ok(if cancelled_before_admission {
@@ -129,6 +221,104 @@ impl OperationRegistry {
         } else {
             AdmissionOutcome::Accepted
         })
+    }
+
+    pub fn attach_managed(
+        self: &Arc<Self>,
+        request: AdmissionRequest,
+    ) -> Result<(ManagedOperationClaim, ManagedOperationDirective), RegistryError> {
+        self.attach_managed_at(request, SystemTime::now(), Instant::now())
+    }
+
+    pub fn attach_managed_at(
+        self: &Arc<Self>,
+        request: AdmissionRequest,
+        wall_now: SystemTime,
+        monotonic_now: Instant,
+    ) -> Result<(ManagedOperationClaim, ManagedOperationDirective), RegistryError> {
+        self.validate_identity(&request.runtime_identity)?;
+        let deadline = convert_deadline(request.deadline_unix_millis, wall_now, monotonic_now)?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_tombstones(&mut state, monotonic_now, self.tombstone_window);
+        if !state.accepting {
+            return Err(RegistryError::ShuttingDown);
+        }
+
+        if let Some(entry) = state.entries.get(&request.operation_id) {
+            if entry.fingerprint != request.fingerprint || entry.scope != request.scope {
+                state.diagnostics.collisions += 1;
+                return Err(RegistryError::OperationConflict);
+            }
+            if let EntryKind::Managed { generation, .. } = entry.kind
+                && matches!(
+                    entry.state,
+                    OperationState::Terminal(
+                        TerminalOutcome::Cancelled | TerminalOutcome::DeadlineExceeded
+                    )
+                )
+            {
+                let claim = ManagedOperationClaim {
+                    registry: Arc::clone(self),
+                    operation_id: request.operation_id,
+                    fingerprint: request.fingerprint,
+                    scope: request.scope,
+                    identity: request.runtime_identity,
+                    generation,
+                };
+                return Ok((claim, directive_for_entry(entry)));
+            }
+            state.diagnostics.collisions += 1;
+            return Err(RegistryError::OperationConflict);
+        }
+
+        state.next_managed_generation = state
+            .next_managed_generation
+            .checked_add(1)
+            .ok_or(RegistryError::OperationConflict)?;
+        let generation = state.next_managed_generation;
+        let cancelled_before_admission = state
+            .cancel_tombstones
+            .remove(&request.operation_id)
+            .is_some();
+        let stop_reason =
+            cancelled_before_admission.then_some(ManagedOperationStopReason::Cancelled);
+        let state_value = if cancelled_before_admission {
+            OperationState::CancelRequested
+        } else {
+            OperationState::Running
+        };
+        let claim = ManagedOperationClaim {
+            registry: Arc::clone(self),
+            operation_id: request.operation_id.clone(),
+            fingerprint: request.fingerprint.clone(),
+            scope: request.scope.clone(),
+            identity: request.runtime_identity.clone(),
+            generation,
+        };
+        state.entries.insert(
+            request.operation_id,
+            Entry {
+                fingerprint: request.fingerprint,
+                scope: request.scope,
+                identity: request.runtime_identity,
+                state: state_value,
+                deadline,
+                kind: EntryKind::Managed {
+                    generation,
+                    stop_reason,
+                    authority_started: false,
+                },
+            },
+        );
+        let directive = state
+            .entries
+            .get(&claim.operation_id)
+            .map(directive_for_entry)
+            .ok_or(RegistryError::OperationConflict)?;
+        Ok((claim, directive))
     }
 
     pub fn mark_running(
@@ -171,19 +361,38 @@ impl OperationRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         prune_tombstones(&mut state, now, self.tombstone_window);
         if let Some(entry) = state.entries.get_mut(&id) {
-            return Ok(match entry.state {
-                OperationState::Admitted | OperationState::Running => {
-                    entry.state = OperationState::CancelRequested;
-                    CancelOutcome::Requested
+            return Ok(match &mut entry.kind {
+                EntryKind::Managed {
+                    stop_reason,
+                    authority_started,
+                    ..
+                } => {
+                    if entry.state.is_terminal() || *authority_started {
+                        state.diagnostics.duplicate_cancels += 1;
+                        CancelOutcome::AlreadyTerminal
+                    } else if stop_reason.is_some() {
+                        state.diagnostics.duplicate_cancels += 1;
+                        CancelOutcome::AlreadyRequested
+                    } else {
+                        *stop_reason = Some(ManagedOperationStopReason::Cancelled);
+                        entry.state = OperationState::CancelRequested;
+                        CancelOutcome::Requested
+                    }
                 }
-                OperationState::CancelRequested => {
-                    state.diagnostics.duplicate_cancels += 1;
-                    CancelOutcome::AlreadyRequested
-                }
-                OperationState::Terminal(_) => {
-                    state.diagnostics.duplicate_cancels += 1;
-                    CancelOutcome::AlreadyTerminal
-                }
+                EntryKind::RuntimeTask => match entry.state {
+                    OperationState::Admitted | OperationState::Running => {
+                        entry.state = OperationState::CancelRequested;
+                        CancelOutcome::Requested
+                    }
+                    OperationState::CancelRequested => {
+                        state.diagnostics.duplicate_cancels += 1;
+                        CancelOutcome::AlreadyRequested
+                    }
+                    OperationState::Terminal(_) => {
+                        state.diagnostics.duplicate_cancels += 1;
+                        CancelOutcome::AlreadyTerminal
+                    }
+                },
             });
         }
         if state.cancel_tombstones.contains_key(&id) {
@@ -228,10 +437,27 @@ impl OperationRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut expired = 0;
         for entry in state.entries.values_mut() {
-            if !entry.state.is_terminal() && entry.deadline.is_some_and(|deadline| deadline <= now)
+            if entry.state.is_terminal() || !entry.deadline.is_some_and(|deadline| deadline <= now)
             {
-                entry.state = OperationState::Terminal(TerminalOutcome::DeadlineExceeded);
-                expired += 1;
+                continue;
+            }
+            match &mut entry.kind {
+                EntryKind::Managed {
+                    stop_reason,
+                    authority_started,
+                    ..
+                } if !*authority_started => {
+                    if stop_reason.is_none() {
+                        *stop_reason = Some(ManagedOperationStopReason::DeadlineExceeded);
+                        entry.state = OperationState::CancelRequested;
+                        expired += 1;
+                    }
+                }
+                EntryKind::Managed { .. } => {}
+                EntryKind::RuntimeTask => {
+                    entry.state = OperationState::Terminal(TerminalOutcome::DeadlineExceeded);
+                    expired += 1;
+                }
             }
         }
         expired
@@ -245,9 +471,26 @@ impl OperationRegistry {
         state.accepting = false;
         let mut cancelled = 0;
         for entry in state.entries.values_mut() {
-            if !entry.state.is_terminal() {
-                entry.state = OperationState::Terminal(TerminalOutcome::Cancelled);
-                cancelled += 1;
+            if entry.state.is_terminal() {
+                continue;
+            }
+            match &mut entry.kind {
+                EntryKind::Managed {
+                    stop_reason,
+                    authority_started,
+                    ..
+                } if !*authority_started => {
+                    if stop_reason.is_none() {
+                        *stop_reason = Some(ManagedOperationStopReason::ShutdownRequested);
+                        entry.state = OperationState::CancelRequested;
+                        cancelled += 1;
+                    }
+                }
+                EntryKind::Managed { .. } => {}
+                EntryKind::RuntimeTask => {
+                    entry.state = OperationState::Terminal(TerminalOutcome::Cancelled);
+                    cancelled += 1;
+                }
             }
         }
         state.cancel_tombstones.clear();
@@ -295,12 +538,158 @@ impl OperationRegistry {
             .diagnostics
     }
 
+    fn checkpoint_managed(
+        &self,
+        claim: &ManagedOperationClaim,
+        now: Instant,
+    ) -> Result<ManagedOperationDirective, RegistryError> {
+        self.validate_identity(&claim.identity)?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = exact_managed_entry_mut(&mut state, claim)?;
+        apply_managed_deadline(entry, now);
+        Ok(directive_for_entry(entry))
+    }
+
+    fn begin_managed_authority(
+        &self,
+        claim: &ManagedOperationClaim,
+        now: Instant,
+    ) -> Result<ManagedOperationDirective, RegistryError> {
+        self.validate_identity(&claim.identity)?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = exact_managed_entry_mut(&mut state, claim)?;
+        apply_managed_deadline(entry, now);
+        let directive = directive_for_entry(entry);
+        if directive != ManagedOperationDirective::ContinueExecution {
+            return Ok(directive);
+        }
+        let EntryKind::Managed {
+            authority_started, ..
+        } = &mut entry.kind
+        else {
+            return Err(RegistryError::OperationConflict);
+        };
+        *authority_started = true;
+        Ok(ManagedOperationDirective::ContinueExecution)
+    }
+
+    fn resolve_managed_terminal(
+        &self,
+        claim: &ManagedOperationClaim,
+        outcome: TerminalOutcome,
+    ) -> Result<OperationState, RegistryError> {
+        self.validate_identity(&claim.identity)?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (terminal_state, was_terminal) = {
+            let entry = exact_managed_entry_mut(&mut state, claim)?;
+            let was_terminal = entry.state.is_terminal();
+            if !was_terminal {
+                entry.state = OperationState::Terminal(outcome);
+            }
+            (entry.state, was_terminal)
+        };
+        if was_terminal {
+            state.diagnostics.late_terminal_results += 1;
+        }
+        Ok(terminal_state)
+    }
+
+    fn abandon_managed(
+        &self,
+        claim: &ManagedOperationClaim,
+        now: Instant,
+    ) -> Result<bool, RegistryError> {
+        self.validate_identity(&claim.identity)?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (stop_reason, terminal) = {
+            let entry = exact_managed_entry_mut(&mut state, claim)?;
+            let EntryKind::Managed { stop_reason, .. } = entry.kind else {
+                return Err(RegistryError::OperationConflict);
+            };
+            (stop_reason, entry.state.is_terminal())
+        };
+        if terminal {
+            return Ok(false);
+        }
+        state.entries.remove(&claim.operation_id);
+        if stop_reason == Some(ManagedOperationStopReason::Cancelled) {
+            state
+                .cancel_tombstones
+                .insert(claim.operation_id.clone(), CancelTombstone { created: now });
+        }
+        Ok(true)
+    }
+
     fn validate_identity(&self, identity: &RuntimeIdentity) -> Result<(), RegistryError> {
         if identity == &self.identity {
             Ok(())
         } else {
             Err(RegistryError::StaleRuntimeIdentity)
         }
+    }
+}
+
+fn exact_managed_entry_mut<'a>(
+    state: &'a mut State,
+    claim: &ManagedOperationClaim,
+) -> Result<&'a mut Entry, RegistryError> {
+    let entry = state
+        .entries
+        .get_mut(&claim.operation_id)
+        .ok_or(RegistryError::OperationConflict)?;
+    let generation = match entry.kind {
+        EntryKind::Managed { generation, .. } => generation,
+        EntryKind::RuntimeTask => return Err(RegistryError::OperationConflict),
+    };
+    if generation != claim.generation
+        || entry.fingerprint != claim.fingerprint
+        || entry.scope != claim.scope
+        || entry.identity != claim.identity
+    {
+        return Err(RegistryError::OperationConflict);
+    }
+    Ok(entry)
+}
+
+fn apply_managed_deadline(entry: &mut Entry, now: Instant) {
+    if entry.state.is_terminal() || !entry.deadline.is_some_and(|deadline| deadline <= now) {
+        return;
+    }
+    if let EntryKind::Managed {
+        stop_reason,
+        authority_started,
+        ..
+    } = &mut entry.kind
+        && !*authority_started
+        && stop_reason.is_none()
+    {
+        *stop_reason = Some(ManagedOperationStopReason::DeadlineExceeded);
+        entry.state = OperationState::CancelRequested;
+    }
+}
+
+fn directive_for_entry(entry: &Entry) -> ManagedOperationDirective {
+    if let OperationState::Terminal(outcome) = entry.state {
+        return ManagedOperationDirective::Terminal(outcome);
+    }
+    match entry.kind {
+        EntryKind::Managed {
+            stop_reason: Some(reason),
+            ..
+        } => ManagedOperationDirective::Stop(reason),
+        _ => ManagedOperationDirective::ContinueExecution,
     }
 }
 

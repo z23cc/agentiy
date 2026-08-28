@@ -1,8 +1,8 @@
 mod common;
 
 use agentry_runtime::{
-    AdmissionOutcome, CancelOutcome, CoreRuntime, LifecycleState, OperationState, RuntimeConfig,
-    RuntimeError, TerminalOutcome,
+    AdmissionOutcome, CancelOutcome, CoreRuntime, LifecycleState, ManagedOperationDirective,
+    ManagedOperationStopReason, OperationState, RuntimeConfig, RuntimeError, TerminalOutcome,
 };
 use std::future;
 use std::sync::{Arc, Barrier};
@@ -128,6 +128,161 @@ fn shutdown_waits_for_synchronous_authority_permit_and_closes_admission() {
     drop(permit);
     assert!(runtime.wait_for_terminal(Duration::from_secs(1)));
     assert_eq!(runtime.active_authority_operation_count(), 0);
+}
+
+#[test]
+fn managed_operations_share_capacity_without_spawning_tokio_tasks() {
+    let identity = common::identity('a');
+    let runtime = CoreRuntime::new(config(1), identity.clone()).expect("runtime");
+    let first_request = common::request(40, &identity);
+    let first_id = first_request.operation_id.clone();
+    let (first, directive) = runtime
+        .attach_managed_operation(first_request)
+        .expect("managed attachment");
+    assert_eq!(directive, ManagedOperationDirective::ContinueExecution);
+    assert_eq!(runtime.active_managed_operation_count(), 1);
+    assert_eq!(runtime.active_task_count(), 0);
+
+    let saturated = common::request(41, &identity);
+    let saturated_id = saturated.operation_id.clone();
+    assert!(matches!(
+        runtime.attach_managed_operation(saturated),
+        Err(RuntimeError::DataLaneSaturated)
+    ));
+    assert!(runtime.registry().snapshot(&saturated_id).is_none());
+    assert_eq!(runtime.active_managed_operation_count(), 1);
+
+    assert_eq!(
+        runtime.cancel(&identity, first_id).expect("cancel managed"),
+        CancelOutcome::Requested
+    );
+    assert_eq!(
+        first.checkpoint().expect("cancel checkpoint"),
+        ManagedOperationDirective::Stop(ManagedOperationStopReason::Cancelled)
+    );
+    assert_eq!(
+        first
+            .resolve_terminal(TerminalOutcome::Cancelled)
+            .expect("cancel terminal"),
+        OperationState::Terminal(TerminalOutcome::Cancelled)
+    );
+    assert_eq!(runtime.active_managed_operation_count(), 0);
+    runtime.begin_shutdown(&identity).expect("shutdown");
+    assert!(runtime.wait_for_terminal(Duration::from_secs(1)));
+}
+
+#[test]
+fn managed_authority_wins_late_cancel_and_shutdown_waits_for_permit() {
+    let identity = common::identity('a');
+    let runtime = CoreRuntime::new(config(1), identity.clone()).expect("runtime");
+    let request = common::request(42, &identity);
+    let operation_id = request.operation_id.clone();
+    let (lease, directive) = runtime
+        .attach_managed_operation(request)
+        .expect("managed attachment");
+    assert_eq!(directive, ManagedOperationDirective::ContinueExecution);
+    let (authority_directive, permit) = runtime
+        .begin_managed_authority_operation(&lease)
+        .expect("managed authority");
+    assert_eq!(
+        authority_directive,
+        ManagedOperationDirective::ContinueExecution
+    );
+    let permit = permit.expect("authority permit");
+    assert_eq!(runtime.active_authority_operation_count(), 1);
+    assert_eq!(
+        runtime
+            .cancel(&identity, operation_id)
+            .expect("late managed cancel"),
+        CancelOutcome::AlreadyTerminal
+    );
+    assert_eq!(
+        lease.checkpoint().expect("late cancel checkpoint"),
+        ManagedOperationDirective::ContinueExecution
+    );
+    assert_eq!(
+        lease
+            .resolve_terminal(TerminalOutcome::Success)
+            .expect("success terminal"),
+        OperationState::Terminal(TerminalOutcome::Success)
+    );
+
+    runtime.begin_shutdown(&identity).expect("shutdown");
+    assert!(!runtime.wait_for_terminal(Duration::from_millis(25)));
+    drop(permit);
+    assert!(runtime.wait_for_terminal(Duration::from_secs(1)));
+    assert_eq!(runtime.active_managed_operation_count(), 0);
+    assert_eq!(runtime.active_authority_operation_count(), 0);
+}
+
+#[test]
+fn managed_shutdown_stop_remains_attached_until_terminalized() {
+    let identity = common::identity('a');
+    let runtime = CoreRuntime::new(config(1), identity.clone()).expect("runtime");
+    let (lease, directive) = runtime
+        .attach_managed_operation(common::request(43, &identity))
+        .expect("managed attachment");
+    assert_eq!(directive, ManagedOperationDirective::ContinueExecution);
+    runtime.begin_shutdown(&identity).expect("shutdown");
+    assert_eq!(
+        lease.checkpoint().expect("shutdown checkpoint"),
+        ManagedOperationDirective::Stop(ManagedOperationStopReason::ShutdownRequested)
+    );
+    assert!(!runtime.wait_for_terminal(Duration::from_millis(25)));
+    assert_eq!(
+        lease
+            .resolve_terminal(TerminalOutcome::Cancelled)
+            .expect("shutdown terminal"),
+        OperationState::Terminal(TerminalOutcome::Cancelled)
+    );
+    assert!(runtime.wait_for_terminal(Duration::from_secs(1)));
+}
+
+#[test]
+fn shutdown_grace_detaches_a_leaked_pre_authority_managed_lease() {
+    let identity = common::identity('a');
+    let mut short = config(1);
+    short.shutdown_grace = Duration::from_millis(25);
+    let runtime = CoreRuntime::new(short, identity.clone()).expect("runtime");
+    let (lease, directive) = runtime
+        .attach_managed_operation(common::request(44, &identity))
+        .expect("managed attachment");
+    assert_eq!(directive, ManagedOperationDirective::ContinueExecution);
+
+    runtime.begin_shutdown(&identity).expect("shutdown");
+    assert!(runtime.wait_for_terminal(Duration::from_secs(1)));
+    assert_eq!(runtime.active_managed_operation_count(), 0);
+    assert_eq!(
+        lease.checkpoint().expect("forced terminal checkpoint"),
+        ManagedOperationDirective::Terminal(TerminalOutcome::Cancelled)
+    );
+}
+
+#[test]
+fn shutdown_grace_preserves_authority_then_detaches_an_unmirrored_lease() {
+    let identity = common::identity('a');
+    let mut short = config(1);
+    short.shutdown_grace = Duration::from_millis(25);
+    let runtime = CoreRuntime::new(short, identity.clone()).expect("runtime");
+    let (lease, directive) = runtime
+        .attach_managed_operation(common::request(45, &identity))
+        .expect("managed attachment");
+    assert_eq!(directive, ManagedOperationDirective::ContinueExecution);
+    let (_, permit) = runtime
+        .begin_managed_authority_operation(&lease)
+        .expect("managed authority");
+    let permit = permit.expect("authority permit");
+
+    runtime.begin_shutdown(&identity).expect("shutdown");
+    assert!(!runtime.wait_for_terminal(Duration::from_millis(75)));
+    drop(permit);
+    assert!(runtime.wait_for_terminal(Duration::from_secs(1)));
+    assert_eq!(runtime.active_authority_operation_count(), 0);
+    assert_eq!(runtime.active_managed_operation_count(), 0);
+    assert_eq!(
+        lease.checkpoint().expect("detached authority checkpoint"),
+        ManagedOperationDirective::Terminal(TerminalOutcome::Failed)
+    );
 }
 
 #[test]

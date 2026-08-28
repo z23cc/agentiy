@@ -141,6 +141,8 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case runtimeStopped
     case operationConflict
     case deadlineExpired
+    case operationCancelled
+    case shutdownRequested
     case subscriptionNotFound
     case queueLimitExceeded
     case payloadTooLarge
@@ -190,6 +192,8 @@ extension CoreBridgeError: LocalizedError {
         case .runtimeStopped: "The Rust runtime has stopped."
         case .operationConflict: "The operation identifier conflicts with an existing request."
         case .deadlineExpired: "The operation deadline expired before admission."
+        case .operationCancelled: "Operation cancellation won before physical authority."
+        case .shutdownRequested: "Runtime shutdown won before physical authority."
         case .subscriptionNotFound: "The subscription no longer exists."
         case .queueLimitExceeded: "The bounded core queue rejected the request."
         case .payloadTooLarge: "The payload exceeds the core boundary limit."

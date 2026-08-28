@@ -1019,6 +1019,14 @@ pub enum CoreWorkspaceCommandAdmissionAcquireKindV1 {
     Replay,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceCommandLifecycleDirectiveV1 {
+    ContinueExecution,
+    Cancelled,
+    DeadlineExceeded,
+    ShutdownRequested,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceCommandAdmissionDiagnosticsV1 {
     pub global_operation_count: u64,

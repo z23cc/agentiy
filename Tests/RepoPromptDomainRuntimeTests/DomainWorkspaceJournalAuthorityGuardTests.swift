@@ -457,7 +457,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(adapter.contains("func commandIdentity("))
         XCTAssertTrue(adapter.contains("core.commandIdentity("))
         XCTAssertTrue(adapter.contains("func acquire("))
-        XCTAssertTrue(adapter.contains("switch try core.acquire(request)"))
+        XCTAssertTrue(adapter.contains("switch try core.acquire("))
         XCTAssertFalse(adapter.contains("func preflight("))
         XCTAssertFalse(adapter.contains("core.preflight("))
         XCTAssertFalse(adapter.contains("core.decision("))
@@ -544,7 +544,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "struct PreparedCommandAdmission: Sendable",
             "struct PreparedExecutionClaim: Sendable",
             "core.beginCommandAdmission(",
-            "switch try core.acquire(request)",
+            "switch try core.acquire(",
             "core.reconcileDurable(",
             "core.reconcileWorkspace(",
             "core.finalizeTransient(",
@@ -571,6 +571,99 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "func decision("
         ] {
             XCTAssertFalse(adapter.contains(retired), "Retired admission adapter remains: \(retired)")
+        }
+    }
+
+    func testClaimBoundWorkspaceLifecycleCompositionHasOneExecutionAuthority() throws {
+        let root = repositoryRoot()
+        let authority = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
+            ),
+            encoding: .utf8
+        )
+        let adapter = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+            ),
+            encoding: .utf8
+        )
+        let persistence = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainPersistence.swift"
+            ),
+            encoding: .utf8
+        )
+        let ffi = try String(
+            contentsOf: root.appendingPathComponent("rust/crates/ffi/src/api.rs"),
+            encoding: .utf8
+        )
+        let registry = try String(
+            contentsOf: root.appendingPathComponent("rust/crates/runtime/src/registry.rs"),
+            encoding: .utf8
+        )
+
+        for required in [
+            "return await withTaskCancellationHandler",
+            "cancellationAdmission.cancel(operationID: envelope.operationID)",
+            "commandLifecycleStopOutcome(",
+            "commandClaim.checkpoint()",
+            "finalizeLifecycleCancellation("
+        ] {
+            XCTAssertTrue(authority.contains(required), "Missing production lifecycle binding: \(required)")
+        }
+        for required in [
+            "func checkpoint() throws -> DomainWorkspaceCommandLifecycleDirective",
+            "func cancel(operationID: UUID)",
+            "core.cancel(OperationID(",
+            "deadlineUnixMilliseconds: UInt64? = nil",
+            "CoreBridgeError.operationCancelled",
+            "CoreBridgeError.deadlineExpired"
+        ] {
+            XCTAssertTrue(adapter.contains(required), "Missing typed lifecycle adapter: \(required)")
+        }
+        XCTAssertGreaterThanOrEqual(
+            persistence.components(separatedBy: "transaction.acquireAuthorityPermit()").count - 1,
+            4,
+            "Every command-backed physical mutation family must cross the Rust authority gate"
+        )
+        for required in [
+            "runtime.attach_managed_operation(managed_request)",
+            "begin_managed_authority_operation",
+            "finalize_workspace_command_authorities",
+            "CoreWorkspaceCommandLifecycleDirectiveV1"
+        ] {
+            XCTAssertTrue(ffi.contains(required), "Missing composite FFI lifecycle seam: \(required)")
+        }
+        let acquireStart = try XCTUnwrap(
+            ffi.range(of: "fn workspace_command_admission_acquire_response(")
+        )
+        let acquireEnd = try XCTUnwrap(
+            ffi.range(
+                of: "fn workspace_command_admission_mutation_response(",
+                range: acquireStart.upperBound ..< ffi.endIndex
+            )
+        )
+        let workspaceAcquireBoundary = ffi[acquireStart.lowerBound ..< acquireEnd.lowerBound]
+        XCTAssertFalse(workspaceAcquireBoundary.contains(".submit("))
+        XCTAssertFalse(workspaceAcquireBoundary.contains(".execute("))
+        for required in [
+            "next_managed_generation",
+            "exact_managed_entry_mut",
+            "cancel_tombstones",
+            "authority_started",
+            "ManagedOperationStopReason::Cancelled"
+        ] {
+            XCTAssertTrue(registry.contains(required), "Missing lifecycle/ABA fence: \(required)")
+        }
+        for retired in [
+            "pendingCommandAdmissions",
+            "PendingCommandAdmission",
+            "envelope.fingerprint",
+            "commandAdmission.preflight(",
+            "commandAdmission.decision("
+        ] {
+            XCTAssertFalse(authority.contains(retired), "Split Swift authority returned: \(retired)")
         }
     }
 

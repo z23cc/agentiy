@@ -118,9 +118,25 @@ enum DomainWorkspaceCommandAdmissionAcquisition: Sendable {
     )
 }
 
+enum DomainWorkspaceCommandLifecycleDirective: Sendable, Equatable {
+    case continueExecution
+    case cancelled
+    case deadlineExceeded
+    case shutdownRequested
+}
+
+enum DomainWorkspaceCommandLifecycleFinalizationError: Error, Sendable, Equatable {
+    case cancelled
+    case deadlineExceeded
+    case shuttingDown
+}
+
 enum DomainWorkspaceCommandAdmissionError: Error, Sendable, Equatable {
     case invalidInput
     case invalidReceipt
+    case capacityExceeded
+    case deadlineExceeded
+    case shuttingDown
     case unavailable
 }
 
@@ -780,7 +796,15 @@ enum DomainWorkspaceRustJournal {
         }
 
         func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
-            try core.acquireAuthorityPermit()
+            do {
+                return try core.acquireAuthorityPermit()
+            } catch CoreBridgeError.operationCancelled {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.deadlineExpired {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.shutdownRequested {
+                throw DomainPersistenceError.runtimeShutdownRequested
+            }
         }
 
         func nextDirective() throws -> DomainWorkspaceCreateDirective {
@@ -809,6 +833,10 @@ enum DomainWorkspaceRustJournal {
                 expectedUpdatedAt: expectedUpdatedAt,
                 isRecovery: isRecovery
             )
+        }
+
+        var commandAdmissionFinalizationReconciled: Bool {
+            core.commandAdmissionFinalizationReconciled
         }
 
         func close() {
@@ -850,7 +878,15 @@ enum DomainWorkspaceRustJournal {
         }
 
         func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
-            try core.acquireAuthorityPermit()
+            do {
+                return try core.acquireAuthorityPermit()
+            } catch CoreBridgeError.operationCancelled {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.deadlineExpired {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.shutdownRequested {
+                throw DomainPersistenceError.runtimeShutdownRequested
+            }
         }
 
         func nextDirective() throws -> DomainWorkspaceJournalMutationDirective {
@@ -879,6 +915,10 @@ enum DomainWorkspaceRustJournal {
                 revisionOperationID: revisionOperationID,
                 expectedUpdatedAt: expectedUpdatedAt
             )
+        }
+
+        var commandAdmissionFinalizationReconciled: Bool {
+            core.commandAdmissionFinalizationReconciled
         }
 
         func close() {
@@ -919,6 +959,18 @@ enum DomainWorkspaceRustJournal {
             self.expectedUpdatedAt = expectedUpdatedAt
         }
 
+        func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
+            do {
+                return try core.acquireAuthorityPermit()
+            } catch CoreBridgeError.operationCancelled {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.deadlineExpired {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.shutdownRequested {
+                throw DomainPersistenceError.runtimeShutdownRequested
+            }
+        }
+
         func nextDirective() throws -> DomainWorkspaceSaveDirective {
             try validator.materializeSaveDirective(
                 core.nextDirective(),
@@ -945,6 +997,10 @@ enum DomainWorkspaceRustJournal {
                 expectedWorkingRevision: expectedWorkingRevision,
                 expectedUpdatedAt: expectedUpdatedAt
             )
+        }
+
+        var commandAdmissionFinalizationReconciled: Bool {
+            core.commandAdmissionFinalizationReconciled
         }
 
         func close() {
@@ -983,7 +1039,15 @@ enum DomainWorkspaceRustJournal {
         }
 
         func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
-            try core.acquireAuthorityPermit()
+            do {
+                return try core.acquireAuthorityPermit()
+            } catch CoreBridgeError.operationCancelled {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.deadlineExpired {
+                throw DomainPersistenceError.cancelled
+            } catch CoreBridgeError.shutdownRequested {
+                throw DomainPersistenceError.runtimeShutdownRequested
+            }
         }
 
         func nextDirective() throws -> DomainWorkspaceDeleteDirective {
@@ -1024,6 +1088,10 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
+        var commandAdmissionFinalizationReconciled: Bool {
+            core.commandAdmissionFinalizationReconciled
+        }
+
         func close() {
             core.close()
         }
@@ -1045,6 +1113,19 @@ enum DomainWorkspaceRustJournal {
             core
         }
 
+        func checkpoint() throws -> DomainWorkspaceCommandLifecycleDirective {
+            do {
+                return switch try core.checkpoint() {
+                case .continueExecution: .continueExecution
+                case .cancelled: .cancelled
+                case .deadlineExceeded: .deadlineExceeded
+                case .shutdownRequested: .shutdownRequested
+                }
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
         func finalizeTransient(
             operation: DomainRecordedOperation
         ) throws -> DomainRecordedOperation {
@@ -1059,6 +1140,14 @@ enum DomainWorkspaceRustJournal {
                 return materialized
             } catch let error as DomainWorkspaceCommandAdmissionError {
                 throw error
+            } catch CoreBridgeError.operationCancelled {
+                throw DomainWorkspaceCommandLifecycleFinalizationError.cancelled
+            } catch CoreBridgeError.deadlineExpired {
+                throw DomainWorkspaceCommandLifecycleFinalizationError.deadlineExceeded
+            } catch CoreBridgeError.runtimeStopped {
+                throw DomainWorkspaceCommandLifecycleFinalizationError.shuttingDown
+            } catch CoreBridgeError.shutdownRequested {
+                throw DomainWorkspaceCommandLifecycleFinalizationError.shuttingDown
             } catch {
                 throw validator.mapCommandAdmissionError(error)
             }
@@ -1091,11 +1180,15 @@ enum DomainWorkspaceRustJournal {
         }
 
         func acquire(
-            _ input: DomainWorkspaceCommandIdentityInput
+            _ input: DomainWorkspaceCommandIdentityInput,
+            deadlineUnixMilliseconds: UInt64? = nil
         ) throws -> DomainWorkspaceCommandAdmissionAcquisition {
             let request = validator.coreCommandIdentityRequest(input)
             do {
-                switch try core.acquire(request) {
+                switch try core.acquire(
+                    request,
+                    deadlineUnixMilliseconds: deadlineUnixMilliseconds
+                ) {
                 case let .claimed(identity, claim, _):
                     try validator.validateCommandAdmissionIdentity(identity, request: request)
                     return .claimed(
@@ -1127,6 +1220,12 @@ enum DomainWorkspaceRustJournal {
                 }
             } catch let error as DomainWorkspaceCommandAdmissionError {
                 throw error
+            } catch CoreBridgeError.queueLimitExceeded {
+                throw DomainWorkspaceCommandAdmissionError.capacityExceeded
+            } catch CoreBridgeError.deadlineExpired {
+                throw DomainWorkspaceCommandAdmissionError.deadlineExceeded
+            } catch CoreBridgeError.runtimeStopped {
+                throw DomainWorkspaceCommandAdmissionError.shuttingDown
             } catch let error as CoreWorkspaceWorkingJournalValidationError {
                 switch error {
                 case .inputTooLarge,
@@ -1139,6 +1238,17 @@ enum DomainWorkspaceRustJournal {
                 }
             } catch {
                 throw DomainWorkspaceCommandAdmissionError.unavailable
+            }
+        }
+
+        @discardableResult
+        func cancel(operationID: UUID) throws -> CoreCancellation {
+            do {
+                return try core.cancel(OperationID(
+                    rawValue: operationID.uuidString.lowercased()
+                ))
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
             }
         }
 

@@ -157,6 +157,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         default:
             return XCTFail("Expected the first acquisition to claim execution")
         }
+        XCTAssertEqual(try transientClaim.checkpoint(), .continueExecution)
         switch try admission.acquire(transientRequest) {
         case let .pending(identity, generation):
             XCTAssertEqual(identity, transientIdentity)
@@ -303,6 +304,93 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         admission.close()
         XCTAssertThrowsError(try admission.diagnostics()) { error in
             XCTAssertEqual(error as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
+        }
+        _ = try await bridge.close()
+    }
+
+    func testWorkspaceCommandLifecycleMapsCancellationDeadlineAndReplay() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let admission = try prepared.beginCommandAdmission(records: [])
+        defer { admission.close() }
+        let workspaceID = UUID()
+        let operationID = UUID()
+        let request = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: operationID,
+            expectedCatalogRevision: nil,
+            expectedWorkspaceRevision: nil,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .save,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+
+        _ = try admission.cancel(
+            OperationID(rawValue: operationID.uuidString.lowercased())
+        )
+        let cancelledIdentity: CoreWorkspaceCommandIdentityV1
+        let cancelledClaim: CoreWorkspaceCommandExecutionClaimV1
+        switch try admission.acquire(request) {
+        case let .claimed(identity, claim, _):
+            cancelledIdentity = identity
+            cancelledClaim = claim
+        default:
+            return XCTFail("A cancel tombstone must materialize an exact stopped claim")
+        }
+        XCTAssertEqual(try cancelledClaim.checkpoint(), .cancelled)
+        let receipt = CoreWorkspaceRecordedOperationV1(
+            operationID: operationID,
+            fingerprint: cancelledIdentity.fingerprint,
+            recordedAt: 45,
+            disposition: "failed",
+            before: nil,
+            after: nil,
+            catalogRevision: 0,
+            resultingDigest: nil,
+            errorCode: "cancelled",
+            diagnostic: "workspace_command_identity_cancelled"
+        )
+        XCTAssertEqual(
+            try cancelledClaim.finalizeTransient(operation: receipt),
+            receipt
+        )
+        switch try admission.acquire(request) {
+        case let .replay(identity, scope, operation):
+            XCTAssertEqual(identity, cancelledIdentity)
+            XCTAssertEqual(scope, .global)
+            XCTAssertEqual(operation, receipt)
+        default:
+            XCTFail("A terminal lifecycle stop must replay through the workspace receipt")
+        }
+
+        let deadlineRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: nil,
+            expectedWorkspaceRevision: nil,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .save,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+        XCTAssertThrowsError(
+            try admission.acquire(deadlineRequest, deadlineUnixMilliseconds: 1)
+        ) { error in
+            XCTAssertEqual(error as? CoreBridgeError, .deadlineExpired)
+        }
+        switch try admission.acquire(deadlineRequest) {
+        case let .claimed(_, claim, _):
+            XCTAssertTrue(try claim.abandon())
+        default:
+            XCTFail("An expired lifecycle attachment must roll the workspace claim back")
         }
         _ = try await bridge.close()
     }
@@ -654,11 +742,16 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             return XCTFail("expected document-authority directive")
         }
 
-        _ = try await bridge.close()
+        let authorityPermit = try transaction.acquireAuthorityPermit()
+        defer { authorityPermit.close() }
+        let closeTask = Task { try await bridge.close() }
+        try await Task.sleep(for: .milliseconds(10))
         let committedJournal = try transaction.report(.success(
             actionID: 2,
             writtenDigest: documentDigest
         ))
+        authorityPermit.close()
+        _ = try await closeTask.value
         let committedActionID: UInt64
         switch committedJournal {
         case let .action(
@@ -948,8 +1041,17 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
                 if expectedKind == .publishCatalog {
                     let permit = try transaction.acquireAuthorityPermit()
                     XCTAssertThrowsError(try transaction.acquireAuthorityPermit())
+                    let attachedReceipt = try XCTUnwrap(receipt)
+                    guard case let .committed(committedReceipt) = try transaction.report(.success(
+                        actionID: actionID,
+                        writtenDigest: digest
+                    )) else {
+                        permit.close()
+                        return XCTFail("catalog authority did not commit create")
+                    }
                     permit.close()
-                    authorityReceipt = try XCTUnwrap(receipt)
+                    XCTAssertEqual(committedReceipt, attachedReceipt)
+                    authorityReceipt = committedReceipt
                 } else {
                     XCTAssertNil(receipt)
                     _ = try transaction.report(.success(
@@ -986,11 +1088,20 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         )
         defer { recovery.close() }
         switch try recovery.nextDirective() {
-        case let .action(actionID, _, .publishCatalog, _, _, _, _, recoveryReceipt):
+        case let .action(actionID, _, .publishCatalog, _, _, digest, _, recoveryReceipt):
             XCTAssertEqual(actionID, 1)
             let permit = try recovery.acquireAuthorityPermit()
+            let attachedReceipt = try XCTUnwrap(recoveryReceipt)
+            guard case let .committed(committedReceipt) = try recovery.report(.success(
+                actionID: actionID,
+                writtenDigest: digest
+            )) else {
+                permit.close()
+                return XCTFail("catalog authority did not commit create recovery")
+            }
             permit.close()
-            XCTAssertNil(try XCTUnwrap(recoveryReceipt).savedRevision)
+            XCTAssertEqual(committedReceipt, attachedReceipt)
+            XCTAssertNil(committedReceipt.savedRevision)
         default:
             XCTFail("recovery did not yield the sole catalog action")
         }
@@ -1192,15 +1303,15 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             return XCTFail("expected catalog-authority directive")
         }
 
-        let authorityPermit = try transaction.acquireAuthorityPermit()
-        XCTAssertThrowsError(try transaction.acquireAuthorityPermit())
-        authorityPermit.close()
         _ = try await bridge.close()
+        XCTAssertThrowsError(try transaction.acquireAuthorityPermit()) {
+            XCTAssertEqual($0 as? CoreTransportError, .shutdownRequested)
+        }
         XCTAssertThrowsError(try transaction.report(.success(
             actionID: actionID,
             writtenDigest: catalogDigest
         ))) {
-            XCTAssertEqual($0 as? CoreTransportError, .runtimeStopped)
+            XCTAssertEqual($0 as? CoreTransportError, .invalidArgument)
         }
         XCTAssertEqual(authorityReceipt.workspaceID, workspaceID)
         XCTAssertEqual(authorityReceipt.operationID, operationID)

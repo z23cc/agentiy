@@ -821,7 +821,7 @@ impl WorkspaceCommandExecutionClaimV1 {
         self.generation
     }
 
-    pub fn finalize_transient(
+    pub fn validate_transient(
         &self,
         mut operation: WorkspaceRecordedOperationV1,
     ) -> Result<WorkspaceRecordedOperationV1, WorkspaceWorkingJournalError> {
@@ -830,6 +830,41 @@ impl WorkspaceCommandExecutionClaimV1 {
         {
             return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
         }
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let current = inner
+            .claims
+            .get(&self.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if current.workspace_id != self.workspace_id
+            || current.fingerprint != self.fingerprint
+            || current.generation != self.generation
+            || current.reservation_id.is_some()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let mut projected = inner
+            .state
+            .as_ref()
+            .cloned()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        for effect in inner.reservations.values() {
+            effect.apply_reservation_projection(&mut projected)?;
+        }
+        projected.insert(None, operation.clone())?;
+        Ok(operation)
+    }
+
+    pub fn finalize_transient(
+        &self,
+        operation: WorkspaceRecordedOperationV1,
+    ) -> Result<WorkspaceRecordedOperationV1, WorkspaceWorkingJournalError> {
+        let operation = self.validate_transient(operation)?;
         let mut inner = self
             .inner
             .lock()
@@ -864,6 +899,33 @@ impl WorkspaceCommandExecutionClaimV1 {
         state.insert(None, operation.clone())?;
         inner.claims.remove(&self.operation_id);
         Ok(operation)
+    }
+
+    pub fn reconciled_terminal(
+        &self,
+    ) -> Result<Option<WorkspaceRecordedOperationV1>, WorkspaceWorkingJournalError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.claims.get(&self.operation_id).is_some_and(|current| {
+            current.workspace_id == self.workspace_id
+                && current.fingerprint == self.fingerprint
+                && current.generation == self.generation
+        }) {
+            return Ok(None);
+        }
+        let state = inner
+            .state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        match state.decision(&self.workspace_id, &self.operation_id, &self.fingerprint) {
+            WorkspaceCommandAdmissionDecisionV1::Replay { operation, .. } => Ok(Some(operation)),
+            WorkspaceCommandAdmissionDecisionV1::Collision { .. } => {
+                Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+            }
+            WorkspaceCommandAdmissionDecisionV1::Unseen => Ok(None),
+        }
     }
 
     pub fn abandon(&self) -> Result<bool, WorkspaceWorkingJournalError> {
@@ -2103,6 +2165,12 @@ impl PreparedWorkspaceSaveTransactionV1 {
                 }) | Some(WorkspaceSaveDirectiveV1::Committed { .. })
             )
         })
+    }
+
+    pub fn is_ready_for_authority(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|state| matches!(state.stage, WorkspaceSaveStageV1::Document))
     }
 
     pub fn command_admission_finalization(
