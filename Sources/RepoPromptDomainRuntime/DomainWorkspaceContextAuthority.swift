@@ -148,7 +148,6 @@ actor DomainWorkspaceContextAuthority {
     private let mutationAccess: DomainWorkspaceMutationAccess
     private let workspaceAuthorityScope: DomainWorkspaceAuthorityLeaseScope
     private let metrics: DomainRuntimeMetricsSink
-    private let projectionObservationSink: DomainWorkspaceProjectionObservationSink
     private let commandIdentityResolver: DomainWorkspaceCommandIdentityResolver?
     private var commandIdentityValidator: DomainWorkspaceRustJournal.PreparedValidator?
     private var commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?
@@ -172,7 +171,6 @@ actor DomainWorkspaceContextAuthority {
         persistence: DomainPersistenceCoordinator,
         mutationAccess: DomainWorkspaceMutationAccess,
         metrics: DomainRuntimeMetricsSink,
-        projectionObservationSink: DomainWorkspaceProjectionObservationSink,
         commandIdentityResolver: DomainWorkspaceCommandIdentityResolver? = nil
     ) {
         self.identity = identity
@@ -180,7 +178,6 @@ actor DomainWorkspaceContextAuthority {
         self.mutationAccess = mutationAccess
         workspaceAuthorityScope = mutationAccess.scope
         self.metrics = metrics
-        self.projectionObservationSink = projectionObservationSink
         self.commandIdentityResolver = commandIdentityResolver
         mutationAccessSnapshot = DomainWorkspaceMutationAccessSnapshot(
             generation: 0,
@@ -219,7 +216,6 @@ actor DomainWorkspaceContextAuthority {
                 catalogRevision = 0
                 unavailableWorkspaces = [:]
                 records = [:]
-                projectionObservationSink.observe([], source: .bootstrap)
                 didBootstrap = true
                 bootstrapTask = nil
                 publish(
@@ -241,10 +237,6 @@ actor DomainWorkspaceContextAuthority {
         records = Dictionary(uniqueKeysWithValues: loaded.workspaces.map { workspace in
             (workspace.document.workspaceID, makeRecord(from: workspace))
         })
-        projectionObservationSink.observe(
-            records.values.map(\.document),
-            source: .bootstrap
-        )
         didBootstrap = true
         bootstrapTask = nil
         let projectedHealth = effectiveHealth(health)
@@ -271,10 +263,6 @@ actor DomainWorkspaceContextAuthority {
                 return $0.document.workspaceID.uuidString < $1.document.workspaceID.uuidString
             }
         )
-        projectionObservationSink.observe(
-            snapshot.workspaces.map(\.document),
-            source: .catalogSnapshot
-        )
         return snapshot
     }
 
@@ -291,9 +279,6 @@ actor DomainWorkspaceContextAuthority {
             projectSnapshot(registration)
         } else {
             records[workspaceID].map(makeSnapshot)
-        }
-        if let snapshot {
-            projectionObservationSink.observe(snapshot.document, source: .workspaceRead)
         }
         return snapshot.map {
             DomainWorkspaceReadFence(
@@ -341,11 +326,7 @@ actor DomainWorkspaceContextAuthority {
     /// Command outcomes and mutation admission must report canonical record state; the read
     /// overlay is routing-only and must never leak into recovery health or revision baselines.
     func canonicalWorkspaceSnapshot(_ workspaceID: UUID) -> DomainWorkspaceSnapshot? {
-        let snapshot = records[workspaceID].map(makeSnapshot)
-        if let snapshot {
-            projectionObservationSink.observe(snapshot.document, source: .canonicalWorkspaceRead)
-        }
-        return snapshot
+        records[workspaceID].map(makeSnapshot)
     }
 
     func contextSnapshot(_ identity: DomainContextIdentity) -> DomainContextSnapshot? {
@@ -359,7 +340,6 @@ actor DomainWorkspaceContextAuthority {
         let previous = readRegistrations[document.workspaceID]
             ?? records[document.workspaceID].map(makeSnapshot)
         if let previous, previous.document.contentDigest == document.contentDigest {
-            projectionObservationSink.observe(previous.document, source: .readRegistration)
             return previous
         }
 
@@ -398,7 +378,6 @@ actor DomainWorkspaceContextAuthority {
         )
         readRegistrations[document.workspaceID] = registration
         let projected = projectSnapshot(registration)
-        projectionObservationSink.observe(projected.document, source: .readRegistration)
         synchronizeReadAuthorityProjection()
         return projected
     }
@@ -453,9 +432,6 @@ actor DomainWorkspaceContextAuthority {
                     envelope,
                     reason: "canonical_storage_mutation_permit_invalid"
                 )
-            }
-            if let document = outcome.workspace?.document {
-                projectionObservationSink.observe(document, source: .commandOutcome)
             }
             return outcome
         } onCancel: {
@@ -621,6 +597,11 @@ actor DomainWorkspaceContextAuthority {
                     workspace: scope == .global ? nil : records[workspaceID].map(makeSnapshot)
                 )
             case let .replay(receiptFingerprint, scope, operation):
+                // Durable transaction finalization may expose an exact replay while the first
+                // actor invocation is still resuming from physical I/O. Join the catalog mutation
+                // fence so its routing row and aggregate publication are installed before replay.
+                await acquireCatalogMutation()
+                releaseCatalogMutation()
                 guard let recorded = await recordedOutcome(
                     for: envelope,
                     fingerprint: receiptFingerprint,
@@ -1036,10 +1017,6 @@ actor DomainWorkspaceContextAuthority {
             await self.reconcileAfterLeaseAcquisition(permit: permit)
         }
         applyMutationAccessSnapshot(accessSnapshot)
-        projectionObservationSink.observe(
-            records.values.map(\.document),
-            source: .leaseReconciliation
-        )
         return accessSnapshot
     }
 
@@ -1072,12 +1049,6 @@ actor DomainWorkspaceContextAuthority {
                 applyMutationAccessSnapshot(await mutationAccess.snapshot())
                 activity = .recoveryPending
             }
-        }
-        if activity != .unchanged {
-            projectionObservationSink.observe(
-                records.values.map(\.document),
-                source: .externalReload
-            )
         }
         return activity
     }

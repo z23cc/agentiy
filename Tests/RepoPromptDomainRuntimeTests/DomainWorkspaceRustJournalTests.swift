@@ -947,9 +947,6 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         ])
         let runtime = MCPDomainRuntime(
             configuration: commandIdentityConfiguration(directory: directory),
-            workspaceProjectionProjector: { _ in
-                throw CommandIdentityAuthorityTestError.projectorFailed
-            },
             workspaceCommandIdentityResolver: { input in
                 try await resolver.resolve(input)
             }
@@ -979,9 +976,6 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         ])
         let runtime = MCPDomainRuntime(
             configuration: commandIdentityConfiguration(directory: directory),
-            workspaceProjectionProjector: { _ in
-                throw CommandIdentityAuthorityTestError.projectorFailed
-            },
             workspaceCommandIdentityResolver: { input in
                 try await resolver.resolve(input)
             }
@@ -1008,9 +1002,6 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         let resolver = CommandIdentityAuthorityCancellationResolver()
         let runtime = MCPDomainRuntime(
             configuration: commandIdentityConfiguration(directory: directory),
-            workspaceProjectionProjector: { _ in
-                throw CommandIdentityAuthorityTestError.projectorFailed
-            },
             workspaceCommandIdentityResolver: { input in
                 await resolver.resolve(input)
             }

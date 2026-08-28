@@ -675,32 +675,52 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertFalse(rustTypes.contains("CoreWorkspaceDeletionTombstoneCleanupRequestV1"))
     }
 
-    func testAggregateProjectionAuthorityRetiresProductionObserverRepairAndCheckpointPaths() throws {
+    func testAggregateProjectionAuthorityPhysicallyRetiresLegacyCompatibilityPlane() throws {
         let root = repositoryRoot()
-        let authority = try String(
-            contentsOf: root.appendingPathComponent(
-                "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
-            ),
-            encoding: .utf8
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+
+        let authority = try source(
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
         )
-        let adapter = try String(
-            contentsOf: root.appendingPathComponent(
-                "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
-            ),
-            encoding: .utf8
+        let adapter = try source(
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
         )
-        let directHeadless = try String(
-            contentsOf: root.appendingPathComponent(
-                "Sources/RepoPromptMCP/DirectHeadlessDomainContext.swift"
-            ),
-            encoding: .utf8
+        let directHeadless = try source(
+            "Sources/RepoPromptMCP/DirectHeadlessDomainContext.swift"
         )
-        let runtime = try String(
-            contentsOf: root.appendingPathComponent(
-                "Sources/RepoPromptDomainRuntime/RepoPromptDomainRuntime.swift"
-            ),
-            encoding: .utf8
-        )
+        let domainSources = try [
+            "Sources/RepoPromptDomainRuntime/RepoPromptDomainRuntime.swift",
+            "Sources/RepoPromptDomainRuntime/AgentryCoreService.swift",
+            "Sources/RepoPromptDomainRuntime/DomainPersistence.swift",
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustProjection.swift"
+        ].map(source).joined(separator: "\n")
+        let bridgeSources = try [
+            "Sources/AgentryCoreBridge/CoreBridge.swift",
+            "Sources/AgentryCoreBridge/CoreOperations.swift",
+            "Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift",
+            "Sources/AgentryCoreBridge/CoreWorkspaceProjectionAuthority.swift"
+        ].map(source).joined(separator: "\n")
+        let rustSources = try [
+            "rust/crates/runtime/src/workspace_context.rs",
+            "rust/crates/ffi/src/api.rs",
+            "rust/crates/ffi/src/errors.rs",
+            "rust/crates/ffi/src/types.rs"
+        ].map(source).joined(separator: "\n")
+        let generatedSources = try [
+            "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift",
+            "Sources/CAgentryRustCore/include/AgentryCoreFFI.h"
+        ].map(source).joined(separator: "\n")
+        let productionSources = [
+            authority,
+            adapter,
+            directHeadless,
+            domainSources,
+            bridgeSources,
+            rustSources,
+            generatedSources
+        ].joined(separator: "\n")
 
         for required in [
             "commandAdmission.publishAuthorityState(",
@@ -708,7 +728,9 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "func workspaceAuthoritativeReadFence(",
             "func authoritativeReadSnapshots()",
             "receipt.previousPublicationSequence == publicationSequence",
-            "guard let commandAdmission else { return }"
+            "guard let commandAdmission else { return }",
+            "await acquireCatalogMutation()",
+            "releaseCatalogMutation()"
         ] {
             XCTAssertTrue(authority.contains(required), "Missing aggregate publication fence: \(required)")
         }
@@ -725,26 +747,76 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "Direct-headless must read the actor-captured Rust aggregate row"
         )
         XCTAssertTrue(
-            runtime.contains("let comparisonProjector: DomainWorkspaceRustProjectionObserver.Projector"),
-            "Production observer must remain comparison-only"
+            bridgeSources.contains("public struct CoreWorkspaceProjectionPublishedWorkspace"),
+            "Shared aggregate projection records must remain in the Bridge"
         )
+        XCTAssertTrue(
+            rustSources.contains("pub struct WorkspaceProjectionCatalog"),
+            "The prepared admission aggregate must retain the bounded Rust projection catalog"
+        )
+        XCTAssertTrue(
+            domainSources.contains(
+                "guard lifecycle == .starting, !Task.isCancelled else { return }\n        await workspaceAuthority.bootstrap()"
+            ),
+            "Cancelled startup must not begin workspace authority bootstrap"
+        )
+
         for retired in [
-            "projectionObservationSink.observePublication(",
+            "WorkspaceProjectionScopeRegistry",
+            "WorkspaceProjectionScopeConfiguration",
+            "WorkspaceProjectionScopeHandle",
+            "WorkspaceProjectionCheckpointV1",
+            "WorkspaceProjectionScopeDiagnostics",
+            "workspace_projection_open_scope_v1",
+            "DomainWorkspaceStatefulRustProjector",
+            "DomainWorkspaceRustProjectionObserver",
+            "DomainWorkspaceProjectionObservationSink",
+            "workspaceProjectionProjector",
+            "loadWorkspaceProjectionCheckpointData(",
+            "persistWorkspaceProjectionCheckpointData(",
             "reconcileAuthoritativeWorkspaceProjection(",
             "workspaceRustProjectionObserver.authoritativeWorkspaceProjection(",
             "DomainWorkspaceRustProjection.swiftProjection(",
-            "publicationSequence &+= 1"
+            "workspace-projection/checkpoint-v1.json",
+            "workspaceProjectionOpenScopeV1",
+            "workspaceProjectionCloseScopeV1",
+            "workspaceProjectionReplaceV1",
+            "workspaceProjectionUpsertV1",
+            "workspaceProjectionRemoveV1",
+            "workspaceProjectionPublishV1",
+            "workspaceProjectionExportCheckpointV1",
+            "workspaceProjectionRestoreCheckpointV1",
+            "workspaceProjectionOpenSnapshotV1",
+            "workspaceProjectionSnapshotPageV1",
+            "workspaceProjectionCloseSnapshotV1",
+            "workspaceProjectionDiagnosticsV1",
+            "workspace_projection_open_scope_v1",
+            "workspace_projection_replace_v1",
+            "workspace_projection_upsert_v1",
+            "workspace_projection_remove_v1",
+            "workspace_projection_publish_v1",
+            "workspace_projection_export_checkpoint_v1",
+            "workspace_projection_restore_checkpoint_v1",
+            "workspace_projection_open_snapshot_v1",
+            "workspace_projection_snapshot_page_v1",
+            "workspace_projection_close_snapshot_v1",
+            "workspace_projection_diagnostics_v1"
         ] {
-            XCTAssertFalse(authority.contains(retired), "Retired authority observer path remains: \(retired)")
-            XCTAssertFalse(directHeadless.contains(retired), "Retired direct-headless repair remains: \(retired)")
+            XCTAssertFalse(
+                productionSources.contains(retired),
+                "Retired projection compatibility surface remains: \(retired)"
+            )
         }
-        for retired in [
-            "activateWorkspaceRustProjectionIfPossible(",
-            "workspaceProjectionLeaseToken",
-            "loadWorkspaceProjectionCheckpointData()",
-            "persistWorkspaceProjectionCheckpointData("
+        for retiredPath in [
+            "Sources/AgentryCoreBridge/CoreWorkspaceProjectionScope.swift",
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustProjectionObserver.swift",
+            "Tests/RepoPromptDomainRuntimeTests/DomainWorkspaceRustProjectionObserverTests.swift",
+            "Tests/RepoPromptDomainRuntimeTests/DomainWorkspaceRustProjectionTests.swift"
         ] {
-            XCTAssertFalse(runtime.contains(retired), "Retired production checkpoint path remains: \(retired)")
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: root.appendingPathComponent(retiredPath).path),
+                "Retired projection compatibility file remains: \(retiredPath)"
+            )
         }
     }
 

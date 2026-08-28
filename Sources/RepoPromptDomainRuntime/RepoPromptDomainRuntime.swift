@@ -126,8 +126,6 @@ package actor MCPDomainRuntime {
     package nonisolated let activityCenter: DomainActivityCenter
     package nonisolated let credentialEnvelopeStore: DomainCredentialEnvelopeStore
     package nonisolated let longRunningToolProvider: MCPDomainLongRunningToolProvider
-    package nonisolated let workspaceRustProjectionObserver: DomainWorkspaceRustProjectionObserver
-
     private nonisolated let workspaceMutationAccess: DomainWorkspaceMutationAccess
     private let workspaceAuthority: DomainWorkspaceContextAuthority
     private var lifecycle: DomainRuntimeLifecycle = .created
@@ -143,7 +141,6 @@ package actor MCPDomainRuntime {
         processID: Int32 = ProcessInfo.processInfo.processIdentifier,
         createdAt: Date = Date(),
         registryID: UUID = UUID(),
-        workspaceProjectionProjector: DomainWorkspaceRustProjectionObserver.Projector? = nil,
         workspaceCommandIdentityResolver: DomainWorkspaceCommandIdentityResolver? = nil,
         prepareChildLaunch: @escaping MCPDomainLongRunningToolProvider.PrepareChildLaunch = { _, _, _ in nil }
     ) {
@@ -172,22 +169,11 @@ package actor MCPDomainRuntime {
             workspaceMutationPermitRegistry: workspaceMutationAccess.permitRegistry
         )
         persistenceCoordinator = persistence
-        let comparisonProjector: DomainWorkspaceRustProjectionObserver.Projector =
-            workspaceProjectionProjector ?? { documentBytes in
-                try await DomainWorkspaceRustProjection.project(documentBytes: documentBytes)
-            }
-        let workspaceRustProjectionObserver = DomainWorkspaceRustProjectionObserver(
-            identity: runtimeIdentity,
-            metrics: configuration.metrics,
-            projector: comparisonProjector
-        )
-        self.workspaceRustProjectionObserver = workspaceRustProjectionObserver
         let authority = DomainWorkspaceContextAuthority(
             identity: runtimeIdentity,
             persistence: persistence,
             mutationAccess: workspaceMutationAccess,
             metrics: configuration.metrics,
-            projectionObservationSink: workspaceRustProjectionObserver.sink,
             commandIdentityResolver: workspaceCommandIdentityResolver
         )
         workspaceAuthority = authority
@@ -275,7 +261,6 @@ package actor MCPDomainRuntime {
     }
 
     private func performStart() async {
-        await workspaceRustProjectionObserver.start()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         await workspaceAuthority.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
@@ -328,7 +313,6 @@ package actor MCPDomainRuntime {
         await pendingMutationAccessRecovery?.value
         await workspaceAuthority.beginMutationAccessDrain()
         await workspaceMutationAccess.waitForDrain()
-        await workspaceRustProjectionObserver.shutdown()
         _ = await domainHost.drain(timeout: configuration.hostDrainTimeout)
         await mutationApprovalBroker.shutdown()
         await interactionBroker.shutdown()

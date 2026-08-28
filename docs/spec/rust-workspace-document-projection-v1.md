@@ -1738,3 +1738,53 @@ reject both projection mutation and reads without resetting ABA generations.
   path remains.
 - Focused Runtime/FFI/Bridge/Domain authority, direct-headless, overlay, restart, lifecycle, source-guard, codegen,
   product-build, style, guardrail, formatting, and diff checks pass.
+
+## P5-7i amendment — legacy projection compatibility retirement
+
+P5-7i physically retires the complete P5-4 compatibility plane after P5-7h made the exact-runtime prepared command-
+admission aggregate the sole production owner of projection rows, workspace/context authority, projection generation,
+catalog/publication cursor, bounded event tail, deterministic digest, and immutable reads. No replacement observer,
+background publication queue, independently stateful registry, or repair authority is introduced. Swift continues to
+own physical I/O, the storage lease, routing overlays, actor serialization, subscriber ownership, and event delivery;
+the P5-7h aggregate publication-before-delivery and direct-headless read contracts remain unchanged.
+
+Rust removes the standalone projection scope and registry, scope incarnations, retained snapshot handles, document-
+only mutation and repair APIs, LRU bookkeeping, checkpoint schema and codecs, checkpoint restore/export, and scope
+diagnostics. UniFFI and the handwritten Bridge remove the matching scope configuration, handles, requests, receipts,
+errors, and transport methods. Shared document/context projection, health, revision, authority, publication kind/event,
+immutable entry/snapshot, catalog-capacity preparation, and aggregate publication/synchronization/read records remain
+active wherever the prepared admission capability consumes them; removal is based on authority ownership and callers,
+not on the `WorkspaceProjection` name prefix.
+
+Domain removes `DomainWorkspaceStatefulRustProjector`, `DomainWorkspaceRustProjectionObserver`, comparison/mismatch
+workers, bounded observation queues, observation-sink calls, projector injection, and their startup/shutdown lifecycle.
+The authority actor continues to submit complete snapshots directly to the admission aggregate, validate exact Rust
+receipts, mirror only Rust-issued cursors, and yield subscribers in the same non-suspending actor turn. Aggregate
+capacity, malformed input, stale runtime, lost lease, quarantine, close, ABA, replay, and first-terminal failure
+isolation retain their P5-7h behavior. An exact replay exposed by durable transaction finalization while its catalog
+mutation caller is still resuming from physical I/O joins the existing catalog-mutation fence before workspace-scoped
+receipt materialization, so the Swift routing row and Rust aggregate publication cannot be observed out of order.
+Direct-headless continues to fail closed on a missing or inconsistent aggregate row and may not reconstruct semantic
+authority from Swift state.
+
+The former `workspace-projection/checkpoint-v1.json` file is an inert legacy artifact. New production code does not
+discover it for migration, open or parse it, lock it, rewrite it, rename it, truncate it, or delete it. Bootstrap derives
+projection authority only from the current bounded workspace/catalog/journal/deletion artifacts through P5-7g/P5-7h.
+Existing legacy files remain untouched in place; any future cleanup requires a separately authorized migration. P5-7i
+adds no durable schema, tombstone, filesystem scan, or compatibility fallback.
+
+### P5-7i done-when
+
+- Runtime and FFI sources contain no projection scope/registry, scope incarnation, retained snapshot handle, standalone
+  replace/upsert/remove/publish, checkpoint, or scope-diagnostics surface; shared aggregate projection validation and
+  capacity behavior remain covered.
+- Generated Swift/C bindings and handwritten Bridge contain no standalone scope records or methods, while typed P5-7h
+  full publication, overlay synchronization, immutable read, and exact receipt surfaces remain.
+- Domain composition contains no stateful projector, comparison observer, observation sink, checkpoint persistence,
+  Swift repair, or observer lifecycle. Authority publication still commits before subscriber delivery and direct-
+  headless reads only the aggregate fence.
+- Restart tests preseed valid, invalid, and oversized legacy checkpoint artifacts and prove current durable artifacts
+  alone determine authority while the legacy file remains byte- and metadata-unchanged.
+- Source guards prove physical absence of the old plane and positive presence of the aggregate authority path; focused
+  Runtime/FFI/Bridge/Domain/direct-headless/restart/lifecycle tests, deterministic codegen, product builds, style,
+  guardrails, formatting, and diff checks pass.

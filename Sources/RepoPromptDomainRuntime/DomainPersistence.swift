@@ -246,7 +246,6 @@ private enum DomainBlockingIO {
 }
 
 package struct DomainPersistenceCoordinator {
-    package static let maximumWorkspaceProjectionCheckpointBytes = 128 * 1024 * 1024
     private static let maximumWorkspaceCatalogBytes = 128 * 1024 * 1024
 
     #if DEBUG
@@ -541,20 +540,6 @@ package struct DomainPersistenceCoordinator {
     private var lockDirectory: URL { runtimeRoot.appendingPathComponent("locks", isDirectory: true) }
     private var settingsDirectory: URL { runtimeRoot.appendingPathComponent("settings", isDirectory: true) }
     private var rollbackRoot: URL { runtimeRoot.appendingPathComponent("rollback", isDirectory: true) }
-    private var workspaceProjectionCheckpointRoot: URL {
-        (workspaceAuthorityScope?.canonicalWorkspaceStorageDirectory ?? workspaceRoot)
-            .appendingPathComponent(".agentry-domain-runtime", isDirectory: true)
-    }
-    private var workspaceProjectionCheckpointURL: URL {
-        workspaceProjectionCheckpointRoot
-            .appendingPathComponent("workspace-projection", isDirectory: true)
-            .appendingPathComponent("checkpoint-v1.json")
-    }
-    private var workspaceProjectionCheckpointLockURL: URL {
-        workspaceProjectionCheckpointRoot
-            .appendingPathComponent("locks", isDirectory: true)
-            .appendingPathComponent("workspace-projection-checkpoint-v1.lock")
-    }
     private var policyURL: URL { settingsDirectory.appendingPathComponent("runtime-policy.json") }
     private var protectedMutationPolicyURL: URL {
         settingsDirectory.appendingPathComponent("protected-mutations.json")
@@ -640,60 +625,6 @@ package struct DomainPersistenceCoordinator {
                 semanticRecovery: nil,
                 semanticPreview: nil
             )
-        }
-    }
-
-    package func loadWorkspaceProjectionCheckpointData() async throws -> Data? {
-        try await DomainBlockingIO.run { cancellation in
-            try cancellation.check()
-            let worker = blockingWorker(cancellation)
-            guard worker.fileManager.fileExists(atPath: worker.workspaceProjectionCheckpointURL.path) else {
-                return nil
-            }
-            let handle = try FileHandle(forReadingFrom: worker.workspaceProjectionCheckpointURL)
-            defer { try? handle.close() }
-            let descriptorSize = try handle.seekToEnd()
-            guard descriptorSize <= UInt64(Self.maximumWorkspaceProjectionCheckpointBytes) else {
-                throw DomainPersistenceError.writeFailed("workspace_projection_checkpoint_too_large")
-            }
-            try handle.seek(toOffset: 0)
-            var data = Data()
-            data.reserveCapacity(Int(descriptorSize))
-            let chunkSize = 64 * 1024
-            while true {
-                try cancellation.check()
-                let remaining = Self.maximumWorkspaceProjectionCheckpointBytes - data.count
-                let nextReadLimit = min(chunkSize, remaining + 1)
-                guard let chunk = try handle.read(upToCount: nextReadLimit), !chunk.isEmpty else { break }
-                data.append(chunk)
-                guard data.count <= Self.maximumWorkspaceProjectionCheckpointBytes else {
-                    throw DomainPersistenceError.writeFailed("workspace_projection_checkpoint_too_large")
-                }
-            }
-            return data
-        }
-    }
-
-    package func persistWorkspaceProjectionCheckpointData(
-        _ data: Data,
-        permit: DomainWorkspaceMutationPermit
-    ) async throws {
-        try validateMutationPermitScope(permit)
-        guard data.count <= Self.maximumWorkspaceProjectionCheckpointBytes else {
-            throw DomainPersistenceError.writeFailed("workspace_projection_checkpoint_too_large")
-        }
-        try await DomainBlockingIO.run { cancellation in
-            let worker = blockingWorker(cancellation)
-            try cancellation.check()
-            try worker.validateMutationPermitScope(permit)
-            try worker.withLock(at: worker.workspaceProjectionCheckpointLockURL) {
-                try cancellation.check()
-                try worker.validateMutationPermitScope(permit)
-                try DomainPersistenceLock.atomicWrite(
-                    data,
-                    to: worker.workspaceProjectionCheckpointURL
-                )
-            }
         }
     }
 
