@@ -822,10 +822,10 @@ actor DomainWorkspaceContextAuthority {
     }
 
     private func recordCommandAdmissionFinalization(
-        _ reconciled: Bool,
+        _ finalization: DomainWorkspaceCommandFinalization,
         workspaceID: UUID?
     ) {
-        guard !reconciled else { return }
+        guard finalization != .reconciled else { return }
         quarantineCommandAdmission()
         markCommandAdmissionReceiptMissing(workspaceID: workspaceID)
     }
@@ -1831,7 +1831,7 @@ actor DomainWorkspaceContextAuthority {
             )
             records[document.workspaceID] = record
             recordCommandAdmissionFinalization(
-                persisted.commandAdmissionFinalizationReconciled,
+                persisted.commandFinalization,
                 workspaceID: document.workspaceID
             )
             let outcome = DomainCommandOutcome(
@@ -1967,7 +1967,7 @@ actor DomainWorkspaceContextAuthority {
             catalogRevision = deleted.catalogRevision
             let cleanupDiagnostic = deleted.tombstone.operation.diagnostic
             recordCommandAdmissionFinalization(
-                deleted.commandAdmissionFinalizationReconciled,
+                deleted.commandFinalization,
                 workspaceID: nil
             )
             let outcome = DomainCommandOutcome(
@@ -2206,7 +2206,7 @@ actor DomainWorkspaceContextAuthority {
             record.operations = persisted.journal.operations
             records[document.workspaceID] = record
             recordCommandAdmissionFinalization(
-                persisted.commandAdmissionFinalizationReconciled,
+                persisted.commandFinalization,
                 workspaceID: document.workspaceID
             )
             let applied = DomainCommandOutcome(
@@ -2314,7 +2314,7 @@ actor DomainWorkspaceContextAuthority {
             record.operations = saved.journal.operations
             records[workspaceID] = record
             recordCommandAdmissionFinalization(
-                saved.commandAdmissionFinalizationReconciled,
+                saved.commandFinalization,
                 workspaceID: workspaceID
             )
         } catch let error as DomainPersistenceError {
@@ -2576,7 +2576,7 @@ actor DomainWorkspaceContextAuthority {
         )
         let operation = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: now, outcome: provisional)
         let operations = record.operations + [operation]
-        var commandAdmissionFinalizationReconciled = true
+        var commandFinalization = DomainWorkspaceCommandFinalization.unreconciled
         do {
             if acceptExternal {
                 let contextRevisions = Dictionary(uniqueKeysWithValues: external.metadata.contexts.map {
@@ -2599,7 +2599,7 @@ actor DomainWorkspaceContextAuthority {
                 record.revisions = persisted.journal.revisions
                 record.contextRevisions = persisted.journal.contextRevisions
                 record.operations = persisted.journal.operations
-                commandAdmissionFinalizationReconciled = persisted.commandAdmissionFinalizationReconciled
+                commandFinalization = persisted.commandFinalization
             } else {
                 let persisted = try await persistence.persistConflictRebase(
                     document: record.document,
@@ -2617,7 +2617,7 @@ actor DomainWorkspaceContextAuthority {
                 record.savedDigest = persisted.journal.savedDigest
                 record.revisions = persisted.journal.revisions
                 record.operations = persisted.journal.operations
-                commandAdmissionFinalizationReconciled = persisted.commandAdmissionFinalizationReconciled
+                commandFinalization = persisted.commandFinalization
             }
         } catch let error as DomainPersistenceError {
             if case .runtimeShutdownRequested = error {
@@ -2665,7 +2665,7 @@ actor DomainWorkspaceContextAuthority {
         record.externalDocument = nil
         records[workspaceID] = record
         recordCommandAdmissionFinalization(
-            commandAdmissionFinalizationReconciled,
+            commandFinalization,
             workspaceID: workspaceID
         )
         let outcome = DomainCommandOutcome(
@@ -3048,7 +3048,7 @@ actor DomainWorkspaceContextAuthority {
             record.operations = persisted.journal.operations
             records[record.document.workspaceID] = record
             recordCommandAdmissionFinalization(
-                persisted.commandAdmissionFinalizationReconciled,
+                persisted.commandFinalization,
                 workspaceID: record.document.workspaceID
             )
             return outcome

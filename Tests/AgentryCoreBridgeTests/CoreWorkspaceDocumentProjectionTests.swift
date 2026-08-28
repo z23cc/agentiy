@@ -468,20 +468,6 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "deletedAt": 44.0
         ], options: [.sortedKeys])
         let tombstone = try prepared.validateDeletionTombstone(tombstoneRecord)
-        let cleanupWarnings = try JSONSerialization.data(
-            withJSONObject: ["revision sidecar: denied"],
-            options: [.sortedKeys]
-        )
-        let amendedTombstone = try prepared.amendDeletionTombstoneCleanup(
-            authoritativeTombstoneBytes: tombstone.canonicalBytes,
-            cleanupWarningsBytes: cleanupWarnings
-        )
-        XCTAssertThrowsError(try prepared.amendDeletionTombstoneCleanup(
-            authoritativeTombstoneBytes: tombstone.canonicalBytes,
-            cleanupWarningsBytes: Data("[]".utf8)
-        )) {
-            XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
-        }
         let catalogTransition = try JSONSerialization.data(withJSONObject: [
             "kind": "seed",
             "entries": [[
@@ -507,8 +493,6 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(savedRevision.operationID, operationID)
         XCTAssertEqual(tombstone.workspaceID, workspaceID)
         XCTAssertEqual(tombstone.operationID, operationID)
-        XCTAssertEqual(amendedTombstone.workspaceID, tombstone.workspaceID)
-        XCTAssertEqual(amendedTombstone.operationID, tombstone.operationID)
         XCTAssertEqual(catalog, validatedCatalog)
         XCTAssertEqual(catalog.catalogVersion, 1)
         XCTAssertEqual(catalog.revision, 0)
@@ -516,9 +500,6 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(catalog.deletionCount, 0)
         XCTAssertFalse(String(decoding: tombstone.canonicalBytes, as: UTF8.self).contains(
             "artifact_cleanup_incomplete"
-        ))
-        XCTAssertTrue(String(decoding: amendedTombstone.canonicalBytes, as: UTF8.self).contains(
-            "artifact_cleanup_incomplete: revision sidecar: denied"
         ))
         XCTAssertEqual(preparedValidated, validated)
         XCTAssertEqual(validated.workspaceID, workspaceID)
@@ -1069,6 +1050,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(receipt.documentDigest, documentDigest)
         XCTAssertEqual(receipt.catalog.revision, 1)
         XCTAssertNotNil(receipt.savedRevision)
+        XCTAssertEqual(transaction.finishCommandAuthority(), .reconciled)
 
         let recoveryRequest = try JSONSerialization.data(withJSONObject: [
             "kind": "recover",
@@ -1102,6 +1084,7 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             permit.close()
             XCTAssertEqual(committedReceipt, attachedReceipt)
             XCTAssertNil(committedReceipt.savedRevision)
+            XCTAssertEqual(recovery.finishCommandAuthority(), .notApplicable)
         default:
             XCTFail("recovery did not yield the sole catalog action")
         }

@@ -862,14 +862,6 @@ pub struct CoreWorkspacePersistenceMetadataRequestV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct CoreWorkspaceDeletionTombstoneCleanupRequestV1 {
-    pub runtime_identity: RuntimeIdentity,
-    pub contract_version: u16,
-    pub authoritative_tombstone_bytes: Vec<u8>,
-    pub cleanup_warnings_bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspacePersistenceMetadataValidationV1 {
     pub workspace_id: String,
     pub operation_id: String,

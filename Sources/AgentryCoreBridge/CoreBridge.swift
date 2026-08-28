@@ -169,11 +169,6 @@ protocol CoreRuntimeTransport: Sendable {
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1
-    func workspaceDeletionTombstoneAmendCleanupV1(
-        identity: CoreRuntimeIdentity,
-        authoritativeTombstoneBytes: Data,
-        cleanupWarningsBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1
     func workspaceDeletionTombstoneValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1194,26 +1189,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    func workspaceDeletionTombstoneAmendCleanupV1(
-        identity: CoreRuntimeIdentity,
-        authoritativeTombstoneBytes: Data,
-        cleanupWarningsBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        do {
-            let response = try runtime.workspaceDeletionTombstoneAmendCleanupV1(request: .init(
-                runtimeIdentity: Self.rawIdentity(identity),
-                contractVersion: CoreWorkspaceWorkingJournalValidationV1.contractVersion,
-                authoritativeTombstoneBytes: authoritativeTombstoneBytes,
-                cleanupWarningsBytes: cleanupWarningsBytes
-            ))
-            return try Self.workspacePersistenceMetadataResponse(response)
-        } catch let error as CoreWorkspaceWorkingJournalValidationError {
-            throw error
-        } catch {
-            throw Self.map(error)
-        }
-    }
-
     func workspaceDeletionTombstoneValidateV1(
         identity: CoreRuntimeIdentity,
         payloadBytes: Data
@@ -1347,6 +1322,19 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             contentDigest: result.contentDigest,
             canonicalBytes: result.canonicalBytes
         )
+    }
+
+    private static func workspaceCommandFinalization(
+        _ value: AgentryUniFFIRaw.CoreWorkspaceCommandFinalizationV1
+    ) -> CoreWorkspaceCommandFinalizationV1 {
+        switch value {
+        case .notApplicable:
+            .notApplicable
+        case .reconciled:
+            .reconciled
+        case .unreconciled:
+            .unreconciled
+        }
     }
 
     private static func workspacePersistenceMetadataValidation(
@@ -1516,8 +1504,14 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
-                commandAdmissionFinalizationReconciled: {
-                    rawTransaction.commandAdmissionFinalizationReconciled()
+                finishCommandAuthority: {
+                    do {
+                        return Self.workspaceCommandFinalization(
+                            try rawTransaction.finishCommandAuthority()
+                        )
+                    } catch {
+                        return .unreconciled
+                    }
                 },
                 close: {
                     rawTransaction.close()
@@ -1596,11 +1590,11 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
-                reconcileAdmissionFinalization: { operation in
+                planCleanup: { cleanupWarningsBytes in
                     do {
-                        _ = try Self.workspaceCommandAdmissionDiagnostics(
-                            rawTransaction.reconcileAdmissionFinalization(
-                                operation: Self.rawWorkspaceRecordedOperation(operation)
+                        return try Self.workspacePersistenceMetadataResponse(
+                            rawTransaction.planCleanup(
+                                cleanupWarningsBytes: cleanupWarningsBytes
                             )
                         )
                     } catch let error as CoreWorkspaceWorkingJournalValidationError {
@@ -1609,8 +1603,26 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
-                commandAdmissionFinalizationReconciled: {
-                    rawTransaction.commandAdmissionFinalizationReconciled()
+                finishCommandAuthority: { cleanupWarningsBytes in
+                    do {
+                        let response = try rawTransaction.finishCommandAuthority(
+                            cleanupWarningsBytes: cleanupWarningsBytes
+                        )
+                        guard response.errorKind == nil,
+                              response.futureSchemaVersion == nil,
+                              let tombstone = response.tombstone
+                        else {
+                            return .init(tombstone: nil, commandFinalization: .unreconciled)
+                        }
+                        return try .init(
+                            tombstone: Self.workspacePersistenceMetadataValidation(tombstone),
+                            commandFinalization: Self.workspaceCommandFinalization(
+                                response.commandFinalization
+                            )
+                        )
+                    } catch {
+                        return .init(tombstone: nil, commandFinalization: .unreconciled)
+                    }
                 },
                 close: {
                     rawTransaction.close()
@@ -1693,8 +1705,14 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         throw Self.map(error)
                     }
                 },
-                commandAdmissionFinalizationReconciled: {
-                    rawTransaction.commandAdmissionFinalizationReconciled()
+                finishCommandAuthority: {
+                    do {
+                        return Self.workspaceCommandFinalization(
+                            try rawTransaction.finishCommandAuthority()
+                        )
+                    } catch {
+                        return .unreconciled
+                    }
                 },
                 close: {
                     rawTransaction.close()
@@ -1761,8 +1779,14 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                         report: Self.rawWorkspaceSaveReport(report)
                     ))
                 },
-                commandAdmissionFinalizationReconciled: {
-                    rawTransaction.commandAdmissionFinalizationReconciled()
+                finishCommandAuthority: {
+                    do {
+                        return Self.workspaceCommandFinalization(
+                            try rawTransaction.finishCommandAuthority()
+                        )
+                    } catch {
+                        return .unreconciled
+                    }
                 },
                 close: {
                     rawTransaction.close()

@@ -59,7 +59,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "candidate.canonicalBytes",
             "validator.validateSavedRevision(",
             "validator.requireRuntimeAvailability()",
-            "validator.amendDeletionTombstoneCleanup(",
+            "transaction.planCleanup(",
+            "transaction.finishCommandAuthority(",
             "private func readSavedRevisionSnapshot(",
             "postAuthoritySuccessFinalization",
             "postAuthorityFailureFinalization",
@@ -225,7 +226,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(runtime.contains("pub fn seed_workspace_catalog_v1("))
     }
 
-    func testStandaloneMetadataPlannersAreRustInternalOnlyAndCleanupAmendmentIsNarrow() throws {
+    func testStandaloneMetadataPlannersAreRustInternalOnlyAndCleanupIsTransactionOwned() throws {
         let root = repositoryRoot()
         let transportSources = [
             "rust/crates/ffi/src/api.rs",
@@ -374,7 +375,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         ))
         let deleteAuthority = source[deleteStart.lowerBound ..< cleanupStart.lowerBound]
         XCTAssertFalse(deleteAuthority.contains("validator.planDeletionTombstone("))
-        XCTAssertFalse(deleteAuthority.contains("validator.amendDeletionTombstoneCleanup("))
+        XCTAssertFalse(deleteAuthority.contains("transaction.planCleanup("))
         XCTAssertFalse(deleteAuthority.contains("transition: .delete("))
         XCTAssertTrue(deleteAuthority.contains("validator.beginDeleteTransaction("))
         XCTAssertTrue(deleteAuthority.contains("transaction.acquireAuthorityPermit()"))
@@ -385,10 +386,10 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         let postAuthorityCleanup = source[cleanupStart.lowerBound ..< cleanupEnd.lowerBound]
         XCTAssertEqual(
             postAuthorityCleanup.components(
-                separatedBy: "validator.amendDeletionTombstoneCleanup("
+                separatedBy: "transaction.planCleanup("
             ).count - 1,
             2,
-            "Only post-authority cleanup may amend the non-authoritative tombstone diagnostic"
+            "Only the authoritative delete transaction may plan post-authority cleanup facts"
         )
     }
 
@@ -483,6 +484,26 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             ),
             encoding: .utf8
         )
+        let coreBridge = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift"
+            ),
+            encoding: .utf8
+        )
+        let rustJournal = try String(
+            contentsOf: root.appendingPathComponent(
+                "rust/crates/runtime/src/workspace_persistence_journal.rs"
+            ),
+            encoding: .utf8
+        )
+        let rustFFI = try String(
+            contentsOf: root.appendingPathComponent("rust/crates/ffi/src/api.rs"),
+            encoding: .utf8
+        )
+        let rustTypes = try String(
+            contentsOf: root.appendingPathComponent("rust/crates/ffi/src/types.rs"),
+            encoding: .utf8
+        )
 
         for required in [
             "private var commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission?",
@@ -549,19 +570,29 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "core.reconcileWorkspace(",
             "core.finalizeTransient(",
             "transactionBinding",
-            "reconcileAdmissionFinalization("
+            "func finishCommandAuthority(",
+            "func planCleanup("
         ] {
             XCTAssertTrue(adapter.contains(required), "Missing Rust admission adapter: \(required)")
         }
         for required in [
-            "let commandAdmissionFinalizationReconciled: Bool",
-            "commandAdmissionFinalizationReconciled: false",
-            "commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled"
+            "let commandFinalization: DomainWorkspaceCommandFinalization",
+            "commandFinalization: transaction.finishCommandAuthority()",
+            "commandFinalization: result.commandFinalization",
+            "commandFinalization: finalization.commandFinalization"
         ] {
             XCTAssertTrue(
                 persistence.contains(required),
-                "Missing post-authority admission finalization signal: \(required)"
+                "Missing transaction-owned command finalization signal: \(required)"
             )
+        }
+        for retired in [
+            "commandAdmissionFinalizationReconciled",
+            "reconcileAdmissionFinalization(",
+            "amendDeletionTombstoneCleanup("
+        ] {
+            XCTAssertFalse(adapter.contains(retired), "Retired durable closeout remains: \(retired)")
+            XCTAssertFalse(persistence.contains(retired), "Retired durable closeout remains: \(retired)")
         }
         for retired in [
             "core.preflight(",
@@ -572,6 +603,32 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         ] {
             XCTAssertFalse(adapter.contains(retired), "Retired admission adapter remains: \(retired)")
         }
+        for required in [
+            "public enum CoreWorkspaceCommandFinalizationV1",
+            "public func finishCommandAuthority(",
+            "public func planCleanup("
+        ] {
+            XCTAssertTrue(coreBridge.contains(required), "Missing typed Core finalization: \(required)")
+        }
+        for required in [
+            "pub enum CoreWorkspaceCommandFinalizationV1",
+            "fn finish_workspace_command_authorities(",
+            "pub fn plan_cleanup("
+        ] {
+            XCTAssertTrue(rustFFI.contains(required), "Missing transaction-owned FFI finalization: \(required)")
+        }
+        XCTAssertTrue(rustJournal.contains("pub fn cleanup_plan("))
+        for retired in [
+            "pub fn preflight(",
+            "pub fn decision(",
+            "pub fn insert(",
+            "pub fn replace(",
+            "pub fn remove_workspace("
+        ] {
+            XCTAssertFalse(rustJournal.contains(retired), "Retired runtime admission API remains: \(retired)")
+        }
+        XCTAssertFalse(rustFFI.contains("workspace_deletion_tombstone_amend_cleanup_v1"))
+        XCTAssertFalse(rustTypes.contains("CoreWorkspaceDeletionTombstoneCleanupRequestV1"))
     }
 
     func testClaimBoundWorkspaceLifecycleCompositionHasOneExecutionAuthority() throws {
@@ -630,7 +687,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for required in [
             "runtime.attach_managed_operation(managed_request)",
             "begin_managed_authority_operation",
-            "finalize_workspace_command_authorities",
+            "finish_workspace_command_authorities",
             "CoreWorkspaceCommandLifecycleDirectiveV1"
         ] {
             XCTAssertTrue(ffi.contains(required), "Missing composite FFI lifecycle seam: \(required)")

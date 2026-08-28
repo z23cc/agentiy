@@ -135,21 +135,21 @@ struct DomainPersistenceWorkspaceRefresh {
 struct DomainPersistenceWorkingCommit {
     let journal: DomainWorkingJournal
     let catalogRevision: UInt64
-    let commandAdmissionFinalizationReconciled: Bool
+    let commandFinalization: DomainWorkspaceCommandFinalization
 }
 
 struct DomainPersistenceSavedCommit {
     let journal: DomainWorkingJournal
     let catalogRevision: UInt64
     let revisionSidecarMissing: Bool
-    let commandAdmissionFinalizationReconciled: Bool
+    let commandFinalization: DomainWorkspaceCommandFinalization
 }
 
 struct DomainPersistenceDeleteCommit {
     let catalogRevision: UInt64
     let tombstone: DomainDeletionTombstone
     let artifactCleanupWarnings: [String]
-    let commandAdmissionFinalizationReconciled: Bool
+    let commandFinalization: DomainWorkspaceCommandFinalization
 }
 
 enum DomainPersistenceError: Error, Equatable {
@@ -1691,7 +1691,6 @@ package struct DomainPersistenceCoordinator {
                 var directive = try transaction.nextDirective()
                 var authorityReceipt: DomainWorkspaceCreateCommitReceipt?
                 var catalogAuthorityEstablished = false
-                var commandAdmissionFinalizationReconciled = true
                 do {
                     createTransactionLoop: while true {
                         switch directive {
@@ -1798,7 +1797,6 @@ package struct DomainPersistenceCoordinator {
                                     }
                                 } catch {
                                     authorityReceipt = attachedReceipt
-                                    commandAdmissionFinalizationReconciled = false
                                 }
                                 break createTransactionLoop
                             } catch {
@@ -1848,8 +1846,7 @@ package struct DomainPersistenceCoordinator {
                     journal: authorityReceipt.committedJournal.journal,
                     catalogRevision: authorityReceipt.catalog.catalog.revision,
                     revisionSidecarMissing: false,
-                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
-                        && transaction.commandAdmissionFinalizationReconciled
+                    commandFinalization: transaction.finishCommandAuthority()
                 )
             }
         }
@@ -1868,7 +1865,7 @@ package struct DomainPersistenceCoordinator {
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
         finalization: DomainWorkspaceJournalMutationFinalization,
-        commandAdmissionFinalizationReconciled: Bool
+        commandFinalization: DomainWorkspaceCommandFinalization
     ) {
         let rawJournalBytes: Data? = switch snapshot.raw {
         case .absent: nil
@@ -1933,13 +1930,13 @@ package struct DomainPersistenceCoordinator {
         func activatedOutcome() -> (
             receipt: DomainWorkspaceJournalMutationCommitReceipt,
             finalization: DomainWorkspaceJournalMutationFinalization,
-            commandAdmissionFinalizationReconciled: Bool
+            commandFinalization: DomainWorkspaceCommandFinalization
         )? {
             guard let activatedReceipt, let activatedFinalization else { return nil }
             return (
                 activatedReceipt,
                 activatedFinalization,
-                transaction.commandAdmissionFinalizationReconciled
+                transaction.finishCommandAuthority()
             )
         }
 
@@ -1979,7 +1976,11 @@ package struct DomainPersistenceCoordinator {
                             writtenDigest: validation.contentDigest
                         ))
                     } catch {
-                        return (authorityReceipt, postAuthoritySuccessFinalization, false)
+                        return (
+                            authorityReceipt,
+                            postAuthoritySuccessFinalization,
+                            transaction.finishCommandAuthority()
+                        )
                     }
                 } catch {
                     let physicalError = error
@@ -2018,7 +2019,11 @@ package struct DomainPersistenceCoordinator {
                         ))
                     } catch {
                         guard let activatedReceipt else { throw error }
-                        return (activatedReceipt, postAuthoritySuccessFinalization, false)
+                        return (
+                            activatedReceipt,
+                            postAuthoritySuccessFinalization,
+                            transaction.finishCommandAuthority()
+                        )
                     }
                 } catch {
                     let physicalError = error
@@ -2031,7 +2036,11 @@ package struct DomainPersistenceCoordinator {
                         ))
                     } catch {
                         guard let activatedReceipt, let activatedFinalization else { throw physicalError }
-                        return (activatedReceipt, activatedFinalization, false)
+                        return (
+                            activatedReceipt,
+                            activatedFinalization,
+                            transaction.finishCommandAuthority()
+                        )
                     }
                 }
 
@@ -2045,7 +2054,7 @@ package struct DomainPersistenceCoordinator {
                 return (
                     receipt,
                     finalization,
-                    transaction.commandAdmissionFinalizationReconciled
+                    transaction.finishCommandAuthority()
                 )
 
             case let .failed(failure):
@@ -2106,7 +2115,7 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
                 catalogRevision: result.receipt.catalogRevision,
-                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
+                commandFinalization: result.commandFinalization
             )
         }
     }
@@ -2159,7 +2168,7 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
                 catalogRevision: result.receipt.catalogRevision,
-                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
+                commandFinalization: result.commandFinalization
             )
         }
     }
@@ -2210,15 +2219,13 @@ package struct DomainPersistenceCoordinator {
 
             func commit(
                 _ receipt: DomainWorkspaceSaveCommitReceipt,
-                finalization: DomainWorkspaceSaveFinalization,
-                commandAdmissionFinalizationReconciled: Bool = true
+                finalization: DomainWorkspaceSaveFinalization
             ) -> DomainPersistenceSavedCommit {
                 DomainPersistenceSavedCommit(
                     journal: receipt.committedJournal.journal,
                     catalogRevision: receipt.catalogRevision,
                     revisionSidecarMissing: finalization == .revisionSidecarMissing,
-                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
-                        && transaction.commandAdmissionFinalizationReconciled
+                    commandFinalization: transaction.finishCommandAuthority()
                 )
             }
 
@@ -2270,14 +2277,11 @@ package struct DomainPersistenceCoordinator {
                     && lhs.savedRevision.canonicalBytes == rhs.savedRevision.canonicalBytes
             }
 
-            func activatedCommit(
-                commandAdmissionFinalizationReconciled: Bool = true
-            ) -> DomainPersistenceSavedCommit? {
+            func activatedCommit() -> DomainPersistenceSavedCommit? {
                 guard let activatedReceipt, let activatedFinalization else { return nil }
                 return commit(
                     activatedReceipt,
-                    finalization: activatedFinalization,
-                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
+                    finalization: activatedFinalization
                 )
             }
 
@@ -2354,8 +2358,7 @@ package struct DomainPersistenceCoordinator {
                         } catch {
                             return commit(
                                 authorityReceipt,
-                                finalization: postAuthoritySuccessFinalization,
-                                commandAdmissionFinalizationReconciled: false
+                                finalization: postAuthoritySuccessFinalization
                             )
                         }
                     } catch {
@@ -2402,9 +2405,7 @@ package struct DomainPersistenceCoordinator {
                                 writtenDigest: validation.contentDigest
                             ))
                         } catch {
-                            guard let committed = activatedCommit(
-                                commandAdmissionFinalizationReconciled: false
-                            ) else { throw error }
+                            guard let committed = activatedCommit() else { throw error }
                             return committed
                         }
                     } catch {
@@ -2417,9 +2418,7 @@ package struct DomainPersistenceCoordinator {
                                 error: physicalError
                             ))
                         } catch {
-                            if let committed = activatedCommit(
-                                commandAdmissionFinalizationReconciled: false
-                            ) { return committed }
+                            if let committed = activatedCommit() { return committed }
                             throw physicalError
                         }
                     }
@@ -2447,9 +2446,7 @@ package struct DomainPersistenceCoordinator {
                                 writtenDigest: validation.contentDigest
                             ))
                         } catch {
-                            guard let committed = activatedCommit(
-                                commandAdmissionFinalizationReconciled: false
-                            ) else { throw error }
+                            guard let committed = activatedCommit() else { throw error }
                             return committed
                         }
                     } catch {
@@ -2462,9 +2459,7 @@ package struct DomainPersistenceCoordinator {
                                 error: physicalError
                             ))
                         } catch {
-                            if let committed = activatedCommit(
-                                commandAdmissionFinalizationReconciled: false
-                            ) { return committed }
+                            if let committed = activatedCommit() { return committed }
                             throw physicalError
                         }
                     }
@@ -2552,7 +2547,7 @@ package struct DomainPersistenceCoordinator {
                 journal: result.receipt.committedJournal.journal,
                 catalogRevision: result.receipt.catalogRevision,
                 revisionSidecarMissing: revisionSidecarMissing,
-                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
+                commandFinalization: result.commandFinalization
             )
         }
     }
@@ -2607,7 +2602,7 @@ package struct DomainPersistenceCoordinator {
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
                 catalogRevision: result.receipt.catalogRevision,
-                commandAdmissionFinalizationReconciled: result.commandAdmissionFinalizationReconciled
+                commandFinalization: result.commandFinalization
             )
         }
     }
@@ -2797,8 +2792,7 @@ package struct DomainPersistenceCoordinator {
                 var recordedTombstone = tombstone
                 if !artifactCleanupWarnings.isEmpty {
                     do {
-                        let cleanupPlan = try validator.amendDeletionTombstoneCleanup(
-                            authoritative: plannedTombstone,
+                        let cleanupPlan = try transaction.planCleanup(
                             cleanupWarnings: artifactCleanupWarnings
                         )
                         recordedTombstone = cleanupPlan.tombstone
@@ -2812,8 +2806,7 @@ package struct DomainPersistenceCoordinator {
                                 artifactCleanupWarnings.append(
                                     "cleanup status sidecar: \(error.localizedDescription)"
                                 )
-                                if let amendedPlan = try? validator.amendDeletionTombstoneCleanup(
-                                    authoritative: plannedTombstone,
+                                if let amendedPlan = try? transaction.planCleanup(
                                     cleanupWarnings: artifactCleanupWarnings
                                 ) {
                                     recordedTombstone = amendedPlan.tombstone
@@ -2826,24 +2819,17 @@ package struct DomainPersistenceCoordinator {
                         )
                     }
                 }
-                let commandAdmissionFinalizationReconciled: Bool
-                do {
-                    try transaction.reconcileAdmissionFinalization(
-                        operation: recordedTombstone.operation
-                    )
-                    commandAdmissionFinalizationReconciled =
-                        transaction.commandAdmissionFinalizationReconciled
-                } catch {
-                    // Catalog publication already established delete authority. Admission repair is
-                    // isolated into the returned commit so the caller can quarantine replay without
-                    // manufacturing a failed physical delete.
-                    commandAdmissionFinalizationReconciled = false
+                let finalization = transaction.finishCommandAuthority(
+                    cleanupWarnings: artifactCleanupWarnings.isEmpty ? nil : artifactCleanupWarnings
+                )
+                if let finalizedTombstone = finalization.tombstone {
+                    recordedTombstone = finalizedTombstone.tombstone
                 }
                 return DomainPersistenceDeleteCommit(
                     catalogRevision: next.catalog.revision,
                     tombstone: recordedTombstone,
                     artifactCleanupWarnings: artifactCleanupWarnings,
-                    commandAdmissionFinalizationReconciled: commandAdmissionFinalizationReconciled
+                    commandFinalization: finalization.commandFinalization
                 )
             }
         }

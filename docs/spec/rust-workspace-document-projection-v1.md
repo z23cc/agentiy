@@ -1469,3 +1469,50 @@ deterministically tested internal capability until a separate contract-first pha
   fingerprint fallback, and no unbound command transaction.
 - Focused Runtime/FFI/Bridge/Domain cancellation, deadline, shutdown, capacity, replay, race, source-guard,
   codegen, product-build, style, guardrail, formatting, and diff checks pass.
+
+## P5-7e amendment — transaction-owned post-authority convergence
+
+P5-7e removes the remaining independent Swift durable-admission closeout after P5-7d. Every authoritative create,
+delete, working-journal, and save transaction now owns a typed command-finalization state: `notApplicable` for an
+explicitly unbound recovery transaction, `reconciled` when the exact P5 receipt and lifecycle mirror agree, or
+`unreconciled` when either side cannot be made exact. After the physical authority action succeeds, reporting may
+advance the Rust transaction and attempt convergence, but an admission or lifecycle failure can no longer escape as
+a transport error that makes Swift infer success from an attached receipt plus a local Boolean. Swift asks the same
+transaction to finish its already-bound authority and receives the typed state; it cannot provide an operation,
+perform an insert, query a decision, or reinterpret a Rust terminal.
+
+Delete cleanup is part of that same transaction boundary. Swift may submit only the bounded cleanup-warning facts it
+observed while removing physical artifacts. The authoritative delete transaction reuses its exact catalog tombstone
+to plan canonical sidecar bytes and, at final completion, changes only the permitted cleanup diagnostic before
+atomically replacing the matching finalized P5 replay receipt. The operation ID, fingerprint, disposition, digests,
+error code, workspace identity, and claim generation are never accepted back from Swift. Repeated cleanup planning is
+side-effect free so a sidecar-write warning can be included in the final in-memory receipt; final completion remains
+first-terminal and exact-receipt fenced. A cleanup-plan or replay-mirror failure preserves catalog delete authority,
+returns `unreconciled`, quarantines later mutation admission, and never manufactures a retryable failed delete.
+
+The standalone deletion-cleanup FFI export, delete `reconcileAdmissionFinalization(operation:)`, transaction Boolean
+status getters, and Swift `commandAdmissionFinalizationReconciled: false` inference are retired together. Rust also
+removes the prepared admission object's unused standalone `preflight`, `decision`, `insert`, `replace`, and
+`removeWorkspace` mutation/query methods; production retains only atomic acquire, claim-bound transaction binding,
+transient claim finalization, and durable restart/external-CAS reconciliation. `reconcileDurable` and
+`reconcileWorkspace` remain recovery inputs derived from Rust-validated durable artifacts, not post-commit fallback
+writes. Durable schemas, filesystem ownership, storage leases, publication order, outward `DomainCommandOutcome`, and
+cleanup-warning text remain unchanged.
+
+### P5-7e done-when
+
+- Rust tests prove all four authoritative transaction families return exact typed completion, retry an exact pending
+  reservation without changing the receipt, preserve lifecycle-terminal mismatch as `unreconciled`, and distinguish
+  explicitly unbound recovery from a missing command binding.
+- Delete tests prove repeated warning planning is pure, final cleanup may change only the diagnostic, exact replay is
+  updated atomically, stale/different operations and repeated incompatible finalization fail closed, and catalog
+  authority survives every cleanup/finalization error.
+- UniFFI and Bridge expose only transaction-scoped finish/cleanup methods; no raw claim, operation replacement,
+  standalone cleanup request, Boolean finalization getter, or generic admission decision/insert crosses the boundary.
+- Domain persistence contains no manual post-authority admission Boolean, no attached-receipt catch that guesses a
+  Rust terminal, and no operation-bearing admission reconcile. Recovery/non-command paths may accept
+  `notApplicable`; command-bound callers quarantine every result other than the exact typed `reconciled` state.
+- Restart and targeted external-CAS reconciliation retain exact replay behavior, including an authoritative deletion
+  sidecar cleanup diagnostic, without serving as a command-commit fallback.
+- Focused Runtime/FFI/Bridge/Domain authority, replay, cleanup, lifecycle, source-guard, codegen, product-build, style,
+  guardrail, formatting, and diff checks pass.

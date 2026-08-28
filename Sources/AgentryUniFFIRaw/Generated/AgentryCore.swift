@@ -821,7 +821,7 @@ public protocol CorePreparedWorkspaceCreateTransactionV1Protocol: AnyObject, Sen
 
     func close()
 
-    func commandAdmissionFinalizationReconciled()  -> Bool
+    func finishCommandAuthority() throws  -> CoreWorkspaceCommandFinalizationV1
 
     func nextDirective() throws  -> CoreWorkspaceCreateDirectiveResponseV1
 
@@ -898,10 +898,10 @@ open func close()  {try! rustCall() {
 }
 }
 
-open func commandAdmissionFinalizationReconciled() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
+open func finishCommandAuthority()throws  -> CoreWorkspaceCommandFinalizationV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandFinalizationV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacecreatetransactionv1_command_admission_finalization_reconciled(
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecreatetransactionv1_finish_command_authority(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -982,11 +982,11 @@ public protocol CorePreparedWorkspaceDeleteTransactionV1Protocol: AnyObject, Sen
 
     func close()
 
-    func commandAdmissionFinalizationReconciled()  -> Bool
+    func finishCommandAuthority(cleanupWarningsBytes: Data?) throws  -> CoreWorkspaceDeleteCleanupFinalizationResponseV1
 
     func nextDirective() throws  -> CoreWorkspaceDeleteDirectiveResponseV1
 
-    func reconcileAdmissionFinalization(operation: CoreWorkspaceRecordedOperationV1) throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
+    func planCleanup(cleanupWarningsBytes: Data) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
     func reportAction(report: CoreWorkspaceSaveActionReportV1) throws  -> CoreWorkspaceDeleteDirectiveResponseV1
 
@@ -1061,11 +1061,12 @@ open func close()  {try! rustCall() {
 }
 }
 
-open func commandAdmissionFinalizationReconciled() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
+open func finishCommandAuthority(cleanupWarningsBytes: Data?)throws  -> CoreWorkspaceDeleteCleanupFinalizationResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceDeleteCleanupFinalizationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacedeletetransactionv1_command_admission_finalization_reconciled(
-            self.uniffiCloneHandle(),uniffiCallStatus
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacedeletetransactionv1_finish_command_authority(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionData.lower(cleanupWarningsBytes),uniffiCallStatus
     )
 })
 }
@@ -1079,12 +1080,12 @@ open func nextDirective()throws  -> CoreWorkspaceDeleteDirectiveResponseV1  {
 })
 }
 
-open func reconcileAdmissionFinalization(operation: CoreWorkspaceRecordedOperationV1)throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1  {
-    return try  FfiConverterTypeCoreWorkspaceCommandAdmissionMutationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+open func planCleanup(cleanupWarningsBytes: Data)throws  -> CoreWorkspacePersistenceMetadataResponseV1  {
+    return try  FfiConverterTypeCoreWorkspacePersistenceMetadataResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacedeletetransactionv1_reconcile_admission_finalization(
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacedeletetransactionv1_plan_cleanup(
             self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceRecordedOperationV1_lower(operation),uniffiCallStatus
+        FfiConverterData.lower(cleanupWarningsBytes),uniffiCallStatus
     )
 })
 }
@@ -1155,7 +1156,7 @@ public protocol CorePreparedWorkspaceJournalMutationTransactionV1Protocol: AnyOb
 
     func close()
 
-    func commandAdmissionFinalizationReconciled()  -> Bool
+    func finishCommandAuthority() throws  -> CoreWorkspaceCommandFinalizationV1
 
     func nextDirective() throws  -> CoreWorkspaceJournalMutationDirectiveResponseV1
 
@@ -1232,10 +1233,10 @@ open func close()  {try! rustCall() {
 }
 }
 
-open func commandAdmissionFinalizationReconciled() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
+open func finishCommandAuthority()throws  -> CoreWorkspaceCommandFinalizationV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandFinalizationV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacejournalmutationtransactionv1_command_admission_finalization_reconciled(
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacejournalmutationtransactionv1_finish_command_authority(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1316,7 +1317,7 @@ public protocol CorePreparedWorkspaceSaveTransactionV1Protocol: AnyObject, Senda
 
     func close()
 
-    func commandAdmissionFinalizationReconciled()  -> Bool
+    func finishCommandAuthority() throws  -> CoreWorkspaceCommandFinalizationV1
 
     func nextDirective() throws  -> CoreWorkspaceSaveDirectiveResponseV1
 
@@ -1393,10 +1394,10 @@ open func close()  {try! rustCall() {
 }
 }
 
-open func commandAdmissionFinalizationReconciled() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
+open func finishCommandAuthority()throws  -> CoreWorkspaceCommandFinalizationV1  {
+    return try  FfiConverterTypeCoreWorkspaceCommandFinalizationV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_corepreparedworkspacesavetransactionv1_command_admission_finalization_reconciled(
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacesavetransactionv1_finish_command_authority(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1697,8 +1698,6 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
     func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceCreateTransactionBeginResponseV1
 
     func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1
-
-    func workspaceDeletionTombstoneAmendCleanupV1(request: CoreWorkspaceDeletionTombstoneCleanupRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
     func workspaceDeletionTombstoneValidateV1(request: CoreWorkspacePersistenceMetadataRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
@@ -2588,16 +2587,6 @@ open func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransact
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceDeleteTransactionRequestV1_lower(request),
         FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
-    )
-})
-}
-
-open func workspaceDeletionTombstoneAmendCleanupV1(request: CoreWorkspaceDeletionTombstoneCleanupRequestV1)throws  -> CoreWorkspacePersistenceMetadataResponseV1  {
-    return try  FfiConverterTypeCoreWorkspacePersistenceMetadataResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
-        uniffiCallStatus in
-    uniffi_agentry_ffi_fn_method_coreruntime_workspace_deletion_tombstone_amend_cleanup_v1(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceDeletionTombstoneCleanupRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -8026,6 +8015,68 @@ public func FfiConverterTypeCoreWorkspaceCreateTransactionRequestV1_lower(_ valu
 }
 
 
+public struct CoreWorkspaceDeleteCleanupFinalizationResponseV1: Equatable, Hashable {
+    public let tombstone: CoreWorkspacePersistenceMetadataValidationV1?
+    public let commandFinalization: CoreWorkspaceCommandFinalizationV1
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(tombstone: CoreWorkspacePersistenceMetadataValidationV1?, commandFinalization: CoreWorkspaceCommandFinalizationV1, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.tombstone = tombstone
+        self.commandFinalization = commandFinalization
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceDeleteCleanupFinalizationResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceDeleteCleanupFinalizationResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
+        return
+            try CoreWorkspaceDeleteCleanupFinalizationResponseV1(
+                tombstone: FfiConverterOptionTypeCoreWorkspacePersistenceMetadataValidationV1.read(from: &buf),
+                commandFinalization: FfiConverterTypeCoreWorkspaceCommandFinalizationV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceDeleteCleanupFinalizationResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspacePersistenceMetadataValidationV1.write(value.tombstone, into: &buf)
+        FfiConverterTypeCoreWorkspaceCommandFinalizationV1.write(value.commandFinalization, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceDeleteCleanupFinalizationResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceDeleteCleanupFinalizationResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceDeleteCleanupFinalizationResponseV1_lower(_ value: CoreWorkspaceDeleteCleanupFinalizationResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceDeleteCleanupFinalizationResponseV1.lower(value)
+}
+
+
 public struct CoreWorkspaceDeleteCommitReceiptV1: Equatable, Hashable {
     public let workspaceId: String
     public let operationId: String
@@ -8275,68 +8326,6 @@ public func FfiConverterTypeCoreWorkspaceDeleteTransactionRequestV1_lift(_ buf: 
 #endif
 public func FfiConverterTypeCoreWorkspaceDeleteTransactionRequestV1_lower(_ value: CoreWorkspaceDeleteTransactionRequestV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceDeleteTransactionRequestV1.lower(value)
-}
-
-
-public struct CoreWorkspaceDeletionTombstoneCleanupRequestV1: Equatable, Hashable {
-    public let runtimeIdentity: RuntimeIdentity
-    public let contractVersion: UInt16
-    public let authoritativeTombstoneBytes: Data
-    public let cleanupWarningsBytes: Data
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, authoritativeTombstoneBytes: Data, cleanupWarningsBytes: Data) {
-        self.runtimeIdentity = runtimeIdentity
-        self.contractVersion = contractVersion
-        self.authoritativeTombstoneBytes = authoritativeTombstoneBytes
-        self.cleanupWarningsBytes = cleanupWarningsBytes
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceDeletionTombstoneCleanupRequestV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceDeletionTombstoneCleanupRequestV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceDeletionTombstoneCleanupRequestV1 {
-        return
-            try CoreWorkspaceDeletionTombstoneCleanupRequestV1(
-                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
-                contractVersion: FfiConverterUInt16.read(from: &buf),
-                authoritativeTombstoneBytes: FfiConverterData.read(from: &buf),
-                cleanupWarningsBytes: FfiConverterData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceDeletionTombstoneCleanupRequestV1, into buf: inout [UInt8]) {
-        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
-        FfiConverterUInt16.write(value.contractVersion, into: &buf)
-        FfiConverterData.write(value.authoritativeTombstoneBytes, into: &buf)
-        FfiConverterData.write(value.cleanupWarningsBytes, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceDeletionTombstoneCleanupRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceDeletionTombstoneCleanupRequestV1 {
-    return try FfiConverterTypeCoreWorkspaceDeletionTombstoneCleanupRequestV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceDeletionTombstoneCleanupRequestV1_lower(_ value: CoreWorkspaceDeletionTombstoneCleanupRequestV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceDeletionTombstoneCleanupRequestV1.lower(value)
 }
 
 
@@ -15110,6 +15099,79 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionLookupScopeV1_lower(_ v
 
 
 
+public enum CoreWorkspaceCommandFinalizationV1: Equatable, Hashable {
+
+    case notApplicable
+    case reconciled
+    case unreconciled
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandFinalizationV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandFinalizationV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandFinalizationV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandFinalizationV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .notApplicable
+
+        case 2: return .reconciled
+
+        case 3: return .unreconciled
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandFinalizationV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .notApplicable:
+            writeInt(&buf, Int32(1))
+
+
+        case .reconciled:
+            writeInt(&buf, Int32(2))
+
+
+        case .unreconciled:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandFinalizationV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandFinalizationV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandFinalizationV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandFinalizationV1_lower(_ value: CoreWorkspaceCommandFinalizationV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandFinalizationV1.lower(value)
+}
+
+
+
+
 public enum CoreWorkspaceCommandKindV1: Equatable, Hashable {
 
     case create
@@ -19955,7 +20017,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_close() != 47899) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_command_admission_finalization_reconciled() != 13730) {
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_finish_command_authority() != 3434) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_next_directive() != 14807) {
@@ -19970,13 +20032,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_close() != 1254) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_command_admission_finalization_reconciled() != 48306) {
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_finish_command_authority() != 60696) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_next_directive() != 15461) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_reconcile_admission_finalization() != 14204) {
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_plan_cleanup() != 20310) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacedeletetransactionv1_report_action() != 48712) {
@@ -19988,7 +20050,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_close() != 56432) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_command_admission_finalization_reconciled() != 16447) {
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_finish_command_authority() != 2406) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_next_directive() != 3821) {
@@ -20003,7 +20065,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_close() != 43264) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_command_admission_finalization_reconciled() != 29318) {
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_finish_command_authority() != 2021) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacesavetransactionv1_next_directive() != 42480) {
@@ -20199,9 +20261,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_delete_transaction_begin_v1() != 16427) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_deletion_tombstone_amend_cleanup_v1() != 59701) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_deletion_tombstone_validate_v1() != 46386) {

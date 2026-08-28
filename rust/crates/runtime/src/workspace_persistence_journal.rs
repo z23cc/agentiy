@@ -351,7 +351,7 @@ pub enum WorkspaceCommandAdmissionLookupScopeV1 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum WorkspaceCommandAdmissionDecisionV1 {
+enum WorkspaceCommandAdmissionDecisionV1 {
     Unseen,
     Collision {
         scope: WorkspaceCommandAdmissionLookupScopeV1,
@@ -362,10 +362,11 @@ pub enum WorkspaceCommandAdmissionDecisionV1 {
     },
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
-pub struct WorkspaceCommandAdmissionPreflightV1 {
-    pub identity: WorkspaceCommandIdentityV1,
-    pub decision: WorkspaceCommandAdmissionDecisionV1,
+struct WorkspaceCommandAdmissionInspectionV1 {
+    identity: WorkspaceCommandIdentityV1,
+    decision: WorkspaceCommandAdmissionDecisionV1,
 }
 
 #[derive(Debug)]
@@ -1079,32 +1080,6 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         })
     }
 
-    pub fn replace(
-        &self,
-        seed: &[WorkspaceCommandAdmissionSeedRecordV1],
-    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
-        let replacement = WorkspaceCommandAdmissionStateV1::from_seed(seed)?;
-        let diagnostics = replacement.diagnostics();
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if state.closed {
-            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
-        }
-        let terminalized_claims =
-            reconcile_workspace_command_execution_claims_v1(&state.claims, &replacement)?;
-        let mut projected = replacement.clone();
-        for effect in state.reservations.values() {
-            effect.apply_reservation_projection(&mut projected)?;
-        }
-        state.state = Some(replacement);
-        for operation_id in terminalized_claims {
-            state.claims.remove(&operation_id);
-        }
-        Ok(diagnostics)
-    }
-
     /// Atomically replaces durable workspace indexes while retaining process-lifetime global
     /// command receipts. This prevents a lease handoff or catalog CAS refresh from erasing an
     /// already-admitted global identity that has not yet appeared in the durable reconstruction.
@@ -1241,85 +1216,6 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         })
     }
 
-    pub fn preflight(
-        &self,
-        request: WorkspaceCommandIdentityRequestV1,
-    ) -> Result<WorkspaceCommandAdmissionPreflightV1, WorkspaceWorkingJournalError> {
-        let operation_id = canonical_uuid(&request.operation_id)
-            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
-        let identity = workspace_command_identity_v1(request)?;
-        let state = self
-            .inner
-            .lock()
-            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if state.closed {
-            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
-        }
-        let admission = state
-            .state
-            .as_ref()
-            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-        let decision =
-            admission.decision(&identity.workspace_id, &operation_id, &identity.fingerprint);
-        Ok(WorkspaceCommandAdmissionPreflightV1 { identity, decision })
-    }
-
-    pub fn decision(
-        &self,
-        workspace_id: &str,
-        operation_id: &str,
-        fingerprint: &str,
-    ) -> Result<WorkspaceCommandAdmissionDecisionV1, WorkspaceWorkingJournalError> {
-        let workspace_id =
-            canonical_uuid(workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
-        let operation_id =
-            canonical_uuid(operation_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
-        if !is_sha256_digest(fingerprint) {
-            return Err(WorkspaceWorkingJournalError::InvalidDigest);
-        }
-        let state = self
-            .inner
-            .lock()
-            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if state.closed {
-            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
-        }
-        let admission = state
-            .state
-            .as_ref()
-            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-        Ok(admission.decision(&workspace_id, &operation_id, fingerprint))
-    }
-
-    pub fn insert(
-        &self,
-        workspace_id: Option<String>,
-        operation: WorkspaceRecordedOperationV1,
-    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if state.closed {
-            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
-        }
-        let mut projected = state
-            .state
-            .as_ref()
-            .cloned()
-            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-        for effect in state.reservations.values() {
-            effect.apply_reservation_projection(&mut projected)?;
-        }
-        projected.insert(workspace_id.clone(), operation.clone())?;
-        let admission = state
-            .state
-            .as_mut()
-            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-        admission.insert(workspace_id, operation)?;
-        Ok(admission.diagnostics())
-    }
-
     pub fn reconcile_workspace(
         &self,
         workspace_id: &str,
@@ -1411,36 +1307,6 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         }
         inner.state = Some(replacement);
         Ok(diagnostics)
-    }
-
-    pub fn remove_workspace(
-        &self,
-        workspace_id: &str,
-    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
-        let workspace_id =
-            canonical_uuid(workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if state.closed {
-            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
-        }
-        let mut projected = state
-            .state
-            .as_ref()
-            .cloned()
-            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-        projected.workspaces.remove(&workspace_id);
-        for effect in state.reservations.values() {
-            effect.apply_reservation_projection(&mut projected)?;
-        }
-        let admission = state
-            .state
-            .as_mut()
-            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-        admission.workspaces.remove(&workspace_id);
-        Ok(admission.diagnostics())
     }
 
     pub fn diagnostics(
@@ -1580,6 +1446,144 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 inner.state.take();
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl PreparedWorkspaceCommandAdmissionV1 {
+    fn inspect_for_test(
+        &self,
+        request: WorkspaceCommandIdentityRequestV1,
+    ) -> Result<WorkspaceCommandAdmissionInspectionV1, WorkspaceWorkingJournalError> {
+        let operation_id = canonical_uuid(&request.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let identity = workspace_command_identity_v1(request)?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let admission = inner
+            .state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let decision =
+            admission.decision(&identity.workspace_id, &operation_id, &identity.fingerprint);
+        Ok(WorkspaceCommandAdmissionInspectionV1 { identity, decision })
+    }
+
+    fn decision_for_test(
+        &self,
+        workspace_id: &str,
+        operation_id: &str,
+        fingerprint: &str,
+    ) -> Result<WorkspaceCommandAdmissionDecisionV1, WorkspaceWorkingJournalError> {
+        let workspace_id =
+            canonical_uuid(workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let operation_id =
+            canonical_uuid(operation_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if !is_sha256_digest(fingerprint) {
+            return Err(WorkspaceWorkingJournalError::InvalidDigest);
+        }
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let admission = inner
+            .state
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        Ok(admission.decision(&workspace_id, &operation_id, fingerprint))
+    }
+
+    fn insert_for_test(
+        &self,
+        workspace_id: Option<String>,
+        operation: WorkspaceRecordedOperationV1,
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let mut projected = inner
+            .state
+            .as_ref()
+            .cloned()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        for effect in inner.reservations.values() {
+            effect.apply_reservation_projection(&mut projected)?;
+        }
+        projected.insert(workspace_id.clone(), operation.clone())?;
+        let admission = inner
+            .state
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        admission.insert(workspace_id, operation)?;
+        Ok(admission.diagnostics())
+    }
+
+    fn replace_for_test(
+        &self,
+        seed: &[WorkspaceCommandAdmissionSeedRecordV1],
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let replacement = WorkspaceCommandAdmissionStateV1::from_seed(seed)?;
+        let diagnostics = replacement.diagnostics();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let terminalized_claims =
+            reconcile_workspace_command_execution_claims_v1(&inner.claims, &replacement)?;
+        let mut projected = replacement.clone();
+        for effect in inner.reservations.values() {
+            effect.apply_reservation_projection(&mut projected)?;
+        }
+        inner.state = Some(replacement);
+        for operation_id in terminalized_claims {
+            inner.claims.remove(&operation_id);
+        }
+        Ok(diagnostics)
+    }
+
+    fn remove_workspace_for_test(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceCommandAdmissionDiagnosticsV1, WorkspaceWorkingJournalError> {
+        let workspace_id =
+            canonical_uuid(workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let mut projected = inner
+            .state
+            .as_ref()
+            .cloned()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        projected.workspaces.remove(&workspace_id);
+        for effect in inner.reservations.values() {
+            effect.apply_reservation_projection(&mut projected)?;
+        }
+        let admission = inner
+            .state
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        admission.workspaces.remove(&workspace_id);
+        Ok(admission.diagnostics())
     }
 }
 
@@ -2249,6 +2253,52 @@ impl PreparedWorkspaceDeleteTransactionV1 {
             .lock()
             .map(|state| state.admission_finalization.clone())
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)
+    }
+
+    pub fn cleanup_plan(
+        &self,
+        cleanup_warnings_bytes: Option<&[u8]>,
+    ) -> Result<WorkspaceDeleteCleanupPlanV1, WorkspaceWorkingJournalError> {
+        let (authoritative_tombstone, authoritative_operation) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+            if !matches!(state.stage, WorkspaceDeleteStageV1::Terminal)
+                || !matches!(
+                    state.last_result,
+                    Some(WorkspaceDeleteDirectiveV1::Committed { .. })
+                )
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            let operation = match &state.admission_finalization {
+                WorkspaceCommandAdmissionFinalizationV1::Delete { operation, .. } => {
+                    operation.clone()
+                }
+                WorkspaceCommandAdmissionFinalizationV1::Workspace { .. } => {
+                    return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+                }
+            };
+            (state.receipt.tombstone.clone(), operation)
+        };
+        let Some(cleanup_warnings_bytes) = cleanup_warnings_bytes else {
+            return Ok(WorkspaceDeleteCleanupPlanV1 {
+                validation: authoritative_tombstone,
+                operation: authoritative_operation,
+            });
+        };
+        let validation = amend_workspace_deletion_tombstone_cleanup_v1(
+            &authoritative_tombstone.canonical_bytes,
+            cleanup_warnings_bytes,
+        )?;
+        let tombstone: WorkspaceDeletionTombstoneV1 =
+            serde_json::from_slice(&validation.canonical_bytes)
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        Ok(WorkspaceDeleteCleanupPlanV1 {
+            validation,
+            operation: tombstone.operation,
+        })
     }
 }
 
@@ -4610,6 +4660,12 @@ pub struct WorkspacePersistenceMetadataValidationV1 {
     pub canonical_bytes: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceDeleteCleanupPlanV1 {
+    pub validation: WorkspacePersistenceMetadataValidationV1,
+    pub operation: WorkspaceRecordedOperationV1,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspaceSavedRevisionPlanRequestV1 {
@@ -5471,7 +5527,7 @@ mod tests {
             PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
         let request = command_identity_request(WorkspaceCommandKindV1::Save);
         let unseen = admission
-            .preflight(request.clone())
+            .inspect_for_test(request.clone())
             .expect("unseen preflight");
         assert_eq!(unseen.identity.workspace_id, WORKSPACE_ID);
         assert_eq!(unseen.identity.command_kind, WorkspaceCommandKindV1::Save);
@@ -5493,13 +5549,13 @@ mod tests {
             diagnostic: Some("workspace_not_found".to_owned()),
         };
         admission
-            .insert(Some(WORKSPACE_ID.to_owned()), operation.clone())
+            .insert_for_test(Some(WORKSPACE_ID.to_owned()), operation.clone())
             .expect("insert receipt");
         assert_eq!(
             admission
-                .preflight(request.clone())
+                .inspect_for_test(request.clone())
                 .expect("replay preflight"),
-            WorkspaceCommandAdmissionPreflightV1 {
+            WorkspaceCommandAdmissionInspectionV1 {
                 identity: unseen.identity.clone(),
                 decision: WorkspaceCommandAdmissionDecisionV1::Replay {
                     scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
@@ -5511,7 +5567,7 @@ mod tests {
         let mut collision_request = request;
         collision_request.origin = WorkspaceCommandOriginV1::Standalone;
         let collision = admission
-            .preflight(collision_request)
+            .inspect_for_test(collision_request)
             .expect("collision preflight");
         assert_ne!(collision.identity.fingerprint, unseen.identity.fingerprint);
         assert!(matches!(
@@ -5524,7 +5580,7 @@ mod tests {
         let mut invalid = command_identity_request(WorkspaceCommandKindV1::Create);
         invalid.content_digest = Some("invalid".to_owned());
         assert_eq!(
-            admission.preflight(invalid),
+            admission.inspect_for_test(invalid),
             Err(WorkspaceWorkingJournalError::InvalidDigest)
         );
         assert_eq!(
@@ -5538,7 +5594,7 @@ mod tests {
 
         admission.close();
         assert_eq!(
-            admission.preflight(command_identity_request(WorkspaceCommandKindV1::Save)),
+            admission.inspect_for_test(command_identity_request(WorkspaceCommandKindV1::Save)),
             Err(WorkspaceWorkingJournalError::InvalidTransaction)
         );
     }
@@ -5783,7 +5839,7 @@ mod tests {
         );
         assert!(matches!(
             admission
-                .decision(WORKSPACE_ID, OPERATION_ID, &operation.fingerprint)
+                .decision_for_test(WORKSPACE_ID, OPERATION_ID, &operation.fingerprint)
                 .expect("finalized decision"),
             WorkspaceCommandAdmissionDecisionV1::Replay {
                 scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
@@ -5911,7 +5967,7 @@ mod tests {
         );
         assert!(matches!(
             admission
-                .decision(WORKSPACE_ID, OPERATION_ID, &operation.fingerprint)
+                .decision_for_test(WORKSPACE_ID, OPERATION_ID, &operation.fingerprint)
                 .expect("failed finalization stayed invisible"),
             WorkspaceCommandAdmissionDecisionV1::Unseen
         ));
@@ -5935,7 +5991,7 @@ mod tests {
 
         assert_eq!(
             admission
-                .decision(WORKSPACE_ID, OPERATION_ID, &"a".repeat(64))
+                .decision_for_test(WORKSPACE_ID, OPERATION_ID, &"a".repeat(64))
                 .expect("local replay"),
             WorkspaceCommandAdmissionDecisionV1::Replay {
                 scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
@@ -5944,7 +6000,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(WORKSPACE_ID, OPERATION_ID, &"c".repeat(64))
+                .decision_for_test(WORKSPACE_ID, OPERATION_ID, &"c".repeat(64))
                 .expect("local collision"),
             WorkspaceCommandAdmissionDecisionV1::Collision {
                 scope: WorkspaceCommandAdmissionLookupScopeV1::Workspace,
@@ -5952,7 +6008,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &global_only.operation_id,
                     &global_only.fingerprint,
@@ -5965,7 +6021,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &indexed_operation(3, 'd').operation_id,
                     &"d".repeat(64)
@@ -5975,12 +6031,12 @@ mod tests {
         );
 
         let removed = admission
-            .remove_workspace(WORKSPACE_ID)
+            .remove_workspace_for_test(WORKSPACE_ID)
             .expect("remove local index");
         assert_eq!(removed.workspace_count, 0);
         assert_eq!(
             admission
-                .decision(WORKSPACE_ID, OPERATION_ID, &"a".repeat(64))
+                .decision_for_test(WORKSPACE_ID, OPERATION_ID, &"a".repeat(64))
                 .expect("global retained replay"),
             WorkspaceCommandAdmissionDecisionV1::Replay {
                 scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
@@ -6009,7 +6065,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &indexed_operation(0, 'a').operation_id,
                     &"a".repeat(64)
@@ -6035,7 +6091,7 @@ mod tests {
         let evicted_local = indexed_operation(0, 'b');
         assert_eq!(
             local
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &evicted_local.operation_id,
                     &evicted_local.fingerprint,
@@ -6063,7 +6119,7 @@ mod tests {
         .expect("duplicate deterministic seed");
         assert_eq!(
             duplicate
-                .decision(WORKSPACE_ID, &duplicate_id, &newer.fingerprint)
+                .decision_for_test(WORKSPACE_ID, &duplicate_id, &newer.fingerprint)
                 .expect("newest duplicate"),
             WorkspaceCommandAdmissionDecisionV1::Replay {
                 scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
@@ -6101,7 +6157,7 @@ mod tests {
         let oldest = indexed_operation(0, 'e');
         assert!(matches!(
             admission
-                .decision(WORKSPACE_ID, &oldest.operation_id, &oldest.fingerprint)
+                .decision_for_test(WORKSPACE_ID, &oldest.operation_id, &oldest.fingerprint)
                 .expect("oldest retained"),
             WorkspaceCommandAdmissionDecisionV1::Replay { .. }
         ));
@@ -6155,7 +6211,7 @@ mod tests {
         );
         let overflow = indexed_operation(seed.len() + 1, 'b');
         assert!(matches!(
-            admission.insert(
+            admission.insert_for_test(
                 Some("ffffffff-ffff-ffff-ffff-ffffffffffff".to_owned()),
                 overflow
             ),
@@ -6195,7 +6251,7 @@ mod tests {
         .expect("prepared admission");
         let before = admission.diagnostics().expect("before diagnostics");
         assert_eq!(
-            admission.insert(Some("not-a-uuid".to_owned()), replacement.clone()),
+            admission.insert_for_test(Some("not-a-uuid".to_owned()), replacement.clone()),
             Err(WorkspaceWorkingJournalError::InvalidIdentity)
         );
         assert_eq!(
@@ -6206,7 +6262,7 @@ mod tests {
         let mut malformed = replacement.clone();
         malformed.fingerprint = "bad".to_owned();
         assert_eq!(
-            admission.insert(None, malformed),
+            admission.insert_for_test(None, malformed),
             Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
         );
         assert_eq!(
@@ -6217,7 +6273,7 @@ mod tests {
         let mut conflicting = original.clone();
         conflicting.fingerprint = "f".repeat(64);
         assert_eq!(
-            admission.insert(Some(WORKSPACE_ID.to_owned()), conflicting),
+            admission.insert_for_test(Some(WORKSPACE_ID.to_owned()), conflicting),
             Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
         );
         assert_eq!(
@@ -6230,7 +6286,9 @@ mod tests {
             operation: replacement.clone(),
         }];
         assert_eq!(
-            admission.replace(&replacement_seed).expect("replace"),
+            admission
+                .replace_for_test(&replacement_seed)
+                .expect("replace"),
             WorkspaceCommandAdmissionDiagnosticsV1 {
                 global_operation_count: 1,
                 workspace_count: 0,
@@ -6239,7 +6297,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &replacement.operation_id,
                     &replacement.fingerprint
@@ -6258,7 +6316,7 @@ mod tests {
             Err(WorkspaceWorkingJournalError::InvalidTransaction)
         );
         assert_eq!(
-            admission.replace(&replacement_seed),
+            admission.replace_for_test(&replacement_seed),
             Err(WorkspaceWorkingJournalError::InvalidTransaction)
         );
     }
@@ -6288,7 +6346,7 @@ mod tests {
 
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &retained_global.operation_id,
                     &retained_global.fingerprint
@@ -6301,7 +6359,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &removed_workspace.operation_id,
                     &removed_workspace.fingerprint
@@ -6314,7 +6372,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &replacement_workspace.operation_id,
                     &replacement_workspace.fingerprint
@@ -6345,7 +6403,7 @@ mod tests {
             PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("prepared admission");
         let request = command_identity_request(WorkspaceCommandKindV1::Save);
         let identity = admission
-            .preflight(request.clone())
+            .inspect_for_test(request.clone())
             .expect("initial preflight")
             .identity;
         let operation = WorkspaceRecordedOperationV1 {
@@ -6368,7 +6426,7 @@ mod tests {
             .expect("reserve operation");
         assert!(matches!(
             admission
-                .preflight(request.clone())
+                .inspect_for_test(request.clone())
                 .expect("reservation remains invisible")
                 .decision,
             WorkspaceCommandAdmissionDecisionV1::Unseen
@@ -6394,7 +6452,7 @@ mod tests {
         reservation.finalize().expect("finalize operation");
         assert_eq!(
             admission
-                .preflight(request)
+                .inspect_for_test(request)
                 .expect("finalized replay")
                 .decision,
             WorkspaceCommandAdmissionDecisionV1::Replay {
@@ -6413,7 +6471,7 @@ mod tests {
             .cancel();
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &cancelled.operation_id,
                     &cancelled.fingerprint
@@ -6490,7 +6548,7 @@ mod tests {
             .expect("reserve delete");
         assert!(matches!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &tombstone.operation_id,
                     &tombstone.fingerprint
@@ -6502,7 +6560,7 @@ mod tests {
         assert_eq!(finalized.workspace_count, 0);
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &tombstone.operation_id,
                     &tombstone.fingerprint
@@ -6524,7 +6582,7 @@ mod tests {
             .expect("idempotent finalized delete retry");
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &tombstone.operation_id,
                     &tombstone.fingerprint
@@ -6537,7 +6595,7 @@ mod tests {
         );
         assert_eq!(
             admission
-                .decision(WORKSPACE_ID, &local.operation_id, &local.fingerprint)
+                .decision_for_test(WORKSPACE_ID, &local.operation_id, &local.fingerprint)
                 .expect("prior receipt retained globally"),
             WorkspaceCommandAdmissionDecisionV1::Replay {
                 scope: WorkspaceCommandAdmissionLookupScopeV1::Global,
@@ -6551,7 +6609,7 @@ mod tests {
             .expect("targeted workspace reconcile");
         assert_eq!(
             admission
-                .decision(
+                .decision_for_test(
                     WORKSPACE_ID,
                     &replacement.operation_id,
                     &replacement.fingerprint
@@ -6601,14 +6659,14 @@ mod tests {
         for operation in [&seed[0].operation, &seed[1].operation] {
             assert_eq!(
                 first
-                    .decision(
+                    .decision_for_test(
                         WORKSPACE_ID,
                         &operation.operation_id,
                         &operation.fingerprint
                     )
                     .expect("first decision"),
                 restarted
-                    .decision(
+                    .decision_for_test(
                         WORKSPACE_ID,
                         &operation.operation_id,
                         &operation.fingerprint
@@ -7473,6 +7531,32 @@ mod tests {
             }
         );
         assert!(transaction.is_authoritative());
+        let exact_cleanup = transaction
+            .cleanup_plan(None)
+            .expect("exact tombstone cleanup");
+        assert_eq!(exact_cleanup.validation, receipt.tombstone);
+        let cleanup_warnings = serde_json::to_vec(&vec![
+            "revision sidecar: denied",
+            "workspace document: busy",
+        ])
+        .expect("cleanup warnings");
+        let amended_cleanup = transaction
+            .cleanup_plan(Some(&cleanup_warnings))
+            .expect("amended tombstone cleanup");
+        assert_eq!(
+            amended_cleanup.operation.diagnostic.as_deref(),
+            Some("artifact_cleanup_incomplete: revision sidecar: denied; workspace document: busy")
+        );
+        assert_eq!(
+            transaction
+                .cleanup_plan(Some(&cleanup_warnings))
+                .expect("deterministic amended tombstone cleanup"),
+            amended_cleanup
+        );
+        assert_eq!(
+            transaction.cleanup_plan(Some(b"[]")),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
         assert_eq!(
             transaction
                 .report_action(WorkspaceDeleteActionReportV1::Success {

@@ -603,7 +603,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         }
     }
 
-    func testPreparedValidatorValidatesMetadataAndAmendsOnlyDeletionCleanupDiagnostic() async throws {
+    func testPreparedValidatorValidatesPersistenceMetadata() async throws {
         let workspaceID = UUID()
         let operationID = UUID()
         let fileURL = URL(fileURLWithPath: "/tmp/Deleted-\(workspaceID.uuidString).json")
@@ -670,23 +670,146 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             DomainContentDigest.sha256(authoritative.canonicalBytes),
             authoritative.contentDigest
         )
+    }
+
+    func testDeleteTransactionOwnsCleanupPlanningFinalizationAndReplay() async throws {
+        let workspaceID = UUID()
+        let operationID = UUID()
+        let fileURL = URL(fileURLWithPath: "/tmp/Delete-\(workspaceID.uuidString).json")
+        let now = Date(timeIntervalSinceReferenceDate: 31)
+        let documentBytes = Data("authoritative workspace".utf8)
+        let document = DomainWorkspaceDocument(
+            workspaceID: workspaceID,
+            fileURL: fileURL,
+            documentBytes: documentBytes,
+            metadata: DomainWorkspaceMetadata(
+                workspaceID: workspaceID,
+                schemaVersion: 1,
+                name: "Workspace",
+                repoPaths: [],
+                customStoragePath: nil,
+                isSystemWorkspace: false,
+                isHiddenInMenus: false,
+                isEphemeral: false,
+                activeContextID: nil,
+                contexts: []
+            )
+        )
+        let revisions = DomainRevisionState(
+            workingRevision: 0,
+            savedRevision: 0,
+            dirtyRevision: nil
+        )
+        let journal = DomainWorkingJournal(
+            workspaceID: workspaceID,
+            fileURL: fileURL,
+            revisions: revisions,
+            savedDigest: document.contentDigest,
+            workingDocument: nil,
+            contextRevisions: [:],
+            contextDigests: [:],
+            contextTombstones: [:],
+            operations: [],
+            pendingSave: nil,
+            updatedAt: now
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let service = AgentryCoreService()
+        defer { Task { await service.shutdown() } }
+        let validator = try await DomainWorkspaceRustJournal.prepare(coreService: service)
+        let effectiveJournal = try validator.validateSynchronously(
+            encoder.encode(journal),
+            expectedWorkspaceID: workspaceID,
+            expectedFileURL: fileURL
+        )
+        let catalog = try validator.seedCatalog(
+            entries: [.init(workspaceID: workspaceID, fileURL: fileURL)],
+            updatedAt: now
+        )
+        let admission = try validator.beginCommandAdmission(records: [])
+        defer { admission.close() }
+        let envelope = DomainWorkspaceCommandEnvelope(
+            operationID: operationID,
+            expectedCatalogRevision: 0,
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .deleteWorkspace(workspaceID: workspaceID)
+        )
+        let input = try XCTUnwrap(DomainWorkspaceCommandIdentityInput(envelope))
+        let fingerprint: String
+        let claim: DomainWorkspaceRustJournal.PreparedExecutionClaim
+        switch try admission.acquire(input) {
+        case let .claimed(receiptFingerprint, executionClaim):
+            fingerprint = receiptFingerprint
+            claim = executionClaim
+        default:
+            return XCTFail("expected an exact delete execution claim")
+        }
+        let operation = DomainRecordedOperation(
+            fingerprint: fingerprint,
+            recordedAt: now,
+            outcome: DomainCommandOutcome(
+                operationID: operationID,
+                disposition: .applied,
+                before: revisions,
+                after: nil,
+                catalogRevision: 1,
+                resultingDigest: nil
+            )
+        )
+        let transaction = try validator.beginDeleteTransaction(
+            rawCatalogBytes: catalog.canonicalBytes,
+            effectiveCatalog: catalog,
+            effectiveJournal: effectiveJournal,
+            document: document,
+            expectedWorkingRevision: 0,
+            expectedCatalogRevision: 0,
+            operation: operation,
+            deletedAt: now,
+            commandClaim: claim
+        )
+        defer { transaction.close() }
+        switch try transaction.nextDirective() {
+        case let .publishCatalog(actionID, _, candidate, logicalExpectedRevision, authorityReceipt):
+            XCTAssertEqual(logicalExpectedRevision, 0)
+            XCTAssertEqual(authorityReceipt.tombstone.tombstone.operation, operation)
+            let permit = try transaction.acquireAuthorityPermit()
+            defer { permit.close() }
+            guard case let .committed(receipt) = try transaction.report(.success(
+                actionID: actionID,
+                writtenDigest: candidate.contentDigest
+            )) else {
+                return XCTFail("delete catalog authority did not commit")
+            }
+            XCTAssertEqual(receipt.tombstone.tombstone.operation, operation)
+        default:
+            return XCTFail("expected the delete catalog-authority action")
+        }
 
         let warnings = ["revision sidecar: denied", "workspace document: busy"]
-        let amended = try prepared.amendDeletionTombstoneCleanup(
-            authoritative: authoritative,
-            cleanupWarnings: warnings
-        )
-        XCTAssertEqual(amended.tombstone.workspaceID, originalTombstone.workspaceID)
-        XCTAssertEqual(amended.tombstone.fileURL, originalTombstone.fileURL)
-        XCTAssertEqual(amended.tombstone.deletedAt, originalTombstone.deletedAt)
-        XCTAssertEqual(amended.tombstone.operation.operationID, originalTombstone.operation.operationID)
-        XCTAssertEqual(amended.tombstone.operation.fingerprint, originalTombstone.operation.fingerprint)
-        XCTAssertEqual(amended.tombstone.operation.before, originalTombstone.operation.before)
-        XCTAssertEqual(amended.tombstone.operation.after, originalTombstone.operation.after)
+        let firstPlan = try transaction.planCleanup(cleanupWarnings: warnings)
+        let repeatedPlan = try transaction.planCleanup(cleanupWarnings: warnings)
+        XCTAssertEqual(firstPlan.canonicalBytes, repeatedPlan.canonicalBytes)
         XCTAssertEqual(
-            amended.tombstone.operation.diagnostic,
+            firstPlan.tombstone.operation.diagnostic,
             "artifact_cleanup_incomplete: \(warnings.joined(separator: "; "))"
         )
+        let finalized = transaction.finishCommandAuthority(cleanupWarnings: warnings)
+        XCTAssertEqual(finalized.commandFinalization, .reconciled)
+        XCTAssertEqual(finalized.tombstone?.canonicalBytes, firstPlan.canonicalBytes)
+        let repeatedFinalization = transaction.finishCommandAuthority(cleanupWarnings: warnings)
+        XCTAssertEqual(repeatedFinalization.commandFinalization, .reconciled)
+        XCTAssertEqual(repeatedFinalization.tombstone?.canonicalBytes, firstPlan.canonicalBytes)
+
+        switch try admission.acquire(input) {
+        case let .replay(replayFingerprint, scope, replayOperation):
+            XCTAssertEqual(replayFingerprint, fingerprint)
+            XCTAssertEqual(scope, .global)
+            XCTAssertEqual(replayOperation, firstPlan.tombstone.operation)
+        default:
+            XCTFail("finalized delete cleanup must replay through the exact amended receipt")
+        }
     }
 
     func testPreparedValidatorSeedsAndValidatesRustOwnedCatalog() async throws {

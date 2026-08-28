@@ -711,13 +711,32 @@ public enum CoreWorkspacePendingSaveRecoveryV1: Sendable, Equatable {
     )
 }
 
+public enum CoreWorkspaceCommandFinalizationV1: Sendable, Equatable {
+    case notApplicable
+    case reconciled
+    case unreconciled
+}
+
+public struct CoreWorkspaceDeleteCleanupFinalizationV1: Sendable, Equatable {
+    public let tombstone: CoreWorkspacePersistenceMetadataValidationV1?
+    public let commandFinalization: CoreWorkspaceCommandFinalizationV1
+
+    public init(
+        tombstone: CoreWorkspacePersistenceMetadataValidationV1?,
+        commandFinalization: CoreWorkspaceCommandFinalizationV1
+    ) {
+        self.tombstone = tombstone
+        self.commandFinalization = commandFinalization
+    }
+}
+
 public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendable {
     private let acquireAuthorityPermitOperation: @Sendable () throws
         -> CoreWorkspaceCreateAuthorityPermitV1
     private let nextOperation: @Sendable () throws -> CoreWorkspaceJournalMutationDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceJournalMutationDirectiveV1
-    private let commandAdmissionFinalizationReconciledOperation: @Sendable () -> Bool
+    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandFinalizationV1
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -726,13 +745,13 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
         next: @escaping @Sendable () throws -> CoreWorkspaceJournalMutationDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceJournalMutationDirectiveV1,
-        commandAdmissionFinalizationReconciled: @escaping @Sendable () -> Bool,
+        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandFinalizationV1,
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
         nextOperation = next
         reportOperation = report
-        commandAdmissionFinalizationReconciledOperation = commandAdmissionFinalizationReconciled
+        finishCommandAuthorityOperation = finishCommandAuthority
         closeOperation = close
     }
 
@@ -754,8 +773,8 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
         try reportOperation(report)
     }
 
-    public var commandAdmissionFinalizationReconciled: Bool {
-        commandAdmissionFinalizationReconciledOperation()
+    public func finishCommandAuthority() -> CoreWorkspaceCommandFinalizationV1 {
+        finishCommandAuthorityOperation()
     }
 
     public func close() {
@@ -769,7 +788,7 @@ public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
     private let nextOperation: @Sendable () throws -> CoreWorkspaceSaveDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceSaveDirectiveV1
-    private let commandAdmissionFinalizationReconciledOperation: @Sendable () -> Bool
+    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandFinalizationV1
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -778,13 +797,13 @@ public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
         next: @escaping @Sendable () throws -> CoreWorkspaceSaveDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceSaveDirectiveV1,
-        commandAdmissionFinalizationReconciled: @escaping @Sendable () -> Bool,
+        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandFinalizationV1,
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
         nextOperation = next
         reportOperation = report
-        commandAdmissionFinalizationReconciledOperation = commandAdmissionFinalizationReconciled
+        finishCommandAuthorityOperation = finishCommandAuthority
         closeOperation = close
     }
 
@@ -806,8 +825,8 @@ public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
         try reportOperation(report)
     }
 
-    public var commandAdmissionFinalizationReconciled: Bool {
-        commandAdmissionFinalizationReconciledOperation()
+    public func finishCommandAuthority() -> CoreWorkspaceCommandFinalizationV1 {
+        finishCommandAuthorityOperation()
     }
 
     public func close() {
@@ -837,7 +856,7 @@ public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
     private let nextOperation: @Sendable () throws -> CoreWorkspaceCreateDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceCreateDirectiveV1
-    private let commandAdmissionFinalizationReconciledOperation: @Sendable () -> Bool
+    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandFinalizationV1
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -846,13 +865,13 @@ public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
         next: @escaping @Sendable () throws -> CoreWorkspaceCreateDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceCreateDirectiveV1,
-        commandAdmissionFinalizationReconciled: @escaping @Sendable () -> Bool,
+        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandFinalizationV1,
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
         nextOperation = next
         reportOperation = report
-        commandAdmissionFinalizationReconciledOperation = commandAdmissionFinalizationReconciled
+        finishCommandAuthorityOperation = finishCommandAuthority
         closeOperation = close
     }
 
@@ -874,8 +893,8 @@ public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
         try reportOperation(report)
     }
 
-    public var commandAdmissionFinalizationReconciled: Bool {
-        commandAdmissionFinalizationReconciledOperation()
+    public func finishCommandAuthority() -> CoreWorkspaceCommandFinalizationV1 {
+        finishCommandAuthorityOperation()
     }
 
     public func close() {
@@ -889,10 +908,10 @@ public final class CoreWorkspaceDeleteTransactionV1: @unchecked Sendable {
     private let nextOperation: @Sendable () throws -> CoreWorkspaceDeleteDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceDeleteDirectiveV1
-    private let reconcileAdmissionFinalizationOperation: @Sendable (
-        CoreWorkspaceRecordedOperationV1
-    ) throws -> Void
-    private let commandAdmissionFinalizationReconciledOperation: @Sendable () -> Bool
+    private let planCleanupOperation: @Sendable (Data) throws
+        -> CoreWorkspacePersistenceMetadataValidationV1
+    private let finishCommandAuthorityOperation: @Sendable (Data?)
+        -> CoreWorkspaceDeleteCleanupFinalizationV1
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -901,17 +920,17 @@ public final class CoreWorkspaceDeleteTransactionV1: @unchecked Sendable {
         next: @escaping @Sendable () throws -> CoreWorkspaceDeleteDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceDeleteDirectiveV1,
-        reconcileAdmissionFinalization: @escaping @Sendable (
-            CoreWorkspaceRecordedOperationV1
-        ) throws -> Void,
-        commandAdmissionFinalizationReconciled: @escaping @Sendable () -> Bool,
+        planCleanup: @escaping @Sendable (Data) throws
+            -> CoreWorkspacePersistenceMetadataValidationV1,
+        finishCommandAuthority: @escaping @Sendable (Data?)
+            -> CoreWorkspaceDeleteCleanupFinalizationV1,
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
         nextOperation = next
         reportOperation = report
-        reconcileAdmissionFinalizationOperation = reconcileAdmissionFinalization
-        commandAdmissionFinalizationReconciledOperation = commandAdmissionFinalizationReconciled
+        planCleanupOperation = planCleanup
+        finishCommandAuthorityOperation = finishCommandAuthority
         closeOperation = close
     }
 
@@ -933,14 +952,16 @@ public final class CoreWorkspaceDeleteTransactionV1: @unchecked Sendable {
         try reportOperation(report)
     }
 
-    public func reconcileAdmissionFinalization(
-        operation: CoreWorkspaceRecordedOperationV1
-    ) throws {
-        try reconcileAdmissionFinalizationOperation(operation)
+    public func planCleanup(
+        cleanupWarningsBytes: Data
+    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
+        try planCleanupOperation(cleanupWarningsBytes)
     }
 
-    public var commandAdmissionFinalizationReconciled: Bool {
-        commandAdmissionFinalizationReconciledOperation()
+    public func finishCommandAuthority(
+        cleanupWarningsBytes: Data?
+    ) -> CoreWorkspaceDeleteCleanupFinalizationV1 {
+        finishCommandAuthorityOperation(cleanupWarningsBytes)
     }
 
     public func close() {
@@ -993,25 +1014,6 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
                 payloadBytes: payloadBytes
             )
         }
-    }
-
-    public func amendDeletionTombstoneCleanup(
-        authoritativeTombstoneBytes: Data,
-        cleanupWarningsBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        let totalBytes = authoritativeTombstoneBytes.count.addingReportingOverflow(
-            cleanupWarningsBytes.count
-        )
-        guard !totalBytes.overflow,
-              totalBytes.partialValue <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes
-        else {
-            throw CoreWorkspaceWorkingJournalValidationError.inputTooLarge
-        }
-        return try context.transport.workspaceDeletionTombstoneAmendCleanupV1(
-            identity: context.identity,
-            authoritativeTombstoneBytes: authoritativeTombstoneBytes,
-            cleanupWarningsBytes: cleanupWarningsBytes
-        )
     }
 
     public func validateDeletionTombstone(
@@ -1428,16 +1430,6 @@ extension CoreRuntimeTransport {
         payloadBytes: Data
     ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
         throw CoreTransportError.unexpected("workspace saved revision validation transport is unavailable")
-    }
-
-    func workspaceDeletionTombstoneAmendCleanupV1(
-        identity: CoreRuntimeIdentity,
-        authoritativeTombstoneBytes: Data,
-        cleanupWarningsBytes: Data
-    ) throws -> CoreWorkspacePersistenceMetadataValidationV1 {
-        throw CoreTransportError.unexpected(
-            "workspace deletion tombstone cleanup amendment transport is unavailable"
-        )
     }
 
     func workspaceDeletionTombstoneValidateV1(

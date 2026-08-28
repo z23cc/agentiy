@@ -146,6 +146,12 @@ struct DomainWorkspaceCommandAdmissionDiagnostics: Sendable, Equatable {
     let workspaceOperationCount: UInt64
 }
 
+enum DomainWorkspaceCommandFinalization: Sendable, Equatable {
+    case notApplicable
+    case reconciled
+    case unreconciled
+}
+
 struct DomainWorkspaceWorkingJournalValidation: Sendable {
     let journal: DomainWorkingJournal
     let canonicalBytes: Data
@@ -162,6 +168,11 @@ struct DomainWorkspaceDeletionTombstoneValidation: Sendable {
     let tombstone: DomainDeletionTombstone
     let canonicalBytes: Data
     let contentDigest: String
+}
+
+struct DomainWorkspaceDeleteCleanupFinalization: Sendable {
+    let tombstone: DomainWorkspaceDeletionTombstoneValidation?
+    let commandFinalization: DomainWorkspaceCommandFinalization
 }
 
 struct DomainWorkspaceCatalogValidation: Sendable {
@@ -835,8 +846,8 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        var commandAdmissionFinalizationReconciled: Bool {
-            core.commandAdmissionFinalizationReconciled
+        func finishCommandAuthority() -> DomainWorkspaceCommandFinalization {
+            DomainWorkspaceRustJournal.commandFinalization(core.finishCommandAuthority())
         }
 
         func close() {
@@ -917,8 +928,8 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        var commandAdmissionFinalizationReconciled: Bool {
-            core.commandAdmissionFinalizationReconciled
+        func finishCommandAuthority() -> DomainWorkspaceCommandFinalization {
+            DomainWorkspaceRustJournal.commandFinalization(core.finishCommandAuthority())
         }
 
         func close() {
@@ -999,8 +1010,8 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        var commandAdmissionFinalizationReconciled: Bool {
-            core.commandAdmissionFinalizationReconciled
+        func finishCommandAuthority() -> DomainWorkspaceCommandFinalization {
+            DomainWorkspaceRustJournal.commandFinalization(core.finishCommandAuthority())
         }
 
         func close() {
@@ -1076,20 +1087,60 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        func reconcileAdmissionFinalization(
-            operation: DomainRecordedOperation
-        ) throws {
-            do {
-                try core.reconcileAdmissionFinalization(
-                    operation: validator.coreRecordedOperation(operation)
-                )
-            } catch {
-                throw validator.mapCommandAdmissionError(error)
-            }
+        func planCleanup(
+            cleanupWarnings: [String]
+        ) throws -> DomainWorkspaceDeletionTombstoneValidation {
+            let validated = try core.planCleanup(
+                cleanupWarningsBytes: validator.cleanupWarningsBytes(cleanupWarnings)
+            )
+            return try validator.materializeDeletionTombstoneCleanup(
+                validated,
+                expectedWorkspaceID: expectedWorkspaceID,
+                expectedFileURL: expectedFileURL,
+                expectedOperation: expectedOperation,
+                expectedDeletedAt: expectedDeletedAt,
+                cleanupWarnings: cleanupWarnings
+            )
         }
 
-        var commandAdmissionFinalizationReconciled: Bool {
-            core.commandAdmissionFinalizationReconciled
+        func finishCommandAuthority(
+            cleanupWarnings: [String]?
+        ) -> DomainWorkspaceDeleteCleanupFinalization {
+            let normalizedWarnings = cleanupWarnings.flatMap { $0.isEmpty ? nil : $0 }
+            let cleanupWarningsBytes: Data?
+            do {
+                cleanupWarningsBytes = try normalizedWarnings.map(validator.cleanupWarningsBytes)
+            } catch {
+                return DomainWorkspaceDeleteCleanupFinalization(
+                    tombstone: nil,
+                    commandFinalization: .unreconciled
+                )
+            }
+            let finalized = core.finishCommandAuthority(
+                cleanupWarningsBytes: cleanupWarningsBytes
+            )
+            let commandFinalization = DomainWorkspaceRustJournal.commandFinalization(
+                finalized.commandFinalization
+            )
+            guard let tombstone = finalized.tombstone,
+                  let materialized = try? validator.materializeDeletionTombstoneCleanup(
+                      tombstone,
+                      expectedWorkspaceID: expectedWorkspaceID,
+                      expectedFileURL: expectedFileURL,
+                      expectedOperation: expectedOperation,
+                      expectedDeletedAt: expectedDeletedAt,
+                      cleanupWarnings: normalizedWarnings
+                  )
+            else {
+                return DomainWorkspaceDeleteCleanupFinalization(
+                    tombstone: nil,
+                    commandFinalization: .unreconciled
+                )
+            }
+            return DomainWorkspaceDeleteCleanupFinalization(
+                tombstone: materialized,
+                commandFinalization: commandFinalization
+            )
         }
 
         func close() {
@@ -1557,21 +1608,21 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
-        func amendDeletionTombstoneCleanup(
-            authoritative: DomainWorkspaceDeletionTombstoneValidation,
-            cleanupWarnings: [String]
+        fileprivate func cleanupWarningsBytes(_ cleanupWarnings: [String]) throws -> Data {
+            try encode(cleanupWarnings)
+        }
+
+        fileprivate func materializeDeletionTombstoneCleanup(
+            _ validated: CoreWorkspacePersistenceMetadataValidationV1,
+            expectedWorkspaceID: UUID,
+            expectedFileURL: URL,
+            expectedOperation: DomainRecordedOperation,
+            expectedDeletedAt: Date,
+            cleanupWarnings: [String]?
         ) throws -> DomainWorkspaceDeletionTombstoneValidation {
             do {
-                let original = authoritative.tombstone
-                guard DomainContentDigest.sha256(authoritative.canonicalBytes) == authoritative.contentDigest else {
-                    throw DomainPersistenceError.corruptJournal
-                }
-                let validated = try core.amendDeletionTombstoneCleanup(
-                    authoritativeTombstoneBytes: authoritative.canonicalBytes,
-                    cleanupWarningsBytes: try encode(cleanupWarnings)
-                )
-                guard validated.workspaceID == original.workspaceID,
-                      validated.operationID == original.operation.operationID,
+                guard validated.workspaceID == expectedWorkspaceID,
+                      validated.operationID == expectedOperation.operationID,
                       validated.schemaVersion == UInt16(DomainDeletionTombstone.schemaVersion),
                       DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
                 else {
@@ -1581,24 +1632,25 @@ enum DomainWorkspaceRustJournal {
                     DomainDeletionTombstone.self,
                     from: validated.canonicalBytes
                 )
-                let expectedDiagnostic =
-                    "artifact_cleanup_incomplete: \(cleanupWarnings.joined(separator: "; "))"
-                guard let originalJSON = try JSONSerialization.jsonObject(
-                    with: authoritative.canonicalBytes
-                ) as? [String: Any],
-                    var amendedJSON = try JSONSerialization.jsonObject(
-                        with: validated.canonicalBytes
-                    ) as? [String: Any],
-                    let originalOperation = originalJSON["operation"] as? [String: Any],
-                    var amendedOperation = amendedJSON["operation"] as? [String: Any],
-                    amendedOperation["diagnostic"] as? String == expectedDiagnostic,
-                    tombstone.operation.diagnostic == expectedDiagnostic
+                let expectedDiagnostic = cleanupWarnings.map {
+                    "artifact_cleanup_incomplete: \($0.joined(separator: "; "))"
+                } ?? expectedOperation.diagnostic
+                let operation = tombstone.operation
+                guard tombstone.version == DomainDeletionTombstone.schemaVersion,
+                      tombstone.workspaceID == expectedWorkspaceID,
+                      tombstone.fileURL == expectedFileURL,
+                      tombstone.deletedAt == expectedDeletedAt,
+                      operation.operationID == expectedOperation.operationID,
+                      operation.fingerprint == expectedOperation.fingerprint,
+                      operation.recordedAt == expectedOperation.recordedAt,
+                      operation.disposition == expectedOperation.disposition,
+                      operation.before == expectedOperation.before,
+                      operation.after == expectedOperation.after,
+                      operation.catalogRevision == expectedOperation.catalogRevision,
+                      operation.resultingDigest == expectedOperation.resultingDigest,
+                      operation.errorCode == expectedOperation.errorCode,
+                      operation.diagnostic == expectedDiagnostic
                 else {
-                    throw DomainPersistenceError.corruptJournal
-                }
-                amendedOperation["diagnostic"] = originalOperation["diagnostic"] ?? NSNull()
-                amendedJSON["operation"] = amendedOperation
-                guard (amendedJSON as NSDictionary).isEqual(originalJSON as NSDictionary) else {
                     throw DomainPersistenceError.corruptJournal
                 }
                 return DomainWorkspaceDeletionTombstoneValidation(
@@ -2988,6 +3040,19 @@ enum DomainWorkspaceRustJournal {
             case .invalidTransaction:
                 return .writeFailed("workspace_save_transaction_invalid")
             }
+        }
+    }
+
+    private static func commandFinalization(
+        _ value: CoreWorkspaceCommandFinalizationV1
+    ) -> DomainWorkspaceCommandFinalization {
+        switch value {
+        case .notApplicable:
+            .notApplicable
+        case .reconciled:
+            .reconciled
+        case .unreconciled:
+            .unreconciled
         }
     }
 
