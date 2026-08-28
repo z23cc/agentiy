@@ -144,6 +144,51 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertNotEqual(canonicalSnapshot.document.contentDigest, document.contentDigest)
     }
 
+    func testAggregateAuthorityFencePublishesBootstrapMutationAndRoutingOverlaySynchronously() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+
+        let bootstrappedRead = await runtime.contextStore.workspaceAuthoritativeReadFence(
+            fixture.workspaceID
+        )
+        let bootstrapped = try XCTUnwrap(bootstrappedRead)
+        XCTAssertEqual(bootstrapped.workspace.document.contentDigest, DomainContentDigest.sha256(try Data(contentsOf: fixture.workspaceFile)))
+        XCTAssertEqual(bootstrapped.projection.contexts.first?.prompt, "saved")
+        XCTAssertGreaterThan(bootstrapped.publicationSequence, 0)
+        XCTAssertEqual(bootstrapped.projectionDigest.count, 64)
+
+        let working = try fixture.document(prompt: "aggregate working")
+        let outcome = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(working)
+        ))
+        XCTAssertEqual(outcome.disposition, .applied)
+        let committedRead = await runtime.contextStore.workspaceAuthoritativeReadFence(
+            fixture.workspaceID
+        )
+        let committed = try XCTUnwrap(committedRead)
+        XCTAssertEqual(committed.workspace.document.contentDigest, working.contentDigest)
+        XCTAssertEqual(committed.projection.contexts.first?.prompt, "aggregate working")
+        XCTAssertGreaterThan(committed.generation, bootstrapped.generation)
+        XCTAssertGreaterThan(committed.publicationSequence, bootstrapped.publicationSequence)
+
+        let overlayDocument = try fixture.document(prompt: "aggregate overlay")
+        let overlay = await runtime.workspaceStore.registerReadDocument(overlayDocument)
+        let routedRead = await runtime.contextStore.workspaceAuthoritativeReadFence(
+            fixture.workspaceID
+        )
+        let routed = try XCTUnwrap(routedRead)
+        XCTAssertEqual(routed.workspace.document.contentDigest, overlay.document.contentDigest)
+        XCTAssertEqual(routed.projection.contexts.first?.prompt, "aggregate overlay")
+        XCTAssertEqual(routed.publicationSequence, committed.publicationSequence)
+        let catalog = await runtime.workspaceStore.snapshot()
+        XCTAssertEqual(catalog.workspaces.first?.document.contentDigest, working.contentDigest)
+    }
+
     func testOutOfScopeReadRegistrationIsReadableButCannotMutate() async throws {
         let fixture = try Fixture.make(includeWorkspace: false)
         defer { fixture.remove() }

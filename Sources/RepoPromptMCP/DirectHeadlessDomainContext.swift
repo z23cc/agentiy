@@ -148,11 +148,9 @@ actor DirectHeadlessDomainContext {
         )
     }
 
-    /// Resolves the production read plane through Rust and then re-reads the Swift envelope to
-    /// prove the source document did not change across the suspending snapshot call. Missing or
-    /// stale rows are reconciled directly under the lease rather than relying on observation
-    /// deduplication. The watchdog bounds operation-permit wait, Rust paging, cancellation cleanup,
-    /// and all retries under one request deadline.
+    /// Resolves the production read plane through one actor-turn fence over the Swift routing
+    /// topology and the Rust aggregate's immutable semantic/revision row. The read cannot repair,
+    /// reproject, or repopulate Rust authority; an absent or mismatched aggregate fails closed.
     private func workspaceAuthorityRead(
         identity: DomainContextIdentity
     ) async throws -> (
@@ -160,106 +158,18 @@ actor DirectHeadlessDomainContext {
         projection: DomainWorkspaceDocumentReadProjection
     ) {
         let deadline = ContinuousClock.now + .seconds(1)
-        while true {
-            try Task.checkCancellation()
-            guard let beforeFence = await runtime.contextStore.workspaceReadFence(identity.workspaceID) else {
+        let read: DomainWorkspaceAuthoritativeReadFence? = try await boundedWorkspaceProjectionOperation(
+            deadline: deadline
+        ) { [runtime] in
+            await runtime.contextStore.workspaceAuthoritativeReadFence(identity.workspaceID)
+        }
+        guard let read else {
+            if await runtime.contextStore.workspaceSnapshot(identity.workspaceID) == nil {
                 throw Error.workspaceUnavailable
             }
-            let before = beforeFence.workspace
-            let expected: DomainWorkspaceDocumentReadProjection
-            do {
-                expected = try DomainWorkspaceRustProjection.swiftProjection(before.document)
-            } catch {
-                throw Error.invalidWorkspaceDocument
-            }
-
-            let current = try await boundedWorkspaceProjectionRead(
-                workspaceID: identity.workspaceID,
-                deadline: deadline
-            )
-            guard current.catalogRevision == beforeFence.catalogRevision,
-                  current.publicationSequence == beforeFence.publicationSequence
-            else {
-                try await waitForWorkspaceProjectionRetry(deadline: deadline)
-                continue
-            }
-            let expectedAuthority = DomainWorkspaceRustProjection.authorityProjection(before)
-            let actual: DomainWorkspaceAuthoritativeProjectionRead
-            if current.projection == expected, current.authority == expectedAuthority {
-                actual = current
-            } else {
-                do {
-                    actual = try await boundedWorkspaceProjectionReconciliation(
-                        workspace: before,
-                        expectedGeneration: current.generation,
-                        expectedCatalogRevision: current.catalogRevision,
-                        expectedPublicationSequence: current.publicationSequence,
-                        deadline: deadline
-                    )
-                } catch DomainWorkspaceStatefulRustProjectionError.authoritativeFenceMismatch {
-                    try await waitForWorkspaceProjectionRetry(deadline: deadline)
-                    continue
-                }
-            }
-            if let actualProjection = actual.projection,
-               let actualAuthority = actual.authority,
-               actualProjection == expected,
-               actualAuthority == expectedAuthority,
-               actual.catalogRevision == beforeFence.catalogRevision,
-               actual.publicationSequence == beforeFence.publicationSequence,
-               let afterFence = await runtime.contextStore.workspaceReadFence(identity.workspaceID),
-               afterFence.catalogRevision == beforeFence.catalogRevision,
-               afterFence.publicationSequence == beforeFence.publicationSequence,
-               afterFence.workspace.document.contentDigest == before.document.contentDigest
-            {
-                guard let authoritativeWorkspace = DomainWorkspaceRustProjection.workspaceSnapshot(
-                    topology: afterFence.workspace,
-                    authority: actualAuthority
-                ) else {
-                    throw Error.invalidWorkspaceDocument
-                }
-                return (authoritativeWorkspace, actualProjection)
-            }
-
-            try await waitForWorkspaceProjectionRetry(deadline: deadline)
-        }
-    }
-
-    private func boundedWorkspaceProjectionRead(
-        workspaceID: UUID,
-        deadline: ContinuousClock.Instant
-    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
-        try await boundedWorkspaceProjectionOperation(deadline: deadline) { [runtime] in
-            try await runtime.workspaceRustProjectionObserver.authoritativeWorkspaceProjection(
-                workspaceID: workspaceID
-            )
-        }
-    }
-
-    private func boundedWorkspaceProjectionReconciliation(
-        workspace: DomainWorkspaceSnapshot,
-        expectedGeneration: UInt64,
-        expectedCatalogRevision: UInt64,
-        expectedPublicationSequence: UInt64,
-        deadline: ContinuousClock.Instant
-    ) async throws -> DomainWorkspaceAuthoritativeProjectionRead {
-        try await boundedWorkspaceProjectionOperation(deadline: deadline) { [runtime] in
-            try await runtime.workspaceRustProjectionObserver.reconcileAuthoritativeWorkspaceProjection(
-                workspace: workspace,
-                expectedGeneration: expectedGeneration,
-                expectedCatalogRevision: expectedCatalogRevision,
-                expectedPublicationSequence: expectedPublicationSequence
-            )
-        }
-    }
-
-    private func waitForWorkspaceProjectionRetry(
-        deadline: ContinuousClock.Instant
-    ) async throws {
-        guard ContinuousClock.now < deadline else {
             throw Error.workspaceProjectionUnavailable
         }
-        try await Task.sleep(for: .milliseconds(10))
+        return (read.workspace, read.projection)
     }
 
     private func boundedWorkspaceProjectionOperation<Value: Sendable>(

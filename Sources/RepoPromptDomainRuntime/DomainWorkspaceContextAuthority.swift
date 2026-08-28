@@ -64,6 +64,15 @@ package struct DomainWorkspaceReadFence: Sendable {
     package let publicationSequence: UInt64
 }
 
+package struct DomainWorkspaceAuthoritativeReadFence: Sendable {
+    package let workspace: DomainWorkspaceSnapshot
+    package let projection: DomainWorkspaceDocumentReadProjection
+    package let generation: UInt64
+    package let catalogRevision: UInt64
+    package let publicationSequence: UInt64
+    package let projectionDigest: String
+}
+
 package struct DomainContextStore {
     private let authority: DomainWorkspaceContextAuthority
 
@@ -81,6 +90,12 @@ package struct DomainContextStore {
 
     package func workspaceReadFence(_ workspaceID: UUID) async -> DomainWorkspaceReadFence? {
         await authority.workspaceReadFence(workspaceID)
+    }
+
+    package func workspaceAuthoritativeReadFence(
+        _ workspaceID: UUID
+    ) async -> DomainWorkspaceAuthoritativeReadFence? {
+        await authority.workspaceAuthoritativeReadFence(workspaceID)
     }
 }
 
@@ -289,6 +304,40 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
+    /// Captures the Swift topology overlay and the immutable Rust aggregate row in one actor turn.
+    /// There is no asynchronous observer, checkpoint restore, or repair path in this read boundary.
+    func workspaceAuthoritativeReadFence(
+        _ workspaceID: UUID
+    ) -> DomainWorkspaceAuthoritativeReadFence? {
+        let topology = if let registration = readRegistrations[workspaceID] {
+            projectSnapshot(registration)
+        } else {
+            records[workspaceID].map(makeSnapshot)
+        }
+        guard let topology,
+              let commandAdmission,
+              let read = try? commandAdmission.authorityRead(workspaceID: workspaceID),
+              read.catalogRevision == catalogRevision,
+              read.publicationSequence == publicationSequence,
+              read.contentDigest == topology.document.contentDigest,
+              let projectionDigest = read.projectionDigest,
+              let projection = read.projection,
+              let authority = read.authority,
+              let workspace = DomainWorkspaceRustProjection.workspaceSnapshot(
+                  topology: topology,
+                  authority: authority
+              )
+        else { return nil }
+        return DomainWorkspaceAuthoritativeReadFence(
+            workspace: workspace,
+            projection: projection,
+            generation: read.generation,
+            catalogRevision: read.catalogRevision,
+            publicationSequence: read.publicationSequence,
+            projectionDigest: projectionDigest
+        )
+    }
+
     /// Command outcomes and mutation admission must report canonical record state; the read
     /// overlay is routing-only and must never leak into recovery health or revision baselines.
     func canonicalWorkspaceSnapshot(_ workspaceID: UUID) -> DomainWorkspaceSnapshot? {
@@ -350,6 +399,7 @@ actor DomainWorkspaceContextAuthority {
         readRegistrations[document.workspaceID] = registration
         let projected = projectSnapshot(registration)
         projectionObservationSink.observe(projected.document, source: .readRegistration)
+        synchronizeReadAuthorityProjection()
         return projected
     }
 
@@ -960,6 +1010,11 @@ actor DomainWorkspaceContextAuthority {
                 return persistenceFailureOutcome(envelope, record: record, error: error)
             }
         }
+        invalidateReadRegistrationIfSuperseded(
+            workspaceID: workspaceID,
+            disposition: prior.disposition,
+            resultingDigest: prior.resultingDigest
+        )
         if scope == .workspace, let record {
             publish(
                 kind: .operationDeduplicated,
@@ -971,11 +1026,6 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: nil
             )
         }
-        invalidateReadRegistrationIfSuperseded(
-            workspaceID: workspaceID,
-            disposition: prior.disposition,
-            resultingDigest: prior.resultingDigest
-        )
         return prior.outcome(workspace: record.map(makeSnapshot))
     }
 
@@ -2928,7 +2978,44 @@ actor DomainWorkspaceContextAuthority {
         revisions: DomainRevisionState?,
         diagnostic: String?
     ) {
-        publicationSequence &+= 1
+        if operationID != nil, let workspaceID {
+            switch kind {
+            case .workspaceCreated, .workspaceDeleted, .workingStateCommitted,
+                 .savedDocumentCommitted, .externalReloaded, .externalConflict:
+                readRegistrations.removeValue(forKey: workspaceID)
+            case .bootstrapped, .degraded, .routingChanged, .operationDeduplicated:
+                break
+            }
+        }
+        guard let commandAdmission else { return }
+        do {
+            let receipt = try commandAdmission.publishAuthorityState(
+                workspaces: authoritativeReadSnapshots(),
+                catalogRevision: catalogRevision,
+                kind: kind,
+                workspaceID: workspaceID,
+                contextID: contextID,
+                operationID: operationID,
+                revisions: revisions
+            )
+            guard receipt.previousPublicationSequence == publicationSequence,
+                  receipt.catalogRevision == catalogRevision
+            else {
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+            }
+            publicationSequence = receipt.publicationSequence
+        } catch {
+            quarantineCommandAdmission()
+            let degraded = DomainAuthorityHealth.degradedReadOnly(
+                reason: "workspace_command_admission_receipt_missing"
+            )
+            health = degraded
+            if let workspaceID, var record = records[workspaceID] {
+                record.health = degraded
+                records[workspaceID] = record
+            }
+            return
+        }
         let event = DomainWorkspaceEvent(
             runtimeID: identity.runtimeID,
             sequence: publicationSequence,
@@ -2945,10 +3032,35 @@ actor DomainWorkspaceContextAuthority {
         for continuation in subscribers.values {
             continuation.yield(event)
         }
-        projectionObservationSink.observePublication(
-            event,
-            workspaces: records.values.map(makeSnapshot)
-        )
+    }
+
+    private func synchronizeReadAuthorityProjection() {
+        guard let commandAdmission else { return }
+        do {
+            let receipt = try commandAdmission.synchronizeAuthorityProjection(
+                workspaces: authoritativeReadSnapshots()
+            )
+            guard receipt.catalogRevision == catalogRevision,
+                  receipt.publicationSequence == publicationSequence
+            else {
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+            }
+        } catch {
+            quarantineCommandAdmission()
+            markCommandAdmissionReceiptMissing(workspaceID: nil)
+        }
+    }
+
+    private func authoritativeReadSnapshots() -> [DomainWorkspaceSnapshot] {
+        var snapshots = Dictionary(uniqueKeysWithValues: records.map { workspaceID, record in
+            (workspaceID, makeSnapshot(record))
+        })
+        for (workspaceID, registration) in readRegistrations {
+            snapshots[workspaceID] = projectSnapshot(registration)
+        }
+        return snapshots.values.sorted {
+            $0.document.workspaceID.uuidString < $1.document.workspaceID.uuidString
+        }
     }
 
     private func removeSubscriber(_ token: UUID) {

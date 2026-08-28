@@ -654,8 +654,8 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
         await observer.shutdown()
     }
 
-    func testProductionCheckpointRestoresNonemptyProjectionAcrossRuntimeRestart() async throws {
-        let directory = temporaryDirectory(name: "ProjectionCheckpointRestart")
+    func testProductionAggregateReconstructsProjectionAcrossRestartWithoutCheckpoint() async throws {
+        let directory = temporaryDirectory(name: "ProjectionAggregateRestart")
         defer { try? FileManager.default.removeItem(at: directory) }
         let configuration = configuration(directory: directory)
         let workspaceID = UUID()
@@ -665,8 +665,24 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
         let value = try document(
             workspaceID: workspaceID,
             name: "Restarted",
-            prompt: "durable projection",
+            prompt: "durable / projection",
+            selectedPaths: ["Zeta/Feature.swift", "Alpha/App.swift"],
             fileURL: workspaceFileURL
+        )
+        let contextMetadata = try XCTUnwrap(value.metadata.contexts.first)
+        let canonicalContext = try XCTUnwrap(String(
+            data: contextMetadata.documentBytes,
+            encoding: .utf8
+        ))
+        XCTAssertTrue(canonicalContext.contains("Alpha/App.swift"))
+        XCTAssertFalse(canonicalContext.contains("\\/"))
+        XCTAssertLessThan(
+            try XCTUnwrap(canonicalContext.range(of: "\"id\"")?.lowerBound),
+            try XCTUnwrap(canonicalContext.range(of: "\"selectedPaths\"")?.lowerBound)
+        )
+        XCTAssertEqual(
+            contextMetadata.contentDigest,
+            DomainContentDigest.sha256(contextMetadata.documentBytes)
         )
 
         let first = MCPDomainRuntime(configuration: configuration)
@@ -679,68 +695,38 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
             origin: .standalone,
             command: .createWorkspace(value)
         ))
-        XCTAssertEqual(created.disposition, .applied)
-        let firstPersisted = await waitFor(timeoutIterations: 500) {
-            await first.workspaceRustProjectionObserver.snapshot().checkpointPersistedCount >= 3
-        }
-        XCTAssertTrue(firstPersisted)
-        let loadedFirstCheckpoint = try await first.persistenceCoordinator.loadWorkspaceProjectionCheckpointData()
-        let firstCheckpoint = try XCTUnwrap(loadedFirstCheckpoint)
-        let firstObject = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: firstCheckpoint) as? [String: Any]
+        XCTAssertEqual(
+            created.disposition,
+            .applied,
+            "create failed: \(created.errorCode?.rawValue ?? "none") \(created.diagnostic ?? "none")"
         )
-        let firstGeneration = try XCTUnwrap((firstObject["generation"] as? NSNumber)?.uint64Value)
-        let firstEntries = try XCTUnwrap(firstObject["entries"] as? [[String: Any]])
-        let firstContentDigest = try XCTUnwrap(firstEntries.first?["contentDigest"] as? String)
-        XCTAssertGreaterThan(firstGeneration, 0)
+        let firstRead = await first.contextStore.workspaceAuthoritativeReadFence(workspaceID)
+        XCTAssertEqual(firstRead?.projection.contexts.first?.prompt, "durable / projection")
+        let firstCheckpoint = try await first.persistenceCoordinator.loadWorkspaceProjectionCheckpointData()
+        XCTAssertNil(firstCheckpoint)
         _ = await first.shutdown()
 
         let second = MCPDomainRuntime(configuration: configuration)
         try await second.start()
-        let recovered = await waitFor(timeoutIterations: 500) {
-            let snapshot = await second.workspaceRustProjectionObserver.snapshot()
-            return snapshot.checkpointRecoveredCount == 1
-                && snapshot.checkpointPersistedCount >= 2
-                && snapshot.publicationMatchedCount >= 1
-        }
-        let recoverySnapshot = await second.workspaceRustProjectionObserver.snapshot()
-        XCTAssertTrue(recovered, "restart recovery did not settle: \(recoverySnapshot)")
-        XCTAssertEqual(recoverySnapshot.checkpointRecoveryFailedCount, 0)
-        XCTAssertEqual(recoverySnapshot.checkpointPersistenceFailedCount, 0)
-        XCTAssertEqual(recoverySnapshot.publicationFailedCount, 0)
-        XCTAssertEqual(recoverySnapshot.publicationRebasedCount, 1)
-        let restoredCatalog = await second.workspaceStore.snapshot()
-        XCTAssertEqual(restoredCatalog.workspaces.map(\.document.workspaceID), [workspaceID])
-
-        let loadedSecondCheckpoint = try await second.persistenceCoordinator.loadWorkspaceProjectionCheckpointData()
-        let secondCheckpoint = try XCTUnwrap(loadedSecondCheckpoint)
-        let secondObject = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: secondCheckpoint) as? [String: Any]
-        )
-        let secondGeneration = try XCTUnwrap(
-            (secondObject["generation"] as? NSNumber)?.uint64Value
-        )
-        XCTAssertGreaterThan(
-            secondGeneration,
-            firstGeneration,
-            "restart health transitions must publish new complete authority rows even when document bytes match"
-        )
-        let secondEntries = try XCTUnwrap(secondObject["entries"] as? [[String: Any]])
-        XCTAssertEqual(secondEntries.first?["contentDigest"] as? String, firstContentDigest)
-        XCTAssertNotNil(secondEntries.first?["authority"] as? [String: Any])
-        XCTAssertEqual((secondObject["publicationSequence"] as? NSNumber)?.uint64Value, 2)
-        let events = try XCTUnwrap(secondObject["events"] as? [[String: Any]])
-        XCTAssertEqual(events.count, 2)
-        XCTAssertEqual(
-            events.compactMap { ($0["sequence"] as? NSNumber)?.uint64Value },
-            [1, 2],
-            "bootstrap rebases at sequence 1 before the lease-acquired publication at sequence 2"
-        )
+        let secondRead = await second.contextStore.workspaceAuthoritativeReadFence(workspaceID)
+        XCTAssertEqual(secondRead?.workspace.document.contentDigest, value.contentDigest)
+        XCTAssertEqual(secondRead?.projection.contexts.first?.prompt, "durable / projection")
+        XCTAssertEqual(secondRead?.projectionDigest.count, 64)
+        let observer = await second.workspaceRustProjectionObserver.snapshot()
+        XCTAssertFalse(observer.hasActiveProjection)
+        XCTAssertEqual(observer.checkpointRecoveredCount, 0)
+        XCTAssertEqual(observer.checkpointRecoveryFailedCount, 0)
+        XCTAssertEqual(observer.checkpointPersistedCount, 0)
+        XCTAssertEqual(observer.checkpointPersistenceFailedCount, 0)
+        XCTAssertEqual(observer.publicationMatchedCount, 0)
+        XCTAssertEqual(observer.publicationFailedCount, 0)
+        let secondCheckpoint = try await second.persistenceCoordinator.loadWorkspaceProjectionCheckpointData()
+        XCTAssertNil(secondCheckpoint)
         _ = await second.shutdown()
     }
 
-    func testContendingRuntimeCannotRecoverOrPersistProjectionWithoutWorkspaceLease() async throws {
-        let directory = temporaryDirectory(name: "ProjectionCheckpointContention")
+    func testContendingRuntimeReadsAggregateButCannotMutateUntilWorkspaceLeaseHandoff() async throws {
+        let directory = temporaryDirectory(name: "ProjectionAggregateContention")
         defer { try? FileManager.default.removeItem(at: directory) }
         let configuration = configuration(directory: directory)
         let holder = MCPDomainRuntime(configuration: configuration)
@@ -761,42 +747,39 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
                 fileURL: workspaceFileURL
             ))
         ))
-        XCTAssertEqual(created.disposition, .applied)
-        let holderPersisted = await waitFor(timeoutIterations: 500) {
-            await holder.workspaceRustProjectionObserver.snapshot().checkpointPersistedCount >= 3
-        }
-        XCTAssertTrue(holderPersisted)
+        XCTAssertEqual(
+            created.disposition,
+            .applied,
+            "create failed: \(created.errorCode?.rawValue ?? "none") \(created.diagnostic ?? "none")"
+        )
 
         let contender = MCPDomainRuntime(configuration: configuration)
         try await contender.start()
-        let runtimeSnapshot = await contender.snapshot()
-        XCTAssertEqual(runtimeSnapshot.lifecycle, .degraded)
-        let projectionSnapshot = await contender.workspaceRustProjectionObserver.snapshot()
-        XCTAssertTrue(projectionSnapshot.isAcceptingObservations)
-        XCTAssertFalse(projectionSnapshot.hasActiveProjection)
-        XCTAssertEqual(projectionSnapshot.checkpointRecoveredCount, 0)
-        XCTAssertEqual(projectionSnapshot.checkpointRecoveryFailedCount, 0)
-        XCTAssertEqual(projectionSnapshot.checkpointPersistedCount, 0)
-        XCTAssertEqual(projectionSnapshot.checkpointPersistenceFailedCount, 0)
-        XCTAssertEqual(projectionSnapshot.matchedCount, 0)
-        XCTAssertEqual(projectionSnapshot.publicationMatchedCount, 0)
+        let contendedRuntimeSnapshot = await contender.snapshot()
+        XCTAssertEqual(contendedRuntimeSnapshot.lifecycle, .degraded)
+        let contendedRead = await contender.contextStore.workspaceAuthoritativeReadFence(workspaceID)
+        XCTAssertEqual(contendedRead?.workspace.document.workspaceID, workspaceID)
+        let comparison = await contender.workspaceRustProjectionObserver.snapshot()
+        XCTAssertTrue(comparison.isAcceptingObservations)
+        XCTAssertFalse(comparison.hasActiveProjection)
+        XCTAssertEqual(comparison.checkpointRecoveredCount, 0)
+        XCTAssertEqual(comparison.checkpointPersistedCount, 0)
+        XCTAssertEqual(comparison.publicationMatchedCount, 0)
 
         _ = await holder.shutdown()
         let tookOver = await waitFor(timeoutIterations: 500) {
-            let runtime = await contender.snapshot()
-            let projection = await contender.workspaceRustProjectionObserver.snapshot()
-            return runtime.lifecycle == .ready
-                && projection.checkpointRecoveredCount == 1
-                && projection.checkpointPersistedCount >= 3
-                && projection.publicationMatchedCount >= 3
+            let snapshot = await contender.snapshot()
+            return snapshot.lifecycle == .ready
         }
-        let takeoverProjection = await contender.workspaceRustProjectionObserver.snapshot()
-        XCTAssertTrue(tookOver, "contender did not activate after lease release: \(takeoverProjection)")
-        XCTAssertEqual(takeoverProjection.checkpointRecoveryFailedCount, 0)
-        XCTAssertEqual(takeoverProjection.checkpointPersistenceFailedCount, 0)
-        let contenderCatalog = await contender.workspaceStore.snapshot()
-        XCTAssertEqual(contenderCatalog.workspaces.map(\.document.workspaceID), [workspaceID])
-
+        XCTAssertTrue(tookOver)
+        let takeoverRead = await contender.contextStore.workspaceAuthoritativeReadFence(workspaceID)
+        XCTAssertEqual(takeoverRead?.workspace.document.workspaceID, workspaceID)
+        let takeoverComparison = await contender.workspaceRustProjectionObserver.snapshot()
+        XCTAssertFalse(takeoverComparison.hasActiveProjection)
+        XCTAssertEqual(takeoverComparison.checkpointRecoveredCount, 0)
+        XCTAssertEqual(takeoverComparison.checkpointPersistedCount, 0)
+        let contenderCheckpoint = try await contender.persistenceCoordinator.loadWorkspaceProjectionCheckpointData()
+        XCTAssertNil(contenderCheckpoint)
         _ = await contender.shutdown()
     }
 
@@ -816,14 +799,9 @@ final class DomainWorkspaceRustProjectionObserverTests: XCTestCase {
         let observerSnapshot = await runtime.workspaceRustProjectionObserver.snapshot()
         XCTAssertEqual(observerSnapshot.failedCount, 0)
         XCTAssertEqual(observerSnapshot.mismatchedCount, 0)
-        let publicationMatched = await waitFor(timeoutIterations: 500) {
-            await runtime.workspaceRustProjectionObserver.snapshot().publicationMatchedCount >= 1
-        }
         let publicationSnapshot = await runtime.workspaceRustProjectionObserver.snapshot()
-        XCTAssertTrue(
-            publicationMatched,
-            "bootstrap publication must reach the real Rust state: \(publicationSnapshot)"
-        )
+        XCTAssertFalse(publicationSnapshot.hasActiveProjection)
+        XCTAssertEqual(publicationSnapshot.publicationMatchedCount, 0)
         XCTAssertEqual(publicationSnapshot.publicationFailedCount, 0)
         _ = await runtime.shutdown()
     }

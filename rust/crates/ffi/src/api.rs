@@ -50,11 +50,13 @@ use crate::types::{
     AgentClaudeStartReceiptV1, CoreAgentClaudeScopeConfigV1,
 };
 use crate::types::{
+    CoreWorkspaceAuthorityProjectionSyncReceiptV1, CoreWorkspaceAuthorityPublicationDraftV1,
+    CoreWorkspaceAuthorityPublicationReceiptV1, CoreWorkspaceAuthorityReadV1,
     CoreWorkspaceProjectionDiagnosticsV1, CoreWorkspaceProjectionMutationReceiptV1,
     CoreWorkspaceProjectionPublicationReceiptV1,
     CoreWorkspaceProjectionPublishAuthoritativeRequestV1, CoreWorkspaceProjectionPublishRequestV1,
-    CoreWorkspaceProjectionRemoveRequestV1, CoreWorkspaceProjectionReplaceRequestV1,
-    CoreWorkspaceProjectionRestoreCheckpointReceiptV1,
+    CoreWorkspaceProjectionPublishedWorkspaceV1, CoreWorkspaceProjectionRemoveRequestV1,
+    CoreWorkspaceProjectionReplaceRequestV1, CoreWorkspaceProjectionRestoreCheckpointReceiptV1,
     CoreWorkspaceProjectionRestoreCheckpointRequestV1, CoreWorkspaceProjectionScopeConfigV1,
     CoreWorkspaceProjectionScopeHandleV1, CoreWorkspaceProjectionSnapshotHandleV1,
     CoreWorkspaceProjectionSnapshotPageV1, CoreWorkspaceProjectionSnapshotRequestV1,
@@ -439,6 +441,27 @@ impl std::fmt::Debug for CorePreparedWorkspaceCommandAdmissionV1 {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityPublicationResponseV1 {
+    pub receipt: Option<CoreWorkspaceAuthorityPublicationReceiptV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityProjectionSyncResponseV1 {
+    pub receipt: Option<CoreWorkspaceAuthorityProjectionSyncReceiptV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityReadResponseV1 {
+    pub read: Option<CoreWorkspaceAuthorityReadV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
 impl CorePreparedWorkspaceCommandAdmissionV1 {
     fn require_live_runtime(&self) -> Result<(), CoreError> {
         let runtime = self.runtime.upgrade().ok_or(CoreError::RuntimeStopped)?;
@@ -539,6 +562,88 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
                     }
                 },
             )
+        })
+    }
+
+    pub fn publish_authority_state(
+        &self,
+        workspaces: Vec<CoreWorkspaceProjectionPublishedWorkspaceV1>,
+        draft: CoreWorkspaceAuthorityPublicationDraftV1,
+    ) -> Result<CoreWorkspaceAuthorityPublicationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let workspaces = workspaces.into_iter().map(Into::into).collect::<Vec<_>>();
+            Ok(
+                match self
+                    .inner
+                    .publish_authority_state(&workspaces, draft.into())
+                {
+                    Ok(receipt) => CoreWorkspaceAuthorityPublicationResponseV1 {
+                        receipt: Some(receipt.into()),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspaceAuthorityPublicationResponseV1 {
+                            receipt: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
+        })
+    }
+
+    pub fn synchronize_authority_projection(
+        &self,
+        workspaces: Vec<CoreWorkspaceProjectionPublishedWorkspaceV1>,
+    ) -> Result<CoreWorkspaceAuthorityProjectionSyncResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            let workspaces = workspaces.into_iter().map(Into::into).collect::<Vec<_>>();
+            Ok(
+                match self.inner.synchronize_authority_projection(&workspaces) {
+                    Ok(receipt) => CoreWorkspaceAuthorityProjectionSyncResponseV1 {
+                        receipt: Some(receipt.into()),
+                        error_kind: None,
+                        future_schema_version: None,
+                    },
+                    Err(error) => {
+                        let (error_kind, future_schema_version) = workspace_journal_error(error);
+                        CoreWorkspaceAuthorityProjectionSyncResponseV1 {
+                            receipt: None,
+                            error_kind: Some(error_kind),
+                            future_schema_version,
+                        }
+                    }
+                },
+            )
+        })
+    }
+
+    pub fn authority_read(
+        &self,
+        workspace_id: String,
+    ) -> Result<CoreWorkspaceAuthorityReadResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            Ok(match self.inner.authority_read(&workspace_id) {
+                Ok(read) => CoreWorkspaceAuthorityReadResponseV1 {
+                    read: Some(read.into()),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceAuthorityReadResponseV1 {
+                        read: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
         })
     }
 

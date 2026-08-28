@@ -1121,7 +1121,7 @@ private func coreWorkspaceProjectionHealth(
     return CoreWorkspaceProjectionHealth(kind: kind, reason: raw.reason)
 }
 
-private func coreWorkspaceProjectionRawHealth(
+func coreWorkspaceProjectionRawHealth(
     _ health: CoreWorkspaceProjectionHealth
 ) -> AgentryUniFFIRaw.CoreWorkspaceProjectionHealthV1 {
     let kind: AgentryUniFFIRaw.CoreWorkspaceProjectionHealthKindV1 = switch health.kind {
@@ -1133,7 +1133,7 @@ private func coreWorkspaceProjectionRawHealth(
     return .init(kind: kind, reason: health.reason)
 }
 
-private func coreWorkspaceProjectionRawRevisionState(
+func coreWorkspaceProjectionRawRevisionState(
     _ revisions: CoreWorkspaceProjectionRevisionState
 ) -> AgentryUniFFIRaw.CoreWorkspaceProjectionRevisionStateV1 {
     .init(
@@ -1143,7 +1143,7 @@ private func coreWorkspaceProjectionRawRevisionState(
     )
 }
 
-private func coreWorkspaceProjectionRawPublishedWorkspace(
+func coreWorkspaceProjectionRawPublishedWorkspace(
     _ workspace: CoreWorkspaceProjectionPublishedWorkspace
 ) -> AgentryUniFFIRaw.CoreWorkspaceProjectionPublishedWorkspaceV1 {
     .init(

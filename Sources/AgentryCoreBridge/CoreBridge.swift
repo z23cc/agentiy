@@ -1207,7 +1207,307 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     throw Self.map(error)
                 }
             },
+            publishAuthorityState: { workspaces, draft in
+                do {
+                    return try Self.workspaceAuthorityPublicationResponse(
+                        rawAdmission.publishAuthorityState(
+                            workspaces: workspaces.map(coreWorkspaceProjectionRawPublishedWorkspace),
+                            draft: Self.rawWorkspaceAuthorityPublicationDraft(draft)
+                        ),
+                        draft: draft,
+                        workspaceCount: workspaces.count
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            synchronizeAuthorityProjection: { workspaces in
+                do {
+                    return try Self.workspaceAuthorityProjectionSyncResponse(
+                        rawAdmission.synchronizeAuthorityProjection(
+                            workspaces: workspaces.map(coreWorkspaceProjectionRawPublishedWorkspace)
+                        ),
+                        workspaceCount: workspaces.count
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            authorityRead: { workspaceID in
+                do {
+                    return try Self.workspaceAuthorityReadResponse(
+                        rawAdmission.authorityRead(
+                            workspaceId: workspaceID.uuidString.lowercased()
+                        ),
+                        workspaceID: workspaceID
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
             close: { rawAdmission.close() }
+        )
+    }
+
+    private static func rawWorkspaceAuthorityPublicationDraft(
+        _ draft: CoreWorkspaceAuthorityPublicationDraft
+    ) -> AgentryUniFFIRaw.CoreWorkspaceAuthorityPublicationDraftV1 {
+        let kind: AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationKindV1 = switch draft.kind {
+        case .bootstrapped: .bootstrapped
+        case .workspaceCreated: .workspaceCreated
+        case .workspaceDeleted: .workspaceDeleted
+        case .workingStateCommitted: .workingStateCommitted
+        case .savedDocumentCommitted: .savedDocumentCommitted
+        case .externalReloaded: .externalReloaded
+        case .externalConflict: .externalConflict
+        case .degraded: .degraded
+        case .routingChanged: .routingChanged
+        case .operationDeduplicated: .operationDeduplicated
+        }
+        return .init(
+            catalogRevision: draft.catalogRevision,
+            kind: kind,
+            workspaceId: draft.workspaceID?.uuidString.lowercased(),
+            contextId: draft.contextID?.uuidString.lowercased(),
+            operationId: draft.operationID?.uuidString.lowercased(),
+            revisions: draft.revisions.map(coreWorkspaceProjectionRawRevisionState)
+        )
+    }
+
+    private static func workspaceProjectionPublicationKind(
+        _ kind: AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationKindV1
+    ) -> CoreWorkspaceProjectionPublicationKind {
+        switch kind {
+        case .bootstrapped: .bootstrapped
+        case .workspaceCreated: .workspaceCreated
+        case .workspaceDeleted: .workspaceDeleted
+        case .workingStateCommitted: .workingStateCommitted
+        case .savedDocumentCommitted: .savedDocumentCommitted
+        case .externalReloaded: .externalReloaded
+        case .externalConflict: .externalConflict
+        case .degraded: .degraded
+        case .routingChanged: .routingChanged
+        case .operationDeduplicated: .operationDeduplicated
+        }
+    }
+
+    private static func workspaceProjectionPublicationEvent(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationEventV1
+    ) throws -> CoreWorkspaceProjectionPublicationEvent {
+        func optionalUUID(_ raw: String?) throws -> UUID? {
+            guard let raw else { return nil }
+            guard let value = UUID(uuidString: raw) else {
+                throw CoreTransportError.unexpected("workspace authority event identity is invalid")
+            }
+            return value
+        }
+        return CoreWorkspaceProjectionPublicationEvent(
+            sequence: raw.sequence,
+            catalogRevision: raw.catalogRevision,
+            kind: workspaceProjectionPublicationKind(raw.kind),
+            workspaceID: try optionalUUID(raw.workspaceId),
+            contextID: try optionalUUID(raw.contextId),
+            operationID: try optionalUUID(raw.operationId),
+            revisions: raw.revisions.map {
+                CoreWorkspaceProjectionRevisionState(
+                    workingRevision: $0.workingRevision,
+                    savedRevision: $0.savedRevision,
+                    dirtyRevision: $0.dirtyRevision
+                )
+            }
+        )
+    }
+
+    private static func workspaceAuthorityPublicationResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceAuthorityPublicationResponseV1,
+        draft: CoreWorkspaceAuthorityPublicationDraft,
+        workspaceCount: Int
+    ) throws -> CoreWorkspaceAuthorityPublicationReceipt {
+        if let errorKind = response.errorKind {
+            guard response.receipt == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace authority publication response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        let nextPublicationSequence: UInt64?
+        let nextGeneration: UInt64?
+        if let raw = response.receipt {
+            nextPublicationSequence = raw.previousPublicationSequence.addingReportingOverflow(1).overflow
+                ? nil
+                : raw.previousPublicationSequence + 1
+            nextGeneration = raw.previousGeneration.addingReportingOverflow(1).overflow
+                ? nil
+                : raw.previousGeneration + 1
+        } else {
+            nextPublicationSequence = nil
+            nextGeneration = nil
+        }
+        guard response.futureSchemaVersion == nil,
+              let raw = response.receipt,
+              let expectedWorkspaceCount = UInt64(exactly: workspaceCount),
+              raw.workspaceCount == expectedWorkspaceCount,
+              raw.catalogRevision == draft.catalogRevision,
+              raw.publicationSequence == nextPublicationSequence,
+              raw.event.sequence == raw.publicationSequence,
+              raw.event.catalogRevision == raw.catalogRevision,
+              isSHA256(raw.projectionDigest),
+              raw.eventLogCount <= 256,
+              raw.eventLogFloorSequence <= raw.publicationSequence
+        else {
+            throw CoreTransportError.unexpected("workspace authority publication receipt is invalid")
+        }
+        let event = try workspaceProjectionPublicationEvent(raw.event)
+        guard event.kind == draft.kind,
+              event.workspaceID == draft.workspaceID,
+              event.contextID == draft.contextID,
+              event.operationID == draft.operationID,
+              event.revisions == draft.revisions,
+              raw.projectionChanged
+              ? raw.generation == nextGeneration
+              : raw.generation == raw.previousGeneration
+        else {
+            throw CoreTransportError.unexpected("workspace authority publication event is invalid")
+        }
+        return CoreWorkspaceAuthorityPublicationReceipt(
+            previousGeneration: raw.previousGeneration,
+            generation: raw.generation,
+            projectionChanged: raw.projectionChanged,
+            workspaceCount: raw.workspaceCount,
+            retainedBytes: raw.retainedBytes,
+            previousCatalogRevision: raw.previousCatalogRevision,
+            previousPublicationSequence: raw.previousPublicationSequence,
+            catalogRevision: raw.catalogRevision,
+            publicationSequence: raw.publicationSequence,
+            eventLogFloorSequence: raw.eventLogFloorSequence,
+            eventLogCount: raw.eventLogCount,
+            projectionDigest: raw.projectionDigest,
+            event: event
+        )
+    }
+
+    private static func workspaceAuthorityProjectionSyncResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceAuthorityProjectionSyncResponseV1,
+        workspaceCount: Int
+    ) throws -> CoreWorkspaceAuthorityProjectionSyncReceipt {
+        if let errorKind = response.errorKind {
+            guard response.receipt == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace authority projection sync contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        let nextGeneration: UInt64?
+        if let raw = response.receipt {
+            let next = raw.previousGeneration.addingReportingOverflow(1)
+            nextGeneration = next.overflow ? nil : next.partialValue
+        } else {
+            nextGeneration = nil
+        }
+        guard response.futureSchemaVersion == nil,
+              let raw = response.receipt,
+              let expectedWorkspaceCount = UInt64(exactly: workspaceCount),
+              raw.workspaceCount == expectedWorkspaceCount,
+              isSHA256(raw.projectionDigest),
+              raw.projectionChanged
+              ? raw.generation == nextGeneration
+              : raw.generation == raw.previousGeneration
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace authority projection sync receipt is invalid"
+            )
+        }
+        return CoreWorkspaceAuthorityProjectionSyncReceipt(
+            previousGeneration: raw.previousGeneration,
+            generation: raw.generation,
+            projectionChanged: raw.projectionChanged,
+            workspaceCount: raw.workspaceCount,
+            retainedBytes: raw.retainedBytes,
+            catalogRevision: raw.catalogRevision,
+            publicationSequence: raw.publicationSequence,
+            projectionDigest: raw.projectionDigest
+        )
+    }
+
+    private static func workspaceAuthorityReadResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceAuthorityReadResponseV1,
+        workspaceID: UUID
+    ) throws -> CoreWorkspaceAuthorityRead {
+        if let errorKind = response.errorKind {
+            guard response.read == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace authority read response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let raw = response.read,
+              isSHA256(raw.projectionDigest),
+              raw.eventLogCount <= 256,
+              (raw.projection == nil) == (raw.contentDigest == nil),
+              raw.contentDigest.map(isSHA256) ?? true
+        else {
+            throw CoreTransportError.unexpected("workspace authority read receipt is invalid")
+        }
+        let eventLogIsValid: Bool
+        if raw.eventLogCount == 0 {
+            let (nextSequence, overflow) = raw.publicationSequence.addingReportingOverflow(1)
+            eventLogIsValid = raw.eventLogFloorSequence == (overflow ? UInt64.max : nextSequence)
+        } else if raw.eventLogFloorSequence <= raw.publicationSequence {
+            let delta = raw.publicationSequence - raw.eventLogFloorSequence
+            let (span, overflow) = delta.addingReportingOverflow(1)
+            eventLogIsValid = !overflow && span == UInt64(raw.eventLogCount)
+        } else {
+            eventLogIsValid = false
+        }
+        guard eventLogIsValid else {
+            throw CoreTransportError.unexpected("workspace authority event log is invalid")
+        }
+        let projection = try raw.projection.map(coreWorkspaceDocumentProjection)
+        if projection == nil {
+            return CoreWorkspaceAuthorityRead(
+                projection: nil,
+                contentDigest: nil,
+                generation: raw.generation,
+                catalogRevision: raw.catalogRevision,
+                publicationSequence: raw.publicationSequence,
+                eventLogFloorSequence: raw.eventLogFloorSequence,
+                eventLogCount: raw.eventLogCount,
+                projectionDigest: raw.projectionDigest
+            )
+        }
+        guard projection?.workspaceID == workspaceID,
+              projection?.authority != nil
+        else {
+            throw CoreTransportError.unexpected("workspace authority read identity is invalid")
+        }
+        return CoreWorkspaceAuthorityRead(
+            projection: projection,
+            contentDigest: raw.contentDigest,
+            generation: raw.generation,
+            catalogRevision: raw.catalogRevision,
+            publicationSequence: raw.publicationSequence,
+            eventLogFloorSequence: raw.eventLogFloorSequence,
+            eventLogCount: raw.eventLogCount,
+            projectionDigest: raw.projectionDigest
         )
     }
 

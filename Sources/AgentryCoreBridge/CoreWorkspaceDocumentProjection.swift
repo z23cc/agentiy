@@ -516,6 +516,139 @@ public struct CoreWorkspaceCommandAdmissionRecoveryReceiptV1: Sendable, Equatabl
     }
 }
 
+public struct CoreWorkspaceAuthorityPublicationDraft: Sendable, Equatable {
+    public let catalogRevision: UInt64
+    public let kind: CoreWorkspaceProjectionPublicationKind
+    public let workspaceID: UUID?
+    public let contextID: UUID?
+    public let operationID: UUID?
+    public let revisions: CoreWorkspaceProjectionRevisionState?
+
+    public init(
+        catalogRevision: UInt64,
+        kind: CoreWorkspaceProjectionPublicationKind,
+        workspaceID: UUID?,
+        contextID: UUID?,
+        operationID: UUID?,
+        revisions: CoreWorkspaceProjectionRevisionState?
+    ) {
+        self.catalogRevision = catalogRevision
+        self.kind = kind
+        self.workspaceID = workspaceID
+        self.contextID = contextID
+        self.operationID = operationID
+        self.revisions = revisions
+    }
+}
+
+public struct CoreWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
+    public let previousGeneration: UInt64
+    public let generation: UInt64
+    public let projectionChanged: Bool
+    public let workspaceCount: UInt64
+    public let retainedBytes: UInt64
+    public let previousCatalogRevision: UInt64
+    public let previousPublicationSequence: UInt64
+    public let catalogRevision: UInt64
+    public let publicationSequence: UInt64
+    public let eventLogFloorSequence: UInt64
+    public let eventLogCount: UInt64
+    public let projectionDigest: String
+    public let event: CoreWorkspaceProjectionPublicationEvent
+
+    public init(
+        previousGeneration: UInt64,
+        generation: UInt64,
+        projectionChanged: Bool,
+        workspaceCount: UInt64,
+        retainedBytes: UInt64,
+        previousCatalogRevision: UInt64,
+        previousPublicationSequence: UInt64,
+        catalogRevision: UInt64,
+        publicationSequence: UInt64,
+        eventLogFloorSequence: UInt64,
+        eventLogCount: UInt64,
+        projectionDigest: String,
+        event: CoreWorkspaceProjectionPublicationEvent
+    ) {
+        self.previousGeneration = previousGeneration
+        self.generation = generation
+        self.projectionChanged = projectionChanged
+        self.workspaceCount = workspaceCount
+        self.retainedBytes = retainedBytes
+        self.previousCatalogRevision = previousCatalogRevision
+        self.previousPublicationSequence = previousPublicationSequence
+        self.catalogRevision = catalogRevision
+        self.publicationSequence = publicationSequence
+        self.eventLogFloorSequence = eventLogFloorSequence
+        self.eventLogCount = eventLogCount
+        self.projectionDigest = projectionDigest
+        self.event = event
+    }
+}
+
+public struct CoreWorkspaceAuthorityProjectionSyncReceipt: Sendable, Equatable {
+    public let previousGeneration: UInt64
+    public let generation: UInt64
+    public let projectionChanged: Bool
+    public let workspaceCount: UInt64
+    public let retainedBytes: UInt64
+    public let catalogRevision: UInt64
+    public let publicationSequence: UInt64
+    public let projectionDigest: String
+
+    public init(
+        previousGeneration: UInt64,
+        generation: UInt64,
+        projectionChanged: Bool,
+        workspaceCount: UInt64,
+        retainedBytes: UInt64,
+        catalogRevision: UInt64,
+        publicationSequence: UInt64,
+        projectionDigest: String
+    ) {
+        self.previousGeneration = previousGeneration
+        self.generation = generation
+        self.projectionChanged = projectionChanged
+        self.workspaceCount = workspaceCount
+        self.retainedBytes = retainedBytes
+        self.catalogRevision = catalogRevision
+        self.publicationSequence = publicationSequence
+        self.projectionDigest = projectionDigest
+    }
+}
+
+public struct CoreWorkspaceAuthorityRead: Sendable, Equatable {
+    public let projection: CoreWorkspaceDocumentProjectionV1?
+    public let contentDigest: String?
+    public let generation: UInt64
+    public let catalogRevision: UInt64
+    public let publicationSequence: UInt64
+    public let eventLogFloorSequence: UInt64
+    public let eventLogCount: UInt64
+    public let projectionDigest: String
+
+    public init(
+        projection: CoreWorkspaceDocumentProjectionV1?,
+        contentDigest: String?,
+        generation: UInt64,
+        catalogRevision: UInt64,
+        publicationSequence: UInt64,
+        eventLogFloorSequence: UInt64,
+        eventLogCount: UInt64,
+        projectionDigest: String
+    ) {
+        self.projection = projection
+        self.contentDigest = contentDigest
+        self.generation = generation
+        self.catalogRevision = catalogRevision
+        self.publicationSequence = publicationSequence
+        self.eventLogFloorSequence = eventLogFloorSequence
+        self.eventLogCount = eventLogCount
+        self.projectionDigest = projectionDigest
+    }
+}
+
 public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable {
     let rawAdmission: AgentryUniFFIRaw.CorePreparedWorkspaceCommandAdmissionV1
     private let acquireOperation: @Sendable (CoreWorkspaceCommandIdentityRequestV1, UInt64?) throws
@@ -527,6 +660,14 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         -> CorePreparedWorkspaceSemanticRecoveryV1
     private let diagnosticsOperation: @Sendable () throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
+    private let publishAuthorityStateOperation: @Sendable (
+        [CoreWorkspaceProjectionPublishedWorkspace],
+        CoreWorkspaceAuthorityPublicationDraft
+    ) throws -> CoreWorkspaceAuthorityPublicationReceipt
+    private let synchronizeAuthorityProjectionOperation: @Sendable (
+        [CoreWorkspaceProjectionPublishedWorkspace]
+    ) throws -> CoreWorkspaceAuthorityProjectionSyncReceipt
+    private let authorityReadOperation: @Sendable (UUID) throws -> CoreWorkspaceAuthorityRead
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -539,6 +680,14 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         prepareSemanticTargetRecovery: @escaping @Sendable (CoreWorkspaceSemanticTargetRecoveryV1) throws
             -> CorePreparedWorkspaceSemanticRecoveryV1,
         diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
+        publishAuthorityState: @escaping @Sendable (
+            [CoreWorkspaceProjectionPublishedWorkspace],
+            CoreWorkspaceAuthorityPublicationDraft
+        ) throws -> CoreWorkspaceAuthorityPublicationReceipt,
+        synchronizeAuthorityProjection: @escaping @Sendable (
+            [CoreWorkspaceProjectionPublishedWorkspace]
+        ) throws -> CoreWorkspaceAuthorityProjectionSyncReceipt,
+        authorityRead: @escaping @Sendable (UUID) throws -> CoreWorkspaceAuthorityRead,
         close: @escaping @Sendable () -> Void
     ) {
         self.rawAdmission = rawAdmission
@@ -547,6 +696,9 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         semanticFullRecoveryOperation = prepareSemanticFullRecovery
         semanticTargetRecoveryOperation = prepareSemanticTargetRecovery
         diagnosticsOperation = diagnostics
+        publishAuthorityStateOperation = publishAuthorityState
+        synchronizeAuthorityProjectionOperation = synchronizeAuthorityProjection
+        authorityReadOperation = authorityRead
         closeOperation = close
     }
 
@@ -580,6 +732,23 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
 
     public func diagnostics() throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {
         try diagnosticsOperation()
+    }
+
+    public func publishAuthorityState(
+        workspaces: [CoreWorkspaceProjectionPublishedWorkspace],
+        draft: CoreWorkspaceAuthorityPublicationDraft
+    ) throws -> CoreWorkspaceAuthorityPublicationReceipt {
+        try publishAuthorityStateOperation(workspaces, draft)
+    }
+
+    public func synchronizeAuthorityProjection(
+        workspaces: [CoreWorkspaceProjectionPublishedWorkspace]
+    ) throws -> CoreWorkspaceAuthorityProjectionSyncReceipt {
+        try synchronizeAuthorityProjectionOperation(workspaces)
+    }
+
+    public func authorityRead(workspaceID: UUID) throws -> CoreWorkspaceAuthorityRead {
+        try authorityReadOperation(workspaceID)
     }
 
     public func close() {

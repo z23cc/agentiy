@@ -1589,6 +1589,116 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         _ = try await bridge.close()
     }
 
+    func testPreparedAdmissionPublishesAndReadsOneAuthorityCursor() async throws {
+        let workspaceID = UUID()
+        let contextID = UUID()
+        let document = try JSONSerialization.data(withJSONObject: [
+            "id": workspaceID.uuidString,
+            "schemaVersion": 1,
+            "name": "Aggregate",
+            "composeTabs": [[
+                "id": contextID.uuidString,
+                "name": "Context",
+                "prompt": "authoritative",
+                "selectedPaths": ["Sources/App.swift"],
+            ]],
+        ], options: [.sortedKeys])
+        let revisions = CoreWorkspaceProjectionRevisionState(
+            workingRevision: 1,
+            savedRevision: 0,
+            dirtyRevision: 1
+        )
+        let health = CoreWorkspaceProjectionHealth(kind: .writable)
+        let published = CoreWorkspaceProjectionPublishedWorkspace(
+            documentBytes: document,
+            authority: CoreWorkspaceProjectionAuthorityState(
+                revisions: revisions,
+                health: health,
+                contexts: [CoreWorkspaceContextAuthorityState(
+                    contextID: contextID,
+                    revisions: revisions,
+                    health: health
+                )]
+            )
+        )
+        let bridge = try await AgentryCoreBridge.start()
+        let client = try await bridge.computeClient()
+        let validator = try await client.prepareWorkspaceWorkingJournalValidatorV1()
+        let admission = try beginCommandAdmission(prepared: validator)
+
+        let emptyRead = try admission.authorityRead(workspaceID: workspaceID)
+        XCTAssertNil(emptyRead.projection)
+        XCTAssertNil(emptyRead.contentDigest)
+        XCTAssertEqual(emptyRead.generation, 0)
+        XCTAssertEqual(emptyRead.publicationSequence, 0)
+        XCTAssertEqual(emptyRead.eventLogFloorSequence, 1)
+        XCTAssertEqual(emptyRead.eventLogCount, 0)
+        let emptySynchronization = try admission.synchronizeAuthorityProjection(workspaces: [])
+        XCTAssertEqual(emptySynchronization.generation, 0)
+        XCTAssertEqual(emptySynchronization.publicationSequence, 0)
+        XCTAssertEqual(
+            try admission.authorityRead(workspaceID: workspaceID).eventLogFloorSequence,
+            1
+        )
+
+        let receipt = try admission.publishAuthorityState(
+            workspaces: [published],
+            draft: CoreWorkspaceAuthorityPublicationDraft(
+                catalogRevision: 7,
+                kind: .bootstrapped,
+                workspaceID: nil,
+                contextID: nil,
+                operationID: nil,
+                revisions: nil
+            )
+        )
+        XCTAssertEqual(receipt.previousGeneration, 0)
+        XCTAssertEqual(receipt.generation, 1)
+        XCTAssertTrue(receipt.projectionChanged)
+        XCTAssertEqual(receipt.publicationSequence, 1)
+        XCTAssertEqual(receipt.event.sequence, 1)
+        XCTAssertEqual(receipt.event.kind, .bootstrapped)
+        XCTAssertEqual(receipt.projectionDigest.count, 64)
+
+        let read = try admission.authorityRead(workspaceID: workspaceID)
+        XCTAssertEqual(read.projection?.workspaceID, workspaceID)
+        XCTAssertEqual(read.projection?.authority?.revisions, revisions)
+        XCTAssertEqual(read.contentDigest, SHA256.hash(data: document).map { String(format: "%02x", $0) }.joined())
+        XCTAssertEqual(read.generation, receipt.generation)
+        XCTAssertEqual(read.catalogRevision, receipt.catalogRevision)
+        XCTAssertEqual(read.publicationSequence, receipt.publicationSequence)
+        XCTAssertEqual(read.projectionDigest, receipt.projectionDigest)
+
+        let overlayDocument = try JSONSerialization.data(withJSONObject: [
+            "id": workspaceID.uuidString,
+            "schemaVersion": 1,
+            "name": "Aggregate",
+            "composeTabs": [[
+                "id": contextID.uuidString,
+                "name": "Context",
+                "prompt": "routing overlay",
+                "selectedPaths": [],
+            ]],
+        ], options: [.sortedKeys])
+        let synchronized = try admission.synchronizeAuthorityProjection(
+            workspaces: [CoreWorkspaceProjectionPublishedWorkspace(
+                documentBytes: overlayDocument,
+                authority: published.authority
+            )]
+        )
+        XCTAssertTrue(synchronized.projectionChanged)
+        XCTAssertEqual(synchronized.generation, receipt.generation + 1)
+        XCTAssertEqual(synchronized.catalogRevision, receipt.catalogRevision)
+        XCTAssertEqual(synchronized.publicationSequence, receipt.publicationSequence)
+        let overlayRead = try admission.authorityRead(workspaceID: workspaceID)
+        XCTAssertEqual(overlayRead.projection?.contexts.first?.prompt, "routing overlay")
+        XCTAssertEqual(overlayRead.publicationSequence, receipt.publicationSequence)
+
+        admission.close()
+        XCTAssertThrowsError(try admission.authorityRead(workspaceID: workspaceID))
+        _ = try await bridge.close()
+    }
+
     func testReopenedScopeRejectsRetiredFacadeAndSnapshotWithoutTouchingFreshIncarnation() async throws {
         let scopeID = UUID()
         let workspaceID = UUID()

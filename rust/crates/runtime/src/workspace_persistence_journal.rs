@@ -1,13 +1,19 @@
-//! P5-5a workspace working-journal compatibility and validation boundary.
+//! Workspace persistence, command admission, and process-lifetime authority boundary.
 //!
-//! The physical file and lease remain Swift-owned. Artifact validators and planners emit deterministic
-//! bounded JSON; the prepared command-admission capability retains only a bounded process-lifetime index
-//! reconstructed from those validated receipts. Embedded document semantics remain a separate boundary.
+//! Physical files and leases remain Swift-owned. Rust validates and plans bounded durable artifacts,
+//! reconstructs replay admission from those artifacts, and retains the immutable semantic/revision/
+//! publication aggregate used by direct reads. Document-schema projection remains in `workspace_context`.
 
 use crate::workspace_context::{
-    MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1, WorkspaceDocumentProjection,
-    WorkspaceProjectionHealth, WorkspaceProjectionHealthKind, WorkspaceProjectionRevisionState,
-    canonical_uuid, is_valid_revision_state, project_workspace_document_v1,
+    MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+    MAXIMUM_WORKSPACE_PROJECTION_PUBLICATION_EVENT_COUNT, WorkspaceDocumentProjection,
+    WorkspaceDocumentProjectionError, WorkspaceProjectionAuthorityState,
+    WorkspaceProjectionCatalog, WorkspaceProjectionCatalogError, WorkspaceProjectionCatalogLimits,
+    WorkspaceProjectionEntry, WorkspaceProjectionHealth, WorkspaceProjectionHealthKind,
+    WorkspaceProjectionPublicationEvent, WorkspaceProjectionPublicationKind,
+    WorkspaceProjectionPublicationState, WorkspaceProjectionPublishedWorkspace,
+    WorkspaceProjectionRevisionState, WorkspaceProjectionSnapshot, canonical_uuid,
+    is_valid_revision_state, project_workspace_document_v1,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -595,6 +601,60 @@ pub struct WorkspaceSemanticRecoveryCommitV1 {
     pub projection_digest: String,
 }
 
+/// P5-7h event input. Rust assigns the next publication sequence under the same capability lock
+/// that owns command admission and the complete authoritative workspace projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceAuthorityPublicationDraftV1 {
+    pub catalog_revision: u64,
+    pub kind: WorkspaceProjectionPublicationKind,
+    pub workspace_id: Option<String>,
+    pub context_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub revisions: Option<WorkspaceProjectionRevisionState>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceAuthorityPublicationReceiptV1 {
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub projection_changed: bool,
+    pub workspace_count: usize,
+    pub retained_bytes: usize,
+    pub previous_catalog_revision: u64,
+    pub previous_publication_sequence: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: usize,
+    pub projection_digest: String,
+    pub event: WorkspaceProjectionPublicationEvent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceAuthorityProjectionSyncReceiptV1 {
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub projection_changed: bool,
+    pub workspace_count: usize,
+    pub retained_bytes: usize,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub projection_digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceAuthorityReadV1 {
+    pub projection: Option<WorkspaceDocumentProjection>,
+    pub authority: Option<WorkspaceProjectionAuthorityState>,
+    pub content_digest: Option<String>,
+    pub generation: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: usize,
+    pub projection_digest: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceCommandAdmissionRecoveryReceiptV1 {
     pub catalog_revision: u64,
@@ -990,6 +1050,158 @@ struct WorkspaceCommandExecutionClaimStateV1 {
     reservation_id: Option<u64>,
 }
 
+fn workspace_authority_projection_digest_v1(
+    entries: &[Arc<WorkspaceProjectionEntry>],
+) -> Result<String, WorkspaceWorkingJournalError> {
+    let canonical = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.content_digest.as_str(),
+                &entry.projection,
+                &entry.authority,
+            )
+        })
+        .collect::<Vec<_>>();
+    let bytes = serde_json::to_vec(&canonical)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn empty_workspace_authority_snapshot_v1()
+-> Result<(Arc<WorkspaceProjectionSnapshot>, String), WorkspaceWorkingJournalError> {
+    let snapshot = Arc::new(WorkspaceProjectionSnapshot {
+        generation: 0,
+        retained_bytes: 0,
+        entries: Vec::new(),
+    });
+    let digest = workspace_authority_projection_digest_v1(&snapshot.entries)?;
+    Ok((snapshot, digest))
+}
+
+fn workspace_authority_catalog_error_v1(
+    error: WorkspaceProjectionCatalogError,
+) -> WorkspaceWorkingJournalError {
+    match error {
+        WorkspaceProjectionCatalogError::WorkspaceCapacityExceeded { actual, maximum }
+        | WorkspaceProjectionCatalogError::RetainedBytesExceeded { actual, maximum } => {
+            WorkspaceWorkingJournalError::InputTooLarge { actual, maximum }
+        }
+        WorkspaceProjectionCatalogError::DuplicateWorkspaceId(_) => {
+            WorkspaceWorkingJournalError::DuplicateCatalogIdentity
+        }
+        WorkspaceProjectionCatalogError::Projection(error) => match error {
+            WorkspaceDocumentProjectionError::InputTooLarge {
+                actual_bytes,
+                maximum_bytes,
+            } => WorkspaceWorkingJournalError::InputTooLarge {
+                actual: actual_bytes,
+                maximum: maximum_bytes,
+            },
+            WorkspaceDocumentProjectionError::InvalidTopLevel => {
+                WorkspaceWorkingJournalError::Malformed
+            }
+            WorkspaceDocumentProjectionError::MissingWorkspaceId => {
+                WorkspaceWorkingJournalError::InvalidIdentity
+            }
+            WorkspaceDocumentProjectionError::FutureSchema(version) => u16::try_from(version)
+                .map(WorkspaceWorkingJournalError::FutureSchema)
+                .unwrap_or(WorkspaceWorkingJournalError::Malformed),
+            WorkspaceDocumentProjectionError::InvalidContext(_) => {
+                WorkspaceWorkingJournalError::InvalidContextTable
+            }
+        },
+        _ => WorkspaceWorkingJournalError::InvalidTransaction,
+    }
+}
+
+fn prepare_workspace_authority_snapshot_v1(
+    workspaces: &[WorkspaceProjectionPublishedWorkspace],
+) -> Result<(usize, Vec<Arc<WorkspaceProjectionEntry>>, String), WorkspaceWorkingJournalError> {
+    let catalog = WorkspaceProjectionCatalog::new(WorkspaceProjectionCatalogLimits::default());
+    let prepared = catalog
+        .replace_published_workspaces(0, workspaces)
+        .map_err(workspace_authority_catalog_error_v1)?
+        .snapshot;
+    let digest = workspace_authority_projection_digest_v1(&prepared.entries)?;
+    Ok((prepared.retained_bytes, prepared.entries.clone(), digest))
+}
+
+fn validate_workspace_authority_publication_draft_v1(
+    entries: &[Arc<WorkspaceProjectionEntry>],
+    draft: &WorkspaceAuthorityPublicationDraftV1,
+    workspace_id: Option<&str>,
+    context_id: Option<&str>,
+) -> Result<(), WorkspaceWorkingJournalError> {
+    if workspace_id.is_none() && (context_id.is_some() || draft.revisions.is_some()) {
+        return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+    }
+    let entry = workspace_id.and_then(|workspace_id| {
+        entries
+            .iter()
+            .find(|entry| entry.projection.workspace_id == workspace_id)
+    });
+    if let Some(context_id) = context_id {
+        let entry = entry.ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?;
+        let projection_contains_context = entry
+            .projection
+            .contexts
+            .iter()
+            .any(|context| context.context_id == context_id);
+        let authority_contains_context = entry.authority.as_ref().is_some_and(|authority| {
+            authority
+                .contexts
+                .iter()
+                .any(|context| context.context_id == context_id)
+        });
+        if !projection_contains_context || !authority_contains_context {
+            return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+        }
+    }
+    if let Some(revisions) = draft.revisions {
+        let authoritative_revisions = entry
+            .and_then(|entry| entry.authority.as_ref())
+            .map(|authority| authority.revisions)
+            .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
+        if authoritative_revisions != revisions {
+            return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+        }
+    }
+    match draft.kind {
+        WorkspaceProjectionPublicationKind::Bootstrapped => {
+            if workspace_id.is_some()
+                || context_id.is_some()
+                || draft.operation_id.is_some()
+                || draft.revisions.is_some()
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        }
+        WorkspaceProjectionPublicationKind::WorkspaceCreated => {
+            if entry.is_none() || draft.revisions.is_none() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        }
+        WorkspaceProjectionPublicationKind::WorkspaceDeleted => {
+            if entry.is_some() || context_id.is_some() || draft.revisions.is_some() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        }
+        WorkspaceProjectionPublicationKind::WorkingStateCommitted
+        | WorkspaceProjectionPublicationKind::SavedDocumentCommitted
+        | WorkspaceProjectionPublicationKind::OperationDeduplicated => {
+            if entry.is_none() || draft.revisions.is_none() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        }
+        WorkspaceProjectionPublicationKind::ExternalReloaded
+        | WorkspaceProjectionPublicationKind::ExternalConflict
+        | WorkspaceProjectionPublicationKind::Degraded
+        | WorkspaceProjectionPublicationKind::RoutingChanged => {}
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct WorkspaceCommandAdmissionInnerV1 {
     state: Option<WorkspaceCommandAdmissionStateV1>,
@@ -998,6 +1210,9 @@ struct WorkspaceCommandAdmissionInnerV1 {
     reservations: BTreeMap<u64, WorkspaceCommandAdmissionFinalizationV1>,
     next_claim_generation: u64,
     next_reservation_id: u64,
+    authority_snapshot: Arc<WorkspaceProjectionSnapshot>,
+    authority_publication: WorkspaceProjectionPublicationState,
+    authority_projection_digest: String,
     quarantined: bool,
     closed: bool,
 }
@@ -2849,6 +3064,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
     {
         let (state, catalog_binding) = derive_full_recovery(recovery)?;
         let diagnostics = state.diagnostics();
+        let (authority_snapshot, authority_projection_digest) =
+            empty_workspace_authority_snapshot_v1()?;
         let receipt = WorkspaceCommandAdmissionRecoveryReceiptV1 {
             catalog_revision: catalog_binding.revision,
             catalog_digest: catalog_binding.digest.clone(),
@@ -2864,6 +3081,9 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                     reservations: BTreeMap::new(),
                     next_claim_generation: 1,
                     next_reservation_id: 1,
+                    authority_snapshot,
+                    authority_publication: WorkspaceProjectionPublicationState::default(),
+                    authority_projection_digest,
                     quarantined: false,
                     closed: false,
                 })),
@@ -2876,6 +3096,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
     fn prepare(
         seed: &[WorkspaceCommandAdmissionSeedRecordV1],
     ) -> Result<Self, WorkspaceWorkingJournalError> {
+        let (authority_snapshot, authority_projection_digest) =
+            empty_workspace_authority_snapshot_v1()?;
         Ok(Self {
             inner: Arc::new(Mutex::new(WorkspaceCommandAdmissionInnerV1 {
                 state: Some(WorkspaceCommandAdmissionStateV1::from_records(seed)?),
@@ -2884,6 +3106,9 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 reservations: BTreeMap::new(),
                 next_claim_generation: 1,
                 next_reservation_id: 1,
+                authority_snapshot,
+                authority_publication: WorkspaceProjectionPublicationState::default(),
+                authority_projection_digest,
                 quarantined: false,
                 closed: false,
             })),
@@ -3348,6 +3573,201 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         }
         inner.state = Some(replacement);
         Ok(diagnostics)
+    }
+
+    /// Atomically replaces the complete direct-headless semantic/revision/health projection and
+    /// advances the Rust-owned publication cursor. The complete proposed snapshot is fully parsed
+    /// and capacity-checked before acquiring the capability lock; commit performs only bounded
+    /// comparisons, generation arithmetic, and prepared-state swaps.
+    pub fn publish_authority_state(
+        &self,
+        workspaces: &[WorkspaceProjectionPublishedWorkspace],
+        draft: WorkspaceAuthorityPublicationDraftV1,
+    ) -> Result<WorkspaceAuthorityPublicationReceiptV1, WorkspaceWorkingJournalError> {
+        let (retained_bytes, entries, projection_digest) =
+            prepare_workspace_authority_snapshot_v1(workspaces)?;
+        let workspace_id = draft
+            .workspace_id
+            .as_deref()
+            .map(|value| canonical_uuid(value).ok_or(WorkspaceWorkingJournalError::InvalidIdentity))
+            .transpose()?;
+        let context_id = draft
+            .context_id
+            .as_deref()
+            .map(|value| canonical_uuid(value).ok_or(WorkspaceWorkingJournalError::InvalidIdentity))
+            .transpose()?;
+        let operation_id = draft
+            .operation_id
+            .as_deref()
+            .map(|value| canonical_uuid(value).ok_or(WorkspaceWorkingJournalError::InvalidIdentity))
+            .transpose()?;
+        if draft
+            .revisions
+            .as_ref()
+            .is_some_and(|revisions| !is_valid_revision_state(*revisions))
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+        }
+        validate_workspace_authority_publication_draft_v1(
+            &entries,
+            &draft,
+            workspace_id.as_deref(),
+            context_id.as_deref(),
+        )?;
+
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed || inner.quarantined || inner.state.is_none() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        if let Some(operation_id) = &operation_id {
+            inner
+                .state
+                .as_ref()
+                .and_then(|state| state.global.get(operation_id))
+                .ok_or(WorkspaceWorkingJournalError::InvalidOperationLedger)?;
+        }
+        let previous_generation = inner.authority_snapshot.generation;
+        let previous_catalog_revision = inner.authority_publication.catalog_revision;
+        let previous_publication_sequence = inner.authority_publication.publication_sequence;
+        if draft.catalog_revision < previous_catalog_revision {
+            return Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot);
+        }
+        let publication_sequence = previous_publication_sequence
+            .checked_add(1)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let projection_changed = inner.authority_snapshot.entries != entries;
+        let generation = if projection_changed {
+            previous_generation
+                .checked_add(1)
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?
+        } else {
+            previous_generation
+        };
+        let snapshot = Arc::new(WorkspaceProjectionSnapshot {
+            generation,
+            retained_bytes,
+            entries,
+        });
+        let event = WorkspaceProjectionPublicationEvent {
+            sequence: publication_sequence,
+            catalog_revision: draft.catalog_revision,
+            kind: draft.kind,
+            workspace_id,
+            context_id,
+            operation_id,
+            revisions: draft.revisions,
+        };
+        let mut publication = inner.authority_publication.clone();
+        publication.catalog_revision = event.catalog_revision;
+        publication.publication_sequence = event.sequence;
+        publication.events.push_back(event.clone());
+        while publication.events.len() > MAXIMUM_WORKSPACE_PROJECTION_PUBLICATION_EVENT_COUNT {
+            publication.events.pop_front();
+        }
+        publication.event_log_floor_sequence = publication
+            .events
+            .front()
+            .map(|event| event.sequence)
+            .unwrap_or_else(|| publication.publication_sequence.saturating_add(1));
+
+        inner.authority_snapshot = snapshot;
+        inner.authority_publication = publication;
+        inner.authority_projection_digest = projection_digest.clone();
+        Ok(WorkspaceAuthorityPublicationReceiptV1 {
+            previous_generation,
+            generation,
+            projection_changed,
+            workspace_count: inner.authority_snapshot.entries.len(),
+            retained_bytes: inner.authority_snapshot.retained_bytes,
+            previous_catalog_revision,
+            previous_publication_sequence,
+            catalog_revision: inner.authority_publication.catalog_revision,
+            publication_sequence: inner.authority_publication.publication_sequence,
+            event_log_floor_sequence: inner.authority_publication.event_log_floor_sequence,
+            event_log_count: inner.authority_publication.events.len(),
+            projection_digest,
+            event,
+        })
+    }
+
+    /// Synchronizes a Swift-owned routing overlay into the same immutable Rust projection without
+    /// inventing a durable catalog event or advancing the subscriber publication cursor. This is
+    /// the only non-event projection mutation and remains fenced by the exact admission capability.
+    pub fn synchronize_authority_projection(
+        &self,
+        workspaces: &[WorkspaceProjectionPublishedWorkspace],
+    ) -> Result<WorkspaceAuthorityProjectionSyncReceiptV1, WorkspaceWorkingJournalError> {
+        let (retained_bytes, entries, projection_digest) =
+            prepare_workspace_authority_snapshot_v1(workspaces)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed || inner.quarantined || inner.state.is_none() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let previous_generation = inner.authority_snapshot.generation;
+        let projection_changed = inner.authority_snapshot.entries != entries;
+        let generation = if projection_changed {
+            previous_generation
+                .checked_add(1)
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?
+        } else {
+            previous_generation
+        };
+        inner.authority_snapshot = Arc::new(WorkspaceProjectionSnapshot {
+            generation,
+            retained_bytes,
+            entries,
+        });
+        inner.authority_projection_digest = projection_digest.clone();
+        Ok(WorkspaceAuthorityProjectionSyncReceiptV1 {
+            previous_generation,
+            generation,
+            projection_changed,
+            workspace_count: inner.authority_snapshot.entries.len(),
+            retained_bytes: inner.authority_snapshot.retained_bytes,
+            catalog_revision: inner.authority_publication.catalog_revision,
+            publication_sequence: inner.authority_publication.publication_sequence,
+            projection_digest,
+        })
+    }
+
+    /// Reads one immutable row and the publication cursor captured under the same capability lock.
+    /// Missing rows are authoritative absence; this method never repairs, reprojects, or mutates
+    /// access order.
+    pub fn authority_read(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceAuthorityReadV1, WorkspaceWorkingJournalError> {
+        let workspace_id =
+            canonical_uuid(workspace_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed || inner.state.is_none() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let entry = inner
+            .authority_snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.projection.workspace_id == workspace_id);
+        Ok(WorkspaceAuthorityReadV1 {
+            projection: entry.map(|entry| entry.projection.clone()),
+            authority: entry.and_then(|entry| entry.authority.clone()),
+            content_digest: entry.map(|entry| entry.content_digest.clone()),
+            generation: inner.authority_snapshot.generation,
+            catalog_revision: inner.authority_publication.catalog_revision,
+            publication_sequence: inner.authority_publication.publication_sequence,
+            event_log_floor_sequence: inner.authority_publication.event_log_floor_sequence,
+            event_log_count: inner.authority_publication.events.len(),
+            projection_digest: inner.authority_projection_digest.clone(),
+        })
     }
 
     pub fn diagnostics(
@@ -7503,11 +7923,58 @@ fn base64_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace_context::WorkspaceContextAuthorityState;
 
     const WORKSPACE_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     const CONTEXT_ID: &str = "11111111-2222-3333-4444-555555555555";
     const OPERATION_ID: &str = "66666666-7777-8888-9999-aaaaaaaaaaaa";
     const OTHER_WORKSPACE_ID: &str = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+
+    fn authority_workspace(
+        workspace_id: &str,
+        prompt: &str,
+        working_revision: u64,
+    ) -> WorkspaceProjectionPublishedWorkspace {
+        let revisions = WorkspaceProjectionRevisionState {
+            working_revision,
+            saved_revision: 0,
+            dirty_revision: (working_revision > 0).then_some(working_revision),
+        };
+        let health = WorkspaceProjectionHealth {
+            kind: WorkspaceProjectionHealthKind::Writable,
+            reason: None,
+        };
+        WorkspaceProjectionPublishedWorkspace {
+            document_bytes: document_for_workspace(workspace_id, prompt),
+            authority: WorkspaceProjectionAuthorityState {
+                revisions,
+                health: health.clone(),
+                contexts: vec![WorkspaceContextAuthorityState {
+                    context_id: CONTEXT_ID.to_owned(),
+                    revisions,
+                    health,
+                }],
+            },
+        }
+    }
+
+    fn authority_draft(
+        catalog_revision: u64,
+        kind: WorkspaceProjectionPublicationKind,
+    ) -> WorkspaceAuthorityPublicationDraftV1 {
+        WorkspaceAuthorityPublicationDraftV1 {
+            catalog_revision,
+            kind,
+            workspace_id: Some(WORKSPACE_ID.to_owned()),
+            context_id: Some(CONTEXT_ID.to_owned()),
+            operation_id: Some(OPERATION_ID.to_owned()),
+            revisions: Some(WorkspaceProjectionRevisionState {
+                working_revision: 1,
+                saved_revision: 0,
+                dirty_revision: Some(1),
+            }),
+        }
+    }
 
     fn command_identity_request(
         command_kind: WorkspaceCommandKindV1,
@@ -7561,6 +8028,218 @@ mod tests {
             fingerprint,
             index as f64,
         )
+    }
+
+    fn authority_admission() -> PreparedWorkspaceCommandAdmissionV1 {
+        PreparedWorkspaceCommandAdmissionV1::prepare(&[WorkspaceCommandAdmissionSeedRecordV1 {
+            workspace_id: Some(WORKSPACE_ID.to_owned()),
+            operation: admission_operation(OPERATION_ID.to_owned(), 'a', 1.0),
+        }])
+        .expect("authority admission")
+    }
+
+    fn global_authority_draft(
+        catalog_revision: u64,
+        kind: WorkspaceProjectionPublicationKind,
+    ) -> WorkspaceAuthorityPublicationDraftV1 {
+        WorkspaceAuthorityPublicationDraftV1 {
+            catalog_revision,
+            kind,
+            workspace_id: None,
+            context_id: None,
+            operation_id: None,
+            revisions: None,
+        }
+    }
+
+    #[test]
+    fn command_admission_authority_publication_and_read_are_one_atomic_cursor() {
+        let admission = authority_admission();
+        let workspace = authority_workspace(WORKSPACE_ID, "aggregate", 1);
+        let first = admission
+            .publish_authority_state(
+                std::slice::from_ref(&workspace),
+                authority_draft(7, WorkspaceProjectionPublicationKind::WorkspaceCreated),
+            )
+            .expect("first publication");
+        assert_eq!(first.previous_generation, 0);
+        assert_eq!(first.generation, 1);
+        assert!(first.projection_changed);
+        assert_eq!(first.previous_publication_sequence, 0);
+        assert_eq!(first.publication_sequence, 1);
+        assert_eq!(first.catalog_revision, 7);
+        assert_eq!(first.event_log_floor_sequence, 1);
+        assert_eq!(first.event_log_count, 1);
+
+        let read = admission
+            .authority_read(WORKSPACE_ID)
+            .expect("authority read");
+        assert_eq!(read.generation, first.generation);
+        assert_eq!(read.catalog_revision, first.catalog_revision);
+        assert_eq!(read.publication_sequence, first.publication_sequence);
+        assert_eq!(read.projection_digest, first.projection_digest);
+        assert_eq!(
+            read.projection
+                .as_ref()
+                .map(|value| value.workspace_id.as_str()),
+            Some(WORKSPACE_ID)
+        );
+        assert_eq!(
+            read.authority
+                .as_ref()
+                .map(|value| value.revisions.working_revision),
+            Some(1)
+        );
+        assert_eq!(
+            read.content_digest,
+            Some(format!("{:x}", Sha256::digest(&workspace.document_bytes)))
+        );
+
+        let second = admission
+            .publish_authority_state(
+                std::slice::from_ref(&workspace),
+                authority_draft(7, WorkspaceProjectionPublicationKind::OperationDeduplicated),
+            )
+            .expect("cursor-only publication");
+        assert!(!second.projection_changed);
+        assert_eq!(second.generation, first.generation);
+        assert_eq!(
+            second.previous_publication_sequence,
+            first.publication_sequence
+        );
+        assert_eq!(second.publication_sequence, 2);
+        assert_eq!(second.event_log_count, 2);
+
+        let overlay = authority_workspace(WORKSPACE_ID, "routing overlay", 1);
+        let synchronized = admission
+            .synchronize_authority_projection(std::slice::from_ref(&overlay))
+            .expect("routing overlay synchronization");
+        assert!(synchronized.projection_changed);
+        assert_eq!(synchronized.previous_generation, second.generation);
+        assert_eq!(synchronized.generation, second.generation + 1);
+        assert_eq!(synchronized.catalog_revision, second.catalog_revision);
+        assert_eq!(
+            synchronized.publication_sequence, second.publication_sequence,
+            "routing overlays must not invent subscriber events"
+        );
+        let overlay_read = admission
+            .authority_read(WORKSPACE_ID)
+            .expect("overlay read");
+        assert_eq!(
+            overlay_read
+                .projection
+                .as_ref()
+                .and_then(|projection| projection.contexts.first())
+                .map(|context| context.prompt.as_str()),
+            Some("routing overlay")
+        );
+        assert_eq!(
+            overlay_read.publication_sequence,
+            second.publication_sequence
+        );
+    }
+
+    #[test]
+    fn command_admission_authority_publication_failure_is_atomic_and_close_fenced() {
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&[]).expect("admission");
+        let workspace = authority_workspace(WORKSPACE_ID, "aggregate", 1);
+        let committed = admission
+            .publish_authority_state(
+                std::slice::from_ref(&workspace),
+                global_authority_draft(3, WorkspaceProjectionPublicationKind::Bootstrapped),
+            )
+            .expect("initial publication");
+        let mut invalid = workspace.clone();
+        invalid.authority.revisions = WorkspaceProjectionRevisionState {
+            working_revision: 0,
+            saved_revision: 1,
+            dirty_revision: None,
+        };
+        assert!(matches!(
+            admission.publish_authority_state(
+                &[invalid],
+                authority_draft(4, WorkspaceProjectionPublicationKind::ExternalReloaded),
+            ),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+                | Err(WorkspaceWorkingJournalError::InvalidRevisionState)
+        ));
+        let unchanged = admission
+            .authority_read(WORKSPACE_ID)
+            .expect("unchanged read");
+        assert_eq!(unchanged.generation, committed.generation);
+        assert_eq!(unchanged.catalog_revision, committed.catalog_revision);
+        assert_eq!(
+            unchanged.publication_sequence,
+            committed.publication_sequence
+        );
+        assert_eq!(unchanged.projection_digest, committed.projection_digest);
+
+        let mut mismatched_revision =
+            authority_draft(4, WorkspaceProjectionPublicationKind::ExternalReloaded);
+        mismatched_revision.operation_id = None;
+        mismatched_revision.revisions = Some(WorkspaceProjectionRevisionState {
+            working_revision: 0,
+            saved_revision: 0,
+            dirty_revision: None,
+        });
+        assert_eq!(
+            admission
+                .publish_authority_state(std::slice::from_ref(&workspace), mismatched_revision,),
+            Err(WorkspaceWorkingJournalError::InvalidRevisionState)
+        );
+        let mut mismatched_context =
+            authority_draft(4, WorkspaceProjectionPublicationKind::ExternalReloaded);
+        mismatched_context.operation_id = None;
+        mismatched_context.context_id = Some(OTHER_WORKSPACE_ID.to_owned());
+        assert_eq!(
+            admission
+                .publish_authority_state(std::slice::from_ref(&workspace), mismatched_context,),
+            Err(WorkspaceWorkingJournalError::InvalidContextTable)
+        );
+        assert_eq!(
+            admission.publish_authority_state(
+                std::slice::from_ref(&workspace),
+                authority_draft(4, WorkspaceProjectionPublicationKind::WorkspaceCreated),
+            ),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        let mut future = workspace.clone();
+        future.document_bytes =
+            format!(r#"{{"id":"{WORKSPACE_ID}","schemaVersion":2,"composeTabs":[]}}"#).into_bytes();
+        assert_eq!(
+            admission.publish_authority_state(
+                &[future],
+                global_authority_draft(4, WorkspaceProjectionPublicationKind::Bootstrapped),
+            ),
+            Err(WorkspaceWorkingJournalError::FutureSchema(2))
+        );
+
+        admission.inner.lock().expect("admission lock").quarantined = true;
+        let mut valid_reload =
+            authority_draft(4, WorkspaceProjectionPublicationKind::ExternalReloaded);
+        valid_reload.operation_id = None;
+        assert_eq!(
+            admission.publish_authority_state(std::slice::from_ref(&workspace), valid_reload),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        assert_eq!(
+            admission.synchronize_authority_projection(std::slice::from_ref(&workspace)),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        let quarantined_read = admission
+            .authority_read(WORKSPACE_ID)
+            .expect("quarantine preserves the last committed authority read");
+        assert_eq!(quarantined_read.generation, committed.generation);
+        assert_eq!(
+            quarantined_read.publication_sequence,
+            committed.publication_sequence
+        );
+
+        admission.close();
+        assert!(matches!(
+            admission.authority_read(WORKSPACE_ID),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        ));
     }
 
     #[test]

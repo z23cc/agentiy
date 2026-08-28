@@ -1505,6 +1505,89 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
+        func synchronizeAuthorityProjection(
+            workspaces: [DomainWorkspaceSnapshot]
+        ) throws -> DomainWorkspaceAuthorityProjectionSyncReceipt {
+            do {
+                let receipt = try core.synchronizeAuthorityProjection(
+                    workspaces: workspaces.map(DomainWorkspaceRustProjection.corePublishedWorkspace)
+                )
+                return DomainWorkspaceAuthorityProjectionSyncReceipt(
+                    previousGeneration: receipt.previousGeneration,
+                    generation: receipt.generation,
+                    projectionChanged: receipt.projectionChanged,
+                    workspaceCount: receipt.workspaceCount,
+                    retainedBytes: receipt.retainedBytes,
+                    catalogRevision: receipt.catalogRevision,
+                    publicationSequence: receipt.publicationSequence,
+                    projectionDigest: receipt.projectionDigest
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func publishAuthorityState(
+            workspaces: [DomainWorkspaceSnapshot],
+            catalogRevision: UInt64,
+            kind: DomainWorkspaceEventKind,
+            workspaceID: UUID?,
+            contextID: UUID?,
+            operationID: UUID?,
+            revisions: DomainRevisionState?
+        ) throws -> DomainWorkspaceAuthorityPublicationReceipt {
+            do {
+                let receipt = try core.publishAuthorityState(
+                    workspaces: workspaces.map(DomainWorkspaceRustProjection.corePublishedWorkspace),
+                    draft: CoreWorkspaceAuthorityPublicationDraft(
+                        catalogRevision: catalogRevision,
+                        kind: DomainWorkspaceRustProjection.corePublicationKind(kind),
+                        workspaceID: workspaceID,
+                        contextID: contextID,
+                        operationID: operationID,
+                        revisions: revisions.map(DomainWorkspaceRustProjection.coreRevisionState)
+                    )
+                )
+                return DomainWorkspaceAuthorityPublicationReceipt(
+                    previousGeneration: receipt.previousGeneration,
+                    generation: receipt.generation,
+                    projectionChanged: receipt.projectionChanged,
+                    workspaceCount: receipt.workspaceCount,
+                    retainedBytes: receipt.retainedBytes,
+                    previousCatalogRevision: receipt.previousCatalogRevision,
+                    previousPublicationSequence: receipt.previousPublicationSequence,
+                    catalogRevision: receipt.catalogRevision,
+                    publicationSequence: receipt.publicationSequence,
+                    eventLogFloorSequence: receipt.eventLogFloorSequence,
+                    eventLogCount: receipt.eventLogCount,
+                    projectionDigest: receipt.projectionDigest
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func authorityRead(
+            workspaceID: UUID
+        ) throws -> DomainWorkspaceAuthoritativeProjectionRead {
+            do {
+                let read = try core.authorityRead(workspaceID: workspaceID)
+                return DomainWorkspaceAuthoritativeProjectionRead(
+                    projection: read.projection.map(DomainWorkspaceRustProjection.domainProjection),
+                    authority: read.projection?.authority.map(DomainWorkspaceRustProjection.domainAuthorityState),
+                    contentDigest: read.contentDigest,
+                    generation: read.generation,
+                    catalogRevision: read.catalogRevision,
+                    publicationSequence: read.publicationSequence,
+                    eventLogFloorSequence: read.eventLogFloorSequence,
+                    eventLogCount: read.eventLogCount,
+                    projectionDigest: read.projectionDigest
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
         func diagnostics() throws -> DomainWorkspaceCommandAdmissionDiagnostics {
             do {
                 return validator.materializeCommandAdmissionDiagnostics(try core.diagnostics())

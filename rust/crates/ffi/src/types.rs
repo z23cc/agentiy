@@ -2724,6 +2724,189 @@ impl From<CoreWorkspaceProjectionPublishedWorkspaceV1>
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityPublicationDraftV1 {
+    pub catalog_revision: u64,
+    pub kind: CoreWorkspaceProjectionPublicationKindV1,
+    pub workspace_id: Option<String>,
+    pub context_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub revisions: Option<CoreWorkspaceProjectionRevisionStateV1>,
+}
+
+impl From<CoreWorkspaceAuthorityPublicationDraftV1>
+    for runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationDraftV1
+{
+    fn from(value: CoreWorkspaceAuthorityPublicationDraftV1) -> Self {
+        Self {
+            catalog_revision: value.catalog_revision,
+            kind: value.kind.into(),
+            workspace_id: value.workspace_id,
+            context_id: value.context_id,
+            operation_id: value.operation_id,
+            revisions: value.revisions.map(Into::into),
+        }
+    }
+}
+
+fn core_workspace_projection_publication_kind_v1(
+    value: runtime::workspace_context::WorkspaceProjectionPublicationKind,
+) -> CoreWorkspaceProjectionPublicationKindV1 {
+    match value {
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::Bootstrapped => {
+            CoreWorkspaceProjectionPublicationKindV1::Bootstrapped
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::WorkspaceCreated => {
+            CoreWorkspaceProjectionPublicationKindV1::WorkspaceCreated
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::WorkspaceDeleted => {
+            CoreWorkspaceProjectionPublicationKindV1::WorkspaceDeleted
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::WorkingStateCommitted => {
+            CoreWorkspaceProjectionPublicationKindV1::WorkingStateCommitted
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::SavedDocumentCommitted => {
+            CoreWorkspaceProjectionPublicationKindV1::SavedDocumentCommitted
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::ExternalReloaded => {
+            CoreWorkspaceProjectionPublicationKindV1::ExternalReloaded
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::ExternalConflict => {
+            CoreWorkspaceProjectionPublicationKindV1::ExternalConflict
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::Degraded => {
+            CoreWorkspaceProjectionPublicationKindV1::Degraded
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::RoutingChanged => {
+            CoreWorkspaceProjectionPublicationKindV1::RoutingChanged
+        }
+        runtime::workspace_context::WorkspaceProjectionPublicationKind::OperationDeduplicated => {
+            CoreWorkspaceProjectionPublicationKindV1::OperationDeduplicated
+        }
+    }
+}
+
+fn core_workspace_projection_publication_event_v1(
+    value: runtime::workspace_context::WorkspaceProjectionPublicationEvent,
+) -> CoreWorkspaceProjectionPublicationEventV1 {
+    CoreWorkspaceProjectionPublicationEventV1 {
+        sequence: value.sequence,
+        catalog_revision: value.catalog_revision,
+        kind: core_workspace_projection_publication_kind_v1(value.kind),
+        workspace_id: value.workspace_id,
+        context_id: value.context_id,
+        operation_id: value.operation_id,
+        revisions: value.revisions.map(Into::into),
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityPublicationReceiptV1 {
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub projection_changed: bool,
+    pub workspace_count: u64,
+    pub retained_bytes: u64,
+    pub previous_catalog_revision: u64,
+    pub previous_publication_sequence: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: u64,
+    pub projection_digest: String,
+    pub event: CoreWorkspaceProjectionPublicationEventV1,
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>
+    for CoreWorkspaceAuthorityPublicationReceiptV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1,
+    ) -> Self {
+        Self {
+            previous_generation: value.previous_generation,
+            generation: value.generation,
+            projection_changed: value.projection_changed,
+            workspace_count: u64::try_from(value.workspace_count).unwrap_or(u64::MAX),
+            retained_bytes: u64::try_from(value.retained_bytes).unwrap_or(u64::MAX),
+            previous_catalog_revision: value.previous_catalog_revision,
+            previous_publication_sequence: value.previous_publication_sequence,
+            catalog_revision: value.catalog_revision,
+            publication_sequence: value.publication_sequence,
+            event_log_floor_sequence: value.event_log_floor_sequence,
+            event_log_count: u64::try_from(value.event_log_count).unwrap_or(u64::MAX),
+            projection_digest: value.projection_digest,
+            event: core_workspace_projection_publication_event_v1(value.event),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityProjectionSyncReceiptV1 {
+    pub previous_generation: u64,
+    pub generation: u64,
+    pub projection_changed: bool,
+    pub workspace_count: u64,
+    pub retained_bytes: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub projection_digest: String,
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceAuthorityProjectionSyncReceiptV1>
+    for CoreWorkspaceAuthorityProjectionSyncReceiptV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceAuthorityProjectionSyncReceiptV1,
+    ) -> Self {
+        Self {
+            previous_generation: value.previous_generation,
+            generation: value.generation,
+            projection_changed: value.projection_changed,
+            workspace_count: u64::try_from(value.workspace_count).unwrap_or(u64::MAX),
+            retained_bytes: u64::try_from(value.retained_bytes).unwrap_or(u64::MAX),
+            catalog_revision: value.catalog_revision,
+            publication_sequence: value.publication_sequence,
+            projection_digest: value.projection_digest,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityReadV1 {
+    pub projection: Option<CoreWorkspaceDocumentProjectionV1>,
+    pub content_digest: Option<String>,
+    pub generation: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub event_log_floor_sequence: u64,
+    pub event_log_count: u64,
+    pub projection_digest: String,
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceAuthorityReadV1>
+    for CoreWorkspaceAuthorityReadV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceAuthorityReadV1) -> Self {
+        let mut projection = value
+            .projection
+            .map(CoreWorkspaceDocumentProjectionV1::from);
+        if let Some(projection) = projection.as_mut() {
+            projection.authority = value.authority.map(Into::into);
+        }
+        Self {
+            projection,
+            content_digest: value.content_digest,
+            generation: value.generation,
+            catalog_revision: value.catalog_revision,
+            publication_sequence: value.publication_sequence,
+            event_log_floor_sequence: value.event_log_floor_sequence,
+            event_log_count: u64::try_from(value.event_log_count).unwrap_or(u64::MAX),
+            projection_digest: value.projection_digest,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceProjectionPublishAuthoritativeRequestV1 {
     pub runtime_identity: RuntimeIdentity,
     pub scope_id: String,

@@ -242,6 +242,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
             mode: .standalone,
             profileIdentifier: "headless-routing",
             storageDirectory: storageRoot,
+            workspaceStorageDirectory: storageRoot,
             eventDirectory: root.appendingPathComponent("events", isDirectory: true),
             temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true),
             externalReloadInterval: nil
@@ -309,6 +310,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
             mode: .standalone,
             profileIdentifier: "headless-identity-routing",
             storageDirectory: storageRoot,
+            workspaceStorageDirectory: storageRoot,
             eventDirectory: root.appendingPathComponent("events", isDirectory: true),
             temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true),
             externalReloadInterval: nil
@@ -393,6 +395,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
             mode: .standalone,
             profileIdentifier: "headless-duplicate-route",
             storageDirectory: storageRoot,
+            workspaceStorageDirectory: storageRoot,
             eventDirectory: fixture.root.appendingPathComponent("duplicate-events", isDirectory: true),
             temporaryDirectory: fixture.root.appendingPathComponent("duplicate-tmp", isDirectory: true),
             externalReloadInterval: nil
@@ -460,6 +463,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
             mode: .standalone,
             profileIdentifier: "headless-duplicate-multi-root",
             storageDirectory: storageRoot,
+            workspaceStorageDirectory: storageRoot,
             eventDirectory: root.appendingPathComponent("events", isDirectory: true),
             temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true),
             externalReloadInterval: nil
@@ -506,6 +510,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
             mode: .standalone,
             profileIdentifier: "headless-ambiguous-route",
             storageDirectory: storageRoot,
+            workspaceStorageDirectory: storageRoot,
             eventDirectory: fixture.root.appendingPathComponent("ambiguous-events", isDirectory: true),
             temporaryDirectory: fixture.root.appendingPathComponent("ambiguous-tmp", isDirectory: true),
             externalReloadInterval: nil
@@ -1641,7 +1646,8 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
                 workspaceID: unrelatedWorkspaceID,
                 contextID: unrelatedContextID,
                 roots: [unrelatedRoot],
-                fileURL: fixture.profile.appendingPathComponent("unrelated.json")
+                fileURL: prepared.runtime.configuration.workspaceStorageDirectory
+                    .appendingPathComponent("unrelated.json")
             ),
             in: prepared.runtime
         )
@@ -1886,6 +1892,7 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
             mode: .standalone,
             profileIdentifier: "headless-close-tab",
             storageDirectory: storageRoot,
+            workspaceStorageDirectory: storageRoot,
             eventDirectory: root.appendingPathComponent("events", isDirectory: true),
             temporaryDirectory: root.appendingPathComponent("tmp", isDirectory: true),
             externalReloadInterval: nil

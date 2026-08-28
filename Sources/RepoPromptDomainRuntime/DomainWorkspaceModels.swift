@@ -317,7 +317,12 @@ private enum DomainWorkspaceDocumentDecoder {
                 activeAgentSessionID: (context["activeAgentSessionID"] as? String).flatMap(UUID.init(uuidString:)),
                 isPinned: context["isPinned"] as? Bool ?? false
             ))
-            let bytes = try JSONSerialization.data(withJSONObject: context, options: [.sortedKeys])
+            // Match serde_json's canonical object spelling used by the Rust journal validator.
+            // Foundation escapes `/` by default, which would create a second context-digest authority.
+            let bytes = try JSONSerialization.data(
+                withJSONObject: context,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
             return DomainContextMetadata(
                 identity: DomainContextIdentity(workspaceID: workspaceID, contextID: contextID),
                 name: context["name"] as? String ?? "Untitled",

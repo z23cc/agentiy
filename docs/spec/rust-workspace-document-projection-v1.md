@@ -1668,3 +1668,73 @@ lease ownership, publication sequence, and external diagnostics remain unchanged
   state only after publication.
 - Focused Runtime/FFI/Bridge/Domain recovery, authority, restart, CAS, lifecycle, source-guard, codegen, product-build,
   style, guardrail, formatting, and diff checks pass.
+
+## P5-7h amendment — aggregate projection publication and direct-read convergence
+
+P5-7h removes the last independently decisive production workspace projection registry. The exact-runtime prepared Rust
+command-admission capability now also owns the complete active read projection, workspace/context revision and health
+authority, projection generation, catalog revision, publication sequence, bounded event tail, and deterministic
+projection digest. Admission receipts, live claims, transaction reservations, quarantine/close fences, semantic
+recovery binding, and direct-headless read authority therefore share one capability lifetime and one mutex-protected
+state. The older P5-4 projection scope, checkpoint schema, LRU eviction, and reconciliation APIs remain compatibility
+and focused-test surfaces only; production composition neither creates nor restores that scope.
+
+Every Domain workspace event first submits the complete bounded workspace read snapshot plus an event draft to that
+aggregate. Rust parses every document, validates exact workspace/context authority relationships and revision shapes,
+checks capacity, computes the complete candidate and digest before locking, then rechecks runtime/capability lifecycle,
+catalog monotonicity, generation arithmetic, and publication overflow under the aggregate lock. Rust atomically swaps
+the immutable projection and advances the catalog/publication cursor and event tail, returning the exact committed
+event. Swift mirrors only the returned sequence and yields subscribers after commit in the same actor turn. Invalid,
+oversized, stale, closed, or receipt-inconsistent publication does not partially mutate Rust; the already-completed
+physical command result remains first-terminal while future mutation is quarantined under the established
+`workspace_command_admission_receipt_missing` boundary.
+
+Awaited read registrations remain Swift-owned routing overlays and do not become durable catalog members or invent
+subscriber events. A registration synchronizes the complete overlay-adjusted snapshot through a separate non-event
+operation on the same aggregate capability. That operation may advance only projection generation and digest; it must
+preserve catalog revision, publication sequence, and event tail exactly. Subsequent durable commands continue to
+supersede the overlay under existing actor rules, and the next event publication carries the resulting complete
+snapshot. Thus ephemeral or presentation-owned routing remains immediately readable without restoring a second Rust
+registry or changing the durable catalog/event contract.
+
+`DomainContextStore.workspaceAuthoritativeReadFence` captures the current Swift routing topology and one immutable Rust
+aggregate row synchronously in a single actor turn. It accepts only exact catalog revision, publication sequence,
+workspace content digest, context order, and authority shape. Direct-headless consumes only that fence. It no longer
+computes an expected Swift semantic projection, reads an asynchronous observer scope, repairs a missing row, retries a
+Swift-to-Rust upsert, or relies on access-order/LRU behavior. Missing, stale, closed, or digest-inconsistent aggregate
+state fails closed as projection unavailable; Swift topology may provide physical paths and routing metadata but may
+not reconstruct semantic authority.
+
+The production `DomainWorkspaceRustProjectionObserver` is now comparison-only: an explicitly supplied pure projector
+may emit mismatch metrics, but publication ingress cannot authorize reads or mutations. Runtime startup starts that
+comparison worker normally, bootstraps the P5-7g recovery/admission aggregate, publishes its first complete projection,
+and acquires the existing storage mutation lease. It no longer pauses for a projection lease, loads or persists a
+projection checkpoint, activates a stateful scope, or ties mutation-access recovery to a projection token. Shutdown
+closes the aggregate through the existing admission lifecycle and drains the comparison observer without discarding a
+pending authoritative publication.
+
+Physical schemas, canonical document bytes, persistence transaction ordering, storage-lease ownership, catalog
+revision semantics, command results, replay/collision behavior, routing overlays, subscriber ownership, and stable
+external diagnostics remain unchanged. Swift context metadata hashes the same sorted, non-slash-escaped JSON spelling
+used by `serde_json`; Foundation's optional `/` escaping cannot create a second context-digest authority. The aggregate
+is process-lifetime bounded state; it introduces no new durable
+migration. Quarantine rejects new admission and projection mutation while preserving the last committed aggregate for
+bounded diagnostic reads and allowing already-bound transaction finalization to converge; Swift drops its capability
+on authority-publication failure and never synthesizes a cursor or subscriber event. Close/runtime identity fences
+reject both projection mutation and reads without resetting ABA generations.
+
+### P5-7h done-when
+
+- Rust tests prove complete publication/read atomicity, event-to-row/context/revision/operation binding, no-op event
+  advancement, overlay synchronization without event advancement, deterministic digests, malformed/capacity failure
+  atomicity, quarantine/close/runtime fences, and bounded event tail behavior while existing admission claims,
+  reservations, and replay tests remain green.
+- UniFFI and Bridge expose typed full-snapshot publication, non-event overlay synchronization, immutable aggregate read,
+  and digest/cursor-bound receipts; handwritten Bridge rejects success/error overlap, invalid identities, cursor or
+  generation arithmetic, noncanonical digests, and inconsistent event echoes.
+- Domain bootstrap, create/replace/save/delete/conflict/reload/dedup/degraded/routing event families commit Rust authority
+  before subscriber delivery. The actor mirrors Rust-issued cursors and direct-headless uses only the combined actor
+  read fence; no production observer publication, repair, Swift semantic comparison, checkpoint restore, or LRU read
+  path remains.
+- Focused Runtime/FFI/Bridge/Domain authority, direct-headless, overlay, restart, lifecycle, source-guard, codegen,
+  product-build, style, guardrail, formatting, and diff checks pass.

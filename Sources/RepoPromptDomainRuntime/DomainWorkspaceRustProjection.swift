@@ -91,17 +91,44 @@ package struct DomainWorkspaceAuthorityReadState: Sendable, Equatable {
 package struct DomainWorkspaceAuthoritativeProjectionRead: Sendable, Equatable {
     package let projection: DomainWorkspaceDocumentReadProjection?
     package let authority: DomainWorkspaceAuthorityReadState?
+    package let contentDigest: String?
     package let generation: UInt64
     package let catalogRevision: UInt64
     package let publicationSequence: UInt64
     package let eventLogFloorSequence: UInt64
     package let eventLogCount: UInt64
+    package let projectionDigest: String?
 }
 
-/// Single-writer client over one runtime-partitioned Rust projection scope. Every observed document
-/// and complete revision/health sidecar is committed under exact generation/cursor CAS and resolved
-/// from one immutable snapshot. P5-4e makes that row the direct-headless semantic read authority;
-/// Swift still owns mutation CAS inputs and physical file routing.
+package struct DomainWorkspaceAuthorityProjectionSyncReceipt: Sendable, Equatable {
+    package let previousGeneration: UInt64
+    package let generation: UInt64
+    package let projectionChanged: Bool
+    package let workspaceCount: UInt64
+    package let retainedBytes: UInt64
+    package let catalogRevision: UInt64
+    package let publicationSequence: UInt64
+    package let projectionDigest: String
+}
+
+package struct DomainWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
+    package let previousGeneration: UInt64
+    package let generation: UInt64
+    package let projectionChanged: Bool
+    package let workspaceCount: UInt64
+    package let retainedBytes: UInt64
+    package let previousCatalogRevision: UInt64
+    package let previousPublicationSequence: UInt64
+    package let catalogRevision: UInt64
+    package let publicationSequence: UInt64
+    package let eventLogFloorSequence: UInt64
+    package let eventLogCount: UInt64
+    package let projectionDigest: String
+}
+
+/// Compatibility/test client over the retired stateful projection-scope boundary. Production direct
+/// reads use the command-admission aggregate so semantic rows and publication cursors cannot diverge;
+/// this actor remains only for deterministic legacy contract coverage and checkpoint migration tests.
 package actor DomainWorkspaceStatefulRustProjector {
     private let scopeID: UUID
     private let coreService: AgentryCoreService
@@ -400,11 +427,13 @@ package actor DomainWorkspaceStatefulRustProjector {
         DomainWorkspaceAuthoritativeProjectionRead(
             projection: workspace.map(DomainWorkspaceRustProjection.domainProjection),
             authority: workspace?.authority.map(domainAuthorityState),
+            contentDigest: nil,
             generation: snapshot.generation,
             catalogRevision: snapshot.catalogRevision,
             publicationSequence: snapshot.publicationSequence,
             eventLogFloorSequence: snapshot.eventLogFloorSequence,
-            eventLogCount: snapshot.eventLogCount
+            eventLogCount: snapshot.eventLogCount,
+            projectionDigest: nil
         )
     }
 
@@ -626,6 +655,104 @@ package actor DomainWorkspaceStatefulRustProjector {
 /// semantic document plus complete revision/health row consumed by direct-headless reads. Swift
 /// remains the durable document writer and supplies mutation CAS inputs and physical file routing.
 package enum DomainWorkspaceRustProjection {
+    package static func corePublishedWorkspace(
+        _ workspace: DomainWorkspaceSnapshot
+    ) -> CoreWorkspaceProjectionPublishedWorkspace {
+        CoreWorkspaceProjectionPublishedWorkspace(
+            documentBytes: workspace.document.documentBytes,
+            authority: CoreWorkspaceProjectionAuthorityState(
+                revisions: coreRevisionState(workspace.revisions),
+                health: coreHealth(workspace.health),
+                contexts: workspace.contexts.map { context in
+                    CoreWorkspaceContextAuthorityState(
+                        contextID: context.metadata.identity.contextID,
+                        revisions: coreRevisionState(context.revisions),
+                        health: coreHealth(context.health)
+                    )
+                }
+            )
+        )
+    }
+
+    package static func corePublicationKind(
+        _ kind: DomainWorkspaceEventKind
+    ) -> CoreWorkspaceProjectionPublicationKind {
+        switch kind {
+        case .bootstrapped: .bootstrapped
+        case .workspaceCreated: .workspaceCreated
+        case .workspaceDeleted: .workspaceDeleted
+        case .workingStateCommitted: .workingStateCommitted
+        case .savedDocumentCommitted: .savedDocumentCommitted
+        case .externalReloaded: .externalReloaded
+        case .externalConflict: .externalConflict
+        case .degraded: .degraded
+        case .routingChanged: .routingChanged
+        case .operationDeduplicated: .operationDeduplicated
+        }
+    }
+
+    package static func coreRevisionState(
+        _ revisions: DomainRevisionState
+    ) -> CoreWorkspaceProjectionRevisionState {
+        CoreWorkspaceProjectionRevisionState(
+            workingRevision: revisions.workingRevision,
+            savedRevision: revisions.savedRevision,
+            dirtyRevision: revisions.dirtyRevision
+        )
+    }
+
+    package static func coreHealth(
+        _ health: DomainAuthorityHealth
+    ) -> CoreWorkspaceProjectionHealth {
+        switch health {
+        case .writable:
+            CoreWorkspaceProjectionHealth(kind: .writable)
+        case let .externalConflict(reason):
+            CoreWorkspaceProjectionHealth(kind: .externalConflict, reason: reason)
+        case let .degradedReadOnly(reason):
+            CoreWorkspaceProjectionHealth(kind: .degradedReadOnly, reason: reason)
+        case .removed:
+            CoreWorkspaceProjectionHealth(kind: .removed)
+        }
+    }
+
+    package static func domainAuthorityState(
+        _ authority: CoreWorkspaceProjectionAuthorityState
+    ) -> DomainWorkspaceAuthorityReadState {
+        DomainWorkspaceAuthorityReadState(
+            revisions: domainRevisionState(authority.revisions),
+            health: domainHealth(authority.health),
+            contexts: authority.contexts.map { context in
+                DomainWorkspaceContextAuthorityReadState(
+                    contextID: context.contextID,
+                    revisions: domainRevisionState(context.revisions),
+                    health: domainHealth(context.health)
+                )
+            }
+        )
+    }
+
+    private static func domainRevisionState(
+        _ revisions: CoreWorkspaceProjectionRevisionState
+    ) -> DomainRevisionState {
+        DomainRevisionState(
+            workingRevision: revisions.workingRevision,
+            savedRevision: revisions.savedRevision,
+            dirtyRevision: revisions.dirtyRevision
+        )
+    }
+
+    private static func domainHealth(
+        _ health: CoreWorkspaceProjectionHealth
+    ) -> DomainAuthorityHealth {
+        switch health.kind {
+        case .writable: .writable
+        case .externalConflict: .externalConflict(reason: health.reason ?? "external_conflict")
+        case .degradedReadOnly: .degradedReadOnly(reason: health.reason ?? "projection_unavailable")
+        case .removed: .removed
+        }
+    }
+
     package static func authorityProjection(
         _ workspace: DomainWorkspaceSnapshot
     ) -> DomainWorkspaceAuthorityReadState {

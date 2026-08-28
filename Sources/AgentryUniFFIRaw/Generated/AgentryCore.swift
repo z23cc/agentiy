@@ -653,6 +653,8 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
 
     func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMillis: UInt64?) throws  -> CoreWorkspaceCommandAdmissionAcquireResponseV1
 
+    func authorityRead(workspaceId: String) throws  -> CoreWorkspaceAuthorityReadResponseV1
+
     func close()
 
     func diagnostics() throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
@@ -660,6 +662,10 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
     func prepareSemanticFullRecovery(recovery: CoreWorkspaceSemanticFullRecoveryV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
 
     func prepareSemanticTargetRecovery(recovery: CoreWorkspaceSemanticTargetRecoveryV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
+
+    func publishAuthorityState(workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1], draft: CoreWorkspaceAuthorityPublicationDraftV1) throws  -> CoreWorkspaceAuthorityPublicationResponseV1
+
+    func synchronizeAuthorityProjection(workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1]) throws  -> CoreWorkspaceAuthorityProjectionSyncResponseV1
 
 }
 open class CorePreparedWorkspaceCommandAdmissionV1: CorePreparedWorkspaceCommandAdmissionV1Protocol, @unchecked Sendable {
@@ -726,6 +732,16 @@ open func acquire(request: CoreWorkspaceCommandIdentityRequestV1, deadlineUnixMi
 })
 }
 
+open func authorityRead(workspaceId: String)throws  -> CoreWorkspaceAuthorityReadResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceAuthorityReadResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_authority_read(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(workspaceId),uniffiCallStatus
+    )
+})
+}
+
 open func close()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_close(
@@ -759,6 +775,27 @@ open func prepareSemanticTargetRecovery(recovery: CoreWorkspaceSemanticTargetRec
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_prepare_semantic_target_recovery(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceSemanticTargetRecoveryV1_lower(recovery),uniffiCallStatus
+    )
+})
+}
+
+open func publishAuthorityState(workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1], draft: CoreWorkspaceAuthorityPublicationDraftV1)throws  -> CoreWorkspaceAuthorityPublicationResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceAuthorityPublicationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_publish_authority_state(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeCoreWorkspaceProjectionPublishedWorkspaceV1.lower(workspaces),
+        FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1_lower(draft),uniffiCallStatus
+    )
+})
+}
+
+open func synchronizeAuthorityProjection(workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1])throws  -> CoreWorkspaceAuthorityProjectionSyncResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_synchronize_authority_projection(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeCoreWorkspaceProjectionPublishedWorkspaceV1.lower(workspaces),uniffiCallStatus
     )
 })
 }
@@ -6873,6 +6910,504 @@ public func FfiConverterTypeCoreTokenAccountingResultV1_lift(_ buf: RustBuffer) 
 #endif
 public func FfiConverterTypeCoreTokenAccountingResultV1_lower(_ value: CoreTokenAccountingResultV1) -> RustBuffer {
     return FfiConverterTypeCoreTokenAccountingResultV1.lower(value)
+}
+
+
+public struct CoreWorkspaceAuthorityProjectionSyncReceiptV1: Equatable, Hashable {
+    public let previousGeneration: UInt64
+    public let generation: UInt64
+    public let projectionChanged: Bool
+    public let workspaceCount: UInt64
+    public let retainedBytes: UInt64
+    public let catalogRevision: UInt64
+    public let publicationSequence: UInt64
+    public let projectionDigest: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(previousGeneration: UInt64, generation: UInt64, projectionChanged: Bool, workspaceCount: UInt64, retainedBytes: UInt64, catalogRevision: UInt64, publicationSequence: UInt64, projectionDigest: String) {
+        self.previousGeneration = previousGeneration
+        self.generation = generation
+        self.projectionChanged = projectionChanged
+        self.workspaceCount = workspaceCount
+        self.retainedBytes = retainedBytes
+        self.catalogRevision = catalogRevision
+        self.publicationSequence = publicationSequence
+        self.projectionDigest = projectionDigest
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceAuthorityProjectionSyncReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityProjectionSyncReceiptV1 {
+        return
+            try CoreWorkspaceAuthorityProjectionSyncReceiptV1(
+                previousGeneration: FfiConverterUInt64.read(from: &buf),
+                generation: FfiConverterUInt64.read(from: &buf),
+                projectionChanged: FfiConverterBool.read(from: &buf),
+                workspaceCount: FfiConverterUInt64.read(from: &buf),
+                retainedBytes: FfiConverterUInt64.read(from: &buf),
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                publicationSequence: FfiConverterUInt64.read(from: &buf),
+                projectionDigest: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceAuthorityProjectionSyncReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.previousGeneration, into: &buf)
+        FfiConverterUInt64.write(value.generation, into: &buf)
+        FfiConverterBool.write(value.projectionChanged, into: &buf)
+        FfiConverterUInt64.write(value.workspaceCount, into: &buf)
+        FfiConverterUInt64.write(value.retainedBytes, into: &buf)
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterUInt64.write(value.publicationSequence, into: &buf)
+        FfiConverterString.write(value.projectionDigest, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityProjectionSyncReceiptV1 {
+    return try FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1_lower(_ value: CoreWorkspaceAuthorityProjectionSyncReceiptV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1.lower(value)
+}
+
+
+public struct CoreWorkspaceAuthorityProjectionSyncResponseV1: Equatable, Hashable {
+    public let receipt: CoreWorkspaceAuthorityProjectionSyncReceiptV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(receipt: CoreWorkspaceAuthorityProjectionSyncReceiptV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.receipt = receipt
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceAuthorityProjectionSyncResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityProjectionSyncResponseV1 {
+        return
+            try CoreWorkspaceAuthorityProjectionSyncResponseV1(
+                receipt: FfiConverterOptionTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceAuthorityProjectionSyncResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1.write(value.receipt, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityProjectionSyncResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1_lower(_ value: CoreWorkspaceAuthorityProjectionSyncResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceAuthorityPublicationDraftV1: Equatable, Hashable {
+    public let catalogRevision: UInt64
+    public let kind: CoreWorkspaceProjectionPublicationKindV1
+    public let workspaceId: String?
+    public let contextId: String?
+    public let operationId: String?
+    public let revisions: CoreWorkspaceProjectionRevisionStateV1?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(catalogRevision: UInt64, kind: CoreWorkspaceProjectionPublicationKindV1, workspaceId: String?, contextId: String?, operationId: String?, revisions: CoreWorkspaceProjectionRevisionStateV1?) {
+        self.catalogRevision = catalogRevision
+        self.kind = kind
+        self.workspaceId = workspaceId
+        self.contextId = contextId
+        self.operationId = operationId
+        self.revisions = revisions
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceAuthorityPublicationDraftV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityPublicationDraftV1 {
+        return
+            try CoreWorkspaceAuthorityPublicationDraftV1(
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                kind: FfiConverterTypeCoreWorkspaceProjectionPublicationKindV1.read(from: &buf),
+                workspaceId: FfiConverterOptionString.read(from: &buf),
+                contextId: FfiConverterOptionString.read(from: &buf),
+                operationId: FfiConverterOptionString.read(from: &buf),
+                revisions: FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceAuthorityPublicationDraftV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionPublicationKindV1.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.workspaceId, into: &buf)
+        FfiConverterOptionString.write(value.contextId, into: &buf)
+        FfiConverterOptionString.write(value.operationId, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.write(value.revisions, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityPublicationDraftV1 {
+    return try FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1_lower(_ value: CoreWorkspaceAuthorityPublicationDraftV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1.lower(value)
+}
+
+
+public struct CoreWorkspaceAuthorityPublicationReceiptV1: Equatable, Hashable {
+    public let previousGeneration: UInt64
+    public let generation: UInt64
+    public let projectionChanged: Bool
+    public let workspaceCount: UInt64
+    public let retainedBytes: UInt64
+    public let previousCatalogRevision: UInt64
+    public let previousPublicationSequence: UInt64
+    public let catalogRevision: UInt64
+    public let publicationSequence: UInt64
+    public let eventLogFloorSequence: UInt64
+    public let eventLogCount: UInt64
+    public let projectionDigest: String
+    public let event: CoreWorkspaceProjectionPublicationEventV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(previousGeneration: UInt64, generation: UInt64, projectionChanged: Bool, workspaceCount: UInt64, retainedBytes: UInt64, previousCatalogRevision: UInt64, previousPublicationSequence: UInt64, catalogRevision: UInt64, publicationSequence: UInt64, eventLogFloorSequence: UInt64, eventLogCount: UInt64, projectionDigest: String, event: CoreWorkspaceProjectionPublicationEventV1) {
+        self.previousGeneration = previousGeneration
+        self.generation = generation
+        self.projectionChanged = projectionChanged
+        self.workspaceCount = workspaceCount
+        self.retainedBytes = retainedBytes
+        self.previousCatalogRevision = previousCatalogRevision
+        self.previousPublicationSequence = previousPublicationSequence
+        self.catalogRevision = catalogRevision
+        self.publicationSequence = publicationSequence
+        self.eventLogFloorSequence = eventLogFloorSequence
+        self.eventLogCount = eventLogCount
+        self.projectionDigest = projectionDigest
+        self.event = event
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceAuthorityPublicationReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceAuthorityPublicationReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityPublicationReceiptV1 {
+        return
+            try CoreWorkspaceAuthorityPublicationReceiptV1(
+                previousGeneration: FfiConverterUInt64.read(from: &buf),
+                generation: FfiConverterUInt64.read(from: &buf),
+                projectionChanged: FfiConverterBool.read(from: &buf),
+                workspaceCount: FfiConverterUInt64.read(from: &buf),
+                retainedBytes: FfiConverterUInt64.read(from: &buf),
+                previousCatalogRevision: FfiConverterUInt64.read(from: &buf),
+                previousPublicationSequence: FfiConverterUInt64.read(from: &buf),
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                publicationSequence: FfiConverterUInt64.read(from: &buf),
+                eventLogFloorSequence: FfiConverterUInt64.read(from: &buf),
+                eventLogCount: FfiConverterUInt64.read(from: &buf),
+                projectionDigest: FfiConverterString.read(from: &buf),
+                event: FfiConverterTypeCoreWorkspaceProjectionPublicationEventV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceAuthorityPublicationReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.previousGeneration, into: &buf)
+        FfiConverterUInt64.write(value.generation, into: &buf)
+        FfiConverterBool.write(value.projectionChanged, into: &buf)
+        FfiConverterUInt64.write(value.workspaceCount, into: &buf)
+        FfiConverterUInt64.write(value.retainedBytes, into: &buf)
+        FfiConverterUInt64.write(value.previousCatalogRevision, into: &buf)
+        FfiConverterUInt64.write(value.previousPublicationSequence, into: &buf)
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterUInt64.write(value.publicationSequence, into: &buf)
+        FfiConverterUInt64.write(value.eventLogFloorSequence, into: &buf)
+        FfiConverterUInt64.write(value.eventLogCount, into: &buf)
+        FfiConverterString.write(value.projectionDigest, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionPublicationEventV1.write(value.event, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityPublicationReceiptV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityPublicationReceiptV1 {
+    return try FfiConverterTypeCoreWorkspaceAuthorityPublicationReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityPublicationReceiptV1_lower(_ value: CoreWorkspaceAuthorityPublicationReceiptV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceAuthorityPublicationReceiptV1.lower(value)
+}
+
+
+public struct CoreWorkspaceAuthorityPublicationResponseV1: Equatable, Hashable {
+    public let receipt: CoreWorkspaceAuthorityPublicationReceiptV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(receipt: CoreWorkspaceAuthorityPublicationReceiptV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.receipt = receipt
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceAuthorityPublicationResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceAuthorityPublicationResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityPublicationResponseV1 {
+        return
+            try CoreWorkspaceAuthorityPublicationResponseV1(
+                receipt: FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationReceiptV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceAuthorityPublicationResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationReceiptV1.write(value.receipt, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityPublicationResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityPublicationResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceAuthorityPublicationResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityPublicationResponseV1_lower(_ value: CoreWorkspaceAuthorityPublicationResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceAuthorityPublicationResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceAuthorityReadResponseV1: Equatable, Hashable {
+    public let read: CoreWorkspaceAuthorityReadV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(read: CoreWorkspaceAuthorityReadV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.read = read
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceAuthorityReadResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceAuthorityReadResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityReadResponseV1 {
+        return
+            try CoreWorkspaceAuthorityReadResponseV1(
+                read: FfiConverterOptionTypeCoreWorkspaceAuthorityReadV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceAuthorityReadResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceAuthorityReadV1.write(value.read, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityReadResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityReadResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceAuthorityReadResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityReadResponseV1_lower(_ value: CoreWorkspaceAuthorityReadResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceAuthorityReadResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceAuthorityReadV1: Equatable, Hashable {
+    public let projection: CoreWorkspaceDocumentProjectionV1?
+    public let contentDigest: String?
+    public let generation: UInt64
+    public let catalogRevision: UInt64
+    public let publicationSequence: UInt64
+    public let eventLogFloorSequence: UInt64
+    public let eventLogCount: UInt64
+    public let projectionDigest: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(projection: CoreWorkspaceDocumentProjectionV1?, contentDigest: String?, generation: UInt64, catalogRevision: UInt64, publicationSequence: UInt64, eventLogFloorSequence: UInt64, eventLogCount: UInt64, projectionDigest: String) {
+        self.projection = projection
+        self.contentDigest = contentDigest
+        self.generation = generation
+        self.catalogRevision = catalogRevision
+        self.publicationSequence = publicationSequence
+        self.eventLogFloorSequence = eventLogFloorSequence
+        self.eventLogCount = eventLogCount
+        self.projectionDigest = projectionDigest
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceAuthorityReadV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceAuthorityReadV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityReadV1 {
+        return
+            try CoreWorkspaceAuthorityReadV1(
+                projection: FfiConverterOptionTypeCoreWorkspaceDocumentProjectionV1.read(from: &buf),
+                contentDigest: FfiConverterOptionString.read(from: &buf),
+                generation: FfiConverterUInt64.read(from: &buf),
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                publicationSequence: FfiConverterUInt64.read(from: &buf),
+                eventLogFloorSequence: FfiConverterUInt64.read(from: &buf),
+                eventLogCount: FfiConverterUInt64.read(from: &buf),
+                projectionDigest: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceAuthorityReadV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceDocumentProjectionV1.write(value.projection, into: &buf)
+        FfiConverterOptionString.write(value.contentDigest, into: &buf)
+        FfiConverterUInt64.write(value.generation, into: &buf)
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterUInt64.write(value.publicationSequence, into: &buf)
+        FfiConverterUInt64.write(value.eventLogFloorSequence, into: &buf)
+        FfiConverterUInt64.write(value.eventLogCount, into: &buf)
+        FfiConverterString.write(value.projectionDigest, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityReadV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityReadV1 {
+    return try FfiConverterTypeCoreWorkspaceAuthorityReadV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceAuthorityReadV1_lower(_ value: CoreWorkspaceAuthorityReadV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceAuthorityReadV1.lower(value)
 }
 
 
@@ -19946,6 +20481,78 @@ fileprivate struct FfiConverterOptionTypeCorePathMatchResolveLocationV1: FfiConv
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceAuthorityProjectionSyncReceiptV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncReceiptV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationReceiptV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceAuthorityPublicationReceiptV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceAuthorityPublicationReceiptV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceAuthorityPublicationReceiptV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceAuthorityReadV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceAuthorityReadV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceAuthorityReadV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceAuthorityReadV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceCatalogValidationV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceCatalogValidationV1?
 
@@ -20058,6 +20665,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCreateCommitReceiptV1: Ffi
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCoreWorkspaceCreateCommitReceiptV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceDocumentProjectionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceDocumentProjectionV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceDocumentProjectionV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceDocumentProjectionV1.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -21563,6 +22194,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_acquire() != 13547) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_authority_read() != 21648) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_close() != 4204) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -21573,6 +22207,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_prepare_semantic_target_recovery() != 65249) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_publish_authority_state() != 26851) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_synchronize_authority_projection() != 35327) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecreatetransactionv1_acquire_authority_permit() != 47881) {

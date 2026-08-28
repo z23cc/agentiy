@@ -135,8 +135,6 @@ package actor MCPDomainRuntime {
     private var startTask: Task<Void, Never>?
     private var externalReloadTask: Task<Void, Never>?
     private var workspaceMutationAccessRecoveryTask: Task<Void, Never>?
-    private var workspaceProjectionLeaseToken: DomainWorkspaceMutationLeaseToken?
-    private var workspaceProjectionActivationInProgress = false
 
     package init(
         configuration: DomainRuntimeConfiguration,
@@ -174,41 +172,14 @@ package actor MCPDomainRuntime {
             workspaceMutationPermitRegistry: workspaceMutationAccess.permitRegistry
         )
         persistenceCoordinator = persistence
-        let usesStatefulRustProjection = workspaceProjectionProjector == nil
-        let statefulScopeID: UUID?
-        let checkpointLoader: DomainWorkspaceRustProjectionObserver.CheckpointLoader?
-        let checkpointWriter: DomainWorkspaceRustProjectionObserver.CheckpointWriter?
-        if usesStatefulRustProjection {
-            statefulScopeID = DomainWorkspaceProjectionScopeIdentity.scopeID(
-                storageScopeDigest: workspaceAuthorityLease.scope.storageScopeDigest
-            )
-            checkpointLoader = {
-                try await persistence.loadWorkspaceProjectionCheckpointData()
+        let comparisonProjector: DomainWorkspaceRustProjectionObserver.Projector =
+            workspaceProjectionProjector ?? { documentBytes in
+                try await DomainWorkspaceRustProjection.project(documentBytes: documentBytes)
             }
-            checkpointWriter = { checkpoint in
-                try await workspaceMutationAccess.withCommandPermit { permit in
-                    try await persistence.persistWorkspaceProjectionCheckpointData(
-                        checkpoint,
-                        permit: permit
-                    )
-                }
-            }
-        } else {
-            statefulScopeID = nil
-            checkpointLoader = nil
-            checkpointWriter = nil
-        }
         let workspaceRustProjectionObserver = DomainWorkspaceRustProjectionObserver(
             identity: runtimeIdentity,
             metrics: configuration.metrics,
-            statefulScopeID: statefulScopeID,
-            statefulStorageScopeDigest: usesStatefulRustProjection
-                ? workspaceAuthorityLease.scope.storageScopeDigest
-                : nil,
-            statefulMutationAccess: usesStatefulRustProjection ? workspaceMutationAccess : nil,
-            checkpointLoader: checkpointLoader,
-            checkpointWriter: checkpointWriter,
-            projector: workspaceProjectionProjector
+            projector: comparisonProjector
         )
         self.workspaceRustProjectionObserver = workspaceRustProjectionObserver
         let authority = DomainWorkspaceContextAuthority(
@@ -304,7 +275,7 @@ package actor MCPDomainRuntime {
     }
 
     private func performStart() async {
-        await workspaceRustProjectionObserver.start(paused: true)
+        await workspaceRustProjectionObserver.start()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         await workspaceAuthority.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
@@ -315,8 +286,6 @@ package actor MCPDomainRuntime {
         await agentWorktreeBindingStore.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         let mutationAccess = await workspaceAuthority.activateMutationAccess()
-        guard lifecycle == .starting, !Task.isCancelled else { return }
-        await activateWorkspaceRustProjectionIfPossible()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         let workspaceSnapshot = await workspaceAuthority.snapshot()
         let agentSessions = await agentSessionStore.snapshot()
@@ -329,7 +298,7 @@ package actor MCPDomainRuntime {
             : .degraded
         publishSnapshot()
         startExternalReloadPollingIfNeeded()
-        if workspaceProjectionLeaseToken == nil {
+        if !mutationAccess.acceptsMutations {
             startWorkspaceMutationAccessRecoveryIfNeeded()
         }
     }
@@ -360,7 +329,6 @@ package actor MCPDomainRuntime {
         await workspaceAuthority.beginMutationAccessDrain()
         await workspaceMutationAccess.waitForDrain()
         await workspaceRustProjectionObserver.shutdown()
-        workspaceProjectionLeaseToken = nil
         _ = await domainHost.drain(timeout: configuration.hostDrainTimeout)
         await mutationApprovalBroker.shutdown()
         await interactionBroker.shutdown()
@@ -434,7 +402,6 @@ package actor MCPDomainRuntime {
                 }
                 guard !Task.isCancelled, let self else { return }
                 let activity = await workspaceStore.reloadExternalChanges()
-                await activateWorkspaceRustProjectionIfPossible()
                 await synchronizeLifecycleWithWorkspaceHealth()
                 interval = switch activity {
                 case .changed:
@@ -443,31 +410,6 @@ package actor MCPDomainRuntime {
                     min(interval * 2, maximumInterval)
                 }
             }
-        }
-    }
-
-    private func activateWorkspaceRustProjectionIfPossible() async {
-        guard workspaceProjectionLeaseToken == nil,
-              !workspaceProjectionActivationInProgress,
-              lifecycle != .draining,
-              lifecycle != .stopped
-        else { return }
-        workspaceProjectionActivationInProgress = true
-        defer { workspaceProjectionActivationInProgress = false }
-        do {
-            let leaseToken = try await workspaceMutationAccess.workspaceLeaseToken()
-            let activated = await workspaceRustProjectionObserver.activateStatefulProjection(
-                leaseToken: leaseToken
-            )
-            guard activated,
-                  lifecycle != .draining,
-                  lifecycle != .stopped,
-                  !Task.isCancelled
-            else { return }
-            workspaceProjectionLeaseToken = leaseToken
-        } catch {
-            // A competing runtime or draining lease keeps the bounded shadow ingress paused. The
-            // dedicated mutation-access recovery loop retries independently of external reloads.
         }
     }
 
@@ -482,7 +424,9 @@ package actor MCPDomainRuntime {
 
     private func runWorkspaceMutationAccessRecovery() async {
         defer { workspaceMutationAccessRecoveryTask = nil }
-        while !Task.isCancelled, workspaceProjectionLeaseToken == nil {
+        while !Task.isCancelled {
+            let current = await workspaceAuthority.mutationAccessStateSnapshot()
+            guard !current.acceptsMutations else { return }
             do {
                 try await Task.sleep(for: .milliseconds(100))
             } catch {
@@ -490,7 +434,6 @@ package actor MCPDomainRuntime {
             }
             guard !Task.isCancelled, lifecycle == .ready || lifecycle == .degraded else { return }
             _ = await workspaceAuthority.activateMutationAccess()
-            await activateWorkspaceRustProjectionIfPossible()
             await synchronizeLifecycleWithWorkspaceHealth()
         }
     }

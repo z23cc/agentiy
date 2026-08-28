@@ -675,6 +675,79 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertFalse(rustTypes.contains("CoreWorkspaceDeletionTombstoneCleanupRequestV1"))
     }
 
+    func testAggregateProjectionAuthorityRetiresProductionObserverRepairAndCheckpointPaths() throws {
+        let root = repositoryRoot()
+        let authority = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
+            ),
+            encoding: .utf8
+        )
+        let adapter = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+            ),
+            encoding: .utf8
+        )
+        let directHeadless = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptMCP/DirectHeadlessDomainContext.swift"
+            ),
+            encoding: .utf8
+        )
+        let runtime = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/RepoPromptDomainRuntime/RepoPromptDomainRuntime.swift"
+            ),
+            encoding: .utf8
+        )
+
+        for required in [
+            "commandAdmission.publishAuthorityState(",
+            "commandAdmission.synchronizeAuthorityProjection(",
+            "func workspaceAuthoritativeReadFence(",
+            "func authoritativeReadSnapshots()",
+            "receipt.previousPublicationSequence == publicationSequence",
+            "guard let commandAdmission else { return }"
+        ] {
+            XCTAssertTrue(authority.contains(required), "Missing aggregate publication fence: \(required)")
+        }
+        for required in [
+            "core.publishAuthorityState(",
+            "core.synchronizeAuthorityProjection(",
+            "core.authorityRead(workspaceID:",
+            "DomainWorkspaceAuthorityPublicationReceipt("
+        ] {
+            XCTAssertTrue(adapter.contains(required), "Missing aggregate Domain adapter: \(required)")
+        }
+        XCTAssertTrue(
+            directHeadless.contains("runtime.contextStore.workspaceAuthoritativeReadFence("),
+            "Direct-headless must read the actor-captured Rust aggregate row"
+        )
+        XCTAssertTrue(
+            runtime.contains("let comparisonProjector: DomainWorkspaceRustProjectionObserver.Projector"),
+            "Production observer must remain comparison-only"
+        )
+        for retired in [
+            "projectionObservationSink.observePublication(",
+            "reconcileAuthoritativeWorkspaceProjection(",
+            "workspaceRustProjectionObserver.authoritativeWorkspaceProjection(",
+            "DomainWorkspaceRustProjection.swiftProjection(",
+            "publicationSequence &+= 1"
+        ] {
+            XCTAssertFalse(authority.contains(retired), "Retired authority observer path remains: \(retired)")
+            XCTAssertFalse(directHeadless.contains(retired), "Retired direct-headless repair remains: \(retired)")
+        }
+        for retired in [
+            "activateWorkspaceRustProjectionIfPossible(",
+            "workspaceProjectionLeaseToken",
+            "loadWorkspaceProjectionCheckpointData()",
+            "persistWorkspaceProjectionCheckpointData("
+        ] {
+            XCTAssertFalse(runtime.contains(retired), "Retired production checkpoint path remains: \(retired)")
+        }
+    }
+
     func testClaimBoundWorkspaceLifecycleCompositionHasOneExecutionAuthority() throws {
         let root = repositoryRoot()
         let authority = try String(
