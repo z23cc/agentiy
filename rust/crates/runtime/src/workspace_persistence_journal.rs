@@ -73,6 +73,12 @@ pub struct WorkspaceCommandSemanticPreflightV1 {
     pub revisions: Option<WorkspaceProjectionRevisionState>,
     pub health: Option<WorkspaceProjectionHealth>,
     pub content_digest: Option<String>,
+    /// Canonical UUID-ordered context identities whose document digest changed, including
+    /// additions and removals. This is derived from the aggregate's canonical document bytes,
+    /// never from a Swift actor mirror.
+    pub changed_context_ids: Vec<String>,
+    pub added_context_ids: Vec<String>,
+    pub removed_context_ids: Vec<String>,
     pub diagnostic: Option<String>,
 }
 
@@ -3904,6 +3910,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         &self,
         claim: &WorkspaceCommandExecutionClaimV1,
         request: &WorkspaceCommandIdentityRequestV1,
+        candidate_document_bytes: Option<&[u8]>,
     ) -> Result<WorkspaceCommandSemanticPreflightV1, WorkspaceWorkingJournalError> {
         let workspace_id = canonical_uuid(&request.workspace_id)
             .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
@@ -3925,6 +3932,33 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         {
             return Err(WorkspaceWorkingJournalError::InvalidDigest);
         }
+        let candidate_context_digests =
+            if let Some(candidate_document_bytes) = candidate_document_bytes {
+                let candidate_projection = project_workspace_document_v1(candidate_document_bytes)
+                    .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+                if candidate_projection.workspace_id != workspace_id {
+                    return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+                }
+                let candidate_digest = format!("{:x}", Sha256::digest(candidate_document_bytes));
+                if request
+                    .content_digest
+                    .as_deref()
+                    .is_some_and(|expected| !expected.eq_ignore_ascii_case(&candidate_digest))
+                {
+                    return Err(WorkspaceWorkingJournalError::InvalidDigest);
+                }
+                Some(workspace_document_context_digests_from_bytes_v1(
+                    candidate_document_bytes,
+                )?)
+            } else {
+                if matches!(
+                    request.command_kind,
+                    WorkspaceCommandKindV1::Create | WorkspaceCommandKindV1::Replace
+                ) {
+                    return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+                }
+                None
+            };
 
         let inner = self
             .inner
@@ -3957,6 +3991,30 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         let health = entry
             .and_then(|entry| entry.authority.as_ref())
             .map(|authority| authority.health.clone());
+        let current_context_digests = entry
+            .map(|entry| workspace_document_context_digests_from_bytes_v1(&entry.document_bytes))
+            .transpose()?
+            .unwrap_or_default();
+        let context_revisions = entry
+            .and_then(|entry| entry.authority.as_ref())
+            .map(|authority| {
+                authority
+                    .contexts
+                    .iter()
+                    .map(|context| (context.context_id.clone(), context.revisions))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let (changed_context_ids, added_context_ids, removed_context_ids) =
+            candidate_context_digests
+                .as_ref()
+                .map(|candidate| {
+                    workspace_semantic_context_delta_from_maps_v1(
+                        &current_context_digests,
+                        candidate,
+                    )
+                })
+                .unwrap_or_default();
 
         let verdict =
             |disposition: WorkspaceCommandSemanticPreflightDispositionV1,
@@ -3968,6 +4026,9 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 revisions,
                 health: health.clone(),
                 content_digest: content_digest.clone(),
+                changed_context_ids: changed_context_ids.clone(),
+                added_context_ids: added_context_ids.clone(),
+                removed_context_ids: removed_context_ids.clone(),
                 diagnostic: diagnostic.map(str::to_owned),
             };
 
@@ -3979,6 +4040,25 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
                 Some("catalog_revision_mismatch"),
             ));
+        }
+        if let Some(expected_context_revision) = request.expected_context_revision {
+            if candidate_context_digests.is_none() || changed_context_ids.len() != 1 {
+                return Ok(verdict(
+                    WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                    Some("context_revision_scope_mismatch"),
+                ));
+            }
+            let context_id = &changed_context_ids[0];
+            if context_revisions
+                .get(context_id)
+                .map(|revision| revision.working_revision)
+                != Some(expected_context_revision)
+            {
+                return Ok(verdict(
+                    WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                    Some("context_revision_mismatch"),
+                ));
+            }
         }
 
         let writable = health
@@ -7894,6 +7974,33 @@ fn workspace_document_context_digests_from_bytes_v1(
     workspace_recovery_document_context_digests_v1(&document)
 }
 
+fn workspace_semantic_context_delta_from_maps_v1(
+    current: &BTreeMap<String, String>,
+    candidate: &BTreeMap<String, String>,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let all_context_ids = current
+        .keys()
+        .chain(candidate.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let changed = all_context_ids
+        .iter()
+        .filter(|context_id| current.get(*context_id) != candidate.get(*context_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let added = candidate
+        .keys()
+        .filter(|context_id| !current.contains_key(*context_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed = current
+        .keys()
+        .filter(|context_id| !candidate.contains_key(*context_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    (changed, added, removed)
+}
+
 fn context_revision_map_v1(
     value: &Value,
 ) -> Result<BTreeMap<String, WorkspaceProjectionRevisionState>, WorkspaceWorkingJournalError> {
@@ -10739,7 +10846,7 @@ mod tests {
             other => panic!("expected claim, got {other:?}"),
         };
         let preflight = admission
-            .semantic_preflight(&claim, &request)
+            .semantic_preflight(&claim, &request, None)
             .expect("semantic preflight");
         assert_eq!(preflight.workspace_id, WORKSPACE_ID);
         assert_eq!(preflight.command_kind, WorkspaceCommandKindV1::Save);
@@ -10769,7 +10876,7 @@ mod tests {
             other => panic!("expected stale claim, got {other:?}"),
         };
         let stale_preflight = admission
-            .semantic_preflight(&stale_claim, &stale_request)
+            .semantic_preflight(&stale_claim, &stale_request, None)
             .expect("stale preflight");
         assert_eq!(
             stale_preflight.disposition,
@@ -10783,10 +10890,118 @@ mod tests {
         let mut mismatched = stale_request;
         mismatched.expected_workspace_revision = Some(1);
         assert_eq!(
-            admission.semantic_preflight(&stale_claim, &mismatched),
+            admission.semantic_preflight(&stale_claim, &mismatched, None),
             Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
         );
         assert!(stale_claim.abandon().expect("abandon stale claim"));
+    }
+
+    #[test]
+    fn semantic_preflight_derives_canonical_context_delta_and_fence() {
+        let admission = authority_admission();
+        let workspace = authority_workspace(WORKSPACE_ID, "aggregate", 1);
+        admission
+            .publish_authority_state(
+                std::slice::from_ref(&workspace),
+                authority_draft(0, WorkspaceProjectionPublicationKind::WorkspaceCreated),
+            )
+            .expect("publish authoritative projection");
+
+        let candidate = document_with_context_prompts("changed", "added");
+        let mut request = command_identity_request(WorkspaceCommandKindV1::Replace);
+        request.operation_id = "99999999-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        request.expected_workspace_revision = Some(1);
+        request.expected_context_revision = Some(1);
+        request.content_digest = Some(format!("{:x}", Sha256::digest(&candidate)));
+        let claim = match admission.acquire(request.clone()).expect("claim") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected claim, got {other:?}"),
+        };
+        let preflight = admission
+            .semantic_preflight(&claim, &request, Some(&candidate))
+            .expect("context-aware preflight");
+        assert_eq!(
+            preflight.disposition,
+            WorkspaceCommandSemanticPreflightDispositionV1::Conflict
+        );
+        assert_eq!(
+            preflight.diagnostic.as_deref(),
+            Some("context_revision_scope_mismatch")
+        );
+        assert_eq!(
+            preflight.changed_context_ids,
+            vec![CONTEXT_ID.to_owned(), CONTEXT_ID_TWO.to_owned()]
+        );
+        assert_eq!(preflight.added_context_ids, vec![CONTEXT_ID_TWO.to_owned()]);
+        assert!(preflight.removed_context_ids.is_empty());
+        assert!(claim.abandon().expect("abandon claim"));
+
+        let candidate = document_for_workspace(WORKSPACE_ID, "changed");
+        let mut request = command_identity_request(WorkspaceCommandKindV1::Replace);
+        request.operation_id = "88888888-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        request.expected_workspace_revision = Some(1);
+        request.expected_context_revision = Some(1);
+        request.content_digest = Some(format!("{:x}", Sha256::digest(&candidate)));
+        let claim = match admission
+            .acquire(request.clone())
+            .expect("single-context claim")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected claim, got {other:?}"),
+        };
+        let preflight = admission
+            .semantic_preflight(&claim, &request, Some(&candidate))
+            .expect("single-context preflight");
+        assert_eq!(
+            preflight.disposition,
+            WorkspaceCommandSemanticPreflightDispositionV1::Proceed
+        );
+        assert_eq!(preflight.changed_context_ids, vec![CONTEXT_ID.to_owned()]);
+        assert_eq!(preflight.added_context_ids, Vec::<String>::new());
+        assert_eq!(preflight.removed_context_ids, Vec::<String>::new());
+        assert!(claim.abandon().expect("abandon single-context claim"));
+
+        let candidate = document_for_workspace(WORKSPACE_ID, "stale context");
+        let mut request = command_identity_request(WorkspaceCommandKindV1::Replace);
+        request.operation_id = "77777777-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        request.expected_workspace_revision = Some(1);
+        request.expected_context_revision = Some(0);
+        request.content_digest = Some(format!("{:x}", Sha256::digest(&candidate)));
+        let claim = match admission
+            .acquire(request.clone())
+            .expect("stale context claim")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected stale context claim, got {other:?}"),
+        };
+        let preflight = admission
+            .semantic_preflight(&claim, &request, Some(&candidate))
+            .expect("stale context preflight");
+        assert_eq!(
+            preflight.disposition,
+            WorkspaceCommandSemanticPreflightDispositionV1::Conflict
+        );
+        assert_eq!(
+            preflight.diagnostic.as_deref(),
+            Some("context_revision_mismatch")
+        );
+        assert!(claim.abandon().expect("abandon stale context claim"));
+
+        let mut request = command_identity_request(WorkspaceCommandKindV1::Replace);
+        request.operation_id = "66666666-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        request.content_digest = Some("f".repeat(64));
+        let claim = match admission
+            .acquire(request.clone())
+            .expect("malformed candidate claim")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected malformed candidate claim, got {other:?}"),
+        };
+        assert_eq!(
+            admission.semantic_preflight(&claim, &request, Some(b"not-json")),
+            Err(WorkspaceWorkingJournalError::InvalidWorkingDocument)
+        );
+        assert!(claim.abandon().expect("abandon malformed candidate claim"));
     }
 
     #[test]

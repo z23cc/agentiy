@@ -2054,3 +2054,45 @@ actor mirrors, and event presentation remain Swift-owned.
 - Focused Runtime/FFI/Bridge/Domain tests, codegen, product builds, style/lint, guardrails,
 formatting, and diff checks pass. Any unrelated full-suite infrastructure hang is reported
 separately.
+
+## P5-11 amendment — Rust context-aware semantic preflight
+
+P5-11 extends the claim-bound Rust semantic preflight with the remaining context-level fence. For
+create and replace commands, the caller supplies the bounded candidate document bytes as a physical
+input. Rust validates the candidate workspace identity and digest, derives canonical per-context
+digests from `composeTabs`, and returns UUID-ordered `changed`, `added`, and `removed` context
+identities. The same aggregate validates `expectedContextRevision`: a scalar fence is accepted only
+when exactly one context is affected and its authoritative working revision matches; zero or
+multiple affected contexts return the existing `context_revision_scope_mismatch` conflict rather
+than guessing a target.
+
+The preflight delta is advisory to physical I/O; the existing claim-bound Rust transaction remains
+the decisive journal, revision, tombstone, operation, and publication authority. Rust transaction
+planners continue deriving the complete context revision/digest/tombstone tables from canonical V1
+journal bytes. Swift retains bounded document validation, physical file/CAS/lease/lock operations,
+external-observation recovery, protected-agent shape validation, actor cache installation, routing
+overlays, outcome presentation, and subscriber delivery. It no longer compares durable documents to
+identify changed contexts or checks `expectedContextRevision` against `WorkspaceRecord` state.
+
+The aggregate's canonical semantic snapshot remains distinct from the visible routing snapshot.
+Candidate context deltas are computed only against canonical document bytes; a transient routing
+overlay cannot create, remove, or alter a semantic context fence. Recovery-only and overlay paths
+remain claimless and do not receive command candidate bytes or operation facts. No durable V1 schema,
+canonical byte ordering, event identity, lease ownership, or external command outcome changes.
+
+### P5-11 done-when
+
+- Runtime tests cover canonical context digest deltas for changed, added, and removed contexts,
+  scalar expected-context matches, stale fences, multi-context scope conflicts, malformed candidate
+  identity/digest, and claim/generation binding.
+- FFI, generated bindings, and Bridge expose the ordered context delta and reject invalid, duplicate,
+  or noncanonical UUID lists plus inconsistent added/removed subsets; deterministic code generation
+  remains green.
+- Domain command admission passes candidate document bytes into Rust preflight and consumes its
+  context fence; no production durable command path computes `changedContextIDs` or compares
+  `contextRevisions` locally. The read-overlay revision helper remains restricted to routing
+  registration.
+- Existing Rust journal transaction derivation, physical persistence, recovery, external-conflict,
+  lease, routing, and subscriber behavior remain unchanged. Focused Runtime/FFI/Bridge/Domain tests,
+  product builds, style/lint, guardrails, formatting, and diff checks pass; unrelated full-suite
+  infrastructure hangs are reported separately.

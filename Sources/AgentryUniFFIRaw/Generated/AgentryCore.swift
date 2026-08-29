@@ -2885,7 +2885,7 @@ public protocol CoreWorkspaceCommandExecutionClaimV1Protocol: AnyObject, Sendabl
 
     func operationId()  -> String
 
-    func semanticPreflight(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceSemanticPreflightResponseV1
+    func semanticPreflight(request: CoreWorkspaceCommandIdentityRequestV1, candidateDocumentBytes: Data?) throws  -> CoreWorkspaceSemanticPreflightResponseV1
 
     func workspaceId()  -> String
 
@@ -3006,12 +3006,13 @@ open func operationId() -> String  {
 })
 }
 
-open func semanticPreflight(request: CoreWorkspaceCommandIdentityRequestV1)throws  -> CoreWorkspaceSemanticPreflightResponseV1  {
+open func semanticPreflight(request: CoreWorkspaceCommandIdentityRequestV1, candidateDocumentBytes: Data?)throws  -> CoreWorkspaceSemanticPreflightResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceSemanticPreflightResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_semantic_preflight(
             self.uniffiCloneHandle(),
-        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),uniffiCallStatus
+        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),
+        FfiConverterOptionData.lower(candidateDocumentBytes),uniffiCallStatus
     )
 })
 }
@@ -10801,11 +10802,14 @@ public struct CoreWorkspaceSemanticPreflightV1: Equatable, Hashable {
     public let revisions: CoreWorkspaceProjectionRevisionStateV1?
     public let health: CoreWorkspaceProjectionHealthV1?
     public let contentDigest: String?
+    public let changedContextIds: [String]
+    public let addedContextIds: [String]
+    public let removedContextIds: [String]
     public let diagnostic: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceId: String, commandKind: CoreWorkspaceCommandKindV1, disposition: CoreWorkspaceSemanticPreflightDispositionV1, catalogRevision: UInt64, revisions: CoreWorkspaceProjectionRevisionStateV1?, health: CoreWorkspaceProjectionHealthV1?, contentDigest: String?, diagnostic: String?) {
+    public init(workspaceId: String, commandKind: CoreWorkspaceCommandKindV1, disposition: CoreWorkspaceSemanticPreflightDispositionV1, catalogRevision: UInt64, revisions: CoreWorkspaceProjectionRevisionStateV1?, health: CoreWorkspaceProjectionHealthV1?, contentDigest: String?, changedContextIds: [String], addedContextIds: [String], removedContextIds: [String], diagnostic: String?) {
         self.workspaceId = workspaceId
         self.commandKind = commandKind
         self.disposition = disposition
@@ -10813,6 +10817,9 @@ public struct CoreWorkspaceSemanticPreflightV1: Equatable, Hashable {
         self.revisions = revisions
         self.health = health
         self.contentDigest = contentDigest
+        self.changedContextIds = changedContextIds
+        self.addedContextIds = addedContextIds
+        self.removedContextIds = removedContextIds
         self.diagnostic = diagnostic
     }
 
@@ -10839,6 +10846,9 @@ public struct FfiConverterTypeCoreWorkspaceSemanticPreflightV1: FfiConverterRust
                 revisions: FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.read(from: &buf),
                 health: FfiConverterOptionTypeCoreWorkspaceProjectionHealthV1.read(from: &buf),
                 contentDigest: FfiConverterOptionString.read(from: &buf),
+                changedContextIds: FfiConverterSequenceString.read(from: &buf),
+                addedContextIds: FfiConverterSequenceString.read(from: &buf),
+                removedContextIds: FfiConverterSequenceString.read(from: &buf),
                 diagnostic: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -10851,6 +10861,9 @@ public struct FfiConverterTypeCoreWorkspaceSemanticPreflightV1: FfiConverterRust
         FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.write(value.revisions, into: &buf)
         FfiConverterOptionTypeCoreWorkspaceProjectionHealthV1.write(value.health, into: &buf)
         FfiConverterOptionString.write(value.contentDigest, into: &buf)
+        FfiConverterSequenceString.write(value.changedContextIds, into: &buf)
+        FfiConverterSequenceString.write(value.addedContextIds, into: &buf)
+        FfiConverterSequenceString.write(value.removedContextIds, into: &buf)
         FfiConverterOptionString.write(value.diagnostic, into: &buf)
     }
 }
@@ -21670,7 +21683,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_operation_id() != 38867) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_semantic_preflight() != 62523) {
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_semantic_preflight() != 52511) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_workspace_id() != 11107) {

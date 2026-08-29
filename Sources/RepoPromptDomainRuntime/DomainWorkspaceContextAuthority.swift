@@ -647,6 +647,7 @@ actor DomainWorkspaceContextAuthority {
         ) {
             return stopped
         }
+        let candidateDocumentBytes = commandDocument(envelope.command)?.documentBytes
         if let document = commandDocument(envelope.command),
            let diagnostic = invalidDocumentDiagnostic(document)
         {
@@ -683,7 +684,10 @@ actor DomainWorkspaceContextAuthority {
             )
         }
         do {
-            let preflight = try commandClaim.semanticPreflight(commandIdentityInput)
+            let preflight = try commandClaim.semanticPreflight(
+                commandIdentityInput,
+                candidateDocumentBytes: candidateDocumentBytes
+            )
             if let preflightOutcome = await semanticPreflightOutcome(
                 preflight,
                 envelope: envelope,
@@ -2160,33 +2164,6 @@ actor DomainWorkspaceContextAuthority {
         var isDurableReplay = false
         while let current = records[document.workspaceID] {
             var record = current
-            let changedContextIDs = Self.changedContextIDs(from: record.document, to: document)
-            if let expectedContext = envelope.expectedContextRevision {
-                guard changedContextIDs.count == 1,
-                      let changedContextID = changedContextIDs.first
-                else {
-                    return finalizeConflictOutcome(
-                        envelope,
-                        fingerprint: fingerprint,
-                        commandClaim: commandClaim,
-                        record: record,
-                        diagnostic: isDurableReplay
-                            ? "context_revision_scope_mismatch_after_refresh"
-                            : "context_revision_scope_mismatch"
-                    )
-                }
-                if !isDurableReplay,
-                   expectedContext != record.contextRevisions[changedContextID]?.workingRevision
-                {
-                    return finalizeConflictOutcome(
-                        envelope,
-                        fingerprint: fingerprint,
-                        commandClaim: commandClaim,
-                        record: record,
-                        diagnostic: "context_revision_mismatch"
-                    )
-                }
-            }
             let before = record.revisions
             let now = Date()
             let authorityDiagnostic = isDurableReplay ? "durable_workspace_revision_replayed" : nil
@@ -3491,20 +3468,6 @@ actor DomainWorkspaceContextAuthority {
                 "byte_count": "\(byteCount)"
             ]
         ))
-    }
-
-    private static func changedContextIDs(
-        from previous: DomainWorkspaceDocument?,
-        to next: DomainWorkspaceDocument
-    ) -> Set<UUID> {
-        guard let previous else { return [] }
-        let old = Dictionary(uniqueKeysWithValues: previous.metadata.contexts.map {
-            ($0.identity.contextID, $0.contentDigest)
-        })
-        let new = Dictionary(uniqueKeysWithValues: next.metadata.contexts.map {
-            ($0.identity.contextID, $0.contentDigest)
-        })
-        return Set(old.keys).union(new.keys).filter { old[$0] != new[$0] }
     }
 
     /// Read-only overlay helper. Durable command and recovery paths receive context authority from Rust.

@@ -445,7 +445,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "case let .replay(receiptFingerprint, scope, operation)",
             "fingerprint: fingerprint",
             "unrecordedCommandIdentityRejection(",
-            "let preflight = try commandClaim.semanticPreflight(commandIdentityInput)"
+            "let preflight = try commandClaim.semanticPreflight(",
+            "candidateDocumentBytes: candidateDocumentBytes"
         ] {
             XCTAssertTrue(authority.contains(required), "Missing Rust acquisition boundary: \(required)")
         }
@@ -473,7 +474,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "if let expected = envelope.expectedCatalogRevision",
             "record.health.acceptsMutations",
             "record.document.contentDigest != document.contentDigest",
-            "record.revisions.dirtyRevision != nil"
+            "record.revisions.dirtyRevision != nil",
+            "changedContextIDs"
         ] {
             XCTAssertFalse(
                 commandPaths.contains(retiredSemanticBranch),

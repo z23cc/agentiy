@@ -988,6 +988,9 @@ pub struct CoreWorkspaceSemanticPreflightV1 {
     pub revisions: Option<CoreWorkspaceProjectionRevisionStateV1>,
     pub health: Option<CoreWorkspaceProjectionHealthV1>,
     pub content_digest: Option<String>,
+    pub changed_context_ids: Vec<String>,
+    pub added_context_ids: Vec<String>,
+    pub removed_context_ids: Vec<String>,
     pub diagnostic: Option<String>,
 }
 
@@ -1619,6 +1622,9 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCommandSemanticPrefli
             revisions: value.revisions.map(Into::into),
             health: value.health.map(Into::into),
             content_digest: value.content_digest,
+            changed_context_ids: value.changed_context_ids,
+            added_context_ids: value.added_context_ids,
+            removed_context_ids: value.removed_context_ids,
             diagnostic: value.diagnostic,
         }
     }

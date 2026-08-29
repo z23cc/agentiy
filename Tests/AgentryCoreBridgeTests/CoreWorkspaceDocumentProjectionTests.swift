@@ -1490,6 +1490,38 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         )
         _ = try semanticClaim.abandon()
 
+        let contextRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: receipt.catalogRevision,
+            expectedWorkspaceRevision: revisions.workingRevision,
+            expectedContextRevision: revisions.workingRevision,
+            origin: .standalone,
+            commandKind: .replace,
+            workspaceID: workspaceID,
+            fileURL: URL(fileURLWithPath: "/tmp/Aggregate.json"),
+            contentDigest: SHA256.hash(data: overlayDocument)
+                .map { String(format: "%02x", $0) }
+                .joined(),
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+        let contextClaim: CoreWorkspaceCommandExecutionClaimV1
+        switch try admission.acquire(contextRequest) {
+        case let .claimed(_, claim, _):
+            contextClaim = claim
+        default:
+            return XCTFail("Expected context preflight claim")
+        }
+        let contextPreflight = try contextClaim.semanticPreflight(
+            contextRequest,
+            candidateDocumentBytes: overlayDocument
+        )
+        XCTAssertEqual(contextPreflight.disposition, .proceed)
+        XCTAssertEqual(contextPreflight.changedContextIDs, [contextID])
+        XCTAssertEqual(contextPreflight.addedContextIDs, [])
+        XCTAssertEqual(contextPreflight.removedContextIDs, [])
+        _ = try contextClaim.abandon()
+
         admission.close()
         XCTAssertThrowsError(try admission.authorityRead(workspaceID: workspaceID))
         _ = try await bridge.close()

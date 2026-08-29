@@ -113,6 +113,9 @@ package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
     package let revisions: DomainRevisionState?
     package let health: DomainAuthorityHealth?
     package let contentDigest: String?
+    package let changedContextIDs: [UUID]
+    package let addedContextIDs: [UUID]
+    package let removedContextIDs: [UUID]
     package let diagnostic: String?
 
     package init(
@@ -123,6 +126,9 @@ package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
         revisions: DomainRevisionState?,
         health: DomainAuthorityHealth?,
         contentDigest: String?,
+        changedContextIDs: [UUID] = [],
+        addedContextIDs: [UUID] = [],
+        removedContextIDs: [UUID] = [],
         diagnostic: String?
     ) {
         self.workspaceID = workspaceID
@@ -132,6 +138,9 @@ package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
         self.revisions = revisions
         self.health = health
         self.contentDigest = contentDigest
+        self.changedContextIDs = changedContextIDs
+        self.addedContextIDs = addedContextIDs
+        self.removedContextIDs = removedContextIDs
         self.diagnostic = diagnostic
     }
 }
@@ -1233,11 +1242,15 @@ enum DomainWorkspaceRustJournal {
         }
 
         func semanticPreflight(
-            _ input: DomainWorkspaceCommandIdentityInput
+            _ input: DomainWorkspaceCommandIdentityInput,
+            candidateDocumentBytes: Data? = nil
         ) throws -> DomainWorkspaceSemanticPreflight {
             let request = validator.coreCommandIdentityRequest(input)
             do {
-                let preflight = try core.semanticPreflight(request)
+                let preflight = try core.semanticPreflight(
+                    request,
+                    candidateDocumentBytes: candidateDocumentBytes
+                )
                 let revisionsValid = preflight.revisions.map {
                     $0.savedRevision <= $0.workingRevision
                         && ($0.dirtyRevision == nil || $0.dirtyRevision == $0.workingRevision)
@@ -1277,6 +1290,9 @@ enum DomainWorkspaceRustJournal {
                         }
                     },
                     contentDigest: preflight.contentDigest,
+                    changedContextIDs: preflight.changedContextIDs,
+                    addedContextIDs: preflight.addedContextIDs,
+                    removedContextIDs: preflight.removedContextIDs,
                     diagnostic: preflight.diagnostic
                 )
             } catch let error as DomainPersistenceError {

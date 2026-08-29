@@ -3009,14 +3009,15 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             }
             let claim = CoreWorkspaceCommandExecutionClaimV1(
                 rawClaim: rawClaim,
-                semanticPreflight: { request in
+                semanticPreflight: { request, candidateDocumentBytes in
                     do {
                         return try Self.workspaceSemanticPreflightResponse(
                             rawClaim.semanticPreflight(
                                 request: Self.rawWorkspaceCommandIdentityRequest(
                                     identity: runtimeIdentity,
                                     request: request
-                                )
+                                ),
+                                candidateDocumentBytes: candidateDocumentBytes
                             ),
                             request: request
                         )
@@ -3153,6 +3154,35 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         else {
             throw CoreTransportError.unexpected("workspace semantic preflight is invalid")
         }
+        func canonicalUUIDs(_ values: [String]) throws -> [UUID] {
+            let ids = try values.map { value in
+                guard let id = UUID(uuidString: value) else {
+                    throw CoreTransportError.unexpected(
+                        "workspace semantic preflight context identity is invalid"
+                    )
+                }
+                return id
+            }
+            let canonical = ids.map { $0.uuidString.lowercased() }
+            guard canonical == canonical.sorted(), Set(canonical).count == canonical.count else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic preflight context identities are not canonical"
+                )
+            }
+            return ids
+        }
+        let changedContextIDs = try canonicalUUIDs(preflight.changedContextIds)
+        let addedContextIDs = try canonicalUUIDs(preflight.addedContextIds)
+        let removedContextIDs = try canonicalUUIDs(preflight.removedContextIds)
+        let changedSet = Set(changedContextIDs)
+        guard Set(addedContextIDs).isSubset(of: changedSet),
+              Set(removedContextIDs).isSubset(of: changedSet),
+              Set(addedContextIDs).isDisjoint(with: Set(removedContextIDs))
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace semantic preflight context delta is inconsistent"
+            )
+        }
         let commandKind: CoreWorkspaceCommandKindV1 = switch preflight.commandKind {
         case .create: .create
         case .replace: .replace
@@ -3180,6 +3210,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             revisions: preflight.revisions.map(workspaceRevisionState),
             health: try preflight.health.map(workspaceSemanticRecoveryHealth),
             contentDigest: preflight.contentDigest,
+            changedContextIDs: changedContextIDs,
+            addedContextIDs: addedContextIDs,
+            removedContextIDs: removedContextIDs,
             diagnostic: preflight.diagnostic
         )
     }

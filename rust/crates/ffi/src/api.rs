@@ -255,6 +255,7 @@ impl CoreWorkspaceCommandExecutionClaimV1 {
     pub fn semantic_preflight(
         &self,
         request: CoreWorkspaceCommandIdentityRequestV1,
+        candidate_document_bytes: Option<Vec<u8>>,
     ) -> Result<CoreWorkspaceSemanticPreflightResponseV1, CoreError> {
         self.panic_guard.call(|| {
             self.require_live_runtime()?;
@@ -266,6 +267,7 @@ impl CoreWorkspaceCommandExecutionClaimV1 {
                 self.admission.semantic_preflight(
                     self.inner.as_ref(),
                     &workspace_command_identity_request(request),
+                    candidate_document_bytes.as_deref(),
                 ),
             ))
         })

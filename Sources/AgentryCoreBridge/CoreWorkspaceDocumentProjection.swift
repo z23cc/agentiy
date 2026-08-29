@@ -111,6 +111,9 @@ public struct CoreWorkspaceSemanticPreflightV1: Sendable, Equatable {
     public let revisions: CoreWorkspaceProjectionRevisionState?
     public let health: CoreWorkspaceProjectionHealth?
     public let contentDigest: String?
+    public let changedContextIDs: [UUID]
+    public let addedContextIDs: [UUID]
+    public let removedContextIDs: [UUID]
     public let diagnostic: String?
 
     public init(
@@ -121,6 +124,9 @@ public struct CoreWorkspaceSemanticPreflightV1: Sendable, Equatable {
         revisions: CoreWorkspaceProjectionRevisionState?,
         health: CoreWorkspaceProjectionHealth?,
         contentDigest: String?,
+        changedContextIDs: [UUID] = [],
+        addedContextIDs: [UUID] = [],
+        removedContextIDs: [UUID] = [],
         diagnostic: String?
     ) {
         self.workspaceID = workspaceID
@@ -130,6 +136,9 @@ public struct CoreWorkspaceSemanticPreflightV1: Sendable, Equatable {
         self.revisions = revisions
         self.health = health
         self.contentDigest = contentDigest
+        self.changedContextIDs = changedContextIDs
+        self.addedContextIDs = addedContextIDs
+        self.removedContextIDs = removedContextIDs
         self.diagnostic = diagnostic
     }
 }
@@ -475,7 +484,8 @@ public enum CoreWorkspaceCommandAdmissionAcquisitionV1: Sendable {
 public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
     let rawClaim: AgentryUniFFIRaw.CoreWorkspaceCommandExecutionClaimV1
     private let semanticPreflightOperation: @Sendable (
-        CoreWorkspaceCommandIdentityRequestV1
+        CoreWorkspaceCommandIdentityRequestV1,
+        Data?
     ) throws -> CoreWorkspaceSemanticPreflightV1
     private let checkpointOperation: @Sendable () throws
         -> CoreWorkspaceCommandLifecycleDirective
@@ -487,7 +497,8 @@ public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
     init(
         rawClaim: AgentryUniFFIRaw.CoreWorkspaceCommandExecutionClaimV1,
         semanticPreflight: @escaping @Sendable (
-            CoreWorkspaceCommandIdentityRequestV1
+            CoreWorkspaceCommandIdentityRequestV1,
+            Data?
         ) throws -> CoreWorkspaceSemanticPreflightV1,
         checkpoint: @escaping @Sendable () throws -> CoreWorkspaceCommandLifecycleDirective,
         finalizeTransient: @escaping @Sendable (CoreWorkspaceRecordedOperationV1) throws
@@ -508,9 +519,10 @@ public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
     }
 
     public func semanticPreflight(
-        _ request: CoreWorkspaceCommandIdentityRequestV1
+        _ request: CoreWorkspaceCommandIdentityRequestV1,
+        candidateDocumentBytes: Data? = nil
     ) throws -> CoreWorkspaceSemanticPreflightV1 {
-        try semanticPreflightOperation(request)
+        try semanticPreflightOperation(request, candidateDocumentBytes)
     }
 
     public func checkpoint() throws -> CoreWorkspaceCommandLifecycleDirective {
