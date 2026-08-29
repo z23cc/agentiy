@@ -436,6 +436,52 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         }
     }
 
+    private func commandAuthorityPublicationCandidate(
+        document: Data?,
+        revisions: CoreWorkspaceProjectionRevisionState?,
+        catalogRevision: UInt64,
+        kind: CoreWorkspaceProjectionPublicationKind,
+        workspaceID: UUID,
+        operationID: UUID
+    ) throws -> CoreWorkspaceAuthorityPublicationCandidate {
+        let workspaces: [CoreWorkspaceProjectionPublishedWorkspace]
+        if let document, let revisions {
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: document) as? [String: Any]
+            )
+            let contexts = (object["composeTabs"] as? [[String: Any]] ?? []).compactMap { context in
+                (context["id"] as? String).flatMap(UUID.init(uuidString:))
+            }.map { contextID in
+                CoreWorkspaceContextAuthorityState(
+                    contextID: contextID,
+                    revisions: revisions,
+                    health: CoreWorkspaceProjectionHealth(kind: .writable)
+                )
+            }
+            workspaces = [CoreWorkspaceProjectionPublishedWorkspace(
+                documentBytes: document,
+                authority: CoreWorkspaceProjectionAuthorityState(
+                    revisions: revisions,
+                    health: CoreWorkspaceProjectionHealth(kind: .writable),
+                    contexts: contexts
+                )
+            )]
+        } else {
+            workspaces = []
+        }
+        return CoreWorkspaceAuthorityPublicationCandidate(
+            workspaces: workspaces,
+            draft: CoreWorkspaceAuthorityPublicationDraft(
+                catalogRevision: catalogRevision,
+                kind: kind,
+                workspaceID: workspaceID,
+                contextID: nil,
+                operationID: operationID,
+                revisions: revisions
+            )
+        )
+    }
+
     func testRealCoreValidatesFoundationWorkspaceWorkingJournalV1Shape() async throws {
         let workspaceID = UUID()
         let contextID = UUID()
@@ -628,6 +674,9 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             "name": "Workspace",
             "composeTabs": []
         ], options: [.sortedKeys])
+        let candidateDocumentDigest = SHA256.hash(data: document)
+            .map { String(format: "%02x", $0) }
+            .joined()
         let bridge = try await AgentryCoreBridge.start()
         let client = try await bridge.computeClient()
         let prepared = try await client.prepareWorkspaceWorkingJournalValidatorV1()
@@ -663,7 +712,16 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
                 "fingerprint": commandIdentity.fingerprint,
                 "recordedAt": 41.0,
                 "disposition": "applied",
-                "catalogRevision": 7
+                "before": [
+                    "workingRevision": 0,
+                    "savedRevision": 0
+                ],
+                "after": [
+                    "workingRevision": 0,
+                    "savedRevision": 0
+                ],
+                "catalogRevision": 7,
+                "resultingDigest": candidateDocumentDigest
             ]],
             "updatedAt": 41.0,
             "catalogRevision": 7
@@ -678,13 +736,26 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
         }
+        let authorityPublication = try commandAuthorityPublicationCandidate(
+            document: document,
+            revisions: CoreWorkspaceProjectionRevisionState(
+                workingRevision: 0,
+                savedRevision: 0,
+                dirtyRevision: nil
+            ),
+            catalogRevision: 7,
+            kind: .savedDocumentCommitted,
+            workspaceID: workspaceID,
+            operationID: operationID
+        )
         let transaction = try prepared.beginSaveTransaction(
             rawJournalBytes: rawJournal,
             effectiveJournalBytes: effective.canonicalBytes,
             requestBytes: request,
             candidateDocumentBytes: document,
             diskDocumentBytes: nil,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            authorityPublication: authorityPublication
         )
         defer { transaction.close() }
 
@@ -1020,6 +1091,19 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         )) {
             XCTAssertEqual($0 as? CoreWorkspaceWorkingJournalValidationError, .invalidTransaction)
         }
+        let authorityRevisions = CoreWorkspaceProjectionRevisionState(
+            workingRevision: 1,
+            savedRevision: 1,
+            dirtyRevision: nil
+        )
+        let authorityPublication = try commandAuthorityPublicationCandidate(
+            document: document,
+            revisions: authorityRevisions,
+            catalogRevision: 1,
+            kind: .workspaceCreated,
+            workspaceID: workspaceID,
+            operationID: operationID
+        )
         let transaction = try prepared.beginCreateTransaction(
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalogBytes: catalog.canonicalBytes,
@@ -1027,7 +1111,8 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             effectiveJournalBytes: nil,
             requestBytes: request,
             documentBytes: document,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            authorityPublication: authorityPublication
         )
         defer { transaction.close() }
         let expectedKinds: [CoreWorkspaceCreateActionKindV1] = [
@@ -1076,7 +1161,11 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(receipt.documentDigest, documentDigest)
         XCTAssertEqual(receipt.catalog.revision, 1)
         XCTAssertNotNil(receipt.savedRevision)
-        XCTAssertEqual(transaction.finishCommandAuthority(), .reconciled)
+        let authorityFinalization = transaction.finishCommandAuthority()
+        XCTAssertEqual(authorityFinalization.commandFinalization, .reconciled)
+        XCTAssertEqual(authorityFinalization.authorityPublication?.catalogRevision, 1)
+        XCTAssertEqual(authorityFinalization.authorityPublication?.event.kind, .workspaceCreated)
+        XCTAssertEqual(authorityFinalization.authorityPublication?.event.operationID, operationID)
 
         let recoveryRequest = try JSONSerialization.data(withJSONObject: [
             "kind": "recover",
@@ -1110,7 +1199,9 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             permit.close()
             XCTAssertEqual(committedReceipt, attachedReceipt)
             XCTAssertNil(committedReceipt.savedRevision)
-            XCTAssertEqual(recovery.finishCommandAuthority(), .notApplicable)
+            let recoveryFinalization = recovery.finishCommandAuthority()
+            XCTAssertEqual(recoveryFinalization.commandFinalization, .notApplicable)
+            XCTAssertNil(recoveryFinalization.authorityPublication)
         default:
             XCTFail("recovery did not yield the sole catalog action")
         }
@@ -1272,12 +1363,21 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         default:
             return XCTFail("Delete validation attempts consumed or changed the command claim")
         }
+        let authorityPublication = try commandAuthorityPublicationCandidate(
+            document: nil,
+            revisions: nil,
+            catalogRevision: 1,
+            kind: .workspaceDeleted,
+            workspaceID: workspaceID,
+            operationID: operationID
+        )
         let transaction = try prepared.beginDeleteTransaction(
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalogBytes: catalog.canonicalBytes,
             effectiveJournalBytes: effectiveJournal.canonicalBytes,
             requestBytes: request,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            authorityPublication: authorityPublication
         )
         defer { transaction.close() }
 

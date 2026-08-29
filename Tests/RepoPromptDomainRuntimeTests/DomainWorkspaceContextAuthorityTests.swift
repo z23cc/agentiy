@@ -187,6 +187,21 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(routed.publicationSequence, committed.publicationSequence)
         let catalog = await runtime.workspaceStore.snapshot()
         XCTAssertEqual(catalog.workspaces.first?.document.contentDigest, working.contentDigest)
+
+        let unchanged = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: committed.workspace.revisions.workingRevision,
+            origin: .standalone,
+            command: .replaceWorkingDocument(working)
+        ))
+        XCTAssertEqual(unchanged.disposition, .unchanged)
+        let deduplicatedReadValue = await runtime.contextStore.workspaceAuthoritativeReadFence(
+            fixture.workspaceID
+        )
+        let deduplicatedRead = try XCTUnwrap(deduplicatedReadValue)
+        XCTAssertEqual(deduplicatedRead.workspace.document.contentDigest, working.contentDigest)
+        XCTAssertEqual(deduplicatedRead.projection.contexts.first?.prompt, "aggregate working")
+        XCTAssertGreaterThan(deduplicatedRead.publicationSequence, routed.publicationSequence)
     }
 
     func testOutOfScopeReadRegistrationIsReadableButCannotMutate() async throws {
@@ -411,8 +426,8 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         )
         let deleted = await runtime.workspaceStore.execute(envelope)
 
-        XCTAssertEqual(deleted.disposition, .applied)
-        XCTAssertNil(deleted.errorCode)
+        XCTAssertEqual(deleted.disposition, .applied, String(describing: deleted))
+        XCTAssertNil(deleted.errorCode, String(describing: deleted))
         XCTAssertTrue(deleted.diagnostic?.hasPrefix("artifact_cleanup_incomplete:") == true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceDirectory.path))
         let authoritativeAfter = await runtime.workspaceStore.snapshot()

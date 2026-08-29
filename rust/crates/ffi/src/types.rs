@@ -2638,6 +2638,12 @@ pub struct CoreWorkspaceAuthorityPublicationDraftV1 {
     pub revisions: Option<CoreWorkspaceProjectionRevisionStateV1>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceAuthorityPublicationCandidateV1 {
+    pub workspaces: Vec<CoreWorkspaceProjectionPublishedWorkspaceV1>,
+    pub draft: CoreWorkspaceAuthorityPublicationDraftV1,
+}
+
 impl From<CoreWorkspaceAuthorityPublicationDraftV1>
     for runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationDraftV1
 {

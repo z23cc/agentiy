@@ -50,9 +50,9 @@ use crate::types::{
     AgentClaudeStartReceiptV1, CoreAgentClaudeScopeConfigV1,
 };
 use crate::types::{
-    CoreWorkspaceAuthorityProjectionSyncReceiptV1, CoreWorkspaceAuthorityPublicationDraftV1,
-    CoreWorkspaceAuthorityPublicationReceiptV1, CoreWorkspaceAuthorityReadV1,
-    CoreWorkspaceProjectionPublishedWorkspaceV1,
+    CoreWorkspaceAuthorityProjectionSyncReceiptV1, CoreWorkspaceAuthorityPublicationCandidateV1,
+    CoreWorkspaceAuthorityPublicationDraftV1, CoreWorkspaceAuthorityPublicationReceiptV1,
+    CoreWorkspaceAuthorityReadV1, CoreWorkspaceProjectionPublishedWorkspaceV1,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -715,6 +715,12 @@ pub enum CoreWorkspaceCommandFinalizationV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandAuthorityFinalizationV1 {
+    pub command_finalization: CoreWorkspaceCommandFinalizationV1,
+    pub authority_publication: Option<CoreWorkspaceAuthorityPublicationReceiptV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceDeleteDirectiveResponseV1 {
     pub directive: Option<CoreWorkspaceDeleteDirectiveV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
@@ -724,7 +730,7 @@ pub struct CoreWorkspaceDeleteDirectiveResponseV1 {
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
     pub tombstone: Option<CoreWorkspacePersistenceMetadataValidationV1>,
-    pub command_finalization: CoreWorkspaceCommandFinalizationV1,
+    pub authority_finalization: CoreWorkspaceCommandAuthorityFinalizationV1,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
 }
@@ -736,34 +742,80 @@ pub struct CoreWorkspacePendingSaveRecoveryResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
-fn finalize_workspace_command_admission_reservation(
-    reservation: &Mutex<
-        Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
-    >,
-) -> Result<(), runtime::workspace_persistence_journal::WorkspaceWorkingJournalError> {
-    let mut reservation = reservation.lock().map_err(|_| {
-        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError::InvalidTransaction
-    })?;
-    if let Some(pending) = reservation.as_mut() {
-        pending.finalize()?;
-        reservation.take();
-    }
-    Ok(())
-}
-
 fn finish_workspace_command_authorities(
     reservation: &Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
     >,
+    authority_publication: &Mutex<
+        Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
+    >,
+    authority_publication_receipt: &Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
+    >,
     command_claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
-) -> CoreWorkspaceCommandFinalizationV1 {
+) -> CoreWorkspaceCommandAuthorityFinalizationV1 {
     let Some(command_claim) = command_claim else {
-        return CoreWorkspaceCommandFinalizationV1::NotApplicable;
+        return CoreWorkspaceCommandAuthorityFinalizationV1 {
+            command_finalization: CoreWorkspaceCommandFinalizationV1::NotApplicable,
+            authority_publication: None,
+        };
     };
-    if finalize_workspace_command_admission_reservation(reservation).is_err() {
-        return CoreWorkspaceCommandFinalizationV1::Unreconciled;
-    }
-    if matches!(
+
+    let authority_receipt = {
+        let mut committed = match authority_publication_receipt.lock() {
+            Ok(committed) => committed,
+            Err(_) => {
+                return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                    command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    authority_publication: None,
+                };
+            }
+        };
+        if committed.is_none() {
+            let mut reservation = match reservation.lock() {
+                Ok(reservation) => reservation,
+                Err(_) => {
+                    return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                        command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        authority_publication: None,
+                    };
+                }
+            };
+            let mut publication = match authority_publication.lock() {
+                Ok(publication) => publication,
+                Err(_) => {
+                    return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                        command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        authority_publication: None,
+                    };
+                }
+            };
+            let Some(pending) = reservation.as_mut() else {
+                return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                    command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    authority_publication: None,
+                };
+            };
+            let Some(prepared_publication) = publication.as_ref() else {
+                return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                    command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    authority_publication: None,
+                };
+            };
+            let Ok((_, receipt)) = pending.finalize_with_authority(prepared_publication) else {
+                return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                    command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    authority_publication: None,
+                };
+            };
+            reservation.take();
+            publication.take();
+            *committed = Some(receipt);
+        }
+        committed.clone()
+    };
+
+    let command_finalization = if matches!(
         command_claim
             .lifecycle
             .resolve_terminal(runtime::TerminalOutcome::Success),
@@ -774,42 +826,107 @@ fn finish_workspace_command_authorities(
         CoreWorkspaceCommandFinalizationV1::Reconciled
     } else {
         CoreWorkspaceCommandFinalizationV1::Unreconciled
+    };
+    CoreWorkspaceCommandAuthorityFinalizationV1 {
+        command_finalization,
+        authority_publication: authority_receipt.map(Into::into),
     }
 }
 
 fn finish_workspace_delete_command_authorities(
-    inner: &runtime::workspace_persistence_journal::PreparedWorkspaceDeleteTransactionV1,
     reservation: &Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
     >,
+    authority_publication: &Mutex<
+        Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
+    >,
+    authority_publication_receipt: &Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
+    >,
     command_claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     replacement_operation: runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1,
-) -> CoreWorkspaceCommandFinalizationV1 {
-    let generic = finish_workspace_command_authorities(reservation, command_claim);
-    if generic != CoreWorkspaceCommandFinalizationV1::Reconciled {
-        return generic;
-    }
+) -> CoreWorkspaceCommandAuthorityFinalizationV1 {
     let Some(command_claim) = command_claim else {
-        return CoreWorkspaceCommandFinalizationV1::NotApplicable;
+        return CoreWorkspaceCommandAuthorityFinalizationV1 {
+            command_finalization: CoreWorkspaceCommandFinalizationV1::NotApplicable,
+            authority_publication: None,
+        };
     };
-    let (workspace_id, expected_operation) = match inner.command_admission_finalization() {
-        Ok(runtime::workspace_persistence_journal::WorkspaceCommandAdmissionFinalizationV1::Delete {
-            workspace_id,
-            operation,
-        }) => (workspace_id, operation),
-        _ => return CoreWorkspaceCommandFinalizationV1::Unreconciled,
+
+    let authority_receipt = {
+        let mut committed = match authority_publication_receipt.lock() {
+            Ok(committed) => committed,
+            Err(_) => {
+                return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                    command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    authority_publication: None,
+                };
+            }
+        };
+        if committed.is_none() {
+            let mut reservation = match reservation.lock() {
+                Ok(reservation) => reservation,
+                Err(_) => {
+                    return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                        command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        authority_publication: None,
+                    };
+                }
+            };
+            let mut publication = match authority_publication.lock() {
+                Ok(publication) => publication,
+                Err(_) => {
+                    return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                        command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        authority_publication: None,
+                    };
+                }
+            };
+            let Some(pending) = reservation.as_mut() else {
+                return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                    command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    authority_publication: None,
+                };
+            };
+            let Some(prepared_publication) = publication.as_ref() else {
+                return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                    command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    authority_publication: None,
+                };
+            };
+            let receipt = match pending
+                .finalize_delete_with_authority(prepared_publication, replacement_operation)
+            {
+                Ok((_, receipt)) => receipt,
+                Err(_error) => {
+                    return CoreWorkspaceCommandAuthorityFinalizationV1 {
+                        command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        authority_publication: None,
+                    };
+                }
+            };
+            reservation.take();
+            publication.take();
+            *committed = Some(receipt);
+        }
+        committed.clone()
     };
-    if replacement_operation == expected_operation {
-        return CoreWorkspaceCommandFinalizationV1::Reconciled;
-    }
-    if command_claim
-        .admission
-        .reconcile_finalized_delete(&workspace_id, expected_operation, replacement_operation)
-        .is_ok()
-    {
+
+    let command_finalization = if matches!(
+        command_claim
+            .lifecycle
+            .resolve_terminal(runtime::TerminalOutcome::Success),
+        Ok(runtime::OperationState::Terminal(
+            runtime::TerminalOutcome::Success
+        ))
+    ) {
         CoreWorkspaceCommandFinalizationV1::Reconciled
     } else {
         CoreWorkspaceCommandFinalizationV1::Unreconciled
+    };
+    CoreWorkspaceCommandAuthorityFinalizationV1 {
+        command_finalization,
+        authority_publication: authority_receipt.map(Into::into),
     }
 }
 
@@ -882,13 +999,51 @@ fn acquire_workspace_command_authority_permit(
     }
 }
 
-fn cancel_workspace_command_admission_reservation(
+fn cancel_workspace_command_authorities(
     reservation: &Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
+    authority_publication: &Mutex<
+        Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
     >,
 ) {
     if let Ok(mut reservation) = reservation.lock() {
         reservation.take();
+    }
+    if let Ok(mut publication) = authority_publication.lock() {
+        publication.take();
+    }
+}
+
+fn prepare_workspace_command_authority_publication(
+    command_claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+    expected_kind: runtime::workspace_context::WorkspaceProjectionPublicationKind,
+    candidate: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
+) -> Result<
+    Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
+    runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+> {
+    match (command_claim, candidate) {
+        (Some(claim), Some(candidate)) => {
+            let workspaces = candidate
+                .workspaces
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>();
+            claim
+                .admission
+                .prepare_claimed_authority_publication(
+                    &claim.inner,
+                    expected_kind,
+                    &workspaces,
+                    candidate.draft.into(),
+                )
+                .map(Some)
+        }
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(
+            runtime::workspace_persistence_journal::WorkspaceWorkingJournalError::InvalidTransaction,
+        ),
     }
 }
 
@@ -916,6 +1071,7 @@ fn bind_workspace_command_admission_finalization(
 #[derive(uniffi::Object)]
 pub struct CorePreparedWorkspaceJournalMutationTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceJournalMutationTransactionV1,
+    terminal_gate: Mutex<()>,
     runtime: Weak<runtime::CoreRuntime>,
     command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     identity: runtime::RuntimeIdentity,
@@ -923,6 +1079,12 @@ pub struct CorePreparedWorkspaceJournalMutationTransactionV1 {
     authority_permit: Mutex<Option<Arc<Mutex<Option<runtime::AuthorityOperationPermit>>>>>,
     admission_reservation: Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
+    authority_publication: Mutex<
+        Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
+    >,
+    authority_publication_receipt: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
     >,
     panic_guard: Arc<PanicGuard>,
 }
@@ -956,6 +1118,10 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
         &self,
     ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !self.inner.is_ready_for_authority()
                 || self
                     .authority_permit_issued
@@ -1010,6 +1176,10 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
         report: CoreWorkspaceSaveActionReportV1,
     ) -> Result<CoreWorkspaceJournalMutationDirectiveResponseV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if self.inner.is_ready_for_authority() {
                 let authority_slot = self
                     .authority_permit
@@ -1027,13 +1197,18 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
                 if did_advance && self.inner.is_authoritative() {
                     let _ = finish_workspace_command_authorities(
                         &self.admission_reservation,
+                        &self.authority_publication,
+                        &self.authority_publication_receipt,
                         self.command_claim.as_ref(),
                     );
                 } else if matches!(
                     result,
                     Ok(runtime::workspace_persistence_journal::WorkspaceJournalMutationDirectiveV1::Failed { .. })
                 ) {
-                    cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                    cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
                 }
                 let response = workspace_journal_mutation_directive_response(result);
                 if did_advance {
@@ -1046,13 +1221,18 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
             if result.is_ok() && self.inner.is_authoritative() {
                 let _ = finish_workspace_command_authorities(
                     &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
                 );
             } else if matches!(
                 result,
                 Ok(runtime::workspace_persistence_journal::WorkspaceJournalMutationDirectiveV1::Failed { .. })
             ) {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             if !self.inner.is_authoritative() {
                 self.require_live_runtime()?;
@@ -1063,13 +1243,19 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
 
     pub fn finish_command_authority(
         &self,
-    ) -> Result<CoreWorkspaceCommandFinalizationV1, CoreError> {
+    ) -> Result<CoreWorkspaceCommandAuthorityFinalizationV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !self.inner.is_authoritative() {
                 return Err(CoreError::InvalidArgument);
             }
             Ok(finish_workspace_command_authorities(
                 &self.admission_reservation,
+                &self.authority_publication,
+                &self.authority_publication_receipt,
                 self.command_claim.as_ref(),
             ))
         })
@@ -1077,13 +1263,22 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if self.inner.is_authoritative() {
                 let _ = finish_workspace_command_authorities(
                     &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
                 );
             } else {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             self.inner.close();
             if let Some(permit) = self
@@ -1105,10 +1300,17 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
 #[derive(uniffi::Object)]
 pub struct CorePreparedWorkspaceSaveTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceSaveTransactionV1,
+    terminal_gate: Mutex<()>,
     runtime: Weak<runtime::CoreRuntime>,
     command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     admission_reservation: Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
+    authority_publication: Mutex<
+        Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
+    >,
+    authority_publication_receipt: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
     >,
     identity: runtime::RuntimeIdentity,
     authority_permit_issued: AtomicBool,
@@ -1145,6 +1347,10 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
         &self,
     ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !self.inner.is_ready_for_authority()
                 || self
                     .authority_permit_issued
@@ -1197,6 +1403,10 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
         report: CoreWorkspaceSaveActionReportV1,
     ) -> Result<CoreWorkspaceSaveDirectiveResponseV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let authority_slot = self
                 .authority_permit
                 .lock()
@@ -1217,13 +1427,18 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
             if result.is_ok() && self.inner.is_authoritative() {
                 let _ = finish_workspace_command_authorities(
                     &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
                 );
             } else if matches!(
                 result,
                 Ok(runtime::workspace_persistence_journal::WorkspaceSaveDirectiveV1::Failed { .. })
             ) {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             if !self.inner.is_authoritative() {
                 self.require_live_runtime()?;
@@ -1237,13 +1452,19 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
 
     pub fn finish_command_authority(
         &self,
-    ) -> Result<CoreWorkspaceCommandFinalizationV1, CoreError> {
+    ) -> Result<CoreWorkspaceCommandAuthorityFinalizationV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !self.inner.is_authoritative() {
                 return Err(CoreError::InvalidArgument);
             }
             Ok(finish_workspace_command_authorities(
                 &self.admission_reservation,
+                &self.authority_publication,
+                &self.authority_publication_receipt,
                 self.command_claim.as_ref(),
             ))
         })
@@ -1251,13 +1472,22 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if self.inner.is_authoritative() {
                 let _ = finish_workspace_command_authorities(
                     &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
                 );
             } else {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             self.inner.close();
             if let Some(permit) = self
@@ -1279,10 +1509,17 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
 #[derive(uniffi::Object)]
 pub struct CorePreparedWorkspaceCreateTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceCreateTransactionV1,
+    terminal_gate: Mutex<()>,
     runtime: Weak<runtime::CoreRuntime>,
     command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     admission_reservation: Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
+    authority_publication: Mutex<
+        Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
+    >,
+    authority_publication_receipt: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
     >,
     identity: runtime::RuntimeIdentity,
     authority_permit_issued: AtomicBool,
@@ -1346,6 +1583,10 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
         &self,
     ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !self.inner.is_ready_for_authority()
                 || self
                     .authority_permit_issued
@@ -1398,6 +1639,10 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
         report: CoreWorkspaceSaveActionReportV1,
     ) -> Result<CoreWorkspaceCreateDirectiveResponseV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let authority_slot = self
                 .authority_permit
                 .lock()
@@ -1423,13 +1668,18 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
             if result.is_ok() && self.inner.is_authoritative() {
                 let _ = finish_workspace_command_authorities(
                     &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
                 );
             } else if matches!(
                 result,
                 Ok(runtime::workspace_persistence_journal::WorkspaceCreateDirectiveV1::Failed { .. })
             ) {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             if let Some(authority_guard) = authority_guard.as_mut() {
                 authority_guard.take();
@@ -1440,13 +1690,19 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
 
     pub fn finish_command_authority(
         &self,
-    ) -> Result<CoreWorkspaceCommandFinalizationV1, CoreError> {
+    ) -> Result<CoreWorkspaceCommandAuthorityFinalizationV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !self.inner.is_authoritative() {
                 return Err(CoreError::InvalidArgument);
             }
             Ok(finish_workspace_command_authorities(
                 &self.admission_reservation,
+                &self.authority_publication,
+                &self.authority_publication_receipt,
                 self.command_claim.as_ref(),
             ))
         })
@@ -1454,13 +1710,22 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if self.inner.is_authoritative() {
                 let _ = finish_workspace_command_authorities(
                     &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
                 );
             } else {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             self.inner.close();
             if let Some(permit) = self
@@ -1482,10 +1747,18 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
 #[derive(uniffi::Object)]
 pub struct CorePreparedWorkspaceDeleteTransactionV1 {
     inner: runtime::workspace_persistence_journal::PreparedWorkspaceDeleteTransactionV1,
+    terminal_gate: Mutex<()>,
+    cleanup_finalization: Mutex<Option<CoreWorkspaceDeleteCleanupFinalizationResponseV1>>,
     runtime: Weak<runtime::CoreRuntime>,
     command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     admission_reservation: Mutex<
         Option<runtime::workspace_persistence_journal::WorkspaceCommandAdmissionReservationV1>,
+    >,
+    authority_publication: Mutex<
+        Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
+    >,
+    authority_publication_receipt: Mutex<
+        Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
     >,
     identity: runtime::RuntimeIdentity,
     authority_permit_issued: AtomicBool,
@@ -1514,6 +1787,62 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
             Err(CoreError::RuntimeStopped)
         }
     }
+
+    fn finish_delete_cleanup_locked(
+        &self,
+        cleanup_warnings_bytes: Option<&[u8]>,
+    ) -> Result<CoreWorkspaceDeleteCleanupFinalizationResponseV1, CoreError> {
+        let mut cached = self
+            .cleanup_finalization
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cached.as_ref() {
+            return Ok(cached.clone());
+        }
+        if !self.inner.is_authoritative() {
+            return Err(CoreError::InvalidArgument);
+        }
+        let response = match self.inner.cleanup_plan(cleanup_warnings_bytes) {
+            Ok(plan) => {
+                let authority_finalization = finish_workspace_delete_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                    &self.authority_publication_receipt,
+                    self.command_claim.as_ref(),
+                    plan.operation,
+                );
+                CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
+                    tombstone: Some(plan.validation.into()),
+                    authority_finalization,
+                    error_kind: None,
+                    future_schema_version: None,
+                }
+            }
+            Err(error) => {
+                let (error_kind, future_schema_version) = workspace_journal_error(error);
+                CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
+                    tombstone: None,
+                    authority_finalization: CoreWorkspaceCommandAuthorityFinalizationV1 {
+                        command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        authority_publication: self
+                            .authority_publication_receipt
+                            .lock()
+                            .ok()
+                            .and_then(|receipt| receipt.clone())
+                            .map(Into::into),
+                    },
+                    error_kind: Some(error_kind),
+                    future_schema_version,
+                }
+            }
+        };
+        if response.authority_finalization.command_finalization
+            != CoreWorkspaceCommandFinalizationV1::Unreconciled
+        {
+            *cached = Some(response.clone());
+        }
+        Ok(response)
+    }
 }
 
 #[uniffi::export]
@@ -1522,6 +1851,10 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
         &self,
     ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !self.inner.is_ready_for_authority()
                 || self
                     .authority_permit_issued
@@ -1574,6 +1907,10 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
         report: CoreWorkspaceSaveActionReportV1,
     ) -> Result<CoreWorkspaceDeleteDirectiveResponseV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let authority_slot = self
                 .authority_permit
                 .lock()
@@ -1596,16 +1933,14 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
                 None
             };
             let result = self.inner.report_action(report.into());
-            if result.is_ok() && self.inner.is_authoritative() {
-                let _ = finish_workspace_command_authorities(
-                    &self.admission_reservation,
-                    self.command_claim.as_ref(),
-                );
-            } else if matches!(
+            if matches!(
                 result,
                 Ok(runtime::workspace_persistence_journal::WorkspaceDeleteDirectiveV1::Failed { .. })
             ) {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             if let Some(authority_guard) = authority_guard.as_mut() {
                 authority_guard.take();
@@ -1619,6 +1954,10 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
         cleanup_warnings_bytes: Vec<u8>,
     ) -> Result<CoreWorkspacePersistenceMetadataResponseV1, CoreError> {
         self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             Ok(workspace_metadata_response(
                 self.inner
                     .cleanup_plan(Some(&cleanup_warnings_bytes))
@@ -1632,50 +1971,27 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
         cleanup_warnings_bytes: Option<Vec<u8>>,
     ) -> Result<CoreWorkspaceDeleteCleanupFinalizationResponseV1, CoreError> {
         self.panic_guard.call(|| {
-            if !self.inner.is_authoritative() {
-                return Err(CoreError::InvalidArgument);
-            }
-            match self.inner.cleanup_plan(cleanup_warnings_bytes.as_deref()) {
-                Ok(plan) => {
-                    let command_finalization = finish_workspace_delete_command_authorities(
-                        &self.inner,
-                        &self.admission_reservation,
-                        self.command_claim.as_ref(),
-                        plan.operation,
-                    );
-                    Ok(CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
-                        tombstone: Some(plan.validation.into()),
-                        command_finalization,
-                        error_kind: None,
-                        future_schema_version: None,
-                    })
-                }
-                Err(error) => {
-                    let _ = finish_workspace_command_authorities(
-                        &self.admission_reservation,
-                        self.command_claim.as_ref(),
-                    );
-                    let (error_kind, future_schema_version) = workspace_journal_error(error);
-                    Ok(CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
-                        tombstone: None,
-                        command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
-                        error_kind: Some(error_kind),
-                        future_schema_version,
-                    })
-                }
-            }
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.finish_delete_cleanup_locked(cleanup_warnings_bytes.as_deref())
         })
     }
 
     pub fn close(&self) {
         let _ = self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if self.inner.is_authoritative() {
-                let _ = finish_workspace_command_authorities(
-                    &self.admission_reservation,
-                    self.command_claim.as_ref(),
-                );
+                let _ = self.finish_delete_cleanup_locked(None);
             } else {
-                cancel_workspace_command_admission_reservation(&self.admission_reservation);
+                cancel_workspace_command_authorities(
+                    &self.admission_reservation,
+                    &self.authority_publication,
+                );
             }
             self.inner.close();
             if let Some(permit) = self
@@ -2294,6 +2610,7 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceCreateTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceCreateTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2319,14 +2636,22 @@ impl CoreRuntime {
                         command_claim.as_ref(),
                         transaction.command_admission_finalization()?,
                     )?;
-                    Ok((transaction, reservation))
+                    let authority_publication = prepare_workspace_command_authority_publication(
+                        command_claim.as_ref(),
+                        transaction.command_authority_publication_kind(),
+                        authority_publication,
+                    )?;
+                    Ok((transaction, reservation, authority_publication))
                 }) {
-                    Ok((transaction, reservation)) => CoreWorkspaceCreateTransactionBeginResponseV1 {
+                    Ok((transaction, reservation, authority_publication)) => CoreWorkspaceCreateTransactionBeginResponseV1 {
                         transaction: Some(Arc::new(CorePreparedWorkspaceCreateTransactionV1 {
                             inner: transaction,
+                            terminal_gate: Mutex::new(()),
                             runtime: Arc::downgrade(&self.inner),
                             command_claim: command_claim.clone(),
                             admission_reservation: Mutex::new(reservation),
+                            authority_publication: Mutex::new(authority_publication),
+                            authority_publication_receipt: Mutex::new(None),
                             identity,
                             authority_permit_issued: AtomicBool::new(false),
                             authority_permit: Mutex::new(None),
@@ -2352,6 +2677,7 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceDeleteTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceDeleteTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2375,14 +2701,23 @@ impl CoreRuntime {
                         command_claim.as_ref(),
                         Some(transaction.command_admission_finalization()?),
                     )?;
-                    Ok((transaction, reservation))
+                    let authority_publication = prepare_workspace_command_authority_publication(
+                        command_claim.as_ref(),
+                        transaction.command_authority_publication_kind(),
+                        authority_publication,
+                    )?;
+                    Ok((transaction, reservation, authority_publication))
                 }) {
-                    Ok((transaction, reservation)) => CoreWorkspaceDeleteTransactionBeginResponseV1 {
+                    Ok((transaction, reservation, authority_publication)) => CoreWorkspaceDeleteTransactionBeginResponseV1 {
                         transaction: Some(Arc::new(CorePreparedWorkspaceDeleteTransactionV1 {
                             inner: transaction,
+                            terminal_gate: Mutex::new(()),
+                            cleanup_finalization: Mutex::new(None),
                             runtime: Arc::downgrade(&self.inner),
                             command_claim: command_claim.clone(),
                             admission_reservation: Mutex::new(reservation),
+                            authority_publication: Mutex::new(authority_publication),
+                            authority_publication_receipt: Mutex::new(None),
                             identity,
                             authority_permit_issued: AtomicBool::new(false),
                             authority_permit: Mutex::new(None),
@@ -2408,6 +2743,7 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceJournalMutationTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceJournalMutationTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2431,18 +2767,26 @@ impl CoreRuntime {
                     command_claim.as_ref(),
                     transaction.command_admission_finalization()?,
                 )?;
-                Ok((transaction, reservation))
+                let authority_publication = prepare_workspace_command_authority_publication(
+                    command_claim.as_ref(),
+                    transaction.command_authority_publication_kind()?,
+                    authority_publication,
+                )?;
+                Ok((transaction, reservation, authority_publication))
             }) {
-                Ok((transaction, reservation)) => CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
+                Ok((transaction, reservation, authority_publication)) => CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
                     transaction: Some(Arc::new(
                         CorePreparedWorkspaceJournalMutationTransactionV1 {
                             inner: transaction,
+                            terminal_gate: Mutex::new(()),
                             runtime: Arc::downgrade(&self.inner),
                             command_claim: command_claim.clone(),
                             identity,
                             authority_permit_issued: AtomicBool::new(false),
                             authority_permit: Mutex::new(None),
                             admission_reservation: Mutex::new(reservation),
+                            authority_publication: Mutex::new(authority_publication),
+                            authority_publication_receipt: Mutex::new(None),
                             panic_guard: Arc::clone(&self.panic_guard),
                         },
                     )),
@@ -2465,6 +2809,7 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceSaveTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceSaveTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2489,22 +2834,32 @@ impl CoreRuntime {
                         command_claim.as_ref(),
                         Some(transaction.command_admission_finalization()?),
                     )?;
-                    Ok((transaction, reservation))
+                    let authority_publication = prepare_workspace_command_authority_publication(
+                        command_claim.as_ref(),
+                        transaction.command_authority_publication_kind(),
+                        authority_publication,
+                    )?;
+                    Ok((transaction, reservation, authority_publication))
                 }) {
-                    Ok((transaction, reservation)) => CoreWorkspaceSaveTransactionBeginResponseV1 {
-                        transaction: Some(Arc::new(CorePreparedWorkspaceSaveTransactionV1 {
-                            inner: transaction,
-                            runtime: Arc::downgrade(&self.inner),
-                            command_claim: command_claim.clone(),
-                            admission_reservation: Mutex::new(reservation),
-                            identity,
-                            authority_permit_issued: AtomicBool::new(false),
-                            authority_permit: Mutex::new(None),
-                            panic_guard: Arc::clone(&self.panic_guard),
-                        })),
-                        error_kind: None,
-                        future_schema_version: None,
-                    },
+                    Ok((transaction, reservation, authority_publication)) => {
+                        CoreWorkspaceSaveTransactionBeginResponseV1 {
+                            transaction: Some(Arc::new(CorePreparedWorkspaceSaveTransactionV1 {
+                                inner: transaction,
+                                terminal_gate: Mutex::new(()),
+                                runtime: Arc::downgrade(&self.inner),
+                                command_claim: command_claim.clone(),
+                                admission_reservation: Mutex::new(reservation),
+                                authority_publication: Mutex::new(authority_publication),
+                                authority_publication_receipt: Mutex::new(None),
+                                identity,
+                                authority_permit_issued: AtomicBool::new(false),
+                                authority_permit: Mutex::new(None),
+                                panic_guard: Arc::clone(&self.panic_guard),
+                            })),
+                            error_kind: None,
+                            future_schema_version: None,
+                        }
+                    }
                     Err(error) => {
                         let (error_kind, future_schema_version) = workspace_journal_error(error);
                         CoreWorkspaceSaveTransactionBeginResponseV1 {
@@ -4946,13 +5301,20 @@ mod tests {
                 .identity
                 .expect("mirror identity")
                 .fingerprint,
+            before: Some(crate::types::CoreWorkspaceProjectionRevisionStateV1 {
+                working_revision: 1,
+                saved_revision: 1,
+                dirty_revision: None,
+            }),
+            after: None,
+            resulting_digest: None,
             ..operation
         };
         let reservation = mirror_claim
             .admission
             .bind_claim(
                 &mirror_claim.inner,
-                runtime::workspace_persistence_journal::WorkspaceCommandAdmissionFinalizationV1::Workspace {
+                runtime::workspace_persistence_journal::WorkspaceCommandAdmissionFinalizationV1::Delete {
                     workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
                     operation: mirror_operation.clone().into(),
                 },
@@ -4967,20 +5329,53 @@ mod tests {
             runtime::ManagedOperationDirective::ContinueExecution
         );
         let authority_permit = authority_permit.expect("mirror authority permit");
+        let publication = mirror_claim
+            .admission
+            .prepare_claimed_authority_publication(
+                &mirror_claim.inner,
+                runtime::workspace_context::WorkspaceProjectionPublicationKind::WorkspaceDeleted,
+                &[],
+                runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationDraftV1 {
+                    catalog_revision: 7,
+                    kind: runtime::workspace_context::WorkspaceProjectionPublicationKind::WorkspaceDeleted,
+                    workspace_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned()),
+                    context_id: None,
+                    operation_id: Some(mirror_request.operation_id.clone()),
+                    revisions: None,
+                },
+            )
+            .expect("mirror publication");
         mirror_claim
             .lifecycle
             .resolve_terminal(runtime::TerminalOutcome::Failed)
             .expect("inject mirror terminal failure");
         assert_eq!(
-            finish_workspace_command_authorities(&Mutex::new(None), None),
-            CoreWorkspaceCommandFinalizationV1::NotApplicable
+            finish_workspace_command_authorities(
+                &Mutex::new(None),
+                &Mutex::new(None),
+                &Mutex::new(None),
+                None,
+            ),
+            CoreWorkspaceCommandAuthorityFinalizationV1 {
+                command_finalization: CoreWorkspaceCommandFinalizationV1::NotApplicable,
+                authority_publication: None,
+            }
         );
         let reservation = Mutex::new(Some(reservation));
+        let publication = Mutex::new(Some(publication));
+        let publication_receipt = Mutex::new(None);
+        let finalization = finish_workspace_command_authorities(
+            &reservation,
+            &publication,
+            &publication_receipt,
+            Some(&mirror_claim),
+        );
         assert_eq!(
-            finish_workspace_command_authorities(&reservation, Some(&mirror_claim)),
+            finalization.command_finalization,
             CoreWorkspaceCommandFinalizationV1::Unreconciled,
             "a lifecycle mirror failure after the P5 receipt must not replace authority success"
         );
+        assert!(finalization.authority_publication.is_some());
         drop(authority_permit);
         assert_eq!(
             admission

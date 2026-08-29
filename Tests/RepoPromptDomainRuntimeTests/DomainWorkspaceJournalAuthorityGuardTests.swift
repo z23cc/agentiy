@@ -604,10 +604,11 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "readSemanticRecoveryArtifact(",
             "applySemanticJournalRewrites(",
             "expectedArtifactDigest",
-            "let commandFinalization: DomainWorkspaceCommandFinalization",
-            "commandFinalization: transaction.finishCommandAuthority()",
-            "commandFinalization: result.commandFinalization",
-            "commandFinalization: finalization.commandFinalization"
+            "let authorityFinalization: DomainWorkspaceCommandAuthorityFinalization",
+            "authorityFinalization: transaction.finishCommandAuthority()",
+            "authorityFinalization: result.authorityFinalization",
+            "authorityFinalization: finalization.authorityFinalization",
+            "authorityPublication: authorityPublication"
         ] {
             XCTAssertTrue(
                 persistence.contains(required),
@@ -649,6 +650,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
         for required in [
             "public enum CoreWorkspaceCommandFinalizationV1",
+            "public struct CoreWorkspaceCommandAuthorityFinalizationV1",
+            "public struct CoreWorkspaceAuthorityPublicationCandidate",
             "public func finishCommandAuthority(",
             "public func planCleanup("
         ] {
@@ -656,12 +659,28 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
         for required in [
             "pub enum CoreWorkspaceCommandFinalizationV1",
+            "pub struct CoreWorkspaceCommandAuthorityFinalizationV1",
+            "CoreWorkspaceAuthorityPublicationCandidateV1",
             "fn finish_workspace_command_authorities(",
             "pub fn plan_cleanup("
         ] {
             XCTAssertTrue(rustFFI.contains(required), "Missing transaction-owned FFI finalization: \(required)")
         }
         XCTAssertTrue(rustJournal.contains("pub fn cleanup_plan("))
+        XCTAssertTrue(rustJournal.contains("pub fn finalize_with_authority("))
+        XCTAssertTrue(rustJournal.contains("pub fn prepare_claimed_authority_publication("))
+        XCTAssertTrue(rustJournal.contains("authority_publication_reservation: Option<"))
+        XCTAssertTrue(rustJournal.contains("validate_claimed_authority_publication_candidate_v1("))
+        XCTAssertTrue(rustJournal.contains("pub fn command_authority_publication_kind("))
+        XCTAssertTrue(rustFFI.contains("transaction.command_authority_publication_kind()"))
+        for required in [
+            "commandAuthorityPublicationCandidate(",
+            "installCommandAuthorityFinalization(",
+            "persisted.authorityFinalization",
+            "deleted.authorityFinalization"
+        ] {
+            XCTAssertTrue(authority.contains(required), "Missing transaction publication cutover: \(required)")
+        }
         for retired in [
             "pub fn preflight(",
             "pub fn decision(",
@@ -729,8 +748,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "func authoritativeReadSnapshots()",
             "receipt.previousPublicationSequence == publicationSequence",
             "guard let commandAdmission else { return }",
-            "await acquireCatalogMutation()",
-            "releaseCatalogMutation()"
+            "await acquireCommandConvergence()",
+            "releaseCommandConvergence()"
         ] {
             XCTAssertTrue(authority.contains(required), "Missing aggregate publication fence: \(required)")
         }

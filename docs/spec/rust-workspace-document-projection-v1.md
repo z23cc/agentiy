@@ -1788,3 +1788,66 @@ adds no durable schema, tombstone, filesystem scan, or compatibility fallback.
 - Source guards prove physical absence of the old plane and positive presence of the aggregate authority path; focused
   Runtime/FFI/Bridge/Domain/direct-headless/restart/lifecycle tests, deterministic codegen, product builds, style,
   guardrails, formatting, and diff checks pass.
+
+## P5-7j amendment — claim-bound transaction authority publication
+
+P5-7j removes the remaining two-step authority commit for durable workspace commands. A claimed create, delete,
+journal-mutation, or save transaction now owns one prevalidated publication candidate in addition to its existing
+claim-bound admission reservation and lifecycle authority permit. The candidate contains the complete bounded
+projection snapshot and event draft that Rust already validates under P5-7h; it is prepared before physical I/O and is
+bound to the exact command workspace, operation ID, fingerprint, runtime identity, transaction lifetime, and admission
+capability. Swift cannot attach a candidate to another claim or add one after a transaction becomes authoritative.
+
+On the decisive successful physical report, the transaction uses the same `WorkspaceCommandAdmissionInnerV1` mutex to
+apply the reserved durable replay effect, replace the immutable projection, compute its digest and generation, advance
+the catalog/publication cursor, and append the exact event. The operation referenced by the event must exist in the
+post-finalization ledger, so neither half can commit without the other. All parsing, document projection, retained-byte
+accounting, event-shape validation, and capacity checks occur before the transaction is exposed to physical I/O; the
+critical section performs only exact binding checks, bounded state projection, arithmetic, and prepared-state swaps.
+No mutex is held while Swift reads or writes files.
+
+The authority result is first-terminal and retained by the transaction. Repeated physical reports, explicit finish,
+close after authority, and caller resumption return the same publication receipt without advancing the cursor again.
+Delete cleanup retries revalidate that returned first-terminal tombstone while treating caller-supplied retry warnings
+as non-authoritative; no second diagnostic may replace or downgrade the committed receipt.
+A malformed, oversized, stale, mismatched, closed, quarantined, or capacity-invalid candidate prevents transaction
+preparation. A failure before decisive physical success releases both the admission reservation and publication
+candidate without changing replay, projection, generation, or cursor state. If physical authority succeeds but the
+atomic aggregate commit cannot be materialized because of a runtime fence or poisoned capability, the physical result
+remains first-terminal while Swift quarantines new mutation under the existing
+`workspace_command_admission_receipt_missing` diagnostic; it may not fall back to a later standalone publish.
+Lifecycle-mirror failure after the aggregate commit likewise cannot roll back or replace the committed receipt.
+
+Swift supplies the same complete candidate it would previously have published immediately after the transaction, but
+Rust remains decisive: it reparses every document, validates revision/health/context relationships and event-to-row
+shape, requires exact claim identity, and commits the candidate only together with the Rust-owned replay effect. Swift
+installs its already-computed actor row after the physical driver returns, validates the receipt against its mirrored
+cursor and catalog revision, removes the target routing overlay where required, and yields the Domain event. There is
+no await, parser, alternate outcome, or second Rust mutation between actor-row installation and delivery. Origin,
+diagnostic, and timestamp remain presentation fields attached to the exact Rust event identity and cursor as before.
+
+The cutover covers create, delete, replace-working-document, save, unchanged command receipts, accepted external
+conflicts, and local conflict rebases. Every production path with a command execution claim must provide a publication
+candidate; recovery-only create transactions and non-command external recovery remain explicitly not applicable and
+continue through the P5-7g/P5-7h full or target publication boundary. Routing registration remains the existing
+non-event overlay synchronization. A later phase may move semantic candidate derivation or non-command presentation
+policy into the aggregate, but it cannot restore a command-side sequential publication path.
+
+P5-7j changes no durable schema, file ordering, lease ownership, command outcome, event kind, diagnostic, publication
+sequence rule, direct-headless fence, or subscriber ownership. The P5-7i catalog-mutation fence remains only for the
+actor-row installation interval and cannot authorize or publish state. The inert legacy projection checkpoint remains
+untouched.
+
+### P5-7j done-when
+
+- Runtime tests prove atomic replay/projection/event commit, rejection before physical I/O, event-operation binding,
+  first-terminal retry/close behavior, capacity and arithmetic atomicity, quarantine/close/runtime fences, reservation
+  cancellation, unrelated claim isolation, and unchanged standalone recovery/overlay behavior.
+- UniFFI and Bridge expose a typed transaction publication candidate and a typed command-authority finalization receipt;
+  every begin surface rejects claim/candidate absence or mismatch, and generated bindings remain deterministic.
+- Domain create/delete/journal/save physical drivers return the transaction-owned publication receipt. All claimed
+  create/replace/save/delete/conflict/unchanged callers precompute the exact candidate, install the committed actor row,
+  validate the Rust receipt, and deliver without calling `publishAuthorityState` afterward.
+- Source guards require the candidate on every claimed production transaction and reject command-path fallback publish;
+  focused Runtime/FFI/Bridge/Domain authority, journal, replay, lifecycle, direct-read, codegen, product-build, style,
+  guardrail, formatting, and diff checks pass.

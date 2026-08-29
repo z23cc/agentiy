@@ -541,6 +541,19 @@ public struct CoreWorkspaceAuthorityPublicationDraft: Sendable, Equatable {
     }
 }
 
+public struct CoreWorkspaceAuthorityPublicationCandidate: Sendable, Equatable {
+    public let workspaces: [CoreWorkspaceProjectionPublishedWorkspace]
+    public let draft: CoreWorkspaceAuthorityPublicationDraft
+
+    public init(
+        workspaces: [CoreWorkspaceProjectionPublishedWorkspace],
+        draft: CoreWorkspaceAuthorityPublicationDraft
+    ) {
+        self.workspaces = workspaces
+        self.draft = draft
+    }
+}
+
 public struct CoreWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
     public let previousGeneration: UInt64
     public let generation: UInt64
@@ -1077,16 +1090,29 @@ public enum CoreWorkspaceCommandFinalizationV1: Sendable, Equatable {
     case unreconciled
 }
 
+public struct CoreWorkspaceCommandAuthorityFinalizationV1: Sendable, Equatable {
+    public let commandFinalization: CoreWorkspaceCommandFinalizationV1
+    public let authorityPublication: CoreWorkspaceAuthorityPublicationReceipt?
+
+    public init(
+        commandFinalization: CoreWorkspaceCommandFinalizationV1,
+        authorityPublication: CoreWorkspaceAuthorityPublicationReceipt?
+    ) {
+        self.commandFinalization = commandFinalization
+        self.authorityPublication = authorityPublication
+    }
+}
+
 public struct CoreWorkspaceDeleteCleanupFinalizationV1: Sendable, Equatable {
     public let tombstone: CoreWorkspacePersistenceMetadataValidationV1?
-    public let commandFinalization: CoreWorkspaceCommandFinalizationV1
+    public let authorityFinalization: CoreWorkspaceCommandAuthorityFinalizationV1
 
     public init(
         tombstone: CoreWorkspacePersistenceMetadataValidationV1?,
-        commandFinalization: CoreWorkspaceCommandFinalizationV1
+        authorityFinalization: CoreWorkspaceCommandAuthorityFinalizationV1
     ) {
         self.tombstone = tombstone
-        self.commandFinalization = commandFinalization
+        self.authorityFinalization = authorityFinalization
     }
 }
 
@@ -1096,7 +1122,7 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
     private let nextOperation: @Sendable () throws -> CoreWorkspaceJournalMutationDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceJournalMutationDirectiveV1
-    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandFinalizationV1
+    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -1105,7 +1131,7 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
         next: @escaping @Sendable () throws -> CoreWorkspaceJournalMutationDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceJournalMutationDirectiveV1,
-        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandFinalizationV1,
+        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1,
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
@@ -1133,7 +1159,7 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
         try reportOperation(report)
     }
 
-    public func finishCommandAuthority() -> CoreWorkspaceCommandFinalizationV1 {
+    public func finishCommandAuthority() -> CoreWorkspaceCommandAuthorityFinalizationV1 {
         finishCommandAuthorityOperation()
     }
 
@@ -1148,7 +1174,7 @@ public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
     private let nextOperation: @Sendable () throws -> CoreWorkspaceSaveDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceSaveDirectiveV1
-    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandFinalizationV1
+    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -1157,7 +1183,7 @@ public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
         next: @escaping @Sendable () throws -> CoreWorkspaceSaveDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceSaveDirectiveV1,
-        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandFinalizationV1,
+        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1,
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
@@ -1185,7 +1211,7 @@ public final class CoreWorkspaceSaveTransactionV1: @unchecked Sendable {
         try reportOperation(report)
     }
 
-    public func finishCommandAuthority() -> CoreWorkspaceCommandFinalizationV1 {
+    public func finishCommandAuthority() -> CoreWorkspaceCommandAuthorityFinalizationV1 {
         finishCommandAuthorityOperation()
     }
 
@@ -1216,7 +1242,7 @@ public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
     private let nextOperation: @Sendable () throws -> CoreWorkspaceCreateDirectiveV1
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceCreateDirectiveV1
-    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandFinalizationV1
+    private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -1225,7 +1251,7 @@ public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
         next: @escaping @Sendable () throws -> CoreWorkspaceCreateDirectiveV1,
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceCreateDirectiveV1,
-        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandFinalizationV1,
+        finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1,
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
@@ -1253,7 +1279,7 @@ public final class CoreWorkspaceCreateTransactionV1: @unchecked Sendable {
         try reportOperation(report)
     }
 
-    public func finishCommandAuthority() -> CoreWorkspaceCommandFinalizationV1 {
+    public func finishCommandAuthority() -> CoreWorkspaceCommandAuthorityFinalizationV1 {
         finishCommandAuthorityOperation()
     }
 
@@ -1459,7 +1485,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1478,7 +1505,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
             documentBytes: documentBytes,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            authorityPublication: authorityPublication
         )
     }
 
@@ -1487,7 +1515,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1502,7 +1531,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveCatalogBytes: effectiveCatalogBytes,
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            authorityPublication: authorityPublication
         )
     }
 
@@ -1512,7 +1542,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1529,7 +1560,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
             diskDocumentBytes: diskDocumentBytes,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            authorityPublication: authorityPublication
         )
     }
 
@@ -1539,7 +1571,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1556,7 +1589,8 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
             diskDocumentBytes: diskDocumentBytes,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            authorityPublication: authorityPublication
         )
     }
 
@@ -1732,7 +1766,8 @@ extension CoreRuntimeTransport {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         throw CoreTransportError.unexpected("workspace create transaction transport is unavailable")
     }
@@ -1743,7 +1778,8 @@ extension CoreRuntimeTransport {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         throw CoreTransportError.unexpected("workspace delete transaction transport is unavailable")
     }
@@ -1755,7 +1791,8 @@ extension CoreRuntimeTransport {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         throw CoreTransportError.unexpected("workspace journal mutation transaction transport is unavailable")
     }
@@ -1767,7 +1804,8 @@ extension CoreRuntimeTransport {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
+        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         throw CoreTransportError.unexpected("workspace save transaction transport is unavailable")
     }

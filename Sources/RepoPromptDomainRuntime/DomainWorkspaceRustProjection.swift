@@ -55,6 +55,16 @@ package struct DomainWorkspaceAuthorityProjectionSyncReceipt: Sendable, Equatabl
     package let projectionDigest: String
 }
 
+package struct DomainWorkspaceAuthorityPublicationCandidate: Sendable, Equatable {
+    package let workspaces: [DomainWorkspaceSnapshot]
+    package let catalogRevision: UInt64
+    package let kind: DomainWorkspaceEventKind
+    package let workspaceID: UUID?
+    package let contextID: UUID?
+    package let operationID: UUID?
+    package let revisions: DomainRevisionState?
+}
+
 package struct DomainWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
     package let previousGeneration: UInt64
     package let generation: UInt64
@@ -90,6 +100,41 @@ package enum DomainWorkspaceRustProjection {
                     )
                 }
             )
+        )
+    }
+
+    package static func corePublicationCandidate(
+        _ candidate: DomainWorkspaceAuthorityPublicationCandidate
+    ) -> CoreWorkspaceAuthorityPublicationCandidate {
+        CoreWorkspaceAuthorityPublicationCandidate(
+            workspaces: candidate.workspaces.map(corePublishedWorkspace),
+            draft: CoreWorkspaceAuthorityPublicationDraft(
+                catalogRevision: candidate.catalogRevision,
+                kind: corePublicationKind(candidate.kind),
+                workspaceID: candidate.workspaceID,
+                contextID: candidate.contextID,
+                operationID: candidate.operationID,
+                revisions: candidate.revisions.map(coreRevisionState)
+            )
+        )
+    }
+
+    package static func authorityPublicationReceipt(
+        _ receipt: CoreWorkspaceAuthorityPublicationReceipt
+    ) -> DomainWorkspaceAuthorityPublicationReceipt {
+        DomainWorkspaceAuthorityPublicationReceipt(
+            previousGeneration: receipt.previousGeneration,
+            generation: receipt.generation,
+            projectionChanged: receipt.projectionChanged,
+            workspaceCount: receipt.workspaceCount,
+            retainedBytes: receipt.retainedBytes,
+            previousCatalogRevision: receipt.previousCatalogRevision,
+            previousPublicationSequence: receipt.previousPublicationSequence,
+            catalogRevision: receipt.catalogRevision,
+            publicationSequence: receipt.publicationSequence,
+            eventLogFloorSequence: receipt.eventLogFloorSequence,
+            eventLogCount: receipt.eventLogCount,
+            projectionDigest: receipt.projectionDigest
         )
     }
 

@@ -260,6 +260,11 @@ enum DomainWorkspaceCommandFinalization: Sendable, Equatable {
     case unreconciled
 }
 
+struct DomainWorkspaceCommandAuthorityFinalization: Sendable, Equatable {
+    let commandFinalization: DomainWorkspaceCommandFinalization
+    let authorityPublication: DomainWorkspaceAuthorityPublicationReceipt?
+}
+
 struct DomainWorkspaceWorkingJournalValidation: Sendable {
     let journal: DomainWorkingJournal
     let canonicalBytes: Data
@@ -280,7 +285,7 @@ struct DomainWorkspaceDeletionTombstoneValidation: Sendable {
 
 struct DomainWorkspaceDeleteCleanupFinalization: Sendable {
     let tombstone: DomainWorkspaceDeletionTombstoneValidation?
-    let commandFinalization: DomainWorkspaceCommandFinalization
+    let authorityFinalization: DomainWorkspaceCommandAuthorityFinalization
 }
 
 struct DomainWorkspaceCatalogValidation: Sendable {
@@ -954,8 +959,8 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        func finishCommandAuthority() -> DomainWorkspaceCommandFinalization {
-            DomainWorkspaceRustJournal.commandFinalization(core.finishCommandAuthority())
+        func finishCommandAuthority() -> DomainWorkspaceCommandAuthorityFinalization {
+            DomainWorkspaceRustJournal.commandAuthorityFinalization(core.finishCommandAuthority())
         }
 
         func close() {
@@ -1036,8 +1041,8 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        func finishCommandAuthority() -> DomainWorkspaceCommandFinalization {
-            DomainWorkspaceRustJournal.commandFinalization(core.finishCommandAuthority())
+        func finishCommandAuthority() -> DomainWorkspaceCommandAuthorityFinalization {
+            DomainWorkspaceRustJournal.commandAuthorityFinalization(core.finishCommandAuthority())
         }
 
         func close() {
@@ -1118,8 +1123,8 @@ enum DomainWorkspaceRustJournal {
             )
         }
 
-        func finishCommandAuthority() -> DomainWorkspaceCommandFinalization {
-            DomainWorkspaceRustJournal.commandFinalization(core.finishCommandAuthority())
+        func finishCommandAuthority() -> DomainWorkspaceCommandAuthorityFinalization {
+            DomainWorkspaceRustJournal.commandAuthorityFinalization(core.finishCommandAuthority())
         }
 
         func close() {
@@ -1221,14 +1226,17 @@ enum DomainWorkspaceRustJournal {
             } catch {
                 return DomainWorkspaceDeleteCleanupFinalization(
                     tombstone: nil,
-                    commandFinalization: .unreconciled
+                    authorityFinalization: .init(
+                        commandFinalization: .unreconciled,
+                        authorityPublication: nil
+                    )
                 )
             }
             let finalized = core.finishCommandAuthority(
                 cleanupWarningsBytes: cleanupWarningsBytes
             )
-            let commandFinalization = DomainWorkspaceRustJournal.commandFinalization(
-                finalized.commandFinalization
+            let authorityFinalization = DomainWorkspaceRustJournal.commandAuthorityFinalization(
+                finalized.authorityFinalization
             )
             guard let tombstone = finalized.tombstone,
                   let materialized = try? validator.materializeDeletionTombstoneCleanup(
@@ -1242,12 +1250,15 @@ enum DomainWorkspaceRustJournal {
             else {
                 return DomainWorkspaceDeleteCleanupFinalization(
                     tombstone: nil,
-                    commandFinalization: .unreconciled
+                    authorityFinalization: .init(
+                        commandFinalization: .unreconciled,
+                        authorityPublication: nil
+                    )
                 )
             }
             return DomainWorkspaceDeleteCleanupFinalization(
                 tombstone: materialized,
-                commandFinalization: commandFinalization
+                authorityFinalization: authorityFinalization
             )
         }
 
@@ -2091,7 +2102,15 @@ enum DomainWorkspaceRustJournal {
                       operation.catalogRevision == expectedOperation.catalogRevision,
                       operation.resultingDigest == expectedOperation.resultingDigest,
                       operation.errorCode == expectedOperation.errorCode,
+                      // Rust owns the first-terminal cleanup receipt; a retry may carry different
+                      // warnings, so retain its original or canonical cleanup diagnostic form.
                       operation.diagnostic == expectedDiagnostic
+                          || operation.diagnostic == expectedOperation.diagnostic
+                          || (cleanupWarnings != nil
+                              && operation.diagnostic.map {
+                                  $0.hasPrefix("artifact_cleanup_incomplete: ")
+                                      && $0.count > "artifact_cleanup_incomplete: ".count
+                              } == true)
                 else {
                     throw DomainPersistenceError.corruptJournal
                 }
@@ -2196,7 +2215,8 @@ enum DomainWorkspaceRustJournal {
             contextRevisions: [UUID: DomainRevisionState],
             operation: DomainRecordedOperation,
             updatedAt: Date,
-            commandClaim: PreparedExecutionClaim
+            commandClaim: PreparedExecutionClaim,
+            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
         ) throws -> PreparedCreateTransaction {
             try beginCreateTransaction(
                 rawCatalogBytes: rawCatalogBytes,
@@ -2219,7 +2239,8 @@ enum DomainWorkspaceRustJournal {
                 ),
                 expectedOperation: operation,
                 isRecovery: false,
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                authorityPublication: authorityPublication
             )
         }
 
@@ -2250,7 +2271,8 @@ enum DomainWorkspaceRustJournal {
                 ),
                 expectedOperation: nil,
                 isRecovery: true,
-                commandClaim: nil
+                commandClaim: nil,
+                authorityPublication: nil
             )
         }
 
@@ -2263,7 +2285,8 @@ enum DomainWorkspaceRustJournal {
             request: CreateTransactionRequest,
             expectedOperation: DomainRecordedOperation?,
             isRecovery: Bool,
-            commandClaim: PreparedExecutionClaim?
+            commandClaim: PreparedExecutionClaim?,
+            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
         ) throws -> PreparedCreateTransaction {
             do {
                 let transaction = try core.beginCreateTransaction(
@@ -2273,7 +2296,10 @@ enum DomainWorkspaceRustJournal {
                     effectiveJournalBytes: effectiveJournal?.canonicalBytes,
                     requestBytes: try encode(request),
                     documentBytes: document.documentBytes,
-                    commandClaim: commandClaim?.transactionBinding
+                    commandClaim: commandClaim?.transactionBinding,
+                    authorityPublication: authorityPublication.map(
+                        DomainWorkspaceRustProjection.corePublicationCandidate
+                    )
                 )
                 return PreparedCreateTransaction(
                     core: transaction,
@@ -2308,7 +2334,8 @@ enum DomainWorkspaceRustJournal {
             expectedCatalogRevision: UInt64,
             operation: DomainRecordedOperation,
             deletedAt: Date,
-            commandClaim: PreparedExecutionClaim
+            commandClaim: PreparedExecutionClaim,
+            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
         ) throws -> PreparedDeleteTransaction {
             do {
                 let request = DeleteTransactionRequest(
@@ -2324,7 +2351,10 @@ enum DomainWorkspaceRustJournal {
                     effectiveCatalogBytes: effectiveCatalog.canonicalBytes,
                     effectiveJournalBytes: effectiveJournal.canonicalBytes,
                     requestBytes: try encode(request),
-                    commandClaim: commandClaim.transactionBinding
+                    commandClaim: commandClaim.transactionBinding,
+                    authorityPublication: DomainWorkspaceRustProjection.corePublicationCandidate(
+                        authorityPublication
+                    )
                 )
                 return PreparedDeleteTransaction(
                     core: transaction,
@@ -2369,7 +2399,8 @@ enum DomainWorkspaceRustJournal {
             revisionOperationID: UUID?,
             updatedAt: Date,
             diskDocumentBytes: Data?,
-            commandClaim: PreparedExecutionClaim?
+            commandClaim: PreparedExecutionClaim?,
+            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
         ) throws -> PreparedJournalMutationTransaction {
             do {
                 let request = JournalMutationTransactionRequest(
@@ -2385,7 +2416,10 @@ enum DomainWorkspaceRustJournal {
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
                     diskDocumentBytes: diskDocumentBytes,
-                    commandClaim: commandClaim?.transactionBinding
+                    commandClaim: commandClaim?.transactionBinding,
+                    authorityPublication: authorityPublication.map(
+                        DomainWorkspaceRustProjection.corePublicationCandidate
+                    )
                 )
                 return PreparedJournalMutationTransaction(
                     core: transaction,
@@ -2431,7 +2465,8 @@ enum DomainWorkspaceRustJournal {
             updatedAt: Date,
             catalogRevision: UInt64,
             diskDocumentBytes: Data?,
-            commandClaim: PreparedExecutionClaim
+            commandClaim: PreparedExecutionClaim,
+            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
         ) throws -> PreparedSaveTransaction {
             do {
                 let request = SaveTransactionRequest(
@@ -2454,7 +2489,10 @@ enum DomainWorkspaceRustJournal {
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
                     diskDocumentBytes: diskDocumentBytes,
-                    commandClaim: commandClaim.transactionBinding
+                    commandClaim: commandClaim.transactionBinding,
+                    authorityPublication: DomainWorkspaceRustProjection.corePublicationCandidate(
+                        authorityPublication
+                    )
                 )
                 return PreparedSaveTransaction(
                     core: transaction,
@@ -3490,6 +3528,17 @@ enum DomainWorkspaceRustJournal {
                 return .writeFailed("workspace_save_transaction_invalid")
             }
         }
+    }
+
+    private static func commandAuthorityFinalization(
+        _ value: CoreWorkspaceCommandAuthorityFinalizationV1
+    ) -> DomainWorkspaceCommandAuthorityFinalization {
+        DomainWorkspaceCommandAuthorityFinalization(
+            commandFinalization: commandFinalization(value.commandFinalization),
+            authorityPublication: value.authorityPublication.map(
+                DomainWorkspaceRustProjection.authorityPublicationReceipt
+            )
+        )
     }
 
     private static func commandFinalization(

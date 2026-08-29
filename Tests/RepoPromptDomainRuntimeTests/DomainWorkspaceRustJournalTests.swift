@@ -786,6 +786,15 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 resultingDigest: nil
             )
         )
+        let authorityPublication = DomainWorkspaceAuthorityPublicationCandidate(
+            workspaces: [],
+            catalogRevision: 1,
+            kind: .workspaceDeleted,
+            workspaceID: workspaceID,
+            contextID: nil,
+            operationID: operationID,
+            revisions: nil
+        )
         let transaction = try validator.beginDeleteTransaction(
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalog: catalog,
@@ -795,7 +804,8 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             expectedCatalogRevision: 0,
             operation: operation,
             deletedAt: now,
-            commandClaim: claim
+            commandClaim: claim,
+            authorityPublication: authorityPublication
         )
         defer { transaction.close() }
         switch try transaction.nextDirective() {
@@ -824,10 +834,23 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             "artifact_cleanup_incomplete: \(warnings.joined(separator: "; "))"
         )
         let finalized = transaction.finishCommandAuthority(cleanupWarnings: warnings)
-        XCTAssertEqual(finalized.commandFinalization, .reconciled)
+        XCTAssertEqual(
+            finalized.authorityFinalization.commandFinalization,
+            .reconciled,
+            String(describing: finalized)
+        )
+        XCTAssertEqual(finalized.authorityFinalization.authorityPublication?.catalogRevision, 1)
         XCTAssertEqual(finalized.tombstone?.canonicalBytes, firstPlan.canonicalBytes)
-        let repeatedFinalization = transaction.finishCommandAuthority(cleanupWarnings: warnings)
-        XCTAssertEqual(repeatedFinalization.commandFinalization, .reconciled)
+        let retryWarnings = ["different retry must not replace the first terminal receipt"]
+        let repeatedFinalization = transaction.finishCommandAuthority(cleanupWarnings: retryWarnings)
+        XCTAssertEqual(
+            repeatedFinalization.authorityFinalization.commandFinalization,
+            .reconciled
+        )
+        XCTAssertEqual(
+            repeatedFinalization.authorityFinalization.authorityPublication,
+            finalized.authorityFinalization.authorityPublication
+        )
         XCTAssertEqual(repeatedFinalization.tombstone?.canonicalBytes, firstPlan.canonicalBytes)
 
         switch try admission.acquire(input) {
