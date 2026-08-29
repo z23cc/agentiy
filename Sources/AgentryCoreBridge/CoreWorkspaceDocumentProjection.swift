@@ -843,6 +843,7 @@ public struct CoreWorkspaceJournalMutationCommitReceiptV1: Sendable, Equatable {
     public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
     public let resultingWorkingRevision: UInt64
     public let resultingSavedRevision: UInt64
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     public init(
         workspaceID: UUID,
@@ -851,7 +852,8 @@ public struct CoreWorkspaceJournalMutationCommitReceiptV1: Sendable, Equatable {
         committedJournal: CoreWorkspaceWorkingJournalValidationV1,
         savedRevision: CoreWorkspacePersistenceMetadataValidationV1?,
         resultingWorkingRevision: UInt64,
-        resultingSavedRevision: UInt64
+        resultingSavedRevision: UInt64,
+        commandResult: CoreWorkspaceCommandResultV1? = nil
     ) {
         self.workspaceID = workspaceID
         self.requestDigest = requestDigest
@@ -860,6 +862,7 @@ public struct CoreWorkspaceJournalMutationCommitReceiptV1: Sendable, Equatable {
         self.savedRevision = savedRevision
         self.resultingWorkingRevision = resultingWorkingRevision
         self.resultingSavedRevision = resultingSavedRevision
+        self.commandResult = commandResult
     }
 }
 
@@ -902,6 +905,46 @@ public enum CoreWorkspaceSaveFailureV1: Sendable, Equatable {
     case writeFailed
 }
 
+public enum CoreWorkspaceCommandResultDispositionV1: Sendable, Equatable {
+    case applied
+    case unchanged
+    case deleted
+}
+
+public struct CoreWorkspaceCommandResultV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let operation: CoreWorkspaceRecordedOperationV1
+    public let disposition: CoreWorkspaceCommandResultDispositionV1
+    public let before: CoreWorkspaceProjectionRevisionState?
+    public let after: CoreWorkspaceProjectionRevisionState?
+    public let resultingDigest: String?
+    public let catalogRevision: UInt64
+    public let publicationKind: CoreWorkspaceProjectionPublicationKind
+    public let contextID: UUID?
+
+    public init(
+        workspaceID: UUID,
+        operation: CoreWorkspaceRecordedOperationV1,
+        disposition: CoreWorkspaceCommandResultDispositionV1,
+        before: CoreWorkspaceProjectionRevisionState?,
+        after: CoreWorkspaceProjectionRevisionState?,
+        resultingDigest: String?,
+        catalogRevision: UInt64,
+        publicationKind: CoreWorkspaceProjectionPublicationKind,
+        contextID: UUID?
+    ) {
+        self.workspaceID = workspaceID
+        self.operation = operation
+        self.disposition = disposition
+        self.before = before
+        self.after = after
+        self.resultingDigest = resultingDigest
+        self.catalogRevision = catalogRevision
+        self.publicationKind = publicationKind
+        self.contextID = contextID
+    }
+}
+
 public struct CoreWorkspaceSaveCommitReceiptV1: Sendable, Equatable {
     public let workspaceID: UUID
     public let operationID: UUID
@@ -912,6 +955,7 @@ public struct CoreWorkspaceSaveCommitReceiptV1: Sendable, Equatable {
     public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1
     public let resultingWorkingRevision: UInt64
     public let resultingSavedRevision: UInt64
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     public init(
         workspaceID: UUID,
@@ -922,7 +966,8 @@ public struct CoreWorkspaceSaveCommitReceiptV1: Sendable, Equatable {
         committedJournal: CoreWorkspaceWorkingJournalValidationV1,
         savedRevision: CoreWorkspacePersistenceMetadataValidationV1,
         resultingWorkingRevision: UInt64,
-        resultingSavedRevision: UInt64
+        resultingSavedRevision: UInt64,
+        commandResult: CoreWorkspaceCommandResultV1? = nil
     ) {
         self.workspaceID = workspaceID
         self.operationID = operationID
@@ -933,6 +978,7 @@ public struct CoreWorkspaceSaveCommitReceiptV1: Sendable, Equatable {
         self.savedRevision = savedRevision
         self.resultingWorkingRevision = resultingWorkingRevision
         self.resultingSavedRevision = resultingSavedRevision
+        self.commandResult = commandResult
     }
 }
 
@@ -986,6 +1032,7 @@ public struct CoreWorkspaceCreateCommitReceiptV1: Sendable, Equatable {
     public let catalog: CoreWorkspaceCatalogValidationV1
     public let committedJournal: CoreWorkspaceWorkingJournalValidationV1
     public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     public init(
         workspaceID: UUID,
@@ -994,7 +1041,8 @@ public struct CoreWorkspaceCreateCommitReceiptV1: Sendable, Equatable {
         documentDigest: String,
         catalog: CoreWorkspaceCatalogValidationV1,
         committedJournal: CoreWorkspaceWorkingJournalValidationV1,
-        savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
+        savedRevision: CoreWorkspacePersistenceMetadataValidationV1?,
+        commandResult: CoreWorkspaceCommandResultV1? = nil
     ) {
         self.workspaceID = workspaceID
         self.operationID = operationID
@@ -1003,6 +1051,7 @@ public struct CoreWorkspaceCreateCommitReceiptV1: Sendable, Equatable {
         self.catalog = catalog
         self.committedJournal = committedJournal
         self.savedRevision = savedRevision
+        self.commandResult = commandResult
     }
 }
 
@@ -1033,19 +1082,22 @@ public struct CoreWorkspaceDeleteCommitReceiptV1: Sendable, Equatable {
     public let requestDigest: String
     public let catalog: CoreWorkspaceCatalogValidationV1
     public let tombstone: CoreWorkspacePersistenceMetadataValidationV1
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     public init(
         workspaceID: UUID,
         operationID: UUID,
         requestDigest: String,
         catalog: CoreWorkspaceCatalogValidationV1,
-        tombstone: CoreWorkspacePersistenceMetadataValidationV1
+        tombstone: CoreWorkspacePersistenceMetadataValidationV1,
+        commandResult: CoreWorkspaceCommandResultV1? = nil
     ) {
         self.workspaceID = workspaceID
         self.operationID = operationID
         self.requestDigest = requestDigest
         self.catalog = catalog
         self.tombstone = tombstone
+        self.commandResult = commandResult
     }
 }
 
@@ -1079,13 +1131,16 @@ public enum CoreWorkspaceCommandFinalizationV1: Sendable, Equatable {
 
 public struct CoreWorkspaceCommandAuthorityFinalizationV1: Sendable, Equatable {
     public let commandFinalization: CoreWorkspaceCommandFinalizationV1
+    public let commandResult: CoreWorkspaceCommandResultV1?
     public let authorityPublication: CoreWorkspaceAuthorityPublicationReceipt?
 
     public init(
         commandFinalization: CoreWorkspaceCommandFinalizationV1,
+        commandResult: CoreWorkspaceCommandResultV1? = nil,
         authorityPublication: CoreWorkspaceAuthorityPublicationReceipt?
     ) {
         self.commandFinalization = commandFinalization
+        self.commandResult = commandResult
         self.authorityPublication = authorityPublication
     }
 }

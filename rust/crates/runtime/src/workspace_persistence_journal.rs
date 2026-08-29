@@ -633,6 +633,85 @@ pub struct WorkspaceAuthorityPublicationReceiptV1 {
     pub event: WorkspaceProjectionPublicationEvent,
 }
 
+/// The canonical semantic result of a claimed command transaction.  This is
+/// intentionally separate from the publication cursor receipt: a command may
+/// be physically durable before its projection publication is mirrored, while
+/// the operation/revision/digest facts must remain exactly those committed by
+/// Rust.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceCommandResultDispositionV1 {
+    Applied,
+    Unchanged,
+    Deleted,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceCommandResultV1 {
+    pub workspace_id: String,
+    pub operation: WorkspaceRecordedOperationV1,
+    pub disposition: WorkspaceCommandResultDispositionV1,
+    pub before: Option<WorkspaceProjectionRevisionState>,
+    pub after: Option<WorkspaceProjectionRevisionState>,
+    pub resulting_digest: Option<String>,
+    pub catalog_revision: u64,
+    pub publication_kind: WorkspaceProjectionPublicationKind,
+    pub context_id: Option<String>,
+}
+
+// Recorded operations reject NaN timestamps during validation; retaining Eq on
+// the receipt lets the surrounding transaction directives remain replayable.
+impl Eq for WorkspaceCommandResultV1 {}
+
+fn workspace_command_result_v1(
+    workspace_id: String,
+    operation: WorkspaceRecordedOperationV1,
+    publication_kind: WorkspaceProjectionPublicationKind,
+    context_id: Option<String>,
+) -> Result<WorkspaceCommandResultV1, WorkspaceWorkingJournalError> {
+    let disposition = match publication_kind {
+        WorkspaceProjectionPublicationKind::WorkspaceDeleted => {
+            WorkspaceCommandResultDispositionV1::Deleted
+        }
+        WorkspaceProjectionPublicationKind::OperationDeduplicated => {
+            WorkspaceCommandResultDispositionV1::Unchanged
+        }
+        _ => WorkspaceCommandResultDispositionV1::Applied,
+    };
+    let expected_operation_disposition = match disposition {
+        WorkspaceCommandResultDispositionV1::Unchanged => "unchanged",
+        WorkspaceCommandResultDispositionV1::Applied
+        | WorkspaceCommandResultDispositionV1::Deleted => "applied",
+    };
+    if operation.disposition != expected_operation_disposition
+        || operation.error_code.is_some()
+        || operation.diagnostic.is_some()
+    {
+        return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+    }
+    if !matches!(
+        publication_kind,
+        WorkspaceProjectionPublicationKind::WorkspaceDeleted
+            | WorkspaceProjectionPublicationKind::OperationDeduplicated
+            | WorkspaceProjectionPublicationKind::WorkspaceCreated
+            | WorkspaceProjectionPublicationKind::WorkingStateCommitted
+            | WorkspaceProjectionPublicationKind::SavedDocumentCommitted
+            | WorkspaceProjectionPublicationKind::ExternalReloaded
+    ) {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    Ok(WorkspaceCommandResultV1 {
+        workspace_id,
+        before: operation.before,
+        after: operation.after,
+        resulting_digest: operation.resulting_digest.clone(),
+        catalog_revision: operation.catalog_revision,
+        operation,
+        disposition,
+        publication_kind,
+        context_id,
+    })
+}
+
 #[derive(Clone, Debug)]
 struct WorkspaceAuthorityPublicationCandidateV1 {
     retained_bytes: usize,
@@ -1497,7 +1576,14 @@ fn apply_workspace_authority_publication_candidate_v1(
         sequence: publication_sequence,
         catalog_revision: candidate.draft.catalog_revision,
         kind: candidate.draft.kind,
-        workspace_id: candidate.workspace_id.clone(),
+        workspace_id: if candidate.draft.kind
+            == WorkspaceProjectionPublicationKind::WorkspaceDeleted
+            && candidate.operation_id.is_some()
+        {
+            None
+        } else {
+            candidate.workspace_id.clone()
+        },
         context_id: candidate.context_id.clone(),
         operation_id: candidate.operation_id.clone(),
         revisions: candidate.draft.revisions,
@@ -4625,6 +4711,7 @@ pub struct WorkspaceCreateCommitReceiptV1 {
     pub catalog: WorkspaceCatalogValidationV1,
     pub committed_journal: WorkspaceWorkingJournalValidationV1,
     pub saved_revision: Option<WorkspacePersistenceMetadataValidationV1>,
+    pub command_result: Option<WorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4670,6 +4757,7 @@ pub struct WorkspaceJournalMutationCommitReceiptV1 {
     pub saved_revision: Option<WorkspacePersistenceMetadataValidationV1>,
     pub resulting_working_revision: u64,
     pub resulting_saved_revision: u64,
+    pub command_result: Option<WorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4730,6 +4818,7 @@ pub struct WorkspaceSaveCommitReceiptV1 {
     pub saved_revision: WorkspacePersistenceMetadataValidationV1,
     pub resulting_working_revision: u64,
     pub resulting_saved_revision: u64,
+    pub command_result: Option<WorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4804,6 +4893,7 @@ pub struct WorkspaceDeleteCommitReceiptV1 {
     pub request_digest: String,
     pub catalog: WorkspaceCatalogValidationV1,
     pub tombstone: WorkspacePersistenceMetadataValidationV1,
+    pub command_result: Option<WorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5085,6 +5175,15 @@ impl PreparedWorkspaceJournalMutationTransactionV1 {
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)
     }
 
+    pub fn command_result(
+        &self,
+    ) -> Result<Option<WorkspaceCommandResultV1>, WorkspaceWorkingJournalError> {
+        self.inner
+            .lock()
+            .map(|state| state.receipt.command_result.clone())
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)
+    }
+
     pub fn prepare_claimed_authority_publication(
         &self,
         admission: &PreparedWorkspaceCommandAdmissionV1,
@@ -5213,6 +5312,15 @@ impl PreparedWorkspaceSaveTransactionV1 {
         WorkspaceProjectionPublicationKind::SavedDocumentCommitted
     }
 
+    pub fn command_result(
+        &self,
+    ) -> Result<Option<WorkspaceCommandResultV1>, WorkspaceWorkingJournalError> {
+        self.inner
+            .lock()
+            .map(|state| state.receipt.command_result.clone())
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)
+    }
+
     pub fn prepare_claimed_authority_publication(
         &self,
         admission: &PreparedWorkspaceCommandAdmissionV1,
@@ -5309,6 +5417,15 @@ impl PreparedWorkspaceDeleteTransactionV1 {
 
     pub fn command_authority_publication_kind(&self) -> WorkspaceProjectionPublicationKind {
         WorkspaceProjectionPublicationKind::WorkspaceDeleted
+    }
+
+    pub fn command_result(
+        &self,
+    ) -> Result<Option<WorkspaceCommandResultV1>, WorkspaceWorkingJournalError> {
+        self.inner
+            .lock()
+            .map(|state| state.receipt.command_result.clone())
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)
     }
 
     pub fn prepare_claimed_authority_publication(
@@ -5453,6 +5570,15 @@ impl PreparedWorkspaceCreateTransactionV1 {
 
     pub fn command_authority_publication_kind(&self) -> WorkspaceProjectionPublicationKind {
         WorkspaceProjectionPublicationKind::WorkspaceCreated
+    }
+
+    pub fn command_result(
+        &self,
+    ) -> Result<Option<WorkspaceCommandResultV1>, WorkspaceWorkingJournalError> {
+        self.inner
+            .lock()
+            .map(|state| state.receipt.command_result.clone())
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)
     }
 
     pub fn prepare_claimed_authority_publication(
@@ -6408,6 +6534,27 @@ pub fn prepare_workspace_create_transaction_v1(
             operation,
         })
     };
+    let command_result = admission_finalization
+        .as_ref()
+        .map(|finalization| {
+            let (workspace_id, operation) = match finalization {
+                WorkspaceCommandAdmissionFinalizationV1::Workspace {
+                    workspace_id,
+                    operation,
+                }
+                | WorkspaceCommandAdmissionFinalizationV1::Delete {
+                    workspace_id,
+                    operation,
+                } => (workspace_id.clone(), operation.clone()),
+            };
+            workspace_command_result_v1(
+                workspace_id,
+                operation,
+                WorkspaceProjectionPublicationKind::WorkspaceCreated,
+                None,
+            )
+        })
+        .transpose()?;
     let receipt = WorkspaceCreateCommitReceiptV1 {
         workspace_id: expected_workspace_id,
         operation_id,
@@ -6416,6 +6563,7 @@ pub fn prepare_workspace_create_transaction_v1(
         catalog: catalog.clone(),
         committed_journal: committed_journal.clone(),
         saved_revision: saved_revision.clone(),
+        command_result,
     };
     Ok(PreparedWorkspaceCreateTransactionV1 {
         inner: Mutex::new(WorkspaceCreateTransactionStateV1 {
@@ -6870,6 +7018,27 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
                 operation,
             },
         );
+    let command_result = admission_finalization
+        .as_ref()
+        .map(|finalization| {
+            let (workspace_id, operation) = match finalization {
+                WorkspaceCommandAdmissionFinalizationV1::Workspace {
+                    workspace_id,
+                    operation,
+                }
+                | WorkspaceCommandAdmissionFinalizationV1::Delete {
+                    workspace_id,
+                    operation,
+                } => (workspace_id.clone(), operation.clone()),
+            };
+            workspace_command_result_v1(
+                workspace_id,
+                operation,
+                authority_publication_kind,
+                context_id.clone(),
+            )
+        })
+        .transpose()?;
     let receipt = WorkspaceJournalMutationCommitReceiptV1 {
         workspace_id: request.expected_workspace_id,
         request_digest: request_digest.clone(),
@@ -6878,6 +7047,7 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
         saved_revision: saved_revision.clone(),
         resulting_working_revision: committed_journal.revisions.working_revision,
         resulting_saved_revision: committed_journal.revisions.saved_revision,
+        command_result,
     };
     Ok(PreparedWorkspaceJournalMutationTransactionV1 {
         inner: Mutex::new(WorkspaceJournalMutationTransactionStateV1 {
@@ -7036,8 +7206,14 @@ pub fn prepare_workspace_save_transaction_v1(
         .ok_or(WorkspaceWorkingJournalError::InvalidOperationLedger)?;
     let admission_finalization = WorkspaceCommandAdmissionFinalizationV1::Workspace {
         workspace_id: request.expected_workspace_id.clone(),
-        operation,
+        operation: operation.clone(),
     };
+    let command_result = workspace_command_result_v1(
+        request.expected_workspace_id.clone(),
+        operation.clone(),
+        WorkspaceProjectionPublicationKind::SavedDocumentCommitted,
+        None,
+    )?;
     let receipt = WorkspaceSaveCommitReceiptV1 {
         workspace_id: request.expected_workspace_id,
         operation_id: request.operation_id,
@@ -7048,6 +7224,7 @@ pub fn prepare_workspace_save_transaction_v1(
         saved_revision: saved_revision.clone(),
         resulting_working_revision: committed_journal.revisions.working_revision,
         resulting_saved_revision: committed_journal.revisions.saved_revision,
+        command_result: Some(command_result),
     };
     Ok(PreparedWorkspaceSaveTransactionV1 {
         inner: Mutex::new(WorkspaceSaveTransactionStateV1 {
@@ -7180,12 +7357,19 @@ pub fn prepare_workspace_delete_transaction_v1(
         workspace_id: request.expected_workspace_id.clone(),
         operation: operation.clone(),
     };
+    let command_result = workspace_command_result_v1(
+        request.expected_workspace_id.clone(),
+        operation.clone(),
+        WorkspaceProjectionPublicationKind::WorkspaceDeleted,
+        None,
+    )?;
     let receipt = WorkspaceDeleteCommitReceiptV1 {
         workspace_id: request.expected_workspace_id,
         operation_id: tombstone.operation_id.clone(),
         request_digest: request_digest.clone(),
         catalog: catalog.clone(),
         tombstone,
+        command_result: Some(command_result),
     };
     Ok(PreparedWorkspaceDeleteTransactionV1 {
         inner: Mutex::new(WorkspaceDeleteTransactionStateV1 {
@@ -12423,6 +12607,21 @@ mod tests {
                     receipt.document_digest,
                     format!("{:x}", Sha256::digest(&document))
                 );
+                let command_result = receipt
+                    .command_result
+                    .as_ref()
+                    .expect("claimed create result receipt");
+                assert_eq!(command_result.workspace_id, WORKSPACE_ID);
+                assert_eq!(command_result.operation.operation_id, receipt.operation_id);
+                assert_eq!(
+                    command_result.disposition,
+                    WorkspaceCommandResultDispositionV1::Applied
+                );
+                assert_eq!(
+                    command_result.publication_kind,
+                    WorkspaceProjectionPublicationKind::WorkspaceCreated
+                );
+                assert_eq!(command_result.catalog_revision, receipt.catalog.revision);
                 final_receipt = Some(receipt);
             }
             let result = transaction
@@ -12491,6 +12690,7 @@ mod tests {
         };
         assert_eq!(action_id, 1);
         assert!(receipt.saved_revision.is_none());
+        assert!(receipt.command_result.is_none());
         assert_eq!(receipt.catalog.deletion_count, 0);
         assert_eq!(receipt.catalog.entry_count, 1);
         assert_eq!(
@@ -12597,6 +12797,21 @@ mod tests {
         assert_eq!(receipt.workspace_id, WORKSPACE_ID);
         assert_eq!(receipt.operation_id, OPERATION_ID);
         assert_eq!(receipt.catalog.content_digest, digest);
+        let command_result = receipt
+            .command_result
+            .as_ref()
+            .expect("delete result receipt");
+        assert_eq!(command_result.workspace_id, WORKSPACE_ID);
+        assert_eq!(command_result.operation.operation_id, OPERATION_ID);
+        assert_eq!(
+            command_result.disposition,
+            WorkspaceCommandResultDispositionV1::Deleted
+        );
+        assert_eq!(
+            command_result.publication_kind,
+            WorkspaceProjectionPublicationKind::WorkspaceDeleted
+        );
+        assert_eq!(command_result.catalog_revision, receipt.catalog.revision);
         assert!(!transaction.is_authoritative());
 
         let committed = transaction
@@ -12875,6 +13090,21 @@ mod tests {
         };
         assert_eq!(receipt.catalog_revision, 9);
         assert_eq!(receipt.document_digest, document_digest);
+        let command_result = receipt
+            .command_result
+            .as_ref()
+            .expect("save result receipt");
+        assert_eq!(command_result.workspace_id, WORKSPACE_ID);
+        assert_eq!(command_result.operation.operation_id, receipt.operation_id);
+        assert_eq!(
+            command_result.disposition,
+            WorkspaceCommandResultDispositionV1::Applied
+        );
+        assert_eq!(
+            command_result.publication_kind,
+            WorkspaceProjectionPublicationKind::SavedDocumentCommitted
+        );
+        assert_eq!(command_result.catalog_revision, receipt.catalog_revision);
         assert!(!transaction.is_authoritative());
 
         let committed_journal = transaction

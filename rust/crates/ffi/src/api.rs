@@ -18,16 +18,17 @@ use crate::types::{
     CoreWorkspaceCommandAdmissionDiagnosticsV1, CoreWorkspaceCommandAdmissionLookupScopeV1,
     CoreWorkspaceCommandAdmissionRecoveryReceiptV1, CoreWorkspaceCommandIdentityRequestV1,
     CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCommandIdentityV1,
-    CoreWorkspaceCommandLifecycleDirectiveV1, CoreWorkspaceCreateDirectiveV1,
-    CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
-    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
-    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceJournalMutationDirectiveV1,
-    CoreWorkspaceJournalMutationTransactionRequestV1, CoreWorkspacePendingSaveRecoveryRequestV1,
-    CoreWorkspacePendingSaveRecoveryV1, CoreWorkspacePersistenceMetadataRequestV1,
-    CoreWorkspacePersistenceMetadataResponseV1, CoreWorkspacePersistenceMetadataValidationV1,
-    CoreWorkspaceRecordedOperationV1, CoreWorkspaceSaveActionReportV1,
-    CoreWorkspaceSaveDirectiveV1, CoreWorkspaceSaveTransactionRequestV1,
-    CoreWorkspaceSemanticFullRecoveryV1, CoreWorkspaceSemanticInitialRecoveryRequestV1,
+    CoreWorkspaceCommandLifecycleDirectiveV1, CoreWorkspaceCommandResultV1,
+    CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
+    CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
+    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
+    CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
+    CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
+    CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
+    CoreWorkspacePersistenceMetadataValidationV1, CoreWorkspaceRecordedOperationV1,
+    CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
+    CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceSemanticFullRecoveryV1,
+    CoreWorkspaceSemanticInitialRecoveryRequestV1,
     CoreWorkspaceSemanticRecoveryAdmissionDispositionV1, CoreWorkspaceSemanticRecoveryPreviewV1,
     CoreWorkspaceSemanticTargetRecoveryV1, CoreWorkspaceWorkingJournalSeedRequestV1,
     CoreWorkspaceWorkingJournalValidationErrorKindV1,
@@ -717,6 +718,7 @@ pub enum CoreWorkspaceCommandFinalizationV1 {
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceCommandAuthorityFinalizationV1 {
     pub command_finalization: CoreWorkspaceCommandFinalizationV1,
+    pub command_result: Option<CoreWorkspaceCommandResultV1>,
     pub authority_publication: Option<CoreWorkspaceAuthorityPublicationReceiptV1>,
 }
 
@@ -753,10 +755,19 @@ fn finish_workspace_command_authorities(
         Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
     >,
     command_claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+    command_result: Option<runtime::workspace_persistence_journal::WorkspaceCommandResultV1>,
 ) -> CoreWorkspaceCommandAuthorityFinalizationV1 {
     let Some(command_claim) = command_claim else {
         return CoreWorkspaceCommandAuthorityFinalizationV1 {
             command_finalization: CoreWorkspaceCommandFinalizationV1::NotApplicable,
+            command_result: None,
+            authority_publication: None,
+        };
+    };
+    let Some(command_result) = command_result else {
+        return CoreWorkspaceCommandAuthorityFinalizationV1 {
+            command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+            command_result: None,
             authority_publication: None,
         };
     };
@@ -767,6 +778,7 @@ fn finish_workspace_command_authorities(
             Err(_) => {
                 return CoreWorkspaceCommandAuthorityFinalizationV1 {
                     command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    command_result: None,
                     authority_publication: None,
                 };
             }
@@ -777,6 +789,7 @@ fn finish_workspace_command_authorities(
                 Err(_) => {
                     return CoreWorkspaceCommandAuthorityFinalizationV1 {
                         command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        command_result: None,
                         authority_publication: None,
                     };
                 }
@@ -786,6 +799,7 @@ fn finish_workspace_command_authorities(
                 Err(_) => {
                     return CoreWorkspaceCommandAuthorityFinalizationV1 {
                         command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        command_result: None,
                         authority_publication: None,
                     };
                 }
@@ -793,18 +807,21 @@ fn finish_workspace_command_authorities(
             let Some(pending) = reservation.as_mut() else {
                 return CoreWorkspaceCommandAuthorityFinalizationV1 {
                     command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    command_result: None,
                     authority_publication: None,
                 };
             };
             let Some(prepared_publication) = publication.as_ref() else {
                 return CoreWorkspaceCommandAuthorityFinalizationV1 {
                     command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    command_result: None,
                     authority_publication: None,
                 };
             };
             let Ok((_, receipt)) = pending.finalize_with_authority(prepared_publication) else {
                 return CoreWorkspaceCommandAuthorityFinalizationV1 {
                     command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    command_result: None,
                     authority_publication: None,
                 };
             };
@@ -829,6 +846,8 @@ fn finish_workspace_command_authorities(
     };
     CoreWorkspaceCommandAuthorityFinalizationV1 {
         command_finalization,
+        command_result: (command_finalization == CoreWorkspaceCommandFinalizationV1::Reconciled)
+            .then_some(command_result.into()),
         authority_publication: authority_receipt.map(Into::into),
     }
 }
@@ -844,11 +863,20 @@ fn finish_workspace_delete_command_authorities(
         Option<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>,
     >,
     command_claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
+    command_result: Option<runtime::workspace_persistence_journal::WorkspaceCommandResultV1>,
     replacement_operation: runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1,
 ) -> CoreWorkspaceCommandAuthorityFinalizationV1 {
     let Some(command_claim) = command_claim else {
         return CoreWorkspaceCommandAuthorityFinalizationV1 {
             command_finalization: CoreWorkspaceCommandFinalizationV1::NotApplicable,
+            command_result: None,
+            authority_publication: None,
+        };
+    };
+    let Some(command_result) = command_result else {
+        return CoreWorkspaceCommandAuthorityFinalizationV1 {
+            command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+            command_result: None,
             authority_publication: None,
         };
     };
@@ -859,6 +887,7 @@ fn finish_workspace_delete_command_authorities(
             Err(_) => {
                 return CoreWorkspaceCommandAuthorityFinalizationV1 {
                     command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    command_result: None,
                     authority_publication: None,
                 };
             }
@@ -869,6 +898,7 @@ fn finish_workspace_delete_command_authorities(
                 Err(_) => {
                     return CoreWorkspaceCommandAuthorityFinalizationV1 {
                         command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        command_result: None,
                         authority_publication: None,
                     };
                 }
@@ -878,6 +908,7 @@ fn finish_workspace_delete_command_authorities(
                 Err(_) => {
                     return CoreWorkspaceCommandAuthorityFinalizationV1 {
                         command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        command_result: None,
                         authority_publication: None,
                     };
                 }
@@ -885,12 +916,14 @@ fn finish_workspace_delete_command_authorities(
             let Some(pending) = reservation.as_mut() else {
                 return CoreWorkspaceCommandAuthorityFinalizationV1 {
                     command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    command_result: None,
                     authority_publication: None,
                 };
             };
             let Some(prepared_publication) = publication.as_ref() else {
                 return CoreWorkspaceCommandAuthorityFinalizationV1 {
                     command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                    command_result: None,
                     authority_publication: None,
                 };
             };
@@ -901,6 +934,7 @@ fn finish_workspace_delete_command_authorities(
                 Err(_error) => {
                     return CoreWorkspaceCommandAuthorityFinalizationV1 {
                         command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        command_result: None,
                         authority_publication: None,
                     };
                 }
@@ -926,6 +960,8 @@ fn finish_workspace_delete_command_authorities(
     };
     CoreWorkspaceCommandAuthorityFinalizationV1 {
         command_finalization,
+        command_result: (command_finalization == CoreWorkspaceCommandFinalizationV1::Reconciled)
+            .then_some(command_result.into()),
         authority_publication: authority_receipt.map(Into::into),
     }
 }
@@ -1172,6 +1208,7 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
                         &self.authority_publication,
                         &self.authority_publication_receipt,
                         self.command_claim.as_ref(),
+self.inner.command_result().ok().flatten(),
                     );
                 } else if matches!(
                     result,
@@ -1196,6 +1233,7 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
                     &self.authority_publication,
                     &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
+self.inner.command_result().ok().flatten(),
                 );
             } else if matches!(
                 result,
@@ -1229,6 +1267,7 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
                 &self.authority_publication,
                 &self.authority_publication_receipt,
                 self.command_claim.as_ref(),
+                self.inner.command_result().ok().flatten(),
             ))
         })
     }
@@ -1245,6 +1284,7 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
                     &self.authority_publication,
                     &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
                 );
             } else {
                 cancel_workspace_command_authorities(
@@ -1402,6 +1442,7 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
                     &self.authority_publication,
                     &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
                 );
             } else if matches!(
                 result,
@@ -1438,6 +1479,7 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
                 &self.authority_publication,
                 &self.authority_publication_receipt,
                 self.command_claim.as_ref(),
+                self.inner.command_result().ok().flatten(),
             ))
         })
     }
@@ -1454,6 +1496,7 @@ impl CorePreparedWorkspaceSaveTransactionV1 {
                     &self.authority_publication,
                     &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
                 );
             } else {
                 cancel_workspace_command_authorities(
@@ -1643,6 +1686,7 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
                     &self.authority_publication,
                     &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
+self.inner.command_result().ok().flatten(),
                 );
             } else if matches!(
                 result,
@@ -1676,6 +1720,7 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
                 &self.authority_publication,
                 &self.authority_publication_receipt,
                 self.command_claim.as_ref(),
+                self.inner.command_result().ok().flatten(),
             ))
         })
     }
@@ -1692,6 +1737,7 @@ impl CorePreparedWorkspaceCreateTransactionV1 {
                     &self.authority_publication,
                     &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
                 );
             } else {
                 cancel_workspace_command_authorities(
@@ -1781,6 +1827,7 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
                     &self.authority_publication,
                     &self.authority_publication_receipt,
                     self.command_claim.as_ref(),
+                    self.inner.command_result().ok().flatten(),
                     plan.operation,
                 );
                 CoreWorkspaceDeleteCleanupFinalizationResponseV1 {
@@ -1796,6 +1843,7 @@ impl CorePreparedWorkspaceDeleteTransactionV1 {
                     tombstone: None,
                     authority_finalization: CoreWorkspaceCommandAuthorityFinalizationV1 {
                         command_finalization: CoreWorkspaceCommandFinalizationV1::Unreconciled,
+                        command_result: None,
                         authority_publication: self
                             .authority_publication_receipt
                             .lock()
@@ -5329,6 +5377,19 @@ mod tests {
                 },
             )
             .expect("mirror publication");
+        let command_result = runtime::workspace_persistence_journal::WorkspaceCommandResultV1 {
+            workspace_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+            operation: mirror_operation.clone().into(),
+            disposition:
+                runtime::workspace_persistence_journal::WorkspaceCommandResultDispositionV1::Deleted,
+            before: mirror_operation.before.map(Into::into),
+            after: mirror_operation.after.map(Into::into),
+            resulting_digest: mirror_operation.resulting_digest.clone(),
+            catalog_revision: mirror_operation.catalog_revision,
+            publication_kind:
+                runtime::workspace_context::WorkspaceProjectionPublicationKind::WorkspaceDeleted,
+            context_id: None,
+        };
         mirror_claim
             .lifecycle
             .resolve_terminal(runtime::TerminalOutcome::Failed)
@@ -5339,26 +5400,43 @@ mod tests {
                 &Mutex::new(None),
                 &Mutex::new(None),
                 None,
+                None,
             ),
             CoreWorkspaceCommandAuthorityFinalizationV1 {
                 command_finalization: CoreWorkspaceCommandFinalizationV1::NotApplicable,
+                command_result: None,
                 authority_publication: None,
             }
         );
         let reservation = Mutex::new(Some(reservation));
         let publication = Mutex::new(Some(publication));
         let publication_receipt = Mutex::new(None);
+        let missing_result = finish_workspace_command_authorities(
+            &reservation,
+            &publication,
+            &publication_receipt,
+            Some(&mirror_claim),
+            None,
+        );
+        assert_eq!(
+            missing_result.command_finalization,
+            CoreWorkspaceCommandFinalizationV1::Unreconciled
+        );
+        assert!(missing_result.command_result.is_none());
+        assert!(missing_result.authority_publication.is_none());
         let finalization = finish_workspace_command_authorities(
             &reservation,
             &publication,
             &publication_receipt,
             Some(&mirror_claim),
+            Some(command_result),
         );
         assert_eq!(
             finalization.command_finalization,
             CoreWorkspaceCommandFinalizationV1::Unreconciled,
             "a lifecycle mirror failure after the P5 receipt must not replace authority success"
         );
+        assert!(finalization.command_result.is_none());
         assert!(finalization.authority_publication.is_some());
         drop(authority_permit);
         assert_eq!(

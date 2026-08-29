@@ -2048,6 +2048,7 @@ package struct DomainPersistenceCoordinator {
                 && lhs.committedJournal.canonicalBytes == rhs.committedJournal.canonicalBytes
                 && lhs.savedRevision?.contentDigest == rhs.savedRevision?.contentDigest
                 && lhs.savedRevision?.canonicalBytes == rhs.savedRevision?.canonicalBytes
+                && lhs.commandResult == rhs.commandResult
         }
 
         func activatedOutcome() -> (
@@ -2411,6 +2412,7 @@ package struct DomainPersistenceCoordinator {
                     && lhs.committedJournal.canonicalBytes == rhs.committedJournal.canonicalBytes
                     && lhs.savedRevision.contentDigest == rhs.savedRevision.contentDigest
                     && lhs.savedRevision.canonicalBytes == rhs.savedRevision.canonicalBytes
+                    && lhs.commandResult == rhs.commandResult
             }
 
             func activatedCommit() -> DomainPersistenceSavedCommit? {

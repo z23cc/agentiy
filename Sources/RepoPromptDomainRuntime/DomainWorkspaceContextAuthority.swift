@@ -1924,17 +1924,13 @@ actor DomainWorkspaceContextAuthority {
                 origin: envelope.origin,
                 diagnostic: nil
             )
-            let outcome = DomainCommandOutcome(
-                operationID: envelope.operationID,
-                disposition: .applied,
-                before: nil,
-                after: record.revisions,
-                catalogRevision: catalogRevision,
-                resultingDigest: document.contentDigest,
-                workspace: makeSnapshot(record)
+            return commandResultOutcome(
+                persisted.authorityFinalization,
+                envelope: envelope,
+                workspace: makeSnapshot(record),
+                byteCount: document.documentBytes.count,
+                diagnostic: nil
             )
-            recordMetric(envelope: envelope, outcome: outcome, byteCount: document.documentBytes.count)
-            return outcome
         } catch let error as DomainPersistenceError {
             if case .runtimeShutdownRequested = error {
                 return finalizeLifecycleShutdown(
@@ -2044,17 +2040,13 @@ actor DomainWorkspaceContextAuthority {
                 origin: envelope.origin,
                 diagnostic: cleanupDiagnostic
             )
-            let outcome = DomainCommandOutcome(
-                operationID: envelope.operationID,
-                disposition: .applied,
-                before: record.revisions,
-                after: nil,
-                catalogRevision: catalogRevision,
-                resultingDigest: nil,
+            return commandResultOutcome(
+                deleted.authorityFinalization,
+                envelope: envelope,
+                workspace: nil,
+                byteCount: 0,
                 diagnostic: cleanupDiagnostic
             )
-            recordMetric(envelope: envelope, outcome: outcome, byteCount: 0)
-            return outcome
         } catch let error as DomainPersistenceError {
             if case .runtimeShutdownRequested = error {
                 return finalizeLifecycleShutdown(
@@ -2254,17 +2246,13 @@ actor DomainWorkspaceContextAuthority {
                 origin: envelope.origin,
                 diagnostic: authorityDiagnostic
             )
-            let applied = DomainCommandOutcome(
-                operationID: envelope.operationID,
-                disposition: .applied,
-                before: before,
-                after: record.revisions,
-                catalogRevision: catalogRevision,
-                resultingDigest: document.contentDigest,
-                workspace: makeSnapshot(record)
+            return commandResultOutcome(
+                persisted.authorityFinalization,
+                envelope: envelope,
+                workspace: makeSnapshot(record),
+                byteCount: document.documentBytes.count,
+                diagnostic: authorityDiagnostic
             )
-            recordMetric(envelope: envelope, outcome: applied, byteCount: document.documentBytes.count)
-            return applied
         }
 
         return finalizeTransientOutcome(
@@ -2318,6 +2306,11 @@ actor DomainWorkspaceContextAuthority {
         let before = record.revisions
         let now = Date()
         let authorityDiagnostic = allowsExternalRecovery ? nil : "external_document_rebased_and_saved"
+        var authorityFinalization = DomainWorkspaceCommandAuthorityFinalization(
+            commandFinalization: .unreconciled,
+            commandResult: nil,
+            authorityPublication: nil
+        )
         do {
             let saved = try await persistence.persistSaved(
                 document: record.document,
@@ -2334,8 +2327,9 @@ actor DomainWorkspaceContextAuthority {
             record.contextRevisions = saved.journal.contextRevisions
             record.operations = saved.journal.operations
             records[workspaceID] = record
+            authorityFinalization = saved.authorityFinalization
             installCommandAuthorityFinalization(
-                saved.authorityFinalization,
+                authorityFinalization,
                 lifecycleWorkspaceID: workspaceID,
                 origin: envelope.origin,
                 diagnostic: authorityDiagnostic
@@ -2509,17 +2503,13 @@ actor DomainWorkspaceContextAuthority {
         } catch {
             return persistenceFailureOutcome(envelope, record: record, error: error)
         }
-        let applied = DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .applied,
-            before: before,
-            after: record.revisions,
-            catalogRevision: catalogRevision,
-            resultingDigest: record.document.contentDigest,
-            workspace: makeSnapshot(record)
+        return commandResultOutcome(
+            authorityFinalization,
+            envelope: envelope,
+            workspace: makeSnapshot(record),
+            byteCount: record.document.documentBytes.count,
+            diagnostic: authorityDiagnostic
         )
-        recordMetric(envelope: envelope, outcome: applied, byteCount: record.document.documentBytes.count)
-        return applied
     }
 
     private func resolveExternalConflict(
@@ -2578,6 +2568,7 @@ actor DomainWorkspaceContextAuthority {
             : "local_conflict_rebased"
         var authorityFinalization = DomainWorkspaceCommandAuthorityFinalization(
             commandFinalization: .unreconciled,
+            commandResult: nil,
             authorityPublication: nil
         )
         do {
@@ -2667,15 +2658,65 @@ actor DomainWorkspaceContextAuthority {
             origin: envelope.origin,
             diagnostic: authorityDiagnostic
         )
-        let outcome = DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .applied,
-            before: before,
-            after: record.revisions,
-            catalogRevision: catalogRevision,
-            resultingDigest: record.document.contentDigest,
-            workspace: makeSnapshot(record)
+        return commandResultOutcome(
+            authorityFinalization,
+            envelope: envelope,
+            workspace: makeSnapshot(record),
+            byteCount: record.document.documentBytes.count,
+            diagnostic: authorityDiagnostic
         )
+    }
+
+    private func commandResultOutcome(
+        _ finalization: DomainWorkspaceCommandAuthorityFinalization,
+        envelope: DomainWorkspaceCommandEnvelope,
+        workspace: DomainWorkspaceSnapshot?,
+        byteCount: Int,
+        diagnostic: String?
+    ) -> DomainCommandOutcome {
+        let valid: Bool = {
+            guard finalization.commandFinalization == .reconciled,
+                  let result = finalization.commandResult,
+                  let publication = finalization.authorityPublication,
+                  let expectedWorkspaceID = envelope.workspaceID,
+                  result.workspaceID == expectedWorkspaceID,
+                  result.operation.operationID == envelope.operationID,
+                  publication.catalogRevision == result.catalogRevision,
+                  publication.publicationSequence == self.publicationSequence,
+                  publication.event.kind == result.publicationKind,
+                  publication.event.operationID == result.operation.operationID
+            else { return false }
+            return true
+        }()
+        guard valid,
+              let result = finalization.commandResult
+        else {
+            let outcome = DomainCommandOutcome(
+                operationID: envelope.operationID,
+                disposition: .failed,
+                before: workspace?.revisions,
+                after: workspace?.revisions,
+                catalogRevision: catalogRevision,
+                resultingDigest: workspace?.document.contentDigest,
+                errorCode: .persistenceFailure,
+                diagnostic: "workspace_command_result_receipt_missing",
+                workspace: workspace
+            )
+            recordMetric(envelope: envelope, outcome: outcome, byteCount: byteCount)
+            return outcome
+        }
+        let operation = result.operation
+        let outcome = DomainCommandOutcome(
+            operationID: operation.operationID,
+            disposition: operation.disposition,
+            before: operation.before,
+            after: operation.after,
+            catalogRevision: result.catalogRevision,
+            resultingDigest: result.resultingDigest,
+            diagnostic: diagnostic,
+            workspace: workspace
+        )
+        recordMetric(envelope: envelope, outcome: outcome, byteCount: byteCount)
         return outcome
     }
 
@@ -2712,7 +2753,14 @@ actor DomainWorkspaceContextAuthority {
               receipt.catalogRevision == catalogRevision,
               receipt.event.sequence == receipt.publicationSequence,
               receipt.event.catalogRevision == receipt.catalogRevision,
-              receipt.event.workspaceID == lifecycleWorkspaceID || lifecycleWorkspaceID == nil
+              receipt.event.workspaceID == lifecycleWorkspaceID || lifecycleWorkspaceID == nil,
+              (finalization.commandFinalization == .reconciled
+                  ? finalization.commandResult.map {
+                      $0.catalogRevision == receipt.catalogRevision
+                          && $0.publicationKind == receipt.event.kind
+                          && $0.operation.operationID == receipt.event.operationID
+                  } == true
+                  : finalization.commandResult == nil)
         else {
             quarantineCommandAdmission()
             markCommandAdmissionReceiptMissing(workspaceID: lifecycleWorkspaceID)
@@ -3119,19 +3167,10 @@ actor DomainWorkspaceContextAuthority {
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
         var record = original
-        let outcome = DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .unchanged,
-            before: record.revisions,
-            after: record.revisions,
-            catalogRevision: catalogRevision,
-            resultingDigest: record.document.contentDigest,
-            workspace: makeSnapshot(record)
-        )
         let operation = DomainRecordedOperation(
+            operationID: envelope.operationID,
             fingerprint: fingerprint,
-            recordedAt: Date(),
-            outcome: outcome
+            recordedAt: Date()
         )
         do {
             let persisted = try await persistence.persistUnchanged(
@@ -3151,7 +3190,13 @@ actor DomainWorkspaceContextAuthority {
                 origin: envelope.origin,
                 diagnostic: nil
             )
-            return outcome
+            return commandResultOutcome(
+                persisted.authorityFinalization,
+                envelope: envelope,
+                workspace: makeSnapshot(record),
+                byteCount: record.document.documentBytes.count,
+                diagnostic: nil
+            )
         } catch {
             return persistenceFailureOutcome(envelope, record: record, error: error)
         }

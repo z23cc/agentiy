@@ -7733,12 +7733,14 @@ public func FfiConverterTypeCoreWorkspaceCommandAdmissionRecoveryReceiptV1_lower
 
 public struct CoreWorkspaceCommandAuthorityFinalizationV1: Equatable, Hashable {
     public let commandFinalization: CoreWorkspaceCommandFinalizationV1
+    public let commandResult: CoreWorkspaceCommandResultV1?
     public let authorityPublication: CoreWorkspaceAuthorityPublicationReceiptV1?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(commandFinalization: CoreWorkspaceCommandFinalizationV1, authorityPublication: CoreWorkspaceAuthorityPublicationReceiptV1?) {
+    public init(commandFinalization: CoreWorkspaceCommandFinalizationV1, commandResult: CoreWorkspaceCommandResultV1?, authorityPublication: CoreWorkspaceAuthorityPublicationReceiptV1?) {
         self.commandFinalization = commandFinalization
+        self.commandResult = commandResult
         self.authorityPublication = authorityPublication
     }
 
@@ -7759,12 +7761,14 @@ public struct FfiConverterTypeCoreWorkspaceCommandAuthorityFinalizationV1: FfiCo
         return
             try CoreWorkspaceCommandAuthorityFinalizationV1(
                 commandFinalization: FfiConverterTypeCoreWorkspaceCommandFinalizationV1.read(from: &buf),
+                commandResult: FfiConverterOptionTypeCoreWorkspaceCommandResultV1.read(from: &buf),
                 authorityPublication: FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationReceiptV1.read(from: &buf)
         )
     }
 
     public static func write(_ value: CoreWorkspaceCommandAuthorityFinalizationV1, into buf: inout [UInt8]) {
         FfiConverterTypeCoreWorkspaceCommandFinalizationV1.write(value.commandFinalization, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandResultV1.write(value.commandResult, into: &buf)
         FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationReceiptV1.write(value.authorityPublication, into: &buf)
     }
 }
@@ -7999,6 +8003,88 @@ public func FfiConverterTypeCoreWorkspaceCommandIdentityV1_lower(_ value: CoreWo
 }
 
 
+public struct CoreWorkspaceCommandResultV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let operation: CoreWorkspaceRecordedOperationV1
+    public let disposition: CoreWorkspaceCommandResultDispositionV1
+    public let before: CoreWorkspaceProjectionRevisionStateV1?
+    public let after: CoreWorkspaceProjectionRevisionStateV1?
+    public let resultingDigest: String?
+    public let catalogRevision: UInt64
+    public let publicationKind: CoreWorkspaceProjectionPublicationKindV1
+    public let contextId: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, operation: CoreWorkspaceRecordedOperationV1, disposition: CoreWorkspaceCommandResultDispositionV1, before: CoreWorkspaceProjectionRevisionStateV1?, after: CoreWorkspaceProjectionRevisionStateV1?, resultingDigest: String?, catalogRevision: UInt64, publicationKind: CoreWorkspaceProjectionPublicationKindV1, contextId: String?) {
+        self.workspaceId = workspaceId
+        self.operation = operation
+        self.disposition = disposition
+        self.before = before
+        self.after = after
+        self.resultingDigest = resultingDigest
+        self.catalogRevision = catalogRevision
+        self.publicationKind = publicationKind
+        self.contextId = contextId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandResultV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandResultV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandResultV1 {
+        return
+            try CoreWorkspaceCommandResultV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                operation: FfiConverterTypeCoreWorkspaceRecordedOperationV1.read(from: &buf),
+                disposition: FfiConverterTypeCoreWorkspaceCommandResultDispositionV1.read(from: &buf),
+                before: FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.read(from: &buf),
+                after: FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.read(from: &buf),
+                resultingDigest: FfiConverterOptionString.read(from: &buf),
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                publicationKind: FfiConverterTypeCoreWorkspaceProjectionPublicationKindV1.read(from: &buf),
+                contextId: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandResultV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterTypeCoreWorkspaceRecordedOperationV1.write(value.operation, into: &buf)
+        FfiConverterTypeCoreWorkspaceCommandResultDispositionV1.write(value.disposition, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.write(value.before, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.write(value.after, into: &buf)
+        FfiConverterOptionString.write(value.resultingDigest, into: &buf)
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionPublicationKindV1.write(value.publicationKind, into: &buf)
+        FfiConverterOptionString.write(value.contextId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandResultV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandResultV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandResultV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandResultV1_lower(_ value: CoreWorkspaceCommandResultV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandResultV1.lower(value)
+}
+
+
 public struct CoreWorkspaceCommandTransientFinalizationResponseV1: Equatable, Hashable {
     public let operation: CoreWorkspaceRecordedOperationV1?
     public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
@@ -8193,10 +8279,11 @@ public struct CoreWorkspaceCreateCommitReceiptV1: Equatable, Hashable {
     public let catalog: CoreWorkspaceCatalogValidationV1
     public let committedJournal: CoreWorkspaceWorkingJournalValidationV1
     public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceId: String, operationId: String, requestDigest: String, documentDigest: String, catalog: CoreWorkspaceCatalogValidationV1, committedJournal: CoreWorkspaceWorkingJournalValidationV1, savedRevision: CoreWorkspacePersistenceMetadataValidationV1?) {
+    public init(workspaceId: String, operationId: String, requestDigest: String, documentDigest: String, catalog: CoreWorkspaceCatalogValidationV1, committedJournal: CoreWorkspaceWorkingJournalValidationV1, savedRevision: CoreWorkspacePersistenceMetadataValidationV1?, commandResult: CoreWorkspaceCommandResultV1?) {
         self.workspaceId = workspaceId
         self.operationId = operationId
         self.requestDigest = requestDigest
@@ -8204,6 +8291,7 @@ public struct CoreWorkspaceCreateCommitReceiptV1: Equatable, Hashable {
         self.catalog = catalog
         self.committedJournal = committedJournal
         self.savedRevision = savedRevision
+        self.commandResult = commandResult
     }
 
 
@@ -8228,7 +8316,8 @@ public struct FfiConverterTypeCoreWorkspaceCreateCommitReceiptV1: FfiConverterRu
                 documentDigest: FfiConverterString.read(from: &buf),
                 catalog: FfiConverterTypeCoreWorkspaceCatalogValidationV1.read(from: &buf),
                 committedJournal: FfiConverterTypeCoreWorkspaceWorkingJournalValidationV1.read(from: &buf),
-                savedRevision: FfiConverterOptionTypeCoreWorkspacePersistenceMetadataValidationV1.read(from: &buf)
+                savedRevision: FfiConverterOptionTypeCoreWorkspacePersistenceMetadataValidationV1.read(from: &buf),
+                commandResult: FfiConverterOptionTypeCoreWorkspaceCommandResultV1.read(from: &buf)
         )
     }
 
@@ -8240,6 +8329,7 @@ public struct FfiConverterTypeCoreWorkspaceCreateCommitReceiptV1: FfiConverterRu
         FfiConverterTypeCoreWorkspaceCatalogValidationV1.write(value.catalog, into: &buf)
         FfiConverterTypeCoreWorkspaceWorkingJournalValidationV1.write(value.committedJournal, into: &buf)
         FfiConverterOptionTypeCoreWorkspacePersistenceMetadataValidationV1.write(value.savedRevision, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandResultV1.write(value.commandResult, into: &buf)
     }
 }
 
@@ -8521,15 +8611,17 @@ public struct CoreWorkspaceDeleteCommitReceiptV1: Equatable, Hashable {
     public let requestDigest: String
     public let catalog: CoreWorkspaceCatalogValidationV1
     public let tombstone: CoreWorkspacePersistenceMetadataValidationV1
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceId: String, operationId: String, requestDigest: String, catalog: CoreWorkspaceCatalogValidationV1, tombstone: CoreWorkspacePersistenceMetadataValidationV1) {
+    public init(workspaceId: String, operationId: String, requestDigest: String, catalog: CoreWorkspaceCatalogValidationV1, tombstone: CoreWorkspacePersistenceMetadataValidationV1, commandResult: CoreWorkspaceCommandResultV1?) {
         self.workspaceId = workspaceId
         self.operationId = operationId
         self.requestDigest = requestDigest
         self.catalog = catalog
         self.tombstone = tombstone
+        self.commandResult = commandResult
     }
 
 
@@ -8552,7 +8644,8 @@ public struct FfiConverterTypeCoreWorkspaceDeleteCommitReceiptV1: FfiConverterRu
                 operationId: FfiConverterString.read(from: &buf),
                 requestDigest: FfiConverterString.read(from: &buf),
                 catalog: FfiConverterTypeCoreWorkspaceCatalogValidationV1.read(from: &buf),
-                tombstone: FfiConverterTypeCoreWorkspacePersistenceMetadataValidationV1.read(from: &buf)
+                tombstone: FfiConverterTypeCoreWorkspacePersistenceMetadataValidationV1.read(from: &buf),
+                commandResult: FfiConverterOptionTypeCoreWorkspaceCommandResultV1.read(from: &buf)
         )
     }
 
@@ -8562,6 +8655,7 @@ public struct FfiConverterTypeCoreWorkspaceDeleteCommitReceiptV1: FfiConverterRu
         FfiConverterString.write(value.requestDigest, into: &buf)
         FfiConverterTypeCoreWorkspaceCatalogValidationV1.write(value.catalog, into: &buf)
         FfiConverterTypeCoreWorkspacePersistenceMetadataValidationV1.write(value.tombstone, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandResultV1.write(value.commandResult, into: &buf)
     }
 }
 
@@ -8907,10 +9001,11 @@ public struct CoreWorkspaceJournalMutationCommitReceiptV1: Equatable, Hashable {
     public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1?
     public let resultingWorkingRevision: UInt64
     public let resultingSavedRevision: UInt64
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceId: String, requestDigest: String, catalogRevision: UInt64, committedJournal: CoreWorkspaceWorkingJournalValidationV1, savedRevision: CoreWorkspacePersistenceMetadataValidationV1?, resultingWorkingRevision: UInt64, resultingSavedRevision: UInt64) {
+    public init(workspaceId: String, requestDigest: String, catalogRevision: UInt64, committedJournal: CoreWorkspaceWorkingJournalValidationV1, savedRevision: CoreWorkspacePersistenceMetadataValidationV1?, resultingWorkingRevision: UInt64, resultingSavedRevision: UInt64, commandResult: CoreWorkspaceCommandResultV1?) {
         self.workspaceId = workspaceId
         self.requestDigest = requestDigest
         self.catalogRevision = catalogRevision
@@ -8918,6 +9013,7 @@ public struct CoreWorkspaceJournalMutationCommitReceiptV1: Equatable, Hashable {
         self.savedRevision = savedRevision
         self.resultingWorkingRevision = resultingWorkingRevision
         self.resultingSavedRevision = resultingSavedRevision
+        self.commandResult = commandResult
     }
 
 
@@ -8942,7 +9038,8 @@ public struct FfiConverterTypeCoreWorkspaceJournalMutationCommitReceiptV1: FfiCo
                 committedJournal: FfiConverterTypeCoreWorkspaceWorkingJournalValidationV1.read(from: &buf),
                 savedRevision: FfiConverterOptionTypeCoreWorkspacePersistenceMetadataValidationV1.read(from: &buf),
                 resultingWorkingRevision: FfiConverterUInt64.read(from: &buf),
-                resultingSavedRevision: FfiConverterUInt64.read(from: &buf)
+                resultingSavedRevision: FfiConverterUInt64.read(from: &buf),
+                commandResult: FfiConverterOptionTypeCoreWorkspaceCommandResultV1.read(from: &buf)
         )
     }
 
@@ -8954,6 +9051,7 @@ public struct FfiConverterTypeCoreWorkspaceJournalMutationCommitReceiptV1: FfiCo
         FfiConverterOptionTypeCoreWorkspacePersistenceMetadataValidationV1.write(value.savedRevision, into: &buf)
         FfiConverterUInt64.write(value.resultingWorkingRevision, into: &buf)
         FfiConverterUInt64.write(value.resultingSavedRevision, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandResultV1.write(value.commandResult, into: &buf)
     }
 }
 
@@ -9929,10 +10027,11 @@ public struct CoreWorkspaceSaveCommitReceiptV1: Equatable, Hashable {
     public let savedRevision: CoreWorkspacePersistenceMetadataValidationV1
     public let resultingWorkingRevision: UInt64
     public let resultingSavedRevision: UInt64
+    public let commandResult: CoreWorkspaceCommandResultV1?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceId: String, operationId: String, requestDigest: String, catalogRevision: UInt64, documentDigest: String, committedJournal: CoreWorkspaceWorkingJournalValidationV1, savedRevision: CoreWorkspacePersistenceMetadataValidationV1, resultingWorkingRevision: UInt64, resultingSavedRevision: UInt64) {
+    public init(workspaceId: String, operationId: String, requestDigest: String, catalogRevision: UInt64, documentDigest: String, committedJournal: CoreWorkspaceWorkingJournalValidationV1, savedRevision: CoreWorkspacePersistenceMetadataValidationV1, resultingWorkingRevision: UInt64, resultingSavedRevision: UInt64, commandResult: CoreWorkspaceCommandResultV1?) {
         self.workspaceId = workspaceId
         self.operationId = operationId
         self.requestDigest = requestDigest
@@ -9942,6 +10041,7 @@ public struct CoreWorkspaceSaveCommitReceiptV1: Equatable, Hashable {
         self.savedRevision = savedRevision
         self.resultingWorkingRevision = resultingWorkingRevision
         self.resultingSavedRevision = resultingSavedRevision
+        self.commandResult = commandResult
     }
 
 
@@ -9968,7 +10068,8 @@ public struct FfiConverterTypeCoreWorkspaceSaveCommitReceiptV1: FfiConverterRust
                 committedJournal: FfiConverterTypeCoreWorkspaceWorkingJournalValidationV1.read(from: &buf),
                 savedRevision: FfiConverterTypeCoreWorkspacePersistenceMetadataValidationV1.read(from: &buf),
                 resultingWorkingRevision: FfiConverterUInt64.read(from: &buf),
-                resultingSavedRevision: FfiConverterUInt64.read(from: &buf)
+                resultingSavedRevision: FfiConverterUInt64.read(from: &buf),
+                commandResult: FfiConverterOptionTypeCoreWorkspaceCommandResultV1.read(from: &buf)
         )
     }
 
@@ -9982,6 +10083,7 @@ public struct FfiConverterTypeCoreWorkspaceSaveCommitReceiptV1: FfiConverterRust
         FfiConverterTypeCoreWorkspacePersistenceMetadataValidationV1.write(value.savedRevision, into: &buf)
         FfiConverterUInt64.write(value.resultingWorkingRevision, into: &buf)
         FfiConverterUInt64.write(value.resultingSavedRevision, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceCommandResultV1.write(value.commandResult, into: &buf)
     }
 }
 
@@ -15577,6 +15679,79 @@ public func FfiConverterTypeCoreWorkspaceCommandOriginV1_lower(_ value: CoreWork
 
 
 
+public enum CoreWorkspaceCommandResultDispositionV1: Equatable, Hashable {
+
+    case applied
+    case unchanged
+    case deleted
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceCommandResultDispositionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceCommandResultDispositionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandResultDispositionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceCommandResultDispositionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .applied
+
+        case 2: return .unchanged
+
+        case 3: return .deleted
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceCommandResultDispositionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .applied:
+            writeInt(&buf, Int32(1))
+
+
+        case .unchanged:
+            writeInt(&buf, Int32(2))
+
+
+        case .deleted:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandResultDispositionV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceCommandResultDispositionV1 {
+    return try FfiConverterTypeCoreWorkspaceCommandResultDispositionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceCommandResultDispositionV1_lower(_ value: CoreWorkspaceCommandResultDispositionV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceCommandResultDispositionV1.lower(value)
+}
+
+
+
+
 public enum CoreWorkspaceCreateActionKindV1: Equatable, Hashable {
 
     case writePendingJournal
@@ -19333,6 +19508,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandIdentityV1: FfiConv
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCoreWorkspaceCommandIdentityV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandResultV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceCommandResultV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceCommandResultV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceCommandResultV1.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

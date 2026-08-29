@@ -829,6 +829,19 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             .reconciled,
             String(describing: finalized)
         )
+        let commandResult = try XCTUnwrap(
+            finalized.authorityFinalization.commandResult,
+            String(describing: finalized)
+        )
+        XCTAssertEqual(commandResult.workspaceID, workspaceID)
+        XCTAssertEqual(commandResult.operation.operationID, operationID)
+        XCTAssertEqual(commandResult.operation.fingerprint, fingerprint)
+        XCTAssertEqual(commandResult.disposition, .deleted)
+        XCTAssertEqual(commandResult.before, revisions)
+        XCTAssertNil(commandResult.after)
+        XCTAssertEqual(commandResult.catalogRevision, 1)
+        XCTAssertEqual(commandResult.publicationKind, .workspaceDeleted)
+        XCTAssertNil(commandResult.contextID)
         XCTAssertEqual(finalized.authorityFinalization.authorityPublication?.catalogRevision, 1)
         XCTAssertEqual(finalized.tombstone?.canonicalBytes, firstPlan.canonicalBytes)
         let retryWarnings = ["different retry must not replace the first terminal receipt"]
@@ -840,6 +853,10 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         XCTAssertEqual(
             repeatedFinalization.authorityFinalization.authorityPublication,
             finalized.authorityFinalization.authorityPublication
+        )
+        XCTAssertEqual(
+            repeatedFinalization.authorityFinalization.commandResult,
+            finalized.authorityFinalization.commandResult
         )
         XCTAssertEqual(repeatedFinalization.tombstone?.canonicalBytes, firstPlan.canonicalBytes)
 

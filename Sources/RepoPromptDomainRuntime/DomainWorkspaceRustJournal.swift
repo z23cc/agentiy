@@ -260,8 +260,27 @@ enum DomainWorkspaceCommandFinalization: Sendable, Equatable {
     case unreconciled
 }
 
+enum DomainWorkspaceCommandResultDisposition: Sendable, Equatable {
+    case applied
+    case unchanged
+    case deleted
+}
+
+struct DomainWorkspaceCommandResult: Sendable, Equatable {
+    let workspaceID: UUID
+    let operation: DomainRecordedOperation
+    let disposition: DomainWorkspaceCommandResultDisposition
+    let before: DomainRevisionState?
+    let after: DomainRevisionState?
+    let resultingDigest: String?
+    let catalogRevision: UInt64
+    let publicationKind: DomainWorkspaceEventKind
+    let contextID: UUID?
+}
+
 struct DomainWorkspaceCommandAuthorityFinalization: Sendable, Equatable {
     let commandFinalization: DomainWorkspaceCommandFinalization
+    let commandResult: DomainWorkspaceCommandResult?
     let authorityPublication: DomainWorkspaceAuthorityPublicationReceipt?
 }
 
@@ -327,6 +346,7 @@ struct DomainWorkspaceJournalMutationCommitReceipt: Sendable {
     let catalogRevision: UInt64
     let committedJournal: DomainWorkspaceWorkingJournalValidation
     let savedRevision: DomainWorkspaceSavedRevisionValidation?
+    let commandResult: DomainWorkspaceCommandResult?
 }
 
 enum DomainWorkspaceSaveFinalization: Sendable, Equatable {
@@ -349,6 +369,7 @@ struct DomainWorkspaceSaveCommitReceipt: Sendable {
     let documentDigest: String
     let committedJournal: DomainWorkspaceWorkingJournalValidation
     let savedRevision: DomainWorkspaceSavedRevisionValidation
+    let commandResult: DomainWorkspaceCommandResult?
 }
 
 enum DomainWorkspaceSaveDirective: Sendable {
@@ -400,6 +421,7 @@ struct DomainWorkspaceCreateCommitReceipt: Sendable {
     let catalog: DomainWorkspaceCatalogValidation
     let committedJournal: DomainWorkspaceWorkingJournalValidation
     let savedRevision: DomainWorkspaceSavedRevisionValidation?
+    let commandResult: DomainWorkspaceCommandResult?
 }
 
 enum DomainWorkspaceCreateDirective: Sendable {
@@ -448,6 +470,7 @@ struct DomainWorkspaceDeleteCommitReceipt: Sendable {
     let requestDigest: String
     let catalog: DomainWorkspaceCatalogValidation
     let tombstone: DomainWorkspaceDeletionTombstoneValidation
+    let commandResult: DomainWorkspaceCommandResult?
 }
 
 enum DomainWorkspaceDeleteDirective: Sendable {
@@ -858,6 +881,7 @@ enum DomainWorkspaceRustJournal {
         private let expectedDocumentDigest: String
         private let revisionOperationID: UUID?
         private let expectedUpdatedAt: Date
+        private let isRecovery: Bool
 
         fileprivate init(
             core: CoreWorkspaceJournalMutationTransactionV1,
@@ -868,7 +892,8 @@ enum DomainWorkspaceRustJournal {
             expectedCatalogRevision: UInt64,
             expectedDocumentDigest: String,
             revisionOperationID: UUID?,
-            expectedUpdatedAt: Date
+            expectedUpdatedAt: Date,
+            isRecovery: Bool
         ) {
             self.core = core
             self.validator = validator
@@ -879,6 +904,7 @@ enum DomainWorkspaceRustJournal {
             self.expectedDocumentDigest = expectedDocumentDigest
             self.revisionOperationID = revisionOperationID
             self.expectedUpdatedAt = expectedUpdatedAt
+            self.isRecovery = isRecovery
         }
 
         func acquireAuthorityPermit() throws -> CoreWorkspaceCreateAuthorityPermitV1 {
@@ -902,7 +928,8 @@ enum DomainWorkspaceRustJournal {
                 expectedCatalogRevision: expectedCatalogRevision,
                 expectedDocumentDigest: expectedDocumentDigest,
                 revisionOperationID: revisionOperationID,
-                expectedUpdatedAt: expectedUpdatedAt
+                expectedUpdatedAt: expectedUpdatedAt,
+                isRecovery: isRecovery
             )
         }
 
@@ -917,7 +944,8 @@ enum DomainWorkspaceRustJournal {
                 expectedCatalogRevision: expectedCatalogRevision,
                 expectedDocumentDigest: expectedDocumentDigest,
                 revisionOperationID: revisionOperationID,
-                expectedUpdatedAt: expectedUpdatedAt
+                expectedUpdatedAt: expectedUpdatedAt,
+                isRecovery: isRecovery
             )
         }
 
@@ -1108,6 +1136,7 @@ enum DomainWorkspaceRustJournal {
                     tombstone: nil,
                     authorityFinalization: .init(
                         commandFinalization: .unreconciled,
+                        commandResult: nil,
                         authorityPublication: nil
                     )
                 )
@@ -1132,6 +1161,7 @@ enum DomainWorkspaceRustJournal {
                     tombstone: nil,
                     authorityFinalization: .init(
                         commandFinalization: .unreconciled,
+                        commandResult: nil,
                         authorityPublication: nil
                     )
                 )
@@ -2303,7 +2333,8 @@ enum DomainWorkspaceRustJournal {
                     expectedCatalogRevision: catalogRevision,
                     expectedDocumentDigest: document.contentDigest,
                     revisionOperationID: revisionOperationID,
-                    expectedUpdatedAt: updatedAt
+                    expectedUpdatedAt: updatedAt,
+                    isRecovery: recoveryMode
                 )
             } catch {
                 if error as? CoreWorkspaceWorkingJournalValidationError == .invalidRevisionState {
@@ -2639,6 +2670,23 @@ enum DomainWorkspaceRustJournal {
                     expectedUpdatedAt: expectedUpdatedAt
                 )
             }
+            let commandResult = try receipt.commandResult.map(
+                DomainWorkspaceRustJournal.materializeCommandResult
+            )
+            if isRecovery {
+                guard commandResult == nil else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+            } else {
+                guard let commandResult,
+                      let expectedOperation,
+                      commandResult.workspaceID == expectedWorkspaceID,
+                      commandResult.operation.operationID == receipt.operationID,
+                      commandResult.operation.fingerprint == expectedOperation.fingerprint,
+                      commandResult.operation.recordedAt == expectedOperation.recordedAt,
+                      commandResult.catalogRevision == catalog.catalog.revision
+                else { throw DomainPersistenceError.corruptJournal }
+            }
             return DomainWorkspaceCreateCommitReceipt(
                 workspaceID: expectedWorkspaceID,
                 operationID: receipt.operationID,
@@ -2646,7 +2694,8 @@ enum DomainWorkspaceRustJournal {
                 documentDigest: expectedDocumentDigest,
                 catalog: catalog,
                 committedJournal: journal,
-                savedRevision: savedRevision
+                savedRevision: savedRevision,
+                commandResult: commandResult
             )
         }
 
@@ -2741,7 +2790,15 @@ enum DomainWorkspaceRustJournal {
                 DomainDeletionTombstone.self,
                 from: tombstoneBytes
             )
-            guard tombstone.workspaceID == expectedWorkspaceID,
+            guard let commandResult = try receipt.commandResult.map(
+                DomainWorkspaceRustJournal.materializeCommandResult
+            ) else { throw DomainPersistenceError.corruptJournal }
+            guard commandResult.workspaceID == expectedWorkspaceID,
+                  commandResult.operation.operationID == expectedOperation.operationID,
+                  commandResult.operation.fingerprint == expectedOperation.fingerprint,
+                  commandResult.operation.recordedAt == expectedOperation.recordedAt,
+                  commandResult.catalogRevision == catalog.catalog.revision,
+                  tombstone.workspaceID == expectedWorkspaceID,
                   tombstone.fileURL.standardizedFileURL == expectedFileURL.standardizedFileURL,
                   tombstone.deletedAt == expectedDeletedAt,
                   tombstone.operation.operationID == expectedOperation.operationID,
@@ -2764,7 +2821,8 @@ enum DomainWorkspaceRustJournal {
                     tombstone: tombstone,
                     canonicalBytes: tombstoneBytes,
                     contentDigest: receipt.tombstone.contentDigest
-                )
+                ),
+                commandResult: commandResult
             )
         }
 
@@ -2795,7 +2853,8 @@ enum DomainWorkspaceRustJournal {
             expectedCatalogRevision: UInt64,
             expectedDocumentDigest: String,
             revisionOperationID: UUID?,
-            expectedUpdatedAt: Date
+            expectedUpdatedAt: Date,
+            isRecovery: Bool
         ) throws -> DomainWorkspaceJournalMutationDirective {
             do {
                 switch directive {
@@ -2832,7 +2891,8 @@ enum DomainWorkspaceRustJournal {
                             expectedCatalogRevision: expectedCatalogRevision,
                             expectedDocumentDigest: expectedDocumentDigest,
                             revisionOperationID: revisionOperationID,
-                            expectedUpdatedAt: expectedUpdatedAt
+                            expectedUpdatedAt: expectedUpdatedAt,
+                            isRecovery: isRecovery
                         )
                         let validation = try materialize(
                             CoreWorkspaceWorkingJournalValidationV1(
@@ -2902,7 +2962,8 @@ enum DomainWorkspaceRustJournal {
                             expectedCatalogRevision: expectedCatalogRevision,
                             expectedDocumentDigest: expectedDocumentDigest,
                             revisionOperationID: revisionOperationID,
-                            expectedUpdatedAt: expectedUpdatedAt
+                            expectedUpdatedAt: expectedUpdatedAt,
+                            isRecovery: isRecovery
                         ),
                         finalization: materializeJournalMutationFinalization(finalization)
                     )
@@ -2928,7 +2989,8 @@ enum DomainWorkspaceRustJournal {
             expectedCatalogRevision: UInt64,
             expectedDocumentDigest: String,
             revisionOperationID: UUID?,
-            expectedUpdatedAt: Date
+            expectedUpdatedAt: Date,
+            isRecovery: Bool
         ) throws -> DomainWorkspaceJournalMutationCommitReceipt {
             guard receipt.workspaceID == expectedWorkspaceID,
                   receipt.catalogRevision == expectedCatalogRevision
@@ -2970,12 +3032,26 @@ enum DomainWorkspaceRustJournal {
             ) else {
                 throw DomainPersistenceError.corruptJournal
             }
+            let commandResult = try receipt.commandResult.map(
+                DomainWorkspaceRustJournal.materializeCommandResult
+            )
+            if isRecovery {
+                guard commandResult == nil else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+            } else {
+                guard let commandResult,
+                      commandResult.workspaceID == expectedWorkspaceID,
+                      commandResult.catalogRevision == expectedCatalogRevision
+                else { throw DomainPersistenceError.corruptJournal }
+            }
             return DomainWorkspaceJournalMutationCommitReceipt(
                 workspaceID: expectedWorkspaceID,
                 requestDigest: receipt.requestDigest,
                 catalogRevision: expectedCatalogRevision,
                 committedJournal: validation,
-                savedRevision: savedRevision
+                savedRevision: savedRevision,
+                commandResult: commandResult
             )
         }
 
@@ -3185,6 +3261,13 @@ enum DomainWorkspaceRustJournal {
                 expectedDocumentDigest: expectedDocumentDigest,
                 expectedUpdatedAt: expectedUpdatedAt
             )
+            guard let commandResult = try receipt.commandResult.map(
+                DomainWorkspaceRustJournal.materializeCommandResult
+            ) else { throw DomainPersistenceError.corruptJournal }
+            guard commandResult.workspaceID == expectedWorkspaceID,
+                  commandResult.operation.operationID == expectedOperationID,
+                  commandResult.catalogRevision == expectedCatalogRevision
+            else { throw DomainPersistenceError.corruptJournal }
             return DomainWorkspaceSaveCommitReceipt(
                 workspaceID: expectedWorkspaceID,
                 operationID: expectedOperationID,
@@ -3192,7 +3275,8 @@ enum DomainWorkspaceRustJournal {
                 catalogRevision: expectedCatalogRevision,
                 documentDigest: expectedDocumentDigest,
                 committedJournal: journal,
-                savedRevision: revision
+                savedRevision: revision,
+                commandResult: commandResult
             )
         }
 
@@ -3408,14 +3492,89 @@ enum DomainWorkspaceRustJournal {
         }
     }
 
+    static func materializeCommandResult(
+        _ value: CoreWorkspaceCommandResultV1
+    ) throws -> DomainWorkspaceCommandResult {
+        guard value.operation.before == value.before,
+              value.operation.after == value.after,
+              value.operation.catalogRevision == value.catalogRevision,
+              value.operation.resultingDigest == value.resultingDigest,
+              value.operation.errorCode == nil,
+              value.operation.diagnostic == nil
+        else {
+            throw DomainPersistenceError.corruptJournal
+        }
+        let disposition: DomainWorkspaceCommandResultDisposition = switch value.disposition {
+        case .applied: .applied
+        case .unchanged: .unchanged
+        case .deleted: .deleted
+        }
+        let expectedOperationDisposition: String = switch disposition {
+        case .applied, .deleted: "applied"
+        case .unchanged: "unchanged"
+        }
+        guard value.operation.disposition == expectedOperationDisposition,
+              let operationDisposition = DomainCommandDisposition(rawValue: value.operation.disposition)
+        else {
+            throw DomainPersistenceError.corruptJournal
+        }
+        let operation = DomainRecordedOperation(
+            fingerprint: value.operation.fingerprint,
+            recordedAt: Date(timeIntervalSinceReferenceDate: value.operation.recordedAt),
+            outcome: DomainCommandOutcome(
+                operationID: value.operation.operationID,
+                disposition: operationDisposition,
+                before: value.operation.before.map(DomainWorkspaceRustProjection.domainRevisionState),
+                after: value.operation.after.map(DomainWorkspaceRustProjection.domainRevisionState),
+                catalogRevision: value.operation.catalogRevision,
+                resultingDigest: value.operation.resultingDigest,
+                workspace: nil
+            )
+        )
+        return DomainWorkspaceCommandResult(
+            workspaceID: value.workspaceID,
+            operation: operation,
+            disposition: disposition,
+            before: value.before.map(DomainWorkspaceRustProjection.domainRevisionState),
+            after: value.after.map(DomainWorkspaceRustProjection.domainRevisionState),
+            resultingDigest: value.resultingDigest,
+            catalogRevision: value.catalogRevision,
+            publicationKind: DomainWorkspaceRustProjection.domainPublicationKind(value.publicationKind),
+            contextID: value.contextID
+        )
+    }
+
     private static func commandAuthorityFinalization(
         _ value: CoreWorkspaceCommandAuthorityFinalizationV1
     ) -> DomainWorkspaceCommandAuthorityFinalization {
-        DomainWorkspaceCommandAuthorityFinalization(
-            commandFinalization: commandFinalization(value.commandFinalization),
-            authorityPublication: value.authorityPublication.map(
-                DomainWorkspaceRustProjection.authorityPublicationReceipt
+        let publication = value.authorityPublication.map(
+            DomainWorkspaceRustProjection.authorityPublicationReceipt
+        )
+        let commandResult: DomainWorkspaceCommandResult?
+        do {
+            commandResult = try value.commandResult.map(materializeCommandResult)
+        } catch {
+            return DomainWorkspaceCommandAuthorityFinalization(
+                commandFinalization: .unreconciled,
+                commandResult: nil,
+                authorityPublication: publication
             )
+        }
+        let commandFinalization = commandFinalization(value.commandFinalization)
+        guard commandFinalization == .reconciled
+              ? commandResult != nil
+              : commandResult == nil
+        else {
+            return DomainWorkspaceCommandAuthorityFinalization(
+                commandFinalization: .unreconciled,
+                commandResult: nil,
+                authorityPublication: publication
+            )
+        }
+        return DomainWorkspaceCommandAuthorityFinalization(
+            commandFinalization: commandFinalization,
+            commandResult: commandResult,
+            authorityPublication: publication
         )
     }
 

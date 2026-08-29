@@ -1204,6 +1204,44 @@ impl From<runtime::workspace_persistence_journal::WorkspaceRecordedOperationV1>
     }
 }
 
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandResultDispositionV1>
+    for CoreWorkspaceCommandResultDispositionV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandResultDispositionV1,
+    ) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceCommandResultDispositionV1::Applied => {
+                Self::Applied
+            }
+            runtime::workspace_persistence_journal::WorkspaceCommandResultDispositionV1::Unchanged => {
+                Self::Unchanged
+            }
+            runtime::workspace_persistence_journal::WorkspaceCommandResultDispositionV1::Deleted => {
+                Self::Deleted
+            }
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandResultV1>
+    for CoreWorkspaceCommandResultV1
+{
+    fn from(value: runtime::workspace_persistence_journal::WorkspaceCommandResultV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            operation: value.operation.into(),
+            disposition: value.disposition.into(),
+            before: value.before.map(Into::into),
+            after: value.after.map(Into::into),
+            resulting_digest: value.resulting_digest,
+            catalog_revision: value.catalog_revision,
+            publication_kind: core_workspace_projection_publication_kind_v1(value.publication_kind),
+            context_id: value.context_id,
+        }
+    }
+}
+
 impl From<CoreWorkspaceRecoveryArtifactEvidenceV1>
     for runtime::workspace_persistence_journal::WorkspaceRecoveryArtifactEvidenceV1
 {
@@ -1653,6 +1691,7 @@ pub struct CoreWorkspaceJournalMutationCommitReceiptV1 {
     pub saved_revision: Option<CoreWorkspacePersistenceMetadataValidationV1>,
     pub resulting_working_revision: u64,
     pub resulting_saved_revision: u64,
+    pub command_result: Option<CoreWorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -1700,6 +1739,28 @@ pub enum CoreWorkspaceSaveFailureV1 {
     WriteFailed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceCommandResultDispositionV1 {
+    Applied,
+    Unchanged,
+    Deleted,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceCommandResultV1 {
+    pub workspace_id: String,
+    pub operation: CoreWorkspaceRecordedOperationV1,
+    pub disposition: CoreWorkspaceCommandResultDispositionV1,
+    pub before: Option<CoreWorkspaceProjectionRevisionStateV1>,
+    pub after: Option<CoreWorkspaceProjectionRevisionStateV1>,
+    pub resulting_digest: Option<String>,
+    pub catalog_revision: u64,
+    pub publication_kind: CoreWorkspaceProjectionPublicationKindV1,
+    pub context_id: Option<String>,
+}
+
+impl Eq for CoreWorkspaceCommandResultV1 {}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceSaveCommitReceiptV1 {
     pub workspace_id: String,
@@ -1711,6 +1772,7 @@ pub struct CoreWorkspaceSaveCommitReceiptV1 {
     pub saved_revision: CoreWorkspacePersistenceMetadataValidationV1,
     pub resulting_working_revision: u64,
     pub resulting_saved_revision: u64,
+    pub command_result: Option<CoreWorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -1781,6 +1843,7 @@ pub struct CoreWorkspaceCreateCommitReceiptV1 {
     pub catalog: CoreWorkspaceCatalogValidationV1,
     pub committed_journal: CoreWorkspaceWorkingJournalValidationV1,
     pub saved_revision: Option<CoreWorkspacePersistenceMetadataValidationV1>,
+    pub command_result: Option<CoreWorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -1822,6 +1885,7 @@ pub struct CoreWorkspaceDeleteCommitReceiptV1 {
     pub request_digest: String,
     pub catalog: CoreWorkspaceCatalogValidationV1,
     pub tombstone: CoreWorkspacePersistenceMetadataValidationV1,
+    pub command_result: Option<CoreWorkspaceCommandResultV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -1947,6 +2011,7 @@ impl From<runtime::workspace_persistence_journal::WorkspaceJournalMutationCommit
             saved_revision: value.saved_revision.map(Into::into),
             resulting_working_revision: value.resulting_working_revision,
             resulting_saved_revision: value.resulting_saved_revision,
+            command_result: value.command_result.map(Into::into),
         }
     }
 }
@@ -2040,6 +2105,7 @@ impl From<runtime::workspace_persistence_journal::WorkspaceSaveCommitReceiptV1>
             saved_revision: value.saved_revision.into(),
             resulting_working_revision: value.resulting_working_revision,
             resulting_saved_revision: value.resulting_saved_revision,
+            command_result: value.command_result.map(Into::into),
         }
     }
 }
@@ -2174,6 +2240,7 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCreateCommitReceiptV1
             catalog: value.catalog.into(),
             committed_journal: value.committed_journal.into(),
             saved_revision: value.saved_revision.map(Into::into),
+            command_result: value.command_result.map(Into::into),
         }
     }
 }
@@ -2254,6 +2321,7 @@ impl From<runtime::workspace_persistence_journal::WorkspaceDeleteCommitReceiptV1
             request_digest: value.request_digest,
             catalog: value.catalog.into(),
             tombstone: value.tombstone.into(),
+            command_result: value.command_result.map(Into::into),
         }
     }
 }

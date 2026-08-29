@@ -1330,6 +1330,73 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
+    private static func workspaceCommandResult(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceCommandResultV1
+    ) throws -> CoreWorkspaceCommandResultV1 {
+        let contextID = try raw.contextId.map { value in
+            guard let contextID = UUID(uuidString: value) else {
+                throw CoreTransportError.unexpected("workspace command result context identity is invalid")
+            }
+            return contextID
+        }
+        guard let workspaceID = UUID(uuidString: raw.workspaceId),
+              isSHA256(raw.operation.fingerprint),
+              raw.resultingDigest.map(isSHA256) ?? true,
+              raw.catalogRevision == raw.operation.catalogRevision,
+              raw.resultingDigest == raw.operation.resultingDigest,
+              raw.before == raw.operation.before,
+              raw.after == raw.operation.after,
+              raw.before.map(workspaceRevisionStateIsValid) ?? true,
+              raw.after.map(workspaceRevisionStateIsValid) ?? true
+        else {
+            throw CoreTransportError.unexpected("workspace command result is invalid")
+        }
+        let operation = try workspaceRecordedOperation(raw.operation)
+        let disposition: CoreWorkspaceCommandResultDispositionV1 = switch raw.disposition {
+        case .applied: .applied
+        case .unchanged: .unchanged
+        case .deleted: .deleted
+        }
+        let publicationKind = workspaceProjectionPublicationKind(raw.publicationKind)
+        let expectedOperationDisposition: String = switch disposition {
+        case .applied, .deleted: "applied"
+        case .unchanged: "unchanged"
+        }
+        let publicationSemanticsValid: Bool = switch disposition {
+        case .deleted:
+            publicationKind == .workspaceDeleted
+        case .unchanged:
+            publicationKind == .operationDeduplicated
+        case .applied:
+            switch publicationKind {
+            case .workspaceCreated, .workingStateCommitted,
+                 .savedDocumentCommitted, .externalReloaded:
+                true
+            case .workspaceDeleted, .operationDeduplicated, .bootstrapped,
+                 .externalConflict, .degraded, .routingChanged:
+                false
+            }
+        }
+        guard operation.disposition == expectedOperationDisposition,
+              operation.errorCode == nil,
+              operation.diagnostic == nil,
+              publicationSemanticsValid
+        else {
+            throw CoreTransportError.unexpected("workspace command result semantics are invalid")
+        }
+        return CoreWorkspaceCommandResultV1(
+            workspaceID: workspaceID,
+            operation: operation,
+            disposition: disposition,
+            before: raw.before.map(workspaceRevisionState),
+            after: raw.after.map(workspaceRevisionState),
+            resultingDigest: raw.resultingDigest,
+            catalogRevision: raw.catalogRevision,
+            publicationKind: publicationKind,
+            contextID: contextID
+        )
+    }
+
     private static func workspaceCommandAuthorityFinalization(
         _ raw: AgentryUniFFIRaw.CoreWorkspaceCommandAuthorityFinalizationV1
     ) throws -> CoreWorkspaceCommandAuthorityFinalizationV1 {
@@ -1349,8 +1416,43 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 workspaceCount: Int($0.workspaceCount)
             )
         }
+        let commandResult = try raw.commandResult.map(workspaceCommandResult)
+        let commandFinalization = workspaceCommandFinalization(raw.commandFinalization)
+        guard commandFinalization == .reconciled
+              ? commandResult != nil && publication != nil
+              : commandResult == nil
+        else {
+            throw CoreTransportError.unexpected("workspace command authority finalization is invalid")
+        }
+        if let commandResult, let publication {
+            let eventWorkspaceMatches: Bool = switch publication.event.kind {
+            case .workspaceDeleted:
+                publication.event.workspaceID == nil
+            default:
+                publication.event.workspaceID == commandResult.workspaceID
+            }
+            guard commandResult.catalogRevision == publication.catalogRevision,
+                  commandResult.publicationKind == publication.event.kind,
+                  commandResult.contextID == publication.event.contextID,
+                  commandResult.operation.operationID == publication.event.operationID,
+                  commandResult.after == publication.event.revisions,
+                  eventWorkspaceMatches
+            else {
+                throw CoreTransportError.unexpected(
+                    "workspace command authority finalization is inconsistent "
+                        + "result=(catalog:\(commandResult.catalogRevision), kind:\(commandResult.publicationKind), "
+                        + "context:\(String(describing: commandResult.contextID)), operation:\(commandResult.operation.operationID), "
+                        + "after:\(String(describing: commandResult.after))) "
+                        + "publication=(catalog:\(publication.catalogRevision), kind:\(publication.event.kind), "
+                        + "context:\(String(describing: publication.event.contextID)), operation:\(String(describing: publication.event.operationID)), "
+                        + "revisions:\(String(describing: publication.event.revisions)), "
+                        + "workspace:\(String(describing: publication.event.workspaceID)))"
+                )
+            }
+        }
         return .init(
-            commandFinalization: workspaceCommandFinalization(raw.commandFinalization),
+            commandFinalization: commandFinalization,
+            commandResult: commandResult,
             authorityPublication: publication
         )
     }
@@ -2257,9 +2359,12 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         let catalog = try workspaceCatalogValidation(value.catalog)
         let journal = try workspaceWorkingJournalValidation(value.committedJournal)
         let savedRevision = try value.savedRevision.map(workspacePersistenceMetadataValidation)
+        let commandResult = try value.commandResult.map(workspaceCommandResult)
         guard journal.workspaceID == workspaceID,
               savedRevision?.workspaceID == nil || savedRevision?.workspaceID == workspaceID,
-              savedRevision?.operationID == nil || savedRevision?.operationID == operationID
+              savedRevision?.operationID == nil || savedRevision?.operationID == operationID,
+              commandResult?.workspaceID == nil || commandResult?.workspaceID == workspaceID,
+              commandResult?.operation.operationID == nil || commandResult?.operation.operationID == operationID
         else {
             throw CoreTransportError.unexpected("workspace create commit receipt is invalid")
         }
@@ -2270,7 +2375,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             documentDigest: value.documentDigest,
             catalog: catalog,
             committedJournal: journal,
-            savedRevision: savedRevision
+            savedRevision: savedRevision,
+            commandResult: commandResult
         )
     }
 
@@ -2356,8 +2462,11 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
         let catalog = try workspaceCatalogValidation(value.catalog)
         let tombstone = try workspacePersistenceMetadataValidation(value.tombstone)
+        let commandResult = try value.commandResult.map(workspaceCommandResult)
         guard tombstone.workspaceID == workspaceID,
-              tombstone.operationID == operationID
+              tombstone.operationID == operationID,
+              commandResult?.workspaceID == nil || commandResult?.workspaceID == workspaceID,
+              commandResult?.operation.operationID == nil || commandResult?.operation.operationID == operationID
         else {
             throw CoreTransportError.unexpected("workspace delete commit receipt is invalid")
         }
@@ -2366,7 +2475,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             operationID: operationID,
             requestDigest: value.requestDigest,
             catalog: catalog,
-            tombstone: tombstone
+            tombstone: tombstone,
+            commandResult: commandResult
         )
     }
 
@@ -2496,8 +2606,11 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
         let journal = try workspaceWorkingJournalValidation(value.committedJournal)
         let revision = try value.savedRevision.map(workspacePersistenceMetadataValidation)
+        let commandResult = try value.commandResult.map(workspaceCommandResult)
         guard journal.workspaceID == workspaceID,
-              revision.map({ $0.workspaceID == workspaceID }) ?? true
+              revision.map({ $0.workspaceID == workspaceID }) ?? true,
+              commandResult?.workspaceID == nil || commandResult?.workspaceID == workspaceID,
+              commandResult?.catalogRevision == nil || commandResult?.catalogRevision == value.catalogRevision
         else {
             throw CoreTransportError.unexpected(
                 "workspace journal mutation commit receipt is invalid"
@@ -2510,7 +2623,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             committedJournal: journal,
             savedRevision: revision,
             resultingWorkingRevision: value.resultingWorkingRevision,
-            resultingSavedRevision: value.resultingSavedRevision
+            resultingSavedRevision: value.resultingSavedRevision,
+            commandResult: commandResult
         )
     }
 
@@ -2630,10 +2744,14 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
         let journal = try workspaceWorkingJournalValidation(value.committedJournal)
         let revision = try workspacePersistenceMetadataValidation(value.savedRevision)
+        let commandResult = try value.commandResult.map(workspaceCommandResult)
         guard journal.workspaceID == workspaceID,
               revision.workspaceID == workspaceID,
               revision.operationID == operationID,
-              value.resultingSavedRevision == value.resultingWorkingRevision
+              value.resultingSavedRevision == value.resultingWorkingRevision,
+              commandResult?.workspaceID == nil || commandResult?.workspaceID == workspaceID,
+              commandResult?.operation.operationID == nil || commandResult?.operation.operationID == operationID,
+              commandResult?.catalogRevision == nil || commandResult?.catalogRevision == value.catalogRevision
         else {
             throw CoreTransportError.unexpected("workspace save commit receipt is invalid")
         }
@@ -2646,7 +2764,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             committedJournal: journal,
             savedRevision: revision,
             resultingWorkingRevision: value.resultingWorkingRevision,
-            resultingSavedRevision: value.resultingSavedRevision
+            resultingSavedRevision: value.resultingSavedRevision,
+            commandResult: commandResult
         )
     }
 

@@ -1092,6 +1092,84 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertFalse(commandPaths.contains("DomainRevisionState("))
     }
 
+    func testP59CommandResultReceiptIsRustOwnedAndBoundToPublication() throws {
+        let root = repositoryRoot()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+
+        let runtime = try source("rust/crates/runtime/src/workspace_persistence_journal.rs")
+        let ffi = try source("rust/crates/ffi/src/api.rs")
+        let ffiTypes = try source("rust/crates/ffi/src/types.rs")
+        let bridge = try source("Sources/AgentryCoreBridge/CoreBridge.swift")
+        let coreModels = try source("Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift")
+        let adapter = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift")
+        let persistence = try source("Sources/RepoPromptDomainRuntime/DomainPersistence.swift")
+        let authority = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift")
+        let spec = try source("docs/spec/rust-workspace-document-projection-v1.md")
+
+        for required in [
+            "enum WorkspaceCommandResultDispositionV1",
+            "struct WorkspaceCommandResultV1",
+            "pub command_result: Option<WorkspaceCommandResultV1>",
+            "fn workspace_command_result_v1(",
+            "pub fn command_result(",
+            "operation.catalog_revision",
+            "operation.resulting_digest"
+        ] {
+            XCTAssertTrue(runtime.contains(required), "Missing Rust command result authority: \(required)")
+        }
+        for required in [
+            "enum CoreWorkspaceCommandResultDispositionV1",
+            "struct CoreWorkspaceCommandResultV1",
+            "pub command_result: Option<CoreWorkspaceCommandResultV1>",
+            "finish_workspace_command_authorities(",
+            "command_result: (command_finalization == CoreWorkspaceCommandFinalizationV1::Reconciled)"
+        ] {
+            XCTAssertTrue(ffi.contains(required) || ffiTypes.contains(required), "Missing FFI result receipt: \(required)")
+        }
+        for required in [
+            "private static func workspaceCommandResult(",
+            "publicationSemanticsValid",
+            "workspace command authority finalization is inconsistent",
+            "commandFinalization == .reconciled"
+        ] {
+            XCTAssertTrue(bridge.contains(required), "Missing Bridge receipt fence: \(required)")
+        }
+        for required in [
+            "public struct CoreWorkspaceCommandResultV1",
+            "public let commandResult: CoreWorkspaceCommandResultV1?"
+        ] {
+            XCTAssertTrue(coreModels.contains(required), "Missing Core result model: \(required)")
+        }
+        for required in [
+            "static func materializeCommandResult(",
+            "commandResult: commandResult",
+            "DomainWorkspaceCommandResult",
+            "commandResult = try value.commandResult.map(materializeCommandResult)"
+        ] {
+            XCTAssertTrue(adapter.contains(required), "Missing Domain result materialization: \(required)")
+        }
+        XCTAssertTrue(persistence.contains("lhs.commandResult == rhs.commandResult"))
+        for required in [
+            "private func commandResultOutcome(",
+            "let operation = result.operation",
+            "workspace_command_result_receipt_missing",
+            "result.publicationKind",
+            "publication.publicationSequence == self.publicationSequence"
+        ] {
+            XCTAssertTrue(authority.contains(required), "Missing actor receipt mirror fence: \(required)")
+        }
+        XCTAssertTrue(spec.contains("## P5-9 amendment — transaction-owned command result receipts"))
+        XCTAssertTrue(spec.contains("workspace_command_admission_receipt_missing"))
+        for forbidden in [
+            "commandAuthorityPublicationCandidate(",
+            "DomainWorkspaceAuthorityPublicationCandidate"
+        ] {
+            XCTAssertFalse(authority.contains(forbidden), "Command path still has an alternate publication authority: \(forbidden)")
+        }
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -1055,8 +1055,27 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(receipt.documentDigest, documentDigest)
         XCTAssertEqual(receipt.catalog.revision, 1)
         XCTAssertNotNil(receipt.savedRevision)
+        let commandResult = try XCTUnwrap(receipt.commandResult)
+        XCTAssertEqual(commandResult.workspaceID, workspaceID)
+        XCTAssertEqual(commandResult.operation.operationID, operationID)
+        XCTAssertEqual(commandResult.operation.fingerprint, commandIdentity.fingerprint)
+        XCTAssertEqual(commandResult.disposition, .applied)
+        XCTAssertNil(commandResult.before)
+        XCTAssertEqual(
+            commandResult.after,
+            CoreWorkspaceProjectionRevisionState(
+                workingRevision: 1,
+                savedRevision: 1,
+                dirtyRevision: nil
+            )
+        )
+        XCTAssertEqual(commandResult.resultingDigest, documentDigest)
+        XCTAssertEqual(commandResult.catalogRevision, receipt.catalog.revision)
+        XCTAssertEqual(commandResult.publicationKind, .workspaceCreated)
+        XCTAssertNil(commandResult.contextID)
         let authorityFinalization = transaction.finishCommandAuthority()
         XCTAssertEqual(authorityFinalization.commandFinalization, .reconciled)
+        XCTAssertEqual(authorityFinalization.commandResult, commandResult)
         XCTAssertEqual(authorityFinalization.authorityPublication?.catalogRevision, 1)
         XCTAssertEqual(authorityFinalization.authorityPublication?.event.kind, .workspaceCreated)
         XCTAssertEqual(authorityFinalization.authorityPublication?.event.operationID, operationID)
@@ -1093,8 +1112,10 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
             permit.close()
             XCTAssertEqual(committedReceipt, attachedReceipt)
             XCTAssertNil(committedReceipt.savedRevision)
+            XCTAssertNil(committedReceipt.commandResult)
             let recoveryFinalization = recovery.finishCommandAuthority()
             XCTAssertEqual(recoveryFinalization.commandFinalization, .notApplicable)
+            XCTAssertNil(recoveryFinalization.commandResult)
             XCTAssertNil(recoveryFinalization.authorityPublication)
         default:
             XCTFail("recovery did not yield the sole catalog action")

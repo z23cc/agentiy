@@ -1954,3 +1954,54 @@ claimless Rust recovery boundary and do not become command admission paths.
   claimless and explicitly not applicable to command admission.
 - Focused runtime/FFI/Bridge/Domain authority and journal tests, codegen, product builds, formatting/lint, guardrails, and
   diff checks pass; any unrelated full-suite infrastructure hang or pre-existing failure is reported separately.
+
+## P5-9 amendment — transaction-owned command result receipts
+
+P5-9 makes the committed semantic result of a claimed workspace command an explicit Rust
+transaction receipt. Create, delete, journal-mutation, save, unchanged, accepted external reload,
+and local conflict-rebase commands expose the operation, before/after revision state, resulting
+document digest, catalog revision, publication kind, context identity, and applied/unchanged/deleted
+disposition that Rust derived from the canonical journal and physical candidate. Swift cannot
+reconstruct those facts from its actor record after the transaction returns.
+
+For a command-owned deletion, the result retains the deleted workspace identity while the paired
+`workspaceDeleted` publication event intentionally carries no workspace row identity; claimless
+external catalog-deletion notifications retain their existing event identity and do not use this
+command-result path.
+
+The result receipt is derived from the exact operation ledger entry and the transaction's authority
+publication kind. Rust validates the operation disposition, error/diagnostic absence, digest and
+revision parity before exposing it through FFI. The handwritten Bridge rejects invalid identities,
+fingerprints, digest parity, revision state, unsupported command publication kinds, and result/event
+mismatches. A reconciled command finalization must contain both the result receipt and its authority
+publication; a recovery-only or claimless finalization remains explicitly not applicable and carries
+neither. If a lifecycle mirror fails after the aggregate publication has committed, the publication
+remains first-terminal and is not replaced; the missing result/finalization mirror quarantines new
+mutation rather than synthesizing a Swift semantic outcome.
+
+Domain persistence materializes and compares the Rust result receipt with every claimed commit
+receipt. The actor installs the physical record and publication receipt, then constructs the outward
+`DomainCommandOutcome` only from the Rust operation/result (while retaining actor-owned workspace,
+origin, timestamp, and cleanup diagnostic presentation). Missing, stale, mismatched, or malformed
+receipts fail closed under `workspace_command_admission_receipt_missing`; no post-commit publish,
+second planner, or locally authored applied/unchanged/delete result is allowed. Recovery and
+non-command overlay paths continue through their existing claimless publication boundary.
+
+P5-9 changes no durable schema, canonical bytes, filesystem ordering, lease ownership, routing
+behavior, event cursor rules, or subscriber ownership.
+
+### P5-9 done-when
+
+- Runtime and FFI tests prove result construction for create/delete/journal/save, exact operation and
+  publication binding, digest/revision parity, recovery absence, first-terminal retries, lifecycle
+  failure isolation, and missing-result fail-closed behavior.
+- UniFFI, generated bindings, and Bridge expose the typed result/disposition on commit receipts and
+  finalization; Bridge rejects success/error overlap, unsupported command kinds, and event/result
+  identity mismatches. Deterministic code generation remains green.
+- Domain adapters validate claimed receipts and derive command outcomes exclusively from the Rust
+  result while preserving cleanup diagnostics and actor-owned snapshot/routing behavior; recovery
+  receipts remain not applicable without a command result.
+- Source guards prove one Rust result authority, no Swift semantic success fallback, no standalone
+  post-commit publication, and no command-result receipt bypass. Focused runtime/FFI/Bridge/Domain
+  tests, product builds, style/lint, guardrails, formatting, and diff checks pass; unrelated full-suite
+  infrastructure hangs are reported separately.
