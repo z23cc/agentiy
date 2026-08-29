@@ -991,6 +991,8 @@ pub struct CoreWorkspaceSemanticPreflightV1 {
     pub changed_context_ids: Vec<String>,
     pub added_context_ids: Vec<String>,
     pub removed_context_ids: Vec<String>,
+    pub external_document_digest: Option<String>,
+    pub protected_context_ids: Vec<String>,
     pub diagnostic: Option<String>,
 }
 
@@ -1625,6 +1627,8 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCommandSemanticPrefli
             changed_context_ids: value.changed_context_ids,
             added_context_ids: value.added_context_ids,
             removed_context_ids: value.removed_context_ids,
+            external_document_digest: value.external_document_digest,
+            protected_context_ids: value.protected_context_ids,
             diagnostic: value.diagnostic,
         }
     }

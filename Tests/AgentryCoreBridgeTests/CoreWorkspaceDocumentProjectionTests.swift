@@ -1490,6 +1490,69 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         )
         _ = try semanticClaim.abandon()
 
+        // An explicit resolution with no external conflict preserves the existing typed
+        // semantic diagnostic and does not invent an external-byte digest.
+        let noConflictResolutionRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: receipt.catalogRevision,
+            expectedWorkspaceRevision: revisions.workingRevision,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .resolveExternalConflict,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: true,
+            protectedAgentIdentities: []
+        )
+        let noConflictResolutionClaim: CoreWorkspaceCommandExecutionClaimV1
+        switch try admission.acquire(noConflictResolutionRequest) {
+        case let .claimed(_, claim, _):
+            noConflictResolutionClaim = claim
+        default:
+            return XCTFail("Expected no-conflict resolution claim")
+        }
+        let noConflictPreflight = try noConflictResolutionClaim.semanticPreflight(
+            noConflictResolutionRequest
+        )
+        XCTAssertEqual(noConflictPreflight.disposition, .conflict)
+        XCTAssertEqual(noConflictPreflight.diagnostic, "workspace_has_no_external_conflict")
+        XCTAssertNil(noConflictPreflight.externalDocumentDigest)
+        _ = try noConflictResolutionClaim.abandon()
+
+        // When external bytes are present, the same non-proceed resolution carries their exact
+        // digest even though the current aggregate still reports no external conflict.
+        let suppliedExternalRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: receipt.catalogRevision,
+            expectedWorkspaceRevision: revisions.workingRevision,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .resolveExternalConflict,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: true,
+            protectedAgentIdentities: []
+        )
+        let suppliedExternalClaim: CoreWorkspaceCommandExecutionClaimV1
+        switch try admission.acquire(suppliedExternalRequest) {
+        case let .claimed(_, claim, _):
+            suppliedExternalClaim = claim
+        default:
+            return XCTFail("Expected supplied-external resolution claim")
+        }
+        let suppliedExternalPreflight = try suppliedExternalClaim.semanticPreflight(
+            suppliedExternalRequest,
+            externalDocumentBytes: overlayDocument
+        )
+        XCTAssertEqual(suppliedExternalPreflight.disposition, .conflict)
+        XCTAssertEqual(
+            suppliedExternalPreflight.externalDocumentDigest,
+            SHA256.hash(data: overlayDocument).map { String(format: "%02x", $0) }.joined()
+        )
+        _ = try suppliedExternalClaim.abandon()
+
         let contextRequest = CoreWorkspaceCommandIdentityRequestV1(
             operationID: UUID(),
             expectedCatalogRevision: receipt.catalogRevision,
@@ -1521,6 +1584,93 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         XCTAssertEqual(contextPreflight.addedContextIDs, [])
         XCTAssertEqual(contextPreflight.removedContextIDs, [])
         _ = try contextClaim.abandon()
+
+        let protectedAgentSessionID = UUID()
+        let protectedDocument = try JSONSerialization.data(withJSONObject: [
+            "id": workspaceID.uuidString,
+            "schemaVersion": 1,
+            "name": "Aggregate",
+            "composeTabs": [[
+                "id": contextID.uuidString,
+                "name": "Context",
+                "prompt": "protected",
+                "selectedPaths": [],
+                "activeAgentSessionID": protectedAgentSessionID.uuidString,
+                "isPinned": true,
+            ]],
+        ], options: [.sortedKeys])
+        let conflictHealth = CoreWorkspaceProjectionHealth(
+            kind: .externalConflict,
+            reason: "external_document_changed"
+        )
+        let conflictAuthority = CoreWorkspaceProjectionAuthorityState(
+            revisions: revisions,
+            health: conflictHealth,
+            contexts: [CoreWorkspaceContextAuthorityState(
+                contextID: contextID,
+                revisions: revisions,
+                health: conflictHealth
+            )]
+        )
+        let conflictPublication = try admission.publishAuthorityState(
+            workspaces: [CoreWorkspaceProjectionPublishedWorkspace(
+                documentBytes: protectedDocument,
+                authority: conflictAuthority
+            )],
+            draft: CoreWorkspaceAuthorityPublicationDraft(
+                catalogRevision: receipt.catalogRevision + 1,
+                kind: .externalConflict,
+                workspaceID: workspaceID,
+                contextID: contextID,
+                operationID: nil,
+                revisions: revisions
+            )
+        )
+        let blockedExternalDocument = try JSONSerialization.data(withJSONObject: [
+            "id": workspaceID.uuidString,
+            "schemaVersion": 1,
+            "name": "Aggregate",
+            "composeTabs": [[
+                "id": contextID.uuidString,
+                "name": "Context",
+                "prompt": "external",
+                "selectedPaths": [],
+            ]],
+        ], options: [.sortedKeys])
+        let protectedResolutionRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: conflictPublication.catalogRevision,
+            expectedWorkspaceRevision: revisions.workingRevision,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .resolveExternalConflict,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: true,
+            protectedAgentIdentities: []
+        )
+        let protectedResolutionClaim: CoreWorkspaceCommandExecutionClaimV1
+        switch try admission.acquire(protectedResolutionRequest) {
+        case let .claimed(_, claim, _):
+            protectedResolutionClaim = claim
+        default:
+            return XCTFail("Expected protected resolution claim")
+        }
+        let protectedPreflight = try protectedResolutionClaim.semanticPreflight(
+            protectedResolutionRequest,
+            externalDocumentBytes: blockedExternalDocument
+        )
+        XCTAssertEqual(protectedPreflight.disposition, .conflict)
+        XCTAssertEqual(protectedPreflight.diagnostic, "protected_agent_identity_rebound")
+        XCTAssertEqual(protectedPreflight.protectedContextIDs, [contextID])
+        XCTAssertEqual(
+            protectedPreflight.externalDocumentDigest,
+            SHA256.hash(data: blockedExternalDocument)
+                .map { String(format: "%02x", $0) }
+                .joined()
+        )
+        _ = try protectedResolutionClaim.abandon()
 
         admission.close()
         XCTAssertThrowsError(try admission.authorityRead(workspaceID: workspaceID))

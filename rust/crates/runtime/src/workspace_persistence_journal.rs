@@ -79,6 +79,11 @@ pub struct WorkspaceCommandSemanticPreflightV1 {
     pub changed_context_ids: Vec<String>,
     pub added_context_ids: Vec<String>,
     pub removed_context_ids: Vec<String>,
+    /// Digest of the external document admitted for explicit conflict resolution. It is bound
+    /// to the live claim on first preflight and remains absent for all other command kinds.
+    pub external_document_digest: Option<String>,
+    /// Canonical UUID-ordered context identities blocked by the protected-agent policy.
+    pub protected_context_ids: Vec<String>,
     pub diagnostic: Option<String>,
 }
 
@@ -1200,6 +1205,7 @@ struct WorkspaceCommandExecutionClaimStateV1 {
     fingerprint: String,
     generation: u64,
     reservation_id: Option<u64>,
+    external_document_digest: Option<String>,
 }
 
 fn workspace_authority_projection_digest_v1(
@@ -3911,6 +3917,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         claim: &WorkspaceCommandExecutionClaimV1,
         request: &WorkspaceCommandIdentityRequestV1,
         candidate_document_bytes: Option<&[u8]>,
+        external_document_bytes: Option<&[u8]>,
     ) -> Result<WorkspaceCommandSemanticPreflightV1, WorkspaceWorkingJournalError> {
         let workspace_id = canonical_uuid(&request.workspace_id)
             .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
@@ -3932,8 +3939,16 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         {
             return Err(WorkspaceWorkingJournalError::InvalidDigest);
         }
+        if candidate_document_bytes.is_some() && external_document_bytes.is_some() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
         let candidate_context_digests =
             if let Some(candidate_document_bytes) = candidate_document_bytes {
+                if request.command_kind != WorkspaceCommandKindV1::Create
+                    && request.command_kind != WorkspaceCommandKindV1::Replace
+                {
+                    return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+                }
                 let candidate_projection = project_workspace_document_v1(candidate_document_bytes)
                     .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
                 if candidate_projection.workspace_id != workspace_id {
@@ -3959,24 +3974,57 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 }
                 None
             };
+        let external_document_digest =
+            if let Some(external_document_bytes) = external_document_bytes {
+                if request.command_kind != WorkspaceCommandKindV1::ResolveExternalConflict {
+                    return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+                }
+                let external_projection = project_workspace_document_v1(external_document_bytes)
+                    .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+                if external_projection.workspace_id != workspace_id {
+                    return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+                }
+                Some(format!("{:x}", Sha256::digest(external_document_bytes)))
+            } else {
+                None
+            };
 
-        let inner = self
+        let mut inner = self
             .inner
             .lock()
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
         if inner.closed || inner.quarantined {
             return Err(WorkspaceWorkingJournalError::InvalidTransaction);
         }
-        let current_claim = inner
-            .claims
-            .get(&claim.operation_id)
-            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
-        if current_claim.workspace_id != claim.workspace_id
-            || current_claim.command_kind != claim.command_kind
-            || current_claim.fingerprint != claim.fingerprint
-            || current_claim.generation != claim.generation
         {
-            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+            let current_claim = inner
+                .claims
+                .get(&claim.operation_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+            if current_claim.workspace_id != claim.workspace_id
+                || current_claim.command_kind != claim.command_kind
+                || current_claim.fingerprint != claim.fingerprint
+                || current_claim.generation != claim.generation
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+            }
+            if let (Some(bound), Some(external_document_digest)) = (
+                current_claim.external_document_digest.as_ref(),
+                external_document_digest.as_ref(),
+            ) {
+                if bound != external_document_digest {
+                    return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+                }
+            }
+        }
+        if let Some(external_document_digest) = external_document_digest.as_ref() {
+            let current_claim = inner
+                .claims
+                .get_mut(&claim.operation_id)
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+            if current_claim.external_document_digest.is_none() {
+                current_claim.external_document_digest = Some(external_document_digest.clone());
+            }
         }
         let catalog_revision = inner.authority_publication.catalog_revision;
         let entry = inner
@@ -4015,7 +4063,6 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                     )
                 })
                 .unwrap_or_default();
-
         let verdict =
             |disposition: WorkspaceCommandSemanticPreflightDispositionV1,
              diagnostic: Option<&str>| WorkspaceCommandSemanticPreflightV1 {
@@ -4029,6 +4076,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 changed_context_ids: changed_context_ids.clone(),
                 added_context_ids: added_context_ids.clone(),
                 removed_context_ids: removed_context_ids.clone(),
+                external_document_digest: external_document_digest.clone(),
+                protected_context_ids: Vec::new(),
                 diagnostic: diagnostic.map(str::to_owned),
             };
 
@@ -4213,6 +4262,26 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                         Some("workspace_revision_mismatch"),
                     ));
                 }
+                let external_document_bytes = external_document_bytes
+                    .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+                if request.accept_external == Some(true) {
+                    let current_document_bytes = entry
+                        .map(|entry| entry.document_bytes.as_slice())
+                        .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+                    let (blocked, diagnostic) = workspace_protected_agent_conflict_v1(
+                        current_document_bytes,
+                        external_document_bytes,
+                        &request.protected_agent_identities,
+                    )?;
+                    if let Some(diagnostic) = diagnostic {
+                        let mut result = verdict(
+                            WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                            Some(diagnostic),
+                        );
+                        result.protected_context_ids = blocked;
+                        return Ok(result);
+                    }
+                }
                 Ok(verdict(
                     WorkspaceCommandSemanticPreflightDispositionV1::Proceed,
                     None,
@@ -4287,6 +4356,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 fingerprint: identity.fingerprint.clone(),
                 generation,
                 reservation_id: None,
+                external_document_digest: None,
             },
         );
         Ok(WorkspaceCommandAdmissionAcquireV1::Claimed {
@@ -8001,6 +8071,182 @@ fn workspace_semantic_context_delta_from_maps_v1(
     (changed, added, removed)
 }
 
+fn workspace_protected_agent_identity_requires_protection_v1(
+    identity: &WorkspaceProtectedAgentIdentityV1,
+) -> bool {
+    identity.active_agent_session_id.is_some() || identity.is_pinned
+}
+
+fn workspace_document_agent_identities_v1(
+    document_bytes: &[u8],
+) -> Result<BTreeMap<String, WorkspaceProtectedAgentIdentityV1>, WorkspaceWorkingJournalError> {
+    let value: Value = serde_json::from_slice(document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let object = value
+        .as_object()
+        .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let mut identities = BTreeMap::new();
+    let composed = object
+        .get("composeTabs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for raw in composed {
+        let tab = raw
+            .as_object()
+            .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+        let tab_id = tab
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(canonical_uuid)
+            .ok_or(WorkspaceWorkingJournalError::InvalidContextTable)?;
+        let identity = WorkspaceProtectedAgentIdentityV1 {
+            tab_id: tab_id.clone(),
+            location: WorkspaceTabLocationV1::Composed,
+            active_agent_session_id: tab
+                .get("activeAgentSessionID")
+                .and_then(Value::as_str)
+                .and_then(canonical_uuid),
+            is_pinned: tab
+                .get("isPinned")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        if identities.insert(tab_id, identity).is_some() {
+            return Err(WorkspaceWorkingJournalError::InvalidContextTable);
+        }
+    }
+    let stashed = object
+        .get("stashedTabs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for raw in stashed {
+        let Some(tab) = raw
+            .as_object()
+            .and_then(|value| value.get("tab"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        let Some(tab_id) = tab
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(canonical_uuid)
+        else {
+            continue;
+        };
+        if identities.contains_key(&tab_id) {
+            continue;
+        }
+        identities.insert(
+            tab_id.clone(),
+            WorkspaceProtectedAgentIdentityV1 {
+                tab_id,
+                location: WorkspaceTabLocationV1::Stashed,
+                active_agent_session_id: tab
+                    .get("activeAgentSessionID")
+                    .and_then(Value::as_str)
+                    .and_then(canonical_uuid),
+                is_pinned: tab
+                    .get("isPinned")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
+        );
+    }
+    Ok(identities)
+}
+
+fn workspace_protected_agent_conflict_v1(
+    local_document_bytes: &[u8],
+    external_document_bytes: &[u8],
+    caller_identities: &[WorkspaceProtectedAgentIdentityV1],
+) -> Result<(Vec<String>, Option<&'static str>), WorkspaceWorkingJournalError> {
+    let local = workspace_document_agent_identities_v1(local_document_bytes)?;
+    let external = workspace_document_agent_identities_v1(external_document_bytes)?;
+    let mut protected = local
+        .values()
+        .filter(|identity| workspace_protected_agent_identity_requires_protection_v1(identity))
+        .cloned()
+        .map(|identity| (identity.tab_id.clone(), identity))
+        .collect::<BTreeMap<_, _>>();
+    let mut blocked = Vec::new();
+    let mut first_diagnostic = None;
+
+    for caller in caller_identities
+        .iter()
+        .filter(|identity| workspace_protected_agent_identity_requires_protection_v1(identity))
+    {
+        let tab_id =
+            canonical_uuid(&caller.tab_id).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let active_agent_session_id = match caller.active_agent_session_id.as_deref() {
+            Some(value) => {
+                Some(canonical_uuid(value).ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?)
+            }
+            None => None,
+        };
+        let normalized = WorkspaceProtectedAgentIdentityV1 {
+            tab_id: tab_id.clone(),
+            location: caller.location,
+            active_agent_session_id,
+            is_pinned: caller.is_pinned,
+        };
+        if let Some(existing) = protected.get_mut(&tab_id) {
+            if existing.location != normalized.location
+                || (existing.active_agent_session_id.is_some()
+                    && normalized.active_agent_session_id.is_some()
+                    && existing.active_agent_session_id != normalized.active_agent_session_id)
+            {
+                blocked.push(tab_id.clone());
+                first_diagnostic.get_or_insert("protected_agent_identity_precondition_mismatch");
+                continue;
+            }
+            existing.active_agent_session_id = normalized
+                .active_agent_session_id
+                .or(existing.active_agent_session_id.clone());
+            existing.is_pinned |= normalized.is_pinned;
+        } else {
+            protected.insert(tab_id, normalized);
+        }
+    }
+
+    let mut session_counts = BTreeMap::<String, usize>::new();
+    for identity in external.values() {
+        if let Some(session_id) = &identity.active_agent_session_id {
+            *session_counts.entry(session_id.clone()).or_default() += 1;
+        }
+    }
+    for (tab_id, identity) in protected {
+        let diagnostic = match external.get(&tab_id) {
+            None => Some("protected_agent_identity_missing"),
+            Some(candidate) if candidate.location != identity.location => {
+                Some("protected_agent_identity_location_changed")
+            }
+            Some(candidate)
+                if candidate.active_agent_session_id != identity.active_agent_session_id =>
+            {
+                Some("protected_agent_identity_rebound")
+            }
+            Some(candidate) if identity.is_pinned && !candidate.is_pinned => {
+                Some("protected_agent_identity_unpinned")
+            }
+            Some(_) => identity
+                .active_agent_session_id
+                .as_ref()
+                .filter(|session_id| session_counts.get(*session_id) != Some(&1))
+                .map(|_| "protected_agent_identity_duplicated"),
+        };
+        if let Some(diagnostic) = diagnostic {
+            blocked.push(tab_id);
+            first_diagnostic.get_or_insert(diagnostic);
+        }
+    }
+    blocked.sort();
+    blocked.dedup();
+    Ok((blocked, first_diagnostic))
+}
+
 fn context_revision_map_v1(
     value: &Value,
 ) -> Result<BTreeMap<String, WorkspaceProjectionRevisionState>, WorkspaceWorkingJournalError> {
@@ -10846,7 +11092,7 @@ mod tests {
             other => panic!("expected claim, got {other:?}"),
         };
         let preflight = admission
-            .semantic_preflight(&claim, &request, None)
+            .semantic_preflight(&claim, &request, None, None)
             .expect("semantic preflight");
         assert_eq!(preflight.workspace_id, WORKSPACE_ID);
         assert_eq!(preflight.command_kind, WorkspaceCommandKindV1::Save);
@@ -10876,7 +11122,7 @@ mod tests {
             other => panic!("expected stale claim, got {other:?}"),
         };
         let stale_preflight = admission
-            .semantic_preflight(&stale_claim, &stale_request, None)
+            .semantic_preflight(&stale_claim, &stale_request, None, None)
             .expect("stale preflight");
         assert_eq!(
             stale_preflight.disposition,
@@ -10890,7 +11136,7 @@ mod tests {
         let mut mismatched = stale_request;
         mismatched.expected_workspace_revision = Some(1);
         assert_eq!(
-            admission.semantic_preflight(&stale_claim, &mismatched, None),
+            admission.semantic_preflight(&stale_claim, &mismatched, None, None),
             Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
         );
         assert!(stale_claim.abandon().expect("abandon stale claim"));
@@ -10918,7 +11164,7 @@ mod tests {
             other => panic!("expected claim, got {other:?}"),
         };
         let preflight = admission
-            .semantic_preflight(&claim, &request, Some(&candidate))
+            .semantic_preflight(&claim, &request, Some(&candidate), None)
             .expect("context-aware preflight");
         assert_eq!(
             preflight.disposition,
@@ -10950,7 +11196,7 @@ mod tests {
             other => panic!("expected claim, got {other:?}"),
         };
         let preflight = admission
-            .semantic_preflight(&claim, &request, Some(&candidate))
+            .semantic_preflight(&claim, &request, Some(&candidate), None)
             .expect("single-context preflight");
         assert_eq!(
             preflight.disposition,
@@ -10975,7 +11221,7 @@ mod tests {
             other => panic!("expected stale context claim, got {other:?}"),
         };
         let preflight = admission
-            .semantic_preflight(&claim, &request, Some(&candidate))
+            .semantic_preflight(&claim, &request, Some(&candidate), None)
             .expect("stale context preflight");
         assert_eq!(
             preflight.disposition,
@@ -10998,10 +11244,178 @@ mod tests {
             other => panic!("expected malformed candidate claim, got {other:?}"),
         };
         assert_eq!(
-            admission.semantic_preflight(&claim, &request, Some(b"not-json")),
+            admission.semantic_preflight(&claim, &request, Some(b"not-json"), None),
             Err(WorkspaceWorkingJournalError::InvalidWorkingDocument)
         );
         assert!(claim.abandon().expect("abandon malformed candidate claim"));
+    }
+
+    #[test]
+    fn semantic_preflight_binds_external_digest_and_protected_agent_policy() {
+        let admission = authority_admission();
+        let local = document_with_agent_identity(
+            "local",
+            Some("abcdefab-cdef-abcd-efab-cdefabcdefab"),
+            true,
+        );
+        let revisions = WorkspaceProjectionRevisionState {
+            working_revision: 1,
+            saved_revision: 0,
+            dirty_revision: Some(1),
+        };
+        let health = WorkspaceProjectionHealth {
+            kind: WorkspaceProjectionHealthKind::ExternalConflict,
+            reason: Some("external_document_changed".to_owned()),
+        };
+        let workspace = WorkspaceProjectionPublishedWorkspace {
+            document_bytes: local.clone(),
+            authority: WorkspaceProjectionAuthorityState {
+                revisions,
+                health: health.clone(),
+                contexts: vec![WorkspaceContextAuthorityState {
+                    context_id: CONTEXT_ID.to_owned(),
+                    revisions,
+                    health,
+                }],
+            },
+        };
+        admission
+            .publish_authority_state(
+                std::slice::from_ref(&workspace),
+                authority_draft(0, WorkspaceProjectionPublicationKind::ExternalConflict),
+            )
+            .expect("publish external conflict authority");
+
+        let blocked_external = document_with_agent_identity("external", None, false);
+        let mut request = command_identity_request(WorkspaceCommandKindV1::ResolveExternalConflict);
+        request.operation_id = "99999999-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        request.expected_workspace_revision = Some(1);
+        let claim = match admission.acquire(request.clone()).expect("blocked claim") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected blocked claim, got {other:?}"),
+        };
+        let preflight = admission
+            .semantic_preflight(&claim, &request, None, Some(&blocked_external))
+            .expect("blocked external preflight");
+        assert_eq!(
+            preflight.disposition,
+            WorkspaceCommandSemanticPreflightDispositionV1::Conflict
+        );
+        assert_eq!(
+            preflight.diagnostic.as_deref(),
+            Some("protected_agent_identity_rebound")
+        );
+        assert_eq!(
+            preflight.external_document_digest,
+            Some(format!("{:x}", Sha256::digest(&blocked_external)))
+        );
+        assert_eq!(preflight.protected_context_ids, vec![CONTEXT_ID.to_owned()]);
+        let changed_external = document_with_agent_identity(
+            "different external",
+            Some("abcdefab-cdef-abcd-efab-cdefabcdefab"),
+            true,
+        );
+        assert_eq!(
+            admission.semantic_preflight(&claim, &request, None, Some(&changed_external)),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        assert!(claim.abandon().expect("abandon blocked claim"));
+
+        let allowed_external = document_with_agent_identity(
+            "allowed external",
+            Some("abcdefab-cdef-abcd-efab-cdefabcdefab"),
+            true,
+        );
+        let mut request = command_identity_request(WorkspaceCommandKindV1::ResolveExternalConflict);
+        request.operation_id = "88888888-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        request.expected_workspace_revision = Some(1);
+        let claim = match admission.acquire(request.clone()).expect("allowed claim") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected allowed claim, got {other:?}"),
+        };
+        let preflight = admission
+            .semantic_preflight(&claim, &request, None, Some(&allowed_external))
+            .expect("allowed external preflight");
+        assert_eq!(
+            preflight.disposition,
+            WorkspaceCommandSemanticPreflightDispositionV1::Proceed
+        );
+        assert!(preflight.protected_context_ids.is_empty());
+        assert!(claim.abandon().expect("abandon allowed claim"));
+
+        let mut request = command_identity_request(WorkspaceCommandKindV1::ResolveExternalConflict);
+        request.operation_id = "77777777-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        assert_eq!(
+            admission
+                .acquire(request.clone())
+                .map(|acquisition| match acquisition {
+                    WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => admission
+                        .semantic_preflight(&claim, &request, None, None)
+                        .expect_err("missing external bytes must fail closed"),
+                    other => panic!("expected missing external claim, got {other:?}"),
+                }),
+            Ok(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+    }
+
+    #[test]
+    fn protected_agent_identity_parser_normalizes_stashed_tabs_and_rejects_composed_duplicates() {
+        let session_id = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+        let stashed_id = "33333333-4444-5555-6666-777777777777";
+        let document = serde_json::to_vec(&serde_json::json!({
+            "id": WORKSPACE_ID,
+            "schemaVersion": 1,
+            "composeTabs": [{
+                "id": CONTEXT_ID,
+                "activeAgentSessionID": session_id,
+                "isPinned": true
+            }],
+            "stashedTabs": [
+                {"tab": {
+                    "id": stashed_id,
+                    "activeAgentSessionID": session_id,
+                    "isPinned": true
+                }},
+                {"malformed": true},
+                {"tab": {"id": CONTEXT_ID, "isPinned": false}},
+                {"tab": {"id": "not-a-uuid", "isPinned": true}}
+            ]
+        }))
+        .expect("normalized identity document");
+        let identities = workspace_document_agent_identities_v1(&document)
+            .expect("identity parser should normalize stashed entries");
+        assert_eq!(identities.len(), 2);
+        assert_eq!(
+            identities.get(CONTEXT_ID),
+            Some(&WorkspaceProtectedAgentIdentityV1 {
+                tab_id: CONTEXT_ID.to_owned(),
+                location: WorkspaceTabLocationV1::Composed,
+                active_agent_session_id: Some(session_id.to_owned()),
+                is_pinned: true,
+            })
+        );
+        assert_eq!(
+            identities.get(stashed_id),
+            Some(&WorkspaceProtectedAgentIdentityV1 {
+                tab_id: stashed_id.to_owned(),
+                location: WorkspaceTabLocationV1::Stashed,
+                active_agent_session_id: Some(session_id.to_owned()),
+                is_pinned: true,
+            })
+        );
+
+        let duplicate_document = serde_json::to_vec(&serde_json::json!({
+            "id": WORKSPACE_ID,
+            "composeTabs": [
+                {"id": CONTEXT_ID},
+                {"id": CONTEXT_ID}
+            ]
+        }))
+        .expect("duplicate identity document");
+        assert_eq!(
+            workspace_document_agent_identities_v1(&duplicate_document),
+            Err(WorkspaceWorkingJournalError::InvalidContextTable)
+        );
     }
 
     #[test]
@@ -12312,6 +12726,27 @@ mod tests {
             ]
         }))
         .expect("two-context document")
+    }
+
+    fn document_with_agent_identity(
+        prompt: &str,
+        active_agent_session_id: Option<&str>,
+        is_pinned: bool,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "id": WORKSPACE_ID,
+            "schemaVersion": 1,
+            "name": "Workspace",
+            "composeTabs": [{
+                "id": CONTEXT_ID,
+                "name": "Context",
+                "prompt": prompt,
+                "selectedPaths": [],
+                "activeAgentSessionID": active_agent_session_id,
+                "isPinned": is_pinned
+            }]
+        }))
+        .expect("agent identity document")
     }
 
     fn base64_encode(bytes: &[u8]) -> String {

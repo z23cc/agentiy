@@ -116,6 +116,8 @@ package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
     package let changedContextIDs: [UUID]
     package let addedContextIDs: [UUID]
     package let removedContextIDs: [UUID]
+    package let externalDocumentDigest: String?
+    package let protectedContextIDs: [UUID]
     package let diagnostic: String?
 
     package init(
@@ -129,6 +131,8 @@ package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
         changedContextIDs: [UUID] = [],
         addedContextIDs: [UUID] = [],
         removedContextIDs: [UUID] = [],
+        externalDocumentDigest: String? = nil,
+        protectedContextIDs: [UUID] = [],
         diagnostic: String?
     ) {
         self.workspaceID = workspaceID
@@ -141,6 +145,8 @@ package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
         self.changedContextIDs = changedContextIDs
         self.addedContextIDs = addedContextIDs
         self.removedContextIDs = removedContextIDs
+        self.externalDocumentDigest = externalDocumentDigest
+        self.protectedContextIDs = protectedContextIDs
         self.diagnostic = diagnostic
     }
 }
@@ -1243,13 +1249,15 @@ enum DomainWorkspaceRustJournal {
 
         func semanticPreflight(
             _ input: DomainWorkspaceCommandIdentityInput,
-            candidateDocumentBytes: Data? = nil
+            candidateDocumentBytes: Data? = nil,
+            externalDocumentBytes: Data? = nil
         ) throws -> DomainWorkspaceSemanticPreflight {
             let request = validator.coreCommandIdentityRequest(input)
             do {
                 let preflight = try core.semanticPreflight(
                     request,
-                    candidateDocumentBytes: candidateDocumentBytes
+                    candidateDocumentBytes: candidateDocumentBytes,
+                    externalDocumentBytes: externalDocumentBytes
                 )
                 let revisionsValid = preflight.revisions.map {
                     $0.savedRevision <= $0.workingRevision
@@ -1258,9 +1266,21 @@ enum DomainWorkspaceRustJournal {
                 guard preflight.workspaceID == request.workspaceID,
                       preflight.commandKind == request.commandKind,
                       preflight.contentDigest.map(PreparedValidator.isSHA256Digest) ?? true,
+                      preflight.externalDocumentDigest.map(PreparedValidator.isSHA256Digest) ?? true,
                       revisionsValid
                 else {
                     throw DomainPersistenceError.corruptJournal
+                }
+                if let externalDocumentBytes {
+                    guard preflight.externalDocumentDigest
+                        == DomainContentDigest.sha256(externalDocumentBytes)
+                    else {
+                        throw DomainPersistenceError.corruptJournal
+                    }
+                } else {
+                    guard preflight.externalDocumentDigest == nil else {
+                        throw DomainPersistenceError.corruptJournal
+                    }
                 }
                 let disposition: DomainWorkspaceSemanticPreflightDisposition = switch preflight.disposition {
                 case .proceed: .proceed
@@ -1293,6 +1313,8 @@ enum DomainWorkspaceRustJournal {
                     changedContextIDs: preflight.changedContextIDs,
                     addedContextIDs: preflight.addedContextIDs,
                     removedContextIDs: preflight.removedContextIDs,
+                    externalDocumentDigest: preflight.externalDocumentDigest,
+                    protectedContextIDs: preflight.protectedContextIDs,
                     diagnostic: preflight.diagnostic
                 )
             } catch let error as DomainPersistenceError {

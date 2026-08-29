@@ -2096,3 +2096,52 @@ canonical byte ordering, event identity, lease ownership, or external command ou
   lease, routing, and subscriber behavior remain unchanged. Focused Runtime/FFI/Bridge/Domain tests,
   product builds, style/lint, guardrails, formatting, and diff checks pass; unrelated full-suite
   infrastructure hangs are reported separately.
+
+## P5-12a amendment — claim-bound protected-agent admission
+
+P5-12a moves the protected-agent decision for an explicit `resolveExternalConflict` command into the
+same claim-bound Rust semantic preflight that owns workspace and context admission. The external
+document bytes remain a separate physical input: they are never folded into the candidate document
+argument, operation fingerprint, actor routing overlay, or durable journal request. Resolve
+preflight requires those bytes only after Rust has established that the workspace exists, is in an
+external-conflict health state, and passes its catalog and workspace revision fences. Missing
+workspace, no-conflict, and stale-fence outcomes retain their existing typed conflict/missing
+diagnostics and may carry no external digest; a proceeding resolution always carries the exact
+lowercase SHA-256 digest of the external bytes.
+
+The live execution claim binds the first external-byte digest observed by preflight. A later
+preflight for the same operation, generation, workspace, command kind, and fingerprint that
+supplies different external bytes fails with `InvalidOperationLedger`; the claim cannot be reused
+to authorize a different external snapshot. The binding is transient claim state and does not
+change the durable V1 journal or operation fingerprint. Claim, runtime, identity, input, catalog,
+workspace, and revision fences remain ordered before protected-agent policy, and physical reload or
+conflict-rebase transactions still reread their bytes and perform their existing CAS validation.
+
+Rust parses the canonical workspace document's composed and normalized stashed tab identity claims
+and applies the established protected truth table: active-agent or pinned claims are protected;
+location changes, session rebinding, missing claims, unpinning, duplicate active sessions, and
+caller precondition mismatches return the existing `protected_agent_identity_*` diagnostics. The
+receipt includes UUID-ordered `protectedContextIDs` for every blocked identity. Swift only captures
+the bounded external document bytes and caller claims, validates typed receipts, maps the diagnostic
+to `protectedAgentIdentityConflict`, and presents the actor-owned outcome. No Swift predicate,
+document comparison, or second semantic decision remains in the explicit resolution path.
+
+Automatic external observation, reload recovery, and routing-overlay synchronization remain on their
+existing claimless/recovery boundaries and are intentionally deferred to P5-13. No durable schema,
+canonical byte representation, lease ownership, publication cursor, event kind, or external command
+outcome changes.
+
+### P5-12a done-when
+
+- Runtime tests prove canonical composed/stashed identity parsing, the protected truth table,
+  deterministic blocked-ID ordering, malformed identity rejection, external-byte digest binding,
+  generation/claim fences, and rejection of a second external snapshot for the same live claim.
+- FFI, generated bindings, and Bridge expose separate external bytes, external digest, and blocked
+  context IDs; Bridge accepts nil digest only for Resolve preflight outcomes that terminate before
+  external bytes are admitted, and requires a valid digest for `proceed`.
+- Domain command admission passes `commandExternalDocument` bytes only to Rust preflight and derives
+  the protected-agent error code solely from the Rust diagnostic. The explicit resolution function
+  contains no local protected-agent predicate; automatic observation remains unchanged for P5-13.
+- Focused Runtime/FFI/Bridge/Domain authority and source-guard tests, deterministic code generation,
+  product builds, style/lint, guardrails, formatting, and diff checks pass. Any unrelated full-suite
+  infrastructure hang is reported separately.

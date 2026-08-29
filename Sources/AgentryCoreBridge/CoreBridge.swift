@@ -3009,7 +3009,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             }
             let claim = CoreWorkspaceCommandExecutionClaimV1(
                 rawClaim: rawClaim,
-                semanticPreflight: { request, candidateDocumentBytes in
+                semanticPreflight: { request, candidateDocumentBytes, externalDocumentBytes in
                     do {
                         return try Self.workspaceSemanticPreflightResponse(
                             rawClaim.semanticPreflight(
@@ -3017,7 +3017,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                                     identity: runtimeIdentity,
                                     request: request
                                 ),
-                                candidateDocumentBytes: candidateDocumentBytes
+                                candidateDocumentBytes: candidateDocumentBytes,
+                                externalDocumentBytes: externalDocumentBytes
                             ),
                             request: request
                         )
@@ -3174,6 +3175,25 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         let changedContextIDs = try canonicalUUIDs(preflight.changedContextIds)
         let addedContextIDs = try canonicalUUIDs(preflight.addedContextIds)
         let removedContextIDs = try canonicalUUIDs(preflight.removedContextIds)
+        let protectedContextIDs = try canonicalUUIDs(preflight.protectedContextIds)
+        let externalDocumentDigest = preflight.externalDocumentDigest
+        let externalDocumentDigestIsValid: Bool = if let externalDocumentDigest {
+            request.commandKind == .resolveExternalConflict && isSHA256(externalDocumentDigest)
+        } else {
+            // A ResolveExternalConflict preflight may terminate before reading external bytes
+            // when the workspace is missing, has no conflict, or its revision fence is stale.
+            // A proceeding resolution, however, must carry the exact external-byte digest.
+            request.commandKind != .resolveExternalConflict
+                || preflight.disposition != .proceed
+        }
+        guard externalDocumentDigestIsValid,
+              Set(protectedContextIDs).count == protectedContextIDs.count,
+              protectedContextIDs == protectedContextIDs.sorted(by: { $0.uuidString.lowercased() < $1.uuidString.lowercased() })
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace semantic preflight protected context identities are invalid"
+            )
+        }
         let changedSet = Set(changedContextIDs)
         guard Set(addedContextIDs).isSubset(of: changedSet),
               Set(removedContextIDs).isSubset(of: changedSet),
@@ -3213,6 +3233,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             changedContextIDs: changedContextIDs,
             addedContextIDs: addedContextIDs,
             removedContextIDs: removedContextIDs,
+            externalDocumentDigest: externalDocumentDigest,
+            protectedContextIDs: protectedContextIDs,
             diagnostic: preflight.diagnostic
         )
     }

@@ -1186,6 +1186,70 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
     }
 
+    func testP512aProtectedAgentAdmissionIsClaimBoundAndExternalByteExplicit() throws {
+        let root = repositoryRoot()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+
+        let authority = try source(
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
+        )
+        let adapter = try source(
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift"
+        )
+        let bridge = try source("Sources/AgentryCoreBridge/CoreBridge.swift")
+        let bridgeModels = try source("Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift")
+        let ffi = try source("rust/crates/ffi/src/api.rs")
+        let ffiTypes = try source("rust/crates/ffi/src/types.rs")
+        let runtime = try source("rust/crates/runtime/src/workspace_persistence_journal.rs")
+        let spec = try source("docs/spec/rust-workspace-document-projection-v1.md")
+
+        for required in [
+            "let externalDocumentBytes = commandExternalDocument(envelope.command)?.documentBytes",
+            "externalDocumentBytes: externalDocumentBytes",
+            "diagnostic.hasPrefix(\"protected_agent_identity_\")",
+            "case let .resolveExternalConflict(workspaceID, acceptExternal, _)"
+        ] {
+            XCTAssertTrue(authority.contains(required), "Missing protected-agent admission seam: \(required)")
+        }
+        XCTAssertTrue(adapter.contains("externalDocumentBytes: Data? = nil"))
+        XCTAssertTrue(adapter.contains("externalDocumentDigest: preflight.externalDocumentDigest"))
+        XCTAssertTrue(adapter.contains("protectedContextIDs: preflight.protectedContextIDs"))
+        XCTAssertTrue(bridge.contains("externalDocumentBytes: externalDocumentBytes"))
+        XCTAssertTrue(bridge.contains("externalDocumentDigestIsValid"))
+        XCTAssertTrue(bridgeModels.contains("public let protectedContextIDs: [UUID]"))
+        XCTAssertTrue(ffi.contains("external_document_bytes: Option<Vec<u8>>"))
+        XCTAssertTrue(ffiTypes.contains("pub external_document_digest: Option<String>"))
+        XCTAssertTrue(runtime.contains("external_document_digest: Option<String>"))
+        XCTAssertTrue(runtime.contains("workspace_protected_agent_conflict_v1("))
+        XCTAssertTrue(runtime.contains("protected_agent_identity_precondition_mismatch"))
+        XCTAssertTrue(runtime.contains("InvalidOperationLedger"))
+
+        let resolveStart = try XCTUnwrap(authority.range(of: "private func resolveExternalConflict("))
+        let resolveEnd = try XCTUnwrap(
+            authority.range(
+                of: "    private func commandResultOutcome(",
+                range: resolveStart.upperBound ..< authority.endIndex
+            )
+        )
+        let resolvePath = authority[resolveStart.lowerBound ..< resolveEnd.lowerBound]
+        for retired in [
+            "protectedAgentIdentityConflict",
+            "protectedAgentIdentities",
+            "metadata.agentIdentityClaims"
+        ] {
+            XCTAssertFalse(
+                resolvePath.contains(retired),
+                "Swift protected-agent oracle remains in explicit resolution: \(retired)"
+            )
+        }
+
+        XCTAssertTrue(spec.contains("## P5-12a amendment — claim-bound protected-agent admission"))
+        XCTAssertTrue(spec.contains("document bytes remain a separate physical input"))
+        XCTAssertTrue(spec.contains("P5-13"))
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

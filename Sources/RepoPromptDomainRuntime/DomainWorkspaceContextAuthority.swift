@@ -648,6 +648,7 @@ actor DomainWorkspaceContextAuthority {
             return stopped
         }
         let candidateDocumentBytes = commandDocument(envelope.command)?.documentBytes
+        let externalDocumentBytes = commandExternalDocument(envelope.command)?.documentBytes
         if let document = commandDocument(envelope.command),
            let diagnostic = invalidDocumentDiagnostic(document)
         {
@@ -686,7 +687,8 @@ actor DomainWorkspaceContextAuthority {
         do {
             let preflight = try commandClaim.semanticPreflight(
                 commandIdentityInput,
-                candidateDocumentBytes: candidateDocumentBytes
+                candidateDocumentBytes: candidateDocumentBytes,
+                externalDocumentBytes: externalDocumentBytes
             )
             if let preflightOutcome = await semanticPreflightOutcome(
                 preflight,
@@ -741,11 +743,10 @@ actor DomainWorkspaceContextAuthority {
                 commandClaim: commandClaim,
                 permit: permit
             )
-        case let .resolveExternalConflict(workspaceID, acceptExternal, protectedAgentIdentities):
+        case let .resolveExternalConflict(workspaceID, acceptExternal, _):
             await resolveExternalConflict(
                 workspaceID,
                 acceptExternal: acceptExternal,
-                protectedAgentIdentities: protectedAgentIdentities,
                 envelope: envelope,
                 fingerprint: fingerprint,
                 commandClaim: commandClaim,
@@ -812,6 +813,15 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
+    private func commandExternalDocument(_ command: DomainWorkspaceCommand) -> DomainWorkspaceDocument? {
+        switch command {
+        case let .resolveExternalConflict(workspaceID, _, _):
+            records[workspaceID]?.externalDocument
+        case .createWorkspace, .replaceWorkingDocument, .saveWorkspaceDocument, .deleteWorkspace:
+            nil
+        }
+    }
+
     private func semanticPreflightOutcome(
         _ preflight: DomainWorkspaceSemanticPreflight,
         envelope: DomainWorkspaceCommandEnvelope,
@@ -830,6 +840,9 @@ actor DomainWorkspaceContextAuthority {
             )
         }
         let diagnostic = preflight.diagnostic ?? "workspace_command_semantic_preflight_rejected"
+        let errorCode: DomainCommandErrorCode = diagnostic.hasPrefix("protected_agent_identity_")
+            ? .protectedAgentIdentityConflict
+            : .stateConflict
         let state = DomainCommandOutcome(
             operationID: envelope.operationID,
             disposition: .conflict,
@@ -837,7 +850,7 @@ actor DomainWorkspaceContextAuthority {
             after: preflight.revisions,
             catalogRevision: preflight.catalogRevision,
             resultingDigest: preflight.contentDigest,
-            errorCode: .stateConflict,
+            errorCode: errorCode,
             diagnostic: diagnostic,
             workspace: records[workspaceID].map(makeSnapshot)
         )
@@ -2500,7 +2513,6 @@ actor DomainWorkspaceContextAuthority {
     private func resolveExternalConflict(
         _ workspaceID: UUID,
         acceptExternal: Bool,
-        protectedAgentIdentities: [DomainProtectedAgentIdentity],
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
@@ -2519,22 +2531,6 @@ actor DomainWorkspaceContextAuthority {
             )
         }
         let before = record.revisions
-        if acceptExternal,
-           let diagnostic = Self.protectedAgentIdentityConflict(
-               local: record.document,
-               external: external,
-               callerClaims: protectedAgentIdentities
-           )
-        {
-            return finalizeTransientOutcome(
-                envelope: envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                disposition: .conflict,
-                errorCode: .protectedAgentIdentityConflict,
-                diagnostic: diagnostic
-            )
-        }
         let now = Date()
         let authorityDiagnostic = acceptExternal
             ? "external_conflict_accepted"
@@ -3057,67 +3053,6 @@ actor DomainWorkspaceContextAuthority {
             errorCode: errorCode,
             diagnostic: diagnostic
         )
-    }
-
-    private static func protectedAgentIdentityConflict(
-        local: DomainWorkspaceDocument,
-        external: DomainWorkspaceDocument,
-        callerClaims: [DomainProtectedAgentIdentity]
-    ) -> String? {
-        var protectedByTabID = Dictionary(
-            uniqueKeysWithValues: local.metadata.agentIdentityClaims
-                .filter(\.requiresProtection)
-                .map { ($0.tabID, $0) }
-        )
-        for callerClaim in callerClaims where callerClaim.requiresProtection {
-            if let existing = protectedByTabID[callerClaim.tabID] {
-                guard existing.location == callerClaim.location else {
-                    return "protected_agent_identity_precondition_mismatch"
-                }
-                if let existingSessionID = existing.activeAgentSessionID,
-                   let callerSessionID = callerClaim.activeAgentSessionID,
-                   existingSessionID != callerSessionID
-                {
-                    return "protected_agent_identity_precondition_mismatch"
-                }
-                protectedByTabID[callerClaim.tabID] = DomainProtectedAgentIdentity(
-                    tabID: callerClaim.tabID,
-                    location: existing.location,
-                    activeAgentSessionID: callerClaim.activeAgentSessionID ?? existing.activeAgentSessionID,
-                    isPinned: existing.isPinned || callerClaim.isPinned
-                )
-            } else {
-                protectedByTabID[callerClaim.tabID] = callerClaim
-            }
-        }
-
-        let externalByTabID = Dictionary(
-            uniqueKeysWithValues: external.metadata.agentIdentityClaims.map { ($0.tabID, $0) }
-        )
-        let sessionCounts = Dictionary(
-            grouping: external.metadata.agentIdentityClaims.compactMap(\.activeAgentSessionID),
-            by: { $0 }
-        ).mapValues(\.count)
-        for claim in protectedByTabID.values {
-            guard let candidate = externalByTabID[claim.tabID] else {
-                return "protected_agent_identity_missing"
-            }
-            guard candidate.location == claim.location else {
-                return "protected_agent_identity_location_changed"
-            }
-            guard candidate.activeAgentSessionID == claim.activeAgentSessionID else {
-                return "protected_agent_identity_rebound"
-            }
-            guard !claim.isPinned || candidate.isPinned else {
-                return "protected_agent_identity_unpinned"
-            }
-            if let sessionID = claim.activeAgentSessionID,
-               sessionCounts[sessionID] != 1
-            {
-                return "protected_agent_identity_duplicated"
-            }
-        }
-        return nil
     }
 
     private func finalizeConflictOutcome(
