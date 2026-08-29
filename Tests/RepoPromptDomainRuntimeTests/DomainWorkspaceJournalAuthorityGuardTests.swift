@@ -937,6 +937,161 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
     }
 
+    func testP58RustOwnsSemanticTransitionAndSwiftSendsIntentOnlyFacts() throws {
+        let root = repositoryRoot()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+
+        let rust = try source("rust/crates/runtime/src/workspace_persistence_journal.rs")
+        let rustRequestStart = try XCTUnwrap(
+            rust.range(of: "struct WorkspaceSaveTransactionRequestV1")
+        )
+        let rustRequestEnd = try XCTUnwrap(
+            rust.range(
+                of: "pub enum WorkspaceCreateActionKindV1",
+                range: rustRequestStart.upperBound ..< rust.endIndex
+            )
+        )
+        let rustRequests = rust[rustRequestStart.lowerBound ..< rustRequestEnd.lowerBound]
+        XCTAssertTrue(rust.contains("pub const WORKSPACE_SEMANTIC_PLANNER_VERSION_V1: u16 = 1;"))
+        XCTAssertTrue(rust.contains("catalog_revision: Option<u64>"))
+        XCTAssertTrue(rust.contains("recovery_mode: bool"))
+        XCTAssertTrue(rust.contains("if request.recovery_mode == operation_facts_present"))
+        XCTAssertTrue(
+            rust.contains(
+                "document_digest.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?"
+            )
+        )
+        for forbidden in [
+            "context_revisions:",
+            "context_digests:",
+            "context_tombstones:",
+            "operations:",
+            "new_revision:",
+            "new_revisions:",
+            "operation: WorkspaceRecordedOperationV1"
+        ] {
+            XCTAssertFalse(
+                rustRequests.contains(forbidden),
+                "Semantic transition request still accepts derived state: \(forbidden)"
+            )
+        }
+        for required in [
+            "semantic_planner_version: u16",
+            "expected_workspace_id: String",
+            "expected_file_url: String",
+            "expected_working_revision: u64",
+            "fingerprint: String",
+            "catalog_revision: u64"
+        ] {
+            XCTAssertTrue(rustRequests.contains(required), "Missing intent-only request fact: \(required)")
+        }
+
+        let adapter = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift")
+        let adapterRequestStart = try XCTUnwrap(
+            adapter.range(of: "private struct DeleteTransactionRequest")
+        )
+        let adapterRequestEnd = try XCTUnwrap(
+            adapter.range(
+                of: "struct PreparedCreateTransaction",
+                range: adapterRequestStart.upperBound ..< adapter.endIndex
+            )
+        )
+        let adapterRequests = adapter[adapterRequestStart.lowerBound ..< adapterRequestEnd.lowerBound]
+        for forbidden in [
+            "contextRevisions:",
+            "contextTombstones:",
+            "operations:",
+            "newRevision:",
+            "newRevisions:"
+        ] {
+            XCTAssertFalse(
+                adapterRequests.contains(forbidden),
+                "Swift transaction request still carries derived state: \(forbidden)"
+            )
+        }
+        for required in [
+            "semanticPlannerVersion: UInt16",
+            "expectedWorkspaceID: UUID",
+            "expectedFileURL: URL",
+            "fingerprint: String",
+            "catalogRevision: UInt64",
+            "recoveryMode: Bool"
+        ] {
+            XCTAssertTrue(adapterRequests.contains(required), "Missing Swift intent fact: \(required)")
+        }
+
+        let authority = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift")
+        let persistence = try source("Sources/RepoPromptDomainRuntime/DomainPersistence.swift")
+        for required in [
+            "func persistWorkingRecovery(",
+            "func persistExternalReloadRecovery(",
+            "func persistConflictRebaseRecovery(",
+            "recoveryMode: false"
+        ] {
+            XCTAssertTrue(persistence.contains(required), "Missing explicit recovery/command split: \(required)")
+        }
+        XCTAssertFalse(
+            persistence.contains("commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil"),
+            "Command persistence API still permits an unclassified claimless mutation"
+        )
+        for required in [
+            "persistence.persistWorkingRecovery(",
+            "persistence.persistExternalReloadRecovery(",
+            "persistence.persistConflictRebaseRecovery("
+        ] {
+            XCTAssertTrue(authority.contains(required), "Recovery path missing explicit boundary: \(required)")
+        }
+        let commandStart = try XCTUnwrap(authority.range(of: "private func createWorkspace("))
+        let commandEnd = try XCTUnwrap(
+            authority.range(
+                of: "    private func commandPublicationInvalidatesReadRegistration(",
+                range: commandStart.upperBound ..< authority.endIndex
+            )
+        )
+        let commandPaths = authority[commandStart.lowerBound ..< commandEnd.lowerBound]
+        for forbidden in [
+            "Self.updatedContextRevisions(",
+            "Self.updatedReadOverlayContextRevisions(",
+            "newRevision:",
+            "newRevisions:",
+            "contextRevisions: context",
+            "contextTombstones: context",
+            "operations: operations"
+        ] {
+            XCTAssertFalse(
+                commandPaths.contains(forbidden),
+                "Durable command/recovery path rebuilt semantic state in Swift: \(forbidden)"
+            )
+        }
+        for required in [
+            "private func createWorkspace(",
+            "private func deleteWorkspace(",
+            "private func replaceWorkingDocument(",
+            "private func saveWorkspace(",
+            "private func resolveExternalConflict(",
+            "persistence.persistCreated(",
+            "persistence.persistDeleted(",
+            "persistence.persistWorking(",
+            "persistence.persistSaved(",
+            "persistence.persistExternalReload(",
+            "persistence.persistConflictRebase("
+        ] {
+            XCTAssertTrue(commandPaths.contains(required), "Command path missing expected Rust-owned seam: \(required)")
+        }
+        let readOverlayStart = try XCTUnwrap(authority.range(of: "func registerReadDocument("))
+        let readOverlayEnd = try XCTUnwrap(
+            authority.range(
+                of: "    func readySnapshot()",
+                range: readOverlayStart.upperBound ..< authority.endIndex
+            )
+        )
+        let readOverlayPath = authority[readOverlayStart.lowerBound ..< readOverlayEnd.lowerBound]
+        XCTAssertTrue(readOverlayPath.contains("Self.updatedReadOverlayContextRevisions("))
+        XCTAssertFalse(commandPaths.contains("DomainRevisionState("))
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -353,7 +353,7 @@ actor DomainWorkspaceContextAuthority {
             dirtyRevision: nextWorking
         )
         let contextRevisions: [UUID: DomainRevisionState] = if let previous {
-            Self.updatedContextRevisions(
+            Self.updatedReadOverlayContextRevisions(
                 previousDocument: previous.document,
                 nextDocument: document,
                 previousRevisions: Dictionary(uniqueKeysWithValues: previous.contexts.map {
@@ -1571,41 +1571,12 @@ actor DomainWorkspaceContextAuthority {
             }
             let before = record.revisions
             let restoresCapturedDocument = record.document.contentDigest != localDocument.contentDigest
-            let revisions: DomainRevisionState
-            let contextRevisions: [UUID: DomainRevisionState]
-            let contextTombstones: [UUID: UInt64]
-            if restoresCapturedDocument {
-                let nextWorking = before.workingRevision &+ 1
-                revisions = DomainRevisionState(
-                    workingRevision: nextWorking,
-                    savedRevision: before.savedRevision,
-                    dirtyRevision: nextWorking
-                )
-                let contextUpdate = Self.updatedContextRevisions(
-                    previousDocument: record.document,
-                    nextDocument: localDocument,
-                    previousRevisions: record.contextRevisions,
-                    workspaceRevision: revisions
-                )
-                contextRevisions = contextUpdate.revisions
-                contextTombstones = record.contextTombstones.merging(
-                    contextUpdate.tombstones
-                ) { _, new in new }
-            } else {
-                revisions = before
-                contextRevisions = record.contextRevisions
-                contextTombstones = record.contextTombstones
-            }
 
             do {
-                let persisted = try await persistence.persistConflictRebase(
+                let persisted = try await persistence.persistConflictRebaseRecovery(
                     document: localDocument,
                     externalSavedDigest: externalDocument.contentDigest,
                     expectedRevisions: before,
-                    newRevisions: revisions,
-                    contextRevisions: contextRevisions,
-                    contextTombstones: contextTombstones,
-                    operations: record.operations,
                     now: Date(),
                     permit: permit
                 )
@@ -1699,28 +1670,10 @@ actor DomainWorkspaceContextAuthority {
         }
 
         let before = record.revisions
-        let nextWorking = before.workingRevision &+ 1
-        let revisions = DomainRevisionState(
-            workingRevision: nextWorking,
-            savedRevision: before.savedRevision,
-            dirtyRevision: nextWorking
-        )
-        let contextUpdate = Self.updatedContextRevisions(
-            previousDocument: record.document,
-            nextDocument: localDocument,
-            previousRevisions: record.contextRevisions,
-            workspaceRevision: revisions
-        )
         do {
-            let persisted = try await persistence.persistWorking(
+            let persisted = try await persistence.persistWorkingRecovery(
                 document: localDocument,
                 expectedRevision: before.workingRevision,
-                newRevision: revisions,
-                contextRevisions: contextUpdate.revisions,
-                contextTombstones: record.contextTombstones.merging(
-                    contextUpdate.tombstones
-                ) { _, new in new },
-                operations: record.operations,
                 now: Date(),
                 permit: permit
             )
@@ -1809,28 +1762,10 @@ actor DomainWorkspaceContextAuthority {
             }
 
             let before = record.revisions
-            let next = before.workingRevision &+ 1
-            let revisions = DomainRevisionState(
-                workingRevision: next,
-                savedRevision: next,
-                dirtyRevision: nil
-            )
-            let contextUpdate = Self.updatedContextRevisions(
-                previousDocument: record.document,
-                nextDocument: externalDocument,
-                previousRevisions: record.contextRevisions,
-                workspaceRevision: revisions
-            )
             do {
-                let persisted = try await persistence.persistExternalReload(
+                let persisted = try await persistence.persistExternalReloadRecovery(
                     document: externalDocument,
                     expectedRevision: before.workingRevision,
-                    newRevision: next,
-                    contextRevisions: contextUpdate.revisions,
-                    contextTombstones: record.contextTombstones.merging(
-                        contextUpdate.tombstones
-                    ) { _, new in new },
-                    operations: record.operations,
                     now: Date(),
                     permit: permit
                 )
@@ -1954,35 +1889,19 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_does_not_exist_at_expected_revision"
             )
         }
-        let revisions = DomainRevisionState(
-            workingRevision: 1,
-            savedRevision: 1,
-            dirtyRevision: nil
-        )
-        let contextRevisions = Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
-            ($0.identity.contextID, revisions)
-        })
-        let provisional = DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .applied,
-            before: nil,
-            after: revisions,
-            catalogRevision: catalogRevision &+ 1,
-            resultingDigest: document.contentDigest
-        )
+        let now = Date()
         let recorded = DomainRecordedOperation(
+            operationID: envelope.operationID,
             fingerprint: fingerprint,
-            recordedAt: Date(),
-            outcome: provisional
+            recordedAt: now
         )
         do {
             let persisted = try await persistence.persistCreated(
                 document: document,
                 expectedCatalogRevision: envelope.expectedCatalogRevision ?? catalogRevision,
                 operationID: envelope.operationID,
-                contextRevisions: contextRevisions,
                 operation: recorded,
-                now: recorded.recordedAt,
+                now: now,
                 permit: permit,
                 commandClaim: commandClaim,
             )
@@ -2101,18 +2020,10 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_revision_mismatch"
             )
         }
-        let provisional = DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .applied,
-            before: record.revisions,
-            after: nil,
-            catalogRevision: catalogRevision &+ 1,
-            resultingDigest: nil
-        )
         let operation = DomainRecordedOperation(
+            operationID: envelope.operationID,
             fingerprint: fingerprint,
-            recordedAt: Date(),
-            outcome: provisional
+            recordedAt: Date()
         )
         do {
             let deleted = try await persistence.persistDeleted(
@@ -2256,43 +2167,16 @@ actor DomainWorkspaceContextAuthority {
             }
 
             let before = record.revisions
-            let nextWorking = before.workingRevision &+ 1
-            let revisions = DomainRevisionState(
-                workingRevision: nextWorking,
-                savedRevision: before.savedRevision,
-                dirtyRevision: nextWorking
-            )
-            let contextUpdate = Self.updatedContextRevisions(
-                previousDocument: record.document,
-                nextDocument: document,
-                previousRevisions: record.contextRevisions,
-                workspaceRevision: revisions
-            )
-            let provisional = DomainCommandOutcome(
-                operationID: envelope.operationID,
-                disposition: .applied,
-                before: before,
-                after: revisions,
-                catalogRevision: catalogRevision,
-                resultingDigest: document.contentDigest,
-                workspace: nil
-            )
-            let recorded = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: Date(), outcome: provisional)
-            let operations = record.operations + [recorded]
-            let nextContextTombstones = record.contextTombstones.merging(
-                contextUpdate.tombstones
-            ) { _, new in new }
+            let now = Date()
             let authorityDiagnostic = isDurableReplay ? "durable_workspace_revision_replayed" : nil
             let persisted: DomainPersistenceWorkingCommit
             do {
                 persisted = try await persistence.persistWorking(
                     document: document,
                     expectedRevision: before.workingRevision,
-                    newRevision: revisions,
-                    contextRevisions: contextUpdate.revisions,
-                    contextTombstones: nextContextTombstones,
-                    operations: operations,
-                    now: recorded.recordedAt,
+                    operationID: envelope.operationID,
+                    fingerprint: fingerprint,
+                    now: now,
                     permit: permit,
                     commandClaim: commandClaim,
                     )
@@ -2432,38 +2316,15 @@ actor DomainWorkspaceContextAuthority {
             return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record, permit: permit)
         }
         let before = record.revisions
-        let after = DomainRevisionState(
-            workingRevision: before.workingRevision,
-            savedRevision: before.workingRevision,
-            dirtyRevision: nil
-        )
-        let provisional = DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .applied,
-            before: before,
-            after: after,
-            catalogRevision: catalogRevision,
-            resultingDigest: record.document.contentDigest
-        )
-        let recorded = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: Date(), outcome: provisional)
-        let operations = record.operations + [recorded]
-        let cleanContextRevisions = record.contextRevisions.mapValues { revision in
-            DomainRevisionState(
-                workingRevision: revision.workingRevision,
-                savedRevision: revision.workingRevision,
-                dirtyRevision: nil
-            )
-        }
+        let now = Date()
         let authorityDiagnostic = allowsExternalRecovery ? nil : "external_document_rebased_and_saved"
         do {
             let saved = try await persistence.persistSaved(
                 document: record.document,
                 expectedWorkingRevision: before.workingRevision,
                 operationID: envelope.operationID,
-                contextRevisions: record.contextRevisions,
-                contextTombstones: record.contextTombstones,
-                operations: operations,
-                now: recorded.recordedAt,
+                fingerprint: fingerprint,
+                now: now,
                 permit: permit,
                 commandClaim: commandClaim,
             )
@@ -2712,29 +2573,6 @@ actor DomainWorkspaceContextAuthority {
             )
         }
         let now = Date()
-        let after = acceptExternal
-            ? DomainRevisionState(
-                workingRevision: before.workingRevision &+ 1,
-                savedRevision: before.workingRevision &+ 1,
-                dirtyRevision: nil
-            )
-            : before
-        let resultingDocument = acceptExternal ? external : record.document
-        let provisional = DomainCommandOutcome(
-            operationID: envelope.operationID,
-            disposition: .applied,
-            before: before,
-            after: after,
-            catalogRevision: catalogRevision,
-            resultingDigest: resultingDocument.contentDigest
-        )
-        let operation = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: now, outcome: provisional)
-        let operations = record.operations + [operation]
-        let contextRevisions = acceptExternal
-            ? Dictionary(uniqueKeysWithValues: external.metadata.contexts.map {
-                ($0.identity.contextID, after)
-            })
-            : record.contextRevisions
         let authorityDiagnostic = acceptExternal
             ? "external_conflict_accepted"
             : "local_conflict_rebased"
@@ -2747,10 +2585,8 @@ actor DomainWorkspaceContextAuthority {
                 let persisted = try await persistence.persistExternalReload(
                     document: external,
                     expectedRevision: before.workingRevision,
-                    newRevision: after.workingRevision,
-                    contextRevisions: contextRevisions,
-                    contextTombstones: record.contextTombstones,
-                    operations: operations,
+                    operationID: envelope.operationID,
+                    fingerprint: fingerprint,
                     now: now,
                     permit: permit,
                     commandClaim: commandClaim,
@@ -2767,10 +2603,8 @@ actor DomainWorkspaceContextAuthority {
                     document: record.document,
                     externalSavedDigest: external.contentDigest,
                     expectedRevisions: before,
-                    newRevisions: after,
-                    contextRevisions: record.contextRevisions,
-                    contextTombstones: record.contextTombstones,
-                    operations: operations,
+                    operationID: envelope.operationID,
+                    fingerprint: fingerprint,
                     now: now,
                     permit: permit,
                     commandClaim: commandClaim,
@@ -3619,7 +3453,8 @@ actor DomainWorkspaceContextAuthority {
         return Set(old.keys).union(new.keys).filter { old[$0] != new[$0] }
     }
 
-    private static func updatedContextRevisions(
+    /// Read-only overlay helper. Durable command and recovery paths receive context authority from Rust.
+    private static func updatedReadOverlayContextRevisions(
         previousDocument: DomainWorkspaceDocument,
         nextDocument: DomainWorkspaceDocument,
         previousRevisions: [UUID: DomainRevisionState],

@@ -1881,8 +1881,11 @@ or alternate semantic outcome. Recovery-only and explicit routing-overlay operat
 non-command publication/synchronization APIs; they do not reintroduce command-side sequential publication.
 
 A claimless transaction remains explicitly not applicable for command admission and can be used only by the established
-recovery/physical paths. A claimed transaction without a derivable operation or with a stale, closed, quarantined,
-capacity-invalid, identity-mismatched, or otherwise malformed canonical result is rejected before physical I/O. Failure
+recovery/physical paths through their dedicated recovery entry points. The journal request carries an explicit
+`recoveryMode` marker; Rust accepts it only when operation facts are absent, while a command request must carry the
+operation facts that bind its transaction to a live claim. A claimed transaction without a derivable operation or with
+a stale, closed, quarantined, capacity-invalid, identity-mismatched, or otherwise malformed canonical result is rejected
+before physical I/O. Failure
 before decisive physical success releases the transaction reservation without changing replay, projection, generation,
 or publication cursors. If physical authority has already succeeded but aggregate finalization cannot be materialized,
 the physical result remains first-terminal and Swift quarantines new mutation under
@@ -1903,3 +1906,51 @@ finish, close, and caller-resumption paths return the same Rust receipt without 
 - Source guards prove no production Swift command candidate/fallback publish remains; focused Runtime/FFI/Bridge/Domain
   authority, journal, replay, lifecycle, direct-read, codegen, product-build, style, guardrail, formatting, and diff
   checks pass.
+
+## P5-8 amendment — Rust semantic transition authority
+
+P5-8 makes the Rust persistence transaction planner the sole semantic transition authority for the
+workspace working journal. Every create, unchanged, working, save, external-reload, conflict-rebase,
+and delete transaction carries `WORKSPACE_SEMANTIC_PLANNER_VERSION_V1` and only intent facts: the
+expected workspace/file identity, expected revision or revision state, catalog revision fence,
+operation identity/fingerprint, external saved digest where applicable, and timestamp. Candidate document bytes remain the bounded physical input. Swift may not provide new revisions, context revision or
+tombstone tables, operation ledgers, resulting digests, or semantic diagnostics to the planner.
+
+Rust validates the expected fences and candidate document, derives the next workspace and context
+revision tables, context tombstones, saved/working/dirty state, operation disposition and ledger
+entry, and resulting document digest from the canonical candidate bytes. The unchanged transition
+must use the candidate working-document digest even when the journal is dirty and its saved digest
+is older. External reload derives the next clean revision; conflict rebase derives whether the
+candidate advances the workspace; all derived values are validated against the canonical journal
+before a transaction is prepared. A claimed transaction binds the derived operation to the exact
+execution claim and reserves the aggregate publication head before physical I/O. A claimless
+transaction is explicitly limited to established recovery and non-command physical paths.
+
+Swift remains responsible for bounded file reads/writes, workspace locks and CAS, storage lease and
+runtime permits, routing overlays, actor record installation, outcome origin/diagnostic presentation,
+and subscriber delivery. It validates the Rust receipt against its actor mirror, removes or retains
+routing overlays according to the existing command result, and publishes the Rust-issued event in
+the same actor turn. No Swift semantic candidate builder, second planner, post-commit fallback
+publication, or alternate outcome may be introduced. Runtime fences, stale heads, identity and
+fingerprint binding, capacity limits, replay receipts, and failure isolation remain fail-closed;
+physical success remains first-terminal if later aggregate finalization cannot be mirrored.
+
+P5-8 changes no durable schema, canonical byte representation, filesystem ordering, lease ownership,
+command outcome, event kind, diagnostic contract, publication sequence rule, or direct-headless
+read fence. Existing full/target recovery and routing-overlay synchronization continue to use their
+claimless Rust recovery boundary and do not become command admission paths.
+
+### P5-8 done-when
+
+- Runtime tests prove planner-version enforcement, intent-only transition decoding, derived revision/context/tombstone
+  tables, candidate-byte digest parity for clean and dirty unchanged commands, external reload/rebase derivation, exact
+  claim/operation binding, explicit claimless recovery mode, idempotent operation-ledger replay, stale-head and capacity
+  atomicity, replay/close/runtime fences, and reservation cancellation.
+- FFI, generated bindings, Bridge, and Domain adapters expose the planner version and intent-only request shapes with a
+  deterministic codegen check; no production Swift request passes semantic revision tables, operation records, or a new
+  revision to Rust.
+- Create/delete/journal/save and unchanged/reload/rebase callers consume transaction-owned semantic receipts while
+  preserving physical I/O, lease, routing, actor mirror, event, and external error behavior. Recovery-only paths remain
+  claimless and explicitly not applicable to command admission.
+- Focused runtime/FFI/Bridge/Domain authority and journal tests, codegen, product builds, formatting/lint, guardrails, and
+  diff checks pass; any unrelated full-suite infrastructure hang or pre-existing failure is reported separately.

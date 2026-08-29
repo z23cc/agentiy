@@ -50,9 +50,9 @@ use crate::types::{
     AgentClaudeStartReceiptV1, CoreAgentClaudeScopeConfigV1,
 };
 use crate::types::{
-    CoreWorkspaceAuthorityProjectionSyncReceiptV1,
-    CoreWorkspaceAuthorityPublicationDraftV1, CoreWorkspaceAuthorityPublicationReceiptV1,
-    CoreWorkspaceAuthorityReadV1, CoreWorkspaceProjectionPublishedWorkspaceV1,
+    CoreWorkspaceAuthorityProjectionSyncReceiptV1, CoreWorkspaceAuthorityPublicationDraftV1,
+    CoreWorkspaceAuthorityPublicationReceiptV1, CoreWorkspaceAuthorityReadV1,
+    CoreWorkspaceProjectionPublishedWorkspaceV1,
 };
 use agentry_proto::{Envelope, PayloadKind};
 use agentry_runtime as runtime;
@@ -1015,6 +1015,10 @@ fn cancel_workspace_command_authorities(
     }
 }
 
+/// Binds the prepared transaction to its exact claim. A claimless transaction is
+/// valid only when Rust classified the request as an explicit recovery/non-command
+/// path and therefore produced no admission finalization. Conversely, a supplied
+/// claim cannot attach to a recovery transaction.
 fn bind_workspace_command_admission_finalization(
     claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
     finalization: Option<

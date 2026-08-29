@@ -114,6 +114,22 @@ struct DomainRecordedOperation: Codable, Equatable, Sendable {
     let errorCode: DomainCommandErrorCode?
     let diagnostic: String?
 
+    /// Command facts supplied to Rust semantic planning. Revision, catalog, digest, and
+    /// diagnostic fields are intentionally absent; Rust derives those fields from the
+    /// authoritative journal/catalog state and candidate bytes.
+    init(operationID: UUID, fingerprint: String, recordedAt: Date) {
+        self.operationID = operationID
+        self.fingerprint = fingerprint
+        self.recordedAt = recordedAt
+        disposition = .applied
+        before = nil
+        after = nil
+        catalogRevision = 0
+        resultingDigest = nil
+        errorCode = nil
+        diagnostic = nil
+    }
+
     init(fingerprint: String, recordedAt: Date, outcome: DomainCommandOutcome) {
         operationID = outcome.operationID
         self.fingerprint = fingerprint

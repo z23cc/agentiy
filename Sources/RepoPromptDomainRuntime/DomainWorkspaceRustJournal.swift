@@ -492,52 +492,39 @@ enum DomainWorkspaceWorkingJournalTransition: Sendable {
     case create(
         workspaceID: UUID,
         fileURL: URL,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextDigests: [UUID: String],
-        operation: DomainRecordedOperation,
         operationID: UUID,
+        fingerprint: String,
         updatedAt: Date
     )
     case unchanged(
         expectedWorkingRevision: UInt64,
-        operation: DomainRecordedOperation,
+        operationID: UUID,
+        fingerprint: String,
         updatedAt: Date
     )
     case working(
         expectedWorkingRevision: UInt64,
-        newRevisions: DomainRevisionState,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextDigests: [UUID: String],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID?,
+        fingerprint: String?,
         updatedAt: Date
     )
     case save(
         expectedWorkingRevision: UInt64,
         operationID: UUID,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextDigests: [UUID: String],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        fingerprint: String,
         updatedAt: Date
     )
     case externalReload(
         expectedWorkingRevision: UInt64,
-        newRevision: UInt64,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextDigests: [UUID: String],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID?,
+        fingerprint: String?,
         updatedAt: Date
     )
     case conflictRebase(
         expectedRevisions: DomainRevisionState,
-        newRevisions: DomainRevisionState,
         externalSavedDigest: String,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextDigests: [UUID: String],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID?,
+        fingerprint: String?,
         updatedAt: Date
     )
 
@@ -555,108 +542,54 @@ enum DomainWorkspaceWorkingJournalTransition: Sendable {
             )
         case let .recoverPending(expectedWorkspaceID):
             EncodedTransition(kind: "recoverPending", expectedWorkspaceID: expectedWorkspaceID)
-        case let .create(
-            workspaceID,
-            fileURL,
-            contextRevisions,
-            contextDigests,
-            operation,
-            operationID,
-            updatedAt
-        ):
+        case let .create(workspaceID, fileURL, operationID, fingerprint, updatedAt):
             EncodedTransition(
                 kind: "create",
                 workspaceID: workspaceID,
                 fileURL: fileURL,
-                contextRevisions: contextRevisions,
-                contextDigests: contextDigests,
-                operation: operation,
                 operationID: operationID,
+                fingerprint: fingerprint,
                 updatedAt: updatedAt
             )
-        case let .unchanged(expectedWorkingRevision, operation, updatedAt):
+        case let .unchanged(expectedWorkingRevision, operationID, fingerprint, updatedAt):
             EncodedTransition(
                 kind: "unchanged",
                 expectedWorkingRevision: expectedWorkingRevision,
-                operation: operation,
+                operationID: operationID,
+                fingerprint: fingerprint,
                 updatedAt: updatedAt
             )
-        case let .working(
-            expectedWorkingRevision,
-            newRevisions,
-            contextRevisions,
-            contextDigests,
-            contextTombstones,
-            operations,
-            updatedAt
-        ):
+        case let .working(expectedWorkingRevision, operationID, fingerprint, updatedAt):
             EncodedTransition(
                 kind: "working",
-                newRevisions: newRevisions,
                 expectedWorkingRevision: expectedWorkingRevision,
-                contextRevisions: contextRevisions,
-                contextDigests: contextDigests,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                operationID: operationID,
+                fingerprint: fingerprint,
                 updatedAt: updatedAt
             )
-        case let .save(
-            expectedWorkingRevision,
-            operationID,
-            contextRevisions,
-            contextDigests,
-            contextTombstones,
-            operations,
-            updatedAt
-        ):
+        case let .save(expectedWorkingRevision, operationID, fingerprint, updatedAt):
             EncodedTransition(
                 kind: "save",
                 expectedWorkingRevision: expectedWorkingRevision,
-                contextRevisions: contextRevisions,
-                contextDigests: contextDigests,
-                contextTombstones: contextTombstones,
-                operations: operations,
                 operationID: operationID,
+                fingerprint: fingerprint,
                 updatedAt: updatedAt
             )
-        case let .externalReload(
-            expectedWorkingRevision,
-            newRevision,
-            contextRevisions,
-            contextDigests,
-            contextTombstones,
-            operations,
-            updatedAt
-        ):
+        case let .externalReload(expectedWorkingRevision, operationID, fingerprint, updatedAt):
             EncodedTransition(
                 kind: "externalReload",
                 expectedWorkingRevision: expectedWorkingRevision,
-                newRevision: newRevision,
-                contextRevisions: contextRevisions,
-                contextDigests: contextDigests,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                operationID: operationID,
+                fingerprint: fingerprint,
                 updatedAt: updatedAt
             )
-        case let .conflictRebase(
-            expectedRevisions,
-            newRevisions,
-            externalSavedDigest,
-            contextRevisions,
-            contextDigests,
-            contextTombstones,
-            operations,
-            updatedAt
-        ):
+        case let .conflictRebase(expectedRevisions, externalSavedDigest, operationID, fingerprint, updatedAt):
             EncodedTransition(
                 kind: "conflictRebase",
                 expectedRevisions: expectedRevisions,
-                newRevisions: newRevisions,
                 externalSavedDigest: externalSavedDigest,
-                contextRevisions: contextRevisions,
-                contextDigests: contextDigests,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                operationID: operationID,
+                fingerprint: fingerprint,
                 updatedAt: updatedAt
             )
         }
@@ -669,17 +602,12 @@ enum DomainWorkspaceWorkingJournalTransition: Sendable {
         var expectedWorkspaceID: UUID?
         var revisions: DomainRevisionState?
         var expectedRevisions: DomainRevisionState?
-        var newRevisions: DomainRevisionState?
         var expectedWorkingRevision: UInt64?
-        var newRevision: UInt64?
         var savedDigest: String?
         var externalSavedDigest: String?
-        var contextRevisions: [UUID: DomainRevisionState]?
         var contextDigests: [UUID: String]?
-        var contextTombstones: [UUID: UInt64]?
-        var operations: [DomainRecordedOperation]?
-        var operation: DomainRecordedOperation?
         var operationID: UUID?
+        var fingerprint: String?
         var updatedAt: Date?
 
         init(
@@ -689,17 +617,12 @@ enum DomainWorkspaceWorkingJournalTransition: Sendable {
             expectedWorkspaceID: UUID? = nil,
             revisions: DomainRevisionState? = nil,
             expectedRevisions: DomainRevisionState? = nil,
-            newRevisions: DomainRevisionState? = nil,
             expectedWorkingRevision: UInt64? = nil,
-            newRevision: UInt64? = nil,
             savedDigest: String? = nil,
             externalSavedDigest: String? = nil,
-            contextRevisions: [UUID: DomainRevisionState]? = nil,
             contextDigests: [UUID: String]? = nil,
-            contextTombstones: [UUID: UInt64]? = nil,
-            operations: [DomainRecordedOperation]? = nil,
-            operation: DomainRecordedOperation? = nil,
             operationID: UUID? = nil,
+            fingerprint: String? = nil,
             updatedAt: Date? = nil
         ) {
             self.kind = kind
@@ -708,17 +631,12 @@ enum DomainWorkspaceWorkingJournalTransition: Sendable {
             self.expectedWorkspaceID = expectedWorkspaceID
             self.revisions = revisions
             self.expectedRevisions = expectedRevisions
-            self.newRevisions = newRevisions
             self.expectedWorkingRevision = expectedWorkingRevision
-            self.newRevision = newRevision
             self.savedDigest = savedDigest
             self.externalSavedDigest = externalSavedDigest
-            self.contextRevisions = contextRevisions
             self.contextDigests = contextDigests
-            self.contextTombstones = contextTombstones
-            self.operations = operations
-            self.operation = operation
             self.operationID = operationID
+            self.fingerprint = fingerprint
             self.updatedAt = updatedAt
         }
     }
@@ -727,11 +645,11 @@ enum DomainWorkspaceWorkingJournalTransition: Sendable {
 private extension DomainWorkspaceWorkingJournalTransition {
     var expectedWorkingRevision: UInt64 {
         switch self {
-        case let .unchanged(revision, _, _),
-             let .working(revision, _, _, _, _, _, _),
-             let .externalReload(revision, _, _, _, _, _, _):
+        case let .unchanged(revision, _, _, _),
+             let .working(revision, _, _, _),
+             let .externalReload(revision, _, _, _):
             revision
-        case let .conflictRebase(revisions, _, _, _, _, _, _, _):
+        case let .conflictRebase(revisions, _, _, _, _):
             revisions.workingRevision
         case .seed, .recoverPending, .create, .save:
             0
@@ -740,17 +658,20 @@ private extension DomainWorkspaceWorkingJournalTransition {
 
     var resultingWorkingRevision: UInt64 {
         switch self {
-        case let .unchanged(revision, _, _): revision
-        case let .working(_, revisions, _, _, _, _, _): revisions.workingRevision
-        case let .externalReload(_, revision, _, _, _, _, _): revision
-        case let .conflictRebase(_, revisions, _, _, _, _, _, _): revisions.workingRevision
+        case let .unchanged(revision, _, _, _): revision
+        case let .working(revision, _, _, _):
+            revision == UInt64.max ? revision : revision + 1
+        case let .externalReload(revision, _, _, _):
+            revision == UInt64.max ? revision : revision + 1
+        case let .conflictRebase(revisions, _, _, _, _):
+            revisions.workingRevision
         case .seed, .recoverPending, .create, .save: 0
         }
     }
 
     var resultingSavedRevision: UInt64? {
-        if case let .externalReload(_, revision, _, _, _, _, _) = self {
-            return revision
+        if case let .externalReload(revision, _, _, _) = self {
+            return revision == UInt64.max ? revision : revision + 1
         }
         return nil
     }
@@ -759,83 +680,41 @@ private extension DomainWorkspaceWorkingJournalTransition {
         journal: DomainWorkingJournal,
         documentDigest: String
     ) -> Bool {
-        func contains(_ operations: [DomainRecordedOperation]) -> Bool {
-            operations.allSatisfy(journal.operations.contains)
-        }
-
-        func workingDocumentMatches(_ revisions: DomainRevisionState) -> Bool {
-            if revisions.dirtyRevision == nil {
-                return journal.workingDocument == nil
-            }
-            return journal.workingDocument.map(DomainContentDigest.sha256) == documentDigest
-        }
-
-        func cleaned(_ revisions: [UUID: DomainRevisionState]) -> [UUID: DomainRevisionState] {
-            revisions.mapValues { revision in
-                DomainRevisionState(
-                    workingRevision: revision.workingRevision,
-                    savedRevision: revision.workingRevision,
-                    dirtyRevision: nil
-                )
+        func contains(_ operationID: UUID?, _ fingerprint: String?) -> Bool {
+            guard let operationID else { return true }
+            return journal.operations.contains {
+                $0.operationID == operationID && (fingerprint == nil || $0.fingerprint == fingerprint)
             }
         }
 
         switch self {
-        case let .unchanged(expectedRevision, operation, _):
+        case let .unchanged(expectedRevision, operationID, fingerprint, _):
+            let effectiveDigest = journal.workingDocument.map(DomainContentDigest.sha256)
+                ?? journal.savedDigest
             return journal.revisions.workingRevision == expectedRevision
-                && journal.operations.contains(operation)
-        case let .working(
-            _,
-            revisions,
-            contextRevisions,
-            contextDigests,
-            contextTombstones,
-            operations,
-            _
-        ):
-            return journal.revisions == revisions
-                && journal.contextRevisions == contextRevisions
-                && journal.contextDigests == contextDigests
-                && journal.contextTombstones == contextTombstones
-                && contains(operations)
-                && workingDocumentMatches(revisions)
-        case let .externalReload(
-            _,
-            revision,
-            contextRevisions,
-            contextDigests,
-            contextTombstones,
-            operations,
-            _
-        ):
-            return journal.revisions == DomainRevisionState(
-                workingRevision: revision,
-                savedRevision: revision,
-                dirtyRevision: nil
-            )
+                && effectiveDigest == documentDigest
+                && journal.operations.contains {
+                    $0.operationID == operationID
+                        && (fingerprint == nil || $0.fingerprint == fingerprint)
+                        && $0.resultingDigest == documentDigest
+                }
+        case let .working(_, operationID, fingerprint, _):
+            return journal.revisions.workingRevision == resultingWorkingRevision
+                && journal.revisions.dirtyRevision == resultingWorkingRevision
+                && journal.workingDocument.map(DomainContentDigest.sha256) == documentDigest
+                && contains(operationID, fingerprint)
+        case let .externalReload(_, operationID, fingerprint, _):
+            return journal.revisions.workingRevision == resultingWorkingRevision
+                && journal.revisions.savedRevision == journal.revisions.workingRevision
+                && journal.revisions.dirtyRevision == nil
                 && journal.savedDigest == documentDigest
                 && journal.workingDocument == nil
-                && journal.contextRevisions == cleaned(contextRevisions)
-                && journal.contextDigests == contextDigests
-                && journal.contextTombstones == contextTombstones
-                && contains(operations)
-        case let .conflictRebase(
-            _,
-            revisions,
-            externalSavedDigest,
-            contextRevisions,
-            contextDigests,
-            contextTombstones,
-            operations,
-            _
-        ):
-            return journal.revisions == revisions
+                && contains(operationID, fingerprint)
+        case let .conflictRebase(expectedRevisions, externalSavedDigest, operationID, fingerprint, _):
+            return (journal.revisions.workingRevision == expectedRevisions.workingRevision
+                || journal.revisions.workingRevision == expectedRevisions.workingRevision + 1)
                 && journal.savedDigest == externalSavedDigest
-                && journal.contextRevisions == contextRevisions
-                && journal.contextDigests == contextDigests
-                && journal.contextTombstones == contextTombstones
-                && contains(operations)
-                && workingDocumentMatches(revisions)
+                && contains(operationID, fingerprint)
         case .seed, .recoverPending, .create, .save:
             return false
         }
@@ -846,42 +725,43 @@ private extension DomainWorkspaceWorkingJournalTransition {
 enum DomainWorkspaceRustJournal {
     private struct CreateTransactionRequest: Encodable {
         let kind: String
+        let semanticPlannerVersion: UInt16?
         let expectedWorkspaceID: UUID
         let expectedFileURL: URL
         let expectedCatalogRevision: UInt64
         let operationID: UUID?
-        let contextRevisions: [UUID: DomainRevisionState]?
-        let contextDigests: [UUID: String]?
-        let operation: DomainRecordedOperation?
+        let fingerprint: String?
         let updatedAt: Date
     }
 
     private struct DeleteTransactionRequest: Encodable {
+        let semanticPlannerVersion: UInt16
         let expectedWorkspaceID: UUID
         let expectedFileURL: URL
         let expectedWorkingRevision: UInt64
         let expectedCatalogRevision: UInt64
-        let operation: DomainRecordedOperation
+        let operationID: UUID
+        let fingerprint: String
         let deletedAt: Date
     }
 
     private struct JournalMutationTransactionRequest: Encodable {
+        let semanticPlannerVersion: UInt16
         let expectedWorkspaceID: UUID
         let expectedFileURL: URL
         let catalogRevision: UInt64
         let revisionOperationID: UUID?
+        let recoveryMode: Bool
         let transition: DomainWorkspaceWorkingJournalTransition.EncodedTransition
     }
 
     private struct SaveTransactionRequest: Encodable {
+        let semanticPlannerVersion: UInt16
         let expectedWorkspaceID: UUID
         let expectedFileURL: URL
         let expectedWorkingRevision: UInt64
         let operationID: UUID
-        let contextRevisions: [UUID: DomainRevisionState]
-        let contextDigests: [UUID: String]
-        let contextTombstones: [UUID: UInt64]
-        let operations: [DomainRecordedOperation]
+        let fingerprint: String
         let updatedAt: Date
         let catalogRevision: UInt64
     }
@@ -2105,12 +1985,11 @@ enum DomainWorkspaceRustJournal {
                       operation.operationID == expectedOperation.operationID,
                       operation.fingerprint == expectedOperation.fingerprint,
                       operation.recordedAt == expectedOperation.recordedAt,
-                      operation.disposition == expectedOperation.disposition,
-                      operation.before == expectedOperation.before,
-                      operation.after == expectedOperation.after,
-                      operation.catalogRevision == expectedOperation.catalogRevision,
-                      operation.resultingDigest == expectedOperation.resultingDigest,
-                      operation.errorCode == expectedOperation.errorCode,
+                      // Rust derives before/after revisions, catalog revision, and resulting digest
+                      // from the authoritative journal/catalog candidate. Swift verifies only the
+                      // command facts and terminal cleanup invariants here.
+                      operation.disposition == .applied,
+                      operation.errorCode == nil,
                       // Rust owns the first-terminal cleanup receipt; a retry may carry different
                       // warnings, so retain its original or canonical cleanup diagnostic form.
                       operation.diagnostic == expectedDiagnostic
@@ -2221,7 +2100,6 @@ enum DomainWorkspaceRustJournal {
             rawCatalogBytes: Data?,
             effectiveCatalog: DomainWorkspaceCatalogValidation,
             document: DomainWorkspaceDocument,
-            contextRevisions: [UUID: DomainRevisionState],
             operation: DomainRecordedOperation,
             updatedAt: Date,
             commandClaim: PreparedExecutionClaim
@@ -2234,15 +2112,12 @@ enum DomainWorkspaceRustJournal {
                 document: document,
                 request: CreateTransactionRequest(
                     kind: "create",
+                    semanticPlannerVersion: 1,
                     expectedWorkspaceID: document.workspaceID,
                     expectedFileURL: document.fileURL.standardizedFileURL,
                     expectedCatalogRevision: effectiveCatalog.catalog.revision,
                     operationID: operation.operationID,
-                    contextRevisions: contextRevisions,
-                    contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
-                        ($0.identity.contextID, $0.contentDigest)
-                    }),
-                    operation: operation,
+                    fingerprint: operation.fingerprint,
                     updatedAt: updatedAt
                 ),
                 expectedOperation: operation,
@@ -2267,13 +2142,12 @@ enum DomainWorkspaceRustJournal {
                 document: document,
                 request: CreateTransactionRequest(
                     kind: "recover",
+                    semanticPlannerVersion: nil,
                     expectedWorkspaceID: document.workspaceID,
                     expectedFileURL: document.fileURL.standardizedFileURL,
                     expectedCatalogRevision: effectiveCatalog.catalog.revision,
                     operationID: nil,
-                    contextRevisions: nil,
-                    contextDigests: nil,
-                    operation: nil,
+                    fingerprint: nil,
                     updatedAt: updatedAt
                 ),
                 expectedOperation: nil,
@@ -2340,11 +2214,13 @@ enum DomainWorkspaceRustJournal {
         ) throws -> PreparedDeleteTransaction {
             do {
                 let request = DeleteTransactionRequest(
+                    semanticPlannerVersion: 1,
                     expectedWorkspaceID: document.workspaceID,
                     expectedFileURL: document.fileURL.standardizedFileURL,
                     expectedWorkingRevision: expectedWorkingRevision,
                     expectedCatalogRevision: expectedCatalogRevision,
-                    operation: operation,
+                    operationID: operation.operationID,
+                    fingerprint: operation.fingerprint,
                     deletedAt: deletedAt
                 )
                 let transaction = try core.beginDeleteTransaction(
@@ -2397,14 +2273,17 @@ enum DomainWorkspaceRustJournal {
             revisionOperationID: UUID?,
             updatedAt: Date,
             diskDocumentBytes: Data?,
-            commandClaim: PreparedExecutionClaim?
+            commandClaim: PreparedExecutionClaim?,
+            recoveryMode: Bool
         ) throws -> PreparedJournalMutationTransaction {
             do {
                 let request = JournalMutationTransactionRequest(
+                    semanticPlannerVersion: 1,
                     expectedWorkspaceID: document.workspaceID,
                     expectedFileURL: document.fileURL.standardizedFileURL,
                     catalogRevision: catalogRevision,
                     revisionOperationID: revisionOperationID,
+                    recoveryMode: recoveryMode,
                     transition: transition.encoded
                 )
                 let transaction = try core.beginJournalMutationTransaction(
@@ -2429,11 +2308,11 @@ enum DomainWorkspaceRustJournal {
             } catch {
                 if error as? CoreWorkspaceWorkingJournalValidationError == .invalidRevisionState {
                     let expected: UInt64 = switch transition {
-                    case let .unchanged(revision, _, _),
-                         let .working(revision, _, _, _, _, _, _),
-                         let .externalReload(revision, _, _, _, _, _, _):
+                    case let .unchanged(revision, _, _, _),
+                         let .working(revision, _, _, _),
+                         let .externalReload(revision, _, _, _):
                         revision
-                    case let .conflictRebase(revisions, _, _, _, _, _, _, _):
+                    case let .conflictRebase(revisions, _, _, _, _):
                         revisions.workingRevision
                     case .seed, .recoverPending, .create, .save:
                         effectiveJournal.journal.revisions.workingRevision
@@ -2453,9 +2332,7 @@ enum DomainWorkspaceRustJournal {
             document: DomainWorkspaceDocument,
             expectedWorkingRevision: UInt64,
             operationID: UUID,
-            contextRevisions: [UUID: DomainRevisionState],
-            contextTombstones: [UUID: UInt64],
-            operations: [DomainRecordedOperation],
+            fingerprint: String,
             updatedAt: Date,
             catalogRevision: UInt64,
             diskDocumentBytes: Data?,
@@ -2463,16 +2340,12 @@ enum DomainWorkspaceRustJournal {
         ) throws -> PreparedSaveTransaction {
             do {
                 let request = SaveTransactionRequest(
+                    semanticPlannerVersion: 1,
                     expectedWorkspaceID: document.workspaceID,
                     expectedFileURL: document.fileURL.standardizedFileURL,
                     expectedWorkingRevision: expectedWorkingRevision,
                     operationID: operationID,
-                    contextRevisions: contextRevisions,
-                    contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
-                        ($0.identity.contextID, $0.contentDigest)
-                    }),
-                    contextTombstones: contextTombstones,
-                    operations: operations,
+                    fingerprint: fingerprint,
                     updatedAt: updatedAt,
                     catalogRevision: catalogRevision
                 )
@@ -2586,7 +2459,11 @@ enum DomainWorkspaceRustJournal {
                             expectedWorkspaceID: expectedWorkspaceID,
                             expectedFileURL: expectedFileURL
                         )
-                        guard journal.journal.operations.contains(expectedOperation) else {
+                        guard journal.journal.operations.contains(where: {
+                            $0.operationID == expectedOperation.operationID
+                                && $0.fingerprint == expectedOperation.fingerprint
+                                && $0.recordedAt == expectedOperation.recordedAt
+                        }) else {
                             throw DomainPersistenceError.corruptJournal
                         }
                         if kind == .writePendingJournal {
@@ -2725,6 +2602,17 @@ enum DomainWorkspaceRustJournal {
                 expectedWorkspaceID: expectedWorkspaceID,
                 expectedFileURL: expectedFileURL
             )
+            let marker = journal.journal.operations.first(where: {
+                $0.operationID == receipt.operationID
+                    && $0.disposition == .applied
+                    && $0.errorCode == nil
+                    && $0.diagnostic == nil
+            })
+            let operationMatches = expectedOperation == nil || marker.map { marker in
+                guard let expectedOperation else { return false }
+                return marker.fingerprint == expectedOperation.fingerprint
+                    && marker.recordedAt == expectedOperation.recordedAt
+            } == true
             guard catalog.catalog.revision == nextRevision.partialValue,
                   catalog.catalog.updatedAt == expectedUpdatedAt,
                   catalog.catalog.entries.contains(where: {
@@ -2738,17 +2626,7 @@ enum DomainWorkspaceRustJournal {
                   journal.journal.workingDocument == nil,
                   journal.journal.revisions.dirtyRevision == nil,
                   journal.journal.savedDigest == expectedDocumentDigest,
-                  let marker = journal.journal.operations.first(where: {
-                      $0.operationID == receipt.operationID
-                          && $0.disposition == .applied
-                          && $0.before == nil
-                          && $0.after == journal.journal.revisions
-                          && $0.catalogRevision == nextRevision.partialValue
-                          && $0.resultingDigest == expectedDocumentDigest
-                          && $0.errorCode == nil
-                          && $0.diagnostic == nil
-                  }),
-                  expectedOperation == nil || marker == expectedOperation,
+                  operationMatches,
                   receipt.savedRevision == nil ? isRecovery : !isRecovery
             else { throw DomainPersistenceError.corruptJournal }
             let savedRevision = try receipt.savedRevision.map {
@@ -2866,7 +2744,12 @@ enum DomainWorkspaceRustJournal {
             guard tombstone.workspaceID == expectedWorkspaceID,
                   tombstone.fileURL.standardizedFileURL == expectedFileURL.standardizedFileURL,
                   tombstone.deletedAt == expectedDeletedAt,
-                  tombstone.operation == expectedOperation,
+                  tombstone.operation.operationID == expectedOperation.operationID,
+                  tombstone.operation.fingerprint == expectedOperation.fingerprint,
+                  tombstone.operation.recordedAt == expectedOperation.recordedAt,
+                  tombstone.operation.disposition == .applied,
+                  tombstone.operation.errorCode == nil,
+                  tombstone.operation.diagnostic == nil,
                   !catalog.catalog.entries.contains(where: {
                       $0.workspaceID == expectedWorkspaceID
                   }),
@@ -3056,11 +2939,13 @@ enum DomainWorkspaceRustJournal {
                 expectedFileURL: expectedFileURL
             )
             let journal = validation.journal
-            guard journal.revisions.workingRevision == receipt.resultingWorkingRevision,
-                  journal.revisions.savedRevision == receipt.resultingSavedRevision,
-                  journal.updatedAt == expectedUpdatedAt,
-                  journal.revisions.workingRevision == expectedTransition.resultingWorkingRevision
-            else { throw DomainPersistenceError.corruptJournal }
+            if journal.revisions.workingRevision != receipt.resultingWorkingRevision
+                || journal.revisions.savedRevision != receipt.resultingSavedRevision
+                || journal.updatedAt != expectedUpdatedAt
+                || journal.revisions.workingRevision != expectedTransition.resultingWorkingRevision
+            {
+                throw DomainPersistenceError.corruptJournal
+            }
 
             let expectedSavedRevision = expectedTransition.resultingSavedRevision
             let savedRevision = try receipt.savedRevision.map { raw in
@@ -3076,12 +2961,15 @@ enum DomainWorkspaceRustJournal {
                     expectedUpdatedAt: expectedUpdatedAt
                 )
             }
-            guard (savedRevision != nil) == (revisionOperationID != nil),
-                  expectedTransition.matches(
-                      journal: journal,
-                      documentDigest: expectedDocumentDigest
-                  )
-            else { throw DomainPersistenceError.corruptJournal }
+            guard (savedRevision != nil) == (revisionOperationID != nil) else {
+                throw DomainPersistenceError.corruptJournal
+            }
+            guard expectedTransition.matches(
+                journal: journal,
+                documentDigest: expectedDocumentDigest
+            ) else {
+                throw DomainPersistenceError.corruptJournal
+            }
             return DomainWorkspaceJournalMutationCommitReceipt(
                 workspaceID: expectedWorkspaceID,
                 requestDigest: receipt.requestDigest,

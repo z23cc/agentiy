@@ -7,14 +7,14 @@
 use crate::workspace_context::{
     MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
     MAXIMUM_WORKSPACE_PROJECTION_PUBLICATION_EVENT_COUNT, WorkspaceContextAuthorityState,
-    WorkspaceDocumentProjection,
-    WorkspaceDocumentProjectionError, WorkspaceProjectionAuthorityState,
-    WorkspaceProjectionCatalog, WorkspaceProjectionCatalogError, WorkspaceProjectionCatalogLimits,
-    WorkspaceProjectionEntry, WorkspaceProjectionHealth, WorkspaceProjectionHealthKind,
-    WorkspaceProjectionPublicationEvent, WorkspaceProjectionPublicationKind,
-    WorkspaceProjectionPublicationState, WorkspaceProjectionPublishedWorkspace,
-    WorkspaceProjectionRevisionState, WorkspaceProjectionSnapshot, canonical_uuid,
-    is_valid_revision_state, project_workspace_document_v1,
+    WorkspaceDocumentProjection, WorkspaceDocumentProjectionError,
+    WorkspaceProjectionAuthorityState, WorkspaceProjectionCatalog, WorkspaceProjectionCatalogError,
+    WorkspaceProjectionCatalogLimits, WorkspaceProjectionEntry, WorkspaceProjectionHealth,
+    WorkspaceProjectionHealthKind, WorkspaceProjectionPublicationEvent,
+    WorkspaceProjectionPublicationKind, WorkspaceProjectionPublicationState,
+    WorkspaceProjectionPublishedWorkspace, WorkspaceProjectionRevisionState,
+    WorkspaceProjectionSnapshot, canonical_uuid, is_valid_revision_state,
+    project_workspace_document_v1,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1: u16 = 1;
+pub const WORKSPACE_SEMANTIC_PLANNER_VERSION_V1: u16 = 1;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1: usize = 128 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_OPERATION_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
@@ -2583,55 +2584,10 @@ fn workspace_recovery_clean_external_reload_v1(
     ),
     WorkspaceWorkingJournalError,
 > {
-    let next_revision = journal
-        .revisions
-        .working_revision
-        .max(journal.revisions.saved_revision)
-        .checked_add(1)
-        .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
-    let previous_revisions = workspace_recovery_context_revisions_v1(&journal.context_revisions)?
-        .into_iter()
-        .map(|context| (context.context_id, context.revisions))
-        .collect::<BTreeMap<_, _>>();
-    let previous_digests = workspace_recovery_context_digest_table_v1(&journal.context_digests)?;
-    let next_digests = workspace_recovery_document_context_digests_v1(saved_document)?;
-    let mut next_revisions = BTreeMap::new();
-    for (context_id, digest) in &next_digests {
-        let revision = if previous_digests.get(context_id) == Some(digest) {
-            previous_revisions.get(context_id).copied().unwrap_or(
-                WorkspaceProjectionRevisionState {
-                    working_revision: next_revision,
-                    saved_revision: next_revision,
-                    dirty_revision: None,
-                },
-            )
-        } else {
-            WorkspaceProjectionRevisionState {
-                working_revision: next_revision,
-                saved_revision: next_revision,
-                dirty_revision: None,
-            }
-        };
-        next_revisions.insert(context_id.clone(), revision);
-    }
-    let mut tombstones = workspace_recovery_context_tombstones_v1(&journal.context_tombstones)?
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    for removed_context_id in previous_digests.keys() {
-        if !next_digests.contains_key(removed_context_id) {
-            tombstones.insert(removed_context_id.clone(), next_revision);
-        }
-    }
-    for active_context_id in next_digests.keys() {
-        tombstones.remove(active_context_id);
-    }
     let request = WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
         expected_working_revision: journal.revisions.working_revision,
-        new_revision: next_revision,
-        context_revisions: workspace_recovery_context_revisions_value_v1(&next_revisions)?,
-        context_digests: workspace_recovery_context_digests_value_v1(&next_digests),
-        context_tombstones: workspace_recovery_context_tombstones_value_v1(&tombstones),
-        operations: journal.operations.clone(),
+        operation_id: None,
+        fingerprint: None,
         updated_at: journal.updated_at.clone(),
     };
     let request_bytes =
@@ -2640,6 +2596,7 @@ fn workspace_recovery_clean_external_reload_v1(
         Some(canonical_journal_bytes),
         &request_bytes,
         Some(&saved_document.bytes),
+        None,
     )?;
     let replacement_bytes = plan.primary.canonical_bytes.clone();
     let replacement = parse_validated_journal(&replacement_bytes)?;
@@ -4567,6 +4524,7 @@ struct WorkspaceWorkingJournalTransitionPlanV1 {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspaceSaveTransactionRequestV1 {
+    semantic_planner_version: u16,
     #[serde(rename = "expectedWorkspaceID")]
     expected_workspace_id: String,
     #[serde(rename = "expectedFileURL")]
@@ -4574,10 +4532,7 @@ struct WorkspaceSaveTransactionRequestV1 {
     expected_working_revision: u64,
     #[serde(rename = "operationID")]
     operation_id: String,
-    context_revisions: Value,
-    context_digests: Value,
-    context_tombstones: Value,
-    operations: Vec<WorkspaceRecordedOperationV1>,
+    fingerprint: String,
     updated_at: Value,
     catalog_revision: u64,
 }
@@ -4585,6 +4540,7 @@ struct WorkspaceSaveTransactionRequestV1 {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspaceJournalMutationTransactionRequestV1 {
+    semantic_planner_version: u16,
     #[serde(rename = "expectedWorkspaceID")]
     expected_workspace_id: String,
     #[serde(rename = "expectedFileURL")]
@@ -4592,19 +4548,24 @@ struct WorkspaceJournalMutationTransactionRequestV1 {
     catalog_revision: u64,
     #[serde(rename = "revisionOperationID")]
     revision_operation_id: Option<String>,
+    #[serde(rename = "recoveryMode")]
+    recovery_mode: bool,
     transition: WorkspaceWorkingJournalTransitionRequestV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspaceDeleteTransactionRequestV1 {
+    semantic_planner_version: u16,
     #[serde(rename = "expectedWorkspaceID")]
     expected_workspace_id: String,
     #[serde(rename = "expectedFileURL")]
     expected_file_url: String,
     expected_working_revision: u64,
     expected_catalog_revision: u64,
-    operation: WorkspaceRecordedOperationV1,
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    fingerprint: String,
     deleted_at: Value,
 }
 
@@ -4617,6 +4578,7 @@ struct WorkspaceDeleteTransactionRequestV1 {
 )]
 enum WorkspaceCreateTransactionRequestV1 {
     Create {
+        semantic_planner_version: u16,
         #[serde(rename = "expectedWorkspaceID")]
         expected_workspace_id: String,
         #[serde(rename = "expectedFileURL")]
@@ -4624,9 +4586,7 @@ enum WorkspaceCreateTransactionRequestV1 {
         expected_catalog_revision: u64,
         #[serde(rename = "operationID")]
         operation_id: String,
-        context_revisions: Value,
-        context_digests: Value,
-        operation: WorkspaceRecordedOperationV1,
+        fingerprint: String,
         updated_at: Value,
     },
     Recover {
@@ -5135,7 +5095,8 @@ impl PreparedWorkspaceJournalMutationTransactionV1 {
                 .inner
                 .lock()
                 .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-            let target = workspace_authority_from_journal_v1(&state.document_bytes, &state.committed)?;
+            let target =
+                workspace_authority_from_journal_v1(&state.document_bytes, &state.committed)?;
             let (_, operation) = transaction_operation_v1(state.admission_finalization.clone())?;
             (
                 target,
@@ -5262,8 +5223,10 @@ impl PreparedWorkspaceSaveTransactionV1 {
                 .inner
                 .lock()
                 .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-            let target = workspace_authority_from_journal_v1(&state.document_bytes, &state.committed)?;
-            let (_, operation) = transaction_operation_v1(Some(state.admission_finalization.clone()))?;
+            let target =
+                workspace_authority_from_journal_v1(&state.document_bytes, &state.committed)?;
+            let (_, operation) =
+                transaction_operation_v1(Some(state.admission_finalization.clone()))?;
             (target, operation)
         };
         admission.prepare_claimed_authority_publication_from_transaction(
@@ -5358,7 +5321,8 @@ impl PreparedWorkspaceDeleteTransactionV1 {
                 .inner
                 .lock()
                 .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-            let (_, operation) = transaction_operation_v1(Some(state.admission_finalization.clone()))?;
+            let (_, operation) =
+                transaction_operation_v1(Some(state.admission_finalization.clone()))?;
             operation
         };
         admission.prepare_claimed_authority_publication_from_transaction(
@@ -5501,7 +5465,10 @@ impl PreparedWorkspaceCreateTransactionV1 {
                 .inner
                 .lock()
                 .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
-            let target = workspace_authority_from_journal_v1(&state.document_bytes, &state.committed_journal)?;
+            let target = workspace_authority_from_journal_v1(
+                &state.document_bytes,
+                &state.committed_journal,
+            )?;
             let (_, operation) = transaction_operation_v1(state.admission_finalization.clone())?;
             (target, operation)
         };
@@ -6117,54 +6084,45 @@ enum WorkspaceWorkingJournalTransitionRequestV1 {
         workspace_id: String,
         #[serde(rename = "fileURL")]
         file_url: String,
-        context_revisions: Value,
-        context_digests: Value,
-        operation: WorkspaceRecordedOperationV1,
         #[serde(rename = "operationID")]
         operation_id: String,
+        fingerprint: String,
         updated_at: Value,
     },
     Unchanged {
         expected_working_revision: u64,
-        operation: WorkspaceRecordedOperationV1,
+        #[serde(rename = "operationID")]
+        operation_id: String,
+        fingerprint: String,
         updated_at: Value,
     },
     Working {
         expected_working_revision: u64,
-        new_revisions: WorkspaceProjectionRevisionState,
-        context_revisions: Value,
-        context_digests: Value,
-        context_tombstones: Value,
-        operations: Vec<WorkspaceRecordedOperationV1>,
+        #[serde(rename = "operationID")]
+        operation_id: Option<String>,
+        fingerprint: Option<String>,
         updated_at: Value,
     },
     Save {
         expected_working_revision: u64,
         #[serde(rename = "operationID")]
         operation_id: String,
-        context_revisions: Value,
-        context_digests: Value,
-        context_tombstones: Value,
-        operations: Vec<WorkspaceRecordedOperationV1>,
+        fingerprint: String,
         updated_at: Value,
     },
     ExternalReload {
         expected_working_revision: u64,
-        new_revision: u64,
-        context_revisions: Value,
-        context_digests: Value,
-        context_tombstones: Value,
-        operations: Vec<WorkspaceRecordedOperationV1>,
+        #[serde(rename = "operationID")]
+        operation_id: Option<String>,
+        fingerprint: Option<String>,
         updated_at: Value,
     },
     ConflictRebase {
         expected_revisions: WorkspaceProjectionRevisionState,
-        new_revisions: WorkspaceProjectionRevisionState,
         external_saved_digest: String,
-        context_revisions: Value,
-        context_digests: Value,
-        context_tombstones: Value,
-        operations: Vec<WorkspaceRecordedOperationV1>,
+        #[serde(rename = "operationID")]
+        operation_id: Option<String>,
+        fingerprint: Option<String>,
         updated_at: Value,
     },
 }
@@ -6212,15 +6170,17 @@ pub fn prepare_workspace_create_transaction_v1(
         recovery,
     ) = match request.clone() {
         WorkspaceCreateTransactionRequestV1::Create {
+            semantic_planner_version,
             expected_workspace_id,
             expected_file_url,
             expected_catalog_revision,
             operation_id,
-            context_revisions,
-            context_digests,
-            mut operation,
+            fingerprint,
             updated_at,
         } => {
+            if semantic_planner_version != WORKSPACE_SEMANTIC_PLANNER_VERSION_V1 {
+                return Err(WorkspaceWorkingJournalError::Malformed);
+            }
             if raw_journal_bytes.is_some() || effective_journal_bytes.is_some() {
                 return Err(WorkspaceWorkingJournalError::InvalidTransaction);
             }
@@ -6242,12 +6202,6 @@ pub fn prepare_workspace_create_transaction_v1(
             if projection.workspace_id != expected_workspace_id {
                 return Err(WorkspaceWorkingJournalError::InvalidIdentity);
             }
-            require_create_context_tables(
-                document_bytes,
-                &projection,
-                &context_revisions,
-                &context_digests,
-            )?;
             let expected_revision = WorkspaceProjectionRevisionState {
                 working_revision: 1,
                 saved_revision: 1,
@@ -6256,26 +6210,11 @@ pub fn prepare_workspace_create_transaction_v1(
             let expected_resulting_catalog_revision = expected_catalog_revision
                 .checked_add(1)
                 .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
-            let canonical_operation_id =
-                validate_and_canonicalize_recorded_operation(&mut operation)?;
-            if canonical_operation_id != operation_id
-                || operation.disposition != "applied"
-                || operation.before.is_some()
-                || operation.after != Some(expected_revision)
-                || operation.catalog_revision != expected_resulting_catalog_revision
-                || operation.resulting_digest.as_deref() != Some(document_digest.as_str())
-                || operation.error_code.is_some()
-                || operation.diagnostic.is_some()
-            {
-                return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
-            }
             let transition = WorkspaceWorkingJournalTransitionRequestV1::Create {
                 workspace_id: expected_workspace_id.clone(),
                 file_url: expected_file_url.clone(),
-                context_revisions,
-                context_digests,
-                operation,
                 operation_id: operation_id.clone(),
+                fingerprint,
                 updated_at: updated_at.clone(),
             };
             let plan = plan_workspace_working_journal_transition_v1(
@@ -6283,6 +6222,7 @@ pub fn prepare_workspace_create_transaction_v1(
                 &serde_json::to_vec(&transition)
                     .map_err(|_| WorkspaceWorkingJournalError::Malformed)?,
                 Some(document_bytes),
+                Some(expected_resulting_catalog_revision),
             )?;
             let committed = plan
                 .committed
@@ -6711,6 +6651,38 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
     let mut request: WorkspaceJournalMutationTransactionRequestV1 =
         serde_json::from_slice(request_bytes)
             .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    if request.semantic_planner_version != WORKSPACE_SEMANTIC_PLANNER_VERSION_V1 {
+        return Err(WorkspaceWorkingJournalError::Malformed);
+    }
+    let operation_facts_present = match &request.transition {
+        WorkspaceWorkingJournalTransitionRequestV1::Working {
+            operation_id,
+            fingerprint,
+            ..
+        }
+        | WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
+            operation_id,
+            fingerprint,
+            ..
+        }
+        | WorkspaceWorkingJournalTransitionRequestV1::ConflictRebase {
+            operation_id,
+            fingerprint,
+            ..
+        } => match (operation_id, fingerprint) {
+            (None, None) => false,
+            (Some(_), Some(_)) => true,
+            _ => return Err(WorkspaceWorkingJournalError::InvalidOperationLedger),
+        },
+        WorkspaceWorkingJournalTransitionRequestV1::Unchanged { .. } => true,
+        WorkspaceWorkingJournalTransitionRequestV1::Seed { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::RecoverPending { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::Create { .. }
+        | WorkspaceWorkingJournalTransitionRequestV1::Save { .. } => false,
+    };
+    if request.recovery_mode == operation_facts_present {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
     request.expected_workspace_id = canonical_uuid(&request.expected_workspace_id)
         .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
     if !valid_file_url(&request.expected_file_url) {
@@ -6806,18 +6778,14 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
     }
     let document_digest = format!("{:x}", Sha256::digest(candidate_document_bytes));
     let disk_digest = disk_document_bytes.map(|bytes| format!("{:x}", Sha256::digest(bytes)));
-    let (saved_revision_number, saved_revision_updated_at) = match &request.transition {
-        WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
-            new_revision,
-            updated_at,
-            ..
-        } => {
+    let saved_revision_updated_at = match &request.transition {
+        WorkspaceWorkingJournalTransitionRequestV1::ExternalReload { updated_at, .. } => {
             if disk_digest.as_deref() != Some(document_digest.as_str())
                 || request.revision_operation_id.is_none()
             {
                 return Err(WorkspaceWorkingJournalError::ExternalDocumentConflict);
             }
-            (Some(*new_revision), Some(updated_at.clone()))
+            Some(updated_at.clone())
         }
         WorkspaceWorkingJournalTransitionRequestV1::ConflictRebase {
             external_saved_digest,
@@ -6828,14 +6796,14 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
             {
                 return Err(WorkspaceWorkingJournalError::ExternalDocumentConflict);
             }
-            (None, None)
+            None
         }
         WorkspaceWorkingJournalTransitionRequestV1::Unchanged { .. }
         | WorkspaceWorkingJournalTransitionRequestV1::Working { .. } => {
             if request.revision_operation_id.is_some() {
                 return Err(WorkspaceWorkingJournalError::InvalidTransaction);
             }
-            (None, None)
+            None
         }
         WorkspaceWorkingJournalTransitionRequestV1::Seed { .. }
         | WorkspaceWorkingJournalTransitionRequestV1::RecoverPending { .. }
@@ -6849,6 +6817,7 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
         Some(&effective_validation.canonical_bytes),
         &transition_bytes,
         Some(candidate_document_bytes),
+        Some(request.catalog_revision),
     )?;
     if plan.committed.is_some() {
         return Err(WorkspaceWorkingJournalError::InvalidTransaction);
@@ -6862,14 +6831,13 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
         _ => None,
     };
     let saved_revision = match (
-        saved_revision_number,
         saved_revision_updated_at,
         request.revision_operation_id.as_ref(),
     ) {
-        (Some(saved_revision), Some(updated_at), Some(operation_id)) => {
+        (Some(updated_at), Some(operation_id)) => {
             let revision_request = WorkspaceSavedRevisionPlanRequestV1 {
                 workspace_id: request.expected_workspace_id.clone(),
-                saved_revision,
+                saved_revision: committed_journal.revisions.saved_revision,
                 document_digest: document_digest.clone(),
                 operation_id: operation_id.clone(),
                 updated_at,
@@ -6879,13 +6847,10 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
                     .map_err(|_| WorkspaceWorkingJournalError::Malformed)?,
             )?)
         }
-        (None, None, None) => None,
+        (None, None) => None,
         _ => return Err(WorkspaceWorkingJournalError::InvalidTransaction),
     };
-    if saved_revision.is_some()
-        && (committed_journal.revisions.saved_revision != saved_revision_number.unwrap_or_default()
-            || committed_journal.saved_digest != document_digest)
-    {
+    if saved_revision.is_some() && committed_journal.saved_digest != document_digest {
         return Err(WorkspaceWorkingJournalError::InvalidTransaction);
     }
 
@@ -6963,6 +6928,9 @@ pub fn prepare_workspace_save_transaction_v1(
 
     let mut request: WorkspaceSaveTransactionRequestV1 = serde_json::from_slice(request_bytes)
         .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    if request.semantic_planner_version != WORKSPACE_SEMANTIC_PLANNER_VERSION_V1 {
+        return Err(WorkspaceWorkingJournalError::Malformed);
+    }
     request.expected_workspace_id = canonical_uuid(&request.expected_workspace_id)
         .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
     request.operation_id = canonical_uuid(&request.operation_id)
@@ -7025,10 +6993,7 @@ pub fn prepare_workspace_save_transaction_v1(
     let save_transition = WorkspaceWorkingJournalTransitionRequestV1::Save {
         expected_working_revision: request.expected_working_revision,
         operation_id: request.operation_id.clone(),
-        context_revisions: request.context_revisions.clone(),
-        context_digests: request.context_digests.clone(),
-        context_tombstones: request.context_tombstones.clone(),
-        operations: request.operations.clone(),
+        fingerprint: request.fingerprint.clone(),
         updated_at: request.updated_at.clone(),
     };
     let transition_bytes = serde_json::to_vec(&save_transition)
@@ -7037,6 +7002,7 @@ pub fn prepare_workspace_save_transaction_v1(
         Some(&effective_validation.canonical_bytes),
         &transition_bytes,
         Some(candidate_document_bytes),
+        Some(request.catalog_revision),
     )?;
     let committed = plan
         .committed
@@ -7112,9 +7078,13 @@ pub fn prepare_workspace_delete_transaction_v1(
     require_metadata_input_bound(effective_catalog_bytes)?;
     let mut request: WorkspaceDeleteTransactionRequestV1 = serde_json::from_slice(request_bytes)
         .map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+    if request.semantic_planner_version != WORKSPACE_SEMANTIC_PLANNER_VERSION_V1 {
+        return Err(WorkspaceWorkingJournalError::Malformed);
+    }
     request.expected_workspace_id = canonical_uuid(&request.expected_workspace_id)
         .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
-    validate_and_canonicalize_recorded_operation(&mut request.operation)?;
+    request.operation_id = canonical_uuid(&request.operation_id)
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
     if !valid_file_url(&request.expected_file_url) {
         return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
     }
@@ -7164,21 +7134,21 @@ pub fn prepare_workspace_delete_transaction_v1(
         return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
     }
     require_working_revision(&journal, request.expected_working_revision)?;
-    if request.operation.disposition != "applied"
-        || request.operation.before != Some(journal.revisions)
-        || request.operation.after.is_some()
-        || request.operation.catalog_revision != expected_resulting_catalog_revision
-        || request.operation.resulting_digest.is_some()
-        || request.operation.error_code.is_some()
-        || request.operation.diagnostic.is_some()
-    {
-        return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
-    }
+    let operation = planned_operation_v1(
+        request.operation_id.clone(),
+        request.fingerprint.clone(),
+        request.deleted_at.clone(),
+        "applied",
+        Some(journal.revisions),
+        None,
+        expected_resulting_catalog_revision,
+        None,
+    )?;
 
     let tombstone_request = WorkspaceDeletionTombstonePlanRequestV1 {
         workspace_id: request.expected_workspace_id.clone(),
         file_url: request.expected_file_url.clone(),
-        operation: request.operation.clone(),
+        operation: operation.clone(),
         deleted_at: request.deleted_at.clone(),
         cleanup_warnings: Vec::new(),
     };
@@ -7208,7 +7178,7 @@ pub fn prepare_workspace_delete_transaction_v1(
     );
     let admission_finalization = WorkspaceCommandAdmissionFinalizationV1::Delete {
         workspace_id: request.expected_workspace_id.clone(),
-        operation: request.operation.clone(),
+        operation: operation.clone(),
     };
     let receipt = WorkspaceDeleteCommitReceiptV1 {
         workspace_id: request.expected_workspace_id,
@@ -7280,6 +7250,7 @@ pub fn resolve_workspace_pending_save_v1(
     let plan = plan_workspace_working_journal_transition_v1(
         Some(&journal.canonical_bytes),
         &transition_bytes,
+        None,
         None,
     )?;
     if plan.committed.is_some() {
@@ -7387,17 +7358,208 @@ pub fn seed_workspace_working_journal_v1(
     ) {
         return Err(WorkspaceWorkingJournalError::InvalidTransaction);
     }
-    let plan = plan_workspace_working_journal_transition_v1(None, seed_request_bytes, None)?;
+    let plan = plan_workspace_working_journal_transition_v1(None, seed_request_bytes, None, None)?;
     if plan.committed.is_some() {
         return Err(WorkspaceWorkingJournalError::InvalidTransaction);
     }
     Ok(plan.primary)
 }
 
+fn workspace_document_context_digests_from_bytes_v1(
+    document_bytes: &[u8],
+) -> Result<BTreeMap<String, String>, WorkspaceWorkingJournalError> {
+    let projection = project_workspace_document_v1(document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let document = WorkspaceRecoveredDocumentV1 {
+        bytes: document_bytes.to_vec(),
+        digest: format!("{:x}", Sha256::digest(document_bytes)),
+        projection,
+    };
+    workspace_recovery_document_context_digests_v1(&document)
+}
+
+fn context_revision_map_v1(
+    value: &Value,
+) -> Result<BTreeMap<String, WorkspaceProjectionRevisionState>, WorkspaceWorkingJournalError> {
+    Ok(workspace_recovery_context_revisions_v1(value)?
+        .into_iter()
+        .map(|entry| (entry.context_id, entry.revisions))
+        .collect())
+}
+
+fn context_tombstone_map_v1(
+    value: &Value,
+) -> Result<BTreeMap<String, u64>, WorkspaceWorkingJournalError> {
+    Ok(workspace_recovery_context_tombstones_v1(value)?
+        .into_iter()
+        .collect())
+}
+
+fn semantic_context_tables_v1(
+    current: Option<&WorkspaceWorkingJournalV1>,
+    document_bytes: &[u8],
+    workspace_revisions: WorkspaceProjectionRevisionState,
+    mode: WorkspaceSemanticContextPlanningModeV1,
+) -> Result<(Value, Value, Value), WorkspaceWorkingJournalError> {
+    let next_digests = workspace_document_context_digests_from_bytes_v1(document_bytes)?;
+    let Some(current) = current else {
+        let revisions = next_digests
+            .keys()
+            .map(|context_id| {
+                (
+                    context_id.clone(),
+                    WorkspaceProjectionRevisionState {
+                        working_revision: 1,
+                        saved_revision: 1,
+                        dirty_revision: None,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        return Ok((
+            workspace_recovery_context_revisions_value_v1(&revisions)?,
+            workspace_recovery_context_digests_value_v1(&next_digests),
+            Value::Array(Vec::new()),
+        ));
+    };
+
+    if matches!(mode, WorkspaceSemanticContextPlanningModeV1::Preserve) {
+        return Ok((
+            current.context_revisions.clone(),
+            current.context_digests.clone(),
+            current.context_tombstones.clone(),
+        ));
+    }
+
+    let previous_revisions = context_revision_map_v1(&current.context_revisions)?;
+    let previous_digests = workspace_recovery_context_digest_table_v1(&current.context_digests)?;
+    let mut next_revisions = BTreeMap::new();
+    let mut tombstones = context_tombstone_map_v1(&current.context_tombstones)?;
+    for (context_id, digest) in &next_digests {
+        let unchanged = previous_digests.get(context_id) == Some(digest);
+        let previous = previous_revisions.get(context_id).copied();
+        let revision = match mode {
+            WorkspaceSemanticContextPlanningModeV1::Preserve => unreachable!(),
+            WorkspaceSemanticContextPlanningModeV1::AdvanceWorkspace => {
+                if unchanged {
+                    previous.unwrap_or(WorkspaceProjectionRevisionState {
+                        working_revision: workspace_revisions.working_revision,
+                        saved_revision: workspace_revisions.saved_revision,
+                        dirty_revision: None,
+                    })
+                } else {
+                    let next_working = previous
+                        .map(|revision| revision.working_revision)
+                        .unwrap_or(0)
+                        .checked_add(1)
+                        .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
+                    WorkspaceProjectionRevisionState {
+                        working_revision: next_working,
+                        saved_revision: previous
+                            .map(|revision| revision.saved_revision)
+                            .unwrap_or(0),
+                        dirty_revision: Some(next_working),
+                    }
+                }
+            }
+            WorkspaceSemanticContextPlanningModeV1::CleanAtWorkingRevision => {
+                clean_revision_state(previous.unwrap_or(workspace_revisions))
+            }
+            WorkspaceSemanticContextPlanningModeV1::CleanAtWorkspaceRevision => {
+                if unchanged {
+                    previous.unwrap_or_else(|| clean_revision_state(workspace_revisions))
+                } else {
+                    clean_revision_state(workspace_revisions)
+                }
+            }
+        };
+        next_revisions.insert(context_id.clone(), revision);
+        tombstones.remove(context_id);
+    }
+    for context_id in previous_digests.keys() {
+        if !next_digests.contains_key(context_id) {
+            tombstones.insert(context_id.clone(), workspace_revisions.working_revision);
+        }
+    }
+    Ok((
+        workspace_recovery_context_revisions_value_v1(&next_revisions)?,
+        workspace_recovery_context_digests_value_v1(&next_digests),
+        workspace_recovery_context_tombstones_value_v1(&tombstones),
+    ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceSemanticContextPlanningModeV1 {
+    Preserve,
+    AdvanceWorkspace,
+    CleanAtWorkingRevision,
+    CleanAtWorkspaceRevision,
+}
+
+fn planned_operation_v1(
+    operation_id: String,
+    fingerprint: String,
+    updated_at: Value,
+    disposition: &str,
+    before: Option<WorkspaceProjectionRevisionState>,
+    after: Option<WorkspaceProjectionRevisionState>,
+    catalog_revision: u64,
+    resulting_digest: Option<String>,
+) -> Result<WorkspaceRecordedOperationV1, WorkspaceWorkingJournalError> {
+    let recorded_at = updated_at
+        .as_f64()
+        .filter(|value| value.is_finite())
+        .ok_or(WorkspaceWorkingJournalError::InvalidTimestamp)?;
+    let mut operation = WorkspaceRecordedOperationV1 {
+        operation_id,
+        fingerprint,
+        recorded_at,
+        disposition: disposition.to_owned(),
+        before,
+        after,
+        catalog_revision,
+        resulting_digest,
+        error_code: None,
+        diagnostic: None,
+    };
+    validate_and_canonicalize_recorded_operation(&mut operation)?;
+    Ok(operation)
+}
+
+fn append_planned_operation_v1(
+    current: &WorkspaceWorkingJournalV1,
+    operation: Option<WorkspaceRecordedOperationV1>,
+    updated_at: &Value,
+) -> Result<Vec<WorkspaceRecordedOperationV1>, WorkspaceWorkingJournalError> {
+    let mut operations = current.operations.clone();
+    if let Some(operation) = operation {
+        if let Some(existing) = operations
+            .iter()
+            .find(|existing| existing.operation_id == operation.operation_id)
+        {
+            let same_semantics = existing.fingerprint == operation.fingerprint
+                && existing.disposition == operation.disposition
+                && existing.before == operation.before
+                && existing.after == operation.after
+                && existing.catalog_revision == operation.catalog_revision
+                && existing.resulting_digest == operation.resulting_digest
+                && existing.error_code == operation.error_code
+                && existing.diagnostic == operation.diagnostic;
+            if !same_semantics {
+                return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+            }
+        } else {
+            operations.push(operation);
+        }
+    }
+    trimmed_operations(operations, updated_at)
+}
+
 fn plan_workspace_working_journal_transition_v1(
     current_journal_bytes: Option<&[u8]>,
     transition_bytes: &[u8],
     document_bytes: Option<&[u8]>,
+    catalog_revision: Option<u64>,
 ) -> Result<WorkspaceWorkingJournalTransitionPlanV1, WorkspaceWorkingJournalError> {
     if transition_bytes.len() > MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1 {
         return Err(WorkspaceWorkingJournalError::InputTooLarge {
@@ -7481,10 +7643,8 @@ fn plan_workspace_working_journal_transition_v1(
         WorkspaceWorkingJournalTransitionRequestV1::Create {
             workspace_id,
             file_url,
-            context_revisions,
-            context_digests,
-            operation,
             operation_id,
+            fingerprint,
             updated_at,
         } => {
             require_no_current(current.as_ref())?;
@@ -7497,6 +7657,25 @@ fn plan_workspace_working_journal_transition_v1(
                 saved_revision: 0,
                 dirty_revision: Some(1),
             };
+            let clean_revisions = clean_revision_state(pending_revisions);
+            let (context_revisions, context_digests, context_tombstones) =
+                semantic_context_tables_v1(
+                    None,
+                    &decode_base64(&working_document)
+                        .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?,
+                    clean_revisions,
+                    WorkspaceSemanticContextPlanningModeV1::CleanAtWorkingRevision,
+                )?;
+            let operation = planned_operation_v1(
+                operation_id.clone(),
+                fingerprint,
+                updated_at.clone(),
+                "applied",
+                None,
+                Some(clean_revisions),
+                catalog_revision.unwrap_or(0),
+                Some(document_digest.clone()),
+            )?;
             let pending = WorkspaceWorkingJournalV1 {
                 version: WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1,
                 workspace_id,
@@ -7506,8 +7685,8 @@ fn plan_workspace_working_journal_transition_v1(
                 working_document: Some(working_document),
                 context_revisions: context_revisions.clone(),
                 context_digests: context_digests.clone(),
-                context_tombstones: Value::Array(Vec::new()),
-                operations: vec![operation.clone()],
+                context_tombstones,
+                operations: vec![operation],
                 pending_save: Some(WorkspacePendingSaveV1 {
                     operation_id,
                     document_digest: document_digest.clone(),
@@ -7526,32 +7705,86 @@ fn plan_workspace_working_journal_transition_v1(
         }
         WorkspaceWorkingJournalTransitionRequestV1::Unchanged {
             expected_working_revision,
-            operation,
+            operation_id,
+            fingerprint,
             updated_at,
         } => {
             let mut current = require_current(current)?;
             require_working_revision(&current, expected_working_revision)?;
-            current.operations.push(operation);
-            current.operations = trimmed_operations(current.operations, &updated_at)?;
+            let document_digest =
+                document_digest.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+            let expected_document_digest = if current.revisions.dirty_revision.is_some() {
+                let working_document = current
+                    .working_document
+                    .as_ref()
+                    .and_then(|value| decode_base64(value))
+                    .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+                format!("{:x}", Sha256::digest(working_document))
+            } else {
+                current.saved_digest.clone()
+            };
+            if document_digest != expected_document_digest {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            let operation = planned_operation_v1(
+                operation_id,
+                fingerprint,
+                updated_at.clone(),
+                "unchanged",
+                Some(current.revisions),
+                Some(current.revisions),
+                catalog_revision.unwrap_or(0),
+                Some(document_digest),
+            )?;
+            current.operations =
+                append_planned_operation_v1(&current, Some(operation), &updated_at)?;
             current.updated_at = updated_at;
             (current, None)
         }
         WorkspaceWorkingJournalTransitionRequestV1::Working {
             expected_working_revision,
-            new_revisions,
-            context_revisions,
-            context_digests,
-            context_tombstones,
-            operations,
+            operation_id,
+            fingerprint,
             updated_at,
         } => {
             let current = require_current(current)?;
             require_working_revision(&current, expected_working_revision)?;
-            let working_document = if new_revisions.dirty_revision.is_some() {
-                Some(working_document.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?)
-            } else {
-                None
+            let working_document =
+                working_document.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+            let next_revision = current
+                .revisions
+                .working_revision
+                .checked_add(1)
+                .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
+            let new_revisions = WorkspaceProjectionRevisionState {
+                working_revision: next_revision,
+                saved_revision: current.revisions.saved_revision,
+                dirty_revision: Some(next_revision),
             };
+            let document_bytes = decode_base64(&working_document)
+                .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+            let (context_revisions, context_digests, context_tombstones) =
+                semantic_context_tables_v1(
+                    Some(&current),
+                    &document_bytes,
+                    new_revisions,
+                    WorkspaceSemanticContextPlanningModeV1::AdvanceWorkspace,
+                )?;
+            let operation = match (operation_id, fingerprint) {
+                (None, None) => None,
+                (Some(operation_id), Some(fingerprint)) => Some(planned_operation_v1(
+                    operation_id,
+                    fingerprint,
+                    updated_at.clone(),
+                    "applied",
+                    Some(current.revisions),
+                    Some(new_revisions),
+                    catalog_revision.unwrap_or(0),
+                    document_digest.clone(),
+                )?),
+                _ => return Err(WorkspaceWorkingJournalError::InvalidOperationLedger),
+            };
+            let operations = append_planned_operation_v1(&current, operation, &updated_at)?;
             (
                 WorkspaceWorkingJournalV1 {
                     version: current.version,
@@ -7559,7 +7792,7 @@ fn plan_workspace_working_journal_transition_v1(
                     file_url: current.file_url,
                     revisions: new_revisions,
                     saved_digest: current.saved_digest,
-                    working_document,
+                    working_document: Some(working_document),
                     context_revisions,
                     context_digests,
                     context_tombstones,
@@ -7573,10 +7806,7 @@ fn plan_workspace_working_journal_transition_v1(
         WorkspaceWorkingJournalTransitionRequestV1::Save {
             expected_working_revision,
             operation_id,
-            context_revisions,
-            context_digests,
-            context_tombstones,
-            operations,
+            fingerprint,
             updated_at,
         } => {
             let current = require_current(current)?;
@@ -7588,7 +7818,28 @@ fn plan_workspace_working_journal_transition_v1(
             } else {
                 None
             };
-            let operations = trimmed_operations(operations, &updated_at)?;
+            let new_revisions = clean_revision_state(current.revisions);
+            let (
+                committed_context_revisions,
+                committed_context_digests,
+                committed_context_tombstones,
+            ) = semantic_context_tables_v1(
+                Some(&current),
+                document_bytes.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?,
+                new_revisions,
+                WorkspaceSemanticContextPlanningModeV1::CleanAtWorkingRevision,
+            )?;
+            let operation = planned_operation_v1(
+                operation_id.clone(),
+                fingerprint,
+                updated_at.clone(),
+                "applied",
+                Some(current.revisions),
+                Some(new_revisions),
+                catalog_revision.unwrap_or(0),
+                Some(document_digest.clone()),
+            )?;
+            let operations = append_planned_operation_v1(&current, Some(operation), &updated_at)?;
             let pending = WorkspaceWorkingJournalV1 {
                 version: current.version,
                 workspace_id: current.workspace_id,
@@ -7596,9 +7847,9 @@ fn plan_workspace_working_journal_transition_v1(
                 revisions: current.revisions,
                 saved_digest: current.saved_digest,
                 working_document,
-                context_revisions: context_revisions.clone(),
-                context_digests: context_digests.clone(),
-                context_tombstones: context_tombstones.clone(),
+                context_revisions: current.context_revisions.clone(),
+                context_digests: committed_context_digests.clone(),
+                context_tombstones: current.context_tombstones.clone(),
                 operations: operations.clone(),
                 pending_save: Some(WorkspacePendingSaveV1 {
                     operation_id,
@@ -7607,10 +7858,12 @@ fn plan_workspace_working_journal_transition_v1(
                 updated_at: updated_at.clone(),
             };
             let committed = WorkspaceWorkingJournalV1 {
-                revisions: clean_revision_state(current.revisions),
+                revisions: new_revisions,
                 saved_digest: document_digest,
                 working_document: None,
-                context_revisions: clean_context_revisions(&context_revisions)?,
+                context_revisions: committed_context_revisions,
+                context_digests: committed_context_digests,
+                context_tombstones: committed_context_tombstones,
                 pending_save: None,
                 ..pending.clone()
             };
@@ -7618,22 +7871,48 @@ fn plan_workspace_working_journal_transition_v1(
         }
         WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
             expected_working_revision,
-            new_revision,
-            context_revisions,
-            context_digests,
-            context_tombstones,
-            operations,
+            operation_id,
+            fingerprint,
             updated_at,
         } => {
             let current = require_current(current)?;
             require_working_revision(&current, expected_working_revision)?;
             let document_digest =
                 document_digest.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+            let new_revision = current
+                .revisions
+                .working_revision
+                .checked_add(1)
+                .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
             let revisions = WorkspaceProjectionRevisionState {
                 working_revision: new_revision,
                 saved_revision: new_revision,
                 dirty_revision: None,
             };
+            let document_bytes =
+                document_bytes.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+            let (context_revisions, context_digests, context_tombstones) =
+                semantic_context_tables_v1(
+                    Some(&current),
+                    document_bytes,
+                    revisions,
+                    WorkspaceSemanticContextPlanningModeV1::CleanAtWorkspaceRevision,
+                )?;
+            let operation = match (operation_id, fingerprint) {
+                (None, None) => None,
+                (Some(operation_id), Some(fingerprint)) => Some(planned_operation_v1(
+                    operation_id,
+                    fingerprint,
+                    updated_at.clone(),
+                    "applied",
+                    Some(current.revisions),
+                    Some(revisions),
+                    catalog_revision.unwrap_or(0),
+                    Some(document_digest.clone()),
+                )?),
+                _ => return Err(WorkspaceWorkingJournalError::InvalidOperationLedger),
+            };
+            let operations = append_planned_operation_v1(&current, operation, &updated_at)?;
             (
                 WorkspaceWorkingJournalV1 {
                     version: current.version,
@@ -7642,7 +7921,7 @@ fn plan_workspace_working_journal_transition_v1(
                     revisions,
                     saved_digest: document_digest,
                     working_document: None,
-                    context_revisions: clean_context_revisions(&context_revisions)?,
+                    context_revisions,
                     context_digests,
                     context_tombstones,
                     operations: trimmed_operations(operations, &updated_at)?,
@@ -7654,31 +7933,69 @@ fn plan_workspace_working_journal_transition_v1(
         }
         WorkspaceWorkingJournalTransitionRequestV1::ConflictRebase {
             expected_revisions,
-            new_revisions,
             external_saved_digest,
-            context_revisions,
-            context_digests,
-            context_tombstones,
-            operations,
+            operation_id,
+            fingerprint,
             updated_at,
         } => {
             let current = require_current(current)?;
             if current.revisions != expected_revisions {
                 return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
             }
-            let keeps_revision = new_revisions == current.revisions;
-            let advances_revision = new_revisions.working_revision
-                == current.revisions.working_revision.wrapping_add(1)
-                && new_revisions.saved_revision == current.revisions.saved_revision
-                && new_revisions.dirty_revision == Some(new_revisions.working_revision);
-            if !keeps_revision && !advances_revision {
-                return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
-            }
-            let working_document = if new_revisions.dirty_revision.is_some() {
-                Some(working_document.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?)
+            let working_document =
+                working_document.ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+            let document_bytes = decode_base64(&working_document)
+                .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+            let candidate_digest = format!("{:x}", Sha256::digest(&document_bytes));
+            let current_document_digest = current
+                .working_document
+                .as_deref()
+                .and_then(decode_base64)
+                .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+            let advances = current_document_digest
+                .as_deref()
+                .map(|digest| digest != candidate_digest)
+                .unwrap_or_else(|| current.saved_digest != candidate_digest);
+            let new_revisions = if advances {
+                let next_revision = current
+                    .revisions
+                    .working_revision
+                    .checked_add(1)
+                    .ok_or(WorkspaceWorkingJournalError::InvalidRevisionState)?;
+                WorkspaceProjectionRevisionState {
+                    working_revision: next_revision,
+                    saved_revision: current.revisions.saved_revision,
+                    dirty_revision: Some(next_revision),
+                }
             } else {
-                None
+                current.revisions
             };
+            let (context_revisions, context_digests, context_tombstones) =
+                semantic_context_tables_v1(
+                    Some(&current),
+                    &document_bytes,
+                    new_revisions,
+                    if advances {
+                        WorkspaceSemanticContextPlanningModeV1::AdvanceWorkspace
+                    } else {
+                        WorkspaceSemanticContextPlanningModeV1::Preserve
+                    },
+                )?;
+            let operation = match (operation_id, fingerprint) {
+                (None, None) => None,
+                (Some(operation_id), Some(fingerprint)) => Some(planned_operation_v1(
+                    operation_id,
+                    fingerprint,
+                    updated_at.clone(),
+                    "applied",
+                    Some(current.revisions),
+                    Some(new_revisions),
+                    catalog_revision.unwrap_or(0),
+                    Some(candidate_digest),
+                )?),
+                _ => return Err(WorkspaceWorkingJournalError::InvalidOperationLedger),
+            };
+            let operations = append_planned_operation_v1(&current, operation, &updated_at)?;
             (
                 WorkspaceWorkingJournalV1 {
                     version: current.version,
@@ -7686,7 +8003,11 @@ fn plan_workspace_working_journal_transition_v1(
                     file_url: current.file_url,
                     revisions: new_revisions,
                     saved_digest: external_saved_digest,
-                    working_document,
+                    working_document: if new_revisions.dirty_revision.is_some() {
+                        Some(working_document)
+                    } else {
+                        None
+                    },
                     context_revisions,
                     context_digests,
                     context_tombstones,
@@ -8658,7 +8979,9 @@ mod tests {
 
     const WORKSPACE_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     const CONTEXT_ID: &str = "11111111-2222-3333-4444-555555555555";
+    const CONTEXT_ID_TWO: &str = "22222222-3333-4444-5555-666666666666";
     const OPERATION_ID: &str = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+    const BASE_OPERATION_ID: &str = "eeeeeeee-ffff-aaaa-bbbb-cccccccccccc";
     const OTHER_WORKSPACE_ID: &str = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
 
     fn authority_workspace(
@@ -9491,10 +9814,7 @@ mod tests {
                 "kind": "save",
                 "expectedWorkingRevision": 0,
                 "operationID": OPERATION_ID,
-                "contextRevisions": [CONTEXT_ID, revision(0, 0, None)],
-                "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
-                "contextTombstones": {},
-                "operations": [operation(OPERATION_ID, 4.0, 1)],
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
                 "updatedAt": 4.0
             }),
             Some(&raw),
@@ -9700,10 +10020,7 @@ mod tests {
                 "kind": "save",
                 "expectedWorkingRevision": 1,
                 "operationID": OPERATION_ID,
-                "contextRevisions": [CONTEXT_ID, revision(1, 0, Some(1))],
-                "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
-                "contextTombstones": {},
-                "operations": [operation(OPERATION_ID, 4.0, 1)],
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
                 "updatedAt": 4.0
             }),
             Some(&raw),
@@ -11175,14 +11492,27 @@ mod tests {
         .into_bytes()
     }
 
-    fn first_context_digest(document_bytes: &[u8]) -> String {
-        let document: Value = serde_json::from_slice(document_bytes).expect("document json");
-        let context = document["composeTabs"]
-            .as_array()
-            .and_then(|contexts| contexts.first())
-            .expect("first context");
-        let canonical = serde_json::to_vec(context).expect("canonical context");
-        format!("{:x}", Sha256::digest(canonical))
+    fn document_with_context_prompts(first: &str, second: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "id": WORKSPACE_ID,
+            "schemaVersion": 1,
+            "name": "Workspace",
+            "composeTabs": [
+                {
+                    "id": CONTEXT_ID,
+                    "name": "Context A",
+                    "prompt": first,
+                    "selectedPaths": []
+                },
+                {
+                    "id": CONTEXT_ID_TWO,
+                    "name": "Context B",
+                    "prompt": second,
+                    "selectedPaths": []
+                }
+            ]
+        }))
+        .expect("two-context document")
     }
 
     fn base64_encode(bytes: &[u8]) -> String {
@@ -11228,7 +11558,7 @@ mod tests {
             "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
             "contextTombstones": [],
             "operations": [{
-                "operationID": OPERATION_ID,
+                "operationID": BASE_OPERATION_ID,
                 "fingerprint": format!("{:x}", Sha256::digest(b"operation")),
                 "recordedAt": 1.5,
                 "disposition": "applied",
@@ -11281,12 +11611,14 @@ mod tests {
         current: Option<&[u8]>,
         document: Option<&[u8]>,
     ) -> WorkspaceWorkingJournalTransitionPlanV1 {
+        let kind = request["kind"].clone();
         plan_workspace_working_journal_transition_v1(
             current,
             &serde_json::to_vec(&request).expect("transition bytes"),
             document,
+            None,
         )
-        .expect("transition")
+        .unwrap_or_else(|error| panic!("transition {kind}: {error:?}"))
     }
 
     fn decoded(validation: &WorkspaceWorkingJournalValidationV1) -> WorkspaceWorkingJournalV1 {
@@ -11295,14 +11627,12 @@ mod tests {
 
     fn save_request(expected_revision: u64, catalog_revision: u64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
+            "semanticPlannerVersion": WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
             "expectedWorkspaceID": WORKSPACE_ID,
             "expectedFileURL": "file:///tmp/Workspace.json",
             "expectedWorkingRevision": expected_revision,
             "operationID": OPERATION_ID,
-            "contextRevisions": [CONTEXT_ID, revision(expected_revision, 0, None)],
-            "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
-            "contextTombstones": {},
-            "operations": [operation(OPERATION_ID, 3.0, catalog_revision)],
+            "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
             "updatedAt": 3.0,
             "catalogRevision": catalog_revision
         }))
@@ -11351,14 +11681,14 @@ mod tests {
     }
 
     fn delete_request(working_revision: u64, catalog_revision: u64) -> Vec<u8> {
-        let mut delete_operation = operation(OPERATION_ID, 3.0, catalog_revision + 1);
-        delete_operation["before"] = revision(working_revision, 0, None);
         serde_json::to_vec(&serde_json::json!({
+            "semanticPlannerVersion": WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
             "expectedWorkspaceID": WORKSPACE_ID,
             "expectedFileURL": "file:///tmp/Workspace.json",
             "expectedWorkingRevision": working_revision,
             "expectedCatalogRevision": catalog_revision,
-            "operation": delete_operation,
+            "operationID": OPERATION_ID,
+            "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
             "deletedAt": 3.0
         }))
         .expect("delete request")
@@ -11393,20 +11723,15 @@ mod tests {
         .expect("create catalog")
     }
 
-    fn create_request(catalog_revision: u64, document_bytes: &[u8]) -> Vec<u8> {
-        let mut create_operation = operation(OPERATION_ID, 2.0, catalog_revision + 1);
-        create_operation["after"] = revision(1, 1, None);
-        create_operation["resultingDigest"] =
-            Value::String(format!("{:x}", Sha256::digest(document_bytes)));
+    fn create_request(catalog_revision: u64, _document_bytes: &[u8]) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "kind": "create",
+            "semanticPlannerVersion": WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
             "expectedWorkspaceID": WORKSPACE_ID,
             "expectedFileURL": "file:///tmp/Workspace.json",
             "expectedCatalogRevision": catalog_revision,
             "operationID": OPERATION_ID,
-            "contextRevisions": [CONTEXT_ID, revision(1, 1, None)],
-            "contextDigests": [CONTEXT_ID, first_context_digest(document_bytes)],
-            "operation": create_operation,
+            "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
             "updatedAt": 2.0
         }))
         .expect("create request")
@@ -11428,14 +11753,279 @@ mod tests {
         catalog_revision: u64,
         revision_operation_id: Option<&str>,
     ) -> Vec<u8> {
+        let recovery_mode =
+            transition["operationID"].is_null() && transition["fingerprint"].is_null();
         serde_json::to_vec(&serde_json::json!({
+            "semanticPlannerVersion": WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
             "expectedWorkspaceID": WORKSPACE_ID,
             "expectedFileURL": "file:///tmp/Workspace.json",
             "catalogRevision": catalog_revision,
             "revisionOperationID": revision_operation_id,
+            "recoveryMode": recovery_mode,
             "transition": transition
         }))
         .expect("journal mutation request")
+    }
+
+    #[test]
+    fn semantic_planner_version_is_required_for_every_command_transaction() {
+        let raw_catalog = catalog_bytes(9);
+        let effective_catalog =
+            validate_workspace_catalog_v1(&raw_catalog).expect("effective catalog");
+        let raw_journal = journal_bytes(None);
+        let effective_journal =
+            validate_workspace_working_journal_v1(&raw_journal).expect("effective journal");
+        let candidate = document("saved");
+
+        let mut create: Value =
+            serde_json::from_slice(&create_request(9, &candidate)).expect("create request");
+        create["semanticPlannerVersion"] = Value::from(0);
+        assert_eq!(
+            prepare_workspace_create_transaction_v1(
+                Some(&raw_catalog),
+                &effective_catalog.canonical_bytes,
+                None,
+                None,
+                &serde_json::to_vec(&create).expect("create bytes"),
+                &candidate,
+            )
+            .expect_err("create must reject an unknown planner"),
+            WorkspaceWorkingJournalError::Malformed
+        );
+
+        let mut journal: Value = serde_json::from_slice(&journal_mutation_request(
+            serde_json::json!({
+                "kind": "working",
+                "expectedWorkingRevision": 0,
+                "updatedAt": 3.0
+            }),
+            9,
+            None,
+        ))
+        .expect("journal request");
+        journal["semanticPlannerVersion"] = Value::from(0);
+        assert_eq!(
+            prepare_workspace_journal_mutation_transaction_v1(
+                Some(&raw_journal),
+                &effective_journal.canonical_bytes,
+                &serde_json::to_vec(&journal).expect("journal bytes"),
+                &candidate,
+                Some(&document("saved")),
+            )
+            .expect_err("journal must reject an unknown planner"),
+            WorkspaceWorkingJournalError::Malformed
+        );
+
+        let mut claimless_command: Value = serde_json::from_slice(&journal_mutation_request(
+            serde_json::json!({
+                "kind": "working",
+                "expectedWorkingRevision": 0,
+                "updatedAt": 3.0
+            }),
+            9,
+            None,
+        ))
+        .expect("claimless recovery request");
+        claimless_command["recoveryMode"] = Value::from(false);
+        assert_eq!(
+            prepare_workspace_journal_mutation_transaction_v1(
+                Some(&raw_journal),
+                &effective_journal.canonical_bytes,
+                &serde_json::to_vec(&claimless_command).expect("claimless command bytes"),
+                &candidate,
+                Some(&document("saved")),
+            )
+            .expect_err("claimless command mode must be rejected"),
+            WorkspaceWorkingJournalError::InvalidTransaction
+        );
+
+        let mut claimed_recovery: Value = serde_json::from_slice(&journal_mutation_request(
+            serde_json::json!({
+                "kind": "working",
+                "expectedWorkingRevision": 0,
+                "operationID": OPERATION_ID,
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
+                "updatedAt": 3.0
+            }),
+            9,
+            None,
+        ))
+        .expect("claimed command request");
+        claimed_recovery["recoveryMode"] = Value::from(true);
+        assert_eq!(
+            prepare_workspace_journal_mutation_transaction_v1(
+                Some(&raw_journal),
+                &effective_journal.canonical_bytes,
+                &serde_json::to_vec(&claimed_recovery).expect("claimed recovery bytes"),
+                &candidate,
+                Some(&document("saved")),
+            )
+            .expect_err("claimed recovery mode must be rejected"),
+            WorkspaceWorkingJournalError::InvalidTransaction
+        );
+
+        let mut save: Value = serde_json::from_slice(&save_request(0, 9)).expect("save request");
+        save["semanticPlannerVersion"] = Value::from(0);
+        assert_eq!(
+            prepare_workspace_save_transaction_v1(
+                Some(&raw_journal),
+                &effective_journal.canonical_bytes,
+                &serde_json::to_vec(&save).expect("save bytes"),
+                &candidate,
+                Some(&candidate),
+            )
+            .expect_err("save must reject an unknown planner"),
+            WorkspaceWorkingJournalError::Malformed
+        );
+
+        let mut delete: Value =
+            serde_json::from_slice(&delete_request(0, 9)).expect("delete request");
+        delete["semanticPlannerVersion"] = Value::from(0);
+        assert_eq!(
+            prepare_workspace_delete_transaction_v1(
+                Some(&raw_catalog),
+                &effective_catalog.canonical_bytes,
+                &effective_journal.canonical_bytes,
+                &serde_json::to_vec(&delete).expect("delete bytes"),
+            )
+            .expect_err("delete must reject an unknown planner"),
+            WorkspaceWorkingJournalError::Malformed
+        );
+    }
+
+    #[test]
+    fn operation_append_is_idempotent_and_rejects_semantic_collisions() {
+        let current = decoded(
+            &validate_workspace_working_journal_v1(&journal_bytes(None))
+                .expect("effective journal"),
+        );
+        let revisions = WorkspaceProjectionRevisionState {
+            working_revision: 0,
+            saved_revision: 0,
+            dirty_revision: None,
+        };
+        let resulting_digest = format!("{:x}", Sha256::digest(document("saved")));
+        let operation = planned_operation_v1(
+            OPERATION_ID.to_owned(),
+            format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
+            Value::from(3.0),
+            "unchanged",
+            Some(revisions),
+            Some(revisions),
+            9,
+            Some(resulting_digest.clone()),
+        )
+        .expect("planned operation");
+        let mut with_operation = current.clone();
+        with_operation.operations.push(operation.clone());
+
+        let replay = planned_operation_v1(
+            OPERATION_ID.to_owned(),
+            format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
+            Value::from(4.0),
+            "unchanged",
+            Some(revisions),
+            Some(revisions),
+            9,
+            Some(resulting_digest),
+        )
+        .expect("replayed operation");
+        let retained =
+            append_planned_operation_v1(&with_operation, Some(replay), &Value::from(4.0))
+                .expect("exact replay is idempotent");
+        assert_eq!(retained.len(), with_operation.operations.len());
+        assert_eq!(retained.last(), Some(&operation));
+
+        let mut collision = operation;
+        collision.fingerprint = format!("{:x}", Sha256::digest(b"different"));
+        assert_eq!(
+            append_planned_operation_v1(&with_operation, Some(collision), &Value::from(4.0)),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+    }
+
+    #[test]
+    fn clean_transitions_preserve_unchanged_context_revisions() {
+        let current_document = document_with_context_prompts("stable", "same");
+        let context_digests = workspace_document_context_digests_from_bytes_v1(&current_document)
+            .expect("current context digests");
+        let mut current_value: Value =
+            serde_json::from_slice(&journal_bytes(None)).expect("current journal");
+        current_value["revisions"] = revision(4, 4, None);
+        current_value["savedDigest"] =
+            Value::String(format!("{:x}", Sha256::digest(&current_document)));
+        current_value["contextRevisions"] = serde_json::json!([
+            CONTEXT_ID,
+            revision(2, 2, None),
+            CONTEXT_ID_TWO,
+            revision(7, 7, None)
+        ]);
+        current_value["contextDigests"] =
+            workspace_recovery_context_digests_value_v1(&context_digests);
+        current_value["operations"] = Value::Array(Vec::new());
+        let current = serde_json::to_vec(&current_value).expect("current bytes");
+
+        let save_plan = transition(
+            serde_json::json!({
+                "kind": "save",
+                "expectedWorkingRevision": 4,
+                "operationID": OPERATION_ID,
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
+                "updatedAt": 5.0
+            }),
+            Some(&current),
+            Some(&current_document),
+        );
+        let save_committed = decoded(save_plan.committed.as_ref().expect("save committed"));
+        let save_contexts =
+            context_revision_map_v1(&save_committed.context_revisions).expect("save contexts");
+        assert_eq!(
+            save_contexts.get(CONTEXT_ID),
+            Some(&WorkspaceProjectionRevisionState {
+                working_revision: 2,
+                saved_revision: 2,
+                dirty_revision: None
+            })
+        );
+        assert_eq!(
+            save_contexts.get(CONTEXT_ID_TWO),
+            Some(&WorkspaceProjectionRevisionState {
+                working_revision: 7,
+                saved_revision: 7,
+                dirty_revision: None
+            })
+        );
+
+        let external_document = document_with_context_prompts("changed", "same");
+        let external_plan = transition(
+            serde_json::json!({
+                "kind": "externalReload",
+                "expectedWorkingRevision": 4,
+                "updatedAt": 6.0
+            }),
+            Some(&current),
+            Some(&external_document),
+        );
+        let external = decoded(&external_plan.primary);
+        assert_eq!(external.revisions.working_revision, 5);
+        let external_contexts =
+            context_revision_map_v1(&external.context_revisions).expect("external contexts");
+        assert_eq!(
+            external_contexts.get(CONTEXT_ID),
+            Some(&WorkspaceProjectionRevisionState {
+                working_revision: 5,
+                saved_revision: 5,
+                dirty_revision: None
+            })
+        );
+        assert_eq!(
+            external_contexts.get(CONTEXT_ID_TWO),
+            Some(&WorkspaceProjectionRevisionState {
+                working_revision: 7,
+                saved_revision: 7,
+                dirty_revision: None
+            })
+        );
     }
 
     #[test]
@@ -11446,11 +12036,6 @@ mod tests {
         let transition = serde_json::json!({
             "kind": "working",
             "expectedWorkingRevision": 0,
-            "newRevisions": revision(1, 0, Some(1)),
-            "contextRevisions": [CONTEXT_ID, revision(1, 0, Some(1))],
-            "contextDigests": [CONTEXT_ID, first_context_digest(&candidate)],
-            "contextTombstones": [],
-            "operations": [],
             "updatedAt": 3.0
         });
         let transaction = prepare_workspace_journal_mutation_transaction_v1(
@@ -11512,11 +12097,6 @@ mod tests {
         let transition = serde_json::json!({
             "kind": "externalReload",
             "expectedWorkingRevision": 0,
-            "newRevision": 1,
-            "contextRevisions": [CONTEXT_ID, revision(1, 0, Some(1))],
-            "contextDigests": [CONTEXT_ID, first_context_digest(&external)],
-            "contextTombstones": [],
-            "operations": [],
             "updatedAt": 4.0
         });
         let transaction = prepare_workspace_journal_mutation_transaction_v1(
@@ -11599,11 +12179,6 @@ mod tests {
                     serde_json::json!({
                         "kind": "externalReload",
                         "expectedWorkingRevision": 0,
-                        "newRevision": 1,
-                        "contextRevisions": [CONTEXT_ID, revision(1, 1, None)],
-                        "contextDigests": [CONTEXT_ID, first_context_digest(&external)],
-                        "contextTombstones": [],
-                        "operations": [],
                         "updatedAt": 4.0
                     }),
                     8,
@@ -11623,7 +12198,6 @@ mod tests {
         let effective_clean =
             validate_workspace_working_journal_v1(&raw_clean).expect("effective clean journal");
         let unchanged_operation_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
-        let unchanged_operation = operation(unchanged_operation_id, 3.0, 9);
         let unchanged = prepare_workspace_journal_mutation_transaction_v1(
             Some(&raw_clean),
             &effective_clean.canonical_bytes,
@@ -11631,7 +12205,8 @@ mod tests {
                 serde_json::json!({
                     "kind": "unchanged",
                     "expectedWorkingRevision": 0,
-                    "operation": unchanged_operation,
+                    "operationID": unchanged_operation_id,
+                    "fingerprint": format!("{:x}", Sha256::digest(unchanged_operation_id.as_bytes())),
                     "updatedAt": 3.0
                 }),
                 9,
@@ -11681,6 +12256,80 @@ mod tests {
         let raw_dirty = journal_bytes(Some(&local));
         let effective_dirty =
             validate_workspace_working_journal_v1(&raw_dirty).expect("effective dirty journal");
+        let dirty_unchanged_operation_id = "cccccccc-dddd-eeee-ffff-000000000001";
+        let dirty_unchanged = prepare_workspace_journal_mutation_transaction_v1(
+            Some(&raw_dirty),
+            &effective_dirty.canonical_bytes,
+            &journal_mutation_request(
+                serde_json::json!({
+                    "kind": "unchanged",
+                    "expectedWorkingRevision": 1,
+                    "operationID": dirty_unchanged_operation_id,
+                    "fingerprint": format!("{:x}", Sha256::digest(dirty_unchanged_operation_id.as_bytes())),
+                    "updatedAt": 3.0
+                }),
+                9,
+                None,
+            ),
+            &local,
+            Some(&local),
+        )
+        .expect("dirty unchanged transaction");
+        let dirty_unchanged_receipt = match dirty_unchanged
+            .next_directive()
+            .expect("dirty unchanged action")
+        {
+            WorkspaceJournalMutationDirectiveV1::Action {
+                action_id,
+                kind: WorkspaceJournalMutationActionKindV1::WriteJournal,
+                content_digest,
+                authority_receipt: Some(receipt),
+                ..
+            } => {
+                dirty_unchanged
+                    .report_action(WorkspaceJournalMutationActionReportV1::Success {
+                        action_id,
+                        written_digest: content_digest,
+                    })
+                    .expect("dirty unchanged commit");
+                receipt
+            }
+            other => panic!("unexpected dirty unchanged directive: {other:?}"),
+        };
+        let dirty_operation = decoded(&dirty_unchanged_receipt.committed_journal)
+            .operations
+            .into_iter()
+            .find(|operation| operation.operation_id == dirty_unchanged_operation_id)
+            .expect("dirty unchanged operation");
+        assert_eq!(
+            dirty_operation.resulting_digest,
+            Some(format!("{:x}", Sha256::digest(&local)))
+        );
+        assert_eq!(
+            prepare_workspace_journal_mutation_transaction_v1(
+                Some(&raw_dirty),
+                &effective_dirty.canonical_bytes,
+                &journal_mutation_request(
+                    serde_json::json!({
+                        "kind": "unchanged",
+                        "expectedWorkingRevision": 1,
+                        "operationID": dirty_unchanged_operation_id,
+                        "fingerprint": format!(
+                            "{:x}",
+                            Sha256::digest(dirty_unchanged_operation_id.as_bytes())
+                        ),
+                        "updatedAt": 3.0
+                    }),
+                    9,
+                    None,
+                ),
+                &document("different"),
+                Some(&local),
+            )
+            .expect_err("unchanged must reject a candidate different from dirty bytes"),
+            WorkspaceWorkingJournalError::InvalidTransaction
+        );
+
         let external = document("external saved");
         let external_digest = format!("{:x}", Sha256::digest(&external));
         let rebased = prepare_workspace_journal_mutation_transaction_v1(
@@ -11690,12 +12339,7 @@ mod tests {
                 serde_json::json!({
                     "kind": "conflictRebase",
                     "expectedRevisions": revision(1, 0, Some(1)),
-                    "newRevisions": revision(2, 0, Some(2)),
                     "externalSavedDigest": external_digest.clone(),
-                    "contextRevisions": [CONTEXT_ID, revision(2, 0, Some(2))],
-                    "contextDigests": [CONTEXT_ID, first_context_digest(&local)],
-                    "contextTombstones": [],
-                    "operations": [],
                     "updatedAt": 4.0
                 }),
                 10,
@@ -11720,9 +12364,9 @@ mod tests {
             other => panic!("unexpected rebase directive: {other:?}"),
         };
         let committed = decoded(&receipt.committed_journal);
-        assert_eq!(committed.revisions.working_revision, 2);
+        assert_eq!(committed.revisions.working_revision, 1);
         assert_eq!(committed.revisions.saved_revision, 0);
-        assert_eq!(committed.revisions.dirty_revision, Some(2));
+        assert_eq!(committed.revisions.dirty_revision, Some(1));
         assert_eq!(committed.saved_digest, external_digest);
         assert_eq!(committed.working_document, Some(base64_encode(&local)));
     }
@@ -11862,8 +12506,7 @@ mod tests {
 
         let mut bad_context_request: Value =
             serde_json::from_slice(&create_request(4, &document)).expect("create request value");
-        bad_context_request["contextDigests"][1] =
-            Value::String(format!("{:x}", Sha256::digest(b"wrong context")));
+        bad_context_request["fingerprint"] = Value::String("not-a-digest".to_owned());
         assert!(matches!(
             prepare_workspace_create_transaction_v1(
                 Some(&raw_catalog),
@@ -11873,7 +12516,7 @@ mod tests {
                 &serde_json::to_vec(&bad_context_request).expect("bad context request"),
                 &document,
             ),
-            Err(WorkspaceWorkingJournalError::InvalidDigest)
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
         ));
 
         let mut bad_catalog: Value = serde_json::from_slice(&raw_catalog).expect("catalog value");
@@ -11920,7 +12563,7 @@ mod tests {
             validate_workspace_working_journal_v1(&journal).expect("effective journal");
         let mut request: Value =
             serde_json::from_slice(&delete_request(0, 9)).expect("delete request value");
-        request["operation"]["operationID"] = Value::String(OPERATION_ID.to_uppercase());
+        request["operationID"] = Value::String(OPERATION_ID.to_uppercase());
         let request = serde_json::to_vec(&request).expect("uppercase delete request");
         let transaction = prepare_workspace_delete_transaction_v1(
             Some(&raw_catalog),
@@ -12145,7 +12788,7 @@ mod tests {
 
         let mut mismatched_revision_request: serde_json::Value =
             serde_json::from_slice(&delete_request(0, 9)).expect("delete request value");
-        mismatched_revision_request["operation"]["catalogRevision"] = serde_json::json!(9);
+        mismatched_revision_request["fingerprint"] = serde_json::json!("not-a-digest");
         let mismatched_revision_request =
             serde_json::to_vec(&mismatched_revision_request).expect("mismatched request");
         assert!(matches!(
@@ -12454,10 +13097,7 @@ mod tests {
                 "kind": "save",
                 "expectedWorkingRevision": 0,
                 "operationID": OPERATION_ID,
-                "contextRevisions": [CONTEXT_ID, revision(0, 0, None)],
-                "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
-                "contextTombstones": {},
-                "operations": [operation(OPERATION_ID, 4.0, 1)],
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
                 "updatedAt": 4.0
             }),
             Some(&raw),
@@ -12505,23 +13145,13 @@ mod tests {
         }
 
         let malformed = b"not-json";
-        let malformed_save = transition(
-            serde_json::json!({
-                "kind": "save",
-                "expectedWorkingRevision": 0,
-                "operationID": OPERATION_ID,
-                "contextRevisions": [CONTEXT_ID, revision(0, 0, None)],
-                "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
-                "contextTombstones": {},
-                "operations": [operation(OPERATION_ID, 5.0, 1)],
-                "updatedAt": 5.0
-            }),
-            Some(&raw),
-            Some(malformed),
-        );
+        let mut malformed_save: Value =
+            serde_json::from_slice(&save.primary.canonical_bytes).expect("pending journal json");
+        malformed_save["workingDocument"] = Value::String("not-base64".to_owned());
+        let malformed_save = serde_json::to_vec(&malformed_save).expect("malformed pending save");
         assert_eq!(
             resolve_workspace_pending_save_v1(
-                &malformed_save.primary.canonical_bytes,
+                &malformed_save,
                 WORKSPACE_ID,
                 "file:///tmp/Workspace.json",
                 Some(malformed),
@@ -12543,7 +13173,7 @@ mod tests {
         });
         let seed_bytes = serde_json::to_vec(&seed_request).expect("seed request");
         let dedicated = seed_workspace_working_journal_v1(&seed_bytes).expect("dedicated seed");
-        let generic = plan_workspace_working_journal_transition_v1(None, &seed_bytes, None)
+        let generic = plan_workspace_working_journal_transition_v1(None, &seed_bytes, None, None)
             .expect("generic seed plan");
         assert_eq!(dedicated, generic.primary);
         assert!(generic.committed.is_none());
@@ -12616,10 +13246,7 @@ mod tests {
                 "kind": "save",
                 "expectedWorkingRevision": 0,
                 "operationID": OPERATION_ID,
-                "contextRevisions": [CONTEXT_ID, revision(0, 0, None)],
-                "contextDigests": [CONTEXT_ID, context_digest],
-                "contextTombstones": {},
-                "operations": [operation(OPERATION_ID, 10.5, 1)],
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
                 "updatedAt": 10.5
             }),
             Some(&seed.primary.canonical_bytes),
@@ -12634,11 +13261,12 @@ mod tests {
             serde_json::json!({
                 "kind": "unchanged",
                 "expectedWorkingRevision": 0,
-                "operation": operation(OPERATION_ID, 11.0, 1),
+                "operationID": OPERATION_ID,
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
                 "updatedAt": 11.0
             }),
             Some(&seed.primary.canonical_bytes),
-            None,
+            Some(&saved),
         );
         assert_eq!(decoded(&unchanged.primary).operations.len(), 1);
         assert!(unchanged.committed.is_none());
@@ -12648,10 +13276,8 @@ mod tests {
                 "kind": "create",
                 "workspaceID": WORKSPACE_ID,
                 "fileURL": file_url,
-                "contextRevisions": [CONTEXT_ID, revision(1, 0, Some(1))],
-                "contextDigests": [CONTEXT_ID, context_digest],
-                "operation": operation(OPERATION_ID, 12.0, 1),
                 "operationID": OPERATION_ID,
+                "fingerprint": format!("{:x}", Sha256::digest(OPERATION_ID.as_bytes())),
                 "updatedAt": 12.0
             }),
             None,
@@ -12672,11 +13298,8 @@ mod tests {
             serde_json::json!({
                 "kind": "working",
                 "expectedWorkingRevision": 1,
-                "newRevisions": revision(2, 1, Some(2)),
-                "contextRevisions": [CONTEXT_ID, revision(2, 1, Some(2))],
-                "contextDigests": [CONTEXT_ID, context_digest],
-                "contextTombstones": {},
-                "operations": [operation(second_operation_id, 13.0, 2)],
+                "operationID": second_operation_id,
+                "fingerprint": format!("{:x}", Sha256::digest(second_operation_id.as_bytes())),
                 "updatedAt": 13.0
             }),
             Some(&create_committed.canonical_bytes),
@@ -12691,10 +13314,7 @@ mod tests {
                 "kind": "save",
                 "expectedWorkingRevision": 2,
                 "operationID": third_operation_id,
-                "contextRevisions": [CONTEXT_ID, revision(2, 1, Some(2))],
-                "contextDigests": [CONTEXT_ID, context_digest],
-                "contextTombstones": {},
-                "operations": [operation(third_operation_id, 14.0, 3)],
+                "fingerprint": format!("{:x}", Sha256::digest(third_operation_id.as_bytes())),
                 "updatedAt": 14.0
             }),
             Some(&working_plan.primary.canonical_bytes),
@@ -12725,11 +13345,6 @@ mod tests {
             serde_json::json!({
                 "kind": "externalReload",
                 "expectedWorkingRevision": 2,
-                "newRevision": 3,
-                "contextRevisions": [CONTEXT_ID, revision(3, 2, Some(3))],
-                "contextDigests": [CONTEXT_ID, context_digest],
-                "contextTombstones": {},
-                "operations": [operation(OPERATION_ID, 15.0, 4)],
                 "updatedAt": 15.0
             }),
             Some(&save_committed.canonical_bytes),
@@ -12753,12 +13368,7 @@ mod tests {
             serde_json::json!({
                 "kind": "conflictRebase",
                 "expectedRevisions": revision(3, 3, None),
-                "newRevisions": revision(4, 3, Some(4)),
                 "externalSavedDigest": format!("{:x}", Sha256::digest(&reloaded)),
-                "contextRevisions": [CONTEXT_ID, revision(4, 3, Some(4))],
-                "contextDigests": [CONTEXT_ID, context_digest],
-                "contextTombstones": {},
-                "operations": [operation(second_operation_id, 16.0, 5)],
                 "updatedAt": 16.0
             }),
             Some(&reload.primary.canonical_bytes),
@@ -12780,11 +13390,6 @@ mod tests {
         let request = serde_json::json!({
             "kind": "working",
             "expectedWorkingRevision": 7,
-            "newRevisions": revision(8, 0, Some(8)),
-            "contextRevisions": [CONTEXT_ID, revision(8, 0, Some(8))],
-            "contextDigests": [CONTEXT_ID, format!("{:x}", Sha256::digest(b"context"))],
-            "contextTombstones": {},
-            "operations": [],
             "updatedAt": 20.0
         });
         assert_eq!(
@@ -12792,17 +13397,18 @@ mod tests {
                 Some(&current),
                 &serde_json::to_vec(&request).expect("request"),
                 Some(&document("working")),
+                None,
             ),
             Err(WorkspaceWorkingJournalError::InvalidRevisionState)
         );
 
         let mut missing_document = request;
         missing_document["expectedWorkingRevision"] = Value::from(0);
-        missing_document["newRevisions"] = revision(1, 0, Some(1));
         assert_eq!(
             plan_workspace_working_journal_transition_v1(
                 Some(&current),
                 &serde_json::to_vec(&missing_document).expect("request"),
+                None,
                 None,
             ),
             Err(WorkspaceWorkingJournalError::InvalidWorkingDocument)

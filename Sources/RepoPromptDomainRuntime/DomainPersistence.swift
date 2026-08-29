@@ -799,7 +799,6 @@ package struct DomainPersistenceCoordinator {
         document: DomainWorkspaceDocument,
         expectedCatalogRevision: UInt64?,
         operationID: UUID,
-        contextRevisions: [UUID: DomainRevisionState],
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
@@ -813,7 +812,6 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 expectedCatalogRevision: expectedCatalogRevision,
                 operationID: operationID,
-                contextRevisions: contextRevisions,
                 operation: operation,
                 now: now,
                 permit: permit,
@@ -867,13 +865,11 @@ package struct DomainPersistenceCoordinator {
     func persistWorking(
         document: DomainWorkspaceDocument,
         expectedRevision: UInt64,
-        newRevision: DomainRevisionState,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID? = nil,
+        fingerprint: String? = nil,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -882,13 +878,31 @@ package struct DomainPersistenceCoordinator {
                 validator: validator,
                 document: document,
                 expectedRevision: expectedRevision,
-                newRevision: newRevision,
-                contextRevisions: contextRevisions,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                operationID: operationID,
+                fingerprint: fingerprint,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                recoveryMode: false
+            )
+        }
+    }
+
+    func persistWorkingRecovery(
+        document: DomainWorkspaceDocument,
+        expectedRevision: UInt64,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
+    ) async throws -> DomainPersistenceWorkingCommit {
+        try await validateMutationPermit(permit, document: document)
+        let validator = try await prepareJournalValidator()
+        return try await DomainBlockingIO.run { cancellation in
+            try blockingWorker(cancellation).persistWorkingRecoveryBlocking(
+                validator: validator,
+                document: document,
+                expectedRevision: expectedRevision,
+                now: now,
+                permit: permit
             )
         }
     }
@@ -897,9 +911,7 @@ package struct DomainPersistenceCoordinator {
         document: DomainWorkspaceDocument,
         expectedWorkingRevision: UInt64,
         operationID: UUID,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        fingerprint: String,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
@@ -912,9 +924,7 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 expectedWorkingRevision: expectedWorkingRevision,
                 operationID: operationID,
-                contextRevisions: contextRevisions,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                fingerprint: fingerprint,
                 now: now,
                 permit: permit,
                 commandClaim: commandClaim
@@ -925,13 +935,11 @@ package struct DomainPersistenceCoordinator {
     func persistExternalReload(
         document: DomainWorkspaceDocument,
         expectedRevision: UInt64,
-        newRevision: UInt64,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID,
+        fingerprint: String,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -940,13 +948,31 @@ package struct DomainPersistenceCoordinator {
                 validator: validator,
                 document: document,
                 expectedRevision: expectedRevision,
-                newRevision: newRevision,
-                contextRevisions: contextRevisions,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                operationID: operationID,
+                fingerprint: fingerprint,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                recoveryMode: false
+            )
+        }
+    }
+
+    func persistExternalReloadRecovery(
+        document: DomainWorkspaceDocument,
+        expectedRevision: UInt64,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
+    ) async throws -> DomainPersistenceSavedCommit {
+        try await validateMutationPermit(permit, document: document)
+        let validator = try await prepareJournalValidator()
+        return try await DomainBlockingIO.run { cancellation in
+            try blockingWorker(cancellation).persistExternalReloadRecoveryBlocking(
+                validator: validator,
+                document: document,
+                expectedRevision: expectedRevision,
+                now: now,
+                permit: permit
             )
         }
     }
@@ -955,13 +981,11 @@ package struct DomainPersistenceCoordinator {
         document: DomainWorkspaceDocument,
         externalSavedDigest: String,
         expectedRevisions: DomainRevisionState,
-        newRevisions: DomainRevisionState,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID,
+        fingerprint: String,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -971,13 +995,33 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 externalSavedDigest: externalSavedDigest,
                 expectedRevisions: expectedRevisions,
-                newRevisions: newRevisions,
-                contextRevisions: contextRevisions,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                operationID: operationID,
+                fingerprint: fingerprint,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                recoveryMode: false
+            )
+        }
+    }
+
+    func persistConflictRebaseRecovery(
+        document: DomainWorkspaceDocument,
+        externalSavedDigest: String,
+        expectedRevisions: DomainRevisionState,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
+    ) async throws -> DomainPersistenceWorkingCommit {
+        try await validateMutationPermit(permit, document: document)
+        let validator = try await prepareJournalValidator()
+        return try await DomainBlockingIO.run { cancellation in
+            try blockingWorker(cancellation).persistConflictRebaseRecoveryBlocking(
+                validator: validator,
+                document: document,
+                externalSavedDigest: externalSavedDigest,
+                expectedRevisions: expectedRevisions,
+                now: now,
+                permit: permit
             )
         }
     }
@@ -1684,7 +1728,6 @@ package struct DomainPersistenceCoordinator {
         document: DomainWorkspaceDocument,
         expectedCatalogRevision: UInt64?,
         operationID: UUID,
-        contextRevisions: [UUID: DomainRevisionState],
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
@@ -1739,7 +1782,6 @@ package struct DomainPersistenceCoordinator {
                     rawCatalogBytes: rawCatalogBytes,
                     effectiveCatalog: currentCatalogValidation,
                     document: document,
-                    contextRevisions: contextRevisions,
                     operation: operation,
                     updatedAt: now,
                     commandClaim: commandClaim
@@ -1940,7 +1982,8 @@ package struct DomainPersistenceCoordinator {
         revisionOperationID: UUID?,
         now: Date,
         diskDocumentBytes: Data?,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
+        recoveryMode: Bool
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
         finalization: DomainWorkspaceJournalMutationFinalization,
@@ -1959,7 +2002,8 @@ package struct DomainPersistenceCoordinator {
             revisionOperationID: revisionOperationID,
             updatedAt: now,
             diskDocumentBytes: diskDocumentBytes,
-            commandClaim: commandClaim
+            commandClaim: commandClaim,
+            recoveryMode: recoveryMode
         )
         defer { transaction.close() }
 
@@ -2182,14 +2226,16 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 transition: .unchanged(
                     expectedWorkingRevision: expectedRevision,
-                    operation: operation,
+                    operationID: operation.operationID,
+                    fingerprint: operation.fingerprint,
                     updatedAt: now
                 ),
                 catalogRevision: catalogRevision,
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                recoveryMode: false
             )
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
@@ -2203,13 +2249,12 @@ package struct DomainPersistenceCoordinator {
         validator: DomainWorkspaceRustJournal.PreparedValidator,
         document: DomainWorkspaceDocument,
         expectedRevision: UInt64,
-        newRevision: DomainRevisionState,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID?,
+        fingerprint: String?,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
+        recoveryMode: Bool
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2229,20 +2274,16 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 transition: .working(
                     expectedWorkingRevision: expectedRevision,
-                    newRevisions: newRevision,
-                    contextRevisions: contextRevisions,
-                    contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
-                        ($0.identity.contextID, $0.contentDigest)
-                    }),
-                    contextTombstones: contextTombstones,
-                    operations: operations,
+                    operationID: operationID,
+                    fingerprint: fingerprint,
                     updatedAt: now
                 ),
                 catalogRevision: catalogRevision,
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                recoveryMode: recoveryMode
             )
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
@@ -2252,14 +2293,32 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
+    private func persistWorkingRecoveryBlocking(
+        validator: DomainWorkspaceRustJournal.PreparedValidator,
+        document: DomainWorkspaceDocument,
+        expectedRevision: UInt64,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
+    ) throws -> DomainPersistenceWorkingCommit {
+        try persistWorkingBlocking(
+            validator: validator,
+            document: document,
+            expectedRevision: expectedRevision,
+            operationID: nil,
+            fingerprint: nil,
+            now: now,
+            permit: permit,
+            commandClaim: nil,
+            recoveryMode: true
+        )
+    }
+
     private func persistSavedBlocking(
         validator: DomainWorkspaceRustJournal.PreparedValidator,
         document: DomainWorkspaceDocument,
         expectedWorkingRevision: UInt64,
         operationID: UUID,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        fingerprint: String,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
@@ -2286,9 +2345,7 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 expectedWorkingRevision: expectedWorkingRevision,
                 operationID: operationID,
-                contextRevisions: contextRevisions,
-                contextTombstones: contextTombstones,
-                operations: operations,
+                fingerprint: fingerprint,
                 updatedAt: now,
                 catalogRevision: catalogRevision,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
@@ -2576,13 +2633,12 @@ package struct DomainPersistenceCoordinator {
         validator: DomainWorkspaceRustJournal.PreparedValidator,
         document: DomainWorkspaceDocument,
         expectedRevision: UInt64,
-        newRevision: UInt64,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID?,
+        fingerprint: String?,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
+        recoveryMode: Bool
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2596,27 +2652,23 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 validator: validator
             )
-            let operationID = UUID()
+            let revisionOperationID = UUID()
             let result = try executeJournalMutationTransaction(
                 validator: validator,
                 snapshot: snapshot,
                 document: document,
                 transition: .externalReload(
                     expectedWorkingRevision: expectedRevision,
-                    newRevision: newRevision,
-                    contextRevisions: contextRevisions,
-                    contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
-                        ($0.identity.contextID, $0.contentDigest)
-                    }),
-                    contextTombstones: contextTombstones,
-                    operations: operations,
+                    operationID: operationID,
+                    fingerprint: fingerprint,
                     updatedAt: now
                 ),
                 catalogRevision: catalogRevision,
-                revisionOperationID: operationID,
+                revisionOperationID: revisionOperationID,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                recoveryMode: recoveryMode
             )
             let revisionSidecarMissing: Bool = switch result.finalization {
             case .finalized: false
@@ -2631,18 +2683,37 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
+    private func persistExternalReloadRecoveryBlocking(
+        validator: DomainWorkspaceRustJournal.PreparedValidator,
+        document: DomainWorkspaceDocument,
+        expectedRevision: UInt64,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
+    ) throws -> DomainPersistenceSavedCommit {
+        try persistExternalReloadBlocking(
+            validator: validator,
+            document: document,
+            expectedRevision: expectedRevision,
+            operationID: nil,
+            fingerprint: nil,
+            now: now,
+            permit: permit,
+            commandClaim: nil,
+            recoveryMode: true
+        )
+    }
+
     private func persistConflictRebaseBlocking(
         validator: DomainWorkspaceRustJournal.PreparedValidator,
         document: DomainWorkspaceDocument,
         externalSavedDigest: String,
         expectedRevisions: DomainRevisionState,
-        newRevisions: DomainRevisionState,
-        contextRevisions: [UUID: DomainRevisionState],
-        contextTombstones: [UUID: UInt64],
-        operations: [DomainRecordedOperation],
+        operationID: UUID?,
+        fingerprint: String?,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
+        recoveryMode: Bool
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2662,21 +2733,17 @@ package struct DomainPersistenceCoordinator {
                 document: document,
                 transition: .conflictRebase(
                     expectedRevisions: expectedRevisions,
-                    newRevisions: newRevisions,
                     externalSavedDigest: externalSavedDigest,
-                    contextRevisions: contextRevisions,
-                    contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
-                        ($0.identity.contextID, $0.contentDigest)
-                    }),
-                    contextTombstones: contextTombstones,
-                    operations: operations,
+                    operationID: operationID,
+                    fingerprint: fingerprint,
                     updatedAt: now
                 ),
                 catalogRevision: catalogRevision,
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim
+                commandClaim: commandClaim,
+                recoveryMode: recoveryMode
             )
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
@@ -2684,6 +2751,28 @@ package struct DomainPersistenceCoordinator {
                 authorityFinalization: result.authorityFinalization
             )
         }
+    }
+
+    private func persistConflictRebaseRecoveryBlocking(
+        validator: DomainWorkspaceRustJournal.PreparedValidator,
+        document: DomainWorkspaceDocument,
+        externalSavedDigest: String,
+        expectedRevisions: DomainRevisionState,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit
+    ) throws -> DomainPersistenceWorkingCommit {
+        try persistConflictRebaseBlocking(
+            validator: validator,
+            document: document,
+            externalSavedDigest: externalSavedDigest,
+            expectedRevisions: expectedRevisions,
+            operationID: nil,
+            fingerprint: nil,
+            now: now,
+            permit: permit,
+            commandClaim: nil,
+            recoveryMode: true
+        )
     }
 
     private func persistDeletedBlocking(
