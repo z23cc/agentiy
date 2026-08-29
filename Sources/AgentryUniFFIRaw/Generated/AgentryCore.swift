@@ -1867,19 +1867,19 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceCommandIdentityResponseV1
 
-    func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?) throws  -> CoreWorkspaceCreateTransactionBeginResponseV1
+    func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceCreateTransactionBeginResponseV1
 
-    func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?) throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1
+    func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1
 
     func workspaceDeletionTombstoneValidateV1(request: CoreWorkspacePersistenceMetadataRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
     func workspaceDocumentProjectionV1(request: CoreWorkspaceDocumentProjectionRequestV1) throws  -> CoreWorkspaceDocumentProjectionV1
 
-    func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?) throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1
+    func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1
 
     func workspacePendingSaveResolveV1(request: CoreWorkspacePendingSaveRecoveryRequestV1) throws  -> CoreWorkspacePendingSaveRecoveryResponseV1
 
-    func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?) throws  -> CoreWorkspaceSaveTransactionBeginResponseV1
+    func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?) throws  -> CoreWorkspaceSaveTransactionBeginResponseV1
 
     func workspaceSavedRevisionValidateV1(request: CoreWorkspacePersistenceMetadataRequestV1) throws  -> CoreWorkspacePersistenceMetadataResponseV1
 
@@ -2705,26 +2705,24 @@ open func workspaceCommandIdentityV1(request: CoreWorkspaceCommandIdentityReques
 })
 }
 
-open func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?)throws  -> CoreWorkspaceCreateTransactionBeginResponseV1  {
+open func workspaceCreateTransactionBeginV1(request: CoreWorkspaceCreateTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceCreateTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceCreateTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_create_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceCreateTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),
-        FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationCandidateV1.lower(authorityPublication),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
 
-open func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?)throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1  {
+open func workspaceDeleteTransactionBeginV1(request: CoreWorkspaceDeleteTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceDeleteTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceDeleteTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_delete_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceDeleteTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),
-        FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationCandidateV1.lower(authorityPublication),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
@@ -2749,14 +2747,13 @@ open func workspaceDocumentProjectionV1(request: CoreWorkspaceDocumentProjection
 })
 }
 
-open func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?)throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1  {
+open func workspaceJournalMutationTransactionBeginV1(request: CoreWorkspaceJournalMutationTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceJournalMutationTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_journal_mutation_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceJournalMutationTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),
-        FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationCandidateV1.lower(authorityPublication),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
@@ -2771,14 +2768,13 @@ open func workspacePendingSaveResolveV1(request: CoreWorkspacePendingSaveRecover
 })
 }
 
-open func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?, authorityPublication: CoreWorkspaceAuthorityPublicationCandidateV1?)throws  -> CoreWorkspaceSaveTransactionBeginResponseV1  {
+open func workspaceSaveTransactionBeginV1(request: CoreWorkspaceSaveTransactionRequestV1, commandClaim: CoreWorkspaceCommandExecutionClaimV1?)throws  -> CoreWorkspaceSaveTransactionBeginResponseV1  {
     return try  FfiConverterTypeCoreWorkspaceSaveTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_workspace_save_transaction_begin_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeCoreWorkspaceSaveTransactionRequestV1_lower(request),
-        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),
-        FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationCandidateV1.lower(authorityPublication),uniffiCallStatus
+        FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1.lower(commandClaim),uniffiCallStatus
     )
 })
 }
@@ -6870,60 +6866,6 @@ public func FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1_lift(
 #endif
 public func FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1_lower(_ value: CoreWorkspaceAuthorityProjectionSyncResponseV1) -> RustBuffer {
     return FfiConverterTypeCoreWorkspaceAuthorityProjectionSyncResponseV1.lower(value)
-}
-
-
-public struct CoreWorkspaceAuthorityPublicationCandidateV1: Equatable, Hashable {
-    public let workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1]
-    public let draft: CoreWorkspaceAuthorityPublicationDraftV1
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(workspaces: [CoreWorkspaceProjectionPublishedWorkspaceV1], draft: CoreWorkspaceAuthorityPublicationDraftV1) {
-        self.workspaces = workspaces
-        self.draft = draft
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension CoreWorkspaceAuthorityPublicationCandidateV1: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCoreWorkspaceAuthorityPublicationCandidateV1: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceAuthorityPublicationCandidateV1 {
-        return
-            try CoreWorkspaceAuthorityPublicationCandidateV1(
-                workspaces: FfiConverterSequenceTypeCoreWorkspaceProjectionPublishedWorkspaceV1.read(from: &buf),
-                draft: FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CoreWorkspaceAuthorityPublicationCandidateV1, into buf: inout [UInt8]) {
-        FfiConverterSequenceTypeCoreWorkspaceProjectionPublishedWorkspaceV1.write(value.workspaces, into: &buf)
-        FfiConverterTypeCoreWorkspaceAuthorityPublicationDraftV1.write(value.draft, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceAuthorityPublicationCandidateV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceAuthorityPublicationCandidateV1 {
-    return try FfiConverterTypeCoreWorkspaceAuthorityPublicationCandidateV1.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCoreWorkspaceAuthorityPublicationCandidateV1_lower(_ value: CoreWorkspaceAuthorityPublicationCandidateV1) -> RustBuffer {
-    return FfiConverterTypeCoreWorkspaceAuthorityPublicationCandidateV1.lower(value)
 }
 
 
@@ -19255,30 +19197,6 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceAuthorityProjectionSyncRec
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationCandidateV1: FfiConverterRustBuffer {
-    typealias SwiftType = CoreWorkspaceAuthorityPublicationCandidateV1?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeCoreWorkspaceAuthorityPublicationCandidateV1.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeCoreWorkspaceAuthorityPublicationCandidateV1.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceAuthorityPublicationReceiptV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceAuthorityPublicationReceiptV1?
 
@@ -21216,10 +21134,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_command_identity_v1() != 62052) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_create_transaction_begin_v1() != 12950) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_create_transaction_begin_v1() != 34746) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_delete_transaction_begin_v1() != 10030) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_delete_transaction_begin_v1() != 16427) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_deletion_tombstone_validate_v1() != 46386) {
@@ -21228,13 +21146,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_document_projection_v1() != 47667) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_journal_mutation_transaction_begin_v1() != 47867) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_journal_mutation_transaction_begin_v1() != 36295) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_pending_save_resolve_v1() != 12179) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_save_transaction_begin_v1() != 53983) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_save_transaction_begin_v1() != 63468) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_workspace_saved_revision_validate_v1() != 64208) {

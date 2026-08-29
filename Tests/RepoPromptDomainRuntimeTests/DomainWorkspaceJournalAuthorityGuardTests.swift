@@ -607,8 +607,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "let authorityFinalization: DomainWorkspaceCommandAuthorityFinalization",
             "authorityFinalization: transaction.finishCommandAuthority()",
             "authorityFinalization: result.authorityFinalization",
-            "authorityFinalization: finalization.authorityFinalization",
-            "authorityPublication: authorityPublication"
+            "authorityFinalization: finalization.authorityFinalization"
         ] {
             XCTAssertTrue(
                 persistence.contains(required),
@@ -651,7 +650,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for required in [
             "public enum CoreWorkspaceCommandFinalizationV1",
             "public struct CoreWorkspaceCommandAuthorityFinalizationV1",
-            "public struct CoreWorkspaceAuthorityPublicationCandidate",
+            "public func beginSaveTransaction(",
             "public func finishCommandAuthority(",
             "public func planCleanup("
         ] {
@@ -660,7 +659,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         for required in [
             "pub enum CoreWorkspaceCommandFinalizationV1",
             "pub struct CoreWorkspaceCommandAuthorityFinalizationV1",
-            "CoreWorkspaceAuthorityPublicationCandidateV1",
+            "transaction.prepare_claimed_authority_publication(",
             "fn finish_workspace_command_authorities(",
             "pub fn plan_cleanup("
         ] {
@@ -672,14 +671,20 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(rustJournal.contains("authority_publication_reservation: Option<"))
         XCTAssertTrue(rustJournal.contains("validate_claimed_authority_publication_candidate_v1("))
         XCTAssertTrue(rustJournal.contains("pub fn command_authority_publication_kind("))
-        XCTAssertTrue(rustFFI.contains("transaction.command_authority_publication_kind()"))
+        XCTAssertTrue(rustFFI.contains("transaction.prepare_claimed_authority_publication("))
         for required in [
-            "commandAuthorityPublicationCandidate(",
             "installCommandAuthorityFinalization(",
             "persisted.authorityFinalization",
             "deleted.authorityFinalization"
         ] {
             XCTAssertTrue(authority.contains(required), "Missing transaction publication cutover: \(required)")
+        }
+        for retired in [
+            "commandAuthorityPublicationCandidate(",
+            "DomainWorkspaceAuthorityPublicationCandidate",
+            "authorityPublication: authorityPublication"
+        ] {
+            XCTAssertFalse(authority.contains(retired), "Swift command candidate authority remains: \(retired)")
         }
         for retired in [
             "pub fn preflight(",

@@ -541,19 +541,6 @@ public struct CoreWorkspaceAuthorityPublicationDraft: Sendable, Equatable {
     }
 }
 
-public struct CoreWorkspaceAuthorityPublicationCandidate: Sendable, Equatable {
-    public let workspaces: [CoreWorkspaceProjectionPublishedWorkspace]
-    public let draft: CoreWorkspaceAuthorityPublicationDraft
-
-    public init(
-        workspaces: [CoreWorkspaceProjectionPublishedWorkspace],
-        draft: CoreWorkspaceAuthorityPublicationDraft
-    ) {
-        self.workspaces = workspaces
-        self.draft = draft
-    }
-}
-
 public struct CoreWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
     public let previousGeneration: UInt64
     public let generation: UInt64
@@ -1485,8 +1472,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1505,8 +1491,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
             documentBytes: documentBytes,
-            commandClaim: commandClaim,
-            authorityPublication: authorityPublication
+            commandClaim: commandClaim
         )
     }
 
@@ -1515,8 +1500,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         guard rawCatalogBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveCatalogBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1531,8 +1515,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             effectiveCatalogBytes: effectiveCatalogBytes,
             effectiveJournalBytes: effectiveJournalBytes,
             requestBytes: requestBytes,
-            commandClaim: commandClaim,
-            authorityPublication: authorityPublication
+            commandClaim: commandClaim
         )
     }
 
@@ -1542,8 +1525,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1560,8 +1542,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
             diskDocumentBytes: diskDocumentBytes,
-            commandClaim: commandClaim,
-            authorityPublication: authorityPublication
+            commandClaim: commandClaim
         )
     }
 
@@ -1571,8 +1552,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         guard rawJournalBytes?.count ?? 0 <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
               effectiveJournalBytes.count <= CoreWorkspaceWorkingJournalValidationV1.maximumJournalBytes,
@@ -1589,8 +1569,7 @@ public struct CorePreparedWorkspaceWorkingJournalValidatorV1: Sendable {
             requestBytes: requestBytes,
             candidateDocumentBytes: candidateDocumentBytes,
             diskDocumentBytes: diskDocumentBytes,
-            commandClaim: commandClaim,
-            authorityPublication: authorityPublication
+            commandClaim: commandClaim
         )
     }
 
@@ -1766,8 +1745,7 @@ extension CoreRuntimeTransport {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         throw CoreTransportError.unexpected("workspace create transaction transport is unavailable")
     }
@@ -1778,8 +1756,7 @@ extension CoreRuntimeTransport {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         throw CoreTransportError.unexpected("workspace delete transaction transport is unavailable")
     }
@@ -1791,8 +1768,7 @@ extension CoreRuntimeTransport {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         throw CoreTransportError.unexpected("workspace journal mutation transaction transport is unavailable")
     }
@@ -1804,8 +1780,7 @@ extension CoreRuntimeTransport {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         throw CoreTransportError.unexpected("workspace save transaction transport is unavailable")
     }

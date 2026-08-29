@@ -50,7 +50,7 @@ use crate::types::{
     AgentClaudeStartReceiptV1, CoreAgentClaudeScopeConfigV1,
 };
 use crate::types::{
-    CoreWorkspaceAuthorityProjectionSyncReceiptV1, CoreWorkspaceAuthorityPublicationCandidateV1,
+    CoreWorkspaceAuthorityProjectionSyncReceiptV1,
     CoreWorkspaceAuthorityPublicationDraftV1, CoreWorkspaceAuthorityPublicationReceiptV1,
     CoreWorkspaceAuthorityReadV1, CoreWorkspaceProjectionPublishedWorkspaceV1,
 };
@@ -1012,38 +1012,6 @@ fn cancel_workspace_command_authorities(
     }
     if let Ok(mut publication) = authority_publication.lock() {
         publication.take();
-    }
-}
-
-fn prepare_workspace_command_authority_publication(
-    command_claim: Option<&Arc<CoreWorkspaceCommandExecutionClaimV1>>,
-    expected_kind: runtime::workspace_context::WorkspaceProjectionPublicationKind,
-    candidate: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
-) -> Result<
-    Option<runtime::workspace_persistence_journal::PreparedWorkspaceAuthorityPublicationV1>,
-    runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
-> {
-    match (command_claim, candidate) {
-        (Some(claim), Some(candidate)) => {
-            let workspaces = candidate
-                .workspaces
-                .into_iter()
-                .map(Into::into)
-                .collect::<Vec<_>>();
-            claim
-                .admission
-                .prepare_claimed_authority_publication(
-                    &claim.inner,
-                    expected_kind,
-                    &workspaces,
-                    candidate.draft.into(),
-                )
-                .map(Some)
-        }
-        (None, None) => Ok(None),
-        (Some(_), None) | (None, Some(_)) => Err(
-            runtime::workspace_persistence_journal::WorkspaceWorkingJournalError::InvalidTransaction,
-        ),
     }
 }
 
@@ -2610,7 +2578,6 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceCreateTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
-        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceCreateTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2636,11 +2603,15 @@ impl CoreRuntime {
                         command_claim.as_ref(),
                         transaction.command_admission_finalization()?,
                     )?;
-                    let authority_publication = prepare_workspace_command_authority_publication(
-                        command_claim.as_ref(),
-                        transaction.command_authority_publication_kind(),
-                        authority_publication,
-                    )?;
+                    let authority_publication = command_claim
+                        .as_ref()
+                        .map(|claim| {
+                            transaction.prepare_claimed_authority_publication(
+                                &claim.admission,
+                                &claim.inner,
+                            )
+                        })
+                        .transpose()?;
                     Ok((transaction, reservation, authority_publication))
                 }) {
                     Ok((transaction, reservation, authority_publication)) => CoreWorkspaceCreateTransactionBeginResponseV1 {
@@ -2677,7 +2648,6 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceDeleteTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
-        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceDeleteTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2701,11 +2671,15 @@ impl CoreRuntime {
                         command_claim.as_ref(),
                         Some(transaction.command_admission_finalization()?),
                     )?;
-                    let authority_publication = prepare_workspace_command_authority_publication(
-                        command_claim.as_ref(),
-                        transaction.command_authority_publication_kind(),
-                        authority_publication,
-                    )?;
+                    let authority_publication = command_claim
+                        .as_ref()
+                        .map(|claim| {
+                            transaction.prepare_claimed_authority_publication(
+                                &claim.admission,
+                                &claim.inner,
+                            )
+                        })
+                        .transpose()?;
                     Ok((transaction, reservation, authority_publication))
                 }) {
                     Ok((transaction, reservation, authority_publication)) => CoreWorkspaceDeleteTransactionBeginResponseV1 {
@@ -2743,7 +2717,6 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceJournalMutationTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
-        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceJournalMutationTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2767,11 +2740,15 @@ impl CoreRuntime {
                     command_claim.as_ref(),
                     transaction.command_admission_finalization()?,
                 )?;
-                let authority_publication = prepare_workspace_command_authority_publication(
-                    command_claim.as_ref(),
-                    transaction.command_authority_publication_kind()?,
-                    authority_publication,
-                )?;
+                let authority_publication = command_claim
+                    .as_ref()
+                    .map(|claim| {
+                        transaction.prepare_claimed_authority_publication(
+                            &claim.admission,
+                            &claim.inner,
+                        )
+                    })
+                    .transpose()?;
                 Ok((transaction, reservation, authority_publication))
             }) {
                 Ok((transaction, reservation, authority_publication)) => CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
@@ -2809,7 +2786,6 @@ impl CoreRuntime {
         &self,
         request: CoreWorkspaceSaveTransactionRequestV1,
         command_claim: Option<Arc<CoreWorkspaceCommandExecutionClaimV1>>,
-        authority_publication: Option<CoreWorkspaceAuthorityPublicationCandidateV1>,
     ) -> Result<CoreWorkspaceSaveTransactionBeginResponseV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
@@ -2834,11 +2810,15 @@ impl CoreRuntime {
                         command_claim.as_ref(),
                         Some(transaction.command_admission_finalization()?),
                     )?;
-                    let authority_publication = prepare_workspace_command_authority_publication(
-                        command_claim.as_ref(),
-                        transaction.command_authority_publication_kind(),
-                        authority_publication,
-                    )?;
+                    let authority_publication = command_claim
+                        .as_ref()
+                        .map(|claim| {
+                            transaction.prepare_claimed_authority_publication(
+                                &claim.admission,
+                                &claim.inner,
+                            )
+                        })
+                        .transpose()?;
                     Ok((transaction, reservation, authority_publication))
                 }) {
                     Ok((transaction, reservation, authority_publication)) => {

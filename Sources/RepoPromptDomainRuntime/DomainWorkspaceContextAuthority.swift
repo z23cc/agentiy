@@ -1975,25 +1975,6 @@ actor DomainWorkspaceContextAuthority {
             recordedAt: Date(),
             outcome: provisional
         )
-        let authorityPublication = commandAuthorityPublicationCandidate(
-            kind: .workspaceCreated,
-            catalogRevision: provisional.catalogRevision,
-            workspaceID: document.workspaceID,
-            contextID: nil,
-            operationID: envelope.operationID,
-            revisions: revisions,
-            targetSnapshot: makeSnapshot(WorkspaceRecord(
-                document: document,
-                savedDigest: document.contentDigest,
-                revisions: revisions,
-                contextRevisions: contextRevisions,
-                contextTombstones: [:],
-                operations: [recorded],
-                health: .writable,
-                externalDocument: nil,
-                fileMetadata: .missing
-            ))
-        )
         do {
             let persisted = try await persistence.persistCreated(
                 document: document,
@@ -2004,7 +1985,6 @@ actor DomainWorkspaceContextAuthority {
                 now: recorded.recordedAt,
                 permit: permit,
                 commandClaim: commandClaim,
-                authorityPublication: authorityPublication
             )
             catalogRevision = persisted.catalogRevision
             let record = WorkspaceRecord(
@@ -2021,7 +2001,6 @@ actor DomainWorkspaceContextAuthority {
             records[document.workspaceID] = record
             installCommandAuthorityFinalization(
                 persisted.authorityFinalization,
-                candidate: authorityPublication,
                 lifecycleWorkspaceID: document.workspaceID,
                 origin: envelope.origin,
                 diagnostic: nil
@@ -2135,15 +2114,6 @@ actor DomainWorkspaceContextAuthority {
             recordedAt: Date(),
             outcome: provisional
         )
-        let authorityPublication = commandAuthorityPublicationCandidate(
-            kind: .workspaceDeleted,
-            catalogRevision: provisional.catalogRevision,
-            workspaceID: workspaceID,
-            contextID: nil,
-            operationID: envelope.operationID,
-            revisions: nil,
-            targetSnapshot: nil
-        )
         do {
             let deleted = try await persistence.persistDeleted(
                 document: record.document,
@@ -2153,14 +2123,12 @@ actor DomainWorkspaceContextAuthority {
                 now: operation.recordedAt,
                 permit: permit,
                 commandClaim: commandClaim,
-                authorityPublication: authorityPublication
             )
             records.removeValue(forKey: workspaceID)
             catalogRevision = deleted.catalogRevision
             let cleanupDiagnostic = deleted.tombstone.operation.diagnostic
             installCommandAuthorityFinalization(
                 deleted.authorityFinalization,
-                candidate: authorityPublication,
                 lifecycleWorkspaceID: nil,
                 origin: envelope.origin,
                 diagnostic: cleanupDiagnostic
@@ -2287,7 +2255,6 @@ actor DomainWorkspaceContextAuthority {
                 return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record, permit: permit)
             }
 
-            let changedContextID = changedContextIDs.count == 1 ? changedContextIDs.first : nil
             let before = record.revisions
             let nextWorking = before.workingRevision &+ 1
             let revisions = DomainRevisionState(
@@ -2315,22 +2282,7 @@ actor DomainWorkspaceContextAuthority {
             let nextContextTombstones = record.contextTombstones.merging(
                 contextUpdate.tombstones
             ) { _, new in new }
-            var authorityRecord = record
-            authorityRecord.document = document
-            authorityRecord.revisions = revisions
-            authorityRecord.contextRevisions = contextUpdate.revisions
-            authorityRecord.contextTombstones = nextContextTombstones
-            authorityRecord.operations = operations
             let authorityDiagnostic = isDurableReplay ? "durable_workspace_revision_replayed" : nil
-            let authorityPublication = commandAuthorityPublicationCandidate(
-                kind: .workingStateCommitted,
-                catalogRevision: catalogRevision,
-                workspaceID: document.workspaceID,
-                contextID: changedContextID,
-                operationID: envelope.operationID,
-                revisions: revisions,
-                targetSnapshot: makeSnapshot(authorityRecord)
-            )
             let persisted: DomainPersistenceWorkingCommit
             do {
                 persisted = try await persistence.persistWorking(
@@ -2343,8 +2295,7 @@ actor DomainWorkspaceContextAuthority {
                     now: recorded.recordedAt,
                     permit: permit,
                     commandClaim: commandClaim,
-                    authorityPublication: authorityPublication
-                )
+                    )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
             } catch let error as DomainPersistenceError {
                 if case .runtimeShutdownRequested = error {
@@ -2415,7 +2366,6 @@ actor DomainWorkspaceContextAuthority {
             records[document.workspaceID] = record
             installCommandAuthorityFinalization(
                 persisted.authorityFinalization,
-                candidate: authorityPublication,
                 lifecycleWorkspaceID: document.workspaceID,
                 origin: envelope.origin,
                 diagnostic: authorityDiagnostic
@@ -2504,21 +2454,7 @@ actor DomainWorkspaceContextAuthority {
                 dirtyRevision: nil
             )
         }
-        var authorityRecord = record
-        authorityRecord.savedDigest = record.document.contentDigest
-        authorityRecord.revisions = after
-        authorityRecord.contextRevisions = cleanContextRevisions
-        authorityRecord.operations = operations
         let authorityDiagnostic = allowsExternalRecovery ? nil : "external_document_rebased_and_saved"
-        let authorityPublication = commandAuthorityPublicationCandidate(
-            kind: .savedDocumentCommitted,
-            catalogRevision: catalogRevision,
-            workspaceID: workspaceID,
-            contextID: nil,
-            operationID: envelope.operationID,
-            revisions: after,
-            targetSnapshot: makeSnapshot(authorityRecord)
-        )
         do {
             let saved = try await persistence.persistSaved(
                 document: record.document,
@@ -2530,7 +2466,6 @@ actor DomainWorkspaceContextAuthority {
                 now: recorded.recordedAt,
                 permit: permit,
                 commandClaim: commandClaim,
-                authorityPublication: authorityPublication
             )
             catalogRevision = max(catalogRevision, saved.catalogRevision)
             record.savedDigest = saved.journal.savedDigest
@@ -2540,7 +2475,6 @@ actor DomainWorkspaceContextAuthority {
             records[workspaceID] = record
             installCommandAuthorityFinalization(
                 saved.authorityFinalization,
-                candidate: authorityPublication,
                 lifecycleWorkspaceID: workspaceID,
                 origin: envelope.origin,
                 diagnostic: authorityDiagnostic
@@ -2801,29 +2735,9 @@ actor DomainWorkspaceContextAuthority {
                 ($0.identity.contextID, after)
             })
             : record.contextRevisions
-        let authorityKind: DomainWorkspaceEventKind = acceptExternal
-            ? .externalReloaded
-            : .workingStateCommitted
         let authorityDiagnostic = acceptExternal
             ? "external_conflict_accepted"
             : "local_conflict_rebased"
-        var authorityRecord = record
-        authorityRecord.document = resultingDocument
-        authorityRecord.savedDigest = external.contentDigest
-        authorityRecord.revisions = after
-        authorityRecord.contextRevisions = contextRevisions
-        authorityRecord.operations = operations
-        authorityRecord.health = .writable
-        authorityRecord.externalDocument = nil
-        let authorityPublication = commandAuthorityPublicationCandidate(
-            kind: authorityKind,
-            catalogRevision: catalogRevision,
-            workspaceID: workspaceID,
-            contextID: nil,
-            operationID: envelope.operationID,
-            revisions: after,
-            targetSnapshot: makeSnapshot(authorityRecord)
-        )
         var authorityFinalization = DomainWorkspaceCommandAuthorityFinalization(
             commandFinalization: .unreconciled,
             authorityPublication: nil
@@ -2840,8 +2754,7 @@ actor DomainWorkspaceContextAuthority {
                     now: now,
                     permit: permit,
                     commandClaim: commandClaim,
-                    authorityPublication: authorityPublication
-                )
+                    )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
                 record.document = external
                 record.savedDigest = persisted.journal.savedDigest
@@ -2861,8 +2774,7 @@ actor DomainWorkspaceContextAuthority {
                     now: now,
                     permit: permit,
                     commandClaim: commandClaim,
-                    authorityPublication: authorityPublication
-                )
+                    )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)
                 record.savedDigest = persisted.journal.savedDigest
                 record.revisions = persisted.journal.revisions
@@ -2917,7 +2829,6 @@ actor DomainWorkspaceContextAuthority {
         records[workspaceID] = record
         installCommandAuthorityFinalization(
             authorityFinalization,
-            candidate: authorityPublication,
             lifecycleWorkspaceID: workspaceID,
             origin: envelope.origin,
             diagnostic: authorityDiagnostic
@@ -2934,32 +2845,6 @@ actor DomainWorkspaceContextAuthority {
         return outcome
     }
 
-    private func commandAuthorityPublicationCandidate(
-        kind: DomainWorkspaceEventKind,
-        catalogRevision: UInt64,
-        workspaceID: UUID?,
-        contextID: UUID?,
-        operationID: UUID,
-        revisions: DomainRevisionState?,
-        targetSnapshot: DomainWorkspaceSnapshot?
-    ) -> DomainWorkspaceAuthorityPublicationCandidate {
-        let invalidatesTargetRegistration = commandPublicationInvalidatesReadRegistration(kind)
-        return DomainWorkspaceAuthorityPublicationCandidate(
-            workspaces: commandAuthoritySnapshots(
-                workspaceID: workspaceID,
-                targetSnapshot: targetSnapshot,
-                removesTarget: kind == .workspaceDeleted,
-                invalidatesTargetRegistration: invalidatesTargetRegistration
-            ),
-            catalogRevision: catalogRevision,
-            kind: kind,
-            workspaceID: workspaceID,
-            contextID: contextID,
-            operationID: operationID,
-            revisions: revisions
-        )
-    }
-
     private func commandPublicationInvalidatesReadRegistration(
         _ kind: DomainWorkspaceEventKind
     ) -> Bool {
@@ -2973,36 +2858,8 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
-    private func commandAuthoritySnapshots(
-        workspaceID: UUID?,
-        targetSnapshot: DomainWorkspaceSnapshot?,
-        removesTarget: Bool,
-        invalidatesTargetRegistration: Bool
-    ) -> [DomainWorkspaceSnapshot] {
-        var snapshots = Dictionary(uniqueKeysWithValues: records.map { workspaceID, record in
-            (workspaceID, makeSnapshot(record))
-        })
-        for (registeredWorkspaceID, registration) in readRegistrations
-        where !invalidatesTargetRegistration || registeredWorkspaceID != workspaceID {
-            snapshots[registeredWorkspaceID] = projectSnapshot(registration)
-        }
-        if let workspaceID {
-            if removesTarget {
-                snapshots.removeValue(forKey: workspaceID)
-            } else if let targetSnapshot,
-                      invalidatesTargetRegistration || readRegistrations[workspaceID] == nil
-            {
-                snapshots[workspaceID] = targetSnapshot
-            }
-        }
-        return snapshots.values.sorted {
-            $0.document.workspaceID.uuidString < $1.document.workspaceID.uuidString
-        }
-    }
-
     private func installCommandAuthorityFinalization(
         _ finalization: DomainWorkspaceCommandAuthorityFinalization,
-        candidate: DomainWorkspaceAuthorityPublicationCandidate,
         lifecycleWorkspaceID: UUID?,
         origin: DomainCommandOrigin,
         diagnostic: String?
@@ -3016,45 +2873,39 @@ actor DomainWorkspaceContextAuthority {
         let nextPublicationSequence = publicationSequence.addingReportingOverflow(1)
         guard !nextPublicationSequence.overflow,
               let receipt = finalization.authorityPublication,
-              catalogRevision == candidate.catalogRevision,
               receipt.previousPublicationSequence == publicationSequence,
-              receipt.catalogRevision == candidate.catalogRevision,
               receipt.publicationSequence == nextPublicationSequence.partialValue,
-              receipt.workspaceCount == UInt64(candidate.workspaces.count),
-              candidate.workspaces == commandAuthoritySnapshots(
-                  workspaceID: candidate.workspaceID,
-                  targetSnapshot: candidate.workspaceID.flatMap { records[$0].map(makeSnapshot) },
-                  removesTarget: candidate.kind == .workspaceDeleted,
-                  invalidatesTargetRegistration: commandPublicationInvalidatesReadRegistration(
-                      candidate.kind
-                  )
-              )
+              receipt.catalogRevision == catalogRevision,
+              receipt.event.sequence == receipt.publicationSequence,
+              receipt.event.catalogRevision == receipt.catalogRevision,
+              receipt.event.workspaceID == lifecycleWorkspaceID || lifecycleWorkspaceID == nil
         else {
             quarantineCommandAdmission()
             markCommandAdmissionReceiptMissing(workspaceID: lifecycleWorkspaceID)
             return
         }
-        if commandPublicationInvalidatesReadRegistration(candidate.kind),
-           let workspaceID = candidate.workspaceID
+        let event = receipt.event
+        if commandPublicationInvalidatesReadRegistration(event.kind),
+           let workspaceID = event.workspaceID
         {
             readRegistrations.removeValue(forKey: workspaceID)
         }
         publicationSequence = receipt.publicationSequence
-        let event = DomainWorkspaceEvent(
+        let publishedEvent = DomainWorkspaceEvent(
             runtimeID: identity.runtimeID,
-            sequence: publicationSequence,
-            catalogRevision: candidate.catalogRevision,
-            kind: candidate.kind,
-            workspaceID: candidate.workspaceID,
-            contextID: candidate.contextID,
-            operationID: candidate.operationID,
+            sequence: event.sequence,
+            catalogRevision: event.catalogRevision,
+            kind: event.kind,
+            workspaceID: event.workspaceID,
+            contextID: event.contextID,
+            operationID: event.operationID,
             origin: origin,
-            revisions: candidate.revisions,
+            revisions: event.revisions,
             timestamp: Date(),
             diagnostic: diagnostic
         )
         for continuation in subscribers.values {
-            continuation.yield(event)
+            continuation.yield(publishedEvent)
         }
     }
 
@@ -3448,17 +3299,6 @@ actor DomainWorkspaceContextAuthority {
             recordedAt: Date(),
             outcome: outcome
         )
-        var authorityRecord = record
-        authorityRecord.operations.append(operation)
-        let authorityPublication = commandAuthorityPublicationCandidate(
-            kind: .operationDeduplicated,
-            catalogRevision: catalogRevision,
-            workspaceID: record.document.workspaceID,
-            contextID: nil,
-            operationID: envelope.operationID,
-            revisions: record.revisions,
-            targetSnapshot: makeSnapshot(authorityRecord)
-        )
         do {
             let persisted = try await persistence.persistUnchanged(
                 document: record.document,
@@ -3467,14 +3307,12 @@ actor DomainWorkspaceContextAuthority {
                 now: operation.recordedAt,
                 permit: permit,
                 commandClaim: commandClaim,
-                authorityPublication: authorityPublication
             )
             catalogRevision = max(catalogRevision, persisted.catalogRevision)
             record.operations = persisted.journal.operations
             records[record.document.workspaceID] = record
             installCommandAuthorityFinalization(
                 persisted.authorityFinalization,
-                candidate: authorityPublication,
                 lifecycleWorkspaceID: record.document.workspaceID,
                 origin: envelope.origin,
                 diagnostic: nil

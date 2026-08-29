@@ -55,8 +55,8 @@ package struct DomainWorkspaceAuthorityProjectionSyncReceipt: Sendable, Equatabl
     package let projectionDigest: String
 }
 
-package struct DomainWorkspaceAuthorityPublicationCandidate: Sendable, Equatable {
-    package let workspaces: [DomainWorkspaceSnapshot]
+package struct DomainWorkspaceAuthorityPublicationEvent: Sendable, Equatable {
+    package let sequence: UInt64
     package let catalogRevision: UInt64
     package let kind: DomainWorkspaceEventKind
     package let workspaceID: UUID?
@@ -66,6 +66,7 @@ package struct DomainWorkspaceAuthorityPublicationCandidate: Sendable, Equatable
 }
 
 package struct DomainWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
+    package let event: DomainWorkspaceAuthorityPublicationEvent
     package let previousGeneration: UInt64
     package let generation: UInt64
     package let projectionChanged: Bool
@@ -103,26 +104,19 @@ package enum DomainWorkspaceRustProjection {
         )
     }
 
-    package static func corePublicationCandidate(
-        _ candidate: DomainWorkspaceAuthorityPublicationCandidate
-    ) -> CoreWorkspaceAuthorityPublicationCandidate {
-        CoreWorkspaceAuthorityPublicationCandidate(
-            workspaces: candidate.workspaces.map(corePublishedWorkspace),
-            draft: CoreWorkspaceAuthorityPublicationDraft(
-                catalogRevision: candidate.catalogRevision,
-                kind: corePublicationKind(candidate.kind),
-                workspaceID: candidate.workspaceID,
-                contextID: candidate.contextID,
-                operationID: candidate.operationID,
-                revisions: candidate.revisions.map(coreRevisionState)
-            )
-        )
-    }
-
     package static func authorityPublicationReceipt(
         _ receipt: CoreWorkspaceAuthorityPublicationReceipt
     ) -> DomainWorkspaceAuthorityPublicationReceipt {
         DomainWorkspaceAuthorityPublicationReceipt(
+            event: DomainWorkspaceAuthorityPublicationEvent(
+                sequence: receipt.event.sequence,
+                catalogRevision: receipt.event.catalogRevision,
+                kind: domainPublicationKind(receipt.event.kind),
+                workspaceID: receipt.event.workspaceID,
+                contextID: receipt.event.contextID,
+                operationID: receipt.event.operationID,
+                revisions: receipt.event.revisions.map(domainRevisionState)
+            ),
             previousGeneration: receipt.previousGeneration,
             generation: receipt.generation,
             projectionChanged: receipt.projectionChanged,
@@ -136,6 +130,23 @@ package enum DomainWorkspaceRustProjection {
             eventLogCount: receipt.eventLogCount,
             projectionDigest: receipt.projectionDigest
         )
+    }
+
+    package static func domainPublicationKind(
+        _ kind: CoreWorkspaceProjectionPublicationKind
+    ) -> DomainWorkspaceEventKind {
+        switch kind {
+        case .bootstrapped: .bootstrapped
+        case .workspaceCreated: .workspaceCreated
+        case .workspaceDeleted: .workspaceDeleted
+        case .workingStateCommitted: .workingStateCommitted
+        case .savedDocumentCommitted: .savedDocumentCommitted
+        case .externalReloaded: .externalReloaded
+        case .externalConflict: .externalConflict
+        case .degraded: .degraded
+        case .routingChanged: .routingChanged
+        case .operationDeduplicated: .operationDeduplicated
+        }
     }
 
     package static func corePublicationKind(
@@ -255,7 +266,7 @@ package enum DomainWorkspaceRustProjection {
         )
     }
 
-    private static func domainRevisionState(
+    package static func domainRevisionState(
         _ revisions: CoreWorkspaceProjectionRevisionState
     ) -> DomainRevisionState {
         DomainRevisionState(

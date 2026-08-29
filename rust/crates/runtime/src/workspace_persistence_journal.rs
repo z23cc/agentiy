@@ -6,7 +6,8 @@
 
 use crate::workspace_context::{
     MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
-    MAXIMUM_WORKSPACE_PROJECTION_PUBLICATION_EVENT_COUNT, WorkspaceDocumentProjection,
+    MAXIMUM_WORKSPACE_PROJECTION_PUBLICATION_EVENT_COUNT, WorkspaceContextAuthorityState,
+    WorkspaceDocumentProjection,
     WorkspaceDocumentProjectionError, WorkspaceProjectionAuthorityState,
     WorkspaceProjectionCatalog, WorkspaceProjectionCatalogError, WorkspaceProjectionCatalogLimits,
     WorkspaceProjectionEntry, WorkspaceProjectionHealth, WorkspaceProjectionHealthKind,
@@ -4039,6 +4040,77 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         Ok(diagnostics)
     }
 
+    /// Derives a command publication from the transaction's canonical result and the current
+    /// immutable aggregate. Swift supplies no speculative snapshot here: Rust retains non-target
+    /// document bytes, replaces the target row (or removes it for delete), and validates the exact
+    /// claim/effect before reserving the aggregate head.
+    pub fn prepare_claimed_authority_publication_from_transaction(
+        &self,
+        claim: &WorkspaceCommandExecutionClaimV1,
+        expected_kind: WorkspaceProjectionPublicationKind,
+        target: Option<WorkspaceProjectionPublishedWorkspace>,
+        mut operation: WorkspaceRecordedOperationV1,
+        context_id: Option<String>,
+    ) -> Result<PreparedWorkspaceAuthorityPublicationV1, WorkspaceWorkingJournalError> {
+        validate_and_canonicalize_recorded_operation(&mut operation)?;
+        if operation.operation_id != claim.operation_id
+            || operation.fingerprint != claim.fingerprint
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+        let workspace_id = canonical_uuid(&claim.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let mut workspaces = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+            inner
+                .authority_snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.projection.workspace_id != workspace_id)
+                .map(|entry| {
+                    Ok(WorkspaceProjectionPublishedWorkspace {
+                        document_bytes: entry.document_bytes.clone(),
+                        authority: entry
+                            .authority
+                            .clone()
+                            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, WorkspaceWorkingJournalError>>()?
+        };
+        if let Some(target) = target {
+            if project_workspace_document_v1(&target.document_bytes)
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?
+                .workspace_id
+                != workspace_id
+            {
+                return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+            }
+            workspaces.push(target);
+        }
+        workspaces.sort_by(|left, right| {
+            let left_id = project_workspace_document_v1(&left.document_bytes)
+                .map(|projection| projection.workspace_id)
+                .unwrap_or_default();
+            let right_id = project_workspace_document_v1(&right.document_bytes)
+                .map(|projection| projection.workspace_id)
+                .unwrap_or_default();
+            left_id.cmp(&right_id)
+        });
+        let draft = WorkspaceAuthorityPublicationDraftV1 {
+            catalog_revision: operation.catalog_revision,
+            kind: expected_kind,
+            workspace_id: Some(workspace_id),
+            context_id,
+            operation_id: Some(operation.operation_id.clone()),
+            revisions: operation.after,
+        };
+        self.prepare_claimed_authority_publication(claim, expected_kind, &workspaces, draft)
+    }
+
     pub fn prepare_claimed_authority_publication(
         &self,
         claim: &WorkspaceCommandExecutionClaimV1,
@@ -4886,6 +4958,8 @@ struct WorkspaceJournalMutationTransactionStateV1 {
     request_digest: String,
     raw_journal_digest: Option<String>,
     expected_working_revision: u64,
+    context_id: Option<String>,
+    document_bytes: Vec<u8>,
     committed: WorkspaceWorkingJournalValidationV1,
     saved_revision: Option<WorkspacePersistenceMetadataValidationV1>,
     receipt: WorkspaceJournalMutationCommitReceiptV1,
@@ -4929,6 +5003,57 @@ enum WorkspaceSaveStageV1 {
     SavedRevision,
     Terminal,
     Closed,
+}
+
+fn workspace_authority_from_journal_v1(
+    document_bytes: &[u8],
+    journal: &WorkspaceWorkingJournalValidationV1,
+) -> Result<WorkspaceProjectionPublishedWorkspace, WorkspaceWorkingJournalError> {
+    let parsed = parse_validated_journal(&journal.canonical_bytes)?;
+    let projection = project_workspace_document_v1(document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    if projection.workspace_id != parsed.workspace_id {
+        return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+    }
+    let context_revisions = workspace_recovery_context_revisions_v1(&parsed.context_revisions)?;
+    let contexts = context_revisions
+        .into_iter()
+        .map(|context| WorkspaceContextAuthorityState {
+            context_id: context.context_id,
+            revisions: context.revisions,
+            health: WorkspaceProjectionHealth {
+                kind: WorkspaceProjectionHealthKind::Writable,
+                reason: None,
+            },
+        })
+        .collect();
+    Ok(WorkspaceProjectionPublishedWorkspace {
+        document_bytes: document_bytes.to_vec(),
+        authority: WorkspaceProjectionAuthorityState {
+            revisions: parsed.revisions,
+            health: WorkspaceProjectionHealth {
+                kind: WorkspaceProjectionHealthKind::Writable,
+                reason: None,
+            },
+            contexts,
+        },
+    })
+}
+
+fn transaction_operation_v1(
+    finalization: Option<WorkspaceCommandAdmissionFinalizationV1>,
+) -> Result<(String, WorkspaceRecordedOperationV1), WorkspaceWorkingJournalError> {
+    match finalization {
+        Some(WorkspaceCommandAdmissionFinalizationV1::Workspace {
+            workspace_id,
+            operation,
+        })
+        | Some(WorkspaceCommandAdmissionFinalizationV1::Delete {
+            workspace_id,
+            operation,
+        }) => Ok((workspace_id, operation)),
+        None => Err(WorkspaceWorkingJournalError::InvalidTransaction),
+    }
 }
 
 impl PreparedWorkspaceJournalMutationTransactionV1 {
@@ -4998,6 +5123,34 @@ impl PreparedWorkspaceJournalMutationTransactionV1 {
             .lock()
             .map(|state| state.authority_publication_kind)
             .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)
+    }
+
+    pub fn prepare_claimed_authority_publication(
+        &self,
+        admission: &PreparedWorkspaceCommandAdmissionV1,
+        claim: &WorkspaceCommandExecutionClaimV1,
+    ) -> Result<PreparedWorkspaceAuthorityPublicationV1, WorkspaceWorkingJournalError> {
+        let (target, operation, kind, context_id) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+            let target = workspace_authority_from_journal_v1(&state.document_bytes, &state.committed)?;
+            let (_, operation) = transaction_operation_v1(state.admission_finalization.clone())?;
+            (
+                target,
+                operation,
+                state.authority_publication_kind,
+                state.context_id.clone(),
+            )
+        };
+        admission.prepare_claimed_authority_publication_from_transaction(
+            claim,
+            kind,
+            Some(target),
+            operation,
+            context_id,
+        )
     }
 
     pub fn is_authoritative(&self) -> bool {
@@ -5098,6 +5251,29 @@ impl PreparedWorkspaceSaveTransactionV1 {
     pub fn command_authority_publication_kind(&self) -> WorkspaceProjectionPublicationKind {
         WorkspaceProjectionPublicationKind::SavedDocumentCommitted
     }
+
+    pub fn prepare_claimed_authority_publication(
+        &self,
+        admission: &PreparedWorkspaceCommandAdmissionV1,
+        claim: &WorkspaceCommandExecutionClaimV1,
+    ) -> Result<PreparedWorkspaceAuthorityPublicationV1, WorkspaceWorkingJournalError> {
+        let (target, operation) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+            let target = workspace_authority_from_journal_v1(&state.document_bytes, &state.committed)?;
+            let (_, operation) = transaction_operation_v1(Some(state.admission_finalization.clone()))?;
+            (target, operation)
+        };
+        admission.prepare_claimed_authority_publication_from_transaction(
+            claim,
+            WorkspaceProjectionPublicationKind::SavedDocumentCommitted,
+            Some(target),
+            operation,
+            None,
+        )
+    }
 }
 
 impl PreparedWorkspaceDeleteTransactionV1 {
@@ -5170,6 +5346,28 @@ impl PreparedWorkspaceDeleteTransactionV1 {
 
     pub fn command_authority_publication_kind(&self) -> WorkspaceProjectionPublicationKind {
         WorkspaceProjectionPublicationKind::WorkspaceDeleted
+    }
+
+    pub fn prepare_claimed_authority_publication(
+        &self,
+        admission: &PreparedWorkspaceCommandAdmissionV1,
+        claim: &WorkspaceCommandExecutionClaimV1,
+    ) -> Result<PreparedWorkspaceAuthorityPublicationV1, WorkspaceWorkingJournalError> {
+        let operation = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+            let (_, operation) = transaction_operation_v1(Some(state.admission_finalization.clone()))?;
+            operation
+        };
+        admission.prepare_claimed_authority_publication_from_transaction(
+            claim,
+            WorkspaceProjectionPublicationKind::WorkspaceDeleted,
+            None,
+            operation,
+            None,
+        )
     }
 
     pub fn cleanup_plan(
@@ -5291,6 +5489,29 @@ impl PreparedWorkspaceCreateTransactionV1 {
 
     pub fn command_authority_publication_kind(&self) -> WorkspaceProjectionPublicationKind {
         WorkspaceProjectionPublicationKind::WorkspaceCreated
+    }
+
+    pub fn prepare_claimed_authority_publication(
+        &self,
+        admission: &PreparedWorkspaceCommandAdmissionV1,
+        claim: &WorkspaceCommandExecutionClaimV1,
+    ) -> Result<PreparedWorkspaceAuthorityPublicationV1, WorkspaceWorkingJournalError> {
+        let (target, operation) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+            let target = workspace_authority_from_journal_v1(&state.document_bytes, &state.committed_journal)?;
+            let (_, operation) = transaction_operation_v1(state.admission_finalization.clone())?;
+            (target, operation)
+        };
+        admission.prepare_claimed_authority_publication_from_transaction(
+            claim,
+            WorkspaceProjectionPublicationKind::WorkspaceCreated,
+            Some(target),
+            operation,
+            None,
+        )
     }
 }
 
@@ -6414,6 +6635,34 @@ fn require_create_context_tables(
     Ok(())
 }
 
+fn context_digest_map_v1(value: &Value) -> Option<BTreeMap<String, String>> {
+    let pairs = value.as_array()?;
+    let mut map = BTreeMap::new();
+    for pair in pairs.chunks_exact(2) {
+        let context_id = canonical_uuid(pair.first()?.as_str()?)?;
+        let digest = pair.get(1)?.as_str()?.to_owned();
+        map.insert(context_id, digest);
+    }
+    (pairs.len() % 2 == 0).then_some(map)
+}
+
+fn changed_context_id_v1(
+    before: &WorkspaceWorkingJournalV1,
+    after: &WorkspaceWorkingJournalV1,
+) -> Option<String> {
+    let before = context_digest_map_v1(&before.context_digests)?;
+    let after = context_digest_map_v1(&after.context_digests)?;
+    let changed = before
+        .keys()
+        .chain(after.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|context_id| before.get(*context_id) != after.get(*context_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    (changed.len() == 1).then(|| changed[0].clone())
+}
+
 fn added_command_admission_operation(
     effective: &WorkspaceWorkingJournalV1,
     committed: &WorkspaceWorkingJournalV1,
@@ -6606,6 +6855,12 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
     }
     let committed = plan.primary;
     let committed_journal = parse_validated_journal(&committed.canonical_bytes)?;
+    let context_id = match &request.transition {
+        WorkspaceWorkingJournalTransitionRequestV1::Working { .. } => {
+            changed_context_id_v1(&effective, &committed_journal)
+        }
+        _ => None,
+    };
     let saved_revision = match (
         saved_revision_number,
         saved_revision_updated_at,
@@ -6664,6 +6919,8 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
             request_digest,
             raw_journal_digest,
             expected_working_revision,
+            context_id,
+            document_bytes: candidate_document_bytes.to_vec(),
             committed,
             saved_revision,
             receipt,

@@ -803,8 +803,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -818,8 +817,7 @@ package struct DomainPersistenceCoordinator {
                 operation: operation,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
     }
@@ -849,8 +847,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -862,8 +859,7 @@ package struct DomainPersistenceCoordinator {
                 operation: operation,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
     }
@@ -877,8 +873,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -893,8 +888,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
     }
@@ -908,8 +902,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -924,8 +917,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
     }
@@ -939,8 +931,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
     ) async throws -> DomainPersistenceSavedCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -955,8 +946,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
     }
@@ -971,8 +961,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate? = nil
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim? = nil
     ) async throws -> DomainPersistenceWorkingCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -988,8 +977,7 @@ package struct DomainPersistenceCoordinator {
                 operations: operations,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
     }
@@ -1001,8 +989,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) async throws -> DomainPersistenceDeleteCommit {
         try await validateMutationPermit(permit, document: document)
         let validator = try await prepareJournalValidator()
@@ -1015,8 +1002,7 @@ package struct DomainPersistenceCoordinator {
                 operation: operation,
                 now: now,
                 permit: permit,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
     }
@@ -1702,8 +1688,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -1757,8 +1742,7 @@ package struct DomainPersistenceCoordinator {
                     contextRevisions: contextRevisions,
                     operation: operation,
                     updatedAt: now,
-                    commandClaim: commandClaim,
-                    authorityPublication: authorityPublication
+                    commandClaim: commandClaim
                 )
                 defer { transaction.close() }
 
@@ -1956,8 +1940,7 @@ package struct DomainPersistenceCoordinator {
         revisionOperationID: UUID?,
         now: Date,
         diskDocumentBytes: Data?,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
         finalization: DomainWorkspaceJournalMutationFinalization,
@@ -1976,8 +1959,7 @@ package struct DomainPersistenceCoordinator {
             revisionOperationID: revisionOperationID,
             updatedAt: now,
             diskDocumentBytes: diskDocumentBytes,
-            commandClaim: commandClaim,
-            authorityPublication: authorityPublication
+            commandClaim: commandClaim
         )
         defer { transaction.close() }
 
@@ -2180,8 +2162,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2208,8 +2189,7 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
@@ -2229,8 +2209,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2263,8 +2242,7 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
@@ -2284,8 +2262,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2315,8 +2292,7 @@ package struct DomainPersistenceCoordinator {
                 updatedAt: now,
                 catalogRevision: catalogRevision,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
             defer { transaction.close() }
 
@@ -2606,8 +2582,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> DomainPersistenceSavedCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2641,8 +2616,7 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: operationID,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
             let revisionSidecarMissing: Bool = switch result.finalization {
             case .finalized: false
@@ -2668,8 +2642,7 @@ package struct DomainPersistenceCoordinator {
         operations: [DomainRecordedOperation],
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?
     ) throws -> DomainPersistenceWorkingCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2703,8 +2676,7 @@ package struct DomainPersistenceCoordinator {
                 revisionOperationID: nil,
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,
@@ -2722,8 +2694,7 @@ package struct DomainPersistenceCoordinator {
         operation: DomainRecordedOperation,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
-        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
     ) throws -> DomainPersistenceDeleteCommit {
         try validateMutationScope(permit, document: document)
         try ensureLazyMigration(now: now, permit: permit, validator: validator)
@@ -2752,8 +2723,7 @@ package struct DomainPersistenceCoordinator {
                     expectedCatalogRevision: requestedCatalogRevision,
                     operation: operation,
                     deletedAt: now,
-                    commandClaim: commandClaim,
-                    authorityPublication: authorityPublication
+                    commandClaim: commandClaim
                 )
                 defer { transaction.close() }
 

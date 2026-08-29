@@ -191,8 +191,7 @@ protocol CoreRuntimeTransport: Sendable {
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1
     func workspaceDeleteTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -200,8 +199,7 @@ protocol CoreRuntimeTransport: Sendable {
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1
     func workspaceJournalMutationTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -210,8 +208,7 @@ protocol CoreRuntimeTransport: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1
     func workspaceSaveTransactionBeginV1(
         identity: CoreRuntimeIdentity,
@@ -220,8 +217,7 @@ protocol CoreRuntimeTransport: Sendable {
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1
     func workspacePendingSaveResolveV1(
         identity: CoreRuntimeIdentity,
@@ -1213,15 +1209,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         )
     }
 
-    private static func rawWorkspaceAuthorityPublicationCandidate(
-        _ candidate: CoreWorkspaceAuthorityPublicationCandidate
-    ) -> AgentryUniFFIRaw.CoreWorkspaceAuthorityPublicationCandidateV1 {
-        .init(
-            workspaces: candidate.workspaces.map(coreWorkspaceProjectionRawPublishedWorkspace),
-            draft: rawWorkspaceAuthorityPublicationDraft(candidate.draft)
-        )
-    }
-
     private static func workspaceProjectionPublicationKind(
         _ kind: AgentryUniFFIRaw.CoreWorkspaceProjectionPublicationKindV1
     ) -> CoreWorkspaceProjectionPublicationKind {
@@ -1344,24 +1331,22 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     }
 
     private static func workspaceCommandAuthorityFinalization(
-        _ raw: AgentryUniFFIRaw.CoreWorkspaceCommandAuthorityFinalizationV1,
-        candidate: CoreWorkspaceAuthorityPublicationCandidate?
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceCommandAuthorityFinalizationV1
     ) throws -> CoreWorkspaceCommandAuthorityFinalizationV1 {
         let publication = try raw.authorityPublication.map {
-            guard let candidate else {
-                throw CoreTransportError.unexpected(
-                    "workspace command authority finalization contains unexpected publication"
-                )
-            }
+            let event = try workspaceProjectionPublicationEvent($0.event)
+            let draft = CoreWorkspaceAuthorityPublicationDraft(
+                catalogRevision: $0.catalogRevision,
+                kind: event.kind,
+                workspaceID: event.workspaceID,
+                contextID: event.contextID,
+                operationID: event.operationID,
+                revisions: event.revisions
+            )
             return try workspaceAuthorityPublicationReceipt(
                 $0,
-                draft: candidate.draft,
-                workspaceCount: candidate.workspaces.count
-            )
-        }
-        if candidate != nil, publication == nil {
-            throw CoreTransportError.unexpected(
-                "workspace command authority finalization is missing publication"
+                draft: draft,
+                workspaceCount: Int($0.workspaceCount)
             )
         }
         return .init(
@@ -1749,8 +1734,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         effectiveJournalBytes: Data?,
         requestBytes: Data,
         documentBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceCreateTransactionV1 {
         do {
             let response = try runtime.workspaceCreateTransactionBeginV1(request: .init(
@@ -1762,8 +1746,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 effectiveJournalBytes: effectiveJournalBytes,
                 requestBytes: requestBytes,
                 documentBytes: documentBytes
-            ), commandClaim: commandClaim?.rawClaim,
-            authorityPublication: authorityPublication.map(Self.rawWorkspaceAuthorityPublicationCandidate))
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1817,7 +1800,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     do {
                         return try Self.workspaceCommandAuthorityFinalization(
                             rawTransaction.finishCommandAuthority(),
-                            candidate: authorityPublication
                         )
                     } catch {
                         return .init(
@@ -1843,8 +1825,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         effectiveCatalogBytes: Data,
         effectiveJournalBytes: Data,
         requestBytes: Data,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceDeleteTransactionV1 {
         do {
             let response = try runtime.workspaceDeleteTransactionBeginV1(request: .init(
@@ -1854,8 +1835,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 effectiveCatalogBytes: effectiveCatalogBytes,
                 effectiveJournalBytes: effectiveJournalBytes,
                 requestBytes: requestBytes
-            ), commandClaim: commandClaim?.rawClaim,
-            authorityPublication: authorityPublication.map(Self.rawWorkspaceAuthorityPublicationCandidate))
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -1939,7 +1919,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                             tombstone: Self.workspacePersistenceMetadataValidation(tombstone),
                             authorityFinalization: try Self.workspaceCommandAuthorityFinalization(
                                 response.authorityFinalization,
-                                candidate: authorityPublication
                             )
                         )
                     } catch {
@@ -1970,8 +1949,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
         do {
             let response = try runtime.workspaceJournalMutationTransactionBeginV1(request: .init(
@@ -1982,8 +1960,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 requestBytes: requestBytes,
                 candidateDocumentBytes: candidateDocumentBytes,
                 diskDocumentBytes: diskDocumentBytes
-            ), commandClaim: commandClaim?.rawClaim,
-            authorityPublication: authorityPublication.map(Self.rawWorkspaceAuthorityPublicationCandidate))
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -2039,7 +2016,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     do {
                         return try Self.workspaceCommandAuthorityFinalization(
                             rawTransaction.finishCommandAuthority(),
-                            candidate: authorityPublication
                         )
                     } catch {
                         return .init(
@@ -2066,8 +2042,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         requestBytes: Data,
         candidateDocumentBytes: Data,
         diskDocumentBytes: Data?,
-        commandClaim: CoreWorkspaceCommandExecutionClaimV1?,
-        authorityPublication: CoreWorkspaceAuthorityPublicationCandidate?
+        commandClaim: CoreWorkspaceCommandExecutionClaimV1?
     ) throws -> CoreWorkspaceSaveTransactionV1 {
         do {
             let response = try runtime.workspaceSaveTransactionBeginV1(request: .init(
@@ -2078,8 +2053,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 requestBytes: requestBytes,
                 candidateDocumentBytes: candidateDocumentBytes,
                 diskDocumentBytes: diskDocumentBytes
-            ), commandClaim: commandClaim?.rawClaim,
-            authorityPublication: authorityPublication.map(Self.rawWorkspaceAuthorityPublicationCandidate))
+            ), commandClaim: commandClaim?.rawClaim)
             if let errorKind = response.errorKind {
                 guard response.transaction == nil else {
                     throw CoreTransportError.unexpected(
@@ -2119,7 +2093,6 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     do {
                         return try Self.workspaceCommandAuthorityFinalization(
                             rawTransaction.finishCommandAuthority(),
-                            candidate: authorityPublication
                         )
                     } catch {
                         return .init(

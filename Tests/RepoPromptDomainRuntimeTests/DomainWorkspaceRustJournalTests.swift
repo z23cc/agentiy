@@ -786,15 +786,6 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
                 resultingDigest: nil
             )
         )
-        let authorityPublication = DomainWorkspaceAuthorityPublicationCandidate(
-            workspaces: [],
-            catalogRevision: 1,
-            kind: .workspaceDeleted,
-            workspaceID: workspaceID,
-            contextID: nil,
-            operationID: operationID,
-            revisions: nil
-        )
         let transaction = try validator.beginDeleteTransaction(
             rawCatalogBytes: catalog.canonicalBytes,
             effectiveCatalog: catalog,
@@ -804,8 +795,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             expectedCatalogRevision: 0,
             operation: operation,
             deletedAt: now,
-            commandClaim: claim,
-            authorityPublication: authorityPublication
+            commandClaim: claim
         )
         defer { transaction.close() }
         switch try transaction.nextDirective() {

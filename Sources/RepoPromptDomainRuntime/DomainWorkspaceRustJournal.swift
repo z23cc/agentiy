@@ -1560,6 +1560,15 @@ enum DomainWorkspaceRustJournal {
                     )
                 )
                 return DomainWorkspaceAuthorityPublicationReceipt(
+                    event: DomainWorkspaceAuthorityPublicationEvent(
+                        sequence: receipt.event.sequence,
+                        catalogRevision: receipt.event.catalogRevision,
+                        kind: DomainWorkspaceRustProjection.domainPublicationKind(receipt.event.kind),
+                        workspaceID: receipt.event.workspaceID,
+                        contextID: receipt.event.contextID,
+                        operationID: receipt.event.operationID,
+                        revisions: receipt.event.revisions.map(DomainWorkspaceRustProjection.domainRevisionState)
+                    ),
                     previousGeneration: receipt.previousGeneration,
                     generation: receipt.generation,
                     projectionChanged: receipt.projectionChanged,
@@ -2215,8 +2224,7 @@ enum DomainWorkspaceRustJournal {
             contextRevisions: [UUID: DomainRevisionState],
             operation: DomainRecordedOperation,
             updatedAt: Date,
-            commandClaim: PreparedExecutionClaim,
-            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+            commandClaim: PreparedExecutionClaim
         ) throws -> PreparedCreateTransaction {
             try beginCreateTransaction(
                 rawCatalogBytes: rawCatalogBytes,
@@ -2239,8 +2247,7 @@ enum DomainWorkspaceRustJournal {
                 ),
                 expectedOperation: operation,
                 isRecovery: false,
-                commandClaim: commandClaim,
-                authorityPublication: authorityPublication
+                commandClaim: commandClaim
             )
         }
 
@@ -2271,8 +2278,7 @@ enum DomainWorkspaceRustJournal {
                 ),
                 expectedOperation: nil,
                 isRecovery: true,
-                commandClaim: nil,
-                authorityPublication: nil
+                commandClaim: nil
             )
         }
 
@@ -2285,8 +2291,7 @@ enum DomainWorkspaceRustJournal {
             request: CreateTransactionRequest,
             expectedOperation: DomainRecordedOperation?,
             isRecovery: Bool,
-            commandClaim: PreparedExecutionClaim?,
-            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
+            commandClaim: PreparedExecutionClaim?
         ) throws -> PreparedCreateTransaction {
             do {
                 let transaction = try core.beginCreateTransaction(
@@ -2296,10 +2301,7 @@ enum DomainWorkspaceRustJournal {
                     effectiveJournalBytes: effectiveJournal?.canonicalBytes,
                     requestBytes: try encode(request),
                     documentBytes: document.documentBytes,
-                    commandClaim: commandClaim?.transactionBinding,
-                    authorityPublication: authorityPublication.map(
-                        DomainWorkspaceRustProjection.corePublicationCandidate
-                    )
+                    commandClaim: commandClaim?.transactionBinding
                 )
                 return PreparedCreateTransaction(
                     core: transaction,
@@ -2334,8 +2336,7 @@ enum DomainWorkspaceRustJournal {
             expectedCatalogRevision: UInt64,
             operation: DomainRecordedOperation,
             deletedAt: Date,
-            commandClaim: PreparedExecutionClaim,
-            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+            commandClaim: PreparedExecutionClaim
         ) throws -> PreparedDeleteTransaction {
             do {
                 let request = DeleteTransactionRequest(
@@ -2351,10 +2352,7 @@ enum DomainWorkspaceRustJournal {
                     effectiveCatalogBytes: effectiveCatalog.canonicalBytes,
                     effectiveJournalBytes: effectiveJournal.canonicalBytes,
                     requestBytes: try encode(request),
-                    commandClaim: commandClaim.transactionBinding,
-                    authorityPublication: DomainWorkspaceRustProjection.corePublicationCandidate(
-                        authorityPublication
-                    )
+                    commandClaim: commandClaim.transactionBinding
                 )
                 return PreparedDeleteTransaction(
                     core: transaction,
@@ -2399,8 +2397,7 @@ enum DomainWorkspaceRustJournal {
             revisionOperationID: UUID?,
             updatedAt: Date,
             diskDocumentBytes: Data?,
-            commandClaim: PreparedExecutionClaim?,
-            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate?
+            commandClaim: PreparedExecutionClaim?
         ) throws -> PreparedJournalMutationTransaction {
             do {
                 let request = JournalMutationTransactionRequest(
@@ -2416,10 +2413,7 @@ enum DomainWorkspaceRustJournal {
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
                     diskDocumentBytes: diskDocumentBytes,
-                    commandClaim: commandClaim?.transactionBinding,
-                    authorityPublication: authorityPublication.map(
-                        DomainWorkspaceRustProjection.corePublicationCandidate
-                    )
+                    commandClaim: commandClaim?.transactionBinding
                 )
                 return PreparedJournalMutationTransaction(
                     core: transaction,
@@ -2465,8 +2459,7 @@ enum DomainWorkspaceRustJournal {
             updatedAt: Date,
             catalogRevision: UInt64,
             diskDocumentBytes: Data?,
-            commandClaim: PreparedExecutionClaim,
-            authorityPublication: DomainWorkspaceAuthorityPublicationCandidate
+            commandClaim: PreparedExecutionClaim
         ) throws -> PreparedSaveTransaction {
             do {
                 let request = SaveTransactionRequest(
@@ -2489,10 +2482,7 @@ enum DomainWorkspaceRustJournal {
                     requestBytes: try encode(request),
                     candidateDocumentBytes: document.documentBytes,
                     diskDocumentBytes: diskDocumentBytes,
-                    commandClaim: commandClaim.transactionBinding,
-                    authorityPublication: DomainWorkspaceRustProjection.corePublicationCandidate(
-                        authorityPublication
-                    )
+                    commandClaim: commandClaim.transactionBinding
                 )
                 return PreparedSaveTransaction(
                     core: transaction,

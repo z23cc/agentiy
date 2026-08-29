@@ -191,6 +191,10 @@ impl Default for WorkspaceProjectionCatalogLimits {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceProjectionEntry {
+    /// Canonical document bytes retained by the Rust authority so transaction-owned publication
+    /// can merge an updated target row with the immutable non-target aggregate without asking Swift
+    /// to reconstruct semantic candidates.
+    pub document_bytes: Vec<u8>,
     pub content_digest: String,
     pub retained_bytes: usize,
     pub projection: WorkspaceDocumentProjection,
@@ -467,6 +471,7 @@ fn prepare_projection_entry(
     let retained_bytes =
         projection_retained_bytes(&projection, authority.as_ref(), content_digest.len());
     Ok(WorkspaceProjectionEntry {
+        document_bytes: document.to_vec(),
         content_digest,
         retained_bytes,
         projection,

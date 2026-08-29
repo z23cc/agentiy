@@ -1851,3 +1851,55 @@ untouched.
 - Source guards require the candidate on every claimed production transaction and reject command-path fallback publish;
   focused Runtime/FFI/Bridge/Domain authority, journal, replay, lifecycle, direct-read, codegen, product-build, style,
   guardrail, formatting, and diff checks pass.
+
+## P5-7k amendment — transaction-derived semantic publication
+
+P5-7k supersedes the P5-7j candidate-transfer clauses: the candidate remains a Rust-internal prepared value,
+not an FFI or Swift input. It retires the final Swift semantic publication candidate builder for durable command
+transactions. Rust now derives
+that candidate from the transaction's validated canonical journal result, the command admission effect, and the current
+aggregate head. The create, delete, journal-mutation, save, unchanged, accepted external-reload, and local conflict-
+rebase transaction families therefore cross the FFI boundary with only typed physical inputs and an optional exact
+execution claim; no Swift caller can provide a speculative workspace list, event draft, revision authority, or candidate
+receipt at begin time.
+
+Each command transaction retains the bounded canonical document bytes needed to replace its target row. Rust reparses
+those bytes together with the committed journal, reconstructs the authoritative workspace/context projection, and merges
+all non-target rows from the immutable aggregate snapshot. It validates workspace identity, operation ID/fingerprint,
+operation disposition and revision shape, event kind, resulting digest, capacity, catalog monotonicity, publication
+head, claim generation, reservation binding, and runtime lifecycle before reserving the exact aggregate head. A working
+journal mutation derives a context event ID only when the canonical before/after context digest tables identify one
+changed context; ambiguous or whole-document changes retain the existing nil presentation value. No durable schema or
+on-disk representation changes.
+
+The Swift actor remains responsible for physical bytes, filesystem locks/CAS, storage leases, routing overlays, actor
+record mirrors, event origin/diagnostic/timestamp presentation, and subscriber delivery. After the Rust transaction
+returns its first-terminal authority receipt, the actor validates the receipt against its mirrored catalog/publication
+cursor, installs its physical record, invalidates the affected routing registration, and yields the Rust event in the
+same actor turn. There is no post-commit `publishAuthorityState` fallback, second candidate construction, parser, await,
+or alternate semantic outcome. Recovery-only and explicit routing-overlay operations continue through the P5-7g/P5-7h
+non-command publication/synchronization APIs; they do not reintroduce command-side sequential publication.
+
+A claimless transaction remains explicitly not applicable for command admission and can be used only by the established
+recovery/physical paths. A claimed transaction without a derivable operation or with a stale, closed, quarantined,
+capacity-invalid, identity-mismatched, or otherwise malformed canonical result is rejected before physical I/O. Failure
+before decisive physical success releases the transaction reservation without changing replay, projection, generation,
+or publication cursors. If physical authority has already succeeded but aggregate finalization cannot be materialized,
+the physical result remains first-terminal and Swift quarantines new mutation under
+`workspace_command_admission_receipt_missing`; it cannot synthesize a later candidate or cursor. Repeated report,
+finish, close, and caller-resumption paths return the same Rust receipt without advancing the aggregate twice.
+
+### P5-7k done-when
+
+- Runtime tests prove transaction-derived candidate preparation from canonical journal/document bytes, non-target merge,
+  exact operation/claim binding, context-ID derivation, stale-head and capacity atomicity, first-terminal replay, and
+  reservation cancellation without any Swift-provided candidate.
+- UniFFI and Bridge command begin surfaces expose claim-only transaction inputs; the removed candidate record and its
+  conversion helpers do not appear in generated bindings or handwritten production code. Non-command full publication,
+  overlay synchronization, immutable reads, and exact receipts remain typed and deterministic.
+- Domain persistence and actor command paths pass no semantic workspace candidate. Create/delete/journal/save/unchanged and
+  conflict/reload finalization consume only the transaction-owned receipt, preserve actor routing/lease behavior, and
+  publish exactly one Rust-issued event after physical commit.
+- Source guards prove no production Swift command candidate/fallback publish remains; focused Runtime/FFI/Bridge/Domain
+  authority, journal, replay, lifecycle, direct-read, codegen, product-build, style, guardrail, formatting, and diff
+  checks pass.
