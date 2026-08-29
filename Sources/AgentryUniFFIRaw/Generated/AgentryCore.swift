@@ -2885,6 +2885,8 @@ public protocol CoreWorkspaceCommandExecutionClaimV1Protocol: AnyObject, Sendabl
 
     func operationId()  -> String
 
+    func semanticPreflight(request: CoreWorkspaceCommandIdentityRequestV1) throws  -> CoreWorkspaceSemanticPreflightResponseV1
+
     func workspaceId()  -> String
 
 }
@@ -3000,6 +3002,16 @@ open func operationId() -> String  {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_operation_id(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func semanticPreflight(request: CoreWorkspaceCommandIdentityRequestV1)throws  -> CoreWorkspaceSemanticPreflightResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceSemanticPreflightResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreworkspacecommandexecutionclaimv1_semantic_preflight(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceCommandIdentityRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -10723,6 +10735,142 @@ public func FfiConverterTypeCoreWorkspaceSemanticJournalRewriteV1_lower(_ value:
 }
 
 
+public struct CoreWorkspaceSemanticPreflightResponseV1: Equatable, Hashable {
+    public let preflight: CoreWorkspaceSemanticPreflightV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(preflight: CoreWorkspaceSemanticPreflightV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.preflight = preflight
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticPreflightResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticPreflightResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticPreflightResponseV1 {
+        return
+            try CoreWorkspaceSemanticPreflightResponseV1(
+                preflight: FfiConverterOptionTypeCoreWorkspaceSemanticPreflightV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticPreflightResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceSemanticPreflightV1.write(value.preflight, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticPreflightResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticPreflightResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticPreflightResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticPreflightResponseV1_lower(_ value: CoreWorkspaceSemanticPreflightResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticPreflightResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceSemanticPreflightV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let commandKind: CoreWorkspaceCommandKindV1
+    public let disposition: CoreWorkspaceSemanticPreflightDispositionV1
+    public let catalogRevision: UInt64
+    public let revisions: CoreWorkspaceProjectionRevisionStateV1?
+    public let health: CoreWorkspaceProjectionHealthV1?
+    public let contentDigest: String?
+    public let diagnostic: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, commandKind: CoreWorkspaceCommandKindV1, disposition: CoreWorkspaceSemanticPreflightDispositionV1, catalogRevision: UInt64, revisions: CoreWorkspaceProjectionRevisionStateV1?, health: CoreWorkspaceProjectionHealthV1?, contentDigest: String?, diagnostic: String?) {
+        self.workspaceId = workspaceId
+        self.commandKind = commandKind
+        self.disposition = disposition
+        self.catalogRevision = catalogRevision
+        self.revisions = revisions
+        self.health = health
+        self.contentDigest = contentDigest
+        self.diagnostic = diagnostic
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticPreflightV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticPreflightV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticPreflightV1 {
+        return
+            try CoreWorkspaceSemanticPreflightV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                commandKind: FfiConverterTypeCoreWorkspaceCommandKindV1.read(from: &buf),
+                disposition: FfiConverterTypeCoreWorkspaceSemanticPreflightDispositionV1.read(from: &buf),
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                revisions: FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.read(from: &buf),
+                health: FfiConverterOptionTypeCoreWorkspaceProjectionHealthV1.read(from: &buf),
+                contentDigest: FfiConverterOptionString.read(from: &buf),
+                diagnostic: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticPreflightV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterTypeCoreWorkspaceCommandKindV1.write(value.commandKind, into: &buf)
+        FfiConverterTypeCoreWorkspaceSemanticPreflightDispositionV1.write(value.disposition, into: &buf)
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1.write(value.revisions, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceProjectionHealthV1.write(value.health, into: &buf)
+        FfiConverterOptionString.write(value.contentDigest, into: &buf)
+        FfiConverterOptionString.write(value.diagnostic, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticPreflightV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticPreflightV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticPreflightV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticPreflightV1_lower(_ value: CoreWorkspaceSemanticPreflightV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticPreflightV1.lower(value)
+}
+
+
 public struct CoreWorkspaceSemanticRecoveryCommitResponseV1 {
     public let admission: CorePreparedWorkspaceCommandAdmissionV1?
     public let admissionReceipt: CoreWorkspaceCommandAdmissionRecoveryReceiptV1?
@@ -17242,6 +17390,93 @@ public func FfiConverterTypeCoreWorkspaceSaveFinalizationV1_lower(_ value: CoreW
 
 
 
+public enum CoreWorkspaceSemanticPreflightDispositionV1: Equatable, Hashable {
+
+    case proceed
+    case unchanged
+    case conflict
+    case missing
+    case unavailable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceSemanticPreflightDispositionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceSemanticPreflightDispositionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticPreflightDispositionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceSemanticPreflightDispositionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .proceed
+
+        case 2: return .unchanged
+
+        case 3: return .conflict
+
+        case 4: return .missing
+
+        case 5: return .unavailable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceSemanticPreflightDispositionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .proceed:
+            writeInt(&buf, Int32(1))
+
+
+        case .unchanged:
+            writeInt(&buf, Int32(2))
+
+
+        case .conflict:
+            writeInt(&buf, Int32(3))
+
+
+        case .missing:
+            writeInt(&buf, Int32(4))
+
+
+        case .unavailable:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticPreflightDispositionV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceSemanticPreflightDispositionV1 {
+    return try FfiConverterTypeCoreWorkspaceSemanticPreflightDispositionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceSemanticPreflightDispositionV1_lower(_ value: CoreWorkspaceSemanticPreflightDispositionV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceSemanticPreflightDispositionV1.lower(value)
+}
+
+
+
+
 public enum CoreWorkspaceSemanticRecoveryAdmissionDispositionV1: Equatable, Hashable {
 
     case installed
@@ -19660,6 +19895,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceProjectionAuthorityStateV1
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceProjectionHealthV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceProjectionHealthV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceProjectionHealthV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceProjectionHealthV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceProjectionRevisionStateV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceProjectionRevisionStateV1?
 
@@ -19724,6 +19983,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceSaveCommitReceiptV1: FfiCo
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCoreWorkspaceSaveCommitReceiptV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceSemanticPreflightV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceSemanticPreflightV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceSemanticPreflightV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceSemanticPreflightV1.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -21385,6 +21668,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_operation_id() != 38867) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_semantic_preflight() != 62523) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreworkspacecommandexecutionclaimv1_workspace_id() != 11107) {

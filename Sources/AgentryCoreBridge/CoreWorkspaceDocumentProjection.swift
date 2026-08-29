@@ -95,6 +95,45 @@ public enum CoreWorkspaceCommandKindV1: Sendable, Equatable {
     case resolveExternalConflict
 }
 
+public enum CoreWorkspaceSemanticPreflightDispositionV1: Sendable, Equatable {
+    case proceed
+    case unchanged
+    case conflict
+    case missing
+    case unavailable
+}
+
+public struct CoreWorkspaceSemanticPreflightV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let commandKind: CoreWorkspaceCommandKindV1
+    public let disposition: CoreWorkspaceSemanticPreflightDispositionV1
+    public let catalogRevision: UInt64
+    public let revisions: CoreWorkspaceProjectionRevisionState?
+    public let health: CoreWorkspaceProjectionHealth?
+    public let contentDigest: String?
+    public let diagnostic: String?
+
+    public init(
+        workspaceID: UUID,
+        commandKind: CoreWorkspaceCommandKindV1,
+        disposition: CoreWorkspaceSemanticPreflightDispositionV1,
+        catalogRevision: UInt64,
+        revisions: CoreWorkspaceProjectionRevisionState?,
+        health: CoreWorkspaceProjectionHealth?,
+        contentDigest: String?,
+        diagnostic: String?
+    ) {
+        self.workspaceID = workspaceID
+        self.commandKind = commandKind
+        self.disposition = disposition
+        self.catalogRevision = catalogRevision
+        self.revisions = revisions
+        self.health = health
+        self.contentDigest = contentDigest
+        self.diagnostic = diagnostic
+    }
+}
+
 public enum CoreWorkspaceTabLocationV1: Sendable, Equatable {
     case composed
     case stashed
@@ -435,6 +474,9 @@ public enum CoreWorkspaceCommandAdmissionAcquisitionV1: Sendable {
 
 public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
     let rawClaim: AgentryUniFFIRaw.CoreWorkspaceCommandExecutionClaimV1
+    private let semanticPreflightOperation: @Sendable (
+        CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceSemanticPreflightV1
     private let checkpointOperation: @Sendable () throws
         -> CoreWorkspaceCommandLifecycleDirective
     private let finalizeTransientOperation: @Sendable (CoreWorkspaceRecordedOperationV1) throws
@@ -444,6 +486,9 @@ public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
 
     init(
         rawClaim: AgentryUniFFIRaw.CoreWorkspaceCommandExecutionClaimV1,
+        semanticPreflight: @escaping @Sendable (
+            CoreWorkspaceCommandIdentityRequestV1
+        ) throws -> CoreWorkspaceSemanticPreflightV1,
         checkpoint: @escaping @Sendable () throws -> CoreWorkspaceCommandLifecycleDirective,
         finalizeTransient: @escaping @Sendable (CoreWorkspaceRecordedOperationV1) throws
             -> CoreWorkspaceRecordedOperationV1,
@@ -451,6 +496,7 @@ public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
         close: @escaping @Sendable () -> Void
     ) {
         self.rawClaim = rawClaim
+        semanticPreflightOperation = semanticPreflight
         checkpointOperation = checkpoint
         finalizeTransientOperation = finalizeTransient
         abandonOperation = abandon
@@ -459,6 +505,12 @@ public final class CoreWorkspaceCommandExecutionClaimV1: @unchecked Sendable {
 
     deinit {
         closeOperation()
+    }
+
+    public func semanticPreflight(
+        _ request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceSemanticPreflightV1 {
+        try semanticPreflightOperation(request)
     }
 
     public func checkpoint() throws -> CoreWorkspaceCommandLifecycleDirective {

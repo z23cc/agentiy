@@ -159,6 +159,13 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         default:
             return XCTFail("Expected the first acquisition to claim execution")
         }
+        let preflight = try transientClaim.semanticPreflight(transientRequest)
+        XCTAssertEqual(preflight.workspaceID, workspaceID)
+        XCTAssertEqual(preflight.commandKind, .save)
+        XCTAssertEqual(preflight.disposition, .conflict)
+        XCTAssertEqual(preflight.diagnostic, "catalog_revision_mismatch")
+        XCTAssertNil(preflight.revisions)
+        XCTAssertNil(preflight.health)
         XCTAssertEqual(try transientClaim.checkpoint(), .continueExecution)
         switch try admission.acquire(transientRequest) {
         case let .pending(identity, generation):
@@ -1450,6 +1457,38 @@ final class CoreWorkspaceDocumentProjectionTests: XCTestCase {
         let overlayRead = try admission.authorityRead(workspaceID: workspaceID)
         XCTAssertEqual(overlayRead.projection?.contexts.first?.prompt, "routing overlay")
         XCTAssertEqual(overlayRead.publicationSequence, receipt.publicationSequence)
+
+        // Routing overlays are a read-projection concern and must not replace the
+        // canonical semantic baseline used by claim-bound command preflight.
+        let semanticRequest = CoreWorkspaceCommandIdentityRequestV1(
+            operationID: UUID(),
+            expectedCatalogRevision: receipt.catalogRevision,
+            expectedWorkspaceRevision: revisions.workingRevision,
+            expectedContextRevision: nil,
+            origin: .standalone,
+            commandKind: .save,
+            workspaceID: workspaceID,
+            fileURL: nil,
+            contentDigest: nil,
+            acceptExternal: nil,
+            protectedAgentIdentities: []
+        )
+        let semanticClaim: CoreWorkspaceCommandExecutionClaimV1
+        switch try admission.acquire(semanticRequest) {
+        case let .claimed(_, claim, _):
+            semanticClaim = claim
+        default:
+            return XCTFail("Expected semantic preflight claim")
+        }
+        let semanticPreflight = try semanticClaim.semanticPreflight(semanticRequest)
+        XCTAssertEqual(semanticPreflight.disposition, .proceed)
+        XCTAssertEqual(semanticPreflight.workspaceID, workspaceID)
+        XCTAssertEqual(semanticPreflight.revisions, revisions)
+        XCTAssertEqual(
+            semanticPreflight.contentDigest,
+            SHA256.hash(data: document).map { String(format: "%02x", $0) }.joined()
+        )
+        _ = try semanticClaim.abandon()
 
         admission.close()
         XCTAssertThrowsError(try admission.authorityRead(workspaceID: workspaceID))

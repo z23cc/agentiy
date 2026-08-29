@@ -28,7 +28,7 @@ use crate::types::{
     CoreWorkspacePersistenceMetadataValidationV1, CoreWorkspaceRecordedOperationV1,
     CoreWorkspaceSaveActionReportV1, CoreWorkspaceSaveDirectiveV1,
     CoreWorkspaceSaveTransactionRequestV1, CoreWorkspaceSemanticFullRecoveryV1,
-    CoreWorkspaceSemanticInitialRecoveryRequestV1,
+    CoreWorkspaceSemanticInitialRecoveryRequestV1, CoreWorkspaceSemanticPreflightV1,
     CoreWorkspaceSemanticRecoveryAdmissionDispositionV1, CoreWorkspaceSemanticRecoveryPreviewV1,
     CoreWorkspaceSemanticTargetRecoveryV1, CoreWorkspaceWorkingJournalSeedRequestV1,
     CoreWorkspaceWorkingJournalValidationErrorKindV1,
@@ -169,6 +169,13 @@ pub struct CoreWorkspaceCommandAdmissionAcquireResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticPreflightResponseV1 {
+    pub preflight: Option<CoreWorkspaceSemanticPreflightV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceCommandTransientFinalizationResponseV1 {
     pub operation: Option<CoreWorkspaceRecordedOperationV1>,
@@ -243,6 +250,25 @@ impl CoreWorkspaceCommandExecutionClaimV1 {
 
     pub fn generation(&self) -> u64 {
         self.inner.generation()
+    }
+
+    pub fn semantic_preflight(
+        &self,
+        request: CoreWorkspaceCommandIdentityRequestV1,
+    ) -> Result<CoreWorkspaceSemanticPreflightResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            if request.runtime_identity.parse()? != self.identity {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            require_workspace_persistence_contract(request.contract_version)?;
+            Ok(workspace_command_semantic_preflight_response(
+                self.admission.semantic_preflight(
+                    self.inner.as_ref(),
+                    &workspace_command_identity_request(request),
+                ),
+            ))
+        })
     }
 
     pub fn checkpoint(&self) -> Result<CoreWorkspaceCommandLifecycleDirectiveV1, CoreError> {
@@ -4345,6 +4371,29 @@ fn workspace_command_admission_acquire_response(
             }
         }
     })
+}
+
+fn workspace_command_semantic_preflight_response(
+    result: Result<
+        runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightV1,
+        runtime::workspace_persistence_journal::WorkspaceWorkingJournalError,
+    >,
+) -> CoreWorkspaceSemanticPreflightResponseV1 {
+    match result {
+        Ok(preflight) => CoreWorkspaceSemanticPreflightResponseV1 {
+            preflight: Some(preflight.into()),
+            error_kind: None,
+            future_schema_version: None,
+        },
+        Err(error) => {
+            let (error_kind, future_schema_version) = workspace_journal_error(error);
+            CoreWorkspaceSemanticPreflightResponseV1 {
+                preflight: None,
+                error_kind: Some(error_kind),
+                future_schema_version,
+            }
+        }
+    }
 }
 
 fn workspace_command_lifecycle_directive(

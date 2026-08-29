@@ -970,6 +970,27 @@ pub struct CoreWorkspaceCommandIdentityResponseV1 {
     pub future_schema_version: Option<u16>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceSemanticPreflightDispositionV1 {
+    Proceed,
+    Unchanged,
+    Conflict,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceSemanticPreflightV1 {
+    pub workspace_id: String,
+    pub command_kind: CoreWorkspaceCommandKindV1,
+    pub disposition: CoreWorkspaceSemanticPreflightDispositionV1,
+    pub catalog_revision: u64,
+    pub revisions: Option<CoreWorkspaceProjectionRevisionStateV1>,
+    pub health: Option<CoreWorkspaceProjectionHealthV1>,
+    pub content_digest: Option<String>,
+    pub diagnostic: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceRecordedOperationV1 {
     pub operation_id: String,
@@ -1554,6 +1575,51 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCommandKindV1>
             runtime::workspace_persistence_journal::WorkspaceCommandKindV1::ResolveExternalConflict => {
                 Self::ResolveExternalConflict
             }
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightDispositionV1>
+    for CoreWorkspaceSemanticPreflightDispositionV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightDispositionV1,
+    ) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightDispositionV1::Proceed => {
+                Self::Proceed
+            }
+            runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightDispositionV1::Unchanged => {
+                Self::Unchanged
+            }
+            runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightDispositionV1::Conflict => {
+                Self::Conflict
+            }
+            runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightDispositionV1::Missing => {
+                Self::Missing
+            }
+            runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightDispositionV1::Unavailable => {
+                Self::Unavailable
+            }
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightV1>
+    for CoreWorkspaceSemanticPreflightV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceCommandSemanticPreflightV1,
+    ) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            command_kind: value.command_kind.into(),
+            disposition: value.disposition.into(),
+            catalog_revision: value.catalog_revision,
+            revisions: value.revisions.map(Into::into),
+            health: value.health.map(Into::into),
+            content_digest: value.content_digest,
+            diagnostic: value.diagnostic,
         }
     }
 }

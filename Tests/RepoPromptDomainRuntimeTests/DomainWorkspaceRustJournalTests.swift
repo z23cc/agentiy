@@ -271,6 +271,12 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
         default:
             return XCTFail("Expected initial execution claim")
         }
+        let preflight = try transientClaim.semanticPreflight(transientInput)
+        XCTAssertEqual(preflight.workspaceID, workspaceID)
+        XCTAssertEqual(preflight.disposition, .conflict)
+        XCTAssertEqual(preflight.diagnostic, "catalog_revision_mismatch")
+        XCTAssertNil(preflight.revisions)
+        XCTAssertNil(preflight.health)
         XCTAssertEqual(try transientClaim.checkpoint(), .continueExecution)
         switch try admission.acquire(transientInput) {
         case let .pending(fingerprint, generation):

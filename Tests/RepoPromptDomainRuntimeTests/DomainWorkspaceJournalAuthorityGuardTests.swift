@@ -444,14 +444,14 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "continue admissionReservation",
             "case let .replay(receiptFingerprint, scope, operation)",
             "fingerprint: fingerprint",
-            "unrecordedCommandIdentityRejection("
+            "unrecordedCommandIdentityRejection(",
+            "let preflight = try commandClaim.semanticPreflight(commandIdentityInput)"
         ] {
             XCTAssertTrue(authority.contains(required), "Missing Rust acquisition boundary: \(required)")
         }
         for retired in [
             "resolveCommandIdentity(",
             "resolveCommandPreflight(",
-            "preflight =",
             "pendingCommandAdmissions",
             "PendingCommandAdmission",
             "commandAdmission.preflight(",
@@ -463,9 +463,23 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(adapter.contains("core.commandIdentity("))
         XCTAssertTrue(adapter.contains("func acquire("))
         XCTAssertTrue(adapter.contains("switch try core.acquire("))
-        XCTAssertFalse(adapter.contains("func preflight("))
-        XCTAssertFalse(adapter.contains("core.preflight("))
+        XCTAssertTrue(adapter.contains("func semanticPreflight("))
+        XCTAssertTrue(adapter.contains("core.semanticPreflight("))
         XCTAssertFalse(adapter.contains("core.decision("))
+        let commandStart = try XCTUnwrap(authority.range(of: "private func createWorkspace("))
+        let commandEnd = try XCTUnwrap(authority.range(of: "private func resolveExternalConflict("))
+        let commandPaths = String(authority[commandStart.lowerBound..<commandEnd.lowerBound])
+        for retiredSemanticBranch in [
+            "if let expected = envelope.expectedCatalogRevision",
+            "record.health.acceptsMutations",
+            "record.document.contentDigest != document.contentDigest",
+            "record.revisions.dirtyRevision != nil"
+        ] {
+            XCTAssertFalse(
+                commandPaths.contains(retiredSemanticBranch),
+                "Swift semantic command branch remains: \(retiredSemanticBranch)"
+            )
+        }
     }
 
     func testCommandReplayAndCollisionProductionAdmissionFinalizesWithRustTransactions() throws {

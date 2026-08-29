@@ -52,6 +52,30 @@ pub enum WorkspaceCommandKindV1 {
     ResolveExternalConflict,
 }
 
+/// Rust-owned semantic admission verdict for a claimed command.  This is deliberately
+/// pre-transaction: it lets the actor ask the aggregate whether the command may proceed without
+/// re-implementing catalog membership, revision, dirty-state, or digest decisions from its mirror.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceCommandSemanticPreflightDispositionV1 {
+    Proceed,
+    Unchanged,
+    Conflict,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceCommandSemanticPreflightV1 {
+    pub workspace_id: String,
+    pub command_kind: WorkspaceCommandKindV1,
+    pub disposition: WorkspaceCommandSemanticPreflightDispositionV1,
+    pub catalog_revision: u64,
+    pub revisions: Option<WorkspaceProjectionRevisionState>,
+    pub health: Option<WorkspaceProjectionHealth>,
+    pub content_digest: Option<String>,
+    pub diagnostic: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum WorkspaceTabLocationV1 {
     Composed,
@@ -1166,6 +1190,7 @@ impl WorkspaceCommandAdmissionFinalizationV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WorkspaceCommandExecutionClaimStateV1 {
     workspace_id: String,
+    command_kind: WorkspaceCommandKindV1,
     fingerprint: String,
     generation: u64,
     reservation_id: Option<u64>,
@@ -1518,6 +1543,10 @@ struct WorkspaceCommandAdmissionInnerV1 {
     next_claim_generation: u64,
     next_reservation_id: u64,
     authority_publication_reservation: Option<WorkspaceAuthorityPublicationReservationV1>,
+    /// Canonical semantic rows used by command preflight and transaction validation.
+    /// Routing overlays never mutate this snapshot.
+    semantic_snapshot: Arc<WorkspaceProjectionSnapshot>,
+    /// Current read projection, which may contain a Swift-owned routing overlay.
     authority_snapshot: Arc<WorkspaceProjectionSnapshot>,
     authority_publication: WorkspaceProjectionPublicationState,
     authority_projection_digest: String,
@@ -1572,6 +1601,59 @@ fn apply_workspace_authority_publication_candidate_v1(
         retained_bytes: candidate.retained_bytes,
         entries: candidate.entries.clone(),
     });
+    // A command publication replaces only its canonical target in the semantic snapshot. The
+    // visible candidate may retain unrelated routing overlays, but those overlays must never
+    // become the next command-preflight baseline. Bootstrap is the one whole-catalog replacement
+    // because no routing overlay can exist before the initial authority is installed.
+    let semantic_entries = if let Some(workspace_id) = candidate.workspace_id.as_deref() {
+        let mut entries = inner
+            .semantic_snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.projection.workspace_id != workspace_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(target) = candidate
+            .entries
+            .iter()
+            .find(|entry| entry.projection.workspace_id == workspace_id)
+        {
+            entries.push(Arc::clone(target));
+        }
+        entries.sort_by(|left, right| {
+            left.projection
+                .workspace_id
+                .cmp(&right.projection.workspace_id)
+        });
+        entries
+    } else {
+        // Non-command publications are supplied by the canonical Swift record set. Routing
+        // overlays use the dedicated synchronize API and therefore never reach this branch.
+        candidate.entries.clone()
+    };
+    let semantic_projection_changed = inner.semantic_snapshot.entries != semantic_entries;
+    let semantic_generation = if semantic_projection_changed {
+        inner
+            .semantic_snapshot
+            .generation
+            .checked_add(1)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?
+    } else {
+        inner.semantic_snapshot.generation
+    };
+    let semantic_retained_bytes = semantic_entries.iter().try_fold(0usize, |total, entry| {
+        total
+            .checked_add(entry.retained_bytes)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
+    })?;
+    // Keep the digest calculation as an integrity check even though preflight reads rows rather
+    // than exposing this internal semantic cursor.
+    let _semantic_projection_digest = workspace_authority_projection_digest_v1(&semantic_entries)?;
+    inner.semantic_snapshot = Arc::new(WorkspaceProjectionSnapshot {
+        generation: semantic_generation,
+        retained_bytes: semantic_retained_bytes,
+        entries: semantic_entries,
+    });
     let event = WorkspaceProjectionPublicationEvent {
         sequence: publication_sequence,
         catalog_revision: candidate.draft.catalog_revision,
@@ -1625,6 +1707,7 @@ fn apply_workspace_authority_publication_candidate_v1(
 pub struct WorkspaceCommandExecutionClaimV1 {
     inner: Arc<Mutex<WorkspaceCommandAdmissionInnerV1>>,
     workspace_id: String,
+    command_kind: WorkspaceCommandKindV1,
     operation_id: String,
     fingerprint: String,
     generation: u64,
@@ -1641,6 +1724,10 @@ impl WorkspaceCommandExecutionClaimV1 {
 
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+
+    pub fn command_kind(&self) -> WorkspaceCommandKindV1 {
+        self.command_kind
     }
 
     pub fn generation(&self) -> u64 {
@@ -3588,6 +3675,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                     next_claim_generation: 1,
                     next_reservation_id: 1,
                     authority_publication_reservation: None,
+                    semantic_snapshot: Arc::clone(&authority_snapshot),
                     authority_snapshot,
                     authority_publication: WorkspaceProjectionPublicationState::default(),
                     authority_projection_digest,
@@ -3614,6 +3702,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 next_claim_generation: 1,
                 next_reservation_id: 1,
                 authority_publication_reservation: None,
+                semantic_snapshot: Arc::clone(&authority_snapshot),
                 authority_snapshot,
                 authority_publication: WorkspaceProjectionPublicationState::default(),
                 authority_projection_digest,
@@ -3811,6 +3900,247 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         Ok(diagnostics)
     }
 
+    pub fn semantic_preflight(
+        &self,
+        claim: &WorkspaceCommandExecutionClaimV1,
+        request: &WorkspaceCommandIdentityRequestV1,
+    ) -> Result<WorkspaceCommandSemanticPreflightV1, WorkspaceWorkingJournalError> {
+        let workspace_id = canonical_uuid(&request.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let operation_id = canonical_uuid(&request.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let identity = workspace_command_identity_v1(request.clone())?;
+        if !Arc::ptr_eq(&self.inner, &claim.inner)
+            || workspace_id != claim.workspace_id
+            || operation_id != claim.operation_id
+            || request.command_kind != claim.command_kind
+            || identity.fingerprint != claim.fingerprint
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+        if request
+            .content_digest
+            .as_deref()
+            .is_some_and(|digest| !is_sha256_digest(digest))
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidDigest);
+        }
+
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed || inner.quarantined {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let current_claim = inner
+            .claims
+            .get(&claim.operation_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if current_claim.workspace_id != claim.workspace_id
+            || current_claim.command_kind != claim.command_kind
+            || current_claim.fingerprint != claim.fingerprint
+            || current_claim.generation != claim.generation
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+        }
+        let catalog_revision = inner.authority_publication.catalog_revision;
+        let entry = inner
+            .semantic_snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.projection.workspace_id == workspace_id);
+        let revisions = entry
+            .and_then(|entry| entry.authority.as_ref())
+            .map(|authority| authority.revisions);
+        let content_digest = entry.map(|entry| entry.content_digest.clone());
+        let health = entry
+            .and_then(|entry| entry.authority.as_ref())
+            .map(|authority| authority.health.clone());
+
+        let verdict =
+            |disposition: WorkspaceCommandSemanticPreflightDispositionV1,
+             diagnostic: Option<&str>| WorkspaceCommandSemanticPreflightV1 {
+                workspace_id: workspace_id.clone(),
+                command_kind: request.command_kind,
+                disposition,
+                catalog_revision,
+                revisions,
+                health: health.clone(),
+                content_digest: content_digest.clone(),
+                diagnostic: diagnostic.map(str::to_owned),
+            };
+
+        if request
+            .expected_catalog_revision
+            .is_some_and(|expected| expected != catalog_revision)
+        {
+            return Ok(verdict(
+                WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                Some("catalog_revision_mismatch"),
+            ));
+        }
+
+        let writable = health
+            .as_ref()
+            .is_none_or(|health| health.kind == WorkspaceProjectionHealthKind::Writable);
+        let unavailable = |fallback: &'static str| {
+            verdict(
+                WorkspaceCommandSemanticPreflightDispositionV1::Unavailable,
+                health
+                    .as_ref()
+                    .and_then(|health| health.reason.as_deref())
+                    .or(Some(fallback)),
+            )
+        };
+
+        match request.command_kind {
+            WorkspaceCommandKindV1::Create => {
+                if let Some(current_digest) = content_digest.as_deref() {
+                    if request.content_digest.as_deref() == Some(current_digest) {
+                        return Ok(verdict(
+                            WorkspaceCommandSemanticPreflightDispositionV1::Unchanged,
+                            Some("workspace_already_exists_unchanged"),
+                        ));
+                    }
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                        Some("workspace_already_exists"),
+                    ));
+                }
+                if request
+                    .expected_workspace_revision
+                    .is_some_and(|expected| expected != 0)
+                {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                        Some("workspace_does_not_exist_at_expected_revision"),
+                    ));
+                }
+                Ok(verdict(
+                    WorkspaceCommandSemanticPreflightDispositionV1::Proceed,
+                    None,
+                ))
+            }
+            WorkspaceCommandKindV1::Replace => {
+                if entry.is_none() {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Missing,
+                        Some("workspace_not_found"),
+                    ));
+                }
+                if !writable {
+                    return Ok(unavailable("runtime_authority_not_writable"));
+                }
+                if request.expected_workspace_revision.is_some_and(|expected| {
+                    Some(expected) != revisions.map(|value| value.working_revision)
+                }) {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                        Some("workspace_revision_mismatch"),
+                    ));
+                }
+                if request.content_digest.as_deref() == content_digest.as_deref() {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Unchanged,
+                        Some("workspace_document_unchanged"),
+                    ));
+                }
+                Ok(verdict(
+                    WorkspaceCommandSemanticPreflightDispositionV1::Proceed,
+                    None,
+                ))
+            }
+            WorkspaceCommandKindV1::Save => {
+                if entry.is_none() {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Missing,
+                        Some("workspace_not_found"),
+                    ));
+                }
+                if !writable {
+                    return Ok(unavailable("runtime_authority_not_writable"));
+                }
+                if request.expected_workspace_revision.is_some_and(|expected| {
+                    Some(expected) != revisions.map(|value| value.working_revision)
+                }) {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                        Some("workspace_revision_mismatch"),
+                    ));
+                }
+                if revisions.and_then(|value| value.dirty_revision).is_none() {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Unchanged,
+                        Some("workspace_document_already_saved"),
+                    ));
+                }
+                Ok(verdict(
+                    WorkspaceCommandSemanticPreflightDispositionV1::Proceed,
+                    None,
+                ))
+            }
+            WorkspaceCommandKindV1::Delete => {
+                if entry.is_none() {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Missing,
+                        Some("workspace_not_found"),
+                    ));
+                }
+                if !writable {
+                    return Ok(unavailable("runtime_authority_not_writable"));
+                }
+                if request.expected_workspace_revision.is_some_and(|expected| {
+                    Some(expected) != revisions.map(|value| value.working_revision)
+                }) {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                        Some("workspace_revision_mismatch"),
+                    ));
+                }
+                Ok(verdict(
+                    WorkspaceCommandSemanticPreflightDispositionV1::Proceed,
+                    None,
+                ))
+            }
+            WorkspaceCommandKindV1::ResolveExternalConflict => {
+                if entry.is_none() {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Missing,
+                        Some("workspace_not_found"),
+                    ));
+                }
+                if request.accept_external.is_none() {
+                    return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+                }
+                let is_external_conflict = health.as_ref().is_some_and(|value| {
+                    value.kind == WorkspaceProjectionHealthKind::ExternalConflict
+                });
+                if !is_external_conflict && !writable {
+                    return Ok(unavailable("runtime_authority_not_writable"));
+                }
+                if !is_external_conflict {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                        Some("workspace_has_no_external_conflict"),
+                    ));
+                }
+                if request.expected_workspace_revision.is_some_and(|expected| {
+                    Some(expected) != revisions.map(|value| value.working_revision)
+                }) {
+                    return Ok(verdict(
+                        WorkspaceCommandSemanticPreflightDispositionV1::Conflict,
+                        Some("workspace_revision_mismatch"),
+                    ));
+                }
+                Ok(verdict(
+                    WorkspaceCommandSemanticPreflightDispositionV1::Proceed,
+                    None,
+                ))
+            }
+        }
+    }
+
     pub fn acquire(
         &self,
         request: WorkspaceCommandIdentityRequestV1,
@@ -3873,6 +4203,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             operation_id.clone(),
             WorkspaceCommandExecutionClaimStateV1 {
                 workspace_id: identity.workspace_id.clone(),
+                command_kind: identity.command_kind,
                 fingerprint: identity.fingerprint.clone(),
                 generation,
                 reservation_id: None,
@@ -3882,6 +4213,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             claim: WorkspaceCommandExecutionClaimV1 {
                 inner: Arc::clone(&self.inner),
                 workspace_id: identity.workspace_id.clone(),
+                command_kind: identity.command_kind,
                 operation_id,
                 fingerprint: identity.fingerprint.clone(),
                 generation,
@@ -10387,6 +10719,74 @@ mod tests {
             }
             other => panic!("expected healed claim, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn semantic_command_preflight_is_claim_bound_to_authoritative_projection() {
+        let admission = authority_admission();
+        let workspace = authority_workspace(WORKSPACE_ID, "aggregate", 1);
+        admission
+            .publish_authority_state(
+                std::slice::from_ref(&workspace),
+                authority_draft(0, WorkspaceProjectionPublicationKind::WorkspaceCreated),
+            )
+            .expect("publish authoritative projection");
+
+        let mut request = command_identity_request(WorkspaceCommandKindV1::Save);
+        request.operation_id = "99999999-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        let claim = match admission.acquire(request.clone()).expect("claim") {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected claim, got {other:?}"),
+        };
+        let preflight = admission
+            .semantic_preflight(&claim, &request)
+            .expect("semantic preflight");
+        assert_eq!(preflight.workspace_id, WORKSPACE_ID);
+        assert_eq!(preflight.command_kind, WorkspaceCommandKindV1::Save);
+        assert_eq!(
+            preflight.disposition,
+            WorkspaceCommandSemanticPreflightDispositionV1::Proceed
+        );
+        assert_eq!(preflight.catalog_revision, 0);
+        assert_eq!(
+            preflight.revisions.expect("revisions").dirty_revision,
+            Some(1)
+        );
+        assert_eq!(
+            preflight.health.expect("health").kind,
+            WorkspaceProjectionHealthKind::Writable
+        );
+        assert!(claim.abandon().expect("abandon claim"));
+
+        let mut stale_request = request;
+        stale_request.operation_id = "88888888-aaaa-bbbb-cccc-dddddddddddd".to_owned();
+        stale_request.expected_catalog_revision = Some(1);
+        let stale_claim = match admission
+            .acquire(stale_request.clone())
+            .expect("stale claim")
+        {
+            WorkspaceCommandAdmissionAcquireV1::Claimed { claim, .. } => claim,
+            other => panic!("expected stale claim, got {other:?}"),
+        };
+        let stale_preflight = admission
+            .semantic_preflight(&stale_claim, &stale_request)
+            .expect("stale preflight");
+        assert_eq!(
+            stale_preflight.disposition,
+            WorkspaceCommandSemanticPreflightDispositionV1::Conflict
+        );
+        assert_eq!(
+            stale_preflight.diagnostic.as_deref(),
+            Some("catalog_revision_mismatch")
+        );
+
+        let mut mismatched = stale_request;
+        mismatched.expected_workspace_revision = Some(1);
+        assert_eq!(
+            admission.semantic_preflight(&stale_claim, &mismatched),
+            Err(WorkspaceWorkingJournalError::InvalidOperationLedger)
+        );
+        assert!(stale_claim.abandon().expect("abandon stale claim"));
     }
 
     #[test]

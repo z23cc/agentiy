@@ -97,6 +97,45 @@ package struct DomainWorkspaceCommandIdentityInput: Sendable, Equatable {
     }
 }
 
+package enum DomainWorkspaceSemanticPreflightDisposition: Sendable, Equatable {
+    case proceed
+    case unchanged
+    case conflict
+    case missing
+    case unavailable
+}
+
+package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
+    package let workspaceID: UUID
+    package let command: DomainWorkspaceCommandIdentityInput.Command
+    package let disposition: DomainWorkspaceSemanticPreflightDisposition
+    package let catalogRevision: UInt64
+    package let revisions: DomainRevisionState?
+    package let health: DomainAuthorityHealth?
+    package let contentDigest: String?
+    package let diagnostic: String?
+
+    package init(
+        workspaceID: UUID,
+        command: DomainWorkspaceCommandIdentityInput.Command,
+        disposition: DomainWorkspaceSemanticPreflightDisposition,
+        catalogRevision: UInt64,
+        revisions: DomainRevisionState?,
+        health: DomainAuthorityHealth?,
+        contentDigest: String?,
+        diagnostic: String?
+    ) {
+        self.workspaceID = workspaceID
+        self.command = command
+        self.disposition = disposition
+        self.catalogRevision = catalogRevision
+        self.revisions = revisions
+        self.health = health
+        self.contentDigest = contentDigest
+        self.diagnostic = diagnostic
+    }
+}
+
 struct DomainWorkspaceCommandAdmissionRecoveryReceipt: Sendable, Equatable {
     let catalogRevision: UInt64
     let catalogDigest: String
@@ -1191,6 +1230,60 @@ enum DomainWorkspaceRustJournal {
 
         fileprivate var transactionBinding: CoreWorkspaceCommandExecutionClaimV1 {
             core
+        }
+
+        func semanticPreflight(
+            _ input: DomainWorkspaceCommandIdentityInput
+        ) throws -> DomainWorkspaceSemanticPreflight {
+            let request = validator.coreCommandIdentityRequest(input)
+            do {
+                let preflight = try core.semanticPreflight(request)
+                let revisionsValid = preflight.revisions.map {
+                    $0.savedRevision <= $0.workingRevision
+                        && ($0.dirtyRevision == nil || $0.dirtyRevision == $0.workingRevision)
+                } ?? true
+                guard preflight.workspaceID == request.workspaceID,
+                      preflight.commandKind == request.commandKind,
+                      preflight.contentDigest.map(PreparedValidator.isSHA256Digest) ?? true,
+                      revisionsValid
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                let disposition: DomainWorkspaceSemanticPreflightDisposition = switch preflight.disposition {
+                case .proceed: .proceed
+                case .unchanged: .unchanged
+                case .conflict: .conflict
+                case .missing: .missing
+                case .unavailable: .unavailable
+                }
+                return DomainWorkspaceSemanticPreflight(
+                    workspaceID: preflight.workspaceID,
+                    command: input.command,
+                    disposition: disposition,
+                    catalogRevision: preflight.catalogRevision,
+                    revisions: preflight.revisions.map {
+                        DomainRevisionState(
+                            workingRevision: $0.workingRevision,
+                            savedRevision: $0.savedRevision,
+                            dirtyRevision: $0.dirtyRevision
+                        )
+                    },
+                    health: preflight.health.map {
+                        switch $0.kind {
+                        case .writable: .writable
+                        case .externalConflict: .externalConflict(reason: $0.reason ?? "external_conflict")
+                        case .degradedReadOnly: .degradedReadOnly(reason: $0.reason ?? "projection_unavailable")
+                        case .removed: .removed
+                        }
+                    },
+                    contentDigest: preflight.contentDigest,
+                    diagnostic: preflight.diagnostic
+                )
+            } catch let error as DomainPersistenceError {
+                throw error
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
         }
 
         func checkpoint() throws -> DomainWorkspaceCommandLifecycleDirective {

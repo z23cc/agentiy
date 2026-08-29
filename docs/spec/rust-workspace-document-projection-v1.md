@@ -2005,3 +2005,52 @@ behavior, event cursor rules, or subscriber ownership.
   post-commit publication, and no command-result receipt bypass. Focused runtime/FFI/Bridge/Domain
   tests, product builds, style/lint, guardrails, formatting, and diff checks pass; unrelated full-suite
   infrastructure hangs are reported separately.
+
+## P5-10 amendment — claim-bound Rust semantic preflight convergence
+
+P5-10 moves the semantic admission facts that remained duplicated in the Swift actor into the
+claim-bound Rust workspace aggregate. After a command claim is acquired, Rust validates the exact
+operation identity, command kind, fingerprint, generation, runtime fence, and current aggregate
+head, then returns one typed preflight verdict: `proceed`, `unchanged`, `conflict`, `missing`, or
+`unavailable`. The verdict includes the authoritative catalog revision, workspace revision state,
+content digest, health, and bounded diagnostic. A preflight request whose identity differs from the
+claim is rejected; it cannot be used to probe or mutate another command's semantic state.
+
+Create, replace-working-document, save, delete, and resolve-external-conflict use this preflight for
+catalog revision, workspace membership, workspace revision, dirty/clean state, digest equality, and
+health admission. Swift retains only bounded document validation and physical concerns: lease scope,
+metadata shape, ephemeral-storage policy, external document bytes, protected-agent identity checks,
+filesystem/CAS/lock ordering, actor record installation, routing overlays, outcome presentation, and
+subscriber delivery. The actor does not independently choose a semantic conflict, unchanged result,
+missing workspace, or writable/degraded branch after Rust returns a preflight verdict. If its mirror
+cannot materialize an authoritative unchanged result, it fails closed and quarantines admission
+rather than inventing a semantic outcome.
+
+The preflight is advisory only with respect to physical I/O: the existing claim-bound Rust
+transaction remains the decisive durable transition and publication authority. Physical CAS or
+journal conflicts still return their existing first-terminal receipts. Recovery-only publication,
+external reload observation, and routing-overlay synchronization remain on their established
+claimless boundaries. No durable schema, canonical bytes, lease ownership, event cursor rule,
+subscriber ownership, or external command outcome contract changes.
+
+The aggregate keeps two explicitly separated snapshots: the canonical semantic snapshot is the
+baseline for command preflight and transaction validation, while the visible read snapshot may carry
+a Swift-owned routing overlay. Overlay synchronization may update only the visible snapshot; it
+must not change semantic membership, revisions, health, or content digests. Canonical publication
+replaces the affected semantic row atomically and then restores any current routing overlay through
+the separate read-projection synchronization boundary.
+
+### P5-10 done-when
+
+- Runtime tests prove claim/generation/fingerprint binding, authoritative membership/revision/
+dirty/digest/health verdicts, stale catalog fences, and fail-closed runtime/quarantine behavior.
+- FFI, generated bindings, and Bridge expose the typed preflight disposition and aggregate state;
+malformed identities, digests, revisions, health reasons, success/error overlap, and command-kind
+mismatches are rejected, with deterministic code generation.
+- Domain command admission invokes preflight before command dispatch; create/delete/replace/save and
+conflict resolution no longer duplicate catalog, workspace revision, dirty, digest, or health
+semantic decisions. Physical persistence, CAS recovery, leases, protected-agent checks, routing,
+actor mirrors, and event presentation remain Swift-owned.
+- Focused Runtime/FFI/Bridge/Domain tests, codegen, product builds, style/lint, guardrails,
+formatting, and diff checks pass. Any unrelated full-suite infrastructure hang is reported
+separately.

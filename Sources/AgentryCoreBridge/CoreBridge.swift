@@ -1088,7 +1088,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                             ),
                             deadlineUnixMillis: deadlineUnixMilliseconds
                         ),
-                        request: request
+                        request: request,
+                        runtimeIdentity: identity
                     )
                 } catch let error as CoreWorkspaceWorkingJournalValidationError {
                     throw error
@@ -2965,7 +2966,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
 
     private static func workspaceCommandAdmissionAcquisition(
         _ response: AgentryUniFFIRaw.CoreWorkspaceCommandAdmissionAcquireResponseV1,
-        request: CoreWorkspaceCommandIdentityRequestV1
+        request: CoreWorkspaceCommandIdentityRequestV1,
+        runtimeIdentity: CoreRuntimeIdentity
     ) throws -> CoreWorkspaceCommandAdmissionAcquisitionV1 {
         if let errorKind = response.errorKind {
             guard response.kind == nil,
@@ -3007,6 +3009,23 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             }
             let claim = CoreWorkspaceCommandExecutionClaimV1(
                 rawClaim: rawClaim,
+                semanticPreflight: { request in
+                    do {
+                        return try Self.workspaceSemanticPreflightResponse(
+                            rawClaim.semanticPreflight(
+                                request: Self.rawWorkspaceCommandIdentityRequest(
+                                    identity: runtimeIdentity,
+                                    request: request
+                                )
+                            ),
+                            request: request
+                        )
+                    } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                        throw error
+                    } catch {
+                        throw workspaceCommandLifecycleError(error)
+                    }
+                },
                 checkpoint: {
                     do {
                         return switch try rawClaim.checkpoint() {
@@ -3108,6 +3127,61 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 operation: operation
             )
         }
+    }
+
+    private static func workspaceSemanticPreflightResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceSemanticPreflightResponseV1,
+        request: CoreWorkspaceCommandIdentityRequestV1
+    ) throws -> CoreWorkspaceSemanticPreflightV1 {
+        if let errorKind = response.errorKind {
+            guard response.preflight == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace semantic preflight contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let preflight = response.preflight,
+              let workspaceID = UUID(uuidString: preflight.workspaceId),
+              workspaceID == request.workspaceID,
+              isSHA256(preflight.contentDigest ?? "") || preflight.contentDigest == nil,
+              preflight.revisions.map(workspaceRevisionStateIsValid) ?? true
+        else {
+            throw CoreTransportError.unexpected("workspace semantic preflight is invalid")
+        }
+        let commandKind: CoreWorkspaceCommandKindV1 = switch preflight.commandKind {
+        case .create: .create
+        case .replace: .replace
+        case .save: .save
+        case .delete: .delete
+        case .resolveExternalConflict: .resolveExternalConflict
+        }
+        guard commandKind == request.commandKind else {
+            throw CoreTransportError.unexpected(
+                "workspace semantic preflight kind does not match request"
+            )
+        }
+        let disposition: CoreWorkspaceSemanticPreflightDispositionV1 = switch preflight.disposition {
+        case .proceed: .proceed
+        case .unchanged: .unchanged
+        case .conflict: .conflict
+        case .missing: .missing
+        case .unavailable: .unavailable
+        }
+        return CoreWorkspaceSemanticPreflightV1(
+            workspaceID: workspaceID,
+            commandKind: commandKind,
+            disposition: disposition,
+            catalogRevision: preflight.catalogRevision,
+            revisions: preflight.revisions.map(workspaceRevisionState),
+            health: try preflight.health.map(workspaceSemanticRecoveryHealth),
+            contentDigest: preflight.contentDigest,
+            diagnostic: preflight.diagnostic
+        )
     }
 
     private static func workspaceSemanticRecoveryPreviewResponse(

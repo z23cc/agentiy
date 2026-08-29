@@ -669,6 +669,9 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "ephemeral_workspace_not_persistable"
             )
         }
+        // An unavailable catalog row is physical evidence (missing/corrupt bytes), not an
+        // authoritative semantic absence. Keep this narrow diagnostic before Rust preflight so a
+        // bad document cannot be mistaken for a request to create a new workspace with the same ID.
         if unavailableWorkspaces[workspaceID] != nil {
             return finalizeTransientOutcome(
                 envelope: envelope,
@@ -679,24 +682,25 @@ actor DomainWorkspaceContextAuthority {
                 diagnostic: "workspace_document_unavailable"
             )
         }
-        guard health.acceptsMutations else {
-            return finalizeTransientOutcome(
+        do {
+            let preflight = try commandClaim.semanticPreflight(commandIdentityInput)
+            if let preflightOutcome = await semanticPreflightOutcome(
+                preflight,
                 envelope: envelope,
+                workspaceID: workspaceID,
                 fingerprint: fingerprint,
                 commandClaim: commandClaim,
+                permit: permit
+            ) {
+                return preflightOutcome
+            }
+        } catch {
+            quarantineCommandAdmission()
+            return unrecordedCommandIdentityRejection(
+                envelope,
                 disposition: .readOnly,
                 errorCode: .runtimeReadOnlyDegraded,
-                diagnostic: "runtime_authority_not_writable"
-            )
-        }
-        if let expected = envelope.expectedCatalogRevision, expected != catalogRevision {
-            return finalizeTransientOutcome(
-                envelope: envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                disposition: .conflict,
-                errorCode: .stateConflict,
-                diagnostic: "catalog_revision_mismatch"
+                diagnostic: "workspace_command_semantic_preflight_unavailable"
             )
         }
 
@@ -801,6 +805,107 @@ actor DomainWorkspaceContextAuthority {
             document
         case .saveWorkspaceDocument, .deleteWorkspace, .resolveExternalConflict:
             nil
+        }
+    }
+
+    private func semanticPreflightOutcome(
+        _ preflight: DomainWorkspaceSemanticPreflight,
+        envelope: DomainWorkspaceCommandEnvelope,
+        workspaceID: UUID,
+        fingerprint: String,
+        commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
+        permit: DomainWorkspaceMutationPermit
+    ) async -> DomainCommandOutcome? {
+        guard preflight.workspaceID == workspaceID else {
+            quarantineCommandAdmission()
+            return unrecordedCommandIdentityRejection(
+                envelope,
+                disposition: .readOnly,
+                errorCode: .runtimeReadOnlyDegraded,
+                diagnostic: "workspace_command_semantic_preflight_identity_invalid"
+            )
+        }
+        let diagnostic = preflight.diagnostic ?? "workspace_command_semantic_preflight_rejected"
+        let state = DomainCommandOutcome(
+            operationID: envelope.operationID,
+            disposition: .conflict,
+            before: preflight.revisions,
+            after: preflight.revisions,
+            catalogRevision: preflight.catalogRevision,
+            resultingDigest: preflight.contentDigest,
+            errorCode: .stateConflict,
+            diagnostic: diagnostic,
+            workspace: records[workspaceID].map(makeSnapshot)
+        )
+        switch preflight.disposition {
+        case .proceed:
+            return nil
+        case .unchanged:
+            guard let record = records[workspaceID] else {
+                quarantineCommandAdmission()
+                return unrecordedCommandIdentityRejection(
+                    envelope,
+                    disposition: .readOnly,
+                    errorCode: .runtimeReadOnlyDegraded,
+                    diagnostic: "workspace_command_semantic_preflight_mirror_missing"
+                )
+            }
+            return await unchangedOutcome(
+                envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim,
+                record: record,
+                permit: permit
+            )
+        case .conflict:
+            return finalizeTransientOutcome(
+                state,
+                envelope: envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim
+            )
+        case .missing:
+            return finalizeTransientOutcome(
+                DomainCommandOutcome(
+                    operationID: envelope.operationID,
+                    disposition: .invalid,
+                    before: preflight.revisions,
+                    after: preflight.revisions,
+                    catalogRevision: preflight.catalogRevision,
+                    resultingDigest: preflight.contentDigest,
+                    errorCode: .workspaceUnavailable,
+                    diagnostic: diagnostic,
+                    workspace: records[workspaceID].map(makeSnapshot)
+                ),
+                envelope: envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim
+            )
+        case .unavailable:
+            let (disposition, errorCode): (DomainCommandDisposition, DomainCommandErrorCode) = switch preflight.health {
+            case .some(.externalConflict):
+                (.conflict, .workspaceExternalConflict)
+            case .some(.removed):
+                (.invalid, .workspaceUnavailable)
+            default:
+                (.readOnly, .workspaceReadOnlyDegraded)
+            }
+            return finalizeTransientOutcome(
+                DomainCommandOutcome(
+                    operationID: envelope.operationID,
+                    disposition: disposition,
+                    before: preflight.revisions,
+                    after: preflight.revisions,
+                    catalogRevision: preflight.catalogRevision,
+                    resultingDigest: preflight.contentDigest,
+                    errorCode: errorCode,
+                    diagnostic: diagnostic,
+                    workspace: records[workspaceID].map(makeSnapshot)
+                ),
+                envelope: envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim
+            )
         }
     }
 
@@ -1856,39 +1961,6 @@ actor DomainWorkspaceContextAuthority {
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
-        if let expected = envelope.expectedCatalogRevision, expected != catalogRevision {
-            return finalizeTransientOutcome(
-                envelope: envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                disposition: .conflict,
-                errorCode: .stateConflict,
-                diagnostic: "catalog_revision_mismatch"
-            )
-        }
-        if let existing = records[document.workspaceID] {
-            if existing.document.contentDigest == document.contentDigest {
-                return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: existing, permit: permit)
-            }
-            return finalizeTransientOutcome(
-                envelope: envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                disposition: .conflict,
-                errorCode: .stateConflict,
-                diagnostic: "workspace_already_exists"
-            )
-        }
-        guard envelope.expectedWorkspaceRevision == nil || envelope.expectedWorkspaceRevision == 0 else {
-            return finalizeTransientOutcome(
-                envelope: envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                disposition: .conflict,
-                errorCode: .stateConflict,
-                diagnostic: "workspace_does_not_exist_at_expected_revision"
-            )
-        }
         let now = Date()
         let recorded = DomainRecordedOperation(
             operationID: envelope.operationID,
@@ -1982,16 +2054,6 @@ actor DomainWorkspaceContextAuthority {
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
-        if let expected = envelope.expectedCatalogRevision, expected != catalogRevision {
-            return finalizeTransientOutcome(
-                envelope: envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                disposition: .conflict,
-                errorCode: .stateConflict,
-                diagnostic: "catalog_revision_mismatch"
-            )
-        }
         guard let record = records[workspaceID] else {
             return finalizeTransientOutcome(
                 envelope: envelope,
@@ -2000,20 +2062,6 @@ actor DomainWorkspaceContextAuthority {
                 disposition: .invalid,
                 errorCode: .workspaceUnavailable,
                 diagnostic: "workspace_not_found"
-            )
-        }
-        guard record.health.acceptsMutations else {
-            return healthRejectionOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record)
-        }
-        if let expected = envelope.expectedWorkspaceRevision,
-           expected != record.revisions.workingRevision
-        {
-            return finalizeConflictOutcome(
-                envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                record: record,
-                diagnostic: "workspace_revision_mismatch"
             )
         }
         let operation = DomainRecordedOperation(
@@ -2112,21 +2160,6 @@ actor DomainWorkspaceContextAuthority {
         var isDurableReplay = false
         while let current = records[document.workspaceID] {
             var record = current
-            guard record.health.acceptsMutations else {
-                return healthRejectionOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record)
-            }
-            if !isDurableReplay,
-               let expected = envelope.expectedWorkspaceRevision,
-               expected != record.revisions.workingRevision
-            {
-                return finalizeConflictOutcome(
-                    envelope,
-                    fingerprint: fingerprint,
-                    commandClaim: commandClaim,
-                    record: record,
-                    diagnostic: "workspace_revision_mismatch"
-                )
-            }
             let changedContextIDs = Self.changedContextIDs(from: record.document, to: document)
             if let expectedContext = envelope.expectedContextRevision {
                 guard changedContextIDs.count == 1,
@@ -2154,10 +2187,6 @@ actor DomainWorkspaceContextAuthority {
                     )
                 }
             }
-            guard record.document.contentDigest != document.contentDigest else {
-                return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record, permit: permit)
-            }
-
             let before = record.revisions
             let now = Date()
             let authorityDiagnostic = isDurableReplay ? "durable_workspace_revision_replayed" : nil
@@ -2271,7 +2300,6 @@ actor DomainWorkspaceContextAuthority {
         fingerprint: String,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
         permit: DomainWorkspaceMutationPermit,
-        validateExpectedRevision: Bool = true,
         allowsCASRecovery: Bool = true,
         allowsExternalRecovery: Bool = true
     ) async -> DomainCommandOutcome {
@@ -2284,24 +2312,6 @@ actor DomainWorkspaceContextAuthority {
                 errorCode: .workspaceUnavailable,
                 diagnostic: "workspace_not_found"
             )
-        }
-        guard record.health.acceptsMutations else {
-            return healthRejectionOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record)
-        }
-        if validateExpectedRevision,
-           let expected = envelope.expectedWorkspaceRevision,
-           expected != record.revisions.workingRevision
-        {
-            return finalizeConflictOutcome(
-                envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                record: record,
-                diagnostic: "workspace_revision_mismatch"
-            )
-        }
-        guard record.revisions.dirtyRevision != nil else {
-            return await unchangedOutcome(envelope, fingerprint: fingerprint, commandClaim: commandClaim, record: record, permit: permit)
         }
         let before = record.revisions
         let now = Date()
@@ -2376,7 +2386,6 @@ actor DomainWorkspaceContextAuthority {
                         fingerprint: fingerprint,
                         commandClaim: commandClaim,
                         permit: permit,
-                        validateExpectedRevision: false,
                         allowsCASRecovery: false,
                         allowsExternalRecovery: allowsExternalRecovery
                     )
@@ -2448,7 +2457,6 @@ actor DomainWorkspaceContextAuthority {
                         fingerprint: fingerprint,
                         commandClaim: commandClaim,
                         permit: permit,
-                        validateExpectedRevision: false,
                         allowsCASRecovery: allowsCASRecovery,
                         allowsExternalRecovery: false
                     )
@@ -2522,7 +2530,6 @@ actor DomainWorkspaceContextAuthority {
         permit: DomainWorkspaceMutationPermit
     ) async -> DomainCommandOutcome {
         guard var record = records[workspaceID],
-              case .externalConflict = record.health,
               let external = record.externalDocument
         else {
             return finalizeTransientOutcome(
@@ -2535,17 +2542,6 @@ actor DomainWorkspaceContextAuthority {
             )
         }
         let before = record.revisions
-        if let expected = envelope.expectedWorkspaceRevision,
-           expected != before.workingRevision
-        {
-            return finalizeConflictOutcome(
-                envelope,
-                fingerprint: fingerprint,
-                commandClaim: commandClaim,
-                record: record,
-                diagnostic: "workspace_revision_mismatch"
-            )
-        }
         if acceptExternal,
            let diagnostic = Self.protectedAgentIdentityConflict(
                local: record.document,
@@ -2893,8 +2889,12 @@ actor DomainWorkspaceContextAuthority {
         }
         guard let commandAdmission else { return }
         do {
+            // Publication is a canonical semantic transition. Read registrations are restored
+            // through the separate routing synchronization below rather than being admitted as
+            // semantic rows or preflight baselines.
+            let hadRoutingOverlay = !readRegistrations.isEmpty
             let receipt = try commandAdmission.publishAuthorityState(
-                workspaces: authoritativeReadSnapshots(),
+                workspaces: canonicalReadSnapshots(),
                 catalogRevision: catalogRevision,
                 kind: kind,
                 workspaceID: workspaceID,
@@ -2908,6 +2908,9 @@ actor DomainWorkspaceContextAuthority {
                 throw DomainWorkspaceCommandAdmissionError.invalidReceipt
             }
             publicationSequence = receipt.publicationSequence
+            if hadRoutingOverlay {
+                synchronizeReadAuthorityProjection()
+            }
         } catch {
             quarantineCommandAdmission()
             let degraded = DomainAuthorityHealth.degradedReadOnly(
@@ -2963,6 +2966,12 @@ actor DomainWorkspaceContextAuthority {
             snapshots[workspaceID] = projectSnapshot(registration)
         }
         return snapshots.values.sorted {
+            $0.document.workspaceID.uuidString < $1.document.workspaceID.uuidString
+        }
+    }
+
+    private func canonicalReadSnapshots() -> [DomainWorkspaceSnapshot] {
+        records.values.map(makeSnapshot).sorted {
             $0.document.workspaceID.uuidString < $1.document.workspaceID.uuidString
         }
     }
