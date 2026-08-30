@@ -1638,6 +1638,8 @@ final class TabContextRoutingTests: XCTestCase {
             path: physicalRootURL.path,
             kind: .sessionWorktree
         )
+        await window.workspaceFileContextStore.waitForPublishedSeededAuthorityReconciliationForTesting(rootID: logicalRoot.id)
+        await window.workspaceFileContextStore.waitForPublishedSeededAuthorityReconciliationForTesting(rootID: physicalRoot.id)
         let binding = makeWorktreeBinding(
             logicalRoot: WorkspaceRootRef(
                 id: logicalRoot.id,
@@ -3868,6 +3870,33 @@ private final class FakeMCPSelectionManager: WorkspaceSelectionHost {
         else { return }
         mirrorAttempts.append(selection)
         mirroredSelection = selection
+    }
+
+    func persistSelectionThroughDomainAuthority(
+        _ selection: StoredSelection,
+        for identity: WorkspaceSelectionIdentity,
+        expectedCurrentSelection: StoredSelection,
+        operationID: UUID
+    ) async -> WorkspaceSelectionDomainMutationResult {
+        guard var tab = composeTab(for: identity), tab.selection == expectedCurrentSelection else {
+            return .conflict(expectedCurrentSelection)
+        }
+        tab.selection = selection
+        tab.lastModified = Date()
+        guard updateComposeTabStoredOnly(tab, inWorkspaceID: identity.workspaceID) else {
+            return .unavailable(expectedCurrentSelection)
+        }
+        return .committed(
+            selection,
+            outcome: DomainCommandOutcome(
+                operationID: operationID,
+                disposition: .applied,
+                before: nil,
+                after: nil,
+                catalogRevision: 0,
+                resultingDigest: nil
+            )
+        )
     }
 
     func updateComposeTabStoredOnly(_ tab: ComposeTabState, inWorkspaceID workspaceID: UUID) -> Bool {

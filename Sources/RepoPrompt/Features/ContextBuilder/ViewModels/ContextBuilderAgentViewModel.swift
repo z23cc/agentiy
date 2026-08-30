@@ -3205,6 +3205,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                         )
                     }
                     var usedAgentOutputAsPrompt = false
+                    let expectedTab = tab
                     if tab.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        let promptFallback = record.session.lastAgentOutput,
                        !promptFallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -3212,9 +3213,12 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                         tab.promptText = promptFallback
                         tab.contextOverrides.useOverridePrompt = false
                         tab.contextOverrides.overridePromptText = ""
-                        guard manager.updateComposeTabStoredOnly(
+                        guard await manager.persistTabContextThroughDomainAuthority(
                             tab,
-                            inWorkspaceID: identity.workspaceID
+                            for: identity,
+                            expectedCurrentTab: expectedTab,
+                            mutationKind: .replacePrompt,
+                            operationID: UUID()
                         ) else {
                             return MCPServerViewModel.ContextBuilderTabContextCommitResult(
                                 outcome: .failed("Context Builder could not store its prompt fallback."),

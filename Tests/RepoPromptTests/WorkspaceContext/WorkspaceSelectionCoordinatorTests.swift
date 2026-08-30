@@ -824,7 +824,10 @@ final class WorkspaceSelectionCoordinatorTests: XCTestCase {
             codemapAutoEnabled: true
         )
         let harness = CoordinatorHarness(initialSelection: initial)
-        _ = try await harness.store.loadRoot(path: root.path)
+        let loadedRoot = try await harness.store.loadRoot(path: root.path)
+        await harness.store.waitForPublishedSeededAuthorityReconciliationForTesting(rootID: loadedRoot.id)
+        let seededAuthorityIsCurrent = await harness.store.publishedSeededAuthorityIsCurrentForTesting(rootID: loadedRoot.id)
+        XCTAssertTrue(seededAuthorityIsCurrent)
         let coordinator = WorkspaceSelectionCoordinator(workspaceManager: harness.manager, store: harness.store)
         var changes: [WorkspaceSelectionCoordinator.Change] = []
         coordinator.changes
@@ -897,7 +900,10 @@ final class WorkspaceSelectionCoordinatorTests: XCTestCase {
             codemapAutoEnabled: false
         )
         let harness = CoordinatorHarness(initialSelection: initial)
-        _ = try await harness.store.loadRoot(path: root.path)
+        let loadedRoot = try await harness.store.loadRoot(path: root.path)
+        await harness.store.waitForPublishedSeededAuthorityReconciliationForTesting(rootID: loadedRoot.id)
+        let seededAuthorityIsCurrent = await harness.store.publishedSeededAuthorityIsCurrentForTesting(rootID: loadedRoot.id)
+        XCTAssertTrue(seededAuthorityIsCurrent)
         let mutationGate = SelectionMutationGate()
         let mutationService = WorkspaceSelectionMutationService(
             store: harness.store,
@@ -958,7 +964,10 @@ final class WorkspaceSelectionCoordinatorTests: XCTestCase {
         let harness = CoordinatorHarness(initialSelection: capturedSelection)
         harness.manager.appendTab(ComposeTabState(id: activeTabID, name: "Active", selection: activeSelection))
         harness.manager.setActiveTab(activeTabID)
-        _ = try await harness.store.loadRoot(path: root.path)
+        let loadedRoot = try await harness.store.loadRoot(path: root.path)
+        await harness.store.waitForPublishedSeededAuthorityReconciliationForTesting(rootID: loadedRoot.id)
+        let seededAuthorityIsCurrent = await harness.store.publishedSeededAuthorityIsCurrentForTesting(rootID: loadedRoot.id)
+        XCTAssertTrue(seededAuthorityIsCurrent)
         let coordinator = WorkspaceSelectionCoordinator(workspaceManager: harness.manager, store: harness.store)
 
         let promoted = await coordinator.promotePathsInSelection(
@@ -1009,7 +1018,10 @@ final class WorkspaceSelectionCoordinatorTests: XCTestCase {
             codemapAutoEnabled: capturedSelection.codemapAutoEnabled
         )
         let harness = CoordinatorHarness(initialSelection: capturedSelection)
-        _ = try await harness.store.loadRoot(path: root.path)
+        let loadedRoot = try await harness.store.loadRoot(path: root.path)
+        await harness.store.waitForPublishedSeededAuthorityReconciliationForTesting(rootID: loadedRoot.id)
+        let seededAuthorityIsCurrent = await harness.store.publishedSeededAuthorityIsCurrentForTesting(rootID: loadedRoot.id)
+        XCTAssertTrue(seededAuthorityIsCurrent)
         let coordinator = WorkspaceSelectionCoordinator(workspaceManager: harness.manager, store: harness.store)
         _ = await coordinator.persistSelection(
             advancedSelection,
@@ -1064,7 +1076,10 @@ final class WorkspaceSelectionCoordinatorTests: XCTestCase {
         let activeTabID = UUID()
         let harness = CoordinatorHarness(initialSelection: selectionAtFirstCapture)
         harness.manager.appendTab(ComposeTabState(id: activeTabID, name: "Active", selection: activeSelection))
-        _ = try await harness.store.loadRoot(path: root.path)
+        let loadedRoot = try await harness.store.loadRoot(path: root.path)
+        await harness.store.waitForPublishedSeededAuthorityReconciliationForTesting(rootID: loadedRoot.id)
+        let seededAuthorityIsCurrent = await harness.store.publishedSeededAuthorityIsCurrentForTesting(rootID: loadedRoot.id)
+        XCTAssertTrue(seededAuthorityIsCurrent)
         let coordinator = WorkspaceSelectionCoordinator(workspaceManager: harness.manager, store: harness.store)
         let source = AgentContextExportSource(
             tabID: harness.tabID,
@@ -1533,6 +1548,35 @@ private final class FakeWorkspaceSelectionManager: WorkspaceSelectionHost {
 
     func advanceLiveUISelectionRevision() {
         liveUISelectionRevision &+= 1
+    }
+
+    func persistSelectionThroughDomainAuthority(
+        _ selection: StoredSelection,
+        for identity: WorkspaceSelectionIdentity,
+        expectedCurrentSelection: StoredSelection,
+        operationID: UUID
+    ) async -> WorkspaceSelectionDomainMutationResult {
+        guard var tab = composeTab(for: identity),
+              tab.selection == expectedCurrentSelection
+        else {
+            return .conflict(expectedCurrentSelection)
+        }
+        tab.selection = selection
+        tab.lastModified = Date()
+        guard updateComposeTabStoredOnly(tab, inWorkspaceID: identity.workspaceID) else {
+            return .unavailable(expectedCurrentSelection)
+        }
+        return .committed(
+            selection,
+            outcome: DomainCommandOutcome(
+                operationID: operationID,
+                disposition: .applied,
+                before: nil,
+                after: nil,
+                catalogRevision: 0,
+                resultingDigest: nil
+            )
+        )
     }
 
     func updateComposeTabStoredOnly(_ tab: ComposeTabState, inWorkspaceID workspaceID: UUID) -> Bool {

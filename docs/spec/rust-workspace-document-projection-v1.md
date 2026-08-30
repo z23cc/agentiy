@@ -2224,3 +2224,43 @@ Swift receives only the typed fence/receipt and keeps physical lease, metadata, 
 - Focused Runtime/FFI/Bridge/Domain external-observation and recovery tests, deterministic codegen,
   product builds, style/lint, guardrails, formatting, and diff checks pass. Any unrelated full-suite
   infrastructure hang is reported separately.
+
+## P5-15 amendment — Rust-owned selection and context mutation authority
+
+P5-15 completes the Phase 5 mutation cutover for composed-tab selection and context state. GUI
+selection coordination, direct-headless `setSelection`, and production prompt/session or
+slice-rebase writes submit typed Domain commands. The Domain actor remains the process boundary,
+while the Rust working-journal transaction owns the semantic candidate, revision/CAS decision,
+operation identity, journal transition, and publication receipt. No adapter may update a durable
+compose-tab field first and rely on a later generic save to make that write authoritative.
+
+Selection mutations use `replaceSelection` with a target context ID and a lowercase SHA-256 digest
+of the nested `selection` object before and after the candidate. Prompt, active chat-session, and
+complete tab-context mutations use `replaceContext` with a digest of the complete compose-tab
+object. Rust validates workspace/context identity, mutation kind, transition shape, digest format,
+and candidate digest under the same transaction that writes the working journal. Swift checks the
+expected digest against its current actor record, then applies only the returned receipt as a
+presentation mirror. Selection policy (path normalization, codemap eligibility, root mapping, and
+UI/MCP peer propagation) remains in Swift and is not duplicated in Rust.
+
+The two commands share the existing command-admission claim and Rust transaction; they do not add
+a second selection aggregate, durable schema, publication cursor, or persistence format. Headless
+prompt and selection operations use the same typed Store entry points as GUI adapters. Ephemeral
+tabs may keep an in-memory presentation mirror because they have no durable Domain row; durable
+workspace writes fail closed when the Domain authority is unavailable.
+
+### P5-15 done-when
+
+- Runtime and Domain contracts reject stale workspace/context or selection/context digest fences,
+  malformed candidate descriptors, wrong mutation kinds, recovery-mode descriptor reuse, and
+  candidate digest mismatches without journal or aggregate mutation.
+- GUI selection, headless selection, headless prompt, slice rebase, chat-session attachment, and
+  Context Builder tab commits all cross the typed Domain command boundary before their stored tab
+  mirror changes; replay and conflict outcomes remain deterministic.
+- `updateComposeTabStoredOnly` is used only after an accepted Domain receipt or for explicitly
+  ephemeral/presentation-only state. UI mirrors, routing overlays, peer propagation, and event
+  delivery remain post-receipt concerns.
+- Focused Runtime/FFI/Bridge/Domain/selection/headless tests, deterministic code generation,
+  product builds, style/lint, guardrails, formatting, and diff checks pass. Any unrelated
+  full-suite infrastructure hang is reported separately. This closes charter Phase 5; subsequent
+  work is Phase 6 and must not introduce a second canonical mutation authority.

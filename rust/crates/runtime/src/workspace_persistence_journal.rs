@@ -4613,6 +4613,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             revision_operation_id,
             recovery_mode: true,
             transition,
+            selection_mutation: None,
+            context_mutation: None,
         };
         let request_bytes =
             serde_json::to_vec(&request).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
@@ -5478,6 +5480,34 @@ struct WorkspaceJournalMutationTransactionRequestV1 {
     #[serde(rename = "recoveryMode")]
     recovery_mode: bool,
     transition: WorkspaceWorkingJournalTransitionRequestV1,
+    #[serde(rename = "selectionMutation", skip_serializing_if = "Option::is_none")]
+    selection_mutation: Option<WorkspaceSelectionMutationDescriptorV1>,
+    #[serde(rename = "contextMutation", skip_serializing_if = "Option::is_none")]
+    context_mutation: Option<WorkspaceContextMutationDescriptorV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceSelectionMutationDescriptorV1 {
+    #[serde(rename = "workspaceID")]
+    workspace_id: String,
+    #[serde(rename = "contextID")]
+    context_id: String,
+    expected_selection_digest: String,
+    candidate_selection_digest: String,
+    mutation_kind: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceContextMutationDescriptorV1 {
+    #[serde(rename = "workspaceID")]
+    workspace_id: String,
+    #[serde(rename = "contextID")]
+    context_id: String,
+    expected_context_digest: String,
+    candidate_context_digest: String,
+    mutation_kind: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -7833,6 +7863,108 @@ fn changed_context_id_v1(
     (changed.len() == 1).then(|| changed[0].clone())
 }
 
+fn workspace_selection_digest_v1(
+    document_bytes: &[u8],
+    context_id: &str,
+) -> Result<String, WorkspaceWorkingJournalError> {
+    let value: Value = serde_json::from_slice(document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let object = value
+        .as_object()
+        .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let contexts = object
+        .get("composeTabs")
+        .and_then(Value::as_array)
+        .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let context = contexts
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|context| {
+            context
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(canonical_uuid)
+                .as_deref()
+                == Some(context_id)
+        })
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let selection = if let Some(selection) = context.get("selection") {
+        selection.clone()
+    } else {
+        let mut legacy = BTreeMap::new();
+        legacy.insert("autoCodemapPaths".to_owned(), Value::Array(Vec::new()));
+        legacy.insert("codemapAutoEnabled".to_owned(), Value::Bool(true));
+        legacy.insert("manualCodemapPaths".to_owned(), Value::Array(Vec::new()));
+        legacy.insert(
+            "selectedPaths".to_owned(),
+            context
+                .get("selectedPaths")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        );
+        legacy.insert("slices".to_owned(), Value::Object(serde_json::Map::new()));
+        Value::Object(legacy.into_iter().collect())
+    };
+    let canonical = canonicalize_json_value_v1(selection);
+    let bytes = serde_json::to_vec(&canonical)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn workspace_context_digest_v1(
+    document_bytes: &[u8],
+    context_id: &str,
+) -> Result<String, WorkspaceWorkingJournalError> {
+    let value: Value = serde_json::from_slice(document_bytes)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let object = value
+        .as_object()
+        .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let contexts = object
+        .get("composeTabs")
+        .and_then(Value::as_array)
+        .ok_or(WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    let context = contexts
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|context| {
+            context
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(canonical_uuid)
+                .as_deref()
+                == Some(context_id)
+        })
+        .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+    let canonical =
+        canonicalize_json_value_v1(Value::Object(context.clone().into_iter().collect()));
+    let bytes = serde_json::to_vec(&canonical)
+        .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn valid_sha256_digest(value: &str) -> bool {
+    value.len() == 64
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && value.bytes().all(|byte| !byte.is_ascii_uppercase())
+}
+
+fn canonicalize_json_value_v1(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let ordered = object
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize_json_value_v1(value)))
+                .collect::<BTreeMap<_, _>>();
+            Value::Object(ordered.into_iter().collect())
+        }
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(canonicalize_json_value_v1).collect())
+        }
+        other => other,
+    }
+}
+
 fn added_command_admission_operation(
     effective: &WorkspaceWorkingJournalV1,
     committed: &WorkspaceWorkingJournalV1,
@@ -8007,6 +8139,58 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
         return Err(WorkspaceWorkingJournalError::InvalidIdentity);
     }
     let document_digest = format!("{:x}", Sha256::digest(candidate_document_bytes));
+    if request.selection_mutation.is_some() && request.context_mutation.is_some() {
+        return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+    }
+    if let Some(selection) = request.selection_mutation.as_ref() {
+        if request.recovery_mode
+            || !matches!(
+                &request.transition,
+                WorkspaceWorkingJournalTransitionRequestV1::Working { .. }
+            )
+            || selection.mutation_kind != "replaceFilesSelection"
+            || canonical_uuid(&selection.workspace_id).as_deref()
+                != Some(request.expected_workspace_id.as_str())
+            || canonical_uuid(&selection.context_id).is_none()
+            || !valid_sha256_digest(&selection.expected_selection_digest)
+            || !valid_sha256_digest(&selection.candidate_selection_digest)
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let context_id = canonical_uuid(&selection.context_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let candidate_selection_digest =
+            workspace_selection_digest_v1(candidate_document_bytes, &context_id)?;
+        if candidate_selection_digest != selection.candidate_selection_digest {
+            return Err(WorkspaceWorkingJournalError::InvalidDigest);
+        }
+    }
+    if let Some(context) = request.context_mutation.as_ref() {
+        if request.recovery_mode
+            || !matches!(
+                &request.transition,
+                WorkspaceWorkingJournalTransitionRequestV1::Working { .. }
+            )
+            || !matches!(
+                context.mutation_kind.as_str(),
+                "replacePrompt" | "replaceChatSession" | "replaceTabContext"
+            )
+            || canonical_uuid(&context.workspace_id).as_deref()
+                != Some(request.expected_workspace_id.as_str())
+            || canonical_uuid(&context.context_id).is_none()
+            || !valid_sha256_digest(&context.expected_context_digest)
+            || !valid_sha256_digest(&context.candidate_context_digest)
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let context_id = canonical_uuid(&context.context_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let candidate_context_digest =
+            workspace_context_digest_v1(candidate_document_bytes, &context_id)?;
+        if candidate_context_digest != context.candidate_context_digest {
+            return Err(WorkspaceWorkingJournalError::InvalidDigest);
+        }
+    }
     let disk_digest = disk_document_bytes.map(|bytes| format!("{:x}", Sha256::digest(bytes)));
     let saved_revision_updated_at = match &request.transition {
         WorkspaceWorkingJournalTransitionRequestV1::ExternalReload { updated_at, .. } => {
@@ -16182,6 +16366,47 @@ mod tests {
         assert_eq!(
             validate_workspace_working_journal_v1(&serde_json::to_vec(&value).expect("bytes")),
             Err(WorkspaceWorkingJournalError::InvalidPendingSave)
+        );
+    }
+
+    #[test]
+    fn context_mutation_digest_is_order_independent_and_covers_tab_fields() {
+        let first = serde_json::json!({
+            "id": WORKSPACE_ID,
+            "schemaVersion": 1,
+            "composeTabs": [{
+                "id": CONTEXT_ID,
+                "name": "Context",
+                "prompt": "one",
+                "selection": {"selectedPaths": ["A.swift"], "slices": {}}
+            }]
+        });
+        let second = serde_json::json!({
+            "composeTabs": [{
+                "selection": {"slices": {}, "selectedPaths": ["A.swift"]},
+                "prompt": "one",
+                "name": "Context",
+                "id": CONTEXT_ID
+            }],
+            "schemaVersion": 1,
+            "id": WORKSPACE_ID
+        });
+        let first_bytes = serde_json::to_vec(&first).expect("first bytes");
+        let second_bytes = serde_json::to_vec(&second).expect("second bytes");
+        assert_eq!(
+            workspace_context_digest_v1(&first_bytes, CONTEXT_ID).expect("first digest"),
+            workspace_context_digest_v1(&second_bytes, CONTEXT_ID).expect("second digest")
+        );
+
+        let mut changed = first;
+        changed["composeTabs"][0]["prompt"] = Value::String("two".to_owned());
+        assert_ne!(
+            workspace_context_digest_v1(&first_bytes, CONTEXT_ID).expect("first digest"),
+            workspace_context_digest_v1(
+                &serde_json::to_vec(&changed).expect("changed bytes"),
+                CONTEXT_ID
+            )
+            .expect("changed digest")
         );
     }
 }

@@ -1777,8 +1777,57 @@ extension MCPServerViewModel {
     }
 
     @MainActor
+    private func persistenceLookupContext(for context: TabContextSnapshot) async -> WorkspaceLookupContext {
+        let resolved = await lookupContext(for: context)
+        guard resolved.bindingProjection == nil,
+              context.frozenLookupContext == nil,
+              let sessionID = context.activeAgentSessionID,
+              case let .hydrated(bindings) = context.worktreeBindingState,
+              !bindings.isEmpty
+        else {
+            return resolved
+        }
+
+        // A resolved snapshot can arrive before the session-root authority has published its
+        // materialized projection (notably during inactive-tab hydration). Logicalization is a
+        // pure adapter step over the already-bound roots; construct that narrow projection here
+        // without admitting it as a lookup scope or bypassing the authoritative mutation gate.
+        let visibleRoots = await promptVM.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace)
+        let boundRoots = bindings.map { binding in
+            let logicalPath = StandardizedPath.absolute((binding.logicalRootPath as NSString).expandingTildeInPath)
+            let physicalPath = StandardizedPath.absolute((binding.worktreeRootPath as NSString).expandingTildeInPath)
+            let logicalRoot = visibleRoots.first { $0.standardizedFullPath == logicalPath }
+                ?? WorkspaceRootRef(
+                    id: UUID(),
+                    name: binding.logicalRootName ?? URL(fileURLWithPath: logicalPath).lastPathComponent,
+                    fullPath: logicalPath
+                )
+            let physicalRoot = WorkspaceRootRef(
+                id: UUID(),
+                name: URL(fileURLWithPath: physicalPath).lastPathComponent,
+                fullPath: physicalPath
+            )
+            return WorkspaceRootBindingProjection.BoundRoot(
+                logicalRoot: logicalRoot,
+                physicalRoot: physicalRoot,
+                binding: binding
+            )
+        }
+        let projection = WorkspaceRootBindingProjection(
+            sessionID: sessionID,
+            boundRoots: boundRoots,
+            visibleLogicalRoots: visibleRoots,
+            lookupPhysicalRootPaths: []
+        )
+        return WorkspaceLookupContext(
+            rootScope: projection.lookupRootScope,
+            bindingProjection: projection
+        )
+    }
+
+    @MainActor
     private func persistenceSafeTabContext(_ context: TabContextSnapshot) async -> TabContextSnapshot {
-        let lookupContext = await lookupContext(for: context)
+        let lookupContext = await persistenceLookupContext(for: context)
         var persisted = context
         persisted.selection = Self.logicalizeSelectionForPersistence(context.selection, lookupContext: lookupContext)
         return persisted
@@ -1958,7 +2007,7 @@ extension MCPServerViewModel {
         var coordinatorVerified = canonicalUnchanged
 
         if !canonicalUnchanged {
-            var verification = await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.AutoSelect.canonicalStoredCommit) {
+            let verification = await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.AutoSelect.canonicalStoredCommit) {
                 await Self.persistMCPSelectionAndVerifyThroughCoordinator(
                     persistedSelection,
                     for: contextKey.tabID,
@@ -1968,24 +2017,7 @@ extension MCPServerViewModel {
                     expectedCurrentSelection: expectedBaseSelection
                 )
             }
-            guard let refreshedTarget = currentReadFileAutoSelectionTab(for: contextKey) else { return nil }
-            if verification.outcome == .unavailable {
-                guard refreshedTarget.tab.selection == expectedBaseSelection else { return nil }
-                var updatedTab = refreshedTarget.tab
-                updatedTab.selection = persistedSelection
-                updatedTab.lastModified = Date()
-                await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.AutoSelect.canonicalStoredCommit) {
-                    _ = refreshedTarget.manager.updateComposeTabStoredOnly(
-                        updatedTab,
-                        inWorkspaceID: refreshedTarget.identity.workspaceID
-                    )
-                }
-                verification = MCPSelectionPersistenceVerification(
-                    outcome: .unavailable,
-                    expectedSelection: persistedSelection,
-                    canonicalSelection: currentReadFileAutoSelectionTab(for: contextKey)?.tab.selection
-                )
-            }
+            guard currentReadFileAutoSelectionTab(for: contextKey) != nil else { return nil }
             coordinatorVerified = verification.isVerified
         }
 
@@ -2375,7 +2407,7 @@ extension MCPServerViewModel {
             from: metadata,
             toolName: toolName
         )
-        let lookupContext = await resolveFileToolLookupContext(from: metadata)
+        var lookupContext = await resolveFileToolLookupContext(from: metadata)
         if resolvedContext.snapshot.activeAgentSessionID != nil,
            case .unhydrated = resolvedContext.snapshot.worktreeBindingState
         {
@@ -2383,6 +2415,7 @@ extension MCPServerViewModel {
                 from: metadata,
                 toolName: toolName
             )
+            lookupContext = await resolveFileToolLookupContext(from: metadata)
         }
         return (resolvedContext, lookupContext)
     }
@@ -4370,6 +4403,7 @@ extension MCPServerViewModel {
         }
 
         var updatedTab = manager.workspaces[workspaceIndex].composeTabs[tabIndex]
+        let expectedCurrentTab = updatedTab
         let isActive = (manager.workspaces[workspaceIndex].activeComposeTabID == updatedTab.id)
         let canonicalSelectionAdvanced = manager.selectionRevisionForMCP(
             workspaceID: workspaceID,
@@ -4397,10 +4431,17 @@ extension MCPServerViewModel {
             updatedTab.activeSubView = promptVM.storedActiveSubView
         }
 
-        // 1) Persist to backing store without publishing UI snapshots (prevents tool echo)
+        // 1) Persist through the Rust-backed Domain context command. The manager applies the
+        // stored tab only after the receipt, preventing a Swift-only canonical write.
         guard isStillCurrent(), !Task.isCancelled else { return nil }
-        guard manager.updateComposeTabStoredOnly(updatedTab, inWorkspaceID: workspaceID) else { return nil }
         let identity = WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: context.tabID)
+        guard await manager.persistTabContextThroughDomainAuthority(
+            updatedTab,
+            for: identity,
+            expectedCurrentTab: expectedCurrentTab,
+            mutationKind: .replaceTabContext,
+            operationID: UUID()
+        ) else { return nil }
         guard let storedTab = manager.composeTab(for: identity),
               storedTab.selection == updatedTab.selection
         else { return nil }

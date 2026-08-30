@@ -594,7 +594,11 @@ fn entries_have_same_content(
 }
 
 fn project_context(context_id: String, context: &Map<String, Value>) -> WorkspaceContextProjection {
-    let selection = all_strings(context.get("selectedPaths"))
+    let selection = context
+        .get("selection")
+        .and_then(Value::as_object)
+        .and_then(|selection| all_strings(selection.get("selectedPaths")))
+        .or_else(|| all_strings(context.get("selectedPaths")))
         .or_else(|| all_strings(context.get("selection")))
         .unwrap_or_default();
     WorkspaceContextProjection {
@@ -735,6 +739,15 @@ mod tests {
         assert!(projected.repo_paths.is_empty());
         assert_eq!(projected.active_context_id, None);
         assert_eq!(projected.contexts[0].selection, ["fallback"]);
+    }
+
+    #[test]
+    fn projects_current_nested_workspace_selection_shape() {
+        let bytes = format!(
+            r#"{{"id":"{WORKSPACE_ID}","composeTabs":[{{"id":"{CONTEXT_A}","selection":{{"selectedPaths":["Sources/A.swift"]}}}}]}}"#
+        );
+        let projected = project_workspace_document_v1(bytes.as_bytes()).expect("projection");
+        assert_eq!(projected.contexts[0].selection, ["Sources/A.swift"]);
     }
 
     #[test]

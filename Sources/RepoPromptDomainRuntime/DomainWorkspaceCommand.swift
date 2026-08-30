@@ -10,6 +10,13 @@ package enum DomainCommandOrigin: Codable, Equatable, Sendable {
 package enum DomainWorkspaceCommand: Codable, Equatable, Sendable {
     case createWorkspace(DomainWorkspaceDocument)
     case replaceWorkingDocument(DomainWorkspaceDocument)
+    /// Selection/context mutations carry an explicit target and digest fence. They still use
+    /// the canonical working-document transaction underneath, but cannot be mistaken for an
+    /// unscoped document replacement by GUI or headless callers.
+    case replaceSelection(DomainWorkspaceSelectionMutationRequest)
+    /// Prompt, chat-session, and tab metadata mutations carry a complete-context digest fence.
+    /// They share the same Rust working-journal transaction without widening selection semantics.
+    case replaceContext(DomainWorkspaceContextMutationRequest)
     case saveWorkspaceDocument(workspaceID: UUID)
     case deleteWorkspace(workspaceID: UUID)
     case resolveExternalConflict(
@@ -17,6 +24,133 @@ package enum DomainWorkspaceCommand: Codable, Equatable, Sendable {
         acceptExternal: Bool,
         protectedAgentIdentities: [DomainProtectedAgentIdentity]
     )
+}
+
+package enum DomainWorkspaceSelectionMutationKind: String, Codable, Equatable, Sendable {
+    case replaceFilesSelection
+}
+
+package struct DomainWorkspaceSelectionMutationRequest: Codable, Equatable, Sendable {
+    package let workspaceID: UUID
+    package let contextID: UUID
+    package let expectedSelectionDigest: String
+    package let candidateSelectionDigest: String
+    package let mutationKind: DomainWorkspaceSelectionMutationKind
+    package let candidateDocument: DomainWorkspaceDocument
+
+    package init(
+        workspaceID: UUID,
+        contextID: UUID,
+        expectedSelectionDigest: String,
+        candidateSelectionDigest: String,
+        mutationKind: DomainWorkspaceSelectionMutationKind = .replaceFilesSelection,
+        candidateDocument: DomainWorkspaceDocument
+    ) {
+        self.workspaceID = workspaceID
+        self.contextID = contextID
+        self.expectedSelectionDigest = expectedSelectionDigest
+        self.candidateSelectionDigest = candidateSelectionDigest
+        self.mutationKind = mutationKind
+        self.candidateDocument = candidateDocument
+    }
+
+    package var descriptor: DomainWorkspaceSelectionMutationDescriptor {
+        DomainWorkspaceSelectionMutationDescriptor(
+            workspaceID: workspaceID,
+            contextID: contextID,
+            expectedSelectionDigest: expectedSelectionDigest,
+            candidateSelectionDigest: candidateSelectionDigest,
+            mutationKind: mutationKind
+        )
+    }
+}
+
+/// Metadata bound into the Rust journal transaction. The candidate document remains the sole
+/// persisted representation; this descriptor is only an integrity and target fence.
+package struct DomainWorkspaceSelectionMutationDescriptor: Codable, Equatable, Sendable {
+    package let workspaceID: UUID
+    package let contextID: UUID
+    package let expectedSelectionDigest: String
+    package let candidateSelectionDigest: String
+    package let mutationKind: DomainWorkspaceSelectionMutationKind
+
+    package init(
+        workspaceID: UUID,
+        contextID: UUID,
+        expectedSelectionDigest: String,
+        candidateSelectionDigest: String,
+        mutationKind: DomainWorkspaceSelectionMutationKind
+    ) {
+        self.workspaceID = workspaceID
+        self.contextID = contextID
+        self.expectedSelectionDigest = expectedSelectionDigest
+        self.candidateSelectionDigest = candidateSelectionDigest
+        self.mutationKind = mutationKind
+    }
+}
+
+package enum DomainWorkspaceContextMutationKind: String, Codable, Equatable, Sendable {
+    case replacePrompt
+    case replaceChatSession
+    case replaceTabContext
+}
+
+package struct DomainWorkspaceContextMutationRequest: Codable, Equatable, Sendable {
+    package let workspaceID: UUID
+    package let contextID: UUID
+    package let expectedContextDigest: String
+    package let candidateContextDigest: String
+    package let mutationKind: DomainWorkspaceContextMutationKind
+    package let candidateDocument: DomainWorkspaceDocument
+
+    package init(
+        workspaceID: UUID,
+        contextID: UUID,
+        expectedContextDigest: String,
+        candidateContextDigest: String,
+        mutationKind: DomainWorkspaceContextMutationKind,
+        candidateDocument: DomainWorkspaceDocument
+    ) {
+        self.workspaceID = workspaceID
+        self.contextID = contextID
+        self.expectedContextDigest = expectedContextDigest
+        self.candidateContextDigest = candidateContextDigest
+        self.mutationKind = mutationKind
+        self.candidateDocument = candidateDocument
+    }
+
+    package var descriptor: DomainWorkspaceContextMutationDescriptor {
+        DomainWorkspaceContextMutationDescriptor(
+            workspaceID: workspaceID,
+            contextID: contextID,
+            expectedContextDigest: expectedContextDigest,
+            candidateContextDigest: candidateContextDigest,
+            mutationKind: mutationKind
+        )
+    }
+}
+
+/// Metadata bound into the Rust journal transaction for a complete compose-tab context change.
+package struct DomainWorkspaceContextMutationDescriptor: Codable, Equatable, Sendable {
+    package let workspaceID: UUID
+    package let contextID: UUID
+    package let expectedContextDigest: String
+    package let candidateContextDigest: String
+    package let mutationKind: DomainWorkspaceContextMutationKind
+
+    package init(
+        workspaceID: UUID,
+        contextID: UUID,
+        expectedContextDigest: String,
+        candidateContextDigest: String,
+        mutationKind: DomainWorkspaceContextMutationKind
+    ) {
+        self.workspaceID = workspaceID
+        self.contextID = contextID
+        self.expectedContextDigest = expectedContextDigest
+        self.candidateContextDigest = candidateContextDigest
+        self.mutationKind = mutationKind
+    }
 }
 
 package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {

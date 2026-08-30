@@ -25,6 +25,41 @@ package struct DomainWorkspaceStore {
         await authority.execute(command)
     }
 
+    /// Typed selection/context mutation seam shared by app presentation and headless adapters.
+    /// Callers provide only the candidate and its selection digest fence; the authority constructs
+    /// the ordinary command envelope so no adapter can bypass Rust admission or publication.
+    package func applySelectionMutation(
+        _ request: DomainWorkspaceSelectionMutationRequest,
+        operationID: UUID,
+        expectedWorkspaceRevision: UInt64? = nil,
+        expectedContextRevision: UInt64? = nil,
+        origin: DomainCommandOrigin
+    ) async -> DomainCommandOutcome {
+        await authority.execute(DomainWorkspaceCommandEnvelope(
+            operationID: operationID,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            expectedContextRevision: expectedContextRevision,
+            origin: origin,
+            command: .replaceSelection(request)
+        ))
+    }
+
+    package func applyContextMutation(
+        _ request: DomainWorkspaceContextMutationRequest,
+        operationID: UUID,
+        expectedWorkspaceRevision: UInt64? = nil,
+        expectedContextRevision: UInt64? = nil,
+        origin: DomainCommandOrigin
+    ) async -> DomainCommandOutcome {
+        await authority.execute(DomainWorkspaceCommandEnvelope(
+            operationID: operationID,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            expectedContextRevision: expectedContextRevision,
+            origin: origin,
+            command: .replaceContext(request)
+        ))
+    }
+
     @discardableResult
     package func reloadExternalChanges() async -> DomainExternalReloadActivity {
         await authority.reloadExternalChanges()
@@ -735,6 +770,24 @@ actor DomainWorkspaceContextAuthority {
                 commandClaim: commandClaim,
                 permit: permit
             )
+        case let .replaceSelection(request):
+            await replaceWorkingDocument(
+                request.candidateDocument,
+                envelope: envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim,
+                permit: permit,
+                selectionMutation: request
+            )
+        case let .replaceContext(request):
+            await replaceWorkingDocument(
+                request.candidateDocument,
+                envelope: envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim,
+                permit: permit,
+                contextMutation: request
+            )
         case let .saveWorkspaceDocument(workspaceID):
             await saveWorkspace(
                 workspaceID,
@@ -796,6 +849,10 @@ actor DomainWorkspaceContextAuthority {
         switch command {
         case let .createWorkspace(document), let .replaceWorkingDocument(document):
             document.metadata.isEphemeral
+        case let .replaceSelection(request):
+            request.candidateDocument.metadata.isEphemeral
+        case let .replaceContext(request):
+            request.candidateDocument.metadata.isEphemeral
         case let .saveWorkspaceDocument(workspaceID),
              let .resolveExternalConflict(workspaceID, _, _):
             records[workspaceID]?.document.metadata.isEphemeral == true
@@ -808,6 +865,10 @@ actor DomainWorkspaceContextAuthority {
         switch command {
         case let .createWorkspace(document), let .replaceWorkingDocument(document):
             document
+        case let .replaceSelection(request):
+            request.candidateDocument
+        case let .replaceContext(request):
+            request.candidateDocument
         case .saveWorkspaceDocument, .deleteWorkspace, .resolveExternalConflict:
             nil
         }
@@ -817,7 +878,8 @@ actor DomainWorkspaceContextAuthority {
         switch command {
         case let .resolveExternalConflict(workspaceID, _, _):
             records[workspaceID]?.externalDocument
-        case .createWorkspace, .replaceWorkingDocument, .saveWorkspaceDocument, .deleteWorkspace:
+        case .createWorkspace, .replaceWorkingDocument, .replaceSelection, .replaceContext,
+             .saveWorkspaceDocument, .deleteWorkspace:
             nil
         }
     }
@@ -2275,7 +2337,9 @@ actor DomainWorkspaceContextAuthority {
         envelope: DomainWorkspaceCommandEnvelope,
         fingerprint: String,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim,
-        permit: DomainWorkspaceMutationPermit
+        permit: DomainWorkspaceMutationPermit,
+        selectionMutation: DomainWorkspaceSelectionMutationRequest? = nil,
+        contextMutation: DomainWorkspaceContextMutationRequest? = nil
     ) async -> DomainCommandOutcome {
         guard document.workspaceID == envelope.workspaceID else {
             return finalizeTransientOutcome(
@@ -2285,6 +2349,69 @@ actor DomainWorkspaceContextAuthority {
                 disposition: .invalid,
                 errorCode: .invalidDocument,
                 diagnostic: "workspace_identity_mismatch"
+            )
+        }
+
+        if let selectionMutation {
+            guard selectionMutation.workspaceID == document.workspaceID,
+                  selectionMutation.candidateDocument.workspaceID == document.workspaceID,
+                  selectionMutation.candidateDocument.metadata.contexts.contains(where: {
+                      $0.identity.contextID == selectionMutation.contextID
+                  }),
+                  let currentRecord = records[document.workspaceID],
+                  (try? DomainWorkspaceSelectionDigest.make(
+                      document: currentRecord.document,
+                      contextID: selectionMutation.contextID
+                  )) == selectionMutation.expectedSelectionDigest,
+                  (try? DomainWorkspaceSelectionDigest.make(
+                      document: selectionMutation.candidateDocument,
+                      contextID: selectionMutation.contextID
+                  )) == selectionMutation.candidateSelectionDigest
+            else {
+                return finalizeTransientOutcome(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
+                    disposition: .conflict,
+                    errorCode: .stateConflict,
+                    diagnostic: "selection_digest_or_target_mismatch"
+                )
+            }
+        }
+        if let contextMutation {
+            guard contextMutation.workspaceID == document.workspaceID,
+                  contextMutation.candidateDocument.workspaceID == document.workspaceID,
+                  contextMutation.candidateDocument.metadata.contexts.contains(where: {
+                      $0.identity.contextID == contextMutation.contextID
+                  }),
+                  let currentRecord = records[document.workspaceID],
+                  (try? DomainWorkspaceContextDigest.make(
+                      document: currentRecord.document,
+                      contextID: contextMutation.contextID
+                  )) == contextMutation.expectedContextDigest,
+                  (try? DomainWorkspaceContextDigest.make(
+                      document: contextMutation.candidateDocument,
+                      contextID: contextMutation.contextID
+                  )) == contextMutation.candidateContextDigest
+            else {
+                return finalizeTransientOutcome(
+                    envelope: envelope,
+                    fingerprint: fingerprint,
+                    commandClaim: commandClaim,
+                    disposition: .conflict,
+                    errorCode: .stateConflict,
+                    diagnostic: "context_digest_or_target_mismatch"
+                )
+            }
+        }
+        guard !(selectionMutation != nil && contextMutation != nil) else {
+            return finalizeTransientOutcome(
+                envelope: envelope,
+                fingerprint: fingerprint,
+                commandClaim: commandClaim,
+                disposition: .invalid,
+                errorCode: .invalidDocument,
+                diagnostic: "workspace_context_mutation_descriptor_ambiguous"
             )
         }
 
@@ -2301,6 +2428,8 @@ actor DomainWorkspaceContextAuthority {
                     expectedRevision: before.workingRevision,
                     operationID: envelope.operationID,
                     fingerprint: fingerprint,
+                    selectionMutation: selectionMutation?.descriptor,
+                    contextMutation: contextMutation?.descriptor,
                     now: now,
                     permit: permit,
                     commandClaim: commandClaim,
@@ -3558,6 +3687,8 @@ private extension DomainWorkspaceCommandEnvelope {
         switch command {
         case let .createWorkspace(document): document.workspaceID
         case let .replaceWorkingDocument(document): document.workspaceID
+        case let .replaceSelection(request): request.workspaceID
+        case let .replaceContext(request): request.workspaceID
         case let .saveWorkspaceDocument(workspaceID): workspaceID
         case let .deleteWorkspace(workspaceID): workspaceID
             case let .resolveExternalConflict(workspaceID, _, _): workspaceID

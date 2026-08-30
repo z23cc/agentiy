@@ -1,6 +1,10 @@
 import Foundation
 import RepoPromptDomainRuntime
 
+enum WorkspaceSelectionDomainError: Error {
+    case targetUnavailable
+}
+
 struct DomainWorkspaceSaveOperationIDs {
     let working: UUID
     let saved: UUID
@@ -72,6 +76,126 @@ struct DomainWorkspaceAuthorityClient {
             origin: .appPresentation(windowID: windowID),
             command: .replaceWorkingDocument(document)
         ))
+    }
+
+    /// Canonical selection mutation entry point shared by GUI and headless adapters. The
+    /// current document is included solely to derive the expected selection fence; Rust owns
+    /// the claim, CAS, journal transition, and publication receipt.
+    func replaceSelection(
+        currentWorkspace: WorkspaceModel,
+        resultingSelection: StoredSelection,
+        targetTabID: UUID,
+        fileURL: URL,
+        expectedWorkspaceRevision: UInt64?,
+        operationID: UUID = UUID()
+    ) throws -> DomainWorkspaceCommandEnvelope {
+        guard let tabIndex = currentWorkspace.composeTabs.firstIndex(where: { $0.id == targetTabID }) else {
+            throw WorkspaceSelectionDomainError.targetUnavailable
+        }
+        var candidateWorkspace = currentWorkspace
+        candidateWorkspace.composeTabs[tabIndex].selection = resultingSelection
+        candidateWorkspace.composeTabs[tabIndex].lastModified = Date()
+        candidateWorkspace.dateModified = Date()
+        let currentDocument = try document(for: currentWorkspace, fileURL: fileURL)
+        let candidateDocument = try document(for: candidateWorkspace, fileURL: fileURL)
+        let request = try DomainWorkspaceSelectionMutationRequest(
+            workspaceID: currentWorkspace.id,
+            contextID: targetTabID,
+            expectedSelectionDigest: DomainWorkspaceSelectionDigest.make(
+                document: currentDocument,
+                contextID: targetTabID
+            ),
+            candidateSelectionDigest: DomainWorkspaceSelectionDigest.make(
+                document: candidateDocument,
+                contextID: targetTabID
+            ),
+            candidateDocument: candidateDocument
+        )
+        return .init(
+            operationID: operationID,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            origin: .appPresentation(windowID: windowID),
+            command: .replaceSelection(request)
+        )
+    }
+
+    func executeSelection(
+        currentWorkspace: WorkspaceModel,
+        resultingSelection: StoredSelection,
+        targetTabID: UUID,
+        fileURL: URL,
+        expectedWorkspaceRevision: UInt64?,
+        operationID: UUID = UUID()
+    ) async throws -> DomainCommandOutcome {
+        let envelope = try replaceSelection(
+            currentWorkspace: currentWorkspace,
+            resultingSelection: resultingSelection,
+            targetTabID: targetTabID,
+            fileURL: fileURL,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            operationID: operationID
+        )
+        return await executeStable(envelope)
+    }
+
+    /// Builds a complete-context mutation envelope. The context digest includes every persisted
+    /// compose-tab field, so prompt/session metadata cannot race a selection or another context
+    /// writer while sharing the Rust working-journal transaction.
+    func replaceContext(
+        currentWorkspace: WorkspaceModel,
+        resultingWorkspace: WorkspaceModel,
+        targetTabID: UUID,
+        fileURL: URL,
+        expectedWorkspaceRevision: UInt64?,
+        mutationKind: DomainWorkspaceContextMutationKind,
+        operationID: UUID = UUID()
+    ) throws -> DomainWorkspaceCommandEnvelope {
+        guard currentWorkspace.composeTabs.contains(where: { $0.id == targetTabID }),
+              resultingWorkspace.composeTabs.contains(where: { $0.id == targetTabID })
+        else { throw WorkspaceSelectionDomainError.targetUnavailable }
+        let currentDocument = try document(for: currentWorkspace, fileURL: fileURL)
+        let candidateDocument = try document(for: resultingWorkspace, fileURL: fileURL)
+        let request = try DomainWorkspaceContextMutationRequest(
+            workspaceID: currentWorkspace.id,
+            contextID: targetTabID,
+            expectedContextDigest: DomainWorkspaceContextDigest.make(
+                document: currentDocument,
+                contextID: targetTabID
+            ),
+            candidateContextDigest: DomainWorkspaceContextDigest.make(
+                document: candidateDocument,
+                contextID: targetTabID
+            ),
+            mutationKind: mutationKind,
+            candidateDocument: candidateDocument
+        )
+        return .init(
+            operationID: operationID,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            origin: .appPresentation(windowID: windowID),
+            command: .replaceContext(request)
+        )
+    }
+
+    func executeContext(
+        currentWorkspace: WorkspaceModel,
+        resultingWorkspace: WorkspaceModel,
+        targetTabID: UUID,
+        fileURL: URL,
+        expectedWorkspaceRevision: UInt64?,
+        mutationKind: DomainWorkspaceContextMutationKind,
+        operationID: UUID = UUID()
+    ) async throws -> DomainCommandOutcome {
+        let envelope = try replaceContext(
+            currentWorkspace: currentWorkspace,
+            resultingWorkspace: resultingWorkspace,
+            targetTabID: targetTabID,
+            fileURL: fileURL,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            mutationKind: mutationKind,
+            operationID: operationID
+        )
+        return await executeStable(envelope)
     }
 
     func save(

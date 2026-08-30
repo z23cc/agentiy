@@ -44,6 +44,18 @@ package struct DomainWorkspaceCommandIdentityInput: Sendable, Equatable {
                 fileURL: document.fileURL,
                 contentDigest: document.contentDigest
             )
+        case let .replaceSelection(request):
+            command = .replace(
+                workspaceID: request.workspaceID,
+                fileURL: request.candidateDocument.fileURL,
+                contentDigest: request.candidateDocument.contentDigest
+            )
+        case let .replaceContext(request):
+            command = .replace(
+                workspaceID: request.workspaceID,
+                fileURL: request.candidateDocument.fileURL,
+                contentDigest: request.candidateDocument.contentDigest
+            )
         case let .saveWorkspaceDocument(workspaceID):
             command = .save(workspaceID: workspaceID)
         case let .deleteWorkspace(workspaceID):
@@ -871,6 +883,8 @@ enum DomainWorkspaceRustJournal {
         let revisionOperationID: UUID?
         let recoveryMode: Bool
         let transition: DomainWorkspaceWorkingJournalTransition.EncodedTransition
+        let selectionMutation: DomainWorkspaceSelectionMutationDescriptor?
+        let contextMutation: DomainWorkspaceContextMutationDescriptor?
     }
 
     private struct SaveTransactionRequest: Encodable {
@@ -2662,7 +2676,9 @@ enum DomainWorkspaceRustJournal {
             updatedAt: Date,
             diskDocumentBytes: Data?,
             commandClaim: PreparedExecutionClaim?,
-            recoveryMode: Bool
+            recoveryMode: Bool,
+            selectionMutation: DomainWorkspaceSelectionMutationDescriptor? = nil,
+            contextMutation: DomainWorkspaceContextMutationDescriptor? = nil
         ) throws -> PreparedJournalMutationTransaction {
             do {
                 let request = JournalMutationTransactionRequest(
@@ -2672,7 +2688,9 @@ enum DomainWorkspaceRustJournal {
                     catalogRevision: catalogRevision,
                     revisionOperationID: revisionOperationID,
                     recoveryMode: recoveryMode,
-                    transition: transition.encoded
+                    transition: transition.encoded,
+                    selectionMutation: selectionMutation,
+                    contextMutation: contextMutation
                 )
                 let transaction = try core.beginJournalMutationTransaction(
                     rawJournalBytes: rawJournalBytes,

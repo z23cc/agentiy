@@ -285,6 +285,67 @@ package enum DomainContentDigest {
     }
 }
 
+/// Computes the stable digest for the selection payload of one composed context. Keeping this
+/// in the domain package makes the GUI and direct-headless adapters use the same fence without
+/// importing app-only `StoredSelection` types.
+package enum DomainWorkspaceSelectionDigest {
+    package static func make(
+        document: DomainWorkspaceDocument,
+        contextID: UUID
+    ) throws -> String {
+        guard let object = try JSONSerialization.jsonObject(with: document.documentBytes) as? [String: Any],
+              let contexts = object["composeTabs"] as? [[String: Any]],
+              let context = contexts.first(where: { ($0["id"] as? String).flatMap(UUID.init(uuidString:)) == contextID })
+        else {
+            throw DomainWorkspaceDocumentError.invalidContext(contextID)
+        }
+
+        let selection: Any
+        if let nested = context["selection"] as? [String: Any] {
+            selection = nested
+        } else {
+            // Older documents used selectedPaths directly on the tab. Normalize that legacy
+            // shape into the current selection object before hashing it.
+            selection = [
+                "selectedPaths": context["selectedPaths"] as? [String] ?? [],
+                "manualCodemapPaths": [],
+                "autoCodemapPaths": [],
+                "slices": [:],
+                "codemapAutoEnabled": true
+            ]
+        }
+        let bytes = try JSONSerialization.data(
+            withJSONObject: selection,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        return DomainContentDigest.sha256(bytes)
+    }
+}
+
+/// Digest fence for a complete composed-tab context. Unlike the selection digest, this includes
+/// prompt, chat/session identity, metadata, and selection fields, so context writes cannot be
+/// replayed against a tab that changed in an unrelated field.
+package enum DomainWorkspaceContextDigest {
+    package static func make(
+        document: DomainWorkspaceDocument,
+        contextID: UUID
+    ) throws -> String {
+        guard let object = try JSONSerialization.jsonObject(with: document.documentBytes) as? [String: Any],
+              let contexts = object["composeTabs"] as? [[String: Any]],
+              let context = contexts.first(where: {
+                  ($0["id"] as? String).flatMap(UUID.init(uuidString:)) == contextID
+              })
+        else {
+            throw DomainWorkspaceDocumentError.invalidContext(contextID)
+        }
+        let bytes = try JSONSerialization.data(
+            withJSONObject: context,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        return DomainContentDigest.sha256(bytes)
+    }
+}
+
 private enum DomainWorkspaceDocumentDecoder {
     static let maximumSupportedSchemaVersion = 1
 

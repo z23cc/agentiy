@@ -1853,7 +1853,20 @@ class OracleViewModel: ObservableObject {
         // Don't write session.selectedPromptIDs into tab.selectedMetaPromptIDs as they are
         // different concepts (chat prompts vs copy/clipboard meta prompts).
         updatedTab.activeSubView = nil
-        workspaceManager.updateComposeTabStoredOnly(updatedTab)
+        guard let workspaceID = workspaceManager.workspaces.first(where: {
+            $0.composeTabs.contains(where: { $0.id == updatedTab.id })
+        })?.id,
+            let currentTab = workspaceManager.composeTab(
+                for: WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: updatedTab.id)
+            )
+        else { return nil }
+        let selectionResult = await workspaceManager.persistSelectionThroughDomainAuthority(
+            updatedTab.selection,
+            for: WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: updatedTab.id),
+            expectedCurrentSelection: currentTab.selection,
+            operationID: UUID()
+        )
+        guard selectionResult.disposition == .committed else { return nil }
 
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[idx].composeTabID = updatedTab.id

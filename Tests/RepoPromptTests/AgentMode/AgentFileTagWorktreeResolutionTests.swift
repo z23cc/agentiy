@@ -465,6 +465,33 @@ private final class FileTagSelectionHost: WorkspaceSelectionHost {
 
     func publishActiveComposeTabSnapshot(commitToMemory _: Bool, touchModified _: Bool) {}
 
+    func persistSelectionThroughDomainAuthority(
+        _ selection: StoredSelection,
+        for identity: WorkspaceSelectionIdentity,
+        expectedCurrentSelection: StoredSelection,
+        operationID: UUID
+    ) async -> WorkspaceSelectionDomainMutationResult {
+        guard var tab = composeTab(for: identity), tab.selection == expectedCurrentSelection else {
+            return .conflict(expectedCurrentSelection)
+        }
+        tab.selection = selection
+        tab.lastModified = Date()
+        guard updateComposeTabStoredOnly(tab, inWorkspaceID: identity.workspaceID) else {
+            return .unavailable(expectedCurrentSelection)
+        }
+        return .committed(
+            selection,
+            outcome: DomainCommandOutcome(
+                operationID: operationID,
+                disposition: .applied,
+                before: nil,
+                after: nil,
+                catalogRevision: 0,
+                resultingDigest: nil
+            )
+        )
+    }
+
     @discardableResult
     func updateComposeTabStoredOnly(_ tab: ComposeTabState, inWorkspaceID workspaceID: UUID) -> Bool {
         guard var workspace = activeWorkspace, workspace.id == workspaceID,

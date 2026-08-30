@@ -1,10 +1,35 @@
 import Combine
 import Foundation
 import OSLog
+import RepoPromptDomainRuntime
 
 struct WorkspaceSelectionIdentity: Hashable {
     let workspaceID: UUID
     let tabID: UUID
+}
+
+enum WorkspaceSelectionDomainMutationDisposition: Equatable {
+    case committed
+    case conflict
+    case unavailable
+}
+
+struct WorkspaceSelectionDomainMutationResult: Equatable {
+    let disposition: WorkspaceSelectionDomainMutationDisposition
+    let selection: StoredSelection
+    let outcome: DomainCommandOutcome?
+
+    static func committed(_ selection: StoredSelection, outcome: DomainCommandOutcome) -> Self {
+        Self(disposition: .committed, selection: selection, outcome: outcome)
+    }
+
+    static func conflict(_ selection: StoredSelection, outcome: DomainCommandOutcome? = nil) -> Self {
+        Self(disposition: .conflict, selection: selection, outcome: outcome)
+    }
+
+    static func unavailable(_ selection: StoredSelection, outcome: DomainCommandOutcome? = nil) -> Self {
+        Self(disposition: .unavailable, selection: selection, outcome: outcome)
+    }
 }
 
 struct MCPSelectionPropagationRegistration: Equatable {
@@ -63,6 +88,12 @@ protocol WorkspaceSelectionHost: AnyObject {
         forTabID tabID: UUID,
         workspaceID: UUID
     ) async
+    func persistSelectionThroughDomainAuthority(
+        _ selection: StoredSelection,
+        for identity: WorkspaceSelectionIdentity,
+        expectedCurrentSelection: StoredSelection,
+        operationID: UUID
+    ) async -> WorkspaceSelectionDomainMutationResult
 }
 
 extension WorkspaceSelectionHost {
@@ -439,11 +470,26 @@ final class WorkspaceSelectionCoordinator {
         }
 
         let requiredPeerMutationFence = source == .mcpPeerContext ? peerMutationFence : nil
-        guard let revision = persist(
+        guard canCommitPeerMutation(
+            requiredPeerMutationFence,
+            source: source,
+            workspaceManager: workspaceManager
+        ) else { return .conflict(current: currentSelection) }
+        let domainResult = await workspaceManager.persistSelectionThroughDomainAuthority(
             selection,
             for: identity,
-            peerMutationFence: requiredPeerMutationFence
-        ) else { return .targetUnavailable }
+            expectedCurrentSelection: currentSelection,
+            operationID: UUID()
+        )
+        switch domainResult.disposition {
+        case .committed:
+            break
+        case .conflict:
+            return .conflict(current: domainResult.selection)
+        case .unavailable:
+            return .targetUnavailable
+        }
+        let revision = recordSelectionRevision(for: identity)
         guard canCommitPeerMutation(
             peerMutationFence,
             source: source,
@@ -513,7 +559,14 @@ final class WorkspaceSelectionCoordinator {
             canonicalRevision = workspaceManager.committedSelectionRevision(for: identity)
             mirrorRevision = selectionRevisionByIdentity[identity] ?? recordSelectionRevision(for: identity)
         } else {
-            guard let persistedRevision = persist(after, for: identity) else { return nil }
+            let domainResult = await workspaceManager.persistSelectionThroughDomainAuthority(
+                after,
+                for: identity,
+                expectedCurrentSelection: before,
+                operationID: UUID()
+            )
+            guard domainResult.disposition == .committed else { return nil }
+            let persistedRevision = recordSelectionRevision(for: identity)
             canonicalRevision = workspaceManager.committedSelectionRevision(for: identity)
             mirrorRevision = persistedRevision
         }
@@ -1124,19 +1177,5 @@ final class WorkspaceSelectionCoordinator {
         nextSelectionRevision &+= 1
         selectionRevisionByIdentity[identity] = nextSelectionRevision
         return nextSelectionRevision
-    }
-
-    private func persist(
-        _ selection: StoredSelection,
-        for identity: WorkspaceSelectionIdentity,
-        peerMutationFence: MCPSelectionPeerMutationFence? = nil
-    ) -> UInt64? {
-        guard let workspaceManager, var tab = workspaceManager.composeTab(for: identity) else { return nil }
-        guard tab.selection != selection else { return nil }
-        guard canApplyPeerMirror(peerMutationFence, workspaceManager: workspaceManager) else { return nil }
-        tab.selection = selection
-        tab.lastModified = Date()
-        guard workspaceManager.updateComposeTabStoredOnly(tab, inWorkspaceID: identity.workspaceID) else { return nil }
-        return recordSelectionRevision(for: identity)
     }
 }

@@ -5204,16 +5204,30 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     @MainActor
     func setActiveChatSessionID(_ sessionID: UUID?, forTabID tabID: UUID) {
-        guard var tab = composeTab(with: tabID) else { return }
-        tab.activeChatSessionID = sessionID
-        updateComposeTabStoredOnly(tab)
+        guard let workspaceID = workspaces.first(where: {
+            $0.composeTabs.contains(where: { $0.id == tabID })
+        })?.id else { return }
+        setActiveChatSessionID(
+            sessionID,
+            for: WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: tabID)
+        )
     }
 
     @MainActor
     func setActiveChatSessionID(_ sessionID: UUID?, for identity: WorkspaceSelectionIdentity) {
-        guard var tab = composeTab(for: identity) else { return }
-        tab.activeChatSessionID = sessionID
-        _ = updateComposeTabStoredOnly(tab, inWorkspaceID: identity.workspaceID)
+        guard let currentTab = composeTab(for: identity) else { return }
+        var resultingTab = currentTab
+        resultingTab.activeChatSessionID = sessionID
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await persistTabContextThroughDomainAuthority(
+                resultingTab,
+                for: identity,
+                expectedCurrentTab: currentTab,
+                mutationKind: .replaceChatSession,
+                operationID: UUID()
+            )
+        }
     }
 
     @MainActor
@@ -5376,6 +5390,162 @@ class WorkspaceManagerViewModel: ObservableObject {
         promptViewModel.tokenCountingViewModel.markDirty(.selection)
     }
 
+    /// Routes a selection write through the process-wide Domain authority. The compose tab is
+    /// updated only after the Rust-backed command has returned its durable receipt; this method
+    /// is therefore a presentation mirror, not a second canonical mutation path.
+    @MainActor
+    func persistSelectionThroughDomainAuthority(
+        _ selection: StoredSelection,
+        for identity: WorkspaceSelectionIdentity,
+        expectedCurrentSelection: StoredSelection,
+        operationID: UUID
+    ) async -> WorkspaceSelectionDomainMutationResult {
+        guard var workspace = workspaces.first(where: { $0.id == identity.workspaceID }),
+              let tab = workspace.composeTabs.first(where: { $0.id == identity.tabID }),
+              tab.selection == expectedCurrentSelection
+        else {
+            return .conflict(expectedCurrentSelection)
+        }
+        if !workspace.isEphemeral {
+            await domainWorkingCommitTasks[workspace.id]?.value
+            guard let refreshedWorkspace = workspaces.first(where: { $0.id == identity.workspaceID }),
+                  let refreshedTab = refreshedWorkspace.composeTabs.first(where: { $0.id == identity.tabID }),
+                  refreshedTab.selection == expectedCurrentSelection
+            else {
+                return .conflict(
+                    workspaces.first(where: { $0.id == identity.workspaceID })?
+                        .composeTabs.first(where: { $0.id == identity.tabID })?.selection
+                        ?? expectedCurrentSelection
+                )
+            }
+            workspace = refreshedWorkspace
+        }
+        if workspace.isEphemeral {
+            // Ephemeral workspaces have no durable Domain row. Their in-memory tab is the
+            // presentation-only canonical state, so retain the historical local behavior without
+            // introducing a durable Swift fallback for persistent workspaces.
+            var mirroredTab = tab
+            mirroredTab.selection = selection
+            mirroredTab.lastModified = Date()
+            guard updateComposeTabStoredOnly(mirroredTab, inWorkspaceID: identity.workspaceID) else {
+                return .unavailable(expectedCurrentSelection)
+            }
+            return .committed(
+                selection,
+                outcome: DomainCommandOutcome(
+                    operationID: operationID,
+                    disposition: .applied,
+                    before: nil,
+                    after: nil,
+                    catalogRevision: domainWorkspaceRevisionsByID[workspace.id]?.workingRevision ?? 0,
+                    resultingDigest: nil
+                )
+            )
+        }
+        guard let domainWorkspaceAuthorityClient else {
+            return .unavailable(expectedCurrentSelection)
+        }
+        do {
+            let outcome = try await domainWorkspaceAuthorityClient.executeSelection(
+                currentWorkspace: workspace,
+                resultingSelection: selection,
+                targetTabID: identity.tabID,
+                fileURL: workspaceFileURL(for: workspace),
+                expectedWorkspaceRevision: domainWorkspaceRevisionsByID[workspace.id]?.workingRevision,
+                operationID: operationID
+            )
+            applyDomainAuthorityOutcome(outcome, workspaceID: identity.workspaceID)
+            switch outcome.disposition {
+            case .applied, .unchanged, .deduplicated:
+                guard var committedTab = composeTab(for: identity) else {
+                    return .unavailable(expectedCurrentSelection, outcome: outcome)
+                }
+                committedTab.selection = selection
+                guard applyComposeTabPresentationOnly(committedTab, inWorkspaceID: identity.workspaceID) else {
+                    return .unavailable(expectedCurrentSelection, outcome: outcome)
+                }
+                return .committed(selection, outcome: outcome)
+            case .conflict:
+                return .conflict(composeTab(for: identity)?.selection ?? expectedCurrentSelection, outcome: outcome)
+            case .readOnly, .invalid, .failed:
+                return .unavailable(expectedCurrentSelection, outcome: outcome)
+            }
+        } catch {
+            reportDomainAuthorityFailure(error, workspaceID: identity.workspaceID, operation: "selection_mutation")
+            return .unavailable(expectedCurrentSelection)
+        }
+    }
+
+    /// Persists a complete compose-tab context through the Rust-backed Domain authority. The
+    /// in-memory tab is changed only after the typed command receipt has been installed; callers
+    /// may use the returned Bool to abandon stale UI work without treating a mirror as committed.
+    @MainActor
+    @discardableResult
+    func persistTabContextThroughDomainAuthority(
+        _ resultingTab: ComposeTabState,
+        for identity: WorkspaceSelectionIdentity,
+        expectedCurrentTab: ComposeTabState,
+        mutationKind: DomainWorkspaceContextMutationKind,
+        operationID: UUID = UUID()
+    ) async -> Bool {
+        guard var workspace = workspaces.first(where: { $0.id == identity.workspaceID }),
+              let currentTab = workspace.composeTabs.first(where: { $0.id == identity.tabID }),
+              currentTab == expectedCurrentTab,
+              resultingTab.id == identity.tabID
+        else { return false }
+        if !workspace.isEphemeral {
+            await domainWorkingCommitTasks[workspace.id]?.value
+            guard let refreshedWorkspace = workspaces.first(where: { $0.id == identity.workspaceID }),
+                  let refreshedTab = refreshedWorkspace.composeTabs.first(where: { $0.id == identity.tabID }),
+                  refreshedTab == expectedCurrentTab
+            else { return false }
+            workspace = refreshedWorkspace
+        }
+        if workspace.isEphemeral {
+            // Ephemeral tabs have no durable Domain row; this is a presentation-only mirror and
+            // is intentionally outside the canonical storage contract.
+            return applyComposeTabPresentationOnly(resultingTab, inWorkspaceID: identity.workspaceID)
+        }
+        guard let domainWorkspaceAuthorityClient else { return false }
+        var candidateWorkspace = workspace
+        guard let tabIndex = candidateWorkspace.composeTabs.firstIndex(where: { $0.id == identity.tabID }) else {
+            return false
+        }
+        candidateWorkspace.composeTabs[tabIndex] = resultingTab
+        candidateWorkspace.dateModified = Date()
+        do {
+            let outcome = try await domainWorkspaceAuthorityClient.executeContext(
+                currentWorkspace: workspace,
+                resultingWorkspace: candidateWorkspace,
+                targetTabID: identity.tabID,
+                fileURL: workspaceFileURL(for: workspace),
+                expectedWorkspaceRevision: domainWorkspaceRevisionsByID[workspace.id]?.workingRevision,
+                mutationKind: mutationKind,
+                operationID: operationID
+            )
+            applyDomainAuthorityOutcome(outcome, workspaceID: identity.workspaceID)
+            guard Self.isSuccessfulDomainOutcome(outcome),
+                  let committed = composeTab(for: identity),
+                  committed.id == resultingTab.id
+            else {
+                if outcome.disposition == .failed || outcome.disposition == .readOnly {
+                    reportDomainAuthorityIssue(outcome, operation: "context_mutation")
+                }
+                return false
+            }
+            // The durable write already completed in Rust. Keep this final step as an in-memory
+            // receipt mirror so it cannot advance timestamps or create a second canonical write.
+            return applyComposeTabPresentationOnly(resultingTab, inWorkspaceID: identity.workspaceID)
+        } catch {
+            reportDomainAuthorityFailure(
+                error,
+                workspaceID: identity.workspaceID,
+                operation: "context_mutation"
+            )
+            return false
+        }
+    }
+
     /// Applies the newest stored selection after deferred `read_file` auto-selection.
     @MainActor
     func applyStoredSelectionMirrorForReadFileAutoSelection(tabID: UUID) async {
@@ -5443,12 +5613,16 @@ class WorkspaceManagerViewModel: ObservableObject {
                       ) else { continue }
                 if tab.selection != propagation.selection {
                     guard peer.canCommitMCPSelectionPeerMutation(peerMutationFence) else { continue }
-                    var updatedTab = tab
-                    updatedTab.selection = propagation.selection
-                    _ = peer.updateComposeTabStoredOnly(
-                        updatedTab,
-                        inWorkspaceID: propagation.identity.workspaceID
+                    let result = await peer.persistSelectionThroughDomainAuthority(
+                        propagation.selection,
+                        for: propagation.identity,
+                        expectedCurrentSelection: tab.selection,
+                        operationID: UUID()
                     )
+                    guard result.disposition == .committed,
+                          result.selection == propagation.selection,
+                          peer.canCommitMCPSelectionPeerMutation(peerMutationFence)
+                    else { continue }
                 }
                 guard peer.canCommitMCPSelectionPeerMutation(peerMutationFence) else { continue }
                 peer.updateComposeTabSelectionPresentation(
@@ -5479,6 +5653,27 @@ class WorkspaceManagerViewModel: ObservableObject {
             workspace.composeTabs.contains(where: { $0.id == tab.id })
         })?.id else { return }
         _ = updateComposeTabStoredOnly(tab, inWorkspaceID: workspaceID)
+    }
+
+    /// Applies an already committed Domain tab snapshot without touching timestamps or creating
+    /// a second local mutation. This is the only mirror primitive used after Rust receipts.
+    @MainActor
+    @discardableResult
+    func applyComposeTabPresentationOnly(_ tab: ComposeTabState, inWorkspaceID workspaceID: UUID) -> Bool {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }),
+              let tabIndex = workspaces[workspaceIndex].composeTabs.firstIndex(where: { $0.id == tab.id })
+        else { return false }
+        let oldSelection = workspaces[workspaceIndex].composeTabs[tabIndex].selection
+        workspaces[workspaceIndex].composeTabs[tabIndex] = tab
+        recordSelectionRevisionIfChanged(
+            workspaceIndex: workspaceIndex,
+            tabIndex: tabIndex,
+            oldSelection: oldSelection,
+            newSelection: tab.selection,
+            reason: "domain_receipt_mirror"
+        )
+        bumpStateVersion(for: workspaceID)
+        return true
     }
 
     /// Exact-identity stored update. This avoids duplicate-tab ambiguity and dirties the
@@ -5573,22 +5768,22 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     @MainActor
-    func dropSlicesForFileAcrossTabs(fullPath: String) {
-        rebaseSlicesForFileAcrossTabs(fullPath: fullPath) { _ in [] }
+    func dropSlicesForFileAcrossTabs(fullPath: String) async {
+        await rebaseSlicesForFileAcrossTabs(fullPath: fullPath) { _ in [] }
     }
 
     @MainActor
     func rebaseSlicesForFileAcrossTabs(
         fullPath: String,
         transform: ([LineRange]) -> [LineRange]
-    ) {
+    ) async {
         guard let workspaceID = activeWorkspaceID,
               let wi = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
 
         let tabs = workspaces[wi].composeTabs
         guard !tabs.isEmpty else { return }
 
-        for var tab in tabs {
+        for tab in tabs {
             #if DEBUG
                 MCPApplyEditsRebaseProbeRecorder.recordTabInspection(fullPath: fullPath)
             #endif
@@ -5596,12 +5791,29 @@ class WorkspaceManagerViewModel: ObservableObject {
                   let nextSelection = Self.rebasedStoredSelectionSlices(tab.selection, for: fullPath, transform: transform)
             else { continue }
 
-            tab.selection = nextSelection
-            tab.lastModified = Date()
+            let identity = WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: tab.id)
+            let committed: Bool
+            if let selectionCoordinator {
+                let result = await selectionCoordinator.persistSelection(
+                    nextSelection,
+                    for: identity,
+                    source: .mcpTabContext,
+                    mirrorToUIIfActive: false,
+                    expectedCurrentSelection: tab.selection
+                )
+                committed = result == nextSelection
+            } else {
+                committed = await persistSelectionThroughDomainAuthority(
+                    nextSelection,
+                    for: identity,
+                    expectedCurrentSelection: tab.selection,
+                    operationID: UUID()
+                ).disposition == .committed
+            }
+            guard committed else { continue }
             #if DEBUG
                 MCPApplyEditsRebaseProbeRecorder.recordTabWrite(fullPath: fullPath)
             #endif
-            updateComposeTabStoredOnly(tab)
         }
     }
 
@@ -5676,12 +5888,15 @@ class WorkspaceManagerViewModel: ObservableObject {
                         expectedCurrentSelection: expectedSelection
                     )
                 } else {
-                    latestTab.selection = nextSelection
-                    latestTab.lastModified = Date()
-                    persistedSelection = updateComposeTabStoredOnly(
-                        latestTab,
-                        inWorkspaceID: target.identity.workspaceID
-                    ) ? nextSelection : expectedSelection
+                    let result = await persistSelectionThroughDomainAuthority(
+                        nextSelection,
+                        for: target.identity,
+                        expectedCurrentSelection: expectedSelection,
+                        operationID: UUID()
+                    )
+                    persistedSelection = result.disposition == .committed
+                        ? result.selection
+                        : expectedSelection
                 }
                 guard persistedSelection == nextSelection else { continue }
                 #if DEBUG

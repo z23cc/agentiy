@@ -882,6 +882,8 @@ package struct DomainPersistenceCoordinator {
         expectedRevision: UInt64,
         operationID: UUID? = nil,
         fingerprint: String? = nil,
+        selectionMutation: DomainWorkspaceSelectionMutationDescriptor? = nil,
+        contextMutation: DomainWorkspaceContextMutationDescriptor? = nil,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim
@@ -895,6 +897,8 @@ package struct DomainPersistenceCoordinator {
                 expectedRevision: expectedRevision,
                 operationID: operationID,
                 fingerprint: fingerprint,
+                selectionMutation: selectionMutation,
+                contextMutation: contextMutation,
                 now: now,
                 permit: permit,
                 commandClaim: commandClaim,
@@ -2049,7 +2053,9 @@ package struct DomainPersistenceCoordinator {
         recoveryMode: Bool,
         externalObservationPlan: DomainExternalObservationRecoveryPlan? = nil,
         externalObservationBytes: Data? = nil,
-        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil,
+        selectionMutation: DomainWorkspaceSelectionMutationDescriptor? = nil,
+        contextMutation: DomainWorkspaceContextMutationDescriptor? = nil
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
         finalization: DomainWorkspaceJournalMutationFinalization,
@@ -2086,7 +2092,9 @@ package struct DomainPersistenceCoordinator {
                 updatedAt: now,
                 diskDocumentBytes: diskDocumentBytes,
                 commandClaim: commandClaim,
-                recoveryMode: recoveryMode
+                recoveryMode: recoveryMode,
+                selectionMutation: selectionMutation,
+                contextMutation: contextMutation
             )
         }
         defer { transaction.close() }
@@ -2347,6 +2355,8 @@ package struct DomainPersistenceCoordinator {
         expectedRevision: UInt64,
         operationID: UUID?,
         fingerprint: String?,
+        selectionMutation: DomainWorkspaceSelectionMutationDescriptor? = nil,
+        contextMutation: DomainWorkspaceContextMutationDescriptor? = nil,
         now: Date,
         permit: DomainWorkspaceMutationPermit,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
@@ -2379,7 +2389,9 @@ package struct DomainPersistenceCoordinator {
                 now: now,
                 diskDocumentBytes: try boundedWorkspaceDocumentBytes(at: document.fileURL),
                 commandClaim: commandClaim,
-                recoveryMode: recoveryMode
+                recoveryMode: recoveryMode,
+                selectionMutation: selectionMutation,
+                contextMutation: contextMutation
             )
             return DomainPersistenceWorkingCommit(
                 journal: result.receipt.committedJournal.journal,

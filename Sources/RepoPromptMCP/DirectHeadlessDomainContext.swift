@@ -308,31 +308,93 @@ actor DirectHeadlessDomainContext {
         else {
             throw Error.invalidWorkspaceDocument
         }
+        let command: DomainWorkspaceCommand
         switch mutation {
         case let .setPrompt(prompt):
             contexts[index]["prompt"] = prompt
+            document["composeTabs"] = contexts
+            let replacementBytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            let replacement = try DomainWorkspaceDocument.decode(
+                documentBytes: replacementBytes,
+                fileURL: current.workspace.document.fileURL
+            )
+            let contextMutation = try DomainWorkspaceContextMutationRequest(
+                workspaceID: current.identity.workspaceID,
+                contextID: current.identity.contextID,
+                expectedContextDigest: DomainWorkspaceContextDigest.make(
+                    document: current.workspace.document,
+                    contextID: current.identity.contextID
+                ),
+                candidateContextDigest: DomainWorkspaceContextDigest.make(
+                    document: replacement,
+                    contextID: current.identity.contextID
+                ),
+                mutationKind: .replacePrompt,
+                candidateDocument: replacement
+            )
+            command = .replaceContext(contextMutation)
         case let .setSelection(paths):
-            contexts[index]["selectedPaths"] = try Self.translateSelectionToCanonical(
+            let canonicalSelectedPaths = try Self.translateSelectionToCanonical(
                 paths,
                 mappings: current.rootOverlay.mappings
             )
+            if var selection = contexts[index]["selection"] as? [String: Any] {
+                selection["selectedPaths"] = canonicalSelectedPaths
+                contexts[index]["selection"] = selection
+            } else {
+                // Preserve the legacy flat tab shape when the source document uses it.
+                // DomainWorkspaceSelectionDigest normalizes both representations, while
+                // rewriting the shape here would create an unrelated semantic mutation.
+                contexts[index]["selectedPaths"] = canonicalSelectedPaths
+            }
+            document["composeTabs"] = contexts
+            let replacementBytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+            let replacement = try DomainWorkspaceDocument.decode(
+                documentBytes: replacementBytes,
+                fileURL: current.workspace.document.fileURL
+            )
+            let selectionMutation = try DomainWorkspaceSelectionMutationRequest(
+                workspaceID: current.identity.workspaceID,
+                contextID: current.identity.contextID,
+                expectedSelectionDigest: DomainWorkspaceSelectionDigest.make(
+                    document: current.workspace.document,
+                    contextID: current.identity.contextID
+                ),
+                candidateSelectionDigest: DomainWorkspaceSelectionDigest.make(
+                    document: replacement,
+                    contextID: current.identity.contextID
+                ),
+                candidateDocument: replacement
+            )
+            command = .replaceSelection(selectionMutation)
         }
-        document["composeTabs"] = contexts
-        let bytes = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
-        let replacement = try DomainWorkspaceDocument.decode(
-            documentBytes: bytes,
-            fileURL: current.workspace.document.fileURL
-        )
         try await MCPDomainMutationCommitContext.willCommit()
         let operationID = request.securityContext?.invocationID ?? UUID()
-        let outcome = await runtime.workspaceStore.execute(DomainWorkspaceCommandEnvelope(
-            operationID: operationID,
-            expectedCatalogRevision: nil,
-            expectedWorkspaceRevision: current.workspace.revisions.workingRevision,
-            expectedContextRevision: current.context.revisions.workingRevision,
-            origin: .standalone,
-            command: .replaceWorkingDocument(replacement)
-        ))
+        let outcome: DomainCommandOutcome = if case let .replaceSelection(selectionMutation) = command {
+            await runtime.workspaceStore.applySelectionMutation(
+                selectionMutation,
+                operationID: operationID,
+                expectedWorkspaceRevision: current.workspace.revisions.workingRevision,
+                expectedContextRevision: current.context.revisions.workingRevision,
+                origin: .standalone
+            )
+        } else if case let .replaceContext(contextMutation) = command {
+            await runtime.workspaceStore.applyContextMutation(
+                contextMutation,
+                operationID: operationID,
+                expectedWorkspaceRevision: current.workspace.revisions.workingRevision,
+                expectedContextRevision: current.context.revisions.workingRevision,
+                origin: .standalone
+            )
+        } else {
+            await runtime.workspaceStore.execute(DomainWorkspaceCommandEnvelope(
+                operationID: operationID,
+                expectedWorkspaceRevision: current.workspace.revisions.workingRevision,
+                expectedContextRevision: current.context.revisions.workingRevision,
+                origin: .standalone,
+                command: command
+            ))
+        }
         guard outcome.disposition == .applied
             || outcome.disposition == .unchanged
             || outcome.disposition == .deduplicated

@@ -15215,8 +15215,16 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             lookupContext: lookupContext
         )
         guard updatedSelection != tab.selection else { return }
-        tab.selection = updatedSelection
-        workspaceManager.updateComposeTabStoredOnly(tab)
+        guard let workspaceID = workspaceManager.workspaces.first(where: {
+            $0.composeTabs.contains(where: { $0.id == tabID })
+        })?.id else { return }
+        let identity = WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: tabID)
+        _ = await workspaceManager.persistSelectionThroughDomainAuthority(
+            updatedSelection,
+            for: identity,
+            expectedCurrentSelection: tab.selection,
+            operationID: UUID()
+        )
     }
 
     static func shouldAttemptTaggedFileAutoSelection(

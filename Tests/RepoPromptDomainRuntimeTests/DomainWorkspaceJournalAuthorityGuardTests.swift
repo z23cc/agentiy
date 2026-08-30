@@ -1297,6 +1297,48 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(spec.contains("## P5-14 amendment — Rust-owned claimless recovery publication"))
     }
 
+    func testP515SelectionAndContextMutationsCrossOneRustAuthority() throws {
+        let root = repositoryRoot()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+
+        let command = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceCommand.swift")
+        let authority = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift")
+        let models = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceModels.swift")
+        let journal = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift")
+        let persistence = try source("Sources/RepoPromptDomainRuntime/DomainPersistence.swift")
+        let bridge = try source("Sources/RepoPrompt/Infrastructure/MCP/AppShared/DomainWorkspacePresentationBridge.swift")
+        let manager = try source("Sources/RepoPrompt/Features/Workspaces/ViewModels/WorkspaceManagerViewModel.swift")
+        let coordinator = try source("Sources/RepoPrompt/Infrastructure/WorkspaceContext/Selection/WorkspaceSelectionCoordinator.swift")
+        let headless = try source("Sources/RepoPromptMCP/DirectHeadlessDomainContext.swift")
+        let rust = try source("rust/crates/runtime/src/workspace_persistence_journal.rs")
+        let spec = try source("docs/spec/rust-workspace-document-projection-v1.md")
+
+        XCTAssertTrue(command.contains("case replaceSelection"))
+        XCTAssertTrue(command.contains("case replaceContext"))
+        XCTAssertTrue(models.contains("enum DomainWorkspaceContextDigest"))
+        XCTAssertTrue(authority.contains("applySelectionMutation"))
+        XCTAssertTrue(authority.contains("applyContextMutation"))
+        XCTAssertTrue(journal.contains("contextMutation: DomainWorkspaceContextMutationDescriptor?"))
+        XCTAssertTrue(persistence.contains("contextMutation: contextMutation"))
+        XCTAssertTrue(bridge.contains("func executeContext("))
+        XCTAssertTrue(manager.contains("persistTabContextThroughDomainAuthority"))
+        XCTAssertTrue(coordinator.contains("persistSelectionThroughDomainAuthority"))
+        XCTAssertTrue(headless.contains("applySelectionMutation"))
+        XCTAssertTrue(headless.contains("applyContextMutation"))
+        XCTAssertTrue(rust.contains("WorkspaceContextMutationDescriptorV1"))
+        XCTAssertTrue(rust.contains("workspace_context_digest_v1"))
+        XCTAssertTrue(spec.contains("## P5-15 amendment — Rust-owned selection and context mutation authority"))
+
+        let rebaseStart = try XCTUnwrap(manager.range(of: "func rebaseSlicesForFileAcrossTabs(\n        fullPath: String,"))
+        let rebaseEnd = try XCTUnwrap(manager.range(of: "    @MainActor\n    func rebaseSlicesForFileAcrossTabs(\n        fullPath: String,\n        asyncTransform:", range: rebaseStart.upperBound ..< manager.endIndex))
+        XCTAssertFalse(manager[rebaseStart.lowerBound ..< rebaseEnd.lowerBound].contains("updateComposeTabStoredOnly"))
+
+        let headlessMutation = try XCTUnwrap(headless.range(of: "func mutate("))
+        XCTAssertFalse(headless[headlessMutation.lowerBound ..< headless.endIndex].contains("command: .replaceWorkingDocument"))
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
