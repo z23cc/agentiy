@@ -11,6 +11,7 @@
     "session_store": "DomainAgentSessionAuthority",
     "identity_admission": "DomainAgentSessionLifecycleDecisionAuthority",
     "run_lifecycle": "DomainAgentRunLifecycleTracker",
+    "terminal_commit": "DomainAgentRunTerminalCommitState",
     "interaction": "DomainInteractionBroker",
     "activity": "DomainActivityCenter",
     "credential_fallback": "DomainCredentialEnvelopeStore",

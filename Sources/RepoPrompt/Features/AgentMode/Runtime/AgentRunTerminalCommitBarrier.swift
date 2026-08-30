@@ -146,7 +146,8 @@ final class AgentRunTerminalCommitBarrier {
             recordRejection("commit_in_progress", request: request)
             return nil
         }
-        if let existingRevision = lifecycle.lastTerminalCommitRevision,
+        if lifecycle.hasTerminalCommit(for: request.ownership),
+           let existingRevision = lifecycle.lastTerminalCommitRevision,
            existingRevision.ownership == request.ownership
         {
             recordRejection("duplicate_commit", request: request)

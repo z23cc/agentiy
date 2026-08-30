@@ -146,6 +146,7 @@ package struct DomainAgentRunLifecycleTracker: Equatable, Sendable {
     package private(set) var activeOwnership: DomainAgentRunOwnership?
     package private(set) var liveness: DomainAgentRunLivenessSnapshot?
     private var nextSequence: UInt64 = 1
+    private var terminalCommit = DomainAgentRunTerminalCommitState()
 
     package init() {}
 
@@ -179,7 +180,56 @@ package struct DomainAgentRunLifecycleTracker: Equatable, Sendable {
             lastHeartbeatUptimeNanoseconds: nil
         )
         nextSequence = 1
+        terminalCommit.reset()
         return ownership
+    }
+
+    package var terminalCommitInProgress: Bool {
+        terminalCommit.isInProgress
+    }
+
+    package var terminalCommitPublicationResult: DomainAgentRunTerminalPublicationResult? {
+        terminalCommit.publicationResult
+    }
+
+    package var terminalCommitReceipt: DomainAgentRunTerminalCommitReceipt? {
+        terminalCommit.stagedReceipt
+    }
+
+    package func hasTerminalCommit(
+        for ownership: DomainAgentRunOwnership
+    ) -> Bool {
+        terminalCommit.matches(ownership: ownership)
+    }
+
+    @discardableResult
+    package mutating func beginTerminalCommit() -> DomainAgentRunTerminalCommitBeginResult {
+        terminalCommit.begin(ownership: activeOwnership)
+    }
+
+    package mutating func stageTerminalCommit(
+        commitID: UUID,
+        ownership: DomainAgentRunOwnership
+    ) -> Bool {
+        terminalCommit.stage(commitID: commitID, ownership: ownership)
+    }
+
+    package mutating func recordTerminalPublicationResult(
+        _ result: DomainAgentRunTerminalPublicationResult
+    ) {
+        terminalCommit.record(result)
+    }
+
+    package mutating func abortTerminalCommit() {
+        terminalCommit.abort()
+    }
+
+    package mutating func completeTerminalCommit() {
+        terminalCommit.complete()
+    }
+
+    package mutating func invalidateTerminalCommit() {
+        terminalCommit.invalidate()
     }
 
     @discardableResult

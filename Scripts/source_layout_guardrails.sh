@@ -512,6 +512,7 @@ if [[ -d "$domain_runtime_source_dir" ]]; then
     "DomainAgentSessionAuthority.swift"
     "DomainAgentSessionLifecycleAuthority.swift"
     "DomainAgentRunLifecycleContracts.swift"
+    "DomainAgentRunTerminalCommitContracts.swift"
     "DomainInteractionBroker.swift"
     "DomainCredentialEnvelope.swift"
     "DomainActivityCenter.swift"
@@ -560,6 +561,7 @@ assert value["approval"]["routing_opt_out"] is False
 assert value["authority"]["typed_policy_errors_preserved"] is True
 assert value["authority"]["identity_admission"] == "DomainAgentSessionLifecycleDecisionAuthority"
 assert value["authority"]["run_lifecycle"] == "DomainAgentRunLifecycleTracker"
+assert value["authority"]["terminal_commit"] == "DomainAgentRunTerminalCommitState"
 assert value["public_contract"]["schema_behavior"] == "wrapped_binding_definition_preserved"
 assert value["public_contract"]["proxy_behavior_changed"] is False
 PY
@@ -580,6 +582,16 @@ PY
     || ! grep -q 'typealias AgentRunLifecycleTracker = DomainAgentRunLifecycleTracker' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunLifecycleContracts.swift" \
     || ! grep -q 'typealias AgentRunOwnership = DomainAgentRunOwnership' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunLifecycleContracts.swift"; then
     fail "Agent run ownership and liveness must be delegated to the Domain reducer"
+  fi
+  if ! grep -q 'package struct DomainAgentRunTerminalCommitState' "$domain_runtime_source_dir/DomainAgentRunTerminalCommitContracts.swift" \
+    || ! grep -q 'tracker.beginTerminalCommit' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
+    || ! grep -q 'tracker.recordTerminalPublicationResult' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
+    || ! grep -q 'lifecycle.hasTerminalCommit' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift"; then
+    fail "Agent run terminal commit phase and result must be delegated to the Domain reducer"
+  fi
+  if grep -q -E 'private\(set\) var terminalCommitInProgress|private\(set\) var lastTerminalPublicationResult' \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift"; then
+    fail "App Agent run lifecycle reintroduced terminal commit authority state"
   fi
   if grep -q -E 'struct AgentRun(Ownership|ProgressSignal|LivenessSnapshot)|enum AgentRun(ProgressRejection|ProgressAcceptance|LifecycleStage|LivenessSignalKind|RetryIntent)|struct AgentRunLifecycleTracker' \
     "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunLifecycleContracts.swift"; then
@@ -935,6 +947,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p12-agent-session-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p13-agent-session-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p14-agent-run-lifecycle-authority.md"
+  "docs/spec/headless-mcp-domain-runtime-p15-agent-run-terminal-commit-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"

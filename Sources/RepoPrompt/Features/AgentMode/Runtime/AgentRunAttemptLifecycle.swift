@@ -63,9 +63,9 @@ final class AgentRunAttemptLifecycle {
     /// Provider process run identity for the active or most recent run.
     private(set) var currentRunID: UUID?
     private(set) var providerTerminalDrainGeneration: UInt64 = 0
-    private(set) var terminalCommitInProgress = false
+    /// Full revision data is an App projection needed by publication hooks;
+    /// commit identity and phase are owned by the Domain tracker.
     private(set) var lastTerminalCommitRevision: AgentRunTerminalCommitRevision?
-    private(set) var lastTerminalPublicationResult: AgentRunTerminalPublicationResult?
     private(set) var terminalResources: AgentRunAttemptTerminalResources?
 
     var activeOwnership: AgentRunOwnership? {
@@ -74,6 +74,16 @@ final class AgentRunAttemptLifecycle {
 
     var liveness: AgentRunLivenessSnapshot? {
         tracker.liveness
+    }
+
+    /// Domain-owned terminal publication result projected for existing App
+    /// call sites. The reducer remains the only mutable authority.
+    var terminalCommitInProgress: Bool {
+        tracker.terminalCommitInProgress
+    }
+
+    var lastTerminalPublicationResult: AgentRunTerminalPublicationResult? {
+        tracker.terminalCommitPublicationResult
     }
 
     // MARK: Attempt lifecycle
@@ -90,9 +100,7 @@ final class AgentRunAttemptLifecycle {
             "Beginning a run attempt with unclaimed terminal resources leaks the prior attempt's teardown"
         )
         terminalResources = nil
-        terminalCommitInProgress = false
         lastTerminalCommitRevision = nil
-        lastTerminalPublicationResult = nil
         providerTerminalDrainGeneration = 0
         return tracker.begin(
             tabID: context.tabID,
@@ -200,7 +208,7 @@ final class AgentRunAttemptLifecycle {
         return teardown
     }
 
-    // MARK: Phased terminal commit
+    // MARK: Phased terminal commit (Domain-backed facade)
 
     // The terminal commit is not one operation: a revision becomes visible
     // before canonical publication resolves, and the in-progress flag clears
@@ -208,26 +216,27 @@ final class AgentRunAttemptLifecycle {
     // one-to-one onto the barrier's existing mutation points and must not be
     // collapsed.
 
-    /// Acquires the terminal-commit phase. Returns `false` when a commit is
-    /// already in progress.
+    /// Acquires the Domain-owned terminal-commit phase. Returns `false` when a
+    /// commit is already in progress.
     @discardableResult
     func beginTerminalCommit() -> Bool {
-        guard !terminalCommitInProgress else { return false }
-        terminalCommitInProgress = true
-        return true
+        tracker.beginTerminalCommit() == .acquired
     }
 
     /// Releases the phase after a post-acquisition validation failure without
     /// touching the staged revision or publication result.
     func abortTerminalCommit() {
-        terminalCommitInProgress = false
+        tracker.abortTerminalCommit()
     }
 
     /// Stores the settled revision and clears the prior publication result.
     /// Does not end the terminal-commit phase.
     func stageTerminalRevision(_ revision: AgentRunTerminalCommitRevision) {
+        guard tracker.stageTerminalCommit(
+            commitID: revision.commitID,
+            ownership: revision.ownership
+        ) else { return }
         lastTerminalCommitRevision = revision
-        lastTerminalPublicationResult = nil
     }
 
     /// Records the canonical publication result. Intentionally unguarded: a
@@ -235,12 +244,12 @@ final class AgentRunAttemptLifecycle {
     /// progress, and a binding transition may clear the revision while
     /// publication is suspended.
     func recordTerminalPublicationResult(_ result: AgentRunTerminalPublicationResult) {
-        lastTerminalPublicationResult = result
+        tracker.recordTerminalPublicationResult(result)
     }
 
     /// Ends the terminal-commit phase, preserving revision and result.
     func completeTerminalCommit() {
-        terminalCommitInProgress = false
+        tracker.completeTerminalCommit()
     }
 
     /// A rebind must not carry the runtime-only terminal classification or
@@ -249,6 +258,10 @@ final class AgentRunAttemptLifecycle {
     /// terminal-commit phase are preserved.
     func invalidateTerminalRevisionForBindingTransition() {
         lastTerminalCommitRevision = nil
-        lastTerminalPublicationResult = nil
+        tracker.invalidateTerminalCommit()
+    }
+
+    func hasTerminalCommit(for ownership: AgentRunOwnership) -> Bool {
+        tracker.hasTerminalCommit(for: ownership)
     }
 }
