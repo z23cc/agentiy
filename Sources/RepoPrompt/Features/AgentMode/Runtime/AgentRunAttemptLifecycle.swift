@@ -2,11 +2,14 @@ import Foundation
 
 // MARK: - App-host run-attempt lifecycle facade
 
-/// Single named owner of one tab-session's transient run-attempt lifecycle and
-/// terminal-settlement bookkeeping.
+/// App facade for one tab-session's transient terminal-settlement bookkeeping.
+///
+/// Provider-neutral ownership and liveness state is reduced by the Domain
+/// `DomainAgentRunLifecycleTracker`; this facade only coordinates that reducer with App-owned
+/// terminal resources and publication phases.
 ///
 /// This type consolidates what used to be a stored field cluster on
-/// `AgentTabSession` (run identity, the attempt tracker, provider
+/// `AgentTabSession` (run identity, the Domain attempt tracker, provider
 /// drain generation, the terminal-commit phase flag, the settled terminal
 /// revision/publication result, and exactly-once terminal resources) behind
 /// named single-writer operations.

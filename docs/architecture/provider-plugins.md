@@ -109,6 +109,7 @@ The remote-by-default policy avoids breaking checkouts that do not have a siblin
 | MCP permission policies, Agentry MCP auto-approval, tool tracking | core |
 | Agent Mode transcript mutation, tool-card UI, run-state ownership | core |
 | Agent session identity/protection facts and mutation admission decisions | `RepoPromptDomainRuntime` (`DomainAgentSessionLifecycleDecisionAuthority`); App retains UI projection reconciliation |
+| Agent run-attempt ownership, liveness, progress sequencing, and heartbeat semantics | `RepoPromptDomainRuntime` (`DomainAgentRunLifecycleTracker`); App retains terminal teardown adaptation |
 | Interactive process/NDJSON/turn/control authority (`agent_claude::AgentClaudeScope`) | Rust runtime |
 | Provider-neutral runtime contract (`NativeAgentRuntimeControlling`) | core |
 | Provider-neutral RepoPrompt workflow prompt catalog and renderers (`RepoPromptShared/Workflows`) | core |
