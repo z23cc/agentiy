@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Foundation
 import RepoPromptDomainRuntime
 import RepoPromptShared
@@ -77,7 +78,28 @@ final class AppDomainRuntimeComposition: Sendable {
                 eventDirectory: root.appendingPathComponent("Events", isDirectory: true),
                 temporaryDirectory: AgentryProductIdentity.temporaryRootURL(),
                 legacyRuntimeDefaults: legacyRuntimeDefaults,
-                metrics: AppDomainRuntimeMetrics.editFlowSink
+                metrics: AppDomainRuntimeMetrics.editFlowSink,
+                catalogProvider: {
+                    let owner = try await AgentryCoreService.shared.runtime()
+                    let coreCatalog = try await owner.coreMcpToolCatalogSnapshot()
+                    return try MCPDomainCatalogSnapshot(core: coreCatalog)
+                },
+                operationResolver: { toolName, input in
+                    let owner = try await AgentryCoreService.shared.runtime()
+                    let coreInput: CoreMcpToolOperationInput = switch input {
+                    case .missing: .missing
+                    case let .value(value): .value(value)
+                    case .malformed: .malformed
+                    }
+                    let identity = try await owner.coreMcpToolOperationIdentity(
+                        toolName: toolName,
+                        input: coreInput
+                    )
+                    return MCPDomainToolOperationIdentity(
+                        canonicalTool: identity.canonicalTool,
+                        normalizedOperation: identity.normalizedOperation
+                    )
+                }
             )
         )
     }
@@ -207,6 +229,9 @@ final class AppGlobalMCPServiceComposition {
         let attempt = registrationAttempt.start {
             @MainActor [runtime, networkManager, appSettingsService, windowRoutingService] in
             try await runtime.start()
+            guard let catalog = await runtime.toolRegistry.catalogSnapshot() else {
+                throw MCPDomainToolRegistryError.catalogUnavailable
+            }
             await windowRoutingService.prepareDomainTools()
             let appSettingsTools = await appSettingsService.tools
             let windowRoutingTools = await windowRoutingService.tools
@@ -214,12 +239,12 @@ final class AppGlobalMCPServiceComposition {
                 MCPDomainToolRegistrationRequest(
                     registrationID: appSettingsService.domainRegistrationID,
                     scope: .application,
-                    bindings: appSettingsTools.map { try $0.domainBinding() }
+                    bindings: appSettingsTools.map { try $0.domainBinding(catalog: catalog) }
                 ),
                 MCPDomainToolRegistrationRequest(
                     registrationID: windowRoutingService.domainRegistrationID,
                     scope: .application,
-                    bindings: windowRoutingTools.map { try $0.domainBinding() }
+                    bindings: windowRoutingTools.map { try $0.domainBinding(catalog: catalog) }
                 )
             ]
             let results = try await runtime.toolRegistry.registerAtomically(requests)

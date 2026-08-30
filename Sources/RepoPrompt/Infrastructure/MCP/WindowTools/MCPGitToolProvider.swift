@@ -215,10 +215,17 @@ final class MCPGitToolProvider {
     )
 
     private let dependencies: Dependencies
+    private let domainHost: MCPDomainHost
     private var stagedAdvertisementsByInvocation: [UUID: MCPGitStagedAdvertisement] = [:]
 
-    init(runtime _: MCPAppToolBinder, context: MCPAppPhysicalCapabilityAdapters.Context, selection: MCPAppPhysicalCapabilityAdapters.Selection) {
+    init(
+        runtime _: MCPAppToolBinder,
+        context: MCPAppPhysicalCapabilityAdapters.Context,
+        selection: MCPAppPhysicalCapabilityAdapters.Selection,
+        domainHost: MCPDomainHost
+    ) {
         dependencies = (context: context, selection: selection)
+        self.domainHost = domainHost
     }
 
     private nonisolated static let maxConcurrentRepositories = 3
@@ -451,7 +458,7 @@ final class MCPGitToolProvider {
         guard let op = GitOp(rawValue: opRaw) else {
             throw MCPError.invalidParams("Invalid op: \(opRaw). Valid ops: status, diff, log, show, blame")
         }
-        let evidenceOperationIdentity = MCPToolAdmissionPolicy.operationIdentity(
+        let evidenceOperationIdentity = await MCPToolAdmissionPolicy.rustOperationIdentity(
             forCanonicalToolName: MCPWindowToolName.git,
             arguments: args
         )
@@ -574,14 +581,15 @@ final class MCPGitToolProvider {
             try await dependencies.context.validateContextBuilderGitArtifactSelection(metadata, publicationFence.target)
         }
 
-        // Tool-level admission is keyed by every repository touched by this request. WI-9's
-        // lower-level global/per-repository subprocess controller remains independently active.
+        // Tool-level admission is keyed by every canonical repository touched by this request.
+        // The domain host owns the catalog-bound limit and the atomic multi-repository wait.
         let gitLeaseWaitClock = ContinuousClock()
         let gitLeaseWaitStart = gitLeaseWaitClock.now
-        let gitAdmissionLease: MCPGitToolAdmissionController.Lease
+        let gitAdmissionLease: MCPDomainToolAdmissionLease
         do {
-            gitAdmissionLease = try await MCPGitToolAdmissionController.shared.acquire(
-                repositoryRoots: repos.map(\.rootURL)
+            gitAdmissionLease = try await domainHost.acquireRepositoryResourceAdmission(
+                toolName: MCPWindowToolName.git,
+                repositoryKeys: repos.map { MCPGitRepositoryAdmissionIdentity.key(for: $0.rootURL) }
             )
             MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                 classKey: .gitRead,
@@ -596,7 +604,7 @@ final class MCPGitToolProvider {
             )
             throw error
         }
-        defer { MCPGitToolAdmissionController.shared.release(gitAdmissionLease) }
+        defer { _ = gitAdmissionLease.release() }
 
         // For now, use primary repo for single-repo operations
         // Multi-root execution will be implemented for operations that benefit from it (status, diff)

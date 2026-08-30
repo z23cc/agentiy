@@ -1,6 +1,20 @@
-// P8 MCP catalog FFI records are kept in a separate source file so the generated
+// P9 MCP catalog FFI records are kept in a separate source file so the generated
 // UniFFI surface remains easy to audit against the language-neutral proto record.
+use crate::errors::CoreError;
 use agentry_proto as proto;
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreMcpToolOperationInputV1 {
+    Missing,
+    Value(String),
+    Malformed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreMcpToolOperationIdentityV1 {
+    pub canonical_tool: String,
+    pub normalized_operation: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreMcpToolAliasV1 {
@@ -50,13 +64,17 @@ pub struct CoreMcpToolCatalogV1 {
     pub catalog_version: u16,
     pub definition_schema_version: u16,
     pub digest: String,
+    /// Exact bytes used to compute `digest`; consumers must verify before projecting tools.
+    pub canonical_catalog_json: Vec<u8>,
     pub tools: Vec<CoreMcpToolDefinitionV1>,
 }
 
-impl From<&proto::McpToolDefinitionV1> for CoreMcpToolDefinitionV1 {
-    fn from(tool: &proto::McpToolDefinitionV1) -> Self {
-        let input_schema_json = serde_json::to_string(&tool.input_schema)
-            .expect("canonical MCP schema values are serializable");
+impl TryFrom<&proto::McpToolDefinitionV1> for CoreMcpToolDefinitionV1 {
+    type Error = CoreError;
+
+    fn try_from(tool: &proto::McpToolDefinitionV1) -> Result<Self, Self::Error> {
+        let input_schema_json =
+            serde_json::to_string(&tool.input_schema).map_err(|_| CoreError::InvalidArgument)?;
         let operation_policy =
             tool.operation_policy
                 .as_ref()
@@ -72,13 +90,9 @@ impl From<&proto::McpToolDefinitionV1> for CoreMcpToolDefinitionV1 {
                         })
                         .collect(),
                     default_operation: policy.default_operation.clone(),
-                    normalization: serde_json::to_value(policy.normalization)
-                        .expect("normalization is serializable")
-                        .as_str()
-                        .expect("normalization is a string")
-                        .to_owned(),
+                    normalization: normalization_name(policy.normalization),
                 });
-        Self {
+        Ok(Self {
             name: tool.name.clone(),
             description: tool.description.clone(),
             input_schema_json,
@@ -88,41 +102,98 @@ impl From<&proto::McpToolDefinitionV1> for CoreMcpToolDefinitionV1 {
             idempotent_hint: tool.annotations.idempotent_hint,
             open_world_hint: tool.annotations.open_world_hint,
             enabled_by_default: tool.enabled_by_default,
-            scope: serde_json::to_value(tool.scope)
-                .expect("scope is serializable")
-                .as_str()
-                .expect("scope is a string")
-                .to_owned(),
+            scope: scope_name(tool.scope),
             registration_scopes: tool
                 .registration_scopes
                 .iter()
-                .map(|scope| {
-                    serde_json::to_value(scope)
-                        .expect("scope is serializable")
-                        .as_str()
-                        .unwrap()
-                        .to_owned()
-                })
+                .map(|scope| registration_scope_name(*scope))
                 .collect(),
             capability: tool.capability.clone(),
-            admission_class: serde_json::to_value(tool.admission_class)
-                .expect("admission class is serializable")
-                .as_str()
-                .expect("admission class is a string")
-                .to_owned(),
+            admission_class: admission_class_name(tool.admission_class),
             operation_policy,
             limits: CoreMcpToolLimitsV1 {
                 connection_lane: tool.limits.connection_lane,
                 resource_lease: tool.limits.resource_lease,
-                resource_scope: tool.limits.resource_scope.map(|scope| {
-                    serde_json::to_value(scope)
-                        .expect("resource scope is serializable")
-                        .as_str()
-                        .unwrap()
-                        .to_owned()
-                }),
+                resource_scope: tool.limits.resource_scope.map(resource_scope_name),
             },
             shared_read: tool.shared_read,
+        })
+    }
+}
+
+impl TryFrom<(&proto::McpCatalogV1, String, Vec<u8>)> for CoreMcpToolCatalogV1 {
+    type Error = CoreError;
+
+    fn try_from(
+        (catalog, digest, canonical_catalog_json): (&proto::McpCatalogV1, String, Vec<u8>),
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            catalog_version: catalog.catalog_version,
+            definition_schema_version: catalog.definition_schema_version,
+            digest,
+            canonical_catalog_json,
+            tools: catalog
+                .tools
+                .iter()
+                .map(CoreMcpToolDefinitionV1::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl From<CoreMcpToolOperationInputV1> for proto::McpToolOperationInputV1 {
+    fn from(value: CoreMcpToolOperationInputV1) -> Self {
+        match value {
+            CoreMcpToolOperationInputV1::Missing => Self::Missing,
+            CoreMcpToolOperationInputV1::Value(value) => Self::Value(value),
+            CoreMcpToolOperationInputV1::Malformed => Self::Malformed,
         }
     }
+}
+
+fn scope_name(value: proto::McpToolScopeV1) -> String {
+    match value {
+        proto::McpToolScopeV1::Application => "application",
+        proto::McpToolScopeV1::Window => "window",
+    }
+    .to_owned()
+}
+
+fn registration_scope_name(value: proto::McpToolRegistrationScopeV1) -> String {
+    match value {
+        proto::McpToolRegistrationScopeV1::Application => "application",
+        proto::McpToolRegistrationScopeV1::Window => "window",
+        proto::McpToolRegistrationScopeV1::Standalone => "standalone",
+    }
+    .to_owned()
+}
+
+fn admission_class_name(value: proto::McpToolAdmissionClassV1) -> String {
+    match value {
+        proto::McpToolAdmissionClassV1::Exclusive => "exclusive",
+        proto::McpToolAdmissionClassV1::Control => "control",
+        proto::McpToolAdmissionClassV1::SmallRead => "small_read",
+        proto::McpToolAdmissionClassV1::FileRead => "file_read",
+        proto::McpToolAdmissionClassV1::GitRead => "git_read",
+        proto::McpToolAdmissionClassV1::FileSearch => "file_search",
+    }
+    .to_owned()
+}
+
+fn resource_scope_name(value: proto::McpToolResourceScopeV1) -> String {
+    match value {
+        proto::McpToolResourceScopeV1::Application => "application",
+        proto::McpToolResourceScopeV1::Window => "window",
+        proto::McpToolResourceScopeV1::Repository => "repository",
+    }
+    .to_owned()
+}
+
+fn normalization_name(value: proto::McpToolOperationNormalizationV1) -> String {
+    match value {
+        proto::McpToolOperationNormalizationV1::Exact => "exact",
+        proto::McpToolOperationNormalizationV1::Lowercased => "lowercased",
+        proto::McpToolOperationNormalizationV1::TrimmedLowercased => "trimmed_lowercased",
+    }
+    .to_owned()
 }

@@ -440,8 +440,13 @@ protocol CoreRuntimeTransport: Sendable {
         rootID: Data
     ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
 
-    // ---- P8: Rust-owned canonical MCP/tool catalog ---------------------------------------
+    // ---- P9: Rust-owned canonical MCP/tool catalog ---------------------------------------
     func mcpToolCatalogV1(identity: CoreRuntimeIdentity) throws -> AgentryUniFFIRaw.CoreMcpToolCatalogV1
+    func mcpToolOperationIdentityV1(
+        identity: CoreRuntimeIdentity,
+        toolName: String,
+        input: AgentryUniFFIRaw.CoreMcpToolOperationInputV1
+    ) throws -> AgentryUniFFIRaw.CoreMcpToolOperationIdentityV1
 
     // ---- P7: Rust-owned filesystem watcher ingress mailbox -------------------------------
     func fileSystemWatcherOpenScope(
@@ -528,6 +533,14 @@ extension CoreRuntimeTransport {
     /// production UniFFI transport overrides this with the Rust export.
     func mcpToolCatalogV1(identity: CoreRuntimeIdentity) throws -> AgentryUniFFIRaw.CoreMcpToolCatalogV1 {
         throw CoreTransportError.unexpected("MCP catalog projection unavailable")
+    }
+
+    func mcpToolOperationIdentityV1(
+        identity: CoreRuntimeIdentity,
+        toolName: String,
+        input: AgentryUniFFIRaw.CoreMcpToolOperationInputV1
+    ) throws -> AgentryUniFFIRaw.CoreMcpToolOperationIdentityV1 {
+        throw CoreTransportError.unexpected("MCP operation identity unavailable")
     }
 }
 
@@ -5075,10 +5088,26 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    // ---- P8: Rust-owned canonical MCP/tool catalog --------------------------------------------
+    // ---- P9: Rust-owned canonical MCP/tool catalog --------------------------------------------
     func mcpToolCatalogV1(identity: CoreRuntimeIdentity) throws -> AgentryUniFFIRaw.CoreMcpToolCatalogV1 {
         do {
             return try runtime.mcpToolCatalogV1(identity: Self.rawIdentity(identity))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func mcpToolOperationIdentityV1(
+        identity: CoreRuntimeIdentity,
+        toolName: String,
+        input: AgentryUniFFIRaw.CoreMcpToolOperationInputV1
+    ) throws -> AgentryUniFFIRaw.CoreMcpToolOperationIdentityV1 {
+        do {
+            return try runtime.mcpToolOperationIdentityV1(
+                identity: Self.rawIdentity(identity),
+                toolName: toolName,
+                input: input
+            )
         } catch {
             throw Self.map(error)
         }
@@ -5492,6 +5521,25 @@ public actor AgentryCoreBridge {
 
     public func runtimeIdentity() throws -> CoreRuntimeIdentity {
         try requireIdentity()
+    }
+
+    /// Resolves operation identity from the Rust catalog. Alias and normalization behavior is
+    /// never reconstructed by the domain runtime.
+    public func mcpToolOperationIdentity(
+        toolName: String,
+        input: CoreMcpToolOperationInput
+    ) throws -> CoreMcpToolOperationIdentity {
+        let identity = try requireIdentity()
+        do {
+            let raw = try transport.mcpToolOperationIdentityV1(
+                identity: identity,
+                toolName: toolName,
+                input: input.raw
+            )
+            return CoreMcpToolOperationIdentity(raw: raw)
+        } catch {
+            throw mapTransportError(error)
+        }
     }
 
     /// Returns the Rust-owned immutable MCP/tool catalog projection. Swift callers may use this

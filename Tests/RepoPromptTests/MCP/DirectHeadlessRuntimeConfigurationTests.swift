@@ -5,36 +5,40 @@ import RepoPromptDomainRuntime
 import XCTest
 
 final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
-    func testDirectHeadlessAgentLifecycleRequiresAdvertisedOperation() throws {
-        let supportedOperations = [
-            "agent_run": ["start", "poll", "wait", "cancel"],
-            "agent_explore": ["start", "poll", "wait", "cancel"]
-        ]
-        for (toolName, operations) in supportedOperations {
-            XCTAssertThrowsError(try DirectHeadlessMCPService.validatedCallArguments(
-                toolName: toolName,
-                arguments: [:]
-            ))
+    func testDirectHeadlessOperationValidationUsesCatalogPolicy() throws {
+        let catalog = MCPDomainToolCatalog.entries
+        for toolName in ["agent_run", "agent_explore"] {
+            let entry = try XCTUnwrap(catalog.first { $0.name == toolName })
+            let policy = try XCTUnwrap(entry.operationPolicy)
+            if policy.defaultOperation == nil {
+                XCTAssertThrowsError(try DirectHeadlessMCPService.validatedCallArguments(
+                    toolName: toolName,
+                    arguments: [:]
+                ))
+            } else {
+                let validated = try DirectHeadlessMCPService.validatedCallArguments(
+                    toolName: toolName,
+                    arguments: [:]
+                )
+                XCTAssertTrue(validated.isEmpty)
+            }
             for invalidOperation in [
                 Value.null,
                 .bool(true),
                 .int(1),
-                .string(" start "),
-                .string("steer"),
-                .string("respond"),
                 .string("unknown")
             ] {
                 XCTAssertThrowsError(try DirectHeadlessMCPService.validatedCallArguments(
                     toolName: toolName,
-                    arguments: ["op": invalidOperation]
+                    arguments: [policy.argumentKey: invalidOperation]
                 ))
             }
-            for operation in operations {
+            for operation in policy.canonicalOperationByInput.values {
                 let validated = try DirectHeadlessMCPService.validatedCallArguments(
                     toolName: toolName,
-                    arguments: ["op": .string(operation)]
+                    arguments: [policy.argumentKey: .string(operation)]
                 )
-                XCTAssertEqual(validated["op"]?.stringValue, operation)
+                XCTAssertEqual(validated[policy.argumentKey]?.stringValue, operation)
             }
         }
         XCTAssertTrue(try DirectHeadlessMCPService.validatedCallArguments(

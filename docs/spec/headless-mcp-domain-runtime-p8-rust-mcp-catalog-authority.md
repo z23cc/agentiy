@@ -19,9 +19,11 @@ catalog table.
 
 The FFI `CoreRuntime.mcpToolCatalogV1` export provides an immutable, identity-fenced
 snapshot for diagnostics and cross-language parity. `AgentryCoreBridge.mcpToolCatalog()`
-validates version, digest, ordering, names, and object schemas. Domain registration and
-headless tools consume the generated projection; unavailable or malformed materialization
-fails closed. Execution providers and routing remain Swift-owned physical adapters.
+validates version, digest, ordering, names, and object schemas. The P9 runtime handoff
+(`headless-mcp-domain-runtime-p9-catalog-handoff.md`) supersedes the P8 diagnostic-only
+consumer boundary: production Domain registration and headless tools now consume the
+verified runtime snapshot and fail closed when it is unavailable. Execution providers and
+routing remain Swift-owned physical adapters.
 
 ## Compatibility
 

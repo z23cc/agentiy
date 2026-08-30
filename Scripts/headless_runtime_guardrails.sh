@@ -63,8 +63,39 @@ if [[ -f "$runtime_sources/MCPDomainCanonicalToolDefinitions.swift" ]] \
   echo "error: retired Swift MCP catalog authority remains in headless sources" >&2
   exit 1
 fi
-if ! grep -q 'MCPDomainGeneratedToolDefinitions' "$direct_sources/DirectHeadlessMCPService.swift"; then
-  echo "error: headless backend must consume generated MCP catalog definitions" >&2
+if ! grep -q 'catalogProvider' "$direct_sources/DirectHeadlessMCPService.swift" \
+  || ! grep -q 'prepared.catalog' "$direct_sources/DirectHeadlessMCPService.swift" \
+  || grep -q 'MCPDomainGeneratedToolDefinitions' "$direct_sources/DirectHeadlessMCPService.swift"; then
+  echo "error: headless backend must consume the verified runtime MCP catalog handoff" >&2
+  exit 1
+fi
+
+if ! grep -q 'domainHost.installCatalog' "$runtime_sources/RepoPromptDomainRuntime.swift" \
+  || ! grep -q 'makeResourceAdmissionControllers' "$runtime_sources/MCPDomainHost.swift" \
+  || ! grep -q 'case repository' "$runtime_sources/MCPDomainHost.swift" \
+  || ! grep -q 'runtimeCatalog' "$runtime_sources/MCPDomainHost.swift" \
+  || ! grep -q 'canonicalDefinitionMismatch' "$runtime_sources/MCPDomainToolRegistry.swift" \
+  || ! grep -q 'canonicalJSONData' Sources/AgentryCoreBridge/MCPToolCatalogBridge.swift; then
+  echo "error: MCP domain admission must install and consume one verified catalog snapshot" >&2
+  exit 1
+fi
+
+if ! grep -q 'rustOperationIdentity' Sources/RepoPrompt/Infrastructure/MCP/Policies/MCPToolAdmissionPolicy.swift \
+  || ! grep -q 'coreMcpToolOperationIdentity' Sources/RepoPromptDomainRuntime/AgentryCoreService.swift \
+  || ! grep -q 'static var smallReadCallLaneLimit' Sources/RepoPrompt/Infrastructure/MCP/MCPConnectionManager.swift; then
+  echo "error: production MCP diagnostics must use the Rust catalog operation resolver and dynamic limits" >&2
+  exit 1
+fi
+
+if ! grep -q 'operationResolver' "$runtime_sources/MCPDomainHost.swift" \
+  || ! grep -q 'operationResolver' Sources/RepoPromptDomainRuntime/RepoPromptDomainRuntime.swift \
+  || ! grep -q 'operationResolver' Sources/RepoPrompt/App/AppDomainRuntimeComposition.swift \
+  || ! grep -q 'resolveOperation' "$runtime_sources/MCPDomainHost.swift" \
+  || ! grep -q 'pendingInvocationIDs' "$runtime_sources/MCPDomainHost.swift" \
+  || ! grep -q 'validateOperation' "$direct_sources/DirectHeadlessMCPService.swift" \
+  || grep -q 'supportedOperations' "$direct_sources/DirectHeadlessMCPService.swift" \
+  || grep -q 'MCPDomainToolCatalog.entry' Sources/RepoPrompt/Infrastructure/MCP/MCPConnectionManager.swift; then
+  echo "error: production MCP execution must use host-owned Rust operation and catalog handoff" >&2
   exit 1
 fi
 

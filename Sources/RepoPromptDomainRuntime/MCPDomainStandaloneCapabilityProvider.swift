@@ -142,8 +142,20 @@ package enum MCPDomainStandaloneToolInstaller {
     package static func install(
         runtime: MCPDomainRuntime,
         scopeID: DomainStandaloneScopeID,
-        backends: MCPDomainStandaloneCapabilityBackends
+        backends: MCPDomainStandaloneCapabilityBackends,
+        catalog: MCPDomainCatalogSnapshot? = nil
     ) async throws -> MCPDomainStandaloneToolInstallation {
+        let runtimeCatalog: MCPDomainCatalogSnapshot?
+        if let catalog {
+            runtimeCatalog = catalog
+        } else {
+            runtimeCatalog = await runtime.toolRegistry.catalogSnapshot()
+        }
+        let orderedToolNames = runtimeCatalog?.orderedToolNames ?? MCPDomainToolCatalog.orderedToolNames
+        let globalToolNames = runtimeCatalog?.globalToolNames ?? MCPGlobalToolName.orderedToolNames
+        let standaloneToolNames = runtimeCatalog?.windowToolNames ?? MCPWindowToolName.orderedToolNames
+        let readDefinitions = runtimeCatalog?.definitions.filter { runtimeCatalog?.sharedReadToolNames.contains($0.name) == true }
+            ?? MCPDomainReadToolDefinitions.definitions
         let readProvider = MCPDomainReadToolProvider(
             resolveContext: { _, requirement in
                 try await resolveReadContext(runtime: runtime, requirement: requirement)
@@ -181,14 +193,15 @@ package enum MCPDomainStandaloneToolInstaller {
                 }
                 return try result.mcpValue()
             },
-            sideEffects: runtime.readSideEffectCoordinator
+            sideEffects: runtime.readSideEffectCoordinator,
+            definitions: readDefinitions
         )
 
         var rawBindings = readProvider.bindings
-        rawBindings.append(contentsOf: try capabilityBindings(backends: backends))
+        rawBindings.append(contentsOf: try capabilityBindings(backends: backends, catalog: runtimeCatalog))
         let names = rawBindings.map(\.definition.name)
-        guard names.count == MCPDomainToolCatalog.orderedToolNames.count,
-              Set(names) == Set(MCPDomainToolCatalog.orderedToolNames),
+        guard names.count == orderedToolNames.count,
+              Set(names) == Set(orderedToolNames),
               Set(names).count == names.count
         else {
             throw MCPDomainToolRegistryError.emptyRegistration
@@ -200,8 +213,8 @@ package enum MCPDomainStandaloneToolInstaller {
             )
         }
         let byName = Dictionary(uniqueKeysWithValues: decorated.map { ($0.definition.name, $0) })
-        let globalBindings = MCPGlobalToolName.orderedToolNames.compactMap { byName[$0] }
-        let standaloneBindings = MCPWindowToolName.orderedToolNames.compactMap { byName[$0] }
+        let globalBindings = globalToolNames.compactMap { byName[$0] }
+        let standaloneBindings = standaloneToolNames.compactMap { byName[$0] }
 
         let globalRegistration = try await runtime.toolRegistry.register(
             registrationID: MCPDomainToolRegistrationID(),
@@ -264,35 +277,38 @@ package enum MCPDomainStandaloneToolInstaller {
     }
 
     private static func capabilityBindings(
-        backends: MCPDomainStandaloneCapabilityBackends
+        backends: MCPDomainStandaloneCapabilityBackends,
+        catalog: MCPDomainCatalogSnapshot?
     ) throws -> [MCPDomainToolBinding] {
         [
-            try binding(MCPGlobalToolName.appSettings, backends.global.accessSettings),
-            try binding(MCPGlobalToolName.bindContext, backends.global.routeContext),
-            try binding(MCPGlobalToolName.manageWorkspaces, backends.global.manageWorkspaceLifecycle),
-            try binding(MCPWindowToolName.manageSelection, backends.workspace.mutateSelection),
-            try binding(MCPWindowToolName.fileActions, backends.filesystem.manageFiles),
-            try binding(MCPWindowToolName.applyEdits, backends.filesystem.applyFileEdits),
-            try binding(MCPWindowToolName.oracleUtils, backends.conversation.accessOracleUtilities),
-            try binding(MCPWindowToolName.askOracle, backends.conversation.startOracleConversation),
-            try binding(MCPWindowToolName.oracleSend, backends.conversation.continueOracleConversation),
-            try binding(MCPWindowToolName.manageWorktree, backends.versionControl.manageWorktree),
-            try binding(MCPWindowToolName.contextBuilder, backends.conversation.buildContext),
-            try binding(MCPWindowToolName.askUser, backends.conversation.requestUserInput),
-            try binding(MCPWindowToolName.agentExplore, backends.agent.explore),
-            try binding(MCPWindowToolName.agentRun, backends.agent.run),
-            try binding(MCPWindowToolName.agentManage, backends.agent.manage),
-            try binding(MCPWindowToolName.shareThoughts, backends.agent.shareThoughts),
-            try binding(MCPWindowToolName.setStatus, backends.agent.publishStatus),
-            try binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction),
+            try binding(MCPGlobalToolName.appSettings, backends.global.accessSettings, catalog: catalog),
+            try binding(MCPGlobalToolName.bindContext, backends.global.routeContext, catalog: catalog),
+            try binding(MCPGlobalToolName.manageWorkspaces, backends.global.manageWorkspaceLifecycle, catalog: catalog),
+            try binding(MCPWindowToolName.manageSelection, backends.workspace.mutateSelection, catalog: catalog),
+            try binding(MCPWindowToolName.fileActions, backends.filesystem.manageFiles, catalog: catalog),
+            try binding(MCPWindowToolName.applyEdits, backends.filesystem.applyFileEdits, catalog: catalog),
+            try binding(MCPWindowToolName.oracleUtils, backends.conversation.accessOracleUtilities, catalog: catalog),
+            try binding(MCPWindowToolName.askOracle, backends.conversation.startOracleConversation, catalog: catalog),
+            try binding(MCPWindowToolName.oracleSend, backends.conversation.continueOracleConversation, catalog: catalog),
+            try binding(MCPWindowToolName.manageWorktree, backends.versionControl.manageWorktree, catalog: catalog),
+            try binding(MCPWindowToolName.contextBuilder, backends.conversation.buildContext, catalog: catalog),
+            try binding(MCPWindowToolName.askUser, backends.conversation.requestUserInput, catalog: catalog),
+            try binding(MCPWindowToolName.agentExplore, backends.agent.explore, catalog: catalog),
+            try binding(MCPWindowToolName.agentRun, backends.agent.run, catalog: catalog),
+            try binding(MCPWindowToolName.agentManage, backends.agent.manage, catalog: catalog),
+            try binding(MCPWindowToolName.shareThoughts, backends.agent.shareThoughts, catalog: catalog),
+            try binding(MCPWindowToolName.setStatus, backends.agent.publishStatus, catalog: catalog),
+            try binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction, catalog: catalog),
         ]
     }
 
     private static func binding(
         _ name: String,
-        _ operation: @escaping @Sendable (DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
+        _ operation: @escaping @Sendable (DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult,
+        catalog: MCPDomainCatalogSnapshot?
     ) throws -> MCPDomainToolBinding {
-        guard let definition = MCPDomainGeneratedToolDefinitions.definition(named: name) else {
+        guard let definition = catalog?.definitions.first(where: { $0.name == name })
+            ?? MCPDomainGeneratedToolDefinitions.definition(named: name) else {
             throw MCPDomainToolRegistryError.unknownToolName(name)
         }
         return MCPDomainToolBinding(definition: definition) { arguments in

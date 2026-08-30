@@ -4,7 +4,25 @@ import Foundation
 package protocol AgentryCoreRuntimeOwner: AnyObject, Sendable {
     func coreSearchClient() async throws -> CoreSearchClient
     func coreComputeClient() async throws -> CoreComputeClient
+    func coreMcpToolCatalogSnapshot() async throws -> CoreMcpToolCatalogSnapshot
+    func coreMcpToolOperationIdentity(
+        toolName: String,
+        input: CoreMcpToolOperationInput
+    ) async throws -> CoreMcpToolOperationIdentity
     func shutdownCoreRuntime() async throws
+}
+
+extension AgentryCoreRuntimeOwner {
+    package func coreMcpToolCatalogSnapshot() async throws -> CoreMcpToolCatalogSnapshot {
+        throw CoreBridgeError.transportFailure("Rust MCP catalog is unavailable")
+    }
+
+    package func coreMcpToolOperationIdentity(
+        toolName _: String,
+        input _: CoreMcpToolOperationInput
+    ) async throws -> CoreMcpToolOperationIdentity {
+        throw CoreBridgeError.transportFailure("Rust MCP operation resolver is unavailable")
+    }
 }
 
 extension AgentryCoreBridge: AgentryCoreRuntimeOwner {
@@ -14,6 +32,17 @@ extension AgentryCoreBridge: AgentryCoreRuntimeOwner {
 
     package func coreComputeClient() async throws -> CoreComputeClient {
         try computeClient()
+    }
+
+    package func coreMcpToolCatalogSnapshot() async throws -> CoreMcpToolCatalogSnapshot {
+        try mcpToolCatalog()
+    }
+
+    package func coreMcpToolOperationIdentity(
+        toolName: String,
+        input: CoreMcpToolOperationInput
+    ) async throws -> CoreMcpToolOperationIdentity {
+        try mcpToolOperationIdentity(toolName: toolName, input: input)
     }
 
     package func shutdownCoreRuntime() async throws {

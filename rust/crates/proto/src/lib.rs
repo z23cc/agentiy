@@ -12,11 +12,12 @@ pub use envelope::{
 };
 pub use error::DecodeError;
 pub use mcp_catalog::{
-    MCP_CATALOG_VERSION, MCP_DEFINITION_SCHEMA_VERSION, McpCatalogError, McpCatalogV1,
-    McpToolAdmissionClassV1, McpToolAnnotationsV1, McpToolDefinitionV1, McpToolLimitsV1,
+    MCP_CATALOG_VERSION, MCP_DEFINITION_SCHEMA_VERSION, MCP_TOOL_COUNT, MCP_TOOL_ORDER,
+    McpCatalogError, McpCatalogV1, McpToolAdmissionClassV1, McpToolAnnotationsV1,
+    McpToolDefinitionV1, McpToolLimitsV1, McpToolOperationIdentityV1, McpToolOperationInputV1,
     McpToolOperationNormalizationV1, McpToolOperationPolicyV1, McpToolRegistrationScopeV1,
     McpToolResourceScopeV1, McpToolScopeV1, mcp_catalog_canonical_bytes, mcp_catalog_digest,
-    mcp_catalog_v1, mcp_tool_definition_v1,
+    mcp_catalog_v1, mcp_tool_definition_v1, mcp_tool_operation_identity_v1,
 };
 
 /// Frozen Phase 0 envelope schema version.

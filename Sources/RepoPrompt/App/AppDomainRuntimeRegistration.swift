@@ -51,9 +51,13 @@ extension AppDomainRuntimeComposition {
         #endif
         let bindings: [MCPDomainToolBinding]
         do {
+            try await runtime.start()
+            guard let catalog = await runtime.toolRegistry.catalogSnapshot() else {
+                throw MCPDomainToolRegistryError.catalogUnavailable
+            }
             let domainRuntime = runtime
             bindings = try tools.map {
-                let domainBinding = try $0.domainBinding()
+                let domainBinding = try $0.domainBinding(catalog: catalog)
                 let longRunningBinding = domainRuntime.longRunningToolProvider.wrapping(
                     domainBinding,
                     interactionAdapter: domainBinding.definition.name == MCPWindowToolName.askUser

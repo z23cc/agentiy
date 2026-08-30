@@ -113,7 +113,7 @@ package struct MCPDomainToolOperationIdentity: Equatable, Hashable, Sendable {
     )
 }
 
-package enum MCPDomainToolResourceLimitScope: String, Sendable {
+package enum MCPDomainToolResourceLimitScope: String, Hashable, Sendable {
     case application
     case window
     case repository
@@ -125,19 +125,19 @@ package struct MCPDomainToolConfiguredLimits: Equatable, Sendable {
     package let resourceScope: MCPDomainToolResourceLimitScope?
 }
 
-private enum MCPDomainToolOperationNormalization: String, Hashable, Sendable {
+package enum MCPDomainToolOperationNormalization: String, Hashable, Sendable {
     case exact
     case lowercased
     case trimmedLowercased = "trimmed_lowercased"
 }
 
-private struct MCPDomainToolOperationPolicy: Hashable, Sendable {
-    let argumentKey: String
-    let canonicalOperationByInput: [String: String]
-    let defaultOperation: String?
-    let normalization: MCPDomainToolOperationNormalization
+package struct MCPDomainToolOperationPolicy: Hashable, Sendable {
+    package let argumentKey: String
+    package let canonicalOperationByInput: [String: String]
+    package let defaultOperation: String?
+    package let normalization: MCPDomainToolOperationNormalization
 
-    init(
+    package init(
         argumentKey: String = "op",
         operations: [String],
         aliases: [String: String] = [:],
@@ -158,7 +158,7 @@ private struct MCPDomainToolOperationPolicy: Hashable, Sendable {
         self.normalization = normalization
     }
 
-    func normalizedOperation(for input: MCPDomainToolOperationInput) -> String {
+    package func normalizedOperation(for input: MCPDomainToolOperationInput) -> String {
         let candidate: String
         switch input {
         case .missing:
@@ -185,8 +185,8 @@ package struct MCPDomainToolCatalogEntry: Hashable, Sendable {
     package let scope: MCPDomainToolScopeKind
     package let capability: MCPToolCapability
     package let admissionClass: MCPToolAdmissionClass
-    fileprivate let operationPolicy: MCPDomainToolOperationPolicy?
-    fileprivate let registrationScopes: [MCPDomainToolScopeKind]
+    package let operationPolicy: MCPDomainToolOperationPolicy?
+    package let registrationScopes: [MCPDomainToolScopeKind]
 
     package init(
         name: String,
@@ -198,11 +198,11 @@ package struct MCPDomainToolCatalogEntry: Hashable, Sendable {
         self.scope = scope
         self.capability = capability
         self.admissionClass = admissionClass
-        operationPolicy = nil
-        registrationScopes = scope == .application ? [.application] : [.window, .standalone]
+        self.operationPolicy = nil
+        self.registrationScopes = scope == .application ? [.application] : [.window, .standalone]
     }
 
-    fileprivate init(
+    package init(
         name: String,
         scope: MCPDomainToolScopeKind,
         capability: MCPToolCapability,
@@ -217,7 +217,7 @@ package struct MCPDomainToolCatalogEntry: Hashable, Sendable {
         self.registrationScopes = scope == .application ? [.application] : [.window, .standalone]
     }
 
-    fileprivate init(
+    package init(
         name: String,
         scope: MCPDomainToolScopeKind,
         capability: MCPToolCapability,
@@ -238,7 +238,52 @@ package struct MCPDomainToolCatalogEntry: Hashable, Sendable {
     }
 }
 
+private final class MCPDomainToolCatalogRuntimeState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshot: MCPDomainCatalogSnapshot?
+
+    func install(_ snapshot: MCPDomainCatalogSnapshot) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let current = self.snapshot, current.digest != snapshot.digest {
+            return false
+        }
+        self.snapshot = snapshot
+        return true
+    }
+
+    func read() -> MCPDomainCatalogSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return snapshot
+    }
+
+    func clear(expectedDigest: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard snapshot?.digest == expectedDigest else { return false }
+        snapshot = nil
+        return true
+    }
+}
+
 package enum MCPDomainToolCatalog {
+    private static let runtimeState = MCPDomainToolCatalogRuntimeState()
+
+    @discardableResult
+    package static func installRuntimeCatalog(_ snapshot: MCPDomainCatalogSnapshot) -> Bool {
+        runtimeState.install(snapshot)
+    }
+
+    @discardableResult
+    package static func clearRuntimeCatalog(expectedDigest: String) -> Bool {
+        runtimeState.clear(expectedDigest: expectedDigest)
+    }
+
+    package static func runtimeCatalogSnapshot() -> MCPDomainCatalogSnapshot? {
+        runtimeState.read()
+    }
+
     /// Generated from the Rust-owned `mcp_catalog_v1.json`; this projection contains no
     /// hand-authored tool names, schemas, capabilities, or operation policies.
     package static let entries: [MCPDomainToolCatalogEntry] = MCPDomainGeneratedToolDefinitions.records.compactMap { record in
@@ -290,19 +335,33 @@ package enum MCPDomainToolCatalog {
         )
     }
 
-    package static let orderedToolNames = entries.map(\.name)
-    package static let globalToolNames = entries.filter { $0.scope == .application }.map(\.name)
-    package static let windowToolNames = entries.filter { $0.scope == .window }.map(\.name)
-    package static let classifications = Dictionary(uniqueKeysWithValues: entries.map { ($0.name, $0.admissionClass) })
+    package static var orderedToolNames: [String] {
+        runtimeState.read()?.orderedToolNames ?? entries.map(\.name)
+    }
+
+    package static var globalToolNames: [String] {
+        runtimeState.read()?.globalToolNames ?? entries.filter { $0.scope == .application }.map(\.name)
+    }
+
+    package static var windowToolNames: [String] {
+        runtimeState.read()?.windowToolNames ?? entries.filter { $0.scope == .window }.map(\.name)
+    }
+
+    package static var classifications: [String: MCPToolAdmissionClass] {
+        Dictionary(uniqueKeysWithValues: (runtimeState.read()?.entries ?? entries).map { ($0.name, $0.admissionClass) })
+    }
 
     private static let entriesByName = Dictionary(uniqueKeysWithValues: entries.map { ($0.name, $0) })
 
     package static func entry(named toolName: String) -> MCPDomainToolCatalogEntry? {
-        entriesByName[toolName]
+        runtimeState.read()?.entry(named: toolName) ?? entriesByName[toolName]
     }
 
     package static func toolNames(for capabilities: Set<MCPToolCapability>) -> Set<String> {
-        Set(entries.lazy.filter { capabilities.contains($0.capability) }.map(\.name))
+        if let snapshot = runtimeState.read() {
+            return snapshot.toolNames(for: capabilities)
+        }
+        return Set(entries.lazy.filter { capabilities.contains($0.capability) }.map(\.name))
     }
 
     package static func capabilities(for toolName: String) -> Set<MCPToolCapability> {
@@ -321,6 +380,9 @@ package enum MCPDomainToolCatalog {
         for toolName: String,
         input: MCPDomainToolOperationInput
     ) -> MCPDomainToolOperationIdentity {
+        if let snapshot = runtimeState.read() {
+            return snapshot.operationIdentity(for: toolName, input: input)
+        }
         guard let entry = entry(named: toolName) else { return .unknown }
         return MCPDomainToolOperationIdentity(
             canonicalTool: entry.name,
@@ -330,6 +392,9 @@ package enum MCPDomainToolCatalog {
     }
 
     package static func configuredLimits(for toolName: String) -> MCPDomainToolConfiguredLimits? {
+        if let snapshot = runtimeState.read() {
+            return snapshot.configuredLimits(for: toolName)
+        }
         guard let entry = entry(named: toolName) else { return nil }
         let connectionLane: Int = switch entry.admissionClass {
         case .exclusive: MCPDomainToolAdmissionLimits.exclusiveConnection

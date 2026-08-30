@@ -1686,7 +1686,8 @@ final class MCPServerViewModel: ObservableObject {
     private lazy var gitToolProvider = MCPGitToolProvider(
         runtime: windowToolRuntime,
         context: windowToolContextCapabilities,
-        selection: windowToolSelectionCapabilities
+        selection: windowToolSelectionCapabilities,
+        domainHost: AppDomainRuntimeComposition.shared.runtime.domainHost
     )
     @MainActor
     private lazy var historyToolProvider = MCPHistoryToolProvider(runtime: windowToolRuntime)

@@ -47,17 +47,17 @@ package enum MCPClientToolPolicyCatalog {
         .agentExternalControl,
         .agentExploreControl,
         .agentReasoningControl,
-        .statusPublication,
+        .statusPublication
     ]
 
     package static let discoveryGrantedCapabilities: Set<MCPToolCapability> = [
-        .userInteraction,
+        .userInteraction
     ]
 
     package static let agentModeRestrictedCapabilities: Set<MCPToolCapability> = [
         .workspaceMutate,
         .conversationHelper,
-        .conversationSend,
+        .conversationSend
     ]
 
     package static let agentModeGenericGrantedCapabilities: Set<MCPToolCapability> = [
@@ -65,14 +65,14 @@ package enum MCPClientToolPolicyCatalog {
         .agentReasoningControl,
         .statusPublication,
         .agentConversationSend,
-        .conversationLog,
+        .conversationLog
     ]
 
     package static let agentModeNativeGrantedCapabilities: Set<MCPToolCapability> = [
         .userInteraction,
         .statusPublication,
         .agentConversationSend,
-        .conversationLog,
+        .conversationLog
     ]
 
     package static let policyGatedCapabilities: Set<MCPToolCapability> = [
@@ -80,7 +80,7 @@ package enum MCPClientToolPolicyCatalog {
         .agentReasoningControl,
         .statusPublication,
         .agentConversationSend,
-        .conversationLog,
+        .conversationLog
     ]
 
     package static let classifications: [MCPClientToolPolicyProfile: MCPClientToolPolicyClassification] = [
@@ -163,29 +163,18 @@ package enum MCPClientToolPolicyCatalog {
             role: .engineer,
             allowsAgentExternalControlTools: false,
             annotationProfile: .canonical
-        ),
+        )
     ]
 
-    package static let policyGatedToolNames = MCPDomainToolCatalog.toolNames(for: policyGatedCapabilities)
+    /// The computed form intentionally reads the currently installed runtime catalog. A cached
+    /// static set would preserve the generated fixture if a process queried policy before startup.
+    package static var policyGatedToolNames: Set<String> {
+        policyGatedToolNames(catalog: nil)
+    }
 
-    private static let agentExternalControlToolNames = MCPDomainToolCatalog.toolNames(for: [.agentExternalControl])
-    private static let hiddenToolNamesByRole: [MCPClientTaskRole: Set<String>] = {
-        let exploreControlTools = MCPDomainToolCatalog.toolNames(for: [.agentExploreControl])
-        var exploreCapabilities = discoveryRestrictedCapabilities
-        exploreCapabilities.remove(.agentReasoningControl)
-        exploreCapabilities.remove(.statusPublication)
-        exploreCapabilities.remove(.appSettings)
-        exploreCapabilities.insert(.conversationLog)
-        exploreCapabilities.insert(.selectionMutate)
-        exploreCapabilities.insert(.promptMutate)
-        exploreCapabilities.insert(.workspaceRead)
-
-        return [
-            .direct: exploreControlTools,
-            .explore: MCPDomainToolCatalog.toolNames(for: exploreCapabilities).union(exploreControlTools),
-            .engineer: agentExternalControlToolNames,
-        ]
-    }()
+    package static func policyGatedToolNames(catalog: MCPDomainCatalogSnapshot?) -> Set<String> {
+        toolNames(for: policyGatedCapabilities, catalog: catalog)
+    }
 
     package static func classification(
         for profile: MCPClientToolPolicyProfile
@@ -197,10 +186,31 @@ package enum MCPClientToolPolicyCatalog {
     }
 
     package static func hiddenToolNames(for role: MCPClientTaskRole) -> Set<String> {
-        guard let names = hiddenToolNamesByRole[role] else {
-            preconditionFailure("Missing MCP hidden-tool policy for role: \(role.rawValue)")
+        hiddenToolNames(for: role, catalog: nil)
+    }
+
+    package static func hiddenToolNames(
+        for role: MCPClientTaskRole,
+        catalog: MCPDomainCatalogSnapshot?
+    ) -> Set<String> {
+        let exploreControlTools = toolNames(for: [.agentExploreControl], catalog: catalog)
+        var exploreCapabilities = discoveryRestrictedCapabilities
+        exploreCapabilities.remove(.agentReasoningControl)
+        exploreCapabilities.remove(.statusPublication)
+        exploreCapabilities.remove(.appSettings)
+        exploreCapabilities.insert(.conversationLog)
+        exploreCapabilities.insert(.selectionMutate)
+        exploreCapabilities.insert(.promptMutate)
+        exploreCapabilities.insert(.workspaceRead)
+        let agentExternalControlTools = toolNames(for: [.agentExternalControl], catalog: catalog)
+        switch role {
+        case .direct:
+            return exploreControlTools
+        case .explore:
+            return toolNames(for: exploreCapabilities, catalog: catalog).union(exploreControlTools)
+        case .engineer:
+            return agentExternalControlTools
         }
-        return names
     }
 
     package static func shouldAdvertise(
@@ -208,29 +218,60 @@ package enum MCPClientToolPolicyCatalog {
         role: MCPClientTaskRole,
         allowsAgentExternalControlTools: Bool
     ) -> Bool {
+        shouldAdvertise(
+            toolName: toolName,
+            role: role,
+            allowsAgentExternalControlTools: allowsAgentExternalControlTools,
+            catalog: nil
+        )
+    }
+
+    package static func shouldAdvertise(
+        toolName: String,
+        role: MCPClientTaskRole,
+        allowsAgentExternalControlTools: Bool,
+        catalog: MCPDomainCatalogSnapshot?
+    ) -> Bool {
         if role != .explore,
            allowsAgentExternalControlTools,
-           agentExternalControlToolNames.contains(toolName)
+           toolNames(for: [.agentExternalControl], catalog: catalog).contains(toolName)
         {
             return true
         }
-        return !hiddenToolNames(for: role).contains(toolName)
+        return !hiddenToolNames(for: role, catalog: catalog).contains(toolName)
     }
 
     package static func resolvedToolNames(
         for profile: MCPClientToolPolicyProfile
     ) -> [String] {
+        resolvedToolNames(for: profile, catalog: nil)
+    }
+
+    package static func resolvedToolNames(
+        for profile: MCPClientToolPolicyProfile,
+        catalog: MCPDomainCatalogSnapshot?
+    ) -> [String] {
         let policy = classification(for: profile)
-        let restricted = MCPDomainToolCatalog.toolNames(for: policy.restrictedCapabilities)
-        let additional = MCPDomainToolCatalog.toolNames(for: policy.grantedCapabilities)
-        return MCPDomainToolCatalog.orderedToolNames.filter { toolName in
+        let restricted = toolNames(for: policy.restrictedCapabilities, catalog: catalog)
+        let additional = toolNames(for: policy.grantedCapabilities, catalog: catalog)
+        let gated = policyGatedToolNames(catalog: catalog)
+        let orderedToolNames = catalog?.orderedToolNames ?? MCPDomainToolCatalog.orderedToolNames
+        return orderedToolNames.filter { toolName in
             !restricted.contains(toolName)
-                && (!policyGatedToolNames.contains(toolName) || additional.contains(toolName))
+                && (!gated.contains(toolName) || additional.contains(toolName))
                 && shouldAdvertise(
                     toolName: toolName,
                     role: policy.role,
-                    allowsAgentExternalControlTools: policy.allowsAgentExternalControlTools
+                    allowsAgentExternalControlTools: policy.allowsAgentExternalControlTools,
+                    catalog: catalog
                 )
         }
+    }
+
+    private static func toolNames(
+        for capabilities: Set<MCPToolCapability>,
+        catalog: MCPDomainCatalogSnapshot?
+    ) -> Set<String> {
+        catalog?.toolNames(for: capabilities) ?? MCPDomainToolCatalog.toolNames(for: capabilities)
     }
 }

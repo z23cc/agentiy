@@ -498,14 +498,27 @@ actor ServerNetworkManager {
         admissionClass(forCanonicalToolName: toolName)?.connectionLane
     }
 
-    nonisolated static let smallReadCallLaneLimit = MCPToolAdmissionPolicy.smallReadConnectionLimit
-    nonisolated static let fileReadCallLaneLimit = MCPToolAdmissionPolicy.fileReadConnectionLimit
-    nonisolated static let controlCallLaneLimit = MCPToolAdmissionPolicy.controlConnectionLimit
-    nonisolated static let gitReadCallLaneLimit = MCPToolAdmissionPolicy.gitReadConnectionLimit
+    nonisolated static var smallReadCallLaneLimit: Int {
+        MCPToolAdmissionPolicy.smallReadConnectionLimit
+    }
+
+    nonisolated static var fileReadCallLaneLimit: Int {
+        MCPToolAdmissionPolicy.fileReadConnectionLimit
+    }
+
+    nonisolated static var controlCallLaneLimit: Int {
+        MCPToolAdmissionPolicy.controlConnectionLimit
+    }
+
+    nonisolated static var gitReadCallLaneLimit: Int {
+        MCPToolAdmissionPolicy.gitReadConnectionLimit
+    }
 
     /// Bounded concurrent `file_search` permits per connection. This remains aligned with
     /// PR #155's per-workspace broad-search active capacity.
-    nonisolated static let fileSearchCallLaneLimit = MCPToolAdmissionPolicy.fileSearchConnectionLimit
+    nonisolated static var fileSearchCallLaneLimit: Int {
+        MCPToolAdmissionPolicy.fileSearchConnectionLimit
+    }
 
     private static func validatedLiveRunID(
         candidateRunID: UUID,
@@ -10979,8 +10992,9 @@ actor ServerNetworkManager {
             // never arguments, paths, or result bodies). No admission behavior change.
             let evidenceClock = ContinuousClock()
             let evidenceArrival = evidenceClock.now
+            let hostAdmissionClass = await domainHost.admissionClass(for: toolName)
             let evidenceClass = MCPToolConcurrencyEvidenceClass(
-                admissionClass: MCPToolAdmissionPolicy.classification(forCanonicalToolName: toolName)
+                admissionClass: hostAdmissionClass
             )
             let preLimiterEnvelopeState = EditFlowPerf.begin(
                 EditFlowPerf.Stage.MCPToolCall.preLimiterEnvelope,
@@ -11019,10 +11033,15 @@ actor ServerNetworkManager {
             let extractedRawJSON = normalized.rawJSON
             let cleanedArguments = normalized.payload
             let capturedRawJSON = extractedRawJSON
-            let evidenceOperationIdentity = MCPToolAdmissionPolicy.operationIdentity(
-                forCanonicalToolName: toolName,
-                arguments: cleanedArguments
-            )
+            let evidenceOperationIdentity: MCPToolOperationIdentity
+            do {
+                evidenceOperationIdentity = try await domainHost.resolveOperation(
+                    toolName: toolName,
+                    arguments: cleanedArguments
+                )
+            } catch {
+                evidenceOperationIdentity = .unknown
+            }
             defer {
                 MCPToolConcurrencyEvidenceRecorder.shared.recordCallCompleted(
                     classKey: evidenceClass,
@@ -11262,8 +11281,26 @@ actor ServerNetworkManager {
             )
 
             // Connection lanes provide bounded FIFO admission only. Shared-state correctness is
-            // enforced below by explicit window/app/repository resource ownership.
-            let admissionClass = preAdmissionDecision.admissionClass
+            // enforced below by explicit window/app/repository resource ownership. Both the
+            // decision and the lease branches must agree with the currently installed Rust-bound
+            // catalog entry; never reintroduce a process-global Swift classification fallback.
+            guard let catalogAdmissionClass = await domainHost.admissionClass(for: toolName),
+                  catalogAdmissionClass == preAdmissionDecision.admissionClass
+            else {
+                MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
+                    classKey: .unclassified,
+                    operationIdentity: evidenceOperationIdentity,
+                    reason: .unclassifiedTool
+                )
+                return await finalizeToolResult(
+                    Self.executionContractToolErrorResult(
+                        rawJSON: capturedRawJSON,
+                        code: "tool_execution_admission_catalog_unavailable",
+                        message: "The MCP tool catalog is unavailable or changed during admission."
+                    )
+                )
+            }
+            let admissionClass = catalogAdmissionClass
             let callLane = admissionClass.connectionLane
             connectionLog("tools/call \(toolName): acquiring limiter lane=\(callLane.rawValue)")
             let limiterResolution = await EditFlowPerf.measure(
@@ -11552,7 +11589,7 @@ actor ServerNetworkManager {
                                         ? nil
                                         : await self.runIDForConnection(connectionID)
                                 }
-                                let mutationAdmissionLease: MCPDomainToolResourceAdmissionController.Lease?
+                                let mutationAdmissionLease: MCPDomainToolAdmissionLease?
                                 if admissionClass == .exclusive {
                                     let mutationResource: MCPDomainToolResourceAdmissionController.Resource
                                     if MCPGlobalToolName.orderedToolNames.contains(toolName) {
@@ -11568,7 +11605,10 @@ actor ServerNetworkManager {
                                     }
                                     do {
                                         let evidenceLeaseWaitStart = evidenceClock.now
-                                        mutationAdmissionLease = try await self.domainHost.acquireMutationResourceAdmission(mutationResource)
+                                        mutationAdmissionLease = try await self.domainHost.acquireToolResourceAdmission(
+                                            toolName: toolName,
+                                            resource: mutationResource
+                                        )
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
                                             operationIdentity: evidenceOperationIdentity,
@@ -11591,7 +11631,7 @@ actor ServerNetworkManager {
                                 }
                                 defer { mutationAdmissionLease?.release() }
 
-                                let smallReadAdmissionLease: MCPDomainToolResourceAdmissionController.Lease?
+                                let smallReadAdmissionLease: MCPDomainToolAdmissionLease?
                                 if admissionClass == .smallRead {
                                     guard let chosenID else {
                                         return Self.executionContractToolErrorResult(
@@ -11602,7 +11642,10 @@ actor ServerNetworkManager {
                                     }
                                     do {
                                         let evidenceLeaseWaitStart = evidenceClock.now
-                                        smallReadAdmissionLease = try await self.domainHost.acquireSmallReadResourceAdmission(windowID: chosenID)
+                                        smallReadAdmissionLease = try await self.domainHost.acquireToolResourceAdmission(
+                                            toolName: toolName,
+                                            resource: .window(chosenID)
+                                        )
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
                                             operationIdentity: evidenceOperationIdentity,
@@ -11625,7 +11668,7 @@ actor ServerNetworkManager {
                                 }
                                 defer { smallReadAdmissionLease?.release() }
 
-                                let fileReadAdmissionLease: MCPDomainToolResourceAdmissionController.Lease?
+                                let fileReadAdmissionLease: MCPDomainToolAdmissionLease?
                                 if admissionClass == .fileRead {
                                     guard let chosenID else {
                                         return Self.executionContractToolErrorResult(
@@ -11636,7 +11679,10 @@ actor ServerNetworkManager {
                                     }
                                     do {
                                         let evidenceLeaseWaitStart = evidenceClock.now
-                                        fileReadAdmissionLease = try await self.domainHost.acquireFileReadResourceAdmission(windowID: chosenID)
+                                        fileReadAdmissionLease = try await self.domainHost.acquireToolResourceAdmission(
+                                            toolName: toolName,
+                                            resource: .window(chosenID)
+                                        )
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
                                             operationIdentity: evidenceOperationIdentity,
@@ -12327,19 +12373,10 @@ actor ServerNetworkManager {
                                     EditFlowPerf.Stage.MCPToolCall.serviceToolLookup,
                                     EditFlowPerf.Dimensions(toolName: toolName)
                                 )
-                                let registrationScope: MCPDomainToolRegistrationScope? = {
-                                    guard let catalogEntry = MCPDomainToolCatalog.entry(named: toolName) else {
-                                        return nil
-                                    }
-                                    switch catalogEntry.scope {
-                                    case .application:
-                                        return .application
-                                    case .window:
-                                        return chosenID.map(MCPDomainToolRegistrationScope.window)
-                                    case .standalone:
-                                        return nil
-                                    }
-                                }()
+                                let registrationScope = await self.domainHost.registrationScope(
+                                    for: toolName,
+                                    windowID: chosenID
+                                )
                                 var resolvedTool = singleWindowFallbackResolvedTool
                                 if resolvedTool == nil, let registrationScope {
                                     resolvedTool = try? await self.domainHost.resolve(

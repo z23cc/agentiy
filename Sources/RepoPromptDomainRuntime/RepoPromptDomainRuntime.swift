@@ -17,6 +17,10 @@ package struct DomainRuntimeConfiguration: Sendable {
     package let externalReloadMaximumInterval: Duration
     package let metrics: DomainRuntimeMetricsSink
     package let hostDrainTimeout: Duration
+    /// When set, startup must obtain a verified Rust catalog before registrations can proceed.
+    package let catalogProvider: (@Sendable () async throws -> MCPDomainCatalogSnapshot)?
+    /// Optional Rust-backed operation resolver used by the host's final invocation fence.
+    package let operationResolver: MCPDomainToolOperationResolver?
 
     package init(
         mode: DomainRuntimeMode,
@@ -29,7 +33,9 @@ package struct DomainRuntimeConfiguration: Sendable {
         externalReloadInterval: Duration? = .seconds(1),
         externalReloadMaximumInterval: Duration = .seconds(30),
         metrics: DomainRuntimeMetricsSink = .disabled,
-        hostDrainTimeout: Duration = .seconds(5)
+        hostDrainTimeout: Duration = .seconds(5),
+        catalogProvider: (@Sendable () async throws -> MCPDomainCatalogSnapshot)? = nil,
+        operationResolver: MCPDomainToolOperationResolver? = nil
     ) {
         self.mode = mode
         self.profileIdentifier = profileIdentifier
@@ -43,6 +49,8 @@ package struct DomainRuntimeConfiguration: Sendable {
         self.externalReloadMaximumInterval = externalReloadMaximumInterval
         self.metrics = metrics
         self.hostDrainTimeout = hostDrainTimeout
+        self.catalogProvider = catalogProvider
+        self.operationResolver = operationResolver
     }
 }
 
@@ -153,7 +161,10 @@ package actor MCPDomainRuntime {
             createdAt: createdAt
         )
         identity = runtimeIdentity
-        toolRegistry = MCPDomainToolRegistry(registryID: registryID)
+        toolRegistry = MCPDomainToolRegistry(
+            registryID: registryID,
+            requiresRuntimeCatalog: configuration.catalogProvider != nil
+        )
         let workspaceAuthorityLease = DomainWorkspaceAuthorityLease(
             configuration: configuration,
             identity: runtimeIdentity
@@ -197,7 +208,9 @@ package actor MCPDomainRuntime {
             identity: runtimeIdentity,
             registry: toolRegistry,
             routingCoordinator: routingCoordinator,
-            metrics: configuration.metrics
+            metrics: configuration.metrics,
+            requiresRuntimeCatalog: configuration.catalogProvider != nil,
+            operationResolver: configuration.operationResolver
         )
         readSideEffectCoordinator = DomainReadSideEffectCoordinator(identity: runtimeIdentity)
         let mutationPolicyStore = DomainMutationPolicyStore(
@@ -262,6 +275,35 @@ package actor MCPDomainRuntime {
 
     private func performStart() async {
         guard lifecycle == .starting, !Task.isCancelled else { return }
+        if let catalogProvider = configuration.catalogProvider {
+            do {
+                let catalog = try await catalogProvider()
+                // Prepare every consumer before committing either side. The shared process
+                // facade is installed only after both actors have accepted the exact digest;
+                // any later failure rolls the actor-local state back before degradation escapes.
+                try await toolRegistry.validateCatalog(catalog)
+                try await domainHost.validateCatalog(catalog)
+                try await toolRegistry.installCatalog(catalog)
+                do {
+                    try await domainHost.installCatalog(catalog)
+                    guard MCPDomainToolCatalog.installRuntimeCatalog(catalog) else {
+                        throw MCPDomainToolRegistryError.catalogUnavailable
+                    }
+                } catch {
+                    _ = await domainHost.uninstallCatalog(expectedDigest: catalog.digest)
+                    _ = await toolRegistry.uninstallCatalog(expectedDigest: catalog.digest)
+                    _ = MCPDomainToolCatalog.clearRuntimeCatalog(expectedDigest: catalog.digest)
+                    throw error
+                }
+            } catch {
+                // A production runtime without a verified Rust catalog is not allowed to
+                // register or advertise tools. Keep the lifecycle degraded and fail closed.
+                startTask = nil
+                lifecycle = .degraded
+                publishSnapshot()
+                return
+            }
+        }
         await workspaceAuthority.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         await mutationPolicyStore.bootstrap()
@@ -314,6 +356,9 @@ package actor MCPDomainRuntime {
         await workspaceAuthority.beginMutationAccessDrain()
         await workspaceMutationAccess.waitForDrain()
         _ = await domainHost.drain(timeout: configuration.hostDrainTimeout)
+        if let catalogDigest = await domainHost.runtimeCatalogSnapshot()?.digest {
+            _ = MCPDomainToolCatalog.clearRuntimeCatalog(expectedDigest: catalogDigest)
+        }
         await mutationApprovalBroker.shutdown()
         await interactionBroker.shutdown()
         _ = await agentSessionStore.shutdown()

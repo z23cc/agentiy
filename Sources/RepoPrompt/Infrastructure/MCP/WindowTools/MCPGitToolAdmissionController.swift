@@ -1,7 +1,9 @@
 import Foundation
 
-/// Tool-level Git admission keyed by canonical repository identity. The lower-level WI-9
-/// GitProcessAdmissionController remains the global/per-repository subprocess budget.
+/// Legacy fixture-only Git admission helper. Production admission is owned by
+/// `MCPDomainHost.acquireRepositoryResourceAdmission`; this type remains for isolated
+/// compatibility tests until the old test contract is retired.
+@available(*, deprecated, message: "Use MCPDomainHost repository admission")
 @MainActor
 final class MCPGitToolAdmissionController {
     struct Lease: Equatable {
@@ -14,10 +16,6 @@ final class MCPGitToolAdmissionController {
         let repositoryKeys: [String]
         let continuation: CheckedContinuation<Lease, Error>
     }
-
-    static let shared = MCPGitToolAdmissionController(
-        perRepositoryLimit: MCPToolAdmissionPolicy.gitReadPerRepositoryLimit
-    )
 
     let perRepositoryLimit: Int
     private var activeByRepository: [String: Int] = [:]
@@ -99,16 +97,11 @@ final class MCPGitToolAdmissionController {
     }
 
     nonisolated static func repositoryKey(for checkoutRoot: URL) -> String {
-        let standardizedRoot = checkoutRoot.standardizedFileURL
-        let repositoryIdentity = GitRepositoryLayoutResolver.resolve(atWorkTreeRoot: standardizedRoot)?.commonDir
-            ?? standardizedRoot
-        return canonicalRepositoryKey(repositoryIdentity.path)
+        MCPGitRepositoryAdmissionIdentity.key(for: checkoutRoot)
     }
 
     private nonisolated static func canonicalRepositoryKey(_ key: String) -> String {
-        URL(fileURLWithPath: key)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL.path.lowercased()
+        MCPDomainRepositoryAdmissionCoordinator.canonicalKey(key)
     }
 
     private func canAcquire(_ repositoryKeys: [String]) -> Bool {

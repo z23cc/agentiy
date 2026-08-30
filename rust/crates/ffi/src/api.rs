@@ -12,20 +12,21 @@ use crate::types::{
     CoreCompactCodeMapBatchResultV1, CoreConfig, CoreFileSystemWatcherEventV1,
     CoreFileSystemWatcherPayloadV1, CoreFileSystemWatcherScopeConfigV1,
     CoreFileSystemWatcherScopeHandleV1, CoreFileSystemWatcherSnapshotV1, CoreHandshake,
-    CoreInventoryScopeConfigV1, CoreMcpToolCatalogV1, CorePathMatchResolveRequestV1,
-    CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1,
-    CorePathSearchFindRequestV1, CorePathSearchFindResultV1, CoreSearchScoreBatchRequestV1,
-    CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1, CoreTextDecodeResultV1,
-    CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1, CoreWorkspaceCatalogResponseV1,
-    CoreWorkspaceCatalogSeedRequestV1, CoreWorkspaceCatalogValidationRequestV1,
-    CoreWorkspaceCommandAdmissionAcquireKindV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
-    CoreWorkspaceCommandAdmissionLookupScopeV1, CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
-    CoreWorkspaceCommandIdentityRequestV1, CoreWorkspaceCommandIdentityResponseV1,
-    CoreWorkspaceCommandIdentityV1, CoreWorkspaceCommandLifecycleDirectiveV1,
-    CoreWorkspaceCommandResultV1, CoreWorkspaceCreateDirectiveV1,
-    CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
-    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
-    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceExternalObservationRecoveryPlanV1,
+    CoreInventoryScopeConfigV1, CoreMcpToolCatalogV1, CoreMcpToolOperationIdentityV1,
+    CoreMcpToolOperationInputV1, CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1,
+    CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
+    CorePathSearchFindResultV1, CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1,
+    CoreTextDecodeRequestV1, CoreTextDecodeResultV1, CoreTokenAccountingRequestV1,
+    CoreTokenAccountingResultV1, CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
+    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionAcquireKindV1,
+    CoreWorkspaceCommandAdmissionDiagnosticsV1, CoreWorkspaceCommandAdmissionLookupScopeV1,
+    CoreWorkspaceCommandAdmissionRecoveryReceiptV1, CoreWorkspaceCommandIdentityRequestV1,
+    CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCommandIdentityV1,
+    CoreWorkspaceCommandLifecycleDirectiveV1, CoreWorkspaceCommandResultV1,
+    CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
+    CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
+    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
+    CoreWorkspaceExternalObservationRecoveryPlanV1,
     CoreWorkspaceExternalObservationRecoveryRequestV1,
     CoreWorkspaceExternalObservationRecoveryTransactionRequestV1,
     CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
@@ -2266,16 +2267,31 @@ impl CoreRuntime {
             self.validate_identity(&identity)?;
             let catalog =
                 agentry_proto::mcp_catalog_v1().map_err(|_| CoreError::InvalidArgument)?;
-            Ok(CoreMcpToolCatalogV1 {
-                catalog_version: catalog.catalog_version,
-                definition_schema_version: catalog.definition_schema_version,
-                digest: agentry_proto::mcp_catalog_digest()
-                    .map_err(|_| CoreError::InvalidArgument)?,
-                tools: catalog
-                    .tools
-                    .iter()
-                    .map(crate::types::CoreMcpToolDefinitionV1::from)
-                    .collect(),
+            let digest =
+                agentry_proto::mcp_catalog_digest().map_err(|_| CoreError::InvalidArgument)?;
+            let canonical_catalog_json = agentry_proto::mcp_catalog_canonical_bytes()
+                .map_err(|_| CoreError::InvalidArgument)?;
+            CoreMcpToolCatalogV1::try_from((catalog, digest, canonical_catalog_json))
+        })
+    }
+
+    /// Resolves operation identity from the same Rust catalog used for advertisement. This
+    /// prevents Swift callers from rebuilding normalization and alias policy independently.
+    pub fn mcp_tool_operation_identity_v1(
+        &self,
+        identity: RuntimeIdentity,
+        tool_name: String,
+        input: CoreMcpToolOperationInputV1,
+    ) -> Result<CoreMcpToolOperationIdentityV1, CoreError> {
+        self.guard(|| {
+            self.require_initialized()?;
+            self.validate_identity(&identity)?;
+            let identity =
+                agentry_proto::mcp_tool_operation_identity_v1(tool_name.as_str(), input.into())
+                    .map_err(|_| CoreError::InvalidArgument)?;
+            Ok(CoreMcpToolOperationIdentityV1 {
+                canonical_tool: identity.canonical_tool,
+                normalized_operation: identity.normalized_operation,
             })
         })
     }

@@ -105,23 +105,26 @@ package struct MCPDomainReadToolProvider {
     private let releaseContext: ReleaseContext
     private let backend: MCPDomainReadToolBackend
     private let sideEffects: DomainReadSideEffectCoordinator
+    private let definitions: [MCPDomainToolDefinition]
 
     package init(
         resolveContext: @escaping ResolveContext,
         refreshContext: @escaping RefreshContext = { $0 },
         releaseContext: @escaping ReleaseContext = { _ in },
         backend: MCPDomainReadToolBackend,
-        sideEffects: DomainReadSideEffectCoordinator
+        sideEffects: DomainReadSideEffectCoordinator,
+        definitions: [MCPDomainToolDefinition] = MCPDomainReadToolDefinitions.definitions
     ) {
         self.resolveContext = resolveContext
         self.refreshContext = refreshContext
         self.releaseContext = releaseContext
         self.backend = backend
         self.sideEffects = sideEffects
+        self.definitions = definitions
     }
 
     package var bindings: [MCPDomainToolBinding] {
-        MCPDomainReadToolDefinitions.definitions.map { definition in
+        definitions.map { definition in
             MCPDomainToolBinding(definition: definition) { arguments in
                 try await execute(
                     toolName: definition.name,

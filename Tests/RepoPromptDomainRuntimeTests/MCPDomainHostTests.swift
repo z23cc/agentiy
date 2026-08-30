@@ -1,9 +1,306 @@
+import AgentryCoreBridge
 import Foundation
 import MCP
 @testable import RepoPromptDomainRuntime
 import XCTest
 
 final class MCPDomainHostTests: XCTestCase {
+    func testRuntimeCatalogHandoffBindsHostIdentityAndResourceAdmission() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let coreCatalog = try await bridge.mcpToolCatalog()
+        let catalog = try MCPDomainCatalogSnapshot(core: coreCatalog)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-domain-host-catalog-\(UUID().uuidString)", isDirectory: true)
+        let runtime = MCPDomainRuntime(
+            configuration: .init(
+                mode: .standalone,
+                profileIdentifier: "host-catalog-test",
+                storageDirectory: directory,
+                eventDirectory: directory,
+                temporaryDirectory: directory,
+                externalReloadInterval: nil,
+                hostDrainTimeout: .milliseconds(25),
+                catalogProvider: { catalog }
+            )
+        )
+
+        try await runtime.start()
+        let hostSnapshot = await runtime.domainHost.snapshot()
+        XCTAssertEqual(hostSnapshot.catalogDigest, catalog.digest)
+        let registeredScope = await runtime.domainHost.registrationScope(
+            for: MCPWindowToolName.readFile,
+            windowID: 7
+        )
+        XCTAssertEqual(registeredScope, .window(id: 7))
+        let admissionClass = await runtime.domainHost.admissionClass(
+            for: MCPWindowToolName.readFile
+        )
+        XCTAssertEqual(admissionClass, .fileRead)
+        let installedCatalogDigest = await (runtime.domainHost.runtimeCatalogSnapshot())?.digest
+        XCTAssertEqual(installedCatalogDigest, catalog.digest)
+        let configuredFileRead = try XCTUnwrap(
+            catalog.configuredLimits(for: MCPWindowToolName.readFile)
+        )
+        XCTAssertEqual(configuredFileRead.resourceScope, .window)
+        XCTAssertEqual(configuredFileRead.resourceLease, ContentReadConcurrencyCapacity.maximumConcurrentReads)
+        XCTAssertEqual(MCPDomainToolCatalog.runtimeCatalogSnapshot()?.digest, catalog.digest)
+        let lease = try await runtime.domainHost.acquireToolResourceAdmission(
+            toolName: MCPWindowToolName.readFile,
+            resource: .window(1)
+        )
+        XCTAssertEqual(lease.catalogDigest, catalog.digest)
+        XCTAssertTrue(lease.release())
+        _ = await runtime.shutdown()
+        XCTAssertNil(MCPDomainToolCatalog.runtimeCatalogSnapshot())
+    }
+
+    func testCatalogReplacementRejectsOrdinaryResourceWaiters() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let catalog = try MCPDomainCatalogSnapshot(core: await bridge.mcpToolCatalog())
+        let fixture = try await makeFixture()
+        let host = fixture.runtime.domainHost
+        try await host.installCatalog(catalog)
+
+        let activeLease = try await host.acquireMutationResourceAdmission(.appWide)
+        let waiter = Task { () -> Error? in
+            do {
+                _ = try await host.acquireMutationResourceAdmission(.appWide)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        for _ in 0 ..< 100 {
+            if await host.snapshot().resourceAdmissionWaiterCount == 1 { break }
+            await Task.yield()
+        }
+        let queuedSnapshot = await host.snapshot()
+        XCTAssertEqual(queuedSnapshot.resourceAdmissionWaiterCount, 1)
+        let uninstallWhileWaiting = await host.uninstallCatalog(expectedDigest: catalog.digest)
+        XCTAssertFalse(uninstallWhileWaiting)
+
+        waiter.cancel()
+        let waiterError = await waiter.value
+        XCTAssertTrue(waiterError is CancellationError)
+        XCTAssertTrue(activeLease.release())
+        let uninstallAfterCancellation = await host.uninstallCatalog(expectedDigest: catalog.digest)
+        XCTAssertTrue(uninstallAfterCancellation)
+        _ = await fixture.runtime.shutdown()
+    }
+
+    func testRequiredCatalogWithoutRustResolverFailsClosed() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let catalog = try MCPDomainCatalogSnapshot(core: await bridge.mcpToolCatalog())
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-domain-host-missing-resolver-\(UUID().uuidString)", isDirectory: true)
+        let runtime = MCPDomainRuntime(configuration: .init(
+            mode: .standalone,
+            profileIdentifier: "host-missing-resolver",
+            storageDirectory: directory,
+            eventDirectory: directory,
+            temporaryDirectory: directory,
+            externalReloadInterval: nil,
+            catalogProvider: { catalog }
+        ))
+        try await runtime.start()
+        do {
+            _ = try await runtime.domainHost.resolveOperation(
+                toolName: MCPWindowToolName.agentRun,
+                arguments: ["op": .string("start")]
+            )
+            XCTFail("Required catalog must not fall back to Swift operation policy")
+        } catch let error as MCPDomainHostError {
+            XCTAssertEqual(error, .operationResolverUnavailable)
+        }
+        _ = await runtime.shutdown()
+    }
+
+    func testRustOperationResolverOwnsFinalInvocationOperationIdentity() async throws {
+        let fixture = try await makeFixture()
+        let calls = OperationResolverCallCounter()
+        let host = MCPDomainHost(
+            identity: fixture.runtime.identity,
+            registry: fixture.runtime.toolRegistry,
+            routingCoordinator: fixture.runtime.routingCoordinator,
+            operationResolver: { toolName, input in
+                await calls.record(toolName: toolName, input: input)
+                guard toolName == MCPWindowToolName.agentRun,
+                      input == .value("START")
+                else {
+                    return .unknown
+                }
+                return MCPDomainToolOperationIdentity(
+                    canonicalTool: toolName,
+                    normalizedOperation: "start"
+                )
+            }
+        )
+        let identity = try await host.resolveOperation(
+            toolName: MCPWindowToolName.agentRun,
+            arguments: ["op": .string("START")]
+        )
+        XCTAssertEqual(identity.normalizedOperation, "start")
+        let call = await calls.value()
+        XCTAssertEqual(call?.toolName, MCPWindowToolName.agentRun)
+        XCTAssertEqual(call?.input, .value("START"))
+        do {
+            _ = try await host.resolveOperation(
+                toolName: MCPWindowToolName.agentRun,
+                arguments: ["op": .string("unknown")]
+            )
+            XCTFail("Unknown Rust operation must fail closed")
+        } catch let error as MCPDomainHostError {
+            XCTAssertEqual(error, .invalidOperation(toolName: MCPWindowToolName.agentRun))
+        }
+    }
+
+    func testInvocationRejectsRustUnknownOperationBeforeProviderExecution() async throws {
+        let invocationCounter = InvocationCounter()
+        let fixture = try await makeFixture(binding: Self.binding(
+            toolName: MCPWindowToolName.agentRun,
+            operation: { _ in
+                await invocationCounter.increment()
+                return .string("unexpected")
+            }
+        ))
+        let host = MCPDomainHost(
+            identity: fixture.runtime.identity,
+            registry: fixture.runtime.toolRegistry,
+            routingCoordinator: fixture.runtime.routingCoordinator,
+            operationResolver: { toolName, input in
+                guard toolName == MCPWindowToolName.agentRun,
+                      input == .value("unknown")
+                else { return .unknown }
+                return .unknown
+            }
+        )
+        let resolution = try await host.resolve(
+            toolName: MCPWindowToolName.agentRun,
+            scope: .window(id: 1)
+        )
+        let invocationID = UUID()
+        do {
+            _ = try await host.invoke(MCPDomainHostInvocation(
+                invocationID: invocationID,
+                connectionID: fixture.connection.connectionID,
+                resolution: resolution,
+                arguments: ["op": .string("unknown")],
+                securityContext: securityContext(
+                    identity: fixture.runtime.identity,
+                    connection: fixture.connection,
+                    invocationID: invocationID
+                )
+            ))
+            XCTFail("Unknown operation must be rejected before provider execution")
+        } catch let error as MCPDomainHostError {
+            XCTAssertEqual(error, .invalidOperation(toolName: MCPWindowToolName.agentRun))
+        }
+        let executedCount = await invocationCounter.value()
+        XCTAssertEqual(executedCount, 0)
+    }
+
+    func testOperationResolverFailureIsNotReclassifiedAsUnknownOperation() async throws {
+        let fixture = try await makeFixture()
+        let host = MCPDomainHost(
+            identity: fixture.runtime.identity,
+            registry: fixture.runtime.toolRegistry,
+            routingCoordinator: fixture.runtime.routingCoordinator,
+            operationResolver: { _, _ in
+                throw MCPDomainHostError.operationResolverUnavailable
+            }
+        )
+        do {
+            _ = try await host.resolveOperation(
+                toolName: MCPWindowToolName.agentRun,
+                arguments: ["op": .string("start")]
+            )
+            XCTFail("Resolver transport failure must fail closed")
+        } catch let error as MCPDomainHostError {
+            XCTAssertEqual(error, .operationResolverUnavailable)
+        }
+    }
+
+    func testRuntimeCatalogRejectsBindingDefinitionDrift() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let coreCatalog = try await bridge.mcpToolCatalog()
+        let catalog = try MCPDomainCatalogSnapshot(core: coreCatalog)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-domain-host-binding-drift-\(UUID().uuidString)", isDirectory: true)
+        let runtime = MCPDomainRuntime(
+            configuration: .init(
+                mode: .standalone,
+                profileIdentifier: "host-catalog-binding-drift-test",
+                storageDirectory: directory,
+                eventDirectory: directory,
+                temporaryDirectory: directory,
+                externalReloadInterval: nil,
+                catalogProvider: { catalog }
+            )
+        )
+        try await runtime.start()
+        let canonical = try XCTUnwrap(catalog.definitions.first { $0.name == MCPWindowToolName.readFile })
+        let drifted = MCPDomainToolDefinition(
+            name: canonical.name,
+            description: canonical.description + " drift",
+            inputSchema: canonical.inputSchema,
+            annotations: canonical.annotations,
+            isEnabledByDefault: canonical.isEnabledByDefault
+        )
+        do {
+            _ = try await runtime.toolRegistry.register(
+                registrationID: MCPDomainToolRegistrationID(),
+                scope: .window(id: 1),
+                bindings: [MCPDomainToolBinding(definition: drifted) { _ in .string("drift") }]
+            )
+            XCTFail("A binding with a non-canonical definition must be rejected")
+        } catch let error as MCPDomainToolRegistryError {
+            XCTAssertEqual(error, .canonicalDefinitionMismatch(toolName: MCPWindowToolName.readFile))
+        }
+        _ = await runtime.shutdown()
+    }
+
+    func testRuntimeCatalogFailureLeavesHostAndRegistryFailClosed() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-domain-host-catalog-failure-\(UUID().uuidString)", isDirectory: true)
+        let runtime = MCPDomainRuntime(
+            configuration: .init(
+                mode: .standalone,
+                profileIdentifier: "host-catalog-failure-test",
+                storageDirectory: directory,
+                eventDirectory: directory,
+                temporaryDirectory: directory,
+                externalReloadInterval: nil,
+                catalogProvider: {
+                    throw MCPDomainHostError.catalogUnavailable
+                }
+            )
+        )
+
+        try await runtime.start()
+        let runtimeSnapshot = await runtime.snapshot()
+        XCTAssertEqual(runtimeSnapshot.lifecycle, .degraded)
+        do {
+            _ = try await runtime.domainHost.resolve(
+                toolName: MCPWindowToolName.readFile,
+                scope: .window(id: 1)
+            )
+            XCTFail("A runtime without a verified catalog must reject host resolution")
+        } catch let error as MCPDomainHostError {
+            XCTAssertEqual(error, .catalogUnavailable)
+        }
+        do {
+            _ = try await runtime.toolRegistry.register(
+                registrationID: MCPDomainToolRegistrationID(),
+                scope: .window(id: 1),
+                bindings: [Self.binding()]
+            )
+            XCTFail("A runtime without a verified catalog must reject registration")
+        } catch let error as MCPDomainToolRegistryError {
+            XCTAssertEqual(error, .catalogUnavailable)
+        }
+        _ = await runtime.shutdown()
+    }
+
     func testHostResolvesAndInvokesExactRegisteredBinding() async throws {
         let fixture = try await makeFixture()
         let resolution = try await fixture.runtime.domainHost.resolve(
@@ -228,6 +525,24 @@ final class MCPDomainHostTests: XCTestCase {
         XCTAssertEqual(snapshot.terminalConnectionFenceCount, 0)
     }
 
+    func testRepositoryResourceAdmissionUsesCatalogBoundController() async throws {
+        let fixture = try await makeFixture()
+        let first = try await fixture.runtime.domainHost.acquireRepositoryResourceAdmission(
+            toolName: MCPWindowToolName.git,
+            repositoryKeys: ["/tmp/example-repository"]
+        )
+        let independent = try await fixture.runtime.domainHost.acquireRepositoryResourceAdmission(
+            toolName: MCPWindowToolName.git,
+            repositoryKeys: ["/tmp/other-repository"]
+        )
+        let snapshot = await fixture.runtime.domainHost.snapshot()
+        XCTAssertEqual(snapshot.activeResourceAdmissionLeaseCount, 2)
+        XCTAssertTrue(first.release())
+        XCTAssertTrue(independent.release())
+        let releasedSnapshot = await fixture.runtime.domainHost.snapshot()
+        XCTAssertEqual(releasedSnapshot.activeResourceAdmissionLeaseCount, 0)
+    }
+
     func testDrainRacingSuspendedAdmissionRejectsLateInvocation() async throws {
         let admissionGate = InvocationBlocker()
         let fixture = try await makeFixture()
@@ -325,8 +640,8 @@ final class MCPDomainHostTests: XCTestCase {
         XCTAssertEqual(invocationCount, 0)
     }
 
-    func testDuplicateInvocationIDIsFencedAtFinalAdmission() async throws {
-        let admissionBarrier = InvocationAdmissionBarrier(expectedArrivalCount: 2)
+    func testDuplicateInvocationIDIsFencedWhileFirstInvocationIsPending() async throws {
+        let admissionBarrier = InvocationAdmissionBarrier(expectedArrivalCount: 1)
         let invocationCounter = InvocationCounter()
         let fixture = try await makeFixture(binding: Self.binding { _ in
             await invocationCounter.increment()
@@ -362,6 +677,7 @@ final class MCPDomainHostTests: XCTestCase {
                 return error
             }
         }
+        await admissionBarrier.awaitAllArrivals()
         let second = Task { () -> Error? in
             do {
                 _ = try await host.invoke(invocation)
@@ -370,15 +686,111 @@ final class MCPDomainHostTests: XCTestCase {
                 return error
             }
         }
-        await admissionBarrier.awaitAllArrivals()
         await admissionBarrier.release()
 
         let errors = await [first.value, second.value]
-        XCTAssertEqual(errors.filter { $0 == nil }.count, 1)
+        XCTAssertEqual(errors.count(where: { $0 == nil }), 1)
         let duplicateErrors = errors.compactMap { $0 as? MCPDomainHostError }
         XCTAssertEqual(duplicateErrors, [.duplicateInvocationID(invocationID)])
         let invocationCount = await invocationCounter.value()
         XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testDuplicateInvocationIDIsFencedWhenFirstPendingRequestFails() async throws {
+        let resolverGate = InvocationBlocker()
+        let fixture = try await makeFixture(binding: Self.binding(toolName: MCPWindowToolName.agentRun))
+        let host = MCPDomainHost(
+            identity: fixture.runtime.identity,
+            registry: fixture.runtime.toolRegistry,
+            routingCoordinator: fixture.runtime.routingCoordinator,
+            operationResolver: { _, _ in
+                await resolverGate.wait()
+                return .unknown
+            }
+        )
+        let resolution = try await host.resolve(
+            toolName: MCPWindowToolName.agentRun,
+            scope: .window(id: 1)
+        )
+        let invocationID = UUID()
+        let invocation = MCPDomainHostInvocation(
+            invocationID: invocationID,
+            connectionID: fixture.connection.connectionID,
+            resolution: resolution,
+            arguments: ["op": .string("start")],
+            securityContext: securityContext(
+                identity: fixture.runtime.identity,
+                connection: fixture.connection,
+                invocationID: invocationID
+            )
+        )
+        let first = Task { () -> Error? in
+            do {
+                _ = try await host.invoke(invocation)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        await resolverGate.awaitStarted()
+        let second = Task { () -> Error? in
+            do {
+                _ = try await host.invoke(invocation)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        await resolverGate.resume()
+
+        let errors = await [first.value, second.value]
+        XCTAssertEqual(errors.count(where: { $0 == nil }), 0)
+        XCTAssertEqual(
+            errors.compactMap { $0 as? MCPDomainHostError },
+            [
+                .invalidOperation(toolName: MCPWindowToolName.agentRun),
+                .duplicateInvocationID(invocationID)
+            ]
+        )
+    }
+
+    func testPendingInvocationBlocksCatalogUninstallUntilFinalAdmissionSettles() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let catalog = try MCPDomainCatalogSnapshot(core: await bridge.mcpToolCatalog())
+        let admissionGate = InvocationBlocker()
+        let fixture = try await makeFixture()
+        let host = MCPDomainHost(
+            identity: fixture.runtime.identity,
+            registry: fixture.runtime.toolRegistry,
+            routingCoordinator: fixture.runtime.routingCoordinator,
+            beforeFinalAdmission: { await admissionGate.wait() }
+        )
+        try await host.installCatalog(catalog)
+        let resolution = try await host.resolve(
+            toolName: MCPWindowToolName.readFile,
+            scope: .window(id: 1)
+        )
+        let invocationID = UUID()
+        let invocation = MCPDomainHostInvocation(
+            invocationID: invocationID,
+            connectionID: fixture.connection.connectionID,
+            resolution: resolution,
+            arguments: [:],
+            securityContext: securityContext(
+                identity: fixture.runtime.identity,
+                connection: fixture.connection,
+                invocationID: invocationID
+            )
+        )
+        let invocationTask = Task { try await host.invoke(invocation) }
+        await admissionGate.awaitStarted()
+        let uninstallWhilePending = await host.uninstallCatalog(expectedDigest: catalog.digest)
+        XCTAssertFalse(uninstallWhilePending)
+        await admissionGate.resume()
+        _ = try await invocationTask.value
+        let uninstallAfterSettlement = await host.uninstallCatalog(expectedDigest: catalog.digest)
+        XCTAssertTrue(uninstallAfterSettlement)
+        _ = await fixture.runtime.shutdown()
     }
 
     func testDrainClosesResourceAdmissionAndWaitsForActiveLease() async throws {
@@ -455,7 +867,7 @@ final class MCPDomainHostTests: XCTestCase {
             bindings: [
                 Self.binding(toolName: MCPWindowToolName.readFile),
                 Self.binding(toolName: MCPWindowToolName.askUser),
-                Self.binding(toolName: MCPWindowToolName.agentExplore),
+                Self.binding(toolName: MCPWindowToolName.agentExplore)
             ]
         )
 
@@ -521,6 +933,10 @@ final class MCPDomainHostTests: XCTestCase {
             policy: directPolicy
         )
         XCTAssertEqual(readDecision.admissionClass, .fileRead)
+        let installedAdmissionClass = await runtime.domainHost.admissionClass(
+            for: MCPWindowToolName.readFile
+        )
+        XCTAssertEqual(readDecision.admissionClass, installedAdmissionClass)
 
         let disabled = await runtime.domainHost.advertisedCatalog(
             MCPDomainCatalogAdvertisementRequest(
@@ -684,7 +1100,7 @@ final class MCPDomainHostTests: XCTestCase {
                 description: description,
                 inputSchema: .object([
                     "type": .string("object"),
-                    "properties": .object([:]),
+                    "properties": .object([:])
                 ])
             ),
             operation: operation
@@ -716,6 +1132,23 @@ final class MCPDomainHostTests: XCTestCase {
             hasAuthoritativeRoutingContext: false,
             ephemeralGrantedToolNames: [MCPWindowToolName.readFile]
         )
+    }
+}
+
+private actor OperationResolverCallCounter {
+    struct Call: Equatable {
+        let toolName: String
+        let input: MCPDomainToolOperationInput
+    }
+
+    private var lastCall: Call?
+
+    func record(toolName: String, input: MCPDomainToolOperationInput) {
+        lastCall = Call(toolName: toolName, input: input)
+    }
+
+    func value() -> Call? {
+        lastCall
     }
 }
 

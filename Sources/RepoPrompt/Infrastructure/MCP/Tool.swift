@@ -123,7 +123,13 @@ extension Tool {
     }
 
     func domainBinding() throws -> MCPDomainToolBinding {
-        let definition: MCPDomainToolDefinition = if let canonical = MCPDomainGeneratedToolDefinitions.definition(named: name) {
+        try domainBinding(catalog: nil)
+    }
+
+    func domainBinding(catalog: MCPDomainCatalogSnapshot?) throws -> MCPDomainToolBinding {
+        let definition: MCPDomainToolDefinition = if let canonical = catalog?.definitions.first(where: { $0.name == name })
+            ?? MCPDomainGeneratedToolDefinitions.definition(named: name)
+        {
             canonical
         } else {
             try MCPDomainToolDefinition(

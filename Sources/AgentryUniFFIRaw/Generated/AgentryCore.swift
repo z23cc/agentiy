@@ -1883,6 +1883,12 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
      */
     func mcpToolCatalogV1(identity: RuntimeIdentity) throws  -> CoreMcpToolCatalogV1
 
+    /**
+     * Resolves operation identity from the same Rust catalog used for advertisement. This
+     * prevents Swift callers from rebuilding normalization and alias policy independently.
+     */
+    func mcpToolOperationIdentityV1(identity: RuntimeIdentity, toolName: String, input: CoreMcpToolOperationInputV1) throws  -> CoreMcpToolOperationIdentityV1
+
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
 
     /**
@@ -2736,6 +2742,22 @@ open func mcpToolCatalogV1(identity: RuntimeIdentity)throws  -> CoreMcpToolCatal
     uniffi_agentry_ffi_fn_method_coreruntime_mcp_tool_catalog_v1(
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Resolves operation identity from the same Rust catalog used for advertisement. This
+     * prevents Swift callers from rebuilding normalization and alias policy independently.
+     */
+open func mcpToolOperationIdentityV1(identity: RuntimeIdentity, toolName: String, input: CoreMcpToolOperationInputV1)throws  -> CoreMcpToolOperationIdentityV1  {
+    return try  FfiConverterTypeCoreMcpToolOperationIdentityV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_mcp_tool_operation_identity_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(toolName),
+        FfiConverterTypeCoreMcpToolOperationInputV1_lower(input),uniffiCallStatus
     )
 })
 }
@@ -6465,14 +6487,22 @@ public struct CoreMcpToolCatalogV1: Equatable, Hashable {
     public let catalogVersion: UInt16
     public let definitionSchemaVersion: UInt16
     public let digest: String
+    /**
+     * Exact bytes used to compute `digest`; consumers must verify before projecting tools.
+     */
+    public let canonicalCatalogJson: Data
     public let tools: [CoreMcpToolDefinitionV1]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(catalogVersion: UInt16, definitionSchemaVersion: UInt16, digest: String, tools: [CoreMcpToolDefinitionV1]) {
+    public init(catalogVersion: UInt16, definitionSchemaVersion: UInt16, digest: String,
+        /**
+         * Exact bytes used to compute `digest`; consumers must verify before projecting tools.
+         */canonicalCatalogJson: Data, tools: [CoreMcpToolDefinitionV1]) {
         self.catalogVersion = catalogVersion
         self.definitionSchemaVersion = definitionSchemaVersion
         self.digest = digest
+        self.canonicalCatalogJson = canonicalCatalogJson
         self.tools = tools
     }
 
@@ -6495,6 +6525,7 @@ public struct FfiConverterTypeCoreMcpToolCatalogV1: FfiConverterRustBuffer {
                 catalogVersion: FfiConverterUInt16.read(from: &buf),
                 definitionSchemaVersion: FfiConverterUInt16.read(from: &buf),
                 digest: FfiConverterString.read(from: &buf),
+                canonicalCatalogJson: FfiConverterData.read(from: &buf),
                 tools: FfiConverterSequenceTypeCoreMcpToolDefinitionV1.read(from: &buf)
         )
     }
@@ -6503,6 +6534,7 @@ public struct FfiConverterTypeCoreMcpToolCatalogV1: FfiConverterRustBuffer {
         FfiConverterUInt16.write(value.catalogVersion, into: &buf)
         FfiConverterUInt16.write(value.definitionSchemaVersion, into: &buf)
         FfiConverterString.write(value.digest, into: &buf)
+        FfiConverterData.write(value.canonicalCatalogJson, into: &buf)
         FfiConverterSequenceTypeCoreMcpToolDefinitionV1.write(value.tools, into: &buf)
     }
 }
@@ -6694,6 +6726,60 @@ public func FfiConverterTypeCoreMcpToolLimitsV1_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeCoreMcpToolLimitsV1_lower(_ value: CoreMcpToolLimitsV1) -> RustBuffer {
     return FfiConverterTypeCoreMcpToolLimitsV1.lower(value)
+}
+
+
+public struct CoreMcpToolOperationIdentityV1: Equatable, Hashable {
+    public let canonicalTool: String
+    public let normalizedOperation: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(canonicalTool: String, normalizedOperation: String) {
+        self.canonicalTool = canonicalTool
+        self.normalizedOperation = normalizedOperation
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreMcpToolOperationIdentityV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMcpToolOperationIdentityV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMcpToolOperationIdentityV1 {
+        return
+            try CoreMcpToolOperationIdentityV1(
+                canonicalTool: FfiConverterString.read(from: &buf),
+                normalizedOperation: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreMcpToolOperationIdentityV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.canonicalTool, into: &buf)
+        FfiConverterString.write(value.normalizedOperation, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolOperationIdentityV1_lift(_ buf: RustBuffer) throws -> CoreMcpToolOperationIdentityV1 {
+    return try FfiConverterTypeCoreMcpToolOperationIdentityV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolOperationIdentityV1_lower(_ value: CoreMcpToolOperationIdentityV1) -> RustBuffer {
+    return FfiConverterTypeCoreMcpToolOperationIdentityV1.lower(value)
 }
 
 
@@ -17091,6 +17177,82 @@ public func FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1_lower(_ value
 
 
 
+
+public enum CoreMcpToolOperationInputV1: Equatable, Hashable {
+
+    case missing
+    case value(String
+    )
+    case malformed
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreMcpToolOperationInputV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMcpToolOperationInputV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreMcpToolOperationInputV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMcpToolOperationInputV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .missing
+
+        case 2: return .value(try FfiConverterString.read(from: &buf)
+        )
+
+        case 3: return .malformed
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreMcpToolOperationInputV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .missing:
+            writeInt(&buf, Int32(1))
+
+
+        case let .value(v1):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(v1, into: &buf)
+
+
+        case .malformed:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolOperationInputV1_lift(_ buf: RustBuffer) throws -> CoreMcpToolOperationInputV1 {
+    return try FfiConverterTypeCoreMcpToolOperationInputV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolOperationInputV1_lower(_ value: CoreMcpToolOperationInputV1) -> RustBuffer {
+    return FfiConverterTypeCoreMcpToolOperationInputV1.lower(value)
+}
+
+
+
 /**
  * Stable encoding identity returned by the standalone TD-5 text decoder.
  */
@@ -23860,6 +24022,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_mcp_tool_catalog_v1() != 8300) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_mcp_tool_operation_identity_v1() != 43420) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_open_subscription() != 16674) {

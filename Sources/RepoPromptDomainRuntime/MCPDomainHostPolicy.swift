@@ -71,8 +71,8 @@ package struct MCPDomainPreAdmissionDecision: Equatable, Sendable {
     }
 }
 
-extension MCPDomainHost {
-    package func advertisedCatalog(
+package extension MCPDomainHost {
+    func advertisedCatalog(
         _ request: MCPDomainCatalogAdvertisementRequest
     ) async -> MCPDomainCatalogAdvertisementResult {
         guard request.isGloballyEnabled else {
@@ -83,6 +83,8 @@ extension MCPDomainHost {
         }
 
         let catalog = await registry.snapshot()
+        let runtimeCatalog = catalogForPolicy()
+        let policyGatedToolNames = MCPClientToolPolicyCatalog.policyGatedToolNames(catalog: runtimeCatalog)
         var visible: [MCPDomainToolDefinition] = []
         var hidden: [String: MCPDomainCatalogHiddenReason] = [:]
         visible.reserveCapacity(catalog.definitions.count)
@@ -97,7 +99,7 @@ extension MCPDomainHost {
                 hidden[toolName] = .restricted
                 continue
             }
-            if MCPClientToolPolicyCatalog.policyGatedToolNames.contains(toolName),
+            if policyGatedToolNames.contains(toolName),
                !request.policy.additionalToolNames.contains(toolName)
             {
                 hidden[toolName] = .missingAdditionalToolGrant
@@ -106,7 +108,8 @@ extension MCPDomainHost {
             if !MCPClientToolPolicyCatalog.shouldAdvertise(
                 toolName: toolName,
                 role: request.policy.role,
-                allowsAgentExternalControlTools: request.policy.allowsAgentExternalControlTools
+                allowsAgentExternalControlTools: request.policy.allowsAgentExternalControlTools,
+                catalog: runtimeCatalog
             ) {
                 hidden[toolName] = .roleAdvertisementPolicy
                 continue
@@ -120,37 +123,46 @@ extension MCPDomainHost {
         )
     }
 
-    package func evaluateEarlyCallPolicy(
+    func evaluateEarlyCallPolicy(
         toolName: String,
         policy: MCPDomainClientPolicySnapshot
     ) throws {
-        if MCPClientToolPolicyCatalog.policyGatedToolNames.contains(toolName),
+        if MCPClientToolPolicyCatalog.policyGatedToolNames(catalog: catalogForPolicy()).contains(toolName),
            !policy.additionalToolNames.contains(toolName)
         {
             throw MCPDomainCallPolicyDenial.missingAdditionalGrant(toolName: toolName)
         }
     }
 
-    package func evaluatePreAdmissionCallPolicy(
+    func evaluatePreAdmissionCallPolicy(
         toolName: String,
         policy: MCPDomainClientPolicySnapshot
     ) throws -> MCPDomainPreAdmissionDecision {
-        guard MCPDomainToolCatalog.entry(named: toolName) != nil else {
+        let runtimeCatalog = catalogForPolicy()
+        guard !requiresRuntimeCatalogForPolicy || runtimeCatalog != nil else {
+            throw MCPDomainCallPolicyDenial.unknownTool(toolName: toolName)
+        }
+        guard (runtimeCatalog?.entry(named: toolName) ?? MCPDomainToolCatalog.entry(named: toolName)) != nil else {
             throw MCPDomainCallPolicyDenial.unknownTool(toolName: toolName)
         }
         if policy.restrictedToolNames.contains(toolName) {
             throw MCPDomainCallPolicyDenial.restricted(toolName: toolName)
         }
-        if MCPDomainToolCatalog.capabilities(for: toolName).contains(.agentExploreControl),
+        let capabilities = runtimeCatalog.map { $0.capabilities(for: toolName) }
+            ?? MCPDomainToolCatalog.capabilities(for: toolName)
+        if capabilities.contains(.agentExploreControl),
            !MCPClientToolPolicyCatalog.shouldAdvertise(
                toolName: toolName,
                role: policy.role,
-               allowsAgentExternalControlTools: policy.allowsAgentExternalControlTools
+               allowsAgentExternalControlTools: policy.allowsAgentExternalControlTools,
+               catalog: runtimeCatalog
            )
         {
             throw MCPDomainCallPolicyDenial.roleUnavailable(toolName: toolName)
         }
-        guard let admissionClass = MCPDomainToolCatalog.admissionClass(for: toolName) else {
+        guard let admissionClass = runtimeCatalog?.admissionClass(for: toolName)
+            ?? MCPDomainToolCatalog.admissionClass(for: toolName)
+        else {
             throw MCPDomainCallPolicyDenial.missingAdmissionClassification(toolName: toolName)
         }
         return MCPDomainPreAdmissionDecision(admissionClass: admissionClass)

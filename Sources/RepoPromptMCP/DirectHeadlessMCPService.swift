@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import CryptoKit
 import Darwin
 import Foundation
@@ -8,6 +9,7 @@ import RepoPromptDomainRuntime
 actor DirectHeadlessMCPService {
     struct PreparedRuntime {
         let runtime: MCPDomainRuntime
+        let catalog: MCPDomainCatalogSnapshot
         let scopeID: DomainStandaloneScopeID
         let connectionID: UUID
         let connectionGeneration: UInt64
@@ -135,23 +137,50 @@ actor DirectHeadlessMCPService {
         }
 
         let childLaunchCoordinator = DirectHeadlessChildLaunchCoordinator()
-        let runtime = MCPDomainRuntime(configuration: DomainRuntimeConfiguration(
-            mode: .standalone,
-            profileIdentifier: locations.profileIdentifier,
-            storageDirectory: locations.storageDirectory,
-            workspaceStorageDirectory: locations.workspaceStorageDirectory,
-            eventDirectory: locations.eventDirectory,
-            temporaryDirectory: locations.temporaryDirectory,
-            hostDrainTimeout: .seconds(5)
-        ), prepareChildLaunch: { toolName, arguments, securityContext in
-            try await childLaunchCoordinator.prepare(
-                toolName: toolName,
-                arguments: arguments,
-                securityContext: securityContext
-            )
-        })
+        let runtime = MCPDomainRuntime(
+            configuration: DomainRuntimeConfiguration(
+                mode: .standalone,
+                profileIdentifier: locations.profileIdentifier,
+                storageDirectory: locations.storageDirectory,
+                workspaceStorageDirectory: locations.workspaceStorageDirectory,
+                eventDirectory: locations.eventDirectory,
+                temporaryDirectory: locations.temporaryDirectory,
+                hostDrainTimeout: .seconds(5),
+                catalogProvider: {
+                    let owner = try await AgentryCoreService.shared.runtime()
+                    let coreCatalog = try await owner.coreMcpToolCatalogSnapshot()
+                    return try MCPDomainCatalogSnapshot(core: coreCatalog)
+                },
+                operationResolver: { toolName, input in
+                    let owner = try await AgentryCoreService.shared.runtime()
+                    let coreInput: CoreMcpToolOperationInput = switch input {
+                    case .missing: .missing
+                    case let .value(value): .value(value)
+                    case .malformed: .malformed
+                    }
+                    let identity = try await owner.coreMcpToolOperationIdentity(
+                        toolName: toolName,
+                        input: coreInput
+                    )
+                    return MCPDomainToolOperationIdentity(
+                        canonicalTool: identity.canonicalTool,
+                        normalizedOperation: identity.normalizedOperation
+                    )
+                }
+            ),
+            prepareChildLaunch: { toolName, arguments, securityContext in
+                try await childLaunchCoordinator.prepare(
+                    toolName: toolName,
+                    arguments: arguments,
+                    securityContext: securityContext
+                )
+            }
+        )
         try await runtime.start()
         do {
+            guard let catalog = await runtime.toolRegistry.catalogSnapshot() else {
+                throw MCPDomainToolRegistryError.catalogUnavailable
+            }
             let workingDirectories = locations.workingDirectories
             if locations.mayBootstrapIsolatedWorkspace {
                 try await ensureExplicitIsolatedWorkspace(
@@ -205,7 +234,8 @@ actor DirectHeadlessMCPService {
             let installation = try await MCPDomainStandaloneToolInstaller.install(
                 runtime: runtime,
                 scopeID: scopeID,
-                backends: backends
+                backends: backends,
+                catalog: catalog
             )
             let privateEndpointDirectory = URL(
                 fileURLWithPath: "/tmp/rpce-h-\(geteuid())-\(runtime.identity.runtimeID.uuidString.prefix(8))",
@@ -235,6 +265,7 @@ actor DirectHeadlessMCPService {
             )
             return PreparedRuntime(
                 runtime: runtime,
+                catalog: catalog,
                 scopeID: scopeID,
                 connectionID: connectionID,
                 connectionGeneration: scope.registration.generation,
@@ -256,27 +287,29 @@ actor DirectHeadlessMCPService {
         prepared: PreparedRuntime,
         connection: ConnectionContext
     ) async {
+        let catalog = prepared.catalog
         let classification = MCPClientToolPolicyCatalog.classification(for: connection.policyProfile)
-        let restrictedNames = MCPDomainToolCatalog
+        let restrictedNames = catalog
             .toolNames(for: classification.restrictedCapabilities)
             .union(connection.restrictedToolNames)
-        let additionalNames = MCPDomainToolCatalog
+        let additionalNames = catalog
             .toolNames(for: classification.grantedCapabilities)
             .union(connection.additionalToolNames)
-        let visibleNames = Set(MCPDomainToolCatalog.orderedToolNames.filter { toolName in
+        let visibleNames = Set(catalog.orderedToolNames.filter { toolName in
             !restrictedNames.contains(toolName)
                 && (
-                    !MCPClientToolPolicyCatalog.policyGatedToolNames.contains(toolName)
+                    !MCPClientToolPolicyCatalog.policyGatedToolNames(catalog: catalog).contains(toolName)
                         || additionalNames.contains(toolName)
                 )
                 && MCPClientToolPolicyCatalog.shouldAdvertise(
                     toolName: toolName,
                     role: classification.role,
-                    allowsAgentExternalControlTools: classification.allowsAgentExternalControlTools
+                    allowsAgentExternalControlTools: classification.allowsAgentExternalControlTools,
+                    catalog: catalog
                 )
         })
         await server.withMethodHandler(ListTools.self) { _ in
-            let tools = MCPDomainGeneratedToolDefinitions.definitions.compactMap { definition -> MCP.Tool? in
+            let tools = catalog.definitions.compactMap { definition -> MCP.Tool? in
                 guard visibleNames.contains(definition.name) else { return nil }
                 let projected = definition.annotations.projected(
                     for: classification.annotationProfile
@@ -302,11 +335,12 @@ actor DirectHeadlessMCPService {
                 return Self.errorResult("Tool is unavailable for this client policy: \(params.name)")
             }
             do {
-                let arguments = try Self.validatedCallArguments(
+                let arguments = params.arguments ?? [:]
+                try await prepared.runtime.domainHost.validateOperation(
                     toolName: params.name,
-                    arguments: params.arguments ?? [:]
+                    arguments: arguments
                 )
-                let scope: MCPDomainToolRegistrationScope = MCPGlobalToolName.orderedToolNames.contains(params.name)
+                let scope: MCPDomainToolRegistrationScope = catalog.globalToolNames.contains(params.name)
                     ? .application
                     : .standalone(id: prepared.scopeID)
                 let resolution = try await prepared.runtime.domainHost.resolve(
@@ -548,23 +582,30 @@ actor DirectHeadlessMCPService {
         )
     }
 
+    /// Fixture-only compatibility helper. Production calls are validated by MCPDomainHost
+    /// against the installed Rust catalog and resolver; this helper remains for parser tests.
     nonisolated static func validatedCallArguments(
         toolName: String,
         arguments: [String: Value]
     ) throws -> [String: Value] {
-        let supportedOperations: Set<String>
-        switch toolName {
-        case "agent_run":
-            supportedOperations = ["start", "poll", "wait", "cancel"]
-        case "agent_explore":
-            supportedOperations = ["start", "poll", "wait", "cancel"]
-        default:
-            return arguments
+        guard let entry = MCPDomainToolCatalog.entry(named: toolName),
+              let policy = entry.operationPolicy
+        else { return arguments }
+        let input: MCPDomainToolOperationInput
+        if let raw = arguments[policy.argumentKey] {
+            guard let value = raw.stringValue else {
+                throw MCPError.invalidParams("\(toolName) requires a supported string operation")
+            }
+            input = .value(value)
+        } else {
+            input = .missing
         }
-        guard let operation = arguments["op"]?.stringValue,
-              supportedOperations.contains(operation)
-        else {
-            throw MCPError.invalidParams("\(toolName) requires a supported string op")
+        let identity = MCPDomainToolOperationIdentity(
+            canonicalTool: entry.name,
+            normalizedOperation: policy.normalizedOperation(for: input)
+        )
+        guard identity.normalizedOperation != MCPDomainToolOperationIdentity.unknownOperation else {
+            throw MCPError.invalidParams("\(toolName) requires a supported operation")
         }
         return arguments
     }

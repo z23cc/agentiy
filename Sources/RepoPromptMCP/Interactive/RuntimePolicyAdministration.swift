@@ -168,7 +168,12 @@ enum RuntimePolicyAdministration {
             storageDirectory: root,
             eventDirectory: root.appendingPathComponent("Events", isDirectory: true),
             temporaryDirectory: AgentryProductIdentity.temporaryRootURL(),
-            externalReloadInterval: nil
+            externalReloadInterval: nil,
+            catalogProvider: {
+                let owner = try await AgentryCoreService.shared.runtime()
+                let coreCatalog = try await owner.coreMcpToolCatalogSnapshot()
+                return try MCPDomainCatalogSnapshot(core: coreCatalog)
+            }
         ))
     }
 
