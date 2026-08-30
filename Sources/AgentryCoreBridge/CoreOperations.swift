@@ -179,6 +179,9 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case agentProviderReaperFailed(String)
     case agentProviderTransportWriteFailed(String)
     case agentProviderInvalidRequest(String)
+    case watcherUnknownScope
+    case watcherScopeClosed
+    case watcherInvalidRequest(String)
     case transportFailure(String)
 }
 
@@ -229,6 +232,9 @@ extension CoreBridgeError: LocalizedError {
         case let .agentProviderReaperFailed(message): "Agent provider reaper registration failed: \(message)"
         case let .agentProviderTransportWriteFailed(message): "Agent provider transport write failed: \(message)"
         case let .agentProviderInvalidRequest(message): "Invalid agent provider request: \(message)"
+        case .watcherUnknownScope: "The file-system watcher scope is unknown or already closed."
+        case .watcherScopeClosed: "The file-system watcher scope is closed."
+        case let .watcherInvalidRequest(message): "The file-system watcher request is invalid: \(message)"
         case let .transportFailure(message): "Rust FFI transport failure: \(message)"
         }
     }

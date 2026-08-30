@@ -4186,7 +4186,8 @@ actor WorkspaceCodemapBindingEngine {
                  .agentClaudeControlResponseError,
                  .agentProviderUnknownScope, .agentProviderScopeClosed, .agentProviderAlreadyRunning,
                  .agentProviderNotRunning, .agentProviderSpawnFailed, .agentProviderReaperFailed,
-                 .agentProviderTransportWriteFailed, .agentProviderInvalidRequest:
+                 .agentProviderTransportWriteFailed, .agentProviderInvalidRequest,
+                 .watcherUnknownScope, .watcherScopeClosed, .watcherInvalidRequest:
                 // P6-6: per-call agent-claude-v1 business-outcome/request errors (unknown/closed
                 // scope, already-running, spawn/reaper/transport failure scoped to one command, a
                 // malformed request). Same reasoning as the inventory-scope-v1 group directly

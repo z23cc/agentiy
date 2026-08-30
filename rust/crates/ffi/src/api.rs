@@ -9,12 +9,14 @@ use crate::types::{
     CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1,
     CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult, CoreAgentProviderScopeConfigV1,
     CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCompactApplyEditsBatchResultV1,
-    CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake, CoreInventoryScopeConfigV1,
-    CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1,
-    CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
-    CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
-    CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
-    CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
+    CoreCompactCodeMapBatchResultV1, CoreConfig, CoreFileSystemWatcherEventV1,
+    CoreFileSystemWatcherPayloadV1, CoreFileSystemWatcherScopeConfigV1,
+    CoreFileSystemWatcherScopeHandleV1, CoreFileSystemWatcherSnapshotV1, CoreHandshake,
+    CoreInventoryScopeConfigV1, CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1,
+    CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
+    CorePathSearchFindResultV1, CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1,
+    CoreTextDecodeRequestV1, CoreTextDecodeResultV1, CoreTokenAccountingRequestV1,
+    CoreTokenAccountingResultV1, CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
     CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionAcquireKindV1,
     CoreWorkspaceCommandAdmissionDiagnosticsV1, CoreWorkspaceCommandAdmissionLookupScopeV1,
     CoreWorkspaceCommandAdmissionRecoveryReceiptV1, CoreWorkspaceCommandIdentityRequestV1,
@@ -45,7 +47,7 @@ use crate::types::{
     InventoryRootLifetimeV1, InventoryRootOpenV1, InventoryRootUnloadReceiptV1,
     InventoryScopeHandleV1, InventorySnapshotHandleV1, InventorySnapshotRequestV1, OperationState,
     OversizeEvent, PathFilterRequest, PathFilterResult, RegexSearchBatchRequest,
-    RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity, ShutdownReceipt,
+    RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity, ScopeId, ShutdownReceipt,
     SubscriptionBootstrap, SubscriptionId, SubscriptionScope, parse_inventory_scope_id,
     parse_root_id, parse_root_lifetime_id, wire_error,
 };
@@ -2208,6 +2210,7 @@ pub struct CoreRuntime {
     inventory_scope_registry: runtime::inventory_scope::ScopeRegistry,
     agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry,
     agent_provider_scope_registry: runtime::agent_provider::ScopeRegistry,
+    watcher_scope_registry: runtime::agent_watcher::ScopeRegistry,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -3358,6 +3361,127 @@ impl CoreRuntime {
             Ok(self
                 .search_leaf
                 .folder_suffix_indices(&request.runtime_request()))
+        })
+    }
+
+    // ============================================================================================
+    // P7: Rust-owned filesystem watcher ingress mailbox.
+    // ============================================================================================
+
+    pub fn file_system_watcher_open_scope(
+        &self,
+        identity: RuntimeIdentity,
+        config: CoreFileSystemWatcherScopeConfigV1,
+    ) -> Result<CoreFileSystemWatcherScopeHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let (root_path, max_queued_raw_entries) = config.runtime_config()?;
+            let scope = self.watcher_scope_registry.open_scope(
+                identity,
+                root_path,
+                max_queued_raw_entries,
+            )?;
+            Ok(CoreFileSystemWatcherScopeHandleV1 {
+                scope_id: scope.id().to_string(),
+            })
+        })
+    }
+
+    pub fn file_system_watcher_start_accepting(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            self.watcher_scope(&scope_id)?.start_accepting(&identity)?;
+            Ok(())
+        })
+    }
+
+    pub fn file_system_watcher_ingest(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        entries: Vec<CoreFileSystemWatcherEventV1>,
+    ) -> Result<Option<u64>, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.watcher_scope(&scope_id)?;
+            let events: Vec<_> = entries.iter().map(Into::into).collect();
+            Ok(scope.ingest(&identity, &events)?)
+        })
+    }
+
+    pub fn file_system_watcher_capture_watermark(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            Ok(self
+                .watcher_scope(&scope_id)?
+                .capture_watermark(&identity)?)
+        })
+    }
+
+    pub fn file_system_watcher_take_next(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        through: Option<u64>,
+    ) -> Result<Option<CoreFileSystemWatcherPayloadV1>, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            Ok(self
+                .watcher_scope(&scope_id)?
+                .take_next(&identity, through)?
+                .map(Into::into))
+        })
+    }
+
+    pub fn file_system_watcher_snapshot(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<CoreFileSystemWatcherSnapshotV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            Ok(self.watcher_scope(&scope_id)?.snapshot(&identity)?.into())
+        })
+    }
+
+    pub fn file_system_watcher_reset(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            self.watcher_scope(&scope_id)?.reset(&identity)?;
+            Ok(())
+        })
+    }
+
+    pub fn file_system_watcher_close_scope(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let id = ScopeId { value: scope_id }.parse()?;
+            self.watcher_scope_registry.close_scope(&identity, &id)?;
+            Ok(())
         })
     }
 
@@ -4924,6 +5048,7 @@ impl CoreRuntime {
             inventory_scope_registry: runtime::inventory_scope::ScopeRegistry::new(),
             agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry::new(),
             agent_provider_scope_registry: runtime::agent_provider::ScopeRegistry::new(),
+            watcher_scope_registry: runtime::agent_watcher::ScopeRegistry::new(),
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),
@@ -4976,7 +5101,20 @@ impl CoreRuntime {
             .ok_or(CoreError::InventoryScopeUnknownScope)
     }
 
-    /// P6-6: the agent-claude-v1 counterpart of `inventory_scope` above.
+    /// P7 counterpart of `inventory_scope`: routes a watcher scope id to the Rust mailbox.
+    fn watcher_scope(
+        &self,
+        scope_id: &str,
+    ) -> Result<std::sync::Arc<runtime::agent_watcher::AgentWatcherScope>, CoreError> {
+        let scope_id = ScopeId {
+            value: scope_id.to_owned(),
+        }
+        .parse()?;
+        self.watcher_scope_registry
+            .scope(&scope_id)
+            .ok_or(CoreError::WatcherUnknownScope)
+    }
+
     fn agent_provider_scope(
         &self,
         scope_id: &str,
@@ -5008,8 +5146,8 @@ mod tests {
     use super::*;
     use crate::types::{
         CoreApplyEditsSubjectRequestV1, CoreCodeMapSourceKindV1, CoreCodeMapSubjectRequestV1,
-        CoreWorkspaceCommandKindV1, CoreWorkspaceCommandOriginV1, InventoryApplyOutcomeV1,
-        InventoryRejectionReasonV1,
+        CoreFileSystemWatcherPayloadContentsV1, CoreWorkspaceCommandKindV1,
+        CoreWorkspaceCommandOriginV1, InventoryApplyOutcomeV1, InventoryRejectionReasonV1,
     };
 
     fn config() -> CoreConfig {
@@ -6253,6 +6391,120 @@ mod tests {
             Err(CoreError::TokenAccountingInvalidRequest {
                 message: "unknown contract version 2".into(),
             })
+        );
+    }
+
+    // ============================================================================================
+    // P7: end-to-end watcher mailbox FFI tests.
+    // ============================================================================================
+
+    #[test]
+    fn watcher_ffi_preserves_fifo_watermarks_and_pressure_collapse() {
+        let (core, identity, _) = initialized_core();
+        let handle = core
+            .file_system_watcher_open_scope(
+                identity.clone(),
+                CoreFileSystemWatcherScopeConfigV1 {
+                    root_path: "/repo".into(),
+                    max_queued_raw_entries: 2,
+                },
+            )
+            .expect("open watcher scope");
+        let event = |path: &str, event_id| CoreFileSystemWatcherEventV1 {
+            path: path.into(),
+            flags: 7,
+            event_id,
+        };
+        assert_eq!(
+            core.file_system_watcher_ingest(
+                identity.clone(),
+                handle.scope_id.clone(),
+                vec![event("/repo/a", 1)]
+            )
+            .expect("ingest first"),
+            Some(1)
+        );
+        assert_eq!(
+            core.file_system_watcher_ingest(
+                identity.clone(),
+                handle.scope_id.clone(),
+                vec![event("/repo/b", 2)]
+            )
+            .expect("ingest second"),
+            Some(2)
+        );
+        assert_eq!(
+            core.file_system_watcher_ingest(
+                identity.clone(),
+                handle.scope_id.clone(),
+                vec![event("/repo/c", 3)]
+            )
+            .expect("ingest overflow"),
+            Some(3)
+        );
+        let snapshot = core
+            .file_system_watcher_snapshot(identity.clone(), handle.scope_id.clone())
+            .expect("snapshot");
+        assert_eq!(snapshot.accepted_high_watermark, 3);
+        assert!(snapshot.has_overflow_root_rescan);
+        let payload = core
+            .file_system_watcher_take_next(identity.clone(), handle.scope_id.clone(), Some(3))
+            .expect("take payload")
+            .expect("payload exists");
+        assert_eq!(payload.lowest_accepted_watermark, 1);
+        assert_eq!(payload.accepted_high_watermark, 3);
+        assert!(matches!(
+            payload.contents,
+            CoreFileSystemWatcherPayloadContentsV1::OverflowRootRescan {
+                highest_event_id: 3,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn watcher_ffi_identity_and_reset_are_fail_closed() {
+        let (core, identity, _) = initialized_core();
+        let handle = core
+            .file_system_watcher_open_scope(
+                identity.clone(),
+                CoreFileSystemWatcherScopeConfigV1 {
+                    root_path: "/repo".into(),
+                    max_queued_raw_entries: 4,
+                },
+            )
+            .expect("open watcher scope");
+        let other = RuntimeIdentity {
+            abi_epoch: ABI_EPOCH,
+            instance_nonce: "abcdefabcdefabcdefabcdefabcdefab".into(),
+            build_fingerprint: CORE_BUILD_FINGERPRINT.into(),
+            binding_checksum: BINDING_CHECKSUM.into(),
+        };
+        assert_eq!(
+            core.file_system_watcher_capture_watermark(other, handle.scope_id.clone()),
+            Err(CoreError::StaleRuntimeIdentity)
+        );
+        core.file_system_watcher_ingest(
+            identity.clone(),
+            handle.scope_id.clone(),
+            vec![CoreFileSystemWatcherEventV1 {
+                path: "/repo/a".into(),
+                flags: 1,
+                event_id: 1,
+            }],
+        )
+        .expect("ingest");
+        core.file_system_watcher_reset(identity.clone(), handle.scope_id.clone())
+            .expect("reset");
+        assert_eq!(
+            core.file_system_watcher_capture_watermark(identity.clone(), handle.scope_id.clone())
+                .expect("watermark"),
+            1
+        );
+        assert!(
+            core.file_system_watcher_take_next(identity.clone(), handle.scope_id, None)
+                .expect("take after reset")
+                .is_none()
         );
     }
 

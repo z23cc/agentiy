@@ -1,13 +1,13 @@
+import AgentryCoreBridge
 import CoreServices
 import Foundation
+import RepoPromptDomainRuntime
 
-/// Owns deep-copied FSEvent callback payloads synchronously before actor entry.
+/// Compatibility facade for the file-system actor's existing ingress contract.
 ///
-/// The FSEvents callback can run outside the `FileSystemService` actor. This mailbox
-/// assigns a per-root monotonic watermark before any task is created, preserves FIFO
-/// payload order, and retains at most one drain task. Under pressure it collapses
-/// queued details to the existing root-rescan sentinel contract without discarding
-/// accepted progress.
+/// The facade owns only callback scheduling and diagnostic correlation. Accepted payload lifetime,
+/// monotonic watermarks, FIFO ordering, pressure collapse, and reset semantics live in the Rust
+/// watcher scope. CoreServices remains the platform host adapter; it never owns a second mailbox.
 final class FileSystemWatcherIngressMailbox: @unchecked Sendable {
     struct Watermark: Hashable, Comparable {
         let rawValue: UInt64
@@ -35,10 +35,8 @@ final class FileSystemWatcherIngressMailbox: @unchecked Sendable {
 
         var rawEntryCount: Int {
             switch contents {
-            case let .entries(entries):
-                entries.count
-            case .overflowRootRescan:
-                1
+            case let .entries(entries): entries.count
+            case .overflowRootRescan: 1
             }
         }
     }
@@ -54,40 +52,49 @@ final class FileSystemWatcherIngressMailbox: @unchecked Sendable {
         }
     #endif
 
+    private let session: CoreFileSystemWatcherSession
     private let lock = NSLock()
-    private let maxQueuedRawEntries: Int
-    private var isAccepting = true
     private var isAutomaticDrainPaused = false
-    private var nextAcceptedSequence: UInt64 = 0
-    private var acceptedHighWatermark = Watermark.zero
-    private var queuedPayloads: [AcceptedPayload] = []
-    private var queuedPayloadHead = 0
-    private var queuedRawEntryCount = 0
-    private var hasOverflowRootRescan = false
     private var nextDrainToken: UInt64 = 0
     private var activeDrainToken: UInt64?
     private var drainTask: Task<Void, Never>?
+    /// Correlation is observability metadata only; Rust remains authoritative for all payload shape
+    /// and watermark state. Entries are removed through the corresponding accepted cut.
+    private var correlationsByWatermark: [UInt64: EditFlowPerf.LifecycleCorrelation] = [:]
 
-    init(maxQueuedRawEntries: Int) {
-        self.maxQueuedRawEntries = max(1, maxQueuedRawEntries)
+    private init(session: CoreFileSystemWatcherSession) {
+        self.session = session
+    }
+
+    deinit {
+        session.close()
+    }
+
+    static func open(rootPath: String, maxQueuedRawEntries: Int) async throws -> FileSystemWatcherIngressMailbox {
+        let runtime = try await AgentryCoreService.shared.runtime()
+        guard let bridge = runtime as? AgentryCoreBridge else {
+            throw CoreBridgeError.transportFailure("file-system-watcher-v1 requires the AgentryCoreBridge runtime")
+        }
+        let session = try await CoreFileSystemWatcherSession.open(
+            bridge: bridge,
+            rootPath: rootPath,
+            maxQueuedRawEntries: UInt64(max(1, maxQueuedRawEntries))
+        )
+        return FileSystemWatcherIngressMailbox(session: session)
     }
 
     func startAccepting() {
-        lock.lock()
-        isAccepting = true
-        lock.unlock()
+        try? session.startAccepting()
     }
 
-    /// Stops callback acceptance from scheduling actor drain work. Explicit FIFO
-    /// takes remain available so a seeded initialization can replay a precise cut.
+    /// Stops callback acceptance and discards pending Rust-owned evidence. The monotonic watermark
+    /// is intentionally retained by the Rust scope so a restart cannot pass an ABA cut.
     func pauseAutomaticDraining() {
         lock.lock()
         isAutomaticDrainPaused = true
         lock.unlock()
     }
 
-    /// Restores ordinary callback-driven draining and immediately schedules any
-    /// payloads that accumulated while the mailbox was paused.
     func resumeAutomaticDraining(
         scheduleDrain: @escaping @Sendable () async -> Void
     ) {
@@ -98,24 +105,19 @@ final class FileSystemWatcherIngressMailbox: @unchecked Sendable {
     }
 
     func stopAcceptingAndDiscardPending() {
+        try? session.reset()
         lock.lock()
-        isAccepting = false
         isAutomaticDrainPaused = false
-        queuedPayloads.removeAll(keepingCapacity: false)
-        queuedPayloadHead = 0
-        queuedRawEntryCount = 0
-        hasOverflowRootRescan = false
         activeDrainToken = nil
         let task = drainTask
         drainTask = nil
+        correlationsByWatermark.removeAll(keepingCapacity: false)
         lock.unlock()
         task?.cancel()
     }
 
     func captureAcceptedWatermark() -> Watermark {
-        lock.lock()
-        defer { lock.unlock() }
-        return acceptedHighWatermark
+        (try? session.captureWatermark()).map(Watermark.init(rawValue:)) ?? .zero
     }
 
     @discardableResult
@@ -125,130 +127,73 @@ final class FileSystemWatcherIngressMailbox: @unchecked Sendable {
         scheduleDrain: (@Sendable () async -> Void)?
     ) -> Watermark? {
         guard !payload.entries.isEmpty else { return nil }
-
-        lock.lock()
-        guard isAccepting else {
+        let events = payload.entries.map {
+            CoreFileSystemWatcherEvent(path: $0.path, flags: UInt64($0.flags), eventID: UInt64($0.id))
+        }
+        guard let rawWatermark = try? session.ingest(events) else { return nil }
+        if let lifecycleCorrelation {
+            lock.lock()
+            correlationsByWatermark[rawWatermark] = lifecycleCorrelation
             lock.unlock()
-            return nil
         }
-
-        nextAcceptedSequence &+= 1
-        let watermark = Watermark(rawValue: nextAcceptedSequence)
-        acceptedHighWatermark = watermark
-        let acceptedPayload = AcceptedPayload(
-            lowestAcceptedWatermark: watermark,
-            acceptedHighWatermark: watermark,
-            contents: .entries(payload.entries),
-            lifecycleCorrelation: lifecycleCorrelation
-        )
-        appendOrCollapse(acceptedPayload)
         if let scheduleDrain {
+            lock.lock()
             scheduleDrainIfNeeded(scheduleDrain)
+            lock.unlock()
         }
-        lock.unlock()
-        return watermark
+        return Watermark(rawValue: rawWatermark)
     }
 
     func takeNextAcceptedPayload(through target: Watermark? = nil) -> AcceptedPayload? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard queuedPayloadHead < queuedPayloads.count else { return nil }
-        let first = queuedPayloads[queuedPayloadHead]
-        if let target, first.lowestAcceptedWatermark > target {
-            return nil
+        guard let payload = try? session.takeNext(through: target?.rawValue) else { return nil }
+        let correlation: EditFlowPerf.LifecycleCorrelation? = lock.withLock {
+            let value = correlationsByWatermark[payload.acceptedHighWatermark]
+            correlationsByWatermark = correlationsByWatermark.filter { $0.key > payload.acceptedHighWatermark }
+            return value
         }
-        queuedPayloadHead += 1
-        queuedRawEntryCount -= first.rawEntryCount
-        compactConsumedPayloadsIfNeeded()
-        return first
+        let contents: AcceptedPayload.Contents = switch payload.contents {
+        case let .entries(entries):
+            .entries(entries.map {
+                FSEventCallbackEntry(
+                    path: $0.path,
+                    flags: FSEventStreamEventFlags($0.flags),
+                    id: FSEventStreamEventId($0.eventID)
+                )
+            })
+        case let .overflowRootRescan(highestEventID, changedIgnoreAbsolutePaths):
+            .overflowRootRescan(
+                highestEventID: FSEventStreamEventId(highestEventID),
+                changedIgnoreAbsolutePaths: changedIgnoreAbsolutePaths
+            )
+        }
+        return AcceptedPayload(
+            lowestAcceptedWatermark: Watermark(rawValue: payload.lowestAcceptedWatermark),
+            acceptedHighWatermark: Watermark(rawValue: payload.acceptedHighWatermark),
+            contents: contents,
+            lifecycleCorrelation: correlation
+        )
     }
 
     #if DEBUG
         func snapshotForTesting() -> Snapshot {
-            lock.lock()
-            defer { lock.unlock() }
+            let snapshot = try? session.snapshot()
+            let paused = lock.withLock { isAutomaticDrainPaused }
             return Snapshot(
-                acceptedHighWatermark: acceptedHighWatermark,
-                queuedAcceptedWatermarkRange: queuedPayloadHead < queuedPayloads.count
-                    ? queuedPayloads[queuedPayloadHead].lowestAcceptedWatermark ... queuedPayloads[queuedPayloads.count - 1].acceptedHighWatermark
-                    : nil,
-                queuedPayloadCount: queuedPayloads.count - queuedPayloadHead,
-                queuedRawEntryCount: queuedRawEntryCount,
-                hasOverflowRootRescan: hasOverflowRootRescan,
-                isAutomaticDrainPaused: isAutomaticDrainPaused
+                acceptedHighWatermark: Watermark(rawValue: snapshot?.acceptedHighWatermark ?? 0),
+                queuedAcceptedWatermarkRange: snapshot?.queuedAcceptedWatermarkRange.map {
+                    Watermark(rawValue: $0.lowerBound) ... Watermark(rawValue: $0.upperBound)
+                },
+                queuedPayloadCount: snapshot?.queuedPayloadCount ?? 0,
+                queuedRawEntryCount: snapshot?.queuedRawEntryCount ?? 0,
+                hasOverflowRootRescan: snapshot?.hasOverflowRootRescan ?? false,
+                isAutomaticDrainPaused: paused
             )
         }
     #endif
 
-    private func appendOrCollapse(_ payload: AcceptedPayload) {
-        if hasOverflowRootRescan {
-            collapseQueuedPayloads(with: payload)
-            return
-        }
-
-        let projectedRawEntryCount = queuedRawEntryCount + payload.rawEntryCount
-        guard projectedRawEntryCount > maxQueuedRawEntries else {
-            queuedPayloads.append(payload)
-            queuedRawEntryCount = projectedRawEntryCount
-            return
-        }
-        collapseQueuedPayloads(with: payload)
-    }
-
-    private func collapseQueuedPayloads(with payload: AcceptedPayload) {
-        let payloads = Array(queuedPayloads.dropFirst(queuedPayloadHead)) + [payload]
-        var lowestAcceptedWatermark = payload.lowestAcceptedWatermark
-        var acceptedHighWatermark = payload.acceptedHighWatermark
-        var highestEventID: FSEventStreamEventId = 0
-        var changedIgnoreAbsolutePaths = Set<String>()
-        for queuedPayload in payloads {
-            lowestAcceptedWatermark = min(lowestAcceptedWatermark, queuedPayload.lowestAcceptedWatermark)
-            acceptedHighWatermark = max(acceptedHighWatermark, queuedPayload.acceptedHighWatermark)
-            switch queuedPayload.contents {
-            case let .entries(entries):
-                for entry in entries {
-                    highestEventID = max(highestEventID, entry.id)
-                    if Self.isIgnoreControlPath(entry.path) {
-                        changedIgnoreAbsolutePaths.insert(entry.path)
-                    }
-                }
-            case let .overflowRootRescan(queuedHighestEventID, queuedIgnorePaths):
-                highestEventID = max(highestEventID, queuedHighestEventID)
-                changedIgnoreAbsolutePaths.formUnion(queuedIgnorePaths)
-            }
-        }
-        queuedPayloads = [AcceptedPayload(
-            lowestAcceptedWatermark: lowestAcceptedWatermark,
-            acceptedHighWatermark: acceptedHighWatermark,
-            contents: .overflowRootRescan(
-                highestEventID: highestEventID,
-                changedIgnoreAbsolutePaths: changedIgnoreAbsolutePaths
-            ),
-            lifecycleCorrelation: payload.lifecycleCorrelation
-        )]
-        queuedPayloadHead = 0
-        queuedRawEntryCount = 1
-        hasOverflowRootRescan = true
-    }
-
-    private func compactConsumedPayloadsIfNeeded() {
-        guard queuedPayloadHead > 0 else { return }
-        if queuedPayloadHead == queuedPayloads.count {
-            queuedPayloads.removeAll(keepingCapacity: true)
-            queuedPayloadHead = 0
-            hasOverflowRootRescan = false
-        } else if queuedPayloadHead >= 64, queuedPayloadHead * 2 >= queuedPayloads.count {
-            queuedPayloads.removeFirst(queuedPayloadHead)
-            queuedPayloadHead = 0
-        }
-    }
-
     private func scheduleDrainIfNeeded(_ scheduleDrain: @escaping @Sendable () async -> Void) {
-        guard isAccepting,
-              !isAutomaticDrainPaused,
-              activeDrainToken == nil,
-              queuedPayloadHead < queuedPayloads.count
-        else { return }
+        guard !isAutomaticDrainPaused, activeDrainToken == nil else { return }
+        guard ((try? session.snapshot())?.queuedPayloadCount ?? 0) > 0 else { return }
         nextDrainToken &+= 1
         let token = nextDrainToken
         activeDrainToken = token
@@ -271,10 +216,5 @@ final class FileSystemWatcherIngressMailbox: @unchecked Sendable {
         drainTask = nil
         scheduleDrainIfNeeded(scheduleDrain)
         lock.unlock()
-    }
-
-    private static func isIgnoreControlPath(_ path: String) -> Bool {
-        let filename = (path as NSString).lastPathComponent.lowercased()
-        return filename == ".gitignore" || filename == ".repo_ignore" || filename == ".cursorignore"
     }
 }

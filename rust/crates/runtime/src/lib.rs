@@ -11,6 +11,7 @@
 
 pub mod agent_claude;
 pub mod agent_provider;
+pub mod agent_watcher;
 pub mod apply_edits;
 pub mod codemap;
 mod config;

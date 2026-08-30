@@ -1763,6 +1763,22 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func execute(command: CommandEnvelope) throws  -> AdmissionReceipt
 
+    func fileSystemWatcherCaptureWatermark(identity: RuntimeIdentity, scopeId: String) throws  -> UInt64
+
+    func fileSystemWatcherCloseScope(identity: RuntimeIdentity, scopeId: String) throws
+
+    func fileSystemWatcherIngest(identity: RuntimeIdentity, scopeId: String, entries: [CoreFileSystemWatcherEventV1]) throws  -> UInt64?
+
+    func fileSystemWatcherOpenScope(identity: RuntimeIdentity, config: CoreFileSystemWatcherScopeConfigV1) throws  -> CoreFileSystemWatcherScopeHandleV1
+
+    func fileSystemWatcherReset(identity: RuntimeIdentity, scopeId: String) throws
+
+    func fileSystemWatcherSnapshot(identity: RuntimeIdentity, scopeId: String) throws  -> CoreFileSystemWatcherSnapshotV1
+
+    func fileSystemWatcherStartAccepting(identity: RuntimeIdentity, scopeId: String) throws
+
+    func fileSystemWatcherTakeNext(identity: RuntimeIdentity, scopeId: String, through: UInt64?) throws  -> CoreFileSystemWatcherPayloadV1?
+
     func filterPaths(request: PathFilterRequest) throws  -> PathFilterResult
 
     func folderSuffixIndices(request: FolderSuffixRequest) throws  -> [UInt32]
@@ -2252,6 +2268,93 @@ open func execute(command: CommandEnvelope)throws  -> AdmissionReceipt  {
     uniffi_agentry_ffi_fn_method_coreruntime_execute(
             self.uniffiCloneHandle(),
         FfiConverterTypeCommandEnvelope_lower(command),uniffiCallStatus
+    )
+})
+}
+
+open func fileSystemWatcherCaptureWatermark(identity: RuntimeIdentity, scopeId: String)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_capture_watermark(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+})
+}
+
+open func fileSystemWatcherCloseScope(identity: RuntimeIdentity, scopeId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_close_scope(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+}
+}
+
+open func fileSystemWatcherIngest(identity: RuntimeIdentity, scopeId: String, entries: [CoreFileSystemWatcherEventV1])throws  -> UInt64?  {
+    return try  FfiConverterOptionUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_ingest(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterSequenceTypeCoreFileSystemWatcherEventV1.lower(entries),uniffiCallStatus
+    )
+})
+}
+
+open func fileSystemWatcherOpenScope(identity: RuntimeIdentity, config: CoreFileSystemWatcherScopeConfigV1)throws  -> CoreFileSystemWatcherScopeHandleV1  {
+    return try  FfiConverterTypeCoreFileSystemWatcherScopeHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_open_scope(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterTypeCoreFileSystemWatcherScopeConfigV1_lower(config),uniffiCallStatus
+    )
+})
+}
+
+open func fileSystemWatcherReset(identity: RuntimeIdentity, scopeId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_reset(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+}
+}
+
+open func fileSystemWatcherSnapshot(identity: RuntimeIdentity, scopeId: String)throws  -> CoreFileSystemWatcherSnapshotV1  {
+    return try  FfiConverterTypeCoreFileSystemWatcherSnapshotV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_snapshot(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+})
+}
+
+open func fileSystemWatcherStartAccepting(identity: RuntimeIdentity, scopeId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_start_accepting(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+}
+}
+
+open func fileSystemWatcherTakeNext(identity: RuntimeIdentity, scopeId: String, through: UInt64?)throws  -> CoreFileSystemWatcherPayloadV1?  {
+    return try  FfiConverterOptionTypeCoreFileSystemWatcherPayloadV1.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_file_system_watcher_take_next(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterOptionUInt64.lower(through),uniffiCallStatus
     )
 })
 }
@@ -5853,6 +5956,300 @@ public func FfiConverterTypeCoreConfig_lift(_ buf: RustBuffer) throws -> CoreCon
 #endif
 public func FfiConverterTypeCoreConfig_lower(_ value: CoreConfig) -> RustBuffer {
     return FfiConverterTypeCoreConfig.lower(value)
+}
+
+
+public struct CoreFileSystemWatcherEventV1: Equatable, Hashable {
+    public let path: String
+    public let flags: UInt64
+    public let eventId: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, flags: UInt64, eventId: UInt64) {
+        self.path = path
+        self.flags = flags
+        self.eventId = eventId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreFileSystemWatcherEventV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreFileSystemWatcherEventV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreFileSystemWatcherEventV1 {
+        return
+            try CoreFileSystemWatcherEventV1(
+                path: FfiConverterString.read(from: &buf),
+                flags: FfiConverterUInt64.read(from: &buf),
+                eventId: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreFileSystemWatcherEventV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterUInt64.write(value.flags, into: &buf)
+        FfiConverterUInt64.write(value.eventId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherEventV1_lift(_ buf: RustBuffer) throws -> CoreFileSystemWatcherEventV1 {
+    return try FfiConverterTypeCoreFileSystemWatcherEventV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherEventV1_lower(_ value: CoreFileSystemWatcherEventV1) -> RustBuffer {
+    return FfiConverterTypeCoreFileSystemWatcherEventV1.lower(value)
+}
+
+
+public struct CoreFileSystemWatcherPayloadV1: Equatable, Hashable {
+    public let lowestAcceptedWatermark: UInt64
+    public let acceptedHighWatermark: UInt64
+    public let contents: CoreFileSystemWatcherPayloadContentsV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lowestAcceptedWatermark: UInt64, acceptedHighWatermark: UInt64, contents: CoreFileSystemWatcherPayloadContentsV1) {
+        self.lowestAcceptedWatermark = lowestAcceptedWatermark
+        self.acceptedHighWatermark = acceptedHighWatermark
+        self.contents = contents
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreFileSystemWatcherPayloadV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreFileSystemWatcherPayloadV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreFileSystemWatcherPayloadV1 {
+        return
+            try CoreFileSystemWatcherPayloadV1(
+                lowestAcceptedWatermark: FfiConverterUInt64.read(from: &buf),
+                acceptedHighWatermark: FfiConverterUInt64.read(from: &buf),
+                contents: FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreFileSystemWatcherPayloadV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.lowestAcceptedWatermark, into: &buf)
+        FfiConverterUInt64.write(value.acceptedHighWatermark, into: &buf)
+        FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1.write(value.contents, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherPayloadV1_lift(_ buf: RustBuffer) throws -> CoreFileSystemWatcherPayloadV1 {
+    return try FfiConverterTypeCoreFileSystemWatcherPayloadV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherPayloadV1_lower(_ value: CoreFileSystemWatcherPayloadV1) -> RustBuffer {
+    return FfiConverterTypeCoreFileSystemWatcherPayloadV1.lower(value)
+}
+
+
+public struct CoreFileSystemWatcherScopeConfigV1: Equatable, Hashable {
+    public let rootPath: String
+    public let maxQueuedRawEntries: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rootPath: String, maxQueuedRawEntries: UInt64) {
+        self.rootPath = rootPath
+        self.maxQueuedRawEntries = maxQueuedRawEntries
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreFileSystemWatcherScopeConfigV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreFileSystemWatcherScopeConfigV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreFileSystemWatcherScopeConfigV1 {
+        return
+            try CoreFileSystemWatcherScopeConfigV1(
+                rootPath: FfiConverterString.read(from: &buf),
+                maxQueuedRawEntries: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreFileSystemWatcherScopeConfigV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.rootPath, into: &buf)
+        FfiConverterUInt64.write(value.maxQueuedRawEntries, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherScopeConfigV1_lift(_ buf: RustBuffer) throws -> CoreFileSystemWatcherScopeConfigV1 {
+    return try FfiConverterTypeCoreFileSystemWatcherScopeConfigV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherScopeConfigV1_lower(_ value: CoreFileSystemWatcherScopeConfigV1) -> RustBuffer {
+    return FfiConverterTypeCoreFileSystemWatcherScopeConfigV1.lower(value)
+}
+
+
+public struct CoreFileSystemWatcherScopeHandleV1: Equatable, Hashable {
+    public let scopeId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(scopeId: String) {
+        self.scopeId = scopeId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreFileSystemWatcherScopeHandleV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreFileSystemWatcherScopeHandleV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreFileSystemWatcherScopeHandleV1 {
+        return
+            try CoreFileSystemWatcherScopeHandleV1(
+                scopeId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreFileSystemWatcherScopeHandleV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.scopeId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherScopeHandleV1_lift(_ buf: RustBuffer) throws -> CoreFileSystemWatcherScopeHandleV1 {
+    return try FfiConverterTypeCoreFileSystemWatcherScopeHandleV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherScopeHandleV1_lower(_ value: CoreFileSystemWatcherScopeHandleV1) -> RustBuffer {
+    return FfiConverterTypeCoreFileSystemWatcherScopeHandleV1.lower(value)
+}
+
+
+public struct CoreFileSystemWatcherSnapshotV1: Equatable, Hashable {
+    public let acceptedHighWatermark: UInt64
+    public let queuedLowWatermark: UInt64?
+    public let queuedHighWatermark: UInt64?
+    public let queuedPayloadCount: UInt64
+    public let queuedRawEntryCount: UInt64
+    public let hasOverflowRootRescan: Bool
+    public let isAccepting: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(acceptedHighWatermark: UInt64, queuedLowWatermark: UInt64?, queuedHighWatermark: UInt64?, queuedPayloadCount: UInt64, queuedRawEntryCount: UInt64, hasOverflowRootRescan: Bool, isAccepting: Bool) {
+        self.acceptedHighWatermark = acceptedHighWatermark
+        self.queuedLowWatermark = queuedLowWatermark
+        self.queuedHighWatermark = queuedHighWatermark
+        self.queuedPayloadCount = queuedPayloadCount
+        self.queuedRawEntryCount = queuedRawEntryCount
+        self.hasOverflowRootRescan = hasOverflowRootRescan
+        self.isAccepting = isAccepting
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreFileSystemWatcherSnapshotV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreFileSystemWatcherSnapshotV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreFileSystemWatcherSnapshotV1 {
+        return
+            try CoreFileSystemWatcherSnapshotV1(
+                acceptedHighWatermark: FfiConverterUInt64.read(from: &buf),
+                queuedLowWatermark: FfiConverterOptionUInt64.read(from: &buf),
+                queuedHighWatermark: FfiConverterOptionUInt64.read(from: &buf),
+                queuedPayloadCount: FfiConverterUInt64.read(from: &buf),
+                queuedRawEntryCount: FfiConverterUInt64.read(from: &buf),
+                hasOverflowRootRescan: FfiConverterBool.read(from: &buf),
+                isAccepting: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreFileSystemWatcherSnapshotV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.acceptedHighWatermark, into: &buf)
+        FfiConverterOptionUInt64.write(value.queuedLowWatermark, into: &buf)
+        FfiConverterOptionUInt64.write(value.queuedHighWatermark, into: &buf)
+        FfiConverterUInt64.write(value.queuedPayloadCount, into: &buf)
+        FfiConverterUInt64.write(value.queuedRawEntryCount, into: &buf)
+        FfiConverterBool.write(value.hasOverflowRootRescan, into: &buf)
+        FfiConverterBool.write(value.isAccepting, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherSnapshotV1_lift(_ buf: RustBuffer) throws -> CoreFileSystemWatcherSnapshotV1 {
+    return try FfiConverterTypeCoreFileSystemWatcherSnapshotV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherSnapshotV1_lower(_ value: CoreFileSystemWatcherSnapshotV1) -> RustBuffer {
+    return FfiConverterTypeCoreFileSystemWatcherSnapshotV1.lower(value)
 }
 
 
@@ -15742,6 +16139,10 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case AgentProviderInvalidRequest(message: String
     )
+    case WatcherUnknownScope
+    case WatcherScopeClosed
+    case WatcherInvalidRequest(message: String
+    )
 
 
 
@@ -15878,6 +16279,11 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
             )
         case 73: return .AgentProviderInvalidRequest(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 74: return .WatcherUnknownScope
+        case 75: return .WatcherScopeClosed
+        case 76: return .WatcherInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -16201,6 +16607,19 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(73))
             FfiConverterString.write(message, into: &buf)
 
+
+        case .WatcherUnknownScope:
+            writeInt(&buf, Int32(74))
+
+
+        case .WatcherScopeClosed:
+            writeInt(&buf, Int32(75))
+
+
+        case let .WatcherInvalidRequest(message):
+            writeInt(&buf, Int32(76))
+            FfiConverterString.write(message, into: &buf)
+
         }
     }
 }
@@ -16219,6 +16638,79 @@ public func FfiConverterTypeCoreError_lift(_ buf: RustBuffer) throws -> CoreErro
 public func FfiConverterTypeCoreError_lower(_ value: CoreError) -> RustBuffer {
     return FfiConverterTypeCoreError.lower(value)
 }
+
+
+
+public enum CoreFileSystemWatcherPayloadContentsV1: Equatable, Hashable {
+
+    case entries(entries: [CoreFileSystemWatcherEventV1]
+    )
+    case overflowRootRescan(highestEventId: UInt64, changedIgnoreAbsolutePaths: [String]
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreFileSystemWatcherPayloadContentsV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreFileSystemWatcherPayloadContentsV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreFileSystemWatcherPayloadContentsV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .entries(entries: try FfiConverterSequenceTypeCoreFileSystemWatcherEventV1.read(from: &buf)
+        )
+
+        case 2: return .overflowRootRescan(highestEventId: try FfiConverterUInt64.read(from: &buf), changedIgnoreAbsolutePaths: try FfiConverterSequenceString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreFileSystemWatcherPayloadContentsV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .entries(entries):
+            writeInt(&buf, Int32(1))
+            FfiConverterSequenceTypeCoreFileSystemWatcherEventV1.write(entries, into: &buf)
+
+
+        case let .overflowRootRescan(highestEventId,changedIgnoreAbsolutePaths):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(highestEventId, into: &buf)
+            FfiConverterSequenceString.write(changedIgnoreAbsolutePaths, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1_lift(_ buf: RustBuffer) throws -> CoreFileSystemWatcherPayloadContentsV1 {
+    return try FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1_lower(_ value: CoreFileSystemWatcherPayloadContentsV1) -> RustBuffer {
+    return FfiConverterTypeCoreFileSystemWatcherPayloadContentsV1.lower(value)
+}
+
 
 
 /**
@@ -20742,6 +21234,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandExecutionClaimV1: F
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreFileSystemWatcherPayloadV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreFileSystemWatcherPayloadV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreFileSystemWatcherPayloadV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreFileSystemWatcherPayloadV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCorePathMatchResolveLocationV1: FfiConverterRustBuffer {
     typealias SwiftType = CorePathMatchResolveLocationV1?
 
@@ -22031,6 +22547,31 @@ fileprivate struct FfiConverterSequenceTypeCoreCompactCodeMapSubjectSummaryV1: F
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoreFileSystemWatcherEventV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreFileSystemWatcherEventV1]
+
+    public static func write(_ value: [CoreFileSystemWatcherEventV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreFileSystemWatcherEventV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreFileSystemWatcherEventV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreFileSystemWatcherEventV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreFileSystemWatcherEventV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCoreSearchScoreCandidateV1: FfiConverterRustBuffer {
     typealias SwiftType = [CoreSearchScoreCandidateV1]
 
@@ -22756,6 +23297,30 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_execute() != 24272) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_capture_watermark() != 11604) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_close_scope() != 14523) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_ingest() != 46840) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_open_scope() != 46269) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_reset() != 45124) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_snapshot() != 62678) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_start_accepting() != 10298) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_file_system_watcher_take_next() != 21671) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_filter_paths() != 52760) {

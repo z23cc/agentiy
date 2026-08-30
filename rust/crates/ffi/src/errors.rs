@@ -5,6 +5,7 @@ use agentry_runtime::agent_claude::{
 use agentry_runtime::agent_provider::{
     AgentProviderScopeError, ScopeRegistryError as AgentProviderScopeRegistryError,
 };
+use agentry_runtime::agent_watcher::WatcherError;
 use agentry_runtime::inventory_scope::{BulkLoadError, ScopeError, ScopeRegistryError};
 use agentry_runtime::{
     IdentifierError, IdentityError, RegistryError, RuntimeError, SearchError, SubscriptionError,
@@ -176,6 +177,12 @@ pub enum CoreError {
     AgentProviderTransportWriteFailed { message: String },
     #[error("{message}")]
     AgentProviderInvalidRequest { message: String },
+    #[error("unknown watcher scope")]
+    WatcherUnknownScope,
+    #[error("watcher scope is closed")]
+    WatcherScopeClosed,
+    #[error("{message}")]
+    WatcherInvalidRequest { message: String },
 }
 
 impl From<IdentifierError> for CoreError {
@@ -422,6 +429,18 @@ impl From<AgentProviderScopeError> for CoreError {
             }
             AgentProviderScopeError::InvalidArgument(what) => Self::AgentProviderInvalidRequest {
                 message: what.to_string(),
+            },
+        }
+    }
+}
+
+impl From<WatcherError> for CoreError {
+    fn from(value: WatcherError) -> Self {
+        match value {
+            WatcherError::IdentityMismatch => Self::StaleRuntimeIdentity,
+            WatcherError::ScopeClosed => Self::WatcherScopeClosed,
+            WatcherError::InvalidArgument(message) => Self::WatcherInvalidRequest {
+                message: message.to_string(),
             },
         }
     }

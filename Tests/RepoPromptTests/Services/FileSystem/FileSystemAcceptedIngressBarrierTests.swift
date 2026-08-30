@@ -267,8 +267,9 @@ final class FileSystemAcceptedIngressBarrierTests: XCTestCase {
         XCTAssertTrue(pendingIgnoreChangeDirs.contains(""))
     }
 
-    func testMailboxStaleDrainCompletionDoesNotClearRestartDrain() async {
-        let mailbox = FileSystemWatcherIngressMailbox(maxQueuedRawEntries: 10)
+    func testMailboxStaleDrainCompletionDoesNotClearRestartDrain() async throws {
+        let root = try temporaryRoots.makeRoot(suiteName: "FileSystemAcceptedIngressMailboxLifecycle")
+        let mailbox = try await FileSystemWatcherIngressMailbox.open(rootPath: root.path, maxQueuedRawEntries: 10)
         let oldDrainGate = AsyncGate()
         let newDrainGate = AsyncGate()
         let oldDrainCount = AsyncCounter()
@@ -327,7 +328,8 @@ final class FileSystemAcceptedIngressBarrierTests: XCTestCase {
     }
 
     func testPausedMailboxAcceptsMonotonicRangeWithoutSchedulingUntilResume() async throws {
-        let mailbox = FileSystemWatcherIngressMailbox(maxQueuedRawEntries: 10)
+        let root = try temporaryRoots.makeRoot(suiteName: "FileSystemAcceptedIngressMailboxPause")
+        let mailbox = try await FileSystemWatcherIngressMailbox.open(rootPath: root.path, maxQueuedRawEntries: 10)
         let drainCount = AsyncCounter()
         mailbox.pauseAutomaticDraining()
 
@@ -345,7 +347,9 @@ final class FileSystemAcceptedIngressBarrierTests: XCTestCase {
         XCTAssertEqual(pausedDrainCount, 0)
         let paused = mailbox.snapshotForTesting()
         XCTAssertTrue(paused.isAutomaticDrainPaused)
-        XCTAssertEqual(paused.queuedAcceptedWatermarkRange, try XCTUnwrap(first) ... second!)
+        let firstWatermark = try XCTUnwrap(first)
+        let secondWatermark = try XCTUnwrap(second)
+        XCTAssertEqual(paused.queuedAcceptedWatermarkRange, firstWatermark ... secondWatermark)
 
         mailbox.resumeAutomaticDraining {
             _ = await drainCount.incrementAndValue()

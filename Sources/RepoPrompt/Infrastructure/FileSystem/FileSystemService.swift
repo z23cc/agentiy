@@ -412,7 +412,10 @@ actor FileSystemService {
         self.skipSymlinks = skipSymlinks
         self.enableHierarchicalIgnores = enableHierarchicalIgnores
 
-        watcherIngressMailbox = FileSystemWatcherIngressMailbox(maxQueuedRawEntries: Self.maxPendingRawEvents)
+        watcherIngressMailbox = try await FileSystemWatcherIngressMailbox.open(
+            rootPath: resolvedRootURL.path,
+            maxQueuedRawEntries: Self.maxPendingRawEvents
+        )
         watcherEarlyFilter = FileSystemWatcherEarlyFilter(rootPath: path)
         nextFSEventStreamStartEventID = FSEventsGetCurrentEventId()
 
@@ -548,7 +551,8 @@ actor FileSystemService {
             self.isTestMode = isTestMode
             self.fileManagerOverride = fileManagerOverride
 
-            watcherIngressMailbox = FileSystemWatcherIngressMailbox(
+            watcherIngressMailbox = try await FileSystemWatcherIngressMailbox.open(
+                rootPath: resolvedRootURL.path,
                 maxQueuedRawEntries: maxPendingWatcherIngressEntriesOverride ?? Self.maxPendingRawEvents
             )
             watcherEarlyFilter = FileSystemWatcherEarlyFilter(rootPath: path)

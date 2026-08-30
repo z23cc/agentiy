@@ -101,6 +101,9 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case agentProviderReaperFailed(String)
     case agentProviderTransportWriteFailed(String)
     case agentProviderInvalidRequest(String)
+    case watcherUnknownScope
+    case watcherScopeClosed
+    case watcherInvalidRequest(String)
     case unexpected(String)
 }
 
@@ -436,6 +439,30 @@ protocol CoreRuntimeTransport: Sendable {
         scopeID: String,
         rootID: Data
     ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
+
+    // ---- P7: Rust-owned filesystem watcher ingress mailbox -------------------------------
+    func fileSystemWatcherOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreFileSystemWatcherScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.CoreFileSystemWatcherScopeHandleV1
+    func fileSystemWatcherStartAccepting(identity: CoreRuntimeIdentity, scopeID: String) throws
+    func fileSystemWatcherIngest(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        entries: [AgentryUniFFIRaw.CoreFileSystemWatcherEventV1]
+    ) throws -> UInt64?
+    func fileSystemWatcherCaptureWatermark(identity: CoreRuntimeIdentity, scopeID: String) throws -> UInt64
+    func fileSystemWatcherTakeNext(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        through: UInt64?
+    ) throws -> AgentryUniFFIRaw.CoreFileSystemWatcherPayloadV1?
+    func fileSystemWatcherSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.CoreFileSystemWatcherSnapshotV1
+    func fileSystemWatcherReset(identity: CoreRuntimeIdentity, scopeID: String) throws
+    func fileSystemWatcherCloseScope(identity: CoreRuntimeIdentity, scopeID: String) throws
 
     // ---- P6: shared Codex/ACP provider transport authority ------------------------------
     func agentProviderOpenScope(
@@ -5039,6 +5066,68 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
 
     // ---- P6-6: agent-claude-v1 ------------------------------------------------------------------
 
+    func fileSystemWatcherOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreFileSystemWatcherScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.CoreFileSystemWatcherScopeHandleV1 {
+        do {
+            return try runtime.fileSystemWatcherOpenScope(identity: Self.rawIdentity(identity), config: config)
+        } catch { throw Self.map(error) }
+    }
+
+    func fileSystemWatcherStartAccepting(identity: CoreRuntimeIdentity, scopeID: String) throws {
+        do {
+            try runtime.fileSystemWatcherStartAccepting(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch { throw Self.map(error) }
+    }
+
+    func fileSystemWatcherIngest(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        entries: [AgentryUniFFIRaw.CoreFileSystemWatcherEventV1]
+    ) throws -> UInt64? {
+        do {
+            return try runtime.fileSystemWatcherIngest(identity: Self.rawIdentity(identity), scopeId: scopeID, entries: entries)
+        } catch { throw Self.map(error) }
+    }
+
+    func fileSystemWatcherCaptureWatermark(identity: CoreRuntimeIdentity, scopeID: String) throws -> UInt64 {
+        do {
+            return try runtime.fileSystemWatcherCaptureWatermark(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch { throw Self.map(error) }
+    }
+
+    func fileSystemWatcherTakeNext(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        through: UInt64?
+    ) throws -> AgentryUniFFIRaw.CoreFileSystemWatcherPayloadV1? {
+        do {
+            return try runtime.fileSystemWatcherTakeNext(identity: Self.rawIdentity(identity), scopeId: scopeID, through: through)
+        } catch { throw Self.map(error) }
+    }
+
+    func fileSystemWatcherSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.CoreFileSystemWatcherSnapshotV1 {
+        do {
+            return try runtime.fileSystemWatcherSnapshot(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch { throw Self.map(error) }
+    }
+
+    func fileSystemWatcherReset(identity: CoreRuntimeIdentity, scopeID: String) throws {
+        do {
+            try runtime.fileSystemWatcherReset(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch { throw Self.map(error) }
+    }
+
+    func fileSystemWatcherCloseScope(identity: CoreRuntimeIdentity, scopeID: String) throws {
+        do {
+            try runtime.fileSystemWatcherCloseScope(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch { throw Self.map(error) }
+    }
+
     func agentProviderOpenScope(
         identity: CoreRuntimeIdentity,
         config: AgentryUniFFIRaw.CoreAgentProviderScopeConfigV1
@@ -5247,6 +5336,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .AgentProviderReaperFailed(message): .agentProviderReaperFailed(message)
         case let .AgentProviderTransportWriteFailed(message): .agentProviderTransportWriteFailed(message)
         case let .AgentProviderInvalidRequest(message): .agentProviderInvalidRequest(message)
+        case .WatcherUnknownScope: .watcherUnknownScope
+        case .WatcherScopeClosed: .watcherScopeClosed
+        case let .WatcherInvalidRequest(message): .watcherInvalidRequest(message)
         }
     }
 
@@ -5957,6 +6049,9 @@ public actor AgentryCoreBridge {
         case let .agentProviderReaperFailed(message): return .agentProviderReaperFailed(message)
         case let .agentProviderTransportWriteFailed(message): return .agentProviderTransportWriteFailed(message)
         case let .agentProviderInvalidRequest(message): return .agentProviderInvalidRequest(message)
+        case .watcherUnknownScope: return .watcherUnknownScope
+        case .watcherScopeClosed: return .watcherScopeClosed
+        case let .watcherInvalidRequest(message): return .watcherInvalidRequest(message)
         case let .unexpected(message): return .transportFailure(message)
         }
     }

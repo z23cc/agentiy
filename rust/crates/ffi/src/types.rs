@@ -4049,6 +4049,130 @@ pub struct AgentProviderStartReceiptV1 {
 }
 
 // ================================================================================================
+// P7: Rust-owned filesystem watcher ingress mailbox.
+// ================================================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreFileSystemWatcherScopeConfigV1 {
+    pub root_path: String,
+    pub max_queued_raw_entries: u64,
+}
+
+impl CoreFileSystemWatcherScopeConfigV1 {
+    pub(crate) fn runtime_config(&self) -> Result<(String, usize), CoreError> {
+        if self.root_path.trim().is_empty() {
+            return Err(CoreError::WatcherInvalidRequest {
+                message: "root_path must not be empty".to_string(),
+            });
+        }
+        let max =
+            usize::try_from(self.max_queued_raw_entries).map_err(|_| CoreError::InvalidArgument)?;
+        if max == 0 {
+            return Err(CoreError::WatcherInvalidRequest {
+                message: "max_queued_raw_entries must be positive".to_string(),
+            });
+        }
+        Ok((self.root_path.clone(), max))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreFileSystemWatcherEventV1 {
+    pub path: String,
+    pub flags: u64,
+    pub event_id: u64,
+}
+
+impl From<&CoreFileSystemWatcherEventV1> for runtime::agent_watcher::WatcherEvent {
+    fn from(value: &CoreFileSystemWatcherEventV1) -> Self {
+        Self {
+            path: value.path.clone(),
+            flags: value.flags,
+            event_id: value.event_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreFileSystemWatcherPayloadContentsV1 {
+    Entries {
+        entries: Vec<CoreFileSystemWatcherEventV1>,
+    },
+    OverflowRootRescan {
+        highest_event_id: u64,
+        changed_ignore_absolute_paths: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreFileSystemWatcherPayloadV1 {
+    pub lowest_accepted_watermark: u64,
+    pub accepted_high_watermark: u64,
+    pub contents: CoreFileSystemWatcherPayloadContentsV1,
+}
+
+impl From<runtime::agent_watcher::AcceptedWatcherPayload> for CoreFileSystemWatcherPayloadV1 {
+    fn from(value: runtime::agent_watcher::AcceptedWatcherPayload) -> Self {
+        let contents = match value.contents {
+            runtime::agent_watcher::WatcherPayloadContents::Entries(entries) => {
+                CoreFileSystemWatcherPayloadContentsV1::Entries {
+                    entries: entries
+                        .into_iter()
+                        .map(|entry| CoreFileSystemWatcherEventV1 {
+                            path: entry.path,
+                            flags: entry.flags,
+                            event_id: entry.event_id,
+                        })
+                        .collect(),
+                }
+            }
+            runtime::agent_watcher::WatcherPayloadContents::OverflowRootRescan {
+                highest_event_id,
+                changed_ignore_absolute_paths,
+            } => CoreFileSystemWatcherPayloadContentsV1::OverflowRootRescan {
+                highest_event_id,
+                changed_ignore_absolute_paths,
+            },
+        };
+        Self {
+            lowest_accepted_watermark: value.lowest_accepted_watermark,
+            accepted_high_watermark: value.accepted_high_watermark,
+            contents,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreFileSystemWatcherSnapshotV1 {
+    pub accepted_high_watermark: u64,
+    pub queued_low_watermark: Option<u64>,
+    pub queued_high_watermark: Option<u64>,
+    pub queued_payload_count: u64,
+    pub queued_raw_entry_count: u64,
+    pub has_overflow_root_rescan: bool,
+    pub is_accepting: bool,
+}
+
+impl From<runtime::agent_watcher::WatcherSnapshot> for CoreFileSystemWatcherSnapshotV1 {
+    fn from(value: runtime::agent_watcher::WatcherSnapshot) -> Self {
+        Self {
+            accepted_high_watermark: value.accepted_high_watermark,
+            queued_low_watermark: value.queued_low_watermark,
+            queued_high_watermark: value.queued_high_watermark,
+            queued_payload_count: value.queued_payload_count,
+            queued_raw_entry_count: value.queued_raw_entry_count,
+            has_overflow_root_rescan: value.has_overflow_root_rescan,
+            is_accepting: value.is_accepting,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreFileSystemWatcherScopeHandleV1 {
+    pub scope_id: String,
+}
+
+// ================================================================================================
 // P6-6: agent-claude-v1 FFI surface (`docs/architecture/rust-agent-claude-v1.md`,
 // `docs/designs/p6-claude-vertical-2026-08-23.md` §11 P6-6). Every export is synchronous and fast
 // (charter §8.2: fast enqueue-only FFI, work inside the runtime, results via terminal events),
