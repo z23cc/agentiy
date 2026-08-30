@@ -124,10 +124,10 @@ final class AgentRunTerminalCommitBarrier {
         #endif
     }
 
-    private var terminalTeardownTasks: [AgentRunOwnership: Task<Void, Never>] = [:]
-    private var consumedProviderSuccessorIDs: Set<UUID> = []
-    private var consumedProviderSuccessorOrder: [UUID] = []
-    private let maxConsumedProviderSuccessorTombstones = 512
+    // Domain owns successor/teardown identity fences. The App retains only
+    // the actual async task needed to execute provider/UI teardown.
+    private var appTerminalTeardownTasks: [AgentRunOwnership: Task<Void, Never>] = [:]
+    private var settlementCoordinator = DomainAgentRunTerminalSettlementCoordinator()
 
     init() {}
 
@@ -387,18 +387,16 @@ final class AgentRunTerminalCommitBarrier {
         publicationResult: AgentRunTerminalPublicationResult
     ) {
         if case .accepted = publicationResult {
-            guard !consumedProviderSuccessorIDs.contains(providerSuccessor.id) else {
+            guard !settlementCoordinator.hasConsumedProviderSuccessor(id: providerSuccessor.id) else {
                 return
             }
             guard providerSuccessor.consumeAfterPublication(revision, publicationResult) else {
                 return
             }
-            consumedProviderSuccessorIDs.insert(providerSuccessor.id)
-            consumedProviderSuccessorOrder.append(providerSuccessor.id)
-            while consumedProviderSuccessorOrder.count > maxConsumedProviderSuccessorTombstones {
-                let expiredID = consumedProviderSuccessorOrder.removeFirst()
-                consumedProviderSuccessorIDs.remove(expiredID)
-            }
+            _ = settlementCoordinator.recordProviderSuccessorConsumption(
+                id: providerSuccessor.id,
+                deliverySucceeded: true
+            )
             return
         }
         _ = providerSuccessor.consumeAfterPublication(revision, publicationResult)
@@ -452,7 +450,7 @@ final class AgentRunTerminalCommitBarrier {
     ) async {
         await awaitTerminalPublication(for: ownership, lifecycle: lifecycle)
         guard lifecycle.lastTerminalCommitRevision?.ownership == ownership else { return }
-        await terminalTeardownTasks[ownership]?.value
+        await appTerminalTeardownTasks[ownership]?.value
     }
 
     private func registerTerminalTeardown(
@@ -461,6 +459,16 @@ final class AgentRunTerminalCommitBarrier {
         tabID: UUID
     ) -> Task<Void, Never>? {
         guard let teardown else { return nil }
+        if let existingTask = appTerminalTeardownTasks[ownership] {
+            return existingTask
+        }
+        let token = UUID()
+        guard settlementCoordinator.registerTeardown(
+            ownership: ownership,
+            token: token
+        ) == .registered else {
+            return appTerminalTeardownTasks[ownership]
+        }
         let task = Task { @MainActor [weak self] in
             #if DEBUG
                 AgentModePerfDiagnostics.increment("run.terminal.teardown.started", tabID: tabID)
@@ -469,9 +477,15 @@ final class AgentRunTerminalCommitBarrier {
             #if DEBUG
                 AgentModePerfDiagnostics.increment("run.terminal.teardown.completed", tabID: tabID)
             #endif
-            self?.terminalTeardownTasks[ownership] = nil
+            guard let self else { return }
+            let didComplete = settlementCoordinator.completeTeardown(
+                ownership: ownership,
+                token: token
+            )
+            guard didComplete else { return }
+            appTerminalTeardownTasks[ownership] = nil
         }
-        terminalTeardownTasks[ownership] = task
+        appTerminalTeardownTasks[ownership] = task
         return task
     }
 

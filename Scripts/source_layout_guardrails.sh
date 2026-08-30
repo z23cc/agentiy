@@ -513,6 +513,7 @@ if [[ -d "$domain_runtime_source_dir" ]]; then
     "DomainAgentSessionLifecycleAuthority.swift"
     "DomainAgentRunLifecycleContracts.swift"
     "DomainAgentRunTerminalCommitContracts.swift"
+    "DomainAgentRunTerminalSettlementContracts.swift"
     "DomainInteractionBroker.swift"
     "DomainCredentialEnvelope.swift"
     "DomainActivityCenter.swift"
@@ -562,6 +563,7 @@ assert value["authority"]["typed_policy_errors_preserved"] is True
 assert value["authority"]["identity_admission"] == "DomainAgentSessionLifecycleDecisionAuthority"
 assert value["authority"]["run_lifecycle"] == "DomainAgentRunLifecycleTracker"
 assert value["authority"]["terminal_commit"] == "DomainAgentRunTerminalCommitState"
+assert value["authority"]["terminal_settlement"] == "DomainAgentRunTerminalSettlementCoordinator"
 assert value["public_contract"]["schema_behavior"] == "wrapped_binding_definition_preserved"
 assert value["public_contract"]["proxy_behavior_changed"] is False
 PY
@@ -588,6 +590,17 @@ PY
     || ! grep -q 'tracker.recordTerminalPublicationResult' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
     || ! grep -q 'lifecycle.hasTerminalCommit' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift"; then
     fail "Agent run terminal commit phase and result must be delegated to the Domain reducer"
+  fi
+  if ! grep -q 'package struct DomainAgentRunTerminalSettlementCoordinator' "$domain_runtime_source_dir/DomainAgentRunTerminalSettlementContracts.swift" \
+    || ! grep -q 'settlementCoordinator.hasConsumedProviderSuccessor' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift" \
+    || ! grep -q 'settlementCoordinator.recordProviderSuccessorConsumption' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift" \
+    || ! grep -q 'settlementCoordinator.registerTeardown' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift" \
+    || ! grep -q 'settlementCoordinator.completeTeardown' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift"; then
+    fail "Agent run terminal successor and teardown settlement must be delegated to the Domain coordinator"
+  fi
+  if grep -q -E 'consumedProviderSuccessorIDs|consumedProviderSuccessorOrder|maxConsumedProviderSuccessorTombstones' \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift"; then
+    fail "App terminal barrier reintroduced an independent provider successor tombstone"
   fi
   if grep -q -E 'private\(set\) var terminalCommitInProgress|private\(set\) var lastTerminalPublicationResult' \
     "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift"; then
@@ -948,6 +961,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p13-agent-session-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p14-agent-run-lifecycle-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p15-agent-run-terminal-commit-authority.md"
+  "docs/spec/headless-mcp-domain-runtime-p16-agent-run-terminal-settlement-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"
