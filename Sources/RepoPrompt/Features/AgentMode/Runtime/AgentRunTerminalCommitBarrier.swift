@@ -1,6 +1,16 @@
 import Foundation
 import RepoPromptDomainRuntime
 
+extension DomainAgentRunTerminalOutcome.Kind {
+    var appTerminalState: AgentSessionRunState {
+        switch self {
+        case .completed: .completed
+        case .cancelled: .cancelled
+        case .failed: .failed
+        }
+    }
+}
+
 extension AgentSessionRunState {
     var isTerminalForCommit: Bool {
         self == .completed || self == .cancelled || self == .failed
@@ -49,11 +59,12 @@ final class AgentRunTerminalCommitBarrier {
         let binding: AgentRunTerminalSessionBinding
         let ownership: AgentRunOwnership
         let expectedRunID: UUID?
-        let terminalState: AgentSessionRunState
+        /// Canonical terminal semantics are supplied by the Domain execution
+        /// contract; App derives its UI state only at hook boundaries.
+        let outcome: DomainAgentRunTerminalOutcome
         let source: String
         let completion: DomainAgentRunCancellationCompletion
         let errorText: String?
-        let failureReason: DomainAgentRunSnapshot.FailureReason?
         let attachmentReservationID: UUID?
         let attachmentDisposition: DomainAgentRunAttachmentTurnDisposition
         let finalizeNonCodexUsage: Bool
@@ -69,11 +80,10 @@ final class AgentRunTerminalCommitBarrier {
             binding: AgentRunTerminalSessionBinding,
             ownership: AgentRunOwnership,
             expectedRunID: UUID?,
-            terminalState: AgentSessionRunState,
+            outcome: DomainAgentRunTerminalOutcome,
             source: String,
             completion: DomainAgentRunCancellationCompletion = .terminalPublished,
             errorText: String? = nil,
-            failureReason: DomainAgentRunSnapshot.FailureReason? = nil,
             attachmentReservationID: UUID? = nil,
             attachmentDisposition: DomainAgentRunAttachmentTurnDisposition,
             finalizeNonCodexUsage: Bool,
@@ -88,11 +98,10 @@ final class AgentRunTerminalCommitBarrier {
             self.binding = binding
             self.ownership = ownership
             self.expectedRunID = expectedRunID
-            self.terminalState = terminalState
+            self.outcome = outcome
             self.source = source
             self.completion = completion
             self.errorText = errorText
-            self.failureReason = failureReason
             self.attachmentReservationID = attachmentReservationID
             self.attachmentDisposition = attachmentDisposition
             self.finalizeNonCodexUsage = finalizeNonCodexUsage
@@ -106,13 +115,17 @@ final class AgentRunTerminalCommitBarrier {
         }
     }
 
+    private func terminalState(for request: Request) -> AgentSessionRunState {
+        request.outcome.kind.appTerminalState
+    }
+
     private func recordTerminalBarrierState(_ active: Bool, request: Request) {
         #if DEBUG
             EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.MCPToolCall.publicationOwnershipState,
                 EditFlowPerf.Dimensions(
                     status: "terminal_barrier",
-                    outcome: request.terminalState.rawValue,
+                    outcome: terminalState(for: request).rawValue,
                     runID: request.expectedRunID?.uuidString,
                     providerActive: false,
                     networkScopeActive: false,
@@ -135,9 +148,9 @@ final class AgentRunTerminalCommitBarrier {
     func commit(_ request: Request) async -> AgentRunTerminalCommitRevision? {
         let binding = request.binding
         let lifecycle = binding.lifecycle
-        guard request.terminalState == .completed
-            || request.terminalState == .cancelled
-            || request.terminalState == .failed
+        guard request.outcome.kind == .completed
+            || request.outcome.kind == .cancelled
+            || request.outcome.kind == .failed
         else {
             assertionFailure("Terminal commit requires a terminal run state")
             return nil
@@ -206,15 +219,15 @@ final class AgentRunTerminalCommitBarrier {
         }
 
         binding.hooks.finalizeStreamingItems()
-        binding.hooks.finalizePendingToolCalls(request.terminalState)
+        binding.hooks.finalizePendingToolCalls(terminalState(for: request))
         if request.finalizeNonCodexUsage {
             binding.hooks.finalizeNonCodexTurnUsage()
         }
 
-        let queuedInstruction = request.terminalState == .completed && request.supportsFollowUp
+        let queuedInstruction = request.outcome.kind == .completed && request.supportsFollowUp
             ? binding.queuedFollowUp
             : nil
-        let providerSuccessor = request.terminalState == .completed
+        let providerSuccessor = request.outcome.kind == .completed
             ? request.providerSuccessor
             : nil
         assert(
@@ -225,15 +238,13 @@ final class AgentRunTerminalCommitBarrier {
             binding.setFollowUpPending(true)
         }
 
-        let reviewCancellationReason = switch request.terminalState {
+        let reviewCancellationReason = switch request.outcome.kind {
         case .completed:
             "Run completed before review decision"
         case .cancelled:
             "Run cancelled"
         case .failed:
             "Run failed"
-        default:
-            "Run finished"
         }
         binding.hooks.cancelPendingInteractions(reviewCancellationReason)
         binding.hooks.finalizeAttachments(
@@ -259,7 +270,7 @@ final class AgentRunTerminalCommitBarrier {
 
         let attemptTeardown = lifecycle.claimTerminalTeardown(
             ownership: request.ownership,
-            terminalState: request.terminalState
+            terminalState: terminalState(for: request)
         )
         let providerTeardown = request.prepareProviderState()
         let teardown: AgentRunAttemptTerminalResources.Teardown? = if attemptTeardown != nil || providerTeardown != nil {
@@ -272,7 +283,7 @@ final class AgentRunTerminalCommitBarrier {
         }
         binding.finishActiveState(
             ownership: request.ownership,
-            terminalState: request.terminalState,
+            terminalState: terminalState(for: request),
             source: request.source
         )
         binding.hooks.setAgentRunInactive()
@@ -292,7 +303,7 @@ final class AgentRunTerminalCommitBarrier {
         let revision = AgentRunTerminalCommitRevision(
             commitID: UUID(),
             ownership: request.ownership,
-            terminalState: request.terminalState,
+            terminalState: terminalState(for: request),
             failureReason: failureReason,
             expectedRunID: request.expectedRunID,
             sourceItemsRevision: binding.sourceItemsRevision,
@@ -300,7 +311,7 @@ final class AgentRunTerminalCommitBarrier {
             providerDrainGeneration: request.providerDrainGeneration,
             mcpPublicationEnvelope: binding.hooks.makeTerminalPublicationEnvelope(
                 request.ownership,
-                request.terminalState,
+                terminalState(for: request),
                 request.expectedRunID,
                 failureReason
             ),
@@ -352,7 +363,7 @@ final class AgentRunTerminalCommitBarrier {
         #if DEBUG
             AgentModePerfDiagnostics.increment("run.terminal.commit.accepted", tabID: binding.tabID)
             AgentModePerfDiagnostics.increment(
-                "run.terminal.commit.accepted.\(request.terminalState.rawValue)",
+                "run.terminal.commit.accepted.\(terminalState(for: request).rawValue)",
                 tabID: binding.tabID
             )
         #endif
@@ -367,11 +378,11 @@ final class AgentRunTerminalCommitBarrier {
         request: Request,
         binding: AgentRunTerminalSessionBinding
     ) -> DomainAgentRunSnapshot.FailureReason? {
-        switch request.terminalState {
+        switch request.outcome.kind {
         case .cancelled:
             return .cancelled
         case .failed:
-            if let failureReason = request.failureReason {
+            if let failureReason = request.outcome.failureReason {
                 return failureReason
             }
             let settledFailureText = binding.latestFailureText
@@ -505,7 +516,7 @@ final class AgentRunTerminalCommitBarrier {
                 fields: [
                     "reason": reason,
                     "source": request.source,
-                    "state": request.terminalState.rawValue
+                    "state": terminalState(for: request).rawValue
                 ]
             )
         #endif

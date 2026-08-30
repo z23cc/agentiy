@@ -55,7 +55,7 @@ final class HeadlessAgentModeRunner {
                 binding: hooks.bindTerminalSession(session),
                 ownership: ownership,
                 expectedRunID: runID,
-                terminalState: .failed,
+                outcome: .failedWithoutClassification(),
                 source: "headless.invalidRoute",
                 errorText: "Internal routing error: Codex native run attempted to use headless provider path.",
                 attachmentReservationID: attachmentReservationID,
@@ -141,7 +141,7 @@ final class HeadlessAgentModeRunner {
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: .cancelled,
+            outcome: .cancelled(),
             source: "headless.acquireFailure",
             attachmentReservationID: attachmentReservationID,
             attachmentDisposition: .deleteFiles,
@@ -169,6 +169,7 @@ final class HeadlessAgentModeRunner {
     ) async {
         var providerInitializationCompleted = false
         let report = await DomainAgentRunExecutionCore.execute(
+            deferFailureClassification: true,
             failureText: { "Agent failed: \($0.localizedDescription)" }
         ) {
             await lease.providerInitializationStarted(provider: session.selectedAgent.rawValue)
@@ -201,13 +202,11 @@ final class HeadlessAgentModeRunner {
         }
 
         guard case let .terminal(outcome) = report.result else { return }
-        let terminalState: AgentSessionRunState
         let source: String
         let notifyTurnComplete: Bool
         let errorText: String?
         switch outcome.kind {
         case .completed:
-            terminalState = .completed
             source = "headless.completed"
             notifyTurnComplete = true
             errorText = nil
@@ -216,7 +215,6 @@ final class HeadlessAgentModeRunner {
                 await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "cancelled")
             }
             hooks.providerInput.recordPendingHandoffSendOutcome(session, false)
-            terminalState = .cancelled
             source = "headless.cancelled"
             notifyTurnComplete = false
             errorText = nil
@@ -225,7 +223,6 @@ final class HeadlessAgentModeRunner {
                 await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "failed")
             }
             hooks.providerInput.recordPendingHandoffSendOutcome(session, false)
-            terminalState = .failed
             source = "headless.failed"
             notifyTurnComplete = false
             errorText = outcome.assistantText
@@ -235,7 +232,7 @@ final class HeadlessAgentModeRunner {
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: terminalState,
+            outcome: outcome,
             source: source,
             errorText: errorText,
             attachmentReservationID: attachmentReservationID,

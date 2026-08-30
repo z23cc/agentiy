@@ -56,6 +56,7 @@ package enum DomainAgentRunExecutionCore {
     package static func execute(
         isolation _: isolated (any Actor)? = #isolation,
         failureReason: DomainAgentRunSnapshot.FailureReason = .agentError,
+        deferFailureClassification: Bool = false,
         failureText: (any Error) -> String = { $0.localizedDescription },
         operation: () async throws -> DomainAgentRunExecutionOperationResult
     ) async -> DomainAgentRunExecutionReport {
@@ -74,10 +75,11 @@ package enum DomainAgentRunExecutionCore {
         } catch is CancellationError {
             return terminalReport(.cancelled(), after: started)
         } catch {
-            return terminalReport(
-                .failed(assistantText: failureText(error), reason: failureReason),
-                after: started
-            )
+            let assistantText = failureText(error)
+            let outcome = deferFailureClassification
+                ? DomainAgentRunTerminalOutcome.failedWithoutClassification(assistantText: assistantText)
+                : DomainAgentRunTerminalOutcome.failed(assistantText: assistantText, reason: failureReason)
+            return terminalReport(outcome, after: started)
         }
     }
 

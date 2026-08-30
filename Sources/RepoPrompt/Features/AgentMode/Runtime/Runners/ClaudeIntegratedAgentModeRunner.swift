@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptDomainRuntime
 
 @MainActor
 final class ClaudeIntegratedAgentModeRunner {
@@ -121,6 +122,7 @@ final class ClaudeIntegratedAgentModeRunner {
                 var didSendToProvider = false
                 var nativeFailureMetadata: (errorText: String?, shouldShutdownSession: Bool)?
                 let report = await DomainAgentRunExecutionCore.execute(
+                    deferFailureClassification: true,
                     failureText: { _ in nativeFailureMetadata?.errorText ?? "" }
                 ) {
                     await lease.providerInitializationStarted(provider: providerName)
@@ -196,7 +198,7 @@ final class ClaudeIntegratedAgentModeRunner {
                             runID: runID,
                             ownership: ownership,
                             attachmentReservationID: attachmentReservationID,
-                            terminalState: .cancelled,
+                            outcome: .cancelled(),
                             errorText: nil,
                             notifyTurnComplete: false
                         )
@@ -207,11 +209,6 @@ final class ClaudeIntegratedAgentModeRunner {
                         await lease.cancelAndCleanup()
                     }
                 case let .terminal(outcome):
-                    let terminalState: AgentSessionRunState = switch outcome.kind {
-                    case .completed: .completed
-                    case .cancelled: .cancelled
-                    case .failed: .failed
-                    }
                     if !didSendToProvider {
                         self.hooks.providerInput.recordPendingHandoffSendOutcome(session, false)
                     }
@@ -220,7 +217,7 @@ final class ClaudeIntegratedAgentModeRunner {
                         runID: runID,
                         ownership: ownership,
                         attachmentReservationID: attachmentReservationID,
-                        terminalState: terminalState,
+                        outcome: outcome,
                         errorText: outcome.kind == .failed ? nativeFailureMetadata?.errorText : nil,
                         notifyTurnComplete: outcome.kind == .completed,
                         shouldShutdownSession: outcome.kind == .failed
@@ -382,7 +379,7 @@ final class ClaudeIntegratedAgentModeRunner {
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: .cancelled,
+            outcome: .cancelled(),
             source: "claudeNative.acquireFailure",
             attachmentReservationID: attachmentReservationID,
             attachmentDisposition: .deleteFiles,
@@ -398,7 +395,7 @@ final class ClaudeIntegratedAgentModeRunner {
         runID: UUID,
         ownership: AgentRunOwnership,
         attachmentReservationID: UUID?,
-        terminalState: AgentSessionRunState,
+        outcome: DomainAgentRunTerminalOutcome,
         errorText: String?,
         notifyTurnComplete: Bool,
         shouldShutdownSession: Bool = false
@@ -407,7 +404,7 @@ final class ClaudeIntegratedAgentModeRunner {
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: terminalState,
+            outcome: outcome,
             source: "claudeNative.finalize",
             errorText: errorText,
             attachmentReservationID: attachmentReservationID,

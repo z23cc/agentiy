@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import RepoPromptDomainRuntime
 
 @MainActor
 final class ACPIntegratedAgentModeRunner {
@@ -97,6 +98,7 @@ final class ACPIntegratedAgentModeRunner {
     ) async -> TransientExecutionClassification {
         var explicitFailureText: String??
         let report = await DomainAgentRunExecutionCore.execute(
+            deferFailureClassification: true,
             failureText: { error in
                 if let failure = error as? ExplicitTerminalFailure {
                     return failure.errorText ?? ""
@@ -475,7 +477,7 @@ final class ACPIntegratedAgentModeRunner {
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: .failed,
+            outcome: .failedWithoutClassification(),
             source: "acp.startupFailure",
             errorText: errorText,
             attachmentReservationID: attachmentReservationID,
@@ -506,7 +508,7 @@ final class ACPIntegratedAgentModeRunner {
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: .cancelled,
+            outcome: .cancelled(),
             source: "acp.startupCancelled",
             attachmentReservationID: attachmentReservationID,
             attachmentDisposition: .deleteFiles,
@@ -945,7 +947,7 @@ final class ACPIntegratedAgentModeRunner {
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: .cancelled,
+            outcome: .cancelled(),
             source: "acp.acquireFailure",
             attachmentReservationID: attachmentReservationID,
             attachmentDisposition: .deleteFiles,
@@ -971,24 +973,16 @@ final class ACPIntegratedAgentModeRunner {
         attachmentReservationID: UUID?
     ) async {
         guard case let .terminal(outcome) = classification.report.result else { return }
-        let terminalState: AgentSessionRunState = switch outcome.kind {
-        case .completed:
-            .completed
-        case .cancelled:
-            .cancelled
-        case .failed:
-            .failed
-        }
         await finalize(
             session: session,
             runID: runID,
             runAttemptID: runAttemptID,
             controller: controller,
             attachmentReservationID: attachmentReservationID,
-            terminalState: terminalState,
+            outcome: outcome,
             errorText: classification.errorText,
-            notifyTurnComplete: terminalState == .completed,
-            shouldShutdownController: terminalState != .completed
+            notifyTurnComplete: outcome.kind == .completed,
+            shouldShutdownController: outcome.kind != .completed
         )
     }
 
@@ -998,25 +992,25 @@ final class ACPIntegratedAgentModeRunner {
         runAttemptID: UUID,
         controller: ACPAgentSessionController?,
         attachmentReservationID: UUID?,
-        terminalState: AgentSessionRunState,
+        outcome: DomainAgentRunTerminalOutcome,
         errorText: String?,
         notifyTurnComplete: Bool,
         shouldShutdownController: Bool
     ) async {
         let finalizeErrorDescription = errorText ?? "nil"
-        log("finalize requested state=\(terminalState.rawValue) error=\(finalizeErrorDescription)", runID: runID)
+        log("finalize requested state=\(outcome.kind.rawValue) error=\(finalizeErrorDescription)", runID: runID)
         guard let ownership = session.activeRunOwnership,
               ownership.attemptID == runAttemptID
         else {
             log("finalize ignored; session no longer owns run", runID: runID)
             return
         }
-        let supportsSessionResume = terminalState == .completed && controller != nil
+        let supportsSessionResume = outcome.kind == .completed && controller != nil
         await terminalCommitBarrier.commit(.init(
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            terminalState: terminalState,
+            outcome: outcome,
             source: "acp.finalize",
             errorText: errorText,
             attachmentReservationID: attachmentReservationID,
@@ -1026,7 +1020,7 @@ final class ACPIntegratedAgentModeRunner {
             notifyTurnComplete: notifyTurnComplete,
             prepareProviderState: {
                 session.pendingSupersedingTurnCompletions = 0
-                if terminalState != .completed {
+                if outcome.kind != .completed {
                     if let controller, session.acpController === controller {
                         session.acpController = nil
                     }

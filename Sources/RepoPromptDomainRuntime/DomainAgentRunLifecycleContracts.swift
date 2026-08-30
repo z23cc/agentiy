@@ -147,8 +147,38 @@ package struct DomainAgentRunLifecycleTracker: Equatable, Sendable {
     package private(set) var liveness: DomainAgentRunLivenessSnapshot?
     private var nextSequence: UInt64 = 1
     private var terminalCommit = DomainAgentRunTerminalCommitState()
+    private var processIdentity = DomainAgentRunProcessIdentityState()
 
     package init() {}
+
+    /// The provider process identity is a Domain projection used by App/headless adapters for
+    /// correlation and stale-cleanup checks. It is not liveness proof.
+    package var processRunID: UUID? {
+        processIdentity.runID
+    }
+
+    /// Generation captured by terminal cleanup and provider callbacks. A bump invalidates
+    /// callbacks from the previous drain without changing the process UUID.
+    package var terminalDrainGeneration: UInt64 {
+        processIdentity.terminalDrainGeneration
+    }
+
+    package mutating func installProcessRunID(_ runID: UUID) {
+        processIdentity.install(runID)
+    }
+
+    @discardableResult
+    package mutating func clearProcessRunID(ifCurrent runID: UUID) -> Bool {
+        processIdentity.clear(ifCurrent: runID)
+    }
+
+    package mutating func forceClearProcessRunID() {
+        processIdentity.forceClear()
+    }
+
+    package mutating func bumpTerminalDrainGeneration() {
+        processIdentity.bumpTerminalDrainGeneration()
+    }
 
     package mutating func begin(
         tabID: UUID,
@@ -181,6 +211,7 @@ package struct DomainAgentRunLifecycleTracker: Equatable, Sendable {
         )
         nextSequence = 1
         terminalCommit.reset()
+        processIdentity.resetForNewAttempt()
         return ownership
     }
 

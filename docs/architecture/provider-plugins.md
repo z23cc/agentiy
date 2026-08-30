@@ -110,7 +110,9 @@ The remote-by-default policy avoids breaking checkouts that do not have a siblin
 | Agent Mode transcript mutation, tool-card UI, run-state ownership | core |
 | Agent session identity/protection facts and mutation admission decisions | `RepoPromptDomainRuntime` (`DomainAgentSessionLifecycleDecisionAuthority`); App retains UI projection reconciliation |
 | Agent run-attempt ownership, liveness, progress sequencing, and heartbeat semantics | `RepoPromptDomainRuntime` (`DomainAgentRunLifecycleTracker`); App retains terminal teardown adaptation |
+| Agent provider process identity and terminal-drain generation | `RepoPromptDomainRuntime` (`DomainAgentRunProcessIdentityState`), projected through the lifecycle tracker; App retains transcript run-ID projection only |
 | Agent run terminal-commit phase, staged receipt, and publication-result fencing | `RepoPromptDomainRuntime` (`DomainAgentRunTerminalCommitState`); App retains full revision projection and teardown/publication adapters |
+| Agent run terminal outcome kind and failure classification input | `RepoPromptDomainRuntime` (`DomainAgentRunTerminalOutcome`); App derives `AgentSessionRunState` only as a presentation projection |
 | Agent run terminal successor exactly-once tombstones and teardown registration/completion fences | `RepoPromptDomainRuntime` (`DomainAgentRunTerminalSettlementCoordinator`); App retains only actual teardown Tasks and provider/UI callbacks |
 | Interactive process/NDJSON/turn/control authority (`agent_claude::AgentClaudeScope`) | Rust runtime |
 | Provider-neutral runtime contract (`NativeAgentRuntimeControlling`) | core |

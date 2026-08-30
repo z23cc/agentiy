@@ -109,6 +109,16 @@ package struct DomainAgentRunTerminalOutcome: Equatable, Hashable {
         DomainAgentRunTerminalOutcome(kind: .failed, assistantText: assistantText, failureReason: reason)
     }
 
+    /// Failed outcome whose classification is intentionally deferred until the
+    /// settled transcript is available at the App publication boundary.
+    /// The terminal kind remains Domain-owned while text-based diagnosis stays
+    /// a projection concern for compatibility with existing transcript rules.
+    package static func failedWithoutClassification(
+        assistantText: String? = nil
+    ) -> DomainAgentRunTerminalOutcome {
+        DomainAgentRunTerminalOutcome(kind: .failed, assistantText: assistantText, failureReason: nil)
+    }
+
     /// Canonical snapshot status for this outcome.
     package var snapshotStatus: DomainAgentRunSnapshot.Status {
         switch kind {

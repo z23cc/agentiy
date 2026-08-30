@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import RepoPromptDomainRuntime
 #if canImport(Darwin)
     import Darwin
 #endif
@@ -7617,13 +7618,13 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session.codexAssistantRowIDByScope.removeAll()
         clearCodexPendingInteractions(in: session)
 
-        let terminalState: AgentSessionRunState = switch turnStatus {
+        let outcome: DomainAgentRunTerminalOutcome = switch turnStatus {
         case .completed:
-            .completed
+            .completed(assistantText: nil)
         case .interrupted:
-            .cancelled
+            .cancelled()
         case .failed:
-            .failed
+            .failedWithoutClassification()
         }
         let attachmentDisposition: AgentModeViewModel.AttachmentTurnDisposition = if turnStatus == .failed {
             if deleteDeferredFilesWhenFailureHasNoInFlight,
@@ -7640,7 +7641,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             binding: terminalSessionBinder(session),
             ownership: ownership,
             expectedRunID: expectedRunID,
-            terminalState: terminalState,
+            outcome: outcome,
             source: "codex.finalize.\(reason)",
             errorText: errorMessage,
             attachmentDisposition: attachmentDisposition,

@@ -153,4 +153,60 @@ final class DomainAgentRunLifecycleContractsTests: XCTestCase {
         XCTAssertNil(tracker.activeOwnership)
         XCTAssertNil(tracker.liveness)
     }
+
+    func testProcessIdentityUsesExactRunFenceAndForceClearSemantics() {
+        let firstRunID = UUID()
+        let successorRunID = UUID()
+        var identity = DomainAgentRunProcessIdentityState()
+
+        identity.install(firstRunID)
+        identity.bumpTerminalDrainGeneration()
+        XCTAssertEqual(identity.runID, firstRunID)
+        XCTAssertEqual(identity.terminalDrainGeneration, 1)
+
+        XCTAssertFalse(identity.clear(ifCurrent: successorRunID))
+        XCTAssertEqual(identity.runID, firstRunID)
+
+        identity.install(successorRunID)
+        XCTAssertFalse(identity.clear(ifCurrent: firstRunID))
+        XCTAssertEqual(identity.runID, successorRunID)
+        XCTAssertTrue(identity.clear(ifCurrent: successorRunID))
+        XCTAssertNil(identity.runID)
+
+        identity.install(firstRunID)
+        identity.forceClear()
+        XCTAssertNil(identity.runID)
+    }
+
+    func testNewAttemptResetsDrainGenerationButPreservesProcessIdentity() {
+        let runID = UUID()
+        var tracker = DomainAgentRunLifecycleTracker()
+        tracker.installProcessRunID(runID)
+        tracker.bumpTerminalDrainGeneration()
+        tracker.bumpTerminalDrainGeneration()
+        XCTAssertEqual(tracker.terminalDrainGeneration, 2)
+
+        let ownership = tracker.begin(
+            tabID: UUID(),
+            persistentSessionID: UUID(),
+            timestampUptimeNanoseconds: 100
+        )
+
+        XCTAssertEqual(tracker.processRunID, runID)
+        XCTAssertEqual(tracker.terminalDrainGeneration, 0)
+        XCTAssertEqual(tracker.activeOwnership, ownership)
+    }
+
+    func testTrackerProcessIdentityClearRemainsStaleSafeAfterSuccessorInstallation() {
+        var tracker = DomainAgentRunLifecycleTracker()
+        let firstRunID = UUID()
+        let successorRunID = UUID()
+        tracker.installProcessRunID(firstRunID)
+        tracker.installProcessRunID(successorRunID)
+
+        XCTAssertFalse(tracker.clearProcessRunID(ifCurrent: firstRunID))
+        XCTAssertEqual(tracker.processRunID, successorRunID)
+        XCTAssertTrue(tracker.clearProcessRunID(ifCurrent: successorRunID))
+        XCTAssertNil(tracker.processRunID)
+    }
 }

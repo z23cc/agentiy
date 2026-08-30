@@ -60,9 +60,17 @@ final class AgentRunAttemptLifecycle {
 
     private var tracker = AgentRunLifecycleTracker()
 
-    /// Provider process run identity for the active or most recent run.
-    private(set) var currentRunID: UUID?
-    private(set) var providerTerminalDrainGeneration: UInt64 = 0
+    /// Provider process run identity for the active or most recent run. The Domain reducer owns
+    /// the mutable value; this facade exposes a compatibility projection for App call sites.
+    var currentRunID: UUID? {
+        tracker.processRunID
+    }
+
+    /// Provider terminal-drain generation projected from the Domain reducer.
+    var providerTerminalDrainGeneration: UInt64 {
+        tracker.terminalDrainGeneration
+    }
+
     /// Full revision data is an App projection needed by publication hooks;
     /// commit identity and phase are owned by the Domain tracker.
     private(set) var lastTerminalCommitRevision: AgentRunTerminalCommitRevision?
@@ -101,7 +109,6 @@ final class AgentRunAttemptLifecycle {
         )
         terminalResources = nil
         lastTerminalCommitRevision = nil
-        providerTerminalDrainGeneration = 0
         return tracker.begin(
             tabID: context.tabID,
             persistentSessionID: context.persistentSessionID,
@@ -152,16 +159,14 @@ final class AgentRunAttemptLifecycle {
     // MARK: Run identity
 
     func installRunID(_ runID: UUID) {
-        currentRunID = runID
+        tracker.installProcessRunID(runID)
     }
 
     /// Clears the run ID only when it still matches the caller's run, so stale
     /// provider cleanup cannot clear a successor run's identity.
     @discardableResult
     func clearRunID(ifCurrent runID: UUID) -> Bool {
-        guard currentRunID == runID else { return false }
-        currentRunID = nil
-        return true
+        tracker.clearProcessRunID(ifCurrent: runID)
     }
 
     /// Host-authoritative force reset: unconditionally clears the run ID,
@@ -171,13 +176,13 @@ final class AgentRunAttemptLifecycle {
     /// Run-scoped cleanup must use `clearRunID(ifCurrent:)` instead. Callers
     /// reach this through `AgentModeProcessRunIdentity.clearProcessRunID(for:)`.
     func forceClearRunID() {
-        currentRunID = nil
+        tracker.forceClearProcessRunID()
     }
 
     // MARK: Provider terminal drain generation
 
     func bumpProviderTerminalDrainGeneration() {
-        providerTerminalDrainGeneration &+= 1
+        tracker.bumpTerminalDrainGeneration()
     }
 
     // MARK: Terminal resources (exactly-once teardown)

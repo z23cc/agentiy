@@ -112,6 +112,23 @@ final class DomainAgentRunExecutionContractsTests: XCTestCase {
         )
     }
 
+    func testExecutionCoreCanDeferFailureClassificationForTranscriptSettlement() async {
+        let report = await DomainAgentRunExecutionCore.execute(
+            failureReason: .timeout,
+            deferFailureClassification: true,
+            failureText: { _ in "timed out" }
+        ) {
+            throw ExecutionFixtureError.failed
+        }
+
+        XCTAssertEqual(
+            report.result,
+            DomainAgentRunExecutionResult.terminal(
+                .failedWithoutClassification(assistantText: "timed out")
+            )
+        )
+    }
+
     func testExecutionCoreKeepsSupersessionExplicitAndNonterminal() async {
         var failureMapperCallCount = 0
 
@@ -178,6 +195,14 @@ final class DomainAgentRunExecutionContractsTests: XCTestCase {
             DomainAgentRunTerminalOutcome.failed(assistantText: "boom").snapshotStatus,
             .failed
         )
+    }
+
+    func testTerminalOutcomeSupportsDeferredFailureClassification() {
+        let outcome = DomainAgentRunTerminalOutcome.failedWithoutClassification(assistantText: "timed out")
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertEqual(outcome.assistantText, "timed out")
+        XCTAssertNil(outcome.failureReason)
+        XCTAssertEqual(outcome.snapshotStatus, .failed)
     }
 
     func testTerminalOutcomeCarriesExplicitFailureClassification() {

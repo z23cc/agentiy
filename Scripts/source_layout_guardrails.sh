@@ -562,8 +562,10 @@ assert value["approval"]["routing_opt_out"] is False
 assert value["authority"]["typed_policy_errors_preserved"] is True
 assert value["authority"]["identity_admission"] == "DomainAgentSessionLifecycleDecisionAuthority"
 assert value["authority"]["run_lifecycle"] == "DomainAgentRunLifecycleTracker"
+assert value["authority"]["process_identity"] == "DomainAgentRunProcessIdentityState"
 assert value["authority"]["terminal_commit"] == "DomainAgentRunTerminalCommitState"
 assert value["authority"]["terminal_settlement"] == "DomainAgentRunTerminalSettlementCoordinator"
+assert value["authority"]["terminal_outcome"] == "DomainAgentRunTerminalOutcome"
 assert value["public_contract"]["schema_behavior"] == "wrapped_binding_definition_preserved"
 assert value["public_contract"]["proxy_behavior_changed"] is False
 PY
@@ -585,6 +587,13 @@ PY
     || ! grep -q 'typealias AgentRunOwnership = DomainAgentRunOwnership' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunLifecycleContracts.swift"; then
     fail "Agent run ownership and liveness must be delegated to the Domain reducer"
   fi
+  if ! grep -q 'package struct DomainAgentRunProcessIdentityState' "$domain_runtime_source_dir/DomainAgentRunProcessIdentity.swift" \
+    || ! grep -q 'tracker.installProcessRunID' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
+    || ! grep -q 'tracker.clearProcessRunID' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
+    || ! grep -q 'tracker.bumpTerminalDrainGeneration' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
+    || grep -q -E 'private\(set\) var (currentRunID|providerTerminalDrainGeneration)' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift"; then
+    fail "Agent process identity and drain generation must be delegated to the Domain reducer"
+  fi
   if ! grep -q 'package struct DomainAgentRunTerminalCommitState' "$domain_runtime_source_dir/DomainAgentRunTerminalCommitContracts.swift" \
     || ! grep -q 'tracker.beginTerminalCommit' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
     || ! grep -q 'tracker.recordTerminalPublicationResult' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunAttemptLifecycle.swift" \
@@ -597,6 +606,46 @@ PY
     || ! grep -q 'settlementCoordinator.registerTeardown' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift" \
     || ! grep -q 'settlementCoordinator.completeTeardown' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift"; then
     fail "Agent run terminal successor and teardown settlement must be delegated to the Domain coordinator"
+  fi
+  if ! python3 - <<'PY'
+from pathlib import Path
+runtime = Path("Sources/RepoPrompt/Features/AgentMode/Runtime")
+needles = ("AgentRunTerminalCommitBarrier.Request(", "terminalCommitBarrier.commit(.init(")
+violations = []
+for path in runtime.rglob("*.swift"):
+    source = path.read_text()
+    for needle in needles:
+        offset = 0
+        while True:
+            start = source.find(needle, offset)
+            if start < 0:
+                break
+            depth = 0
+            end = start
+            while end < len(source):
+                if source[end] == "(":
+                    depth += 1
+                elif source[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        end += 1
+                        break
+                end += 1
+            block = source[start:end]
+            if "outcome:" not in block or "terminalState:" in block or "failureReason:" in block:
+                violations.append(f"{path}:{source[:start].count(chr(10)) + 1}")
+            offset = end
+if violations:
+    print("\\n".join(violations))
+    raise SystemExit(1)
+PY
+  then
+    fail "Agent terminal commit requests must carry only the Domain-owned terminal outcome"
+  fi
+  if ! grep -q 'deferFailureClassification: true' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/HeadlessAgentModeRunner.swift" \
+    || ! grep -q 'deferFailureClassification: true' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ClaudeIntegratedAgentModeRunner.swift" \
+    || ! grep -q 'deferFailureClassification: true' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ACPIntegratedAgentModeRunner.swift"; then
+    fail "Provider terminal paths must preserve deferred transcript failure classification explicitly"
   fi
   if grep -q -E 'consumedProviderSuccessorIDs|consumedProviderSuccessorOrder|maxConsumedProviderSuccessorTombstones' \
     "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift"; then
@@ -962,6 +1011,8 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p14-agent-run-lifecycle-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p15-agent-run-terminal-commit-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p16-agent-run-terminal-settlement-authority.md"
+  "docs/spec/headless-mcp-domain-runtime-p17-agent-run-terminal-outcome-authority.md"
+  "docs/spec/headless-mcp-domain-runtime-p18-agent-run-process-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"
