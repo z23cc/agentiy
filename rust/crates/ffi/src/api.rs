@@ -4,9 +4,10 @@ use crate::generated::contract_identity::{
 };
 use crate::panic_guard::PanicGuard;
 use crate::types::{
-    AdmissionDisposition, AdmissionReceipt, BulkChunkDiscoveryReceiptV1, BulkChunkReceiptV1,
-    CancelReceipt, CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1,
-    CompactQueryResultV1, CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult,
+    AdmissionDisposition, AdmissionReceipt, AgentProviderScopeHandleV1,
+    AgentProviderStartReceiptV1, BulkChunkDiscoveryReceiptV1, BulkChunkReceiptV1, CancelReceipt,
+    CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1,
+    CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult, CoreAgentProviderScopeConfigV1,
     CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCompactApplyEditsBatchResultV1,
     CoreCompactCodeMapBatchResultV1, CoreConfig, CoreHandshake, CoreInventoryScopeConfigV1,
     CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1,
@@ -2206,6 +2207,7 @@ pub struct CoreRuntime {
     token_accounting_service: runtime::tokenacct::TokenAccountingService,
     inventory_scope_registry: runtime::inventory_scope::ScopeRegistry,
     agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry,
+    agent_provider_scope_registry: runtime::agent_provider::ScopeRegistry,
     config: CoreConfig,
     initialized: AtomicBool,
     panic_guard: Arc<PanicGuard>,
@@ -4103,6 +4105,83 @@ impl CoreRuntime {
     }
 
     // ============================================================================================
+    // P6: shared Rust provider transport authority for Codex app-server and ACP.
+    // ============================================================================================
+
+    pub fn agent_provider_open_scope(
+        &self,
+        identity: RuntimeIdentity,
+        config: CoreAgentProviderScopeConfigV1,
+    ) -> Result<AgentProviderScopeHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self
+                .agent_provider_scope_registry
+                .open_scope(identity, config.runtime_config()?);
+            scope.attach_event_sink(
+                std::sync::Arc::clone(self.inner.subscriptions()),
+                scope.id().to_subscription_scope_id(),
+            );
+            Ok(AgentProviderScopeHandleV1 {
+                scope_id: scope.id().to_string(),
+                subscription_scope_id: scope.id().to_subscription_scope_id().to_string(),
+            })
+        })
+    }
+
+    pub fn agent_provider_start(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<AgentProviderStartReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            let receipt = scope.start(&identity)?;
+            Ok(AgentProviderStartReceiptV1 {
+                pid: receipt.pid,
+                process_group_id: receipt.process_group_id,
+            })
+        })
+    }
+
+    /// Sends one already-encoded provider JSON-RPC frame. Rust appends exactly one newline,
+    /// serializes writes, and returns a monotonic outbound sequence. Provider meaning remains
+    /// Swift-owned; no protocol-specific request type crosses this boundary.
+    pub fn agent_provider_send_line(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        payload: Vec<u8>,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.send_line(&identity, &payload)?)
+        })
+    }
+
+    /// Idempotent terminal close. Child termination and reaping remain Rust-owned; the generic
+    /// subscription is closed by the Swift session wrapper so stream lifetime stays explicit.
+    pub fn agent_provider_shutdown(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<(), CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let parsed_scope_id = crate::types::parse_agent_provider_scope_id(&scope_id)?;
+            self.agent_provider_scope_registry
+                .close_scope(&identity, parsed_scope_id)?;
+            Ok(())
+        })
+    }
+
+    // ============================================================================================
     // P6-6: agent-claude-v1 FFI surface (`docs/architecture/rust-agent-claude-v1.md`,
     // `docs/designs/p6-claude-vertical-2026-08-23.md` §11 P6-6). Synchronous and fast throughout
     // (charter §8.2): commands admit work and return a receipt; results (including the five-
@@ -4844,6 +4923,7 @@ impl CoreRuntime {
             token_accounting_service: runtime::tokenacct::TokenAccountingService,
             inventory_scope_registry: runtime::inventory_scope::ScopeRegistry::new(),
             agent_claude_scope_registry: runtime::agent_claude::ScopeRegistry::new(),
+            agent_provider_scope_registry: runtime::agent_provider::ScopeRegistry::new(),
             config,
             initialized: AtomicBool::new(false),
             panic_guard: Arc::new(PanicGuard::new()),
@@ -4897,6 +4977,16 @@ impl CoreRuntime {
     }
 
     /// P6-6: the agent-claude-v1 counterpart of `inventory_scope` above.
+    fn agent_provider_scope(
+        &self,
+        scope_id: &str,
+    ) -> Result<std::sync::Arc<runtime::agent_provider::AgentProviderScope>, CoreError> {
+        let scope_id = crate::types::parse_agent_provider_scope_id(scope_id)?;
+        self.agent_provider_scope_registry
+            .scope(scope_id)
+            .ok_or(CoreError::AgentProviderUnknownScope)
+    }
+
     fn agent_claude_scope(
         &self,
         scope_id: &str,

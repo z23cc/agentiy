@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Darwin
 import Foundation
 
@@ -222,6 +223,9 @@ actor ACPAgentSessionController {
     private let logPrefix: String
     private let diagnosticSink: DiagnosticSink?
     private let requestTimeouts: RequestTimeouts
+    /// When present, Rust owns the child process, framing, serialized stdin and reaping.
+    /// The ACP controller remains the provider-specific semantic/normalization authority.
+    private let runtimeTransport: (any AgentProviderRuntimeTransport)?
 
     /// Modern configOptions are the only configuration authority. Mutations are serialized,
     /// and complete snapshots apply in inbound wire order.
@@ -239,6 +243,9 @@ actor ACPAgentSessionController {
     private var stdoutConsumerTask: Task<Void, Never>?
     private var stderrConsumerTask: Task<Void, Never>?
     private var processWaitTask: Task<Void, Never>?
+    private var runtimeSession: (any AgentProviderRuntimeSession)?
+    private var runtimeEventTask: Task<Void, Never>?
+    private var runtimePID: pid_t?
     private var stdoutFramer = LineFramer()
     private var stderrFramer = LineFramer()
     private var launchDescription: String?
@@ -295,7 +302,8 @@ actor ACPAgentSessionController {
         provider: any ACPAgentProvider,
         runRequest: ACPRunRequest,
         diagnosticSink: DiagnosticSink? = nil,
-        requestTimeouts: RequestTimeouts = .default
+        requestTimeouts: RequestTimeouts = .default,
+        runtimeTransport: (any AgentProviderRuntimeTransport)? = nil
     ) throws {
         self.provider = provider
         providerSessionIdentity = ACPProviderSessionIdentity(
@@ -316,6 +324,7 @@ actor ACPAgentSessionController {
         logPrefix = "[ACP][\(provider.providerID.rawValue)]"
         self.diagnosticSink = diagnosticSink
         self.requestTimeouts = requestTimeouts
+        self.runtimeTransport = runtimeTransport
         #if DEBUG
             rawACPCaptureURL = Self.resolveRawACPCaptureURL(for: provider.providerID)
         #endif
@@ -333,7 +342,7 @@ actor ACPAgentSessionController {
     }
 
     var hasReusableSession: Bool {
-        state == .sessionOpen && process != nil && sessionID != nil
+        state == .sessionOpen && (process != nil || runtimeSession != nil) && sessionID != nil
     }
 
     func isCompatibleWith(request: ACPRunRequest) -> Bool {
@@ -376,7 +385,7 @@ actor ACPAgentSessionController {
 
     @discardableResult
     func prepareForNextTurn() -> Bool {
-        guard state == .sessionOpen, process != nil, sessionID != nil else { return false }
+        guard state == .sessionOpen, process != nil || runtimeSession != nil, sessionID != nil else { return false }
         didEmitTerminal = false
         eventStreamFinished = false
         resetEventsStreamForNextTurn()
@@ -422,38 +431,85 @@ actor ACPAgentSessionController {
         )
         logLaunchContract(command: resolvedCommand, workingDirectory: workingDirectory)
         diagnose(.info("Launching ACP command: \(launchDescription ?? resolvedCommand)"))
-        let spawned: SpawnedProcess
-        do {
-            spawned = try ProcessLauncher.spawn(
-                command: resolvedCommand,
-                arguments: launchConfiguration.arguments,
-                environment: environment,
-                workingDirectory: workingDirectory
-            )
-        } catch {
-            await recordRunLaunchContract(
-                event: "acp_launch_spawn_failed",
-                resolvedCommand: resolvedCommand,
-                workingDirectory: workingDirectory,
-                pid: nil,
-                error: error
-            )
-            throw error
+        var launchedPID: pid_t?
+        if let runtimeTransport {
+            do {
+                let session = try await runtimeTransport.open(
+                    command: resolvedCommand,
+                    arguments: launchConfiguration.arguments,
+                    environment: environment,
+                    workingDirectory: workingDirectory,
+                    protocolKind: .acp,
+                    maxStderrBytes: 8192
+                )
+                runtimeSession = session
+                let stream = try await session.events()
+                runtimeEventTask = Task { [weak self] in
+                    do {
+                        for try await event in stream {
+                            guard let self else { return }
+                            await handleRuntimeEvent(event)
+                        }
+                    } catch {
+                        guard let self else { return }
+                        await handleRuntimeStreamFailure(error)
+                    }
+                    try? await stream.close()
+                }
+                let receipt = try await session.start()
+                launchedPID = receipt.pid
+                runtimePID = receipt.pid
+            } catch {
+                await runtimeSession?.shutdown()
+                runtimeSession = nil
+                runtimeEventTask?.cancel()
+                runtimeEventTask = nil
+                await recordRunLaunchContract(
+                    event: "acp_launch_spawn_failed",
+                    resolvedCommand: resolvedCommand,
+                    workingDirectory: workingDirectory,
+                    pid: nil,
+                    error: error
+                )
+                throw error
+            }
+        } else {
+            let spawned: SpawnedProcess
+            do {
+                spawned = try ProcessLauncher.spawn(
+                    command: resolvedCommand,
+                    arguments: launchConfiguration.arguments,
+                    environment: environment,
+                    workingDirectory: workingDirectory
+                )
+            } catch {
+                await recordRunLaunchContract(
+                    event: "acp_launch_spawn_failed",
+                    resolvedCommand: resolvedCommand,
+                    workingDirectory: workingDirectory,
+                    pid: nil,
+                    error: error
+                )
+                throw error
+            }
+            process = spawned
+            do {
+                try startReaders(stdout: spawned.stdout, stderr: spawned.stderr)
+            } catch {
+                spawned.stdout.readabilityHandler = nil
+                spawned.stderr.readabilityHandler = nil
+                spawned.stdin?.closeFile()
+                process = nil
+                _ = await ProcessTermination.terminateAndReap(pid: spawned.pid, processGroupID: spawned.processGroupID)
+                state = .failed
+                throw ControllerError.protocolViolation("Failed to start ACP process readers: \(error.localizedDescription)")
+            }
+            launchedPID = spawned.pid
+            startProcessWaitTask(for: spawned)
         }
-        process = spawned
-        do {
-            try startReaders(stdout: spawned.stdout, stderr: spawned.stderr)
-        } catch {
-            spawned.stdout.readabilityHandler = nil
-            spawned.stderr.readabilityHandler = nil
-            spawned.stdin?.closeFile()
-            process = nil
-            _ = await ProcessTermination.terminateAndReap(pid: spawned.pid, processGroupID: spawned.processGroupID)
-            state = .failed
-            throw ControllerError.protocolViolation("Failed to start ACP process readers: \(error.localizedDescription)")
+        if let launchedPID {
+            await registerExpectedAgentPIDIfNeeded(launchedPID)
         }
-        await registerExpectedAgentPIDIfNeeded(spawned.pid)
-        startProcessWaitTask(for: spawned)
         await recordRunLaunchContract(
             event: "acp_launch_contract_resolved",
             resolvedCommand: resolvedCommand,
@@ -465,7 +521,7 @@ actor ACPAgentSessionController {
             event: "acp_process_spawned",
             resolvedCommand: resolvedCommand,
             workingDirectory: workingDirectory,
-            pid: spawned.pid,
+            pid: launchedPID,
             error: nil
         )
         diagnose(.phaseCompleted("launch"))
@@ -1189,8 +1245,11 @@ actor ACPAgentSessionController {
         stdoutConsumerTask?.cancel()
         stderrConsumerTask?.cancel()
         processWaitTask?.cancel()
+        runtimeEventTask?.cancel()
 
-        if let process {
+        if runtimeSession != nil {
+            await shutdownRuntimeSession()
+        } else if let process {
             process.stdout.readabilityHandler = nil
             process.stderr.readabilityHandler = nil
             process.stdin?.closeFile()
@@ -1205,6 +1264,9 @@ actor ACPAgentSessionController {
         stdoutConsumerTask = nil
         stderrConsumerTask = nil
         processWaitTask = nil
+        runtimeEventTask = nil
+        runtimeSession = nil
+        runtimePID = nil
         process = nil
         discoveredSessionModels = nil
         sessionModelConfigOptionID = nil
@@ -1554,6 +1616,61 @@ actor ACPAgentSessionController {
         emit(.approvalRequested(request))
     }
 
+    private func handleRuntimeEvent(_ event: CoreAgentProviderEvent) async {
+        switch event.kind {
+        case "providerMessage":
+            guard let envelope = event.payloadDictionary,
+                  let payload = envelope["payload"] else { return }
+            guard JSONSerialization.isValidJSONObject(payload) else {
+                handleProtocolViolation("Rust ACP transport returned a non-JSON provider payload.")
+                return
+            }
+            do {
+                try handleJSONLine(JSONSerialization.data(withJSONObject: payload, options: []))
+            } catch {
+                handleProtocolViolation("Rust ACP transport payload encoding failed: \(error.localizedDescription)")
+            }
+        case "stderr":
+            guard let envelope = event.payloadDictionary,
+                  let text = envelope["text"] as? String else { return }
+            handleStderrChunk(Data((text + "\n").utf8))
+        case "processExited":
+            let envelope = event.payloadDictionary ?? [:]
+            let exitCode = (envelope["exit_code"] as? NSNumber)?.int32Value ?? 0
+            await handleProcessExit(exitCode, timedOut: false)
+            await shutdownRuntimeSession()
+        case "scopeClosed":
+            if state != .closing, state != .closed {
+                await handleProcessExit(0, timedOut: false)
+            }
+            await shutdownRuntimeSession()
+        default:
+            break
+        }
+    }
+
+    private func handleRuntimeStreamFailure(_ error: Error) async {
+        guard state != .closing, state != .closed else { return }
+        log("Rust ACP transport stream failed: \(error.localizedDescription)")
+        await handleProcessExit(0, timedOut: false)
+        await shutdownRuntimeSession()
+    }
+
+    private func shutdownRuntimeSession() async {
+        let session = runtimeSession
+        runtimeSession = nil
+        runtimePID = nil
+        await session?.shutdown()
+    }
+
+    private func handleRuntimeWriteFailure(_ error: Error) {
+        let message = "ACP Rust transport write failed: \(error.localizedDescription)"
+        failPendingRequests(with: ControllerError.requestFailed(message))
+        emit(.stream(AIStreamResult(type: "error", text: message)))
+        emitTerminal(state: .failed, errorText: message)
+        if state != .closing, state != .closed { state = .failed }
+    }
+
     private func handleProcessExit(_ exitCode: Int32, timedOut: Bool) async {
         guard state != .closing, state != .closed else {
             finishEventsIfNeeded()
@@ -1702,7 +1819,7 @@ actor ACPAgentSessionController {
         method: String,
         params: [String: Any]
     ) async throws -> RequestResponse {
-        guard process != nil else { throw ControllerError.processNotRunning }
+        guard process != nil || runtimeSession != nil else { throw ControllerError.processNotRunning }
 
         let requestID = JSONRPCID.int(nextRequestID)
         nextRequestID += 1
@@ -1730,9 +1847,6 @@ actor ACPAgentSessionController {
     }
 
     private func sendJSONLine(_ payload: [String: Any]) throws {
-        guard let stdinDescriptor = process?.stdinDescriptor else {
-            throw ControllerError.processNotRunning
-        }
         #if DEBUG
             captureRawACPEvent(kind: "jsonrpc.outbound", payload: payload)
         #endif
@@ -1741,6 +1855,21 @@ actor ACPAgentSessionController {
         frame.append(0x0A)
         if let line = String(data: data, encoding: .utf8) {
             diagnose(.outboundJSON(line))
+        }
+        if let runtimeSession {
+            let session = runtimeSession
+            Task { [weak self] in
+                do {
+                    _ = try await session.sendLine(frame)
+                } catch {
+                    guard let self else { return }
+                    await handleRuntimeWriteFailure(error)
+                }
+            }
+            return
+        }
+        guard let stdinDescriptor = process?.stdinDescriptor else {
+            throw ControllerError.processNotRunning
         }
         try FDWriteSupport.writeAll(frame, to: stdinDescriptor)
     }

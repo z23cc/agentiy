@@ -3974,6 +3974,81 @@ pub(crate) fn wire_error(error: runtime::inventory_scope::WireError) -> CoreErro
 }
 
 // ================================================================================================
+// P6 full provider transport authority: the Codex app-server and ACP families share this
+// process-owned scope. Provider JSON remains opaque at this FFI boundary; Swift owns semantic
+// normalization and permission policy while Rust owns spawn, framing, sequencing and teardown.
+// ================================================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentProviderEnvironmentEntryV1 {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum AgentProviderProtocolV1 {
+    CodexAppServer,
+    Acp,
+}
+
+impl From<AgentProviderProtocolV1> for runtime::agent_provider::ProviderProtocol {
+    fn from(value: AgentProviderProtocolV1) -> Self {
+        match value {
+            AgentProviderProtocolV1::CodexAppServer => Self::CodexAppServer,
+            AgentProviderProtocolV1::Acp => Self::Acp,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentProviderScopeConfigV1 {
+    pub command: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<CoreAgentProviderEnvironmentEntryV1>,
+    pub working_directory: Option<String>,
+    pub protocol: AgentProviderProtocolV1,
+    pub max_stderr_bytes: u64,
+}
+
+impl CoreAgentProviderScopeConfigV1 {
+    pub(crate) fn runtime_config(
+        &self,
+    ) -> Result<runtime::agent_provider::AgentProviderScopeConfig, CoreError> {
+        if self.command.trim().is_empty() {
+            return Err(CoreError::AgentProviderInvalidRequest {
+                message: "command must not be empty".to_string(),
+            });
+        }
+        let max_stderr_bytes =
+            usize::try_from(self.max_stderr_bytes).map_err(|_| CoreError::InvalidArgument)?;
+        Ok(runtime::agent_provider::AgentProviderScopeConfig {
+            command: self.command.clone(),
+            arguments: self.arguments.clone(),
+            environment: self
+                .environment
+                .iter()
+                .map(|entry| (entry.key.clone(), entry.value.clone()))
+                .collect(),
+            working_directory: self.working_directory.clone(),
+            protocol: self.protocol.into(),
+            max_stderr_bytes,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct AgentProviderScopeHandleV1 {
+    pub scope_id: String,
+    pub subscription_scope_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct AgentProviderStartReceiptV1 {
+    pub pid: i32,
+    pub process_group_id: i32,
+}
+
+// ================================================================================================
 // P6-6: agent-claude-v1 FFI surface (`docs/architecture/rust-agent-claude-v1.md`,
 // `docs/designs/p6-claude-vertical-2026-08-23.md` §11 P6-6). Every export is synchronous and fast
 // (charter §8.2: fast enqueue-only FFI, work inside the runtime, results via terminal events),
@@ -4172,6 +4247,16 @@ pub(crate) fn parse_agent_claude_scope_id(
         .parse()
         .map_err(|_| CoreError::AgentClaudeInvalidRequest {
             message: "invalid agent-claude scope id".to_string(),
+        })
+}
+
+pub(crate) fn parse_agent_provider_scope_id(
+    value: &str,
+) -> Result<runtime::agent_provider::AgentProviderScopeId, CoreError> {
+    value
+        .parse()
+        .map_err(|_| CoreError::AgentProviderInvalidRequest {
+            message: "invalid agent-provider scope id".to_string(),
         })
 }
 

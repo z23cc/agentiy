@@ -2,6 +2,9 @@ use agentry_proto::DecodeError;
 use agentry_runtime::agent_claude::{
     AgentScopeError, ScopeRegistryError as AgentClaudeScopeRegistryError,
 };
+use agentry_runtime::agent_provider::{
+    AgentProviderScopeError, ScopeRegistryError as AgentProviderScopeRegistryError,
+};
 use agentry_runtime::inventory_scope::{BulkLoadError, ScopeError, ScopeRegistryError};
 use agentry_runtime::{
     IdentifierError, IdentityError, RegistryError, RuntimeError, SearchError, SubscriptionError,
@@ -156,6 +159,23 @@ pub enum CoreError {
     /// port of `ControllerError.invalidControlResponse`.
     #[error("agent-claude control response error: {message}")]
     AgentClaudeControlResponseError { message: String },
+    /// P6 provider transport authority shared by Codex app-server and ACP.
+    #[error("unknown agent-provider scope")]
+    AgentProviderUnknownScope,
+    #[error("agent-provider scope is closed")]
+    AgentProviderScopeClosed,
+    #[error("agent-provider scope already has a running process")]
+    AgentProviderAlreadyRunning,
+    #[error("agent-provider scope has no running process")]
+    AgentProviderNotRunning,
+    #[error("agent-provider spawn failed: {message}")]
+    AgentProviderSpawnFailed { message: String },
+    #[error("agent-provider reaper registration failed: {message}")]
+    AgentProviderReaperFailed { message: String },
+    #[error("agent-provider transport write failed: {message}")]
+    AgentProviderTransportWriteFailed { message: String },
+    #[error("{message}")]
+    AgentProviderInvalidRequest { message: String },
 }
 
 impl From<IdentifierError> for CoreError {
@@ -384,6 +404,34 @@ impl From<AgentClaudeScopeRegistryError> for CoreError {
         match value {
             AgentClaudeScopeRegistryError::IdentityMismatch => Self::StaleRuntimeIdentity,
             AgentClaudeScopeRegistryError::UnknownScope => Self::AgentClaudeUnknownScope,
+        }
+    }
+}
+
+impl From<AgentProviderScopeError> for CoreError {
+    fn from(value: AgentProviderScopeError) -> Self {
+        match value {
+            AgentProviderScopeError::IdentityMismatch => Self::StaleRuntimeIdentity,
+            AgentProviderScopeError::ScopeClosed => Self::AgentProviderScopeClosed,
+            AgentProviderScopeError::AlreadyRunning => Self::AgentProviderAlreadyRunning,
+            AgentProviderScopeError::NotRunning => Self::AgentProviderNotRunning,
+            AgentProviderScopeError::Spawn(message) => Self::AgentProviderSpawnFailed { message },
+            AgentProviderScopeError::Reaper(message) => Self::AgentProviderReaperFailed { message },
+            AgentProviderScopeError::TransportWrite(message) => {
+                Self::AgentProviderTransportWriteFailed { message }
+            }
+            AgentProviderScopeError::InvalidArgument(what) => Self::AgentProviderInvalidRequest {
+                message: what.to_string(),
+            },
+        }
+    }
+}
+
+impl From<AgentProviderScopeRegistryError> for CoreError {
+    fn from(value: AgentProviderScopeRegistryError) -> Self {
+        match value {
+            AgentProviderScopeRegistryError::IdentityMismatch => Self::StaleRuntimeIdentity,
+            AgentProviderScopeRegistryError::UnknownScope => Self::AgentProviderUnknownScope,
         }
     }
 }

@@ -170,6 +170,15 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     /// P6-7 (§15.5): the CLI answered a session-startup handshake control request (`initialize`/
     /// `set_permission_mode`) with `subtype: "error"`.
     case agentClaudeControlResponseError(String)
+    // P6 provider-runtime authority shared by Codex app-server and ACP.
+    case agentProviderUnknownScope
+    case agentProviderScopeClosed
+    case agentProviderAlreadyRunning
+    case agentProviderNotRunning
+    case agentProviderSpawnFailed(String)
+    case agentProviderReaperFailed(String)
+    case agentProviderTransportWriteFailed(String)
+    case agentProviderInvalidRequest(String)
     case transportFailure(String)
 }
 
@@ -212,6 +221,14 @@ extension CoreBridgeError: LocalizedError {
         case let .agentClaudeTransportWriteFailed(message): "Agent-claude transport write failed: \(message)"
         case let .agentClaudeInvalidRequest(message): "Invalid agent-claude request: \(message)"
         case let .agentClaudeControlResponseError(message): "Agent-claude control response error: \(message)"
+        case .agentProviderUnknownScope: "The agent provider scope is unknown or already closed."
+        case .agentProviderScopeClosed: "The agent provider scope is closed."
+        case .agentProviderAlreadyRunning: "The agent provider scope already has a running process."
+        case .agentProviderNotRunning: "The agent provider scope has no running process."
+        case let .agentProviderSpawnFailed(message): "Agent provider spawn failed: \(message)"
+        case let .agentProviderReaperFailed(message): "Agent provider reaper registration failed: \(message)"
+        case let .agentProviderTransportWriteFailed(message): "Agent provider transport write failed: \(message)"
+        case let .agentProviderInvalidRequest(message): "Invalid agent provider request: \(message)"
         case let .transportFailure(message): "Rust FFI transport failure: \(message)"
         }
     }

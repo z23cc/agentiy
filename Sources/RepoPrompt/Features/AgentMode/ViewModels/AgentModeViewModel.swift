@@ -1650,7 +1650,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return FileManager.default.temporaryDirectory
         }
         let codexControllerFactory: CodexAgentModeCoordinator.CodexControllerFactory = { runID, tabID, windowID, workspacePaths, permissionProfile, _, computerUseEnabled in
-            let client = CodexAppServerClient(provisionsRepoPromptMCPOnStart: false)
+            let client = CodexAppServerClient(
+                provisionsRepoPromptMCPOnStart: false,
+                runtimeTransport: CoreAgentProviderRuntimeTransport()
+            )
             let options = CodexNativeSessionController.Options.agentModeDefault(
                 approvalPolicyProvider: { permissionProfile.codexApprovalPolicy },
                 sandboxModeProvider: { permissionProfile.codexSandboxMode },
@@ -1678,7 +1681,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             try await ACPAgentProviderFactory.makeProvider(for: agent, modelString: modelString)
         }
         acpControllerFactory = { provider, runRequest in
-            try ACPAgentSessionController(provider: provider, runRequest: runRequest)
+            try ACPAgentSessionController(
+                provider: provider,
+                runRequest: runRequest,
+                runtimeTransport: CoreAgentProviderRuntimeTransport()
+            )
         }
         connectionPolicyInstaller = { clientName, windowID, restrictedTools, oneShot, reason, ttl, tabID, runID, additionalTools, purpose, taskLabelKind, allowsAgentExternalControlTools, requiresExpectedAgentPID in
             await Self.defaultConnectionPolicyInstaller(

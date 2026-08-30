@@ -26,7 +26,11 @@ struct CursorACPControllerModelDiscoveryClient: CursorACPModelDiscoveryClient {
             return try await ACPAgentProviderFactory.makeProvider(for: agent, modelString: modelString)
         },
         controllerFactory: @escaping ControllerFactory = { provider, runRequest in
-            try ACPAgentSessionController(provider: provider, runRequest: runRequest)
+            try ACPAgentSessionController(
+                provider: provider,
+                runRequest: runRequest,
+                runtimeTransport: CoreAgentProviderRuntimeTransport()
+            )
         }
     ) {
         self.providerFactory = providerFactory

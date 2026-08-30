@@ -45,7 +45,7 @@ struct ProviderConversationCleanupRegistry {
         handle: ProviderConversationCleanupHandle,
         action: ProviderConversationCleanupAction
     ) async -> ProviderConversationCleanupOutcome {
-        let client = CodexAppServerClient()
+        let client = CodexAppServerClient(runtimeTransport: CoreAgentProviderRuntimeTransport())
         do {
             try await client.startIfNeeded()
             let cleanup = CodexConversationCleanupService(

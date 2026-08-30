@@ -1,3 +1,4 @@
+import AgentryCoreBridge
 import Darwin
 import Darwin.POSIX.fcntl
 import Foundation
@@ -405,6 +406,9 @@ actor CodexAppServerClient {
 
     private var config = Config()
     private var activeTransport: ActiveTransport?
+    private var runtimeSession: (any AgentProviderRuntimeSession)?
+    private var runtimeEventTask: Task<Void, Never>?
+    private var runtimePID: pid_t?
     private var stdoutChunkChannel: FileHandleChunkChannel?
     private var stderrChunkChannel: FileHandleChunkChannel?
     private var stdoutConsumerTask: Task<Void, Never>?
@@ -447,6 +451,9 @@ actor CodexAppServerClient {
     private let processExitObserverFactory: @Sendable (pid_t) -> ChildProcessExitObserver
     private let expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar
     private let faultInjection: FaultInjection
+    /// Optional Rust-owned process/transport authority. Nil preserves the injected legacy
+    /// process path used by focused tests and non-provider maintenance flows.
+    private let runtimeTransport: (any AgentProviderRuntimeTransport)?
     #if DEBUG
         private var terminalObserverJoinCount = 0
     #endif
@@ -471,7 +478,8 @@ actor CodexAppServerClient {
             ChildProcessExitObserver(pid: $0)
         },
         expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar = .serverNetworkManager,
-        faultInjection: FaultInjection = .init()
+        faultInjection: FaultInjection = .init(),
+        runtimeTransport: (any AgentProviderRuntimeTransport)? = nil
     ) {
         self.writeFrameHandler = writeFrameHandler
         self.livenessProbe = livenessProbe
@@ -481,6 +489,7 @@ actor CodexAppServerClient {
         self.processExitObserverFactory = processExitObserverFactory
         self.expectedAgentPIDRegistrar = expectedAgentPIDRegistrar
         self.faultInjection = faultInjection
+        self.runtimeTransport = runtimeTransport
     }
 
     func updateConfig(_ config: Config) {
@@ -556,11 +565,13 @@ actor CodexAppServerClient {
             await clearRegisteredExpectedAgentPIDIfNeeded()
             return
         }
-        guard let activeTransport else {
+        if let activeTransport {
+            await registerExpectedAgentPIDIfNeeded(for: activeTransport.process.pid)
+        } else if let runtimePID {
+            await registerExpectedAgentPIDIfNeeded(for: runtimePID)
+        } else {
             await clearRegisteredExpectedAgentPIDIfNeeded()
-            return
         }
-        await registerExpectedAgentPIDIfNeeded(for: activeTransport.process.pid)
     }
 
     func clearExpectedAgentPIDRegistration() async {
@@ -581,10 +592,14 @@ actor CodexAppServerClient {
         )
         guard registeredExpectedAgentPID != target else { return }
         await clearRegisteredExpectedAgentPIDIfNeeded()
-        guard expectedAgentPIDRegistration == registration, activeTransport?.process.pid == pid else { return }
+        guard expectedAgentPIDRegistration == registration,
+              activeTransport?.process.pid == pid || runtimePID == pid
+        else { return }
         registeredExpectedAgentPID = target
         await expectedAgentPIDRegistrar.register(target.pid, target.clientName, target.runID)
-        guard expectedAgentPIDRegistration == registration, activeTransport?.process.pid == pid else {
+        guard expectedAgentPIDRegistration == registration,
+              activeTransport?.process.pid == pid || runtimePID == pid
+        else {
             if registeredExpectedAgentPID == target {
                 registeredExpectedAgentPID = nil
             }
@@ -646,14 +661,12 @@ actor CodexAppServerClient {
     }
 
     func healthyTransportGeneration() -> UInt64? {
-        guard let activeTransport,
-              isInitialized,
-              !didTerminateTransport,
-              livenessProbe(activeTransport.process)
-        else {
-            return nil
+        if let activeTransport {
+            guard isInitialized, !didTerminateTransport, livenessProbe(activeTransport.process) else { return nil }
+            return activeTransport.generation
         }
-        return activeTransport.generation
+        guard runtimeSession != nil, isInitialized, !didTerminateTransport else { return nil }
+        return transportGeneration
     }
 
     func subscribeNotificationsWithTransportGeneration() async throws -> NotificationSubscription {
@@ -716,6 +729,8 @@ actor CodexAppServerClient {
                 )
                 try ensureStartupAuthority(authority)
             }
+        } else if runtimeSession != nil, isInitialized, !didTerminateTransport {
+            return
         }
         try ensureStartupAuthority(authority)
         let startupID = UUID()
@@ -749,6 +764,14 @@ actor CodexAppServerClient {
             await termination.task.value
             return
         }
+        if runtimeSession != nil {
+            await terminateAuthorityTransport(
+                expectedGeneration: transportGeneration,
+                requestFailure: .processNotRunning,
+                reason: .explicitStop
+            )
+            return
+        }
         await terminateTransport(flushStdout: true, reason: .explicitStop)
     }
 
@@ -777,6 +800,14 @@ actor CodexAppServerClient {
         requestFailure: ClientError = .processNotRunning,
         reason: TransportTerminationReason
     ) async {
+        if runtimeSession != nil {
+            await terminateAuthorityTransport(
+                expectedGeneration: expectedGeneration ?? transportGeneration,
+                requestFailure: requestFailure,
+                reason: reason
+            )
+            return
+        }
         let task = beginTransportTermination(
             flushStdout: flushStdout,
             expectedGeneration: expectedGeneration,
@@ -961,6 +992,14 @@ actor CodexAppServerClient {
             await existing.task.value
             return
         }
+        if runtimeSession != nil, generation == transportGeneration {
+            await terminateAuthorityTransport(
+                expectedGeneration: generation,
+                requestFailure: .processNotRunning,
+                reason: fallbackReason
+            )
+            return
+        }
         if let activeTransport,
            activeTransport.generation == generation,
            let observer = activeTransport.exitObservation?.observer
@@ -1136,6 +1175,13 @@ actor CodexAppServerClient {
                 )
             }
         }
+        if let runtimeSession {
+            runtimeEventTask?.cancel()
+            runtimeEventTask = nil
+            self.runtimeSession = nil
+            runtimePID = nil
+            Task.detached { await runtimeSession.shutdown() }
+        }
         guard let activeTransport else { return }
         self.activeTransport = nil
         activeTransport.exitObservation?.stderrCapture.finish()
@@ -1238,10 +1284,10 @@ actor CodexAppServerClient {
         deadline: TimeInterval,
         onUnsettled: @escaping @Sendable (_ generation: UInt64) -> Void = { _ in }
     ) async throws -> [String: Any] {
-        guard let activeTransport, !didTerminateTransport else {
+        guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
-        let generation = activeTransport.generation
+        let generation = transportGeneration
         do {
             return try await request(
                 method: method,
@@ -1311,11 +1357,11 @@ actor CodexAppServerClient {
         onMutationUnsettled: (@Sendable (_ generation: UInt64) -> Void)? = nil
     ) async throws -> [String: Any] {
         try Task.checkCancellation()
-        guard let activeTransport, !didTerminateTransport else {
+        guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
         let requestID = makeRequestID()
-        let generation = activeTransport.generation
+        let generation = transportGeneration
         let deadline = timeout ?? (useDefaultTimeout ? config.requestTimeout : nil)
         var payload: [String: Any] = [
             "method": method,
@@ -1351,7 +1397,7 @@ actor CodexAppServerClient {
     }
 
     func respondToServerRequest(id: CodexAppServerRequestID, result: [String: Any]) throws {
-        guard activeTransport != nil, !didTerminateTransport else {
+        guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
         let payload: [String: Any] = [
@@ -1367,7 +1413,7 @@ actor CodexAppServerClient {
         message: String,
         data: [String: Any]? = nil
     ) throws {
-        guard activeTransport != nil, !didTerminateTransport else {
+        guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
         var errorObject: [String: Any] = [
@@ -1385,7 +1431,7 @@ actor CodexAppServerClient {
     }
 
     func notify(method: String, params: [String: Any]?) throws {
-        guard activeTransport != nil, !didTerminateTransport else {
+        guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
         var payload: [String: Any] = [
@@ -1514,7 +1560,7 @@ actor CodexAppServerClient {
     ) async throws {
         do {
             try ensureStartupAuthority(startupAuthority)
-            if activeTransport == nil {
+            if activeTransport == nil, runtimeSession == nil {
                 try await startProcess(startupAuthority: startupAuthority)
             }
             try ensureStartupAuthority(startupAuthority)
@@ -1575,6 +1621,54 @@ actor CodexAppServerClient {
         let launchDirectory = CLIProcessConfiguration.resolvedWorkingDirectory(
             config.processLaunchDirectory
         )
+        if let runtimeTransport {
+            transportGeneration &+= 1
+            let generation = transportGeneration
+            didTerminateTransport = false
+            lastTransportTerminationReason = nil
+            lastTransportFailure = nil
+            transportTerminationTask = nil
+            decodeRecoveryAttemptsByGeneration[generation] = 0
+            do {
+                let session = try await runtimeTransport.open(
+                    command: resolution.resolvedCommand,
+                    arguments: args,
+                    environment: environment,
+                    workingDirectory: launchDirectory,
+                    protocolKind: .codexAppServer,
+                    maxStderrBytes: UInt64(Self.stderrTailLimit)
+                )
+                runtimeSession = session
+                let stream = try await session.events()
+                runtimeEventTask = Task { [weak self] in
+                    do {
+                        for try await event in stream {
+                            guard let self else { return }
+                            await handleRuntimeEvent(event, generation: generation)
+                        }
+                    } catch {
+                        guard let self else { return }
+                        await handleRuntimeStreamFailure(error, generation: generation)
+                    }
+                    try? await stream.close()
+                }
+                let receipt = try await session.start()
+                runtimePID = receipt.pid
+                await registerExpectedAgentPIDIfNeeded(for: receipt.pid)
+                try ensureStartupAuthority(startupAuthority)
+                guard runtimeSession != nil, !didTerminateTransport else {
+                    throw lastTransportFailure ?? ClientError.processNotRunning
+                }
+                return
+            } catch {
+                await runtimeSession?.shutdown()
+                runtimeSession = nil
+                runtimeEventTask?.cancel()
+                runtimeEventTask = nil
+                runtimePID = nil
+                throw error
+            }
+        }
         let spawned: SpawnedProcess
         do {
             try await processSpawnPreparation()
@@ -1651,6 +1745,67 @@ actor CodexAppServerClient {
             }
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
+    }
+
+    private func handleRuntimeEvent(_ event: CoreAgentProviderEvent, generation: UInt64) async {
+        guard generation == transportGeneration, !didTerminateTransport else { return }
+        switch event.kind {
+        case "providerMessage":
+            guard let envelope = event.payloadDictionary,
+                  let payload = envelope["payload"],
+                  JSONSerialization.isValidJSONObject(payload),
+                  let data = try? JSONSerialization.data(withJSONObject: payload, options: [])
+            else { return }
+            handleJSONLine(data)
+        case "stderr":
+            guard let envelope = event.payloadDictionary,
+                  let text = envelope["text"] as? String else { return }
+            if config.enableDebugLogging { print("[CodexAppServer][stderr] \(text)") }
+        case "processExited", "scopeClosed":
+            lastTransportFailure = .processNotRunning
+            await terminateAuthorityTransport(
+                expectedGeneration: generation,
+                requestFailure: .processNotRunning,
+                reason: .livenessCheckFailed(method: nil)
+            )
+        default:
+            break
+        }
+    }
+
+    private func handleRuntimeStreamFailure(_ error: Error, generation: UInt64) async {
+        guard generation == transportGeneration, !didTerminateTransport else { return }
+        lastTransportFailure = .processNotRunning
+        await terminateAuthorityTransport(
+            expectedGeneration: generation,
+            requestFailure: .processNotRunning,
+            reason: .livenessCheckFailed(method: nil)
+        )
+    }
+
+    private func terminateAuthorityTransport(
+        expectedGeneration: UInt64,
+        requestFailure: ClientError,
+        reason: TransportTerminationReason
+    ) async {
+        guard expectedGeneration == transportGeneration, runtimeSession != nil else { return }
+        guard !didTerminateTransport else { return }
+        didTerminateTransport = true
+        isInitialized = false
+        lastTransportTerminationReason = reason
+        let session = runtimeSession
+        runtimeSession = nil
+        runtimePID = nil
+        runtimeEventTask?.cancel()
+        runtimeEventTask = nil
+        await session?.shutdown()
+        await finishTransportTermination(
+            invalidateClaimedTransport(
+                flushStdout: false,
+                requestFailure: requestFailure,
+                processFamilyCleanupWasCompleted: true
+            )
+        )
     }
 
     // SEARCH-HELPER: FIFO stdout, FileHandleChunkChannel, readabilityHandler, chunk ordering
@@ -2087,21 +2242,38 @@ actor CodexAppServerClient {
     ///
     /// Related:
     private func sendJSONLine(_ payload: [String: Any], method: String?) throws {
-        guard let activeTransport, !didTerminateTransport else {
+        guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
-        let process = activeTransport.process
         let data = try JSONSerialization.data(withJSONObject: payload, options: [])
         if config.enableDebugLogging {
             if let line = String(data: data, encoding: .utf8) {
                 print("[CodexAppServer] -> \(line)")
             }
         }
-        guard let stdinDescriptor = process.stdinDescriptor else {
-            throw ClientError.processNotRunning
-        }
         var frame = data
         frame.append(0x0A)
+        if let runtimeSession {
+            let session = runtimeSession
+            Task { [weak self] in
+                do {
+                    _ = try await session.sendLine(frame)
+                } catch {
+                    guard let self else { return }
+                    await terminateAuthorityTransport(
+                        expectedGeneration: transportGeneration,
+                        requestFailure: .transportWriteFailed(message: "Codex Rust transport write failed: \(error.localizedDescription)", errno: nil),
+                        reason: .stdinWrite(method: method, errno: nil)
+                    )
+                }
+            }
+            return
+        }
+        guard let activeTransport,
+              let stdinDescriptor = activeTransport.process.stdinDescriptor
+        else {
+            throw ClientError.processNotRunning
+        }
         let generation = activeTransport.generation
         do {
             try writeFrameHandler(stdinDescriptor, frame)

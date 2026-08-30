@@ -26,7 +26,8 @@ final class GrokBuildACPHeadlessAgentProvider: HeadlessAgentProvider {
             try ACPAgentSessionController(
                 provider: provider,
                 runRequest: request,
-                diagnosticSink: diagnosticSink
+                diagnosticSink: diagnosticSink,
+                runtimeTransport: CoreAgentProviderRuntimeTransport()
             )
         }
     ) {

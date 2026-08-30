@@ -1702,6 +1702,23 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScopeConfigV1) throws  -> AgentClaudeScopeHandleV1
 
+    func agentProviderOpenScope(identity: RuntimeIdentity, config: CoreAgentProviderScopeConfigV1) throws  -> AgentProviderScopeHandleV1
+
+    /**
+     * Sends one already-encoded provider JSON-RPC frame. Rust appends exactly one newline,
+     * serializes writes, and returns a monotonic outbound sequence. Provider meaning remains
+     * Swift-owned; no protocol-specific request type crosses this boundary.
+     */
+    func agentProviderSendLine(identity: RuntimeIdentity, scopeId: String, payload: Data) throws  -> UInt64
+
+    /**
+     * Idempotent terminal close. Child termination and reaping remain Rust-owned; the generic
+     * subscription is closed by the Swift session wrapper so stream lifetime stays explicit.
+     */
+    func agentProviderShutdown(identity: RuntimeIdentity, scopeId: String) throws
+
+    func agentProviderStart(identity: RuntimeIdentity, scopeId: String) throws  -> AgentProviderStartReceiptV1
+
     /**
      * Contract §7.1's permission **protocol** half only -- policy (auto-approval matching,
      * secure-store decisions) stays Swift/core-owned; this call only encodes and writes the
@@ -2034,6 +2051,59 @@ open func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScope
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(config),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderOpenScope(identity: RuntimeIdentity, config: CoreAgentProviderScopeConfigV1)throws  -> AgentProviderScopeHandleV1  {
+    return try  FfiConverterTypeAgentProviderScopeHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_open_scope(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterTypeCoreAgentProviderScopeConfigV1_lower(config),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Sends one already-encoded provider JSON-RPC frame. Rust appends exactly one newline,
+     * serializes writes, and returns a monotonic outbound sequence. Provider meaning remains
+     * Swift-owned; no protocol-specific request type crosses this boundary.
+     */
+open func agentProviderSendLine(identity: RuntimeIdentity, scopeId: String, payload: Data)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_send_line(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(payload),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Idempotent terminal close. Child termination and reaping remain Rust-owned; the generic
+     * subscription is closed by the Swift session wrapper so stream lifetime stays explicit.
+     */
+open func agentProviderShutdown(identity: RuntimeIdentity, scopeId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_shutdown(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+}
+}
+
+open func agentProviderStart(identity: RuntimeIdentity, scopeId: String)throws  -> AgentProviderStartReceiptV1  {
+    return try  FfiConverterTypeAgentProviderStartReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_start(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
     )
 })
 }
@@ -3642,6 +3712,114 @@ public func FfiConverterTypeAgentClaudeStartReceiptV1_lower(_ value: AgentClaude
 }
 
 
+public struct AgentProviderScopeHandleV1: Equatable, Hashable {
+    public let scopeId: String
+    public let subscriptionScopeId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(scopeId: String, subscriptionScopeId: String) {
+        self.scopeId = scopeId
+        self.subscriptionScopeId = subscriptionScopeId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentProviderScopeHandleV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentProviderScopeHandleV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentProviderScopeHandleV1 {
+        return
+            try AgentProviderScopeHandleV1(
+                scopeId: FfiConverterString.read(from: &buf),
+                subscriptionScopeId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentProviderScopeHandleV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterString.write(value.subscriptionScopeId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderScopeHandleV1_lift(_ buf: RustBuffer) throws -> AgentProviderScopeHandleV1 {
+    return try FfiConverterTypeAgentProviderScopeHandleV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderScopeHandleV1_lower(_ value: AgentProviderScopeHandleV1) -> RustBuffer {
+    return FfiConverterTypeAgentProviderScopeHandleV1.lower(value)
+}
+
+
+public struct AgentProviderStartReceiptV1: Equatable, Hashable {
+    public let pid: Int32
+    public let processGroupId: Int32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(pid: Int32, processGroupId: Int32) {
+        self.pid = pid
+        self.processGroupId = processGroupId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentProviderStartReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentProviderStartReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentProviderStartReceiptV1 {
+        return
+            try AgentProviderStartReceiptV1(
+                pid: FfiConverterInt32.read(from: &buf),
+                processGroupId: FfiConverterInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentProviderStartReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterInt32.write(value.pid, into: &buf)
+        FfiConverterInt32.write(value.processGroupId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderStartReceiptV1_lift(_ buf: RustBuffer) throws -> AgentProviderStartReceiptV1 {
+    return try FfiConverterTypeAgentProviderStartReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderStartReceiptV1_lower(_ value: AgentProviderStartReceiptV1) -> RustBuffer {
+    return FfiConverterTypeAgentProviderStartReceiptV1.lower(value)
+}
+
+
 /**
  * `inventoryPushBulkChunkDiscovery`'s receipt: the usual staged counts, plus the minted file/
  * folder ids (each a raw 16-byte UUID, matching `root_id`'s `Vec<u8>` convention elsewhere in
@@ -4641,6 +4819,130 @@ public func FfiConverterTypeCoreAgentClaudeScopeConfigV1_lift(_ buf: RustBuffer)
 #endif
 public func FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(_ value: CoreAgentClaudeScopeConfigV1) -> RustBuffer {
     return FfiConverterTypeCoreAgentClaudeScopeConfigV1.lower(value)
+}
+
+
+public struct CoreAgentProviderEnvironmentEntryV1: Equatable, Hashable {
+    public let key: String
+    public let value: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(key: String, value: String) {
+        self.key = key
+        self.value = value
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentProviderEnvironmentEntryV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentProviderEnvironmentEntryV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentProviderEnvironmentEntryV1 {
+        return
+            try CoreAgentProviderEnvironmentEntryV1(
+                key: FfiConverterString.read(from: &buf),
+                value: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentProviderEnvironmentEntryV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.key, into: &buf)
+        FfiConverterString.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderEnvironmentEntryV1_lift(_ buf: RustBuffer) throws -> CoreAgentProviderEnvironmentEntryV1 {
+    return try FfiConverterTypeCoreAgentProviderEnvironmentEntryV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderEnvironmentEntryV1_lower(_ value: CoreAgentProviderEnvironmentEntryV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentProviderEnvironmentEntryV1.lower(value)
+}
+
+
+public struct CoreAgentProviderScopeConfigV1: Equatable, Hashable {
+    public let command: String
+    public let arguments: [String]
+    public let environment: [CoreAgentProviderEnvironmentEntryV1]
+    public let workingDirectory: String?
+    public let `protocol`: AgentProviderProtocolV1
+    public let maxStderrBytes: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(command: String, arguments: [String], environment: [CoreAgentProviderEnvironmentEntryV1], workingDirectory: String?, `protocol`: AgentProviderProtocolV1, maxStderrBytes: UInt64) {
+        self.command = command
+        self.arguments = arguments
+        self.environment = environment
+        self.workingDirectory = workingDirectory
+        self.`protocol` = `protocol`
+        self.maxStderrBytes = maxStderrBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentProviderScopeConfigV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentProviderScopeConfigV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentProviderScopeConfigV1 {
+        return
+            try CoreAgentProviderScopeConfigV1(
+                command: FfiConverterString.read(from: &buf),
+                arguments: FfiConverterSequenceString.read(from: &buf),
+                environment: FfiConverterSequenceTypeCoreAgentProviderEnvironmentEntryV1.read(from: &buf),
+                workingDirectory: FfiConverterOptionString.read(from: &buf),
+                protocol: FfiConverterTypeAgentProviderProtocolV1.read(from: &buf),
+                maxStderrBytes: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentProviderScopeConfigV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.command, into: &buf)
+        FfiConverterSequenceString.write(value.arguments, into: &buf)
+        FfiConverterSequenceTypeCoreAgentProviderEnvironmentEntryV1.write(value.environment, into: &buf)
+        FfiConverterOptionString.write(value.workingDirectory, into: &buf)
+        FfiConverterTypeAgentProviderProtocolV1.write(value.`protocol`, into: &buf)
+        FfiConverterUInt64.write(value.maxStderrBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderScopeConfigV1_lift(_ buf: RustBuffer) throws -> CoreAgentProviderScopeConfigV1 {
+    return try FfiConverterTypeCoreAgentProviderScopeConfigV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderScopeConfigV1_lower(_ value: CoreAgentProviderScopeConfigV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentProviderScopeConfigV1.lower(value)
 }
 
 
@@ -15026,6 +15328,72 @@ public func FfiConverterTypeAgentClaudePermissionDecisionV1_lower(_ value: Agent
 
 
 
+public enum AgentProviderProtocolV1: Equatable, Hashable {
+
+    case codexAppServer
+    case acp
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentProviderProtocolV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentProviderProtocolV1: FfiConverterRustBuffer {
+    typealias SwiftType = AgentProviderProtocolV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentProviderProtocolV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .codexAppServer
+
+        case 2: return .acp
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentProviderProtocolV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .codexAppServer:
+            writeInt(&buf, Int32(1))
+
+
+        case .acp:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderProtocolV1_lift(_ buf: RustBuffer) throws -> AgentProviderProtocolV1 {
+    return try FfiConverterTypeAgentProviderProtocolV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderProtocolV1_lower(_ value: AgentProviderProtocolV1) -> RustBuffer {
+    return FfiConverterTypeAgentProviderProtocolV1.lower(value)
+}
+
+
+
+
 public enum CancelDisposition: Equatable, Hashable {
 
     case requested
@@ -15359,6 +15727,21 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case AgentClaudeControlResponseError(message: String
     )
+    /**
+     * P6 provider transport authority shared by Codex app-server and ACP.
+     */
+    case AgentProviderUnknownScope
+    case AgentProviderScopeClosed
+    case AgentProviderAlreadyRunning
+    case AgentProviderNotRunning
+    case AgentProviderSpawnFailed(message: String
+    )
+    case AgentProviderReaperFailed(message: String
+    )
+    case AgentProviderTransportWriteFailed(message: String
+    )
+    case AgentProviderInvalidRequest(message: String
+    )
 
 
 
@@ -15479,6 +15862,22 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
             )
         case 65: return .AgentClaudeControlResponseError(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 66: return .AgentProviderUnknownScope
+        case 67: return .AgentProviderScopeClosed
+        case 68: return .AgentProviderAlreadyRunning
+        case 69: return .AgentProviderNotRunning
+        case 70: return .AgentProviderSpawnFailed(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 71: return .AgentProviderReaperFailed(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 72: return .AgentProviderTransportWriteFailed(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 73: return .AgentProviderInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -15764,6 +16163,42 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
 
         case let .AgentClaudeControlResponseError(message):
             writeInt(&buf, Int32(65))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case .AgentProviderUnknownScope:
+            writeInt(&buf, Int32(66))
+
+
+        case .AgentProviderScopeClosed:
+            writeInt(&buf, Int32(67))
+
+
+        case .AgentProviderAlreadyRunning:
+            writeInt(&buf, Int32(68))
+
+
+        case .AgentProviderNotRunning:
+            writeInt(&buf, Int32(69))
+
+
+        case let .AgentProviderSpawnFailed(message):
+            writeInt(&buf, Int32(70))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentProviderReaperFailed(message):
+            writeInt(&buf, Int32(71))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentProviderTransportWriteFailed(message):
+            writeInt(&buf, Int32(72))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .AgentProviderInvalidRequest(message):
+            writeInt(&buf, Int32(73))
             FfiConverterString.write(message, into: &buf)
 
         }
@@ -21446,6 +21881,31 @@ fileprivate struct FfiConverterSequenceTypeCoreAgentClaudeEnvironmentEntryV1: Ff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoreAgentProviderEnvironmentEntryV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreAgentProviderEnvironmentEntryV1]
+
+    public static func write(_ value: [CoreAgentProviderEnvironmentEntryV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreAgentProviderEnvironmentEntryV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreAgentProviderEnvironmentEntryV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreAgentProviderEnvironmentEntryV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreAgentProviderEnvironmentEntryV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCoreApplyEditsOperationV1: FfiConverterRustBuffer {
     typealias SwiftType = [CoreApplyEditsOperationV1]
 
@@ -22248,6 +22708,18 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_open_scope() != 12578) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_open_scope() != 3803) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_send_line() != 15774) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_shutdown() != 36009) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_start() != 49719) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_respond_permission() != 30809) {

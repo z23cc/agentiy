@@ -877,6 +877,7 @@ allowed_tracked_docs=(
   "docs/architecture/headless-mcp-runtime.md"
   "docs/architecture/provider-plugins.md"
   "docs/architecture/rust-agent-claude-v1.md"
+  "docs/architecture/rust-agent-provider-v1.md"
   "docs/architecture/rust-apply-edits-compact-v1.md"
   "docs/architecture/rust-codemap-compact-v1.md"
   "docs/architecture/rust-ffi.md"

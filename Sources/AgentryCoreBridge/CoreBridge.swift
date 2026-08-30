@@ -93,6 +93,14 @@ enum CoreTransportError: Error, Sendable, Equatable {
     /// P6-7 (§15.5): the CLI answered a session-startup handshake control request (`initialize`/
     /// `set_permission_mode`) with `subtype: "error"`.
     case agentClaudeControlResponseError(String)
+    case agentProviderUnknownScope
+    case agentProviderScopeClosed
+    case agentProviderAlreadyRunning
+    case agentProviderNotRunning
+    case agentProviderSpawnFailed(String)
+    case agentProviderReaperFailed(String)
+    case agentProviderTransportWriteFailed(String)
+    case agentProviderInvalidRequest(String)
     case unexpected(String)
 }
 
@@ -428,6 +436,15 @@ protocol CoreRuntimeTransport: Sendable {
         scopeID: String,
         rootID: Data
     ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
+
+    // ---- P6: shared Codex/ACP provider transport authority ------------------------------
+    func agentProviderOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreAgentProviderScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.AgentProviderScopeHandleV1
+    func agentProviderStart(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1
+    func agentProviderSendLine(identity: CoreRuntimeIdentity, scopeID: String, payload: Data) throws -> UInt64
+    func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
     // ---- P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md) -------------------
     //
@@ -5022,6 +5039,41 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
 
     // ---- P6-6: agent-claude-v1 ------------------------------------------------------------------
 
+    func agentProviderOpenScope(
+        identity: CoreRuntimeIdentity,
+        config: AgentryUniFFIRaw.CoreAgentProviderScopeConfigV1
+    ) throws -> AgentryUniFFIRaw.AgentProviderScopeHandleV1 {
+        do {
+            return try runtime.agentProviderOpenScope(identity: Self.rawIdentity(identity), config: config)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderStart(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1 {
+        do {
+            return try runtime.agentProviderStart(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderSendLine(identity: CoreRuntimeIdentity, scopeID: String, payload: Data) throws -> UInt64 {
+        do {
+            return try runtime.agentProviderSendLine(identity: Self.rawIdentity(identity), scopeId: scopeID, payload: payload)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws {
+        do {
+            try runtime.agentProviderShutdown(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func agentOpenScope(
         identity: CoreRuntimeIdentity,
         config: AgentryUniFFIRaw.CoreAgentClaudeScopeConfigV1
@@ -5187,6 +5239,14 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .AgentClaudeTransportWriteFailed(message): .agentClaudeTransportWriteFailed(message)
         case let .AgentClaudeControlResponseError(message): .agentClaudeControlResponseError(message)
         case let .AgentClaudeInvalidRequest(message): .agentClaudeInvalidRequest(message)
+        case .AgentProviderUnknownScope: .agentProviderUnknownScope
+        case .AgentProviderScopeClosed: .agentProviderScopeClosed
+        case .AgentProviderAlreadyRunning: .agentProviderAlreadyRunning
+        case .AgentProviderNotRunning: .agentProviderNotRunning
+        case let .AgentProviderSpawnFailed(message): .agentProviderSpawnFailed(message)
+        case let .AgentProviderReaperFailed(message): .agentProviderReaperFailed(message)
+        case let .AgentProviderTransportWriteFailed(message): .agentProviderTransportWriteFailed(message)
+        case let .AgentProviderInvalidRequest(message): .agentProviderInvalidRequest(message)
         }
     }
 
@@ -5889,6 +5949,14 @@ public actor AgentryCoreBridge {
         case let .agentClaudeTransportWriteFailed(message): return .agentClaudeTransportWriteFailed(message)
         case let .agentClaudeControlResponseError(message): return .agentClaudeControlResponseError(message)
         case let .agentClaudeInvalidRequest(message): return .agentClaudeInvalidRequest(message)
+        case .agentProviderUnknownScope: return .agentProviderUnknownScope
+        case .agentProviderScopeClosed: return .agentProviderScopeClosed
+        case .agentProviderAlreadyRunning: return .agentProviderAlreadyRunning
+        case .agentProviderNotRunning: return .agentProviderNotRunning
+        case let .agentProviderSpawnFailed(message): return .agentProviderSpawnFailed(message)
+        case let .agentProviderReaperFailed(message): return .agentProviderReaperFailed(message)
+        case let .agentProviderTransportWriteFailed(message): return .agentProviderTransportWriteFailed(message)
+        case let .agentProviderInvalidRequest(message): return .agentProviderInvalidRequest(message)
         case let .unexpected(message): return .transportFailure(message)
         }
     }
