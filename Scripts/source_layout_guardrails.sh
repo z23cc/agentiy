@@ -510,6 +510,7 @@ if [[ -d "$domain_runtime_source_dir" ]]; then
     "DomainAgentSessionModels.swift"
     "DomainAgentRunSessionStore.swift"
     "DomainAgentSessionAuthority.swift"
+    "DomainAgentSessionLifecycleAuthority.swift"
     "DomainInteractionBroker.swift"
     "DomainCredentialEnvelope.swift"
     "DomainActivityCenter.swift"
@@ -556,6 +557,7 @@ assert value["credentials"]["persisted_secret_bytes"] is False
 assert value["credentials"]["actual_owned_bytes_instrumented"] is True
 assert value["approval"]["routing_opt_out"] is False
 assert value["authority"]["typed_policy_errors_preserved"] is True
+assert value["authority"]["identity_admission"] == "DomainAgentSessionLifecycleDecisionAuthority"
 assert value["public_contract"]["schema_behavior"] == "wrapped_binding_definition_preserved"
 assert value["public_contract"]["proxy_behavior_changed"] is False
 PY
@@ -565,6 +567,15 @@ PY
   if ! grep -q 'package actor DomainAgentSessionAuthority' "$domain_runtime_source_dir/DomainAgentRunSessionStore.swift" \
     || ! grep -q 'typealias DomainAgentRunSessionStore = DomainAgentSessionAuthority' "$domain_runtime_source_dir/DomainAgentRunSessionStore.swift"; then
     fail "agent-session lifecycle authority lost its canonical name or compatibility alias"
+  fi
+  if ! grep -q 'package struct DomainAgentSessionLifecycleDecisionAuthority' "$domain_runtime_source_dir/DomainAgentSessionLifecycleAuthority.swift" \
+    || ! grep -q 'typealias Identity = DomainAgentSessionLifecycleIdentity' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentSessionLifecycleAuthority.swift" \
+    || ! grep -q 'decisionAuthority.validateMutationTarget' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentSessionLifecycleAuthority.swift" \
+    || ! grep -q 'decisionAuthority.decideAdmission' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentSessionLifecycleAuthority.swift"; then
+    fail "agent-session identity and admission decisions must be delegated to the Domain authority"
+  fi
+  if grep -q 'guard current.identity.sessionID' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentSessionLifecycleAuthority.swift"; then
+    fail "App agent-session facade reintroduced a duplicate identity predicate"
   fi
   if ! grep -q 'MCPDomainGeneratedToolDefinitions.records' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift" \
     || ! grep -q 'filter(\\.sharedRead)' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
@@ -911,6 +922,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p10-admission-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p11-execution-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p12-agent-session-authority.md"
+  "docs/spec/headless-mcp-domain-runtime-p13-agent-session-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"

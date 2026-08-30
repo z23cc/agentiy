@@ -1,21 +1,26 @@
 import CryptoKit
 import Foundation
 import OSLog
+import RepoPromptDomainRuntime
 
-/// Single decision authority for Agent compose-tab/session identity transitions.
+/// App compatibility facade for Agent compose-tab/session identity transitions.
 ///
-/// Callers may own presentation, persistence, provider, or MCP mechanics, but none of
-/// those layers may independently retarget a live Agent operation. They consume the
-/// immutable identities and typed decisions produced here.
+/// Pure identity/protection/admission decisions are owned by
+/// `DomainAgentSessionLifecycleDecisionAuthority`; this MainActor facade retains only
+/// `WorkspaceModel` projection reconciliation and App diagnostics. Callers may own presentation,
+/// persistence, provider, or MCP mechanics, but none may independently retarget a live operation.
 @MainActor
 final class AgentSessionLifecycleAuthority {
-    struct Identity: Equatable, Hashable {
-        let workspaceID: UUID
-        let tabID: UUID
-        let sessionID: UUID?
-        let persistentBindingGeneration: UUID?
-        let bindingTransitionGeneration: UInt64
-    }
+    // Compatibility vocabulary for App callers; the decision types and identity are owned by
+    // RepoPromptDomainRuntime and remain usable by headless adapters without MainActor state.
+    typealias Identity = DomainAgentSessionLifecycleIdentity
+    typealias MutationTarget = DomainAgentSessionMutationTarget
+    typealias CallerCategory = DomainAgentSessionCallerCategory
+    typealias Intent = DomainAgentSessionIntent
+    typealias Phase = DomainAgentSessionPhase
+    typealias Decision = DomainAgentSessionDecision
+    typealias RejectionReason = DomainAgentSessionRejectionReason
+    typealias AdmissionDecision = DomainAgentSessionAdmissionDecision
 
     struct ProtectionClaim: Equatable {
         let identity: Identity
@@ -25,62 +30,19 @@ final class AgentSessionLifecycleAuthority {
         let isPinned: Bool
         let hasActiveRun: Bool
 
-        var isProtected: Bool {
-            isLive || isPinned
+        var domainFacts: DomainAgentSessionProtectionFacts {
+            DomainAgentSessionProtectionFacts(
+                identity: identity,
+                isLive: isLive,
+                isActive: isActive,
+                isPinned: isPinned,
+                hasActiveRun: hasActiveRun
+            )
         }
-    }
 
-    struct MutationTarget: Equatable {
-        let tabID: UUID
-        let identity: Identity?
-    }
-
-    enum CallerCategory: String {
-        case agentRunStart = "agent_run_start"
-        case agentSessionControl = "agent_session_control"
-        case domainProjection = "domain_projection"
-        case providerLifecycle = "provider_lifecycle"
-    }
-
-    enum Intent: String {
-        case createOrContinue = "create_or_continue"
-        case applyProjection = "apply_projection"
-        case setStatus = "set_status"
-        case shareThoughts = "share_thoughts"
-        case waitForInstruction = "wait_for_instruction"
-        case askUser = "ask_user"
-        case providerStart = "provider_start"
-    }
-
-    enum Phase: String {
-        case beforeBinding = "before_binding"
-        case bindingPersisted = "binding_persisted"
-        case beforeProviderStart = "before_provider_start"
-        case afterProviderStart = "after_provider_start"
-        case mutationValidation = "mutation_validation"
-        case projectionReconciliation = "projection_reconciliation"
-    }
-
-    enum Decision: String {
-        case admitted
-        case protected
-        case rejected
-        case unchanged
-    }
-
-    enum RejectionReason: String, Error {
-        case workspacePersistenceRejected = "workspace_persistence_rejected"
-        case workspaceChanged = "workspace_changed"
-        case tabMissing = "tab_missing"
-        case sessionMissing = "session_missing"
-        case sessionIdentityChanged = "session_identity_changed"
-        case bindingGenerationChanged = "binding_generation_changed"
-        case transitionGenerationChanged = "transition_generation_changed"
-    }
-
-    enum AdmissionDecision: Equatable {
-        case commit
-        case rollback(RejectionReason)
+        var isProtected: Bool {
+            domainFacts.isProtected
+        }
     }
 
     struct Event: Equatable {
@@ -105,6 +67,8 @@ final class AgentSessionLifecycleAuthority {
         let protectedClaimCount: Int
     }
 
+    private let decisionAuthority = DomainAgentSessionLifecycleDecisionAuthority()
+
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "RepoPrompt",
         category: "AgentSessionLifecycle"
@@ -122,38 +86,28 @@ final class AgentSessionLifecycleAuthority {
         expected: Identity,
         current: ProtectionClaim?
     ) -> Result<MutationTarget, RejectionReason> {
-        guard let current else { return .failure(.tabMissing) }
-        guard current.identity.tabID == expected.tabID else { return .failure(.tabMissing) }
-        guard current.identity.sessionID == expected.sessionID else {
-            return .failure(.sessionIdentityChanged)
-        }
-        guard current.identity.persistentBindingGeneration == expected.persistentBindingGeneration else {
-            return .failure(.bindingGenerationChanged)
-        }
-        guard current.identity.bindingTransitionGeneration == expected.bindingTransitionGeneration else {
-            return .failure(.transitionGenerationChanged)
-        }
-        return .success(MutationTarget(tabID: expected.tabID, identity: expected))
+        decisionAuthority.validateMutationTarget(
+            expected: expected,
+            current: current?.domainFacts
+        )
     }
 
-    /// Owns the commit/rollback decision for every create-or-continue admission.
-    /// Presentation and persistence layers provide facts but do not independently
-    /// decide whether provider-visible identity may be published.
+    /// Compatibility adapter for the Domain-owned commit/rollback decision for every
+    /// create-or-continue admission. Presentation and persistence layers provide facts but do not
+    /// independently decide whether provider-visible identity may be published.
     func decideAdmission(
         persistence: WorkspacePersistenceOutcome,
         targetWorkspaceID: UUID,
         bindingStillCurrent: Bool
     ) -> AdmissionDecision {
-        guard persistence.acceptedForLifecycleAdmission else {
-            return .rollback(.workspacePersistenceRejected)
-        }
-        guard persistence.workspaceID == targetWorkspaceID else {
-            return .rollback(.workspaceChanged)
-        }
-        guard bindingStillCurrent else {
-            return .rollback(.sessionIdentityChanged)
-        }
-        return .commit
+        decisionAuthority.decideAdmission(
+            persistence: DomainAgentSessionPersistenceFact(
+                workspaceID: persistence.workspaceID,
+                acceptedForLifecycleAdmission: persistence.acceptedForLifecycleAdmission
+            ),
+            targetWorkspaceID: targetWorkspaceID,
+            bindingStillCurrent: bindingStillCurrent
+        )
     }
 
     func reconcileProjection(

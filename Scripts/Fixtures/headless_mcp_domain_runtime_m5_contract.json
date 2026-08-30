@@ -9,6 +9,7 @@
   ],
   "authority": {
     "session_store": "DomainAgentSessionAuthority",
+    "identity_admission": "DomainAgentSessionLifecycleDecisionAuthority",
     "interaction": "DomainInteractionBroker",
     "activity": "DomainActivityCenter",
     "credential_fallback": "DomainCredentialEnvelopeStore",
