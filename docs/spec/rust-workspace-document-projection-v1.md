@@ -2145,3 +2145,67 @@ outcome changes.
 - Focused Runtime/FFI/Bridge/Domain authority and source-guard tests, deterministic code generation,
   product builds, style/lint, guardrails, formatting, and diff checks pass. Any unrelated full-suite
   infrastructure hang is reported separately.
+
+## P5-13 amendment — Rust-owned external observation classification and recovery
+
+P5-13 moves automatic external filesystem observation classification and recovery admission into the
+same exact-runtime Rust aggregate that owns semantic workspace state. Swift performs only bounded
+metadata and raw-byte reads, while Rust compares the observed document with the immutable aggregate
+head and returns one typed claimless plan. The plan is contract version `1` and has no command
+operation ID, fingerprint, replay receipt, or admission-capacity reservation; automatic observation
+must never consume command admission. It carries the workspace/file identity, catalog revision,
+workspace revision, aggregate generation, current and saved digests, external digest, ordered
+changed/added/removed context IDs, disposition, candidate, transition, timestamp, optional
+revision-sidecar identity, and a stable diagnostic. `updatedAt` crosses the FFI as finite
+Foundation reference-date seconds, matching the canonical journal JSON `Date` encoding; Unix epoch
+seconds are not valid for this contract.
+
+The only valid disposition/candidate/transition combinations are `noChange`/`none`/`none`,
+`cleanReload`/`externalDocument`/`externalReload`, and `dirtyConflict`/`existingWorkingDocument`/
+`conflictRebase`. Rust validates the bounded external document, workspace identity, lowercase
+SHA-256 inputs, catalog and working-revision fences, saved-digest relationship, and context delta
+before returning a plan. A clean aggregate row may reload only when its saved digest matches the
+current semantic digest; a dirty row never accepts external bytes as the working candidate. The
+optional revision-sidecar identity is deterministic plan data, not a command ledger operation, and
+is present only for the clean external-reload transition.
+
+Swift then supplies the raw journal bytes, the effective journal validation, and the bytes observed
+from disk to a specialized Rust journal transaction. Rust re-prepares the plan under the aggregate
+mutex, rejects stale generation/revision/catalog/file/digest evidence, selects the external bytes
+for clean reload or the aggregate's authoritative existing working document for dirty conflict (even
+  when physical journal evidence is absent and must be seeded), and builds the ordinary canonical
+  journal transition.
+working candidate, derive context revisions, or synthesize a recovery receipt. The physical worker
+holds the existing catalog/workspace locks while rereading the external bytes, so a second external
+write becomes an external-document conflict rather than a mixed journal/document commit. Clean
+reload atomically advances the saved revision sidecar; dirty conflict preserves the local working
+candidate while recording the external saved digest. No durable schema or file ordering changes.
+
+The actor remains responsible for lease and mutation permits, metadata, bounded physical reads,
+filesystem locks/CAS, record dictionaries, routing overlays, health presentation, and subscriber
+events. It decodes present bytes only to maintain its record/event mirror, asks Rust for the plan,
+installs the transaction receipt in the same actor turn, and publishes `externalReloaded` or
+`workingStateCommitted` only after physical commit. `unchanged` and confirmed `absent` evidence
+update metadata without semantic mutation. `unavailable` evidence is explicit and never treated as
+an invalid document or an empty journal; it preserves the degraded read-only behavior with its
+stable physical reason. A stale plan, changed external bytes, runtime fence, closed/quarantined
+aggregate, or failed recovery leaves actor membership and durable semantic authority unchanged and
+is retried through the existing bounded refresh path. Explicit command conflict resolution and
+restart/full/target recovery retain their existing claim-bound or artifact-bound contracts and do
+not route through this automatic observation plan.
+
+### P5-13 done-when
+
+- Runtime tests cover no-change, clean reload, dirty conflict, ordered context deltas, invalid or
+  oversized bytes, saved-digest mismatch, stale catalog/revision/generation, candidate selection,
+  plan revalidation, and transaction-side external CAS races without mutating aggregate state on
+  failure.
+- FFI, generated bindings, Bridge, and Domain adapters expose only the versioned typed plan,
+  bounded evidence, and claimless recovery transaction; identities, digests, dates, enum combinations,
+  context ordering, and sidecar parity are rejected deterministically.
+- Automatic actor reload no longer calls the old Swift clean/dirty decision path. It consumes raw
+  evidence, asks Rust for classification, and installs Rust journal/revision receipts while
+  preserving physical lease, metadata, routing, health, event, and external-diagnostic behavior.
+- Focused Runtime/FFI/Bridge/Domain external-observation and recovery tests, deterministic codegen,
+  product builds, style/lint, guardrails, formatting, and diff checks pass. Any unrelated full-suite
+  infrastructure hang is reported separately.

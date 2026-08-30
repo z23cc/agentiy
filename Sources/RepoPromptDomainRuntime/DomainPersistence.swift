@@ -97,6 +97,14 @@ enum DomainExternalDocumentProbe {
     case cancelled
 }
 
+enum DomainExternalObservationEvidence: Sendable, Equatable {
+    case unchanged(DomainFileMetadata)
+    case present(bytes: Data, metadata: DomainFileMetadata, digest: String)
+    case absent(DomainFileMetadata)
+    case unavailable(metadata: DomainFileMetadata, reason: String)
+    case cancelled
+}
+
 enum DomainWorkspaceCommandAdmissionJournalEvidence: Sendable, Equatable {
     case absent
     case present(Data)
@@ -173,6 +181,12 @@ struct DomainPersistenceSavedCommit {
     let catalogRevision: UInt64
     let revisionSidecarMissing: Bool
     let authorityFinalization: DomainWorkspaceCommandAuthorityFinalization
+}
+
+struct DomainPersistenceExternalObservationCommit {
+    let journal: DomainWorkingJournal
+    let catalogRevision: UInt64
+    let revisionSidecarMissing: Bool
 }
 
 struct DomainPersistenceDeleteCommit {
@@ -1026,6 +1040,33 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
+    func persistExternalObservationRecovery(
+        candidateDocument: DomainWorkspaceDocument,
+        authoritativeDocument: DomainWorkspaceDocument,
+        authoritativeRevisions: DomainRevisionState,
+        externalDocumentBytes: Data,
+        plan: DomainExternalObservationRecoveryPlan,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+    ) async throws -> DomainPersistenceExternalObservationCommit {
+        try await validateMutationPermit(permit, document: candidateDocument)
+        let validator = try await prepareJournalValidator()
+        return try await DomainBlockingIO.run { cancellation in
+            try blockingWorker(cancellation).persistExternalObservationRecoveryBlocking(
+                validator: validator,
+                candidateDocument: candidateDocument,
+                authoritativeDocument: authoritativeDocument,
+                authoritativeRevisions: authoritativeRevisions,
+                externalDocumentBytes: externalDocumentBytes,
+                plan: plan,
+                now: now,
+                permit: permit,
+                commandAdmission: commandAdmission
+            )
+        }
+    }
+
     func persistDeleted(
         document: DomainWorkspaceDocument,
         expectedWorkspaceRevision: UInt64,
@@ -1081,6 +1122,27 @@ package struct DomainPersistenceCoordinator {
             return .cancelled
         } catch {
             return .invalid(knownMetadata)
+        }
+    }
+
+    func externalObservationEvidence(
+        for snapshot: DomainWorkspaceSnapshot,
+        knownMetadata: DomainFileMetadata
+    ) async -> DomainExternalObservationEvidence {
+        do {
+            return try await DomainBlockingIO.run { cancellation in
+                try cancellation.check()
+                return try blockingWorker(cancellation).externalObservationEvidenceBlocking(
+                    for: snapshot,
+                    knownMetadata: knownMetadata
+                )
+            }
+        } catch DomainPersistenceError.cancelled {
+            return .cancelled
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .unavailable(metadata: knownMetadata, reason: "external_workspace_probe_failed")
         }
     }
 
@@ -1983,7 +2045,10 @@ package struct DomainPersistenceCoordinator {
         now: Date,
         diskDocumentBytes: Data?,
         commandClaim: DomainWorkspaceRustJournal.PreparedExecutionClaim?,
-        recoveryMode: Bool
+        recoveryMode: Bool,
+        externalObservationPlan: DomainExternalObservationRecoveryPlan? = nil,
+        externalObservationBytes: Data? = nil,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission? = nil
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
         finalization: DomainWorkspaceJournalMutationFinalization,
@@ -1993,18 +2058,35 @@ package struct DomainPersistenceCoordinator {
         case .absent: nil
         case let .present(_, bytes): bytes
         }
-        let transaction = try validator.beginJournalMutationTransaction(
-            rawJournalBytes: rawJournalBytes,
-            effectiveJournal: snapshot.effectiveValidation,
-            document: document,
-            transition: transition,
-            catalogRevision: catalogRevision,
-            revisionOperationID: revisionOperationID,
-            updatedAt: now,
-            diskDocumentBytes: diskDocumentBytes,
-            commandClaim: commandClaim,
-            recoveryMode: recoveryMode
-        )
+        let transaction: DomainWorkspaceRustJournal.PreparedJournalMutationTransaction
+        if let externalObservationPlan,
+           let externalObservationBytes,
+           let commandAdmission
+        {
+            do {
+                transaction = try commandAdmission.beginExternalObservationRecoveryTransaction(
+                    plan: externalObservationPlan,
+                    rawJournalBytes: rawJournalBytes,
+                    effectiveJournal: snapshot.effectiveValidation,
+                    externalDocumentBytes: externalObservationBytes
+                )
+            } catch {
+                throw error
+            }
+        } else {
+            transaction = try validator.beginJournalMutationTransaction(
+                rawJournalBytes: rawJournalBytes,
+                effectiveJournal: snapshot.effectiveValidation,
+                document: document,
+                transition: transition,
+                catalogRevision: catalogRevision,
+                revisionOperationID: revisionOperationID,
+                updatedAt: now,
+                diskDocumentBytes: diskDocumentBytes,
+                commandClaim: commandClaim,
+                recoveryMode: recoveryMode
+            )
+        }
         defer { transaction.close() }
 
         func rawSnapshot(digest: String?) -> RawJournalSnapshot {
@@ -2705,6 +2787,115 @@ package struct DomainPersistenceCoordinator {
         )
     }
 
+    private func persistExternalObservationRecoveryBlocking(
+        validator: DomainWorkspaceRustJournal.PreparedValidator,
+        candidateDocument: DomainWorkspaceDocument,
+        authoritativeDocument: DomainWorkspaceDocument,
+        authoritativeRevisions: DomainRevisionState,
+        externalDocumentBytes: Data,
+        plan: DomainExternalObservationRecoveryPlan,
+        now: Date,
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
+    ) throws -> DomainPersistenceExternalObservationCommit {
+        try validateMutationScope(permit, document: candidateDocument)
+        guard candidateDocument.workspaceID == plan.workspaceID,
+              candidateDocument.fileURL.standardizedFileURL == plan.expectedFileURL.standardizedFileURL,
+              authoritativeDocument.workspaceID == plan.workspaceID,
+              authoritativeDocument.fileURL.standardizedFileURL == plan.expectedFileURL.standardizedFileURL,
+              authoritativeRevisions.workingRevision == plan.workspaceRevision,
+              DomainContentDigest.sha256(authoritativeDocument.documentBytes) == plan.currentDocumentDigest,
+              DomainContentDigest.sha256(externalDocumentBytes) == plan.externalDocumentDigest
+        else {
+            throw DomainPersistenceError.admissionRecoveryStale
+        }
+        try ensureLazyMigration(now: now, permit: permit, validator: validator)
+        return try withExistingWorkspaceLocks(
+            document: candidateDocument,
+            validator: validator,
+            now: now,
+            permit: permit
+        ) { catalogRevision in
+            guard catalogRevision == plan.catalogRevision else {
+                throw DomainPersistenceError.admissionRecoveryStale
+            }
+            guard let observedExternalBytes = try boundedWorkspaceDocumentBytes(
+                at: candidateDocument.fileURL
+            ),
+                  DomainContentDigest.sha256(observedExternalBytes) == plan.externalDocumentDigest
+            else {
+                throw DomainPersistenceError.externalDocumentConflict
+            }
+            let snapshot: ValidatedJournalSnapshot
+            if case .absent = try readRawJournalSnapshot(workspaceID: plan.workspaceID) {
+                let seeded = try validator.seedWorkingJournal(
+                    workspaceID: authoritativeDocument.workspaceID,
+                    fileURL: authoritativeDocument.fileURL,
+                    revisions: authoritativeRevisions,
+                    savedDigest: plan.savedDigest,
+                    contextDigests: Dictionary(uniqueKeysWithValues: authoritativeDocument.metadata.contexts.map {
+                        ($0.identity.contextID, $0.contentDigest)
+                    }),
+                    updatedAt: plan.updatedAt
+                )
+                snapshot = ValidatedJournalSnapshot(
+                    raw: .absent,
+                    effectiveJournal: seeded.journal,
+                    effectiveValidation: seeded
+                )
+            } else {
+                snapshot = try readCurrentJournalOrSeed(
+                    document: candidateDocument,
+                    validator: validator
+                )
+            }
+            let recoveryDate = plan.updatedAt
+            let transition: DomainWorkspaceWorkingJournalTransition = switch plan.transition {
+            case .externalReload:
+                .externalReload(
+                    expectedWorkingRevision: plan.workspaceRevision,
+                    operationID: nil,
+                    fingerprint: nil,
+                    updatedAt: recoveryDate
+                )
+            case .conflictRebase:
+                .conflictRebase(
+                    expectedRevisions: snapshot.effectiveValidation.journal.revisions,
+                    externalSavedDigest: plan.externalDocumentDigest,
+                    operationID: nil,
+                    fingerprint: nil,
+                    updatedAt: recoveryDate
+                )
+            case .none:
+                throw DomainPersistenceError.admissionRecoveryStale
+            }
+            let result = try executeJournalMutationTransaction(
+                validator: validator,
+                snapshot: snapshot,
+                document: candidateDocument,
+                transition: transition,
+                catalogRevision: catalogRevision,
+                revisionOperationID: plan.revisionSidecarID,
+                now: recoveryDate,
+                diskDocumentBytes: observedExternalBytes,
+                commandClaim: nil,
+                recoveryMode: true,
+                externalObservationPlan: plan,
+                externalObservationBytes: observedExternalBytes,
+                commandAdmission: commandAdmission
+            )
+            let revisionSidecarMissing: Bool = switch result.finalization {
+            case .finalized: false
+            case .revisionSidecarMissing: true
+            }
+            return DomainPersistenceExternalObservationCommit(
+                journal: result.receipt.committedJournal.journal,
+                catalogRevision: result.receipt.catalogRevision,
+                revisionSidecarMissing: revisionSidecarMissing
+            )
+        }
+    }
+
     private func persistConflictRebaseBlocking(
         validator: DomainWorkspaceRustJournal.PreparedValidator,
         document: DomainWorkspaceDocument,
@@ -3034,6 +3225,52 @@ package struct DomainPersistenceCoordinator {
             return nil
         } catch {
             return "\(label): \(error.localizedDescription)"
+        }
+    }
+
+    private func externalObservationEvidenceBlocking(
+        for snapshot: DomainWorkspaceSnapshot,
+        knownMetadata: DomainFileMetadata
+    ) throws -> DomainExternalObservationEvidence {
+        let observedMetadata = fileMetadata(at: snapshot.document.fileURL)
+        guard observedMetadata != knownMetadata else {
+            return .unchanged(observedMetadata)
+        }
+        guard observedMetadata.exists else {
+            return .absent(observedMetadata)
+        }
+        do {
+            guard let bytes = try boundedWorkspaceDocumentBytes(at: snapshot.document.fileURL) else {
+                return .absent(observedMetadata)
+            }
+            return .present(
+                bytes: bytes,
+                metadata: observedMetadata,
+                digest: DomainContentDigest.sha256(bytes)
+            )
+        } catch DomainPersistenceError.cancelled {
+            throw DomainPersistenceError.cancelled
+        } catch {
+            return .unavailable(
+                metadata: observedMetadata,
+                reason: externalObservationProbeReason(error)
+            )
+        }
+    }
+
+    private func externalObservationProbeReason(_ error: Error) -> String {
+        guard let persistenceError = error as? DomainPersistenceError else {
+            return "external_workspace_probe_failed"
+        }
+        switch persistenceError {
+        case .writeFailed("workspace_document_too_large"):
+            return "external_workspace_too_large"
+        case .writeFailed("workspace_document_read_failed"):
+            return "external_workspace_read_failed"
+        case .cancelled, .runtimeShutdownRequested:
+            return "external_workspace_probe_cancelled"
+        default:
+            return "external_workspace_probe_failed"
         }
     }
 

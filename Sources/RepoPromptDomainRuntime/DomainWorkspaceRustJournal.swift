@@ -151,6 +151,44 @@ package struct DomainWorkspaceSemanticPreflight: Sendable, Equatable {
     }
 }
 
+package enum DomainExternalObservationDisposition: Sendable, Equatable {
+    case noChange
+    case cleanReload
+    case dirtyConflict
+}
+
+package enum DomainExternalObservationCandidate: Sendable, Equatable {
+    case none
+    case externalDocument
+    case existingWorkingDocument
+}
+
+package enum DomainExternalObservationTransition: Sendable, Equatable {
+    case none
+    case externalReload
+    case conflictRebase
+}
+
+package struct DomainExternalObservationRecoveryPlan: Sendable, Equatable {
+    package let workspaceID: UUID
+    package let expectedFileURL: URL
+    package let catalogRevision: UInt64
+    package let workspaceRevision: UInt64
+    package let aggregateGeneration: UInt64
+    package let currentDocumentDigest: String
+    package let savedDigest: String
+    package let externalDocumentDigest: String
+    package let changedContextIDs: [UUID]
+    package let addedContextIDs: [UUID]
+    package let removedContextIDs: [UUID]
+    package let disposition: DomainExternalObservationDisposition
+    package let candidate: DomainExternalObservationCandidate
+    package let transition: DomainExternalObservationTransition
+    package let updatedAt: Date
+    package let revisionSidecarID: UUID?
+    package let diagnostic: String?
+}
+
 struct DomainWorkspaceCommandAdmissionRecoveryReceipt: Sendable, Equatable {
     let catalogRevision: UInt64
     let catalogDigest: String
@@ -974,17 +1012,22 @@ enum DomainWorkspaceRustJournal {
         }
 
         func nextDirective() throws -> DomainWorkspaceJournalMutationDirective {
-            try validator.materializeJournalMutationDirective(
-                core.nextDirective(),
-                expectedWorkspaceID: expectedWorkspaceID,
-                expectedFileURL: expectedFileURL,
-                expectedTransition: expectedTransition,
-                expectedCatalogRevision: expectedCatalogRevision,
-                expectedDocumentDigest: expectedDocumentDigest,
-                revisionOperationID: revisionOperationID,
-                expectedUpdatedAt: expectedUpdatedAt,
-                isRecovery: isRecovery
-            )
+            do {
+                let raw = try core.nextDirective()
+                return try validator.materializeJournalMutationDirective(
+                    raw,
+                    expectedWorkspaceID: expectedWorkspaceID,
+                    expectedFileURL: expectedFileURL,
+                    expectedTransition: expectedTransition,
+                    expectedCatalogRevision: expectedCatalogRevision,
+                    expectedDocumentDigest: expectedDocumentDigest,
+                    revisionOperationID: revisionOperationID,
+                    expectedUpdatedAt: expectedUpdatedAt,
+                    isRecovery: isRecovery
+                )
+            } catch {
+                throw error
+            }
         }
 
         func report(
@@ -1557,6 +1600,165 @@ enum DomainWorkspaceRustJournal {
             }
         }
 
+        func prepareExternalObservationRecovery(
+            workspaceID: UUID,
+            fileURL: URL,
+            catalogRevision: UInt64,
+            workspaceRevision: UInt64,
+            currentDocumentDigest: String,
+            savedDigest: String,
+            externalDocumentBytes: Data,
+            updatedAt: Date
+        ) throws -> DomainExternalObservationRecoveryPlan {
+            do {
+                let plan = try core.prepareExternalObservationRecovery(
+                    CoreWorkspaceExternalObservationRecoveryRequestV1(
+                        workspaceID: workspaceID,
+                        expectedFileURL: fileURL,
+                        expectedCatalogRevision: catalogRevision,
+                        expectedWorkspaceRevision: workspaceRevision,
+                        currentDocumentDigest: currentDocumentDigest,
+                        savedDigest: savedDigest,
+                        externalDocumentBytes: externalDocumentBytes,
+                        updatedAt: updatedAt
+                    )
+                )
+                let disposition: DomainExternalObservationDisposition = switch plan.disposition {
+                case .noChange: .noChange
+                case .cleanReload: .cleanReload
+                case .dirtyConflict: .dirtyConflict
+                }
+                let candidate: DomainExternalObservationCandidate = switch plan.candidate {
+                case .none: .none
+                case .externalDocument: .externalDocument
+                case .existingWorkingDocument: .existingWorkingDocument
+                }
+                let transition: DomainExternalObservationTransition = switch plan.transition {
+                case .none: .none
+                case .externalReload: .externalReload
+                case .conflictRebase: .conflictRebase
+                }
+                guard plan.workspaceID == workspaceID,
+                      plan.expectedFileURL.standardizedFileURL == fileURL.standardizedFileURL,
+                      plan.catalogRevision == catalogRevision,
+                      plan.workspaceRevision == workspaceRevision,
+                      PreparedValidator.isSHA256Digest(plan.currentDocumentDigest),
+                      PreparedValidator.isSHA256Digest(plan.savedDigest),
+                      PreparedValidator.isSHA256Digest(plan.externalDocumentDigest),
+                      abs(plan.updatedAt.timeIntervalSinceReferenceDate - updatedAt.timeIntervalSinceReferenceDate) <= 0.000001,
+                      (transition == .externalReload) == (plan.revisionSidecarID != nil)
+                else {
+                    throw DomainPersistenceError.corruptJournal
+                }
+                return DomainExternalObservationRecoveryPlan(
+                    workspaceID: plan.workspaceID,
+                    expectedFileURL: plan.expectedFileURL,
+                    catalogRevision: plan.catalogRevision,
+                    workspaceRevision: plan.workspaceRevision,
+                    aggregateGeneration: plan.aggregateGeneration,
+                    currentDocumentDigest: plan.currentDocumentDigest,
+                    savedDigest: plan.savedDigest,
+                    externalDocumentDigest: plan.externalDocumentDigest,
+                    changedContextIDs: plan.changedContextIDs,
+                    addedContextIDs: plan.addedContextIDs,
+                    removedContextIDs: plan.removedContextIDs,
+                    disposition: disposition,
+                    candidate: candidate,
+                    transition: transition,
+                    updatedAt: plan.updatedAt,
+                    revisionSidecarID: plan.revisionSidecarID,
+                    diagnostic: plan.diagnostic
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
+        func beginExternalObservationRecoveryTransaction(
+            plan: DomainExternalObservationRecoveryPlan,
+            rawJournalBytes: Data?,
+            effectiveJournal: DomainWorkspaceWorkingJournalValidation,
+            externalDocumentBytes: Data
+        ) throws -> PreparedJournalMutationTransaction {
+            let transition: DomainWorkspaceWorkingJournalTransition = switch plan.transition {
+            case .externalReload:
+                .externalReload(
+                    expectedWorkingRevision: plan.workspaceRevision,
+                    operationID: nil,
+                    fingerprint: nil,
+                    updatedAt: plan.updatedAt
+                )
+            case .conflictRebase:
+                .conflictRebase(
+                    expectedRevisions: effectiveJournal.journal.revisions,
+                    externalSavedDigest: plan.externalDocumentDigest,
+                    operationID: nil,
+                    fingerprint: nil,
+                    updatedAt: plan.updatedAt
+                )
+            case .none:
+                throw DomainPersistenceError.corruptJournal
+            }
+            let coreDisposition: CoreWorkspaceExternalObservationDispositionV1 = switch plan.disposition {
+            case .noChange: .noChange
+            case .cleanReload: .cleanReload
+            case .dirtyConflict: .dirtyConflict
+            }
+            let coreCandidate: CoreWorkspaceExternalObservationCandidateV1 = switch plan.candidate {
+            case .none: .none
+            case .externalDocument: .externalDocument
+            case .existingWorkingDocument: .existingWorkingDocument
+            }
+            let coreTransition: CoreWorkspaceExternalObservationTransitionV1 = switch plan.transition {
+            case .none: .none
+            case .externalReload: .externalReload
+            case .conflictRebase: .conflictRebase
+            }
+            let corePlan = CoreWorkspaceExternalObservationRecoveryPlanV1(
+                workspaceID: plan.workspaceID,
+                expectedFileURL: plan.expectedFileURL,
+                catalogRevision: plan.catalogRevision,
+                workspaceRevision: plan.workspaceRevision,
+                aggregateGeneration: plan.aggregateGeneration,
+                currentDocumentDigest: plan.currentDocumentDigest,
+                savedDigest: plan.savedDigest,
+                externalDocumentDigest: plan.externalDocumentDigest,
+                changedContextIDs: plan.changedContextIDs,
+                addedContextIDs: plan.addedContextIDs,
+                removedContextIDs: plan.removedContextIDs,
+                disposition: coreDisposition,
+                candidate: coreCandidate,
+                transition: coreTransition,
+                updatedAt: plan.updatedAt,
+                revisionSidecarID: plan.revisionSidecarID,
+                diagnostic: plan.diagnostic
+            )
+            do {
+                let coreTransaction = try core.beginExternalObservationRecoveryTransaction(
+                    plan: corePlan,
+                    rawJournalBytes: rawJournalBytes,
+                    effectiveJournalBytes: effectiveJournal.canonicalBytes,
+                    externalDocumentBytes: externalDocumentBytes
+                )
+                return PreparedJournalMutationTransaction(
+                    core: coreTransaction,
+                    validator: validator,
+                    expectedWorkspaceID: plan.workspaceID,
+                    expectedFileURL: plan.expectedFileURL,
+                    expectedTransition: transition,
+                    expectedCatalogRevision: plan.catalogRevision,
+                    expectedDocumentDigest: plan.transition == .externalReload
+                        ? plan.externalDocumentDigest
+                        : plan.currentDocumentDigest,
+                    revisionOperationID: plan.revisionSidecarID,
+                    expectedUpdatedAt: plan.updatedAt,
+                    isRecovery: true
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
         func synchronizeAuthorityProjection(
             workspaces: [DomainWorkspaceSnapshot]
         ) throws -> DomainWorkspaceAuthorityProjectionSyncReceipt {
@@ -1765,6 +1967,10 @@ enum DomainWorkspaceRustJournal {
             value.utf8.count == 64 && value.utf8.allSatisfy { byte in
                 (48 ... 57).contains(byte) || (65 ... 70).contains(byte) || (97 ... 102).contains(byte)
             }
+        }
+
+        fileprivate static func datesEqual(_ lhs: Date, _ rhs: Date) -> Bool {
+            abs(lhs.timeIntervalSinceReferenceDate - rhs.timeIntervalSinceReferenceDate) <= 0.000001
         }
 
         func prepareInitialSemanticRecovery(
@@ -3132,16 +3338,18 @@ enum DomainWorkspaceRustJournal {
                 expectedFileURL: expectedFileURL
             )
             let journal = validation.journal
-            if journal.revisions.workingRevision != receipt.resultingWorkingRevision
-                || journal.revisions.savedRevision != receipt.resultingSavedRevision
-                || journal.updatedAt != expectedUpdatedAt
-                || journal.revisions.workingRevision != expectedTransition.resultingWorkingRevision
-            {
+            let revisionShape = journal.revisions.workingRevision == receipt.resultingWorkingRevision
+                && journal.revisions.savedRevision == receipt.resultingSavedRevision
+                && Self.datesEqual(journal.updatedAt, expectedUpdatedAt)
+                && journal.revisions.workingRevision == expectedTransition.resultingWorkingRevision
+            if !revisionShape {
                 throw DomainPersistenceError.corruptJournal
             }
 
             let expectedSavedRevision = expectedTransition.resultingSavedRevision
-            let savedRevision = try receipt.savedRevision.map { raw in
+            let savedRevision: DomainWorkspaceSavedRevisionValidation?
+            do {
+                savedRevision = try receipt.savedRevision.map { raw in
                 guard let revisionOperationID,
                       let expectedSavedRevision
                 else { throw DomainPersistenceError.corruptJournal }
@@ -3153,14 +3361,18 @@ enum DomainWorkspaceRustJournal {
                     expectedDocumentDigest: expectedDocumentDigest,
                     expectedUpdatedAt: expectedUpdatedAt
                 )
+                }
+            } catch {
+                throw error
             }
             guard (savedRevision != nil) == (revisionOperationID != nil) else {
                 throw DomainPersistenceError.corruptJournal
             }
-            guard expectedTransition.matches(
+            let transitionMatches = expectedTransition.matches(
                 journal: journal,
                 documentDigest: expectedDocumentDigest
-            ) else {
+            )
+            guard transitionMatches else {
                 throw DomainPersistenceError.corruptJournal
             }
             let commandResult = try receipt.commandResult.map(
@@ -3530,7 +3742,7 @@ enum DomainWorkspaceRustJournal {
                   record.operationID == validated.operationID,
                   record.documentDigest == expectedDocumentDigest,
                   expectedSavedRevision == nil || record.savedRevision == expectedSavedRevision,
-                  expectedUpdatedAt == nil || record.updatedAt == expectedUpdatedAt
+                  expectedUpdatedAt.map { Self.datesEqual(record.updatedAt, $0) } ?? true
             else {
                 throw DomainPersistenceError.corruptJournal
             }

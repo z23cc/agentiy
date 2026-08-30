@@ -22,6 +22,9 @@ use crate::types::{
     CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
     CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
     CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
+    CoreWorkspaceExternalObservationRecoveryPlanV1,
+    CoreWorkspaceExternalObservationRecoveryRequestV1,
+    CoreWorkspaceExternalObservationRecoveryTransactionRequestV1,
     CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
     CoreWorkspacePendingSaveRecoveryRequestV1, CoreWorkspacePendingSaveRecoveryV1,
     CoreWorkspacePersistenceMetadataRequestV1, CoreWorkspacePersistenceMetadataResponseV1,
@@ -126,6 +129,13 @@ impl LeafCancellation {
 #[derive(Debug, uniffi::Record)]
 pub struct CoreWorkspaceSemanticRecoveryPrepareResponseV1 {
     pub recovery: Option<Arc<CorePreparedWorkspaceSemanticRecoveryV1>>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceExternalObservationRecoveryResponseV1 {
+    pub plan: Option<CoreWorkspaceExternalObservationRecoveryPlanV1>,
     pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
     pub future_schema_version: Option<u16>,
 }
@@ -585,6 +595,102 @@ impl CorePreparedWorkspaceCommandAdmissionV1 {
                     }
                 },
             )
+        })
+    }
+
+    pub fn prepare_external_observation_recovery(
+        &self,
+        request: CoreWorkspaceExternalObservationRecoveryRequestV1,
+    ) -> Result<CoreWorkspaceExternalObservationRecoveryResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            if request.runtime_identity.parse()? != self.identity {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            if request.contract_version
+                != runtime::workspace_persistence_journal::WORKSPACE_EXTERNAL_OBSERVATION_CONTRACT_VERSION_V1
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            Ok(match self
+                .inner
+                .prepare_external_observation_recovery(request.into())
+            {
+                Ok(plan) => CoreWorkspaceExternalObservationRecoveryResponseV1 {
+                    plan: Some(plan.into()),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceExternalObservationRecoveryResponseV1 {
+                        plan: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
+        })
+    }
+
+    pub fn begin_external_observation_recovery_transaction(
+        &self,
+        request: CoreWorkspaceExternalObservationRecoveryTransactionRequestV1,
+    ) -> Result<CoreWorkspaceJournalMutationTransactionBeginResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            self.require_live_runtime()?;
+            if request.runtime_identity.parse()? != self.identity {
+                return Err(CoreError::StaleRuntimeIdentity);
+            }
+            if request.contract_version
+                != runtime::workspace_persistence_journal::WORKSPACE_EXTERNAL_OBSERVATION_CONTRACT_VERSION_V1
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            if request.effective_journal_bytes.len()
+                > runtime::workspace_persistence_journal::MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1
+                || request.raw_journal_bytes.as_ref().is_some_and(|bytes| {
+                    bytes.len()
+                        > runtime::workspace_persistence_journal::MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1
+                })
+            {
+                return Err(CoreError::InvalidArgument);
+            }
+            let plan = request.plan.into();
+            Ok(match self.inner.begin_external_observation_recovery_transaction(
+                plan,
+                request.raw_journal_bytes.as_deref(),
+                &request.effective_journal_bytes,
+                &request.external_document_bytes,
+            ) {
+                Ok(transaction) => CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
+                    transaction: Some(Arc::new(
+                        CorePreparedWorkspaceJournalMutationTransactionV1 {
+                            inner: transaction,
+                            terminal_gate: Mutex::new(()),
+                            runtime: self.runtime.clone(),
+                            command_claim: None,
+                            identity: self.identity.clone(),
+                            authority_permit_issued: AtomicBool::new(false),
+                            authority_permit: Mutex::new(None),
+                            admission_reservation: Mutex::new(None),
+                            authority_publication: Mutex::new(None),
+                            authority_publication_receipt: Mutex::new(None),
+                            panic_guard: Arc::clone(&self.panic_guard),
+                        },
+                    )),
+                    error_kind: None,
+                    future_schema_version: None,
+                },
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    CoreWorkspaceJournalMutationTransactionBeginResponseV1 {
+                        transaction: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    }
+                }
+            })
         })
     }
 

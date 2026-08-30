@@ -1128,6 +1128,80 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     throw Self.map(error)
                 }
             },
+            prepareExternalObservationRecovery: { request in
+                do {
+                    let response = try rawAdmission.prepareExternalObservationRecovery(request: .init(
+                        runtimeIdentity: Self.rawIdentity(identity),
+                        contractVersion: CoreWorkspaceDocumentProjectionV1.contractVersion,
+                        workspaceId: request.workspaceID.uuidString.lowercased(),
+                        expectedFileUrl: request.expectedFileURL.standardizedFileURL.absoluteString,
+                        expectedCatalogRevision: request.expectedCatalogRevision,
+                        expectedWorkspaceRevision: request.expectedWorkspaceRevision,
+                        currentDocumentDigest: request.currentDocumentDigest,
+                        savedDigest: request.savedDigest,
+                        externalDocumentBytes: request.externalDocumentBytes,
+                        updatedAt: request.updatedAt.timeIntervalSinceReferenceDate
+                    ))
+                    if let errorKind = response.errorKind {
+                        guard response.plan == nil else {
+                            throw CoreTransportError.unexpected(
+                                "workspace external observation response contains success and error"
+                            )
+                        }
+                        throw try Self.workspaceWorkingJournalValidationError(
+                            errorKind,
+                            futureSchemaVersion: response.futureSchemaVersion
+                        )
+                    }
+                    guard response.futureSchemaVersion == nil, let plan = response.plan else {
+                        throw CoreTransportError.unexpected(
+                            "workspace external observation plan is invalid"
+                        )
+                    }
+                    return try Self.workspaceExternalObservationPlan(plan, request: request)
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
+            beginExternalObservationRecoveryTransaction: { plan, rawJournalBytes, effectiveJournalBytes, externalDocumentBytes in
+                do {
+                    let response = try rawAdmission.beginExternalObservationRecoveryTransaction(
+                        request: .init(
+                            runtimeIdentity: Self.rawIdentity(identity),
+                            contractVersion: CoreWorkspaceDocumentProjectionV1.contractVersion,
+                            plan: Self.rawWorkspaceExternalObservationPlan(plan),
+                            rawJournalBytes: rawJournalBytes,
+                            effectiveJournalBytes: effectiveJournalBytes,
+                            externalDocumentBytes: externalDocumentBytes
+                        )
+                    )
+                    if let errorKind = response.errorKind {
+                        guard response.transaction == nil else {
+                            throw CoreTransportError.unexpected(
+                                "workspace external observation transaction response contains success and error"
+                            )
+                        }
+                        throw try Self.workspaceWorkingJournalValidationError(
+                            errorKind,
+                            futureSchemaVersion: response.futureSchemaVersion
+                        )
+                    }
+                    guard response.futureSchemaVersion == nil,
+                          let rawTransaction = response.transaction
+                    else {
+                        throw CoreTransportError.unexpected(
+                            "workspace external observation transaction receipt is invalid"
+                        )
+                    }
+                    return Self.workspaceJournalMutationTransaction(rawTransaction)
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
+            },
             diagnostics: {
                 do {
                     return try Self.workspaceCommandAdmissionDiagnostics(rawAdmission.diagnostics())
@@ -3129,6 +3203,172 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 operation: operation
             )
         }
+    }
+
+    private static func rawWorkspaceExternalObservationPlan(
+        _ plan: CoreWorkspaceExternalObservationRecoveryPlanV1
+    ) -> AgentryUniFFIRaw.CoreWorkspaceExternalObservationRecoveryPlanV1 {
+        let disposition: AgentryUniFFIRaw.CoreWorkspaceExternalObservationDispositionV1 = switch plan.disposition {
+        case .noChange: .noChange
+        case .cleanReload: .cleanReload
+        case .dirtyConflict: .dirtyConflict
+        }
+        let candidate: AgentryUniFFIRaw.CoreWorkspaceExternalObservationCandidateV1 = switch plan.candidate {
+        case .none: .none
+        case .externalDocument: .externalDocument
+        case .existingWorkingDocument: .existingWorkingDocument
+        }
+        let transition: AgentryUniFFIRaw.CoreWorkspaceExternalObservationTransitionV1 = switch plan.transition {
+        case .none: .none
+        case .externalReload: .externalReload
+        case .conflictRebase: .conflictRebase
+        }
+        return .init(
+            workspaceId: plan.workspaceID.uuidString.lowercased(),
+            expectedFileUrl: plan.expectedFileURL.standardizedFileURL.absoluteString,
+            catalogRevision: plan.catalogRevision,
+            workspaceRevision: plan.workspaceRevision,
+            aggregateGeneration: plan.aggregateGeneration,
+            currentDocumentDigest: plan.currentDocumentDigest,
+            savedDigest: plan.savedDigest,
+            externalDocumentDigest: plan.externalDocumentDigest,
+            changedContextIds: plan.changedContextIDs.map { $0.uuidString.lowercased() },
+            addedContextIds: plan.addedContextIDs.map { $0.uuidString.lowercased() },
+            removedContextIds: plan.removedContextIDs.map { $0.uuidString.lowercased() },
+            disposition: disposition,
+            candidate: candidate,
+            transition: transition,
+            updatedAt: plan.updatedAt.timeIntervalSinceReferenceDate,
+            revisionSidecarId: plan.revisionSidecarID?.uuidString.lowercased(),
+            diagnostic: plan.diagnostic
+        )
+    }
+
+    private static func workspaceExternalObservationPlan(
+        _ raw: AgentryUniFFIRaw.CoreWorkspaceExternalObservationRecoveryPlanV1,
+        request: CoreWorkspaceExternalObservationRecoveryRequestV1
+    ) throws -> CoreWorkspaceExternalObservationRecoveryPlanV1 {
+        guard let workspaceID = UUID(uuidString: raw.workspaceId),
+              workspaceID == request.workspaceID,
+              let expectedFileURL = URL(string: raw.expectedFileUrl),
+              expectedFileURL.standardizedFileURL == request.expectedFileURL.standardizedFileURL,
+              raw.catalogRevision == request.expectedCatalogRevision,
+              raw.workspaceRevision == request.expectedWorkspaceRevision,
+              raw.currentDocumentDigest.caseInsensitiveCompare(request.currentDocumentDigest) == .orderedSame,
+              raw.savedDigest.caseInsensitiveCompare(request.savedDigest) == .orderedSame,
+              isSHA256(raw.currentDocumentDigest),
+              isSHA256(raw.savedDigest),
+              isSHA256(raw.externalDocumentDigest),
+              raw.updatedAt.isFinite,
+              abs(raw.updatedAt - request.updatedAt.timeIntervalSinceReferenceDate) < 0.000_001
+        else {
+            throw CoreTransportError.unexpected("workspace external observation plan identity is invalid")
+        }
+        if let rawRevisionSidecarID = raw.revisionSidecarId {
+            guard let revisionSidecarID = UUID(uuidString: rawRevisionSidecarID) else {
+                throw CoreTransportError.unexpected("workspace external observation sidecar identity is invalid")
+            }
+            guard raw.transition == .externalReload else {
+                throw CoreTransportError.unexpected("workspace external observation sidecar identity is unexpected")
+            }
+            _ = revisionSidecarID
+        } else if raw.transition == .externalReload {
+            throw CoreTransportError.unexpected("workspace external observation sidecar identity is missing")
+        }
+        func canonicalUUIDs(_ values: [String]) throws -> [UUID] {
+            let ids = try values.map { value in
+                guard let id = UUID(uuidString: value) else {
+                    throw CoreTransportError.unexpected("workspace external observation context identity is invalid")
+                }
+                return id
+            }
+            let canonical = ids.map { $0.uuidString.lowercased() }
+            guard canonical == canonical.sorted(), Set(canonical).count == canonical.count else {
+                throw CoreTransportError.unexpected("workspace external observation context identities are not canonical")
+            }
+            return ids
+        }
+        let changed = try canonicalUUIDs(raw.changedContextIds)
+        let added = try canonicalUUIDs(raw.addedContextIds)
+        let removed = try canonicalUUIDs(raw.removedContextIds)
+        let disposition: CoreWorkspaceExternalObservationDispositionV1 = switch raw.disposition {
+        case .noChange: .noChange
+        case .cleanReload: .cleanReload
+        case .dirtyConflict: .dirtyConflict
+        }
+        let candidate: CoreWorkspaceExternalObservationCandidateV1 = switch raw.candidate {
+        case .none: .none
+        case .externalDocument: .externalDocument
+        case .existingWorkingDocument: .existingWorkingDocument
+        }
+        let transition: CoreWorkspaceExternalObservationTransitionV1 = switch raw.transition {
+        case .none: .none
+        case .externalReload: .externalReload
+        case .conflictRebase: .conflictRebase
+        }
+        guard (disposition, candidate, transition) == (.noChange, .none, .none)
+            || (disposition, candidate, transition) == (.cleanReload, .externalDocument, .externalReload)
+            || (disposition, candidate, transition) == (.dirtyConflict, .existingWorkingDocument, .conflictRebase)
+        else {
+            throw CoreTransportError.unexpected("workspace external observation plan transition is invalid")
+        }
+        let changedSet = Set(changed)
+        guard Set(added).isSubset(of: changedSet),
+              Set(removed).isSubset(of: changedSet),
+              Set(added).isDisjoint(with: Set(removed))
+        else {
+            throw CoreTransportError.unexpected("workspace external observation context delta is invalid")
+        }
+        return CoreWorkspaceExternalObservationRecoveryPlanV1(
+            workspaceID: workspaceID,
+            expectedFileURL: expectedFileURL,
+            catalogRevision: raw.catalogRevision,
+            workspaceRevision: raw.workspaceRevision,
+            aggregateGeneration: raw.aggregateGeneration,
+            currentDocumentDigest: raw.currentDocumentDigest,
+            savedDigest: raw.savedDigest,
+            externalDocumentDigest: raw.externalDocumentDigest,
+            changedContextIDs: changed,
+            addedContextIDs: added,
+            removedContextIDs: removed,
+            disposition: disposition,
+            candidate: candidate,
+            transition: transition,
+            updatedAt: Date(timeIntervalSinceReferenceDate: raw.updatedAt),
+            revisionSidecarID: raw.revisionSidecarId.flatMap(UUID.init(uuidString:)),
+            diagnostic: raw.diagnostic
+        )
+    }
+
+    private static func workspaceJournalMutationTransaction(
+        _ rawTransaction: AgentryUniFFIRaw.CorePreparedWorkspaceJournalMutationTransactionV1
+    ) -> CoreWorkspaceJournalMutationTransactionV1 {
+        CoreWorkspaceJournalMutationTransactionV1(
+            acquireAuthorityPermit: {
+                do {
+                    let rawPermit = try rawTransaction.acquireAuthorityPermit()
+                    return CoreWorkspaceCreateAuthorityPermitV1(close: { rawPermit.close() })
+                } catch { throw Self.map(error) }
+            },
+            next: {
+                do { return try Self.workspaceJournalMutationDirective(rawTransaction.nextDirective()) }
+                catch let error as CoreWorkspaceWorkingJournalValidationError { throw error }
+                catch { throw Self.map(error) }
+            },
+            report: { report in
+                do {
+                    return try Self.workspaceJournalMutationDirective(
+                        rawTransaction.reportAction(report: Self.rawWorkspaceSaveReport(report))
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError { throw error }
+                catch { throw Self.map(error) }
+            },
+            finishCommandAuthority: {
+                do { return try Self.workspaceCommandAuthorityFinalization(rawTransaction.finishCommandAuthority()) }
+                catch { return .init(commandFinalization: .unreconciled, authorityPublication: nil) }
+            },
+            close: { rawTransaction.close() }
+        )
     }
 
     private static func workspaceSemanticPreflightResponse(

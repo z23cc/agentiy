@@ -655,9 +655,13 @@ public protocol CorePreparedWorkspaceCommandAdmissionV1Protocol: AnyObject, Send
 
     func authorityRead(workspaceId: String) throws  -> CoreWorkspaceAuthorityReadResponseV1
 
+    func beginExternalObservationRecoveryTransaction(request: CoreWorkspaceExternalObservationRecoveryTransactionRequestV1) throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1
+
     func close()
 
     func diagnostics() throws  -> CoreWorkspaceCommandAdmissionMutationResponseV1
+
+    func prepareExternalObservationRecovery(request: CoreWorkspaceExternalObservationRecoveryRequestV1) throws  -> CoreWorkspaceExternalObservationRecoveryResponseV1
 
     func prepareSemanticFullRecovery(recovery: CoreWorkspaceSemanticFullRecoveryV1) throws  -> CoreWorkspaceSemanticRecoveryPrepareResponseV1
 
@@ -742,6 +746,16 @@ open func authorityRead(workspaceId: String)throws  -> CoreWorkspaceAuthorityRea
 })
 }
 
+open func beginExternalObservationRecoveryTransaction(request: CoreWorkspaceExternalObservationRecoveryTransactionRequestV1)throws  -> CoreWorkspaceJournalMutationTransactionBeginResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceJournalMutationTransactionBeginResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_begin_external_observation_recovery_transaction(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceExternalObservationRecoveryTransactionRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
 open func close()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_close(
@@ -755,6 +769,16 @@ open func diagnostics()throws  -> CoreWorkspaceCommandAdmissionMutationResponseV
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_diagnostics(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func prepareExternalObservationRecovery(request: CoreWorkspaceExternalObservationRecoveryRequestV1)throws  -> CoreWorkspaceExternalObservationRecoveryResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceExternalObservationRecoveryResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacecommandadmissionv1_prepare_external_observation_recovery(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCoreWorkspaceExternalObservationRecoveryRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -9007,6 +9031,334 @@ public func FfiConverterTypeCoreWorkspaceDocumentProjectionV1_lower(_ value: Cor
 }
 
 
+public struct CoreWorkspaceExternalObservationRecoveryPlanV1: Equatable, Hashable {
+    public let workspaceId: String
+    public let expectedFileUrl: String
+    public let catalogRevision: UInt64
+    public let workspaceRevision: UInt64
+    public let aggregateGeneration: UInt64
+    public let currentDocumentDigest: String
+    public let savedDigest: String
+    public let externalDocumentDigest: String
+    public let changedContextIds: [String]
+    public let addedContextIds: [String]
+    public let removedContextIds: [String]
+    public let disposition: CoreWorkspaceExternalObservationDispositionV1
+    public let candidate: CoreWorkspaceExternalObservationCandidateV1
+    public let transition: CoreWorkspaceExternalObservationTransitionV1
+    public let updatedAt: Double
+    public let revisionSidecarId: String?
+    public let diagnostic: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(workspaceId: String, expectedFileUrl: String, catalogRevision: UInt64, workspaceRevision: UInt64, aggregateGeneration: UInt64, currentDocumentDigest: String, savedDigest: String, externalDocumentDigest: String, changedContextIds: [String], addedContextIds: [String], removedContextIds: [String], disposition: CoreWorkspaceExternalObservationDispositionV1, candidate: CoreWorkspaceExternalObservationCandidateV1, transition: CoreWorkspaceExternalObservationTransitionV1, updatedAt: Double, revisionSidecarId: String?, diagnostic: String?) {
+        self.workspaceId = workspaceId
+        self.expectedFileUrl = expectedFileUrl
+        self.catalogRevision = catalogRevision
+        self.workspaceRevision = workspaceRevision
+        self.aggregateGeneration = aggregateGeneration
+        self.currentDocumentDigest = currentDocumentDigest
+        self.savedDigest = savedDigest
+        self.externalDocumentDigest = externalDocumentDigest
+        self.changedContextIds = changedContextIds
+        self.addedContextIds = addedContextIds
+        self.removedContextIds = removedContextIds
+        self.disposition = disposition
+        self.candidate = candidate
+        self.transition = transition
+        self.updatedAt = updatedAt
+        self.revisionSidecarId = revisionSidecarId
+        self.diagnostic = diagnostic
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceExternalObservationRecoveryPlanV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceExternalObservationRecoveryPlanV1 {
+        return
+            try CoreWorkspaceExternalObservationRecoveryPlanV1(
+                workspaceId: FfiConverterString.read(from: &buf),
+                expectedFileUrl: FfiConverterString.read(from: &buf),
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                workspaceRevision: FfiConverterUInt64.read(from: &buf),
+                aggregateGeneration: FfiConverterUInt64.read(from: &buf),
+                currentDocumentDigest: FfiConverterString.read(from: &buf),
+                savedDigest: FfiConverterString.read(from: &buf),
+                externalDocumentDigest: FfiConverterString.read(from: &buf),
+                changedContextIds: FfiConverterSequenceString.read(from: &buf),
+                addedContextIds: FfiConverterSequenceString.read(from: &buf),
+                removedContextIds: FfiConverterSequenceString.read(from: &buf),
+                disposition: FfiConverterTypeCoreWorkspaceExternalObservationDispositionV1.read(from: &buf),
+                candidate: FfiConverterTypeCoreWorkspaceExternalObservationCandidateV1.read(from: &buf),
+                transition: FfiConverterTypeCoreWorkspaceExternalObservationTransitionV1.read(from: &buf),
+                updatedAt: FfiConverterDouble.read(from: &buf),
+                revisionSidecarId: FfiConverterOptionString.read(from: &buf),
+                diagnostic: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceExternalObservationRecoveryPlanV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterString.write(value.expectedFileUrl, into: &buf)
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterUInt64.write(value.workspaceRevision, into: &buf)
+        FfiConverterUInt64.write(value.aggregateGeneration, into: &buf)
+        FfiConverterString.write(value.currentDocumentDigest, into: &buf)
+        FfiConverterString.write(value.savedDigest, into: &buf)
+        FfiConverterString.write(value.externalDocumentDigest, into: &buf)
+        FfiConverterSequenceString.write(value.changedContextIds, into: &buf)
+        FfiConverterSequenceString.write(value.addedContextIds, into: &buf)
+        FfiConverterSequenceString.write(value.removedContextIds, into: &buf)
+        FfiConverterTypeCoreWorkspaceExternalObservationDispositionV1.write(value.disposition, into: &buf)
+        FfiConverterTypeCoreWorkspaceExternalObservationCandidateV1.write(value.candidate, into: &buf)
+        FfiConverterTypeCoreWorkspaceExternalObservationTransitionV1.write(value.transition, into: &buf)
+        FfiConverterDouble.write(value.updatedAt, into: &buf)
+        FfiConverterOptionString.write(value.revisionSidecarId, into: &buf)
+        FfiConverterOptionString.write(value.diagnostic, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceExternalObservationRecoveryPlanV1 {
+    return try FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1_lower(_ value: CoreWorkspaceExternalObservationRecoveryPlanV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1.lower(value)
+}
+
+
+public struct CoreWorkspaceExternalObservationRecoveryRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let workspaceId: String
+    public let expectedFileUrl: String
+    public let expectedCatalogRevision: UInt64
+    public let expectedWorkspaceRevision: UInt64
+    public let currentDocumentDigest: String
+    public let savedDigest: String
+    public let externalDocumentBytes: Data
+    public let updatedAt: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, workspaceId: String, expectedFileUrl: String, expectedCatalogRevision: UInt64, expectedWorkspaceRevision: UInt64, currentDocumentDigest: String, savedDigest: String, externalDocumentBytes: Data, updatedAt: Double) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.workspaceId = workspaceId
+        self.expectedFileUrl = expectedFileUrl
+        self.expectedCatalogRevision = expectedCatalogRevision
+        self.expectedWorkspaceRevision = expectedWorkspaceRevision
+        self.currentDocumentDigest = currentDocumentDigest
+        self.savedDigest = savedDigest
+        self.externalDocumentBytes = externalDocumentBytes
+        self.updatedAt = updatedAt
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceExternalObservationRecoveryRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceExternalObservationRecoveryRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceExternalObservationRecoveryRequestV1 {
+        return
+            try CoreWorkspaceExternalObservationRecoveryRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                workspaceId: FfiConverterString.read(from: &buf),
+                expectedFileUrl: FfiConverterString.read(from: &buf),
+                expectedCatalogRevision: FfiConverterUInt64.read(from: &buf),
+                expectedWorkspaceRevision: FfiConverterUInt64.read(from: &buf),
+                currentDocumentDigest: FfiConverterString.read(from: &buf),
+                savedDigest: FfiConverterString.read(from: &buf),
+                externalDocumentBytes: FfiConverterData.read(from: &buf),
+                updatedAt: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceExternalObservationRecoveryRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterString.write(value.workspaceId, into: &buf)
+        FfiConverterString.write(value.expectedFileUrl, into: &buf)
+        FfiConverterUInt64.write(value.expectedCatalogRevision, into: &buf)
+        FfiConverterUInt64.write(value.expectedWorkspaceRevision, into: &buf)
+        FfiConverterString.write(value.currentDocumentDigest, into: &buf)
+        FfiConverterString.write(value.savedDigest, into: &buf)
+        FfiConverterData.write(value.externalDocumentBytes, into: &buf)
+        FfiConverterDouble.write(value.updatedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceExternalObservationRecoveryRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceExternalObservationRecoveryRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryRequestV1_lower(_ value: CoreWorkspaceExternalObservationRecoveryRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceExternalObservationRecoveryRequestV1.lower(value)
+}
+
+
+public struct CoreWorkspaceExternalObservationRecoveryResponseV1: Equatable, Hashable {
+    public let plan: CoreWorkspaceExternalObservationRecoveryPlanV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(plan: CoreWorkspaceExternalObservationRecoveryPlanV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.plan = plan
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceExternalObservationRecoveryResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceExternalObservationRecoveryResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceExternalObservationRecoveryResponseV1 {
+        return
+            try CoreWorkspaceExternalObservationRecoveryResponseV1(
+                plan: FfiConverterOptionTypeCoreWorkspaceExternalObservationRecoveryPlanV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceExternalObservationRecoveryResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceExternalObservationRecoveryPlanV1.write(value.plan, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceExternalObservationRecoveryResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceExternalObservationRecoveryResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryResponseV1_lower(_ value: CoreWorkspaceExternalObservationRecoveryResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceExternalObservationRecoveryResponseV1.lower(value)
+}
+
+
+public struct CoreWorkspaceExternalObservationRecoveryTransactionRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let contractVersion: UInt16
+    public let plan: CoreWorkspaceExternalObservationRecoveryPlanV1
+    public let rawJournalBytes: Data?
+    public let effectiveJournalBytes: Data
+    public let externalDocumentBytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, contractVersion: UInt16, plan: CoreWorkspaceExternalObservationRecoveryPlanV1, rawJournalBytes: Data?, effectiveJournalBytes: Data, externalDocumentBytes: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.contractVersion = contractVersion
+        self.plan = plan
+        self.rawJournalBytes = rawJournalBytes
+        self.effectiveJournalBytes = effectiveJournalBytes
+        self.externalDocumentBytes = externalDocumentBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceExternalObservationRecoveryTransactionRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceExternalObservationRecoveryTransactionRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceExternalObservationRecoveryTransactionRequestV1 {
+        return
+            try CoreWorkspaceExternalObservationRecoveryTransactionRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                contractVersion: FfiConverterUInt16.read(from: &buf),
+                plan: FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1.read(from: &buf),
+                rawJournalBytes: FfiConverterOptionData.read(from: &buf),
+                effectiveJournalBytes: FfiConverterData.read(from: &buf),
+                externalDocumentBytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceExternalObservationRecoveryTransactionRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterUInt16.write(value.contractVersion, into: &buf)
+        FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1.write(value.plan, into: &buf)
+        FfiConverterOptionData.write(value.rawJournalBytes, into: &buf)
+        FfiConverterData.write(value.effectiveJournalBytes, into: &buf)
+        FfiConverterData.write(value.externalDocumentBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryTransactionRequestV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceExternalObservationRecoveryTransactionRequestV1 {
+    return try FfiConverterTypeCoreWorkspaceExternalObservationRecoveryTransactionRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationRecoveryTransactionRequestV1_lower(_ value: CoreWorkspaceExternalObservationRecoveryTransactionRequestV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceExternalObservationRecoveryTransactionRequestV1.lower(value)
+}
+
+
 public struct CoreWorkspaceJournalMutationCommitReceiptV1: Equatable, Hashable {
     public let workspaceId: String
     public let requestDigest: String
@@ -16407,6 +16759,225 @@ public func FfiConverterTypeCoreWorkspaceDeleteFailureV1_lower(_ value: CoreWork
 
 
 
+public enum CoreWorkspaceExternalObservationCandidateV1: Equatable, Hashable {
+
+    case none
+    case externalDocument
+    case existingWorkingDocument
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceExternalObservationCandidateV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceExternalObservationCandidateV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceExternalObservationCandidateV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceExternalObservationCandidateV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .none
+
+        case 2: return .externalDocument
+
+        case 3: return .existingWorkingDocument
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceExternalObservationCandidateV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .none:
+            writeInt(&buf, Int32(1))
+
+
+        case .externalDocument:
+            writeInt(&buf, Int32(2))
+
+
+        case .existingWorkingDocument:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationCandidateV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceExternalObservationCandidateV1 {
+    return try FfiConverterTypeCoreWorkspaceExternalObservationCandidateV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationCandidateV1_lower(_ value: CoreWorkspaceExternalObservationCandidateV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceExternalObservationCandidateV1.lower(value)
+}
+
+
+
+
+public enum CoreWorkspaceExternalObservationDispositionV1: Equatable, Hashable {
+
+    case noChange
+    case cleanReload
+    case dirtyConflict
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceExternalObservationDispositionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceExternalObservationDispositionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceExternalObservationDispositionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceExternalObservationDispositionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .noChange
+
+        case 2: return .cleanReload
+
+        case 3: return .dirtyConflict
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceExternalObservationDispositionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .noChange:
+            writeInt(&buf, Int32(1))
+
+
+        case .cleanReload:
+            writeInt(&buf, Int32(2))
+
+
+        case .dirtyConflict:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationDispositionV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceExternalObservationDispositionV1 {
+    return try FfiConverterTypeCoreWorkspaceExternalObservationDispositionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationDispositionV1_lower(_ value: CoreWorkspaceExternalObservationDispositionV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceExternalObservationDispositionV1.lower(value)
+}
+
+
+
+
+public enum CoreWorkspaceExternalObservationTransitionV1: Equatable, Hashable {
+
+    case none
+    case externalReload
+    case conflictRebase
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceExternalObservationTransitionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceExternalObservationTransitionV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceExternalObservationTransitionV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceExternalObservationTransitionV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .none
+
+        case 2: return .externalReload
+
+        case 3: return .conflictRebase
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CoreWorkspaceExternalObservationTransitionV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .none:
+            writeInt(&buf, Int32(1))
+
+
+        case .externalReload:
+            writeInt(&buf, Int32(2))
+
+
+        case .conflictRebase:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationTransitionV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceExternalObservationTransitionV1 {
+    return try FfiConverterTypeCoreWorkspaceExternalObservationTransitionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceExternalObservationTransitionV1_lower(_ value: CoreWorkspaceExternalObservationTransitionV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceExternalObservationTransitionV1.lower(value)
+}
+
+
+
+
 public enum CoreWorkspaceJournalMutationActionKindV1: Equatable, Hashable {
 
     case writeJournal
@@ -19845,6 +20416,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceDocumentProjectionV1: FfiC
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceExternalObservationRecoveryPlanV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceExternalObservationRecoveryPlanV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceJournalMutationCommitReceiptV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceJournalMutationCommitReceiptV1?
 
@@ -21368,10 +21963,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_authority_read() != 21648) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_begin_external_observation_recovery_transaction() != 31876) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_close() != 4204) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_diagnostics() != 57548) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_prepare_external_observation_recovery() != 9636) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacecommandadmissionv1_prepare_semantic_full_recovery() != 4440) {

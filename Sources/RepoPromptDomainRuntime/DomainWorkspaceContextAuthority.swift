@@ -1532,9 +1532,8 @@ actor DomainWorkspaceContextAuthority {
             let observedRevision = current.revisions
             let observedSavedDigest = current.savedDigest
             let observedMetadata = current.fileMetadata
-            let external = await persistence.externalDocument(
+            let external = await persistence.externalObservationEvidence(
                 for: makeSnapshot(current),
-                savedDigest: observedSavedDigest,
                 knownMetadata: observedMetadata
             )
             guard !Task.isCancelled else { return .incomplete }
@@ -1576,7 +1575,7 @@ actor DomainWorkspaceContextAuthority {
                 } else if !record.health.acceptsMutations {
                     recoveryPending = true
                 }
-            case let .missing(metadata):
+            case let .absent(metadata):
                 // A vanished saved document (unplugged volume, external cleanup) must not
                 // brick the journal-backed workspace: an explicit save rewrites it and a
                 // returning file is detected by the next metadata change.
@@ -1587,11 +1586,9 @@ actor DomainWorkspaceContextAuthority {
                 if !record.health.acceptsMutations {
                     recoveryPending = true
                 }
-            case let .invalid(metadata):
-                let degraded = DomainAuthorityHealth.degradedReadOnly(
-                    reason: "external_workspace_decode_failed"
-                )
-                let shouldPublish = record.health != degraded
+            case let .unavailable(metadata, reason):
+                let degraded = DomainAuthorityHealth.degradedReadOnly(reason: reason)
+                let shouldPublish = record.health != degraded || record.fileMetadata != metadata
                 record.health = degraded
                 record.fileMetadata = metadata
                 records[workspaceID] = record
@@ -1603,10 +1600,36 @@ actor DomainWorkspaceContextAuthority {
                         contextID: nil,
                         operationID: nil,
                         revisions: record.revisions,
-                        diagnostic: "external_workspace_decode_failed"
+                        diagnostic: reason
                     )
                 }
-            case let .changed(document, metadata):
+            case let .present(bytes, metadata, _):
+                guard let document = try? DomainWorkspaceDocument.decode(
+                    documentBytes: bytes,
+                    fileURL: record.document.fileURL
+                ),
+                      document.workspaceID == workspaceID
+                else {
+                    let degraded = DomainAuthorityHealth.degradedReadOnly(
+                        reason: "external_workspace_decode_failed"
+                    )
+                    let shouldPublish = record.health != degraded
+                    record.health = degraded
+                    record.fileMetadata = metadata
+                    records[workspaceID] = record
+                    recoveryPending = true
+                    if shouldPublish {
+                        publish(
+                            kind: .degraded,
+                            workspaceID: workspaceID,
+                            contextID: nil,
+                            operationID: nil,
+                            revisions: record.revisions,
+                            diagnostic: "external_workspace_decode_failed"
+                        )
+                    }
+                    continue
+                }
                 if document.metadata.isEphemeral || record.document.metadata.isEphemeral {
                     record.document = document
                     record.fileMetadata = metadata
@@ -1623,16 +1646,78 @@ actor DomainWorkspaceContextAuthority {
                     changed = true
                     continue
                 }
+                guard let commandAdmission else {
+                    recoveryPending = true
+                    continue
+                }
+                let plan: DomainExternalObservationRecoveryPlan
+                do {
+                    plan = try commandAdmission.prepareExternalObservationRecovery(
+                        workspaceID: workspaceID,
+                        fileURL: record.document.fileURL,
+                        catalogRevision: catalogRevision,
+                        workspaceRevision: record.revisions.workingRevision,
+                        currentDocumentDigest: record.document.contentDigest,
+                        savedDigest: record.savedDigest,
+                        externalDocumentBytes: bytes,
+                        updatedAt: Date()
+                    )
+                } catch {
+                    recoveryPending = true
+                    continue
+                }
+                if plan.disposition == .noChange {
+                    let recoveredExternalDegradation: Bool
+                    if case let .degradedReadOnly(reason) = record.health,
+                       reason.hasPrefix("external_"),
+                       record.fileMetadata != metadata
+                    {
+                        record.health = .writable
+                        record.externalDocument = nil
+                        recoveredExternalDegradation = true
+                        changed = true
+                    } else {
+                        recoveredExternalDegradation = false
+                    }
+                    if record.fileMetadata != metadata || recoveredExternalDegradation {
+                        record.fileMetadata = metadata
+                        records[workspaceID] = record
+                    }
+                    if recoveredExternalDegradation {
+                        publish(
+                            kind: .externalReloaded,
+                            workspaceID: workspaceID,
+                            contextID: nil,
+                            operationID: nil,
+                            revisions: record.revisions,
+                            diagnostic: "external_workspace_recovered"
+                        )
+                    }
+                    continue
+                }
+                let candidateDocument: DomainWorkspaceDocument
+                switch plan.candidate {
+                case .externalDocument:
+                    candidateDocument = document
+                case .existingWorkingDocument:
+                    candidateDocument = record.document
+                case .none:
+                    recoveryPending = true
+                    continue
+                }
                 #if DEBUG
                     if let testBeforeExternalReconciliation {
                         await testBeforeExternalReconciliation(workspaceID)
                     }
                 #endif
-                switch await reconcileExternalDocument(
+                switch await reconcileExternalObservation(
                     workspaceID: workspaceID,
-                    externalDocument: document,
+                    candidateDocument: candidateDocument,
+                    externalDocumentBytes: bytes,
                     fileMetadata: metadata,
-                    permit: permit
+                    plan: plan,
+                    permit: permit,
+                    commandAdmission: commandAdmission
                 ) {
                 case .applied:
                     changed = true
@@ -1863,97 +1948,82 @@ actor DomainWorkspaceContextAuthority {
         }
     }
 
-    private func reconcileExternalDocument(
+    private func reconcileExternalObservation(
         workspaceID: UUID,
-        externalDocument: DomainWorkspaceDocument,
+        candidateDocument: DomainWorkspaceDocument,
+        externalDocumentBytes: Data,
         fileMetadata: DomainFileMetadata,
-        permit: DomainWorkspaceMutationPermit
+        plan: DomainExternalObservationRecoveryPlan,
+        permit: DomainWorkspaceMutationPermit,
+        commandAdmission: DomainWorkspaceRustJournal.PreparedCommandAdmission
     ) async -> DirtyExternalRebaseResult {
-        for attempt in 0 ..< Self.maximumCASRecoveryAttempts {
-            guard var record = records[workspaceID], record.health.acceptsMutations else {
-                return .failed
-            }
-            if record.revisions.dirtyRevision != nil {
-                return await rebaseDirtyWorkingDocument(
-                    workspaceID: workspaceID,
-                    localDocument: record.document,
-                    externalDocument: externalDocument,
-                    fileMetadata: fileMetadata,
-                    permit: permit
-                )
-            }
-
-            let before = record.revisions
-            do {
-                let persisted = try await persistence.persistExternalReloadRecovery(
-                    document: externalDocument,
-                    expectedRevision: before.workingRevision,
-                    now: Date(),
-                    permit: permit
-                )
-                catalogRevision = max(catalogRevision, persisted.catalogRevision)
-                record.document = externalDocument
-                record.savedDigest = persisted.journal.savedDigest
-                record.revisions = persisted.journal.revisions
-                record.contextRevisions = persisted.journal.contextRevisions
-                record.contextTombstones = persisted.journal.contextTombstones
-                record.operations = persisted.journal.operations
-                record.externalDocument = nil
-                record.fileMetadata = fileMetadata
-                records[workspaceID] = record
-                readRegistrations.removeValue(forKey: workspaceID)
-                let diagnostic: String? = if persisted.revisionSidecarMissing {
-                    "external_reload_revision_sidecar_missing"
-                } else if attempt == 0 {
-                    nil
-                } else {
-                    "external_reload_revision_replayed"
-                }
-                publish(
-                    kind: .externalReloaded,
-                    workspaceID: workspaceID,
-                    contextID: nil,
-                    operationID: nil,
-                    revisions: record.revisions,
-                    diagnostic: diagnostic
-                )
-                return .applied
-            } catch let error as DomainPersistenceError {
-                switch error {
-                case .stateConflict:
-                    await refreshAfterCASConflict(
-                        workspaceID: workspaceID,
-                        fileURL: externalDocument.fileURL,
-                        permit: permit
-                    )
-                    if Task.isCancelled { return .recoveryPending }
-                    if attempt + 1 < Self.maximumCASRecoveryAttempts { continue }
-                    return .recoveryPending
-                case .cancelled:
-                    return .recoveryPending
-                default:
-                    if var current = records[workspaceID] {
-                        current.health = .degradedReadOnly(
-                            reason: "workspace_external_reload_persistence_failed"
-                        )
-                        records[workspaceID] = current
-                        publish(
-                            kind: .degraded,
-                            workspaceID: workspaceID,
-                            contextID: nil,
-                            operationID: nil,
-                            revisions: current.revisions,
-                            diagnostic: "workspace_external_reload_persistence_failed"
-                        )
-                    }
-                    return .failed
-                }
-            } catch is CancellationError {
+        guard candidateDocument.workspaceID == workspaceID,
+              candidateDocument.fileURL.standardizedFileURL == plan.expectedFileURL.standardizedFileURL,
+              plan.workspaceID == workspaceID
+        else { return .failed }
+        guard let record = records[workspaceID], record.health.acceptsMutations else {
+            return .failed
+        }
+        let before = record.revisions
+        do {
+            let persisted = try await persistence.persistExternalObservationRecovery(
+                candidateDocument: candidateDocument,
+                authoritativeDocument: record.document,
+                authoritativeRevisions: record.revisions,
+                externalDocumentBytes: externalDocumentBytes,
+                plan: plan,
+                now: plan.updatedAt,
+                permit: permit,
+                commandAdmission: commandAdmission
+            )
+            guard var current = records[workspaceID], current.revisions == before else {
                 return .recoveryPending
-            } catch {
+            }
+            catalogRevision = max(catalogRevision, persisted.catalogRevision)
+            current.document = candidateDocument
+            current.savedDigest = persisted.journal.savedDigest
+            current.revisions = persisted.journal.revisions
+            current.contextRevisions = persisted.journal.contextRevisions
+            current.contextTombstones = persisted.journal.contextTombstones
+            current.operations = persisted.journal.operations
+            current.health = .writable
+            current.externalDocument = nil
+            current.fileMetadata = fileMetadata
+            records[workspaceID] = current
+            readRegistrations.removeValue(forKey: workspaceID)
+            let diagnostic: String? = if persisted.revisionSidecarMissing {
+                plan.transition == .externalReload
+                    ? "external_reload_revision_sidecar_missing"
+                    : "external_conflict_revision_sidecar_missing"
+            } else {
+                plan.diagnostic
+            }
+            publish(
+                kind: plan.transition == .externalReload
+                    ? .externalReloaded
+                    : .workingStateCommitted,
+                workspaceID: workspaceID,
+                contextID: nil,
+                operationID: nil,
+                revisions: current.revisions,
+                diagnostic: diagnostic
+            )
+            return .applied
+        } catch let error as DomainPersistenceError {
+            switch error {
+            case .stateConflict, .admissionRecoveryStale, .externalDocumentConflict:
+                await refreshAfterCASConflict(
+                    workspaceID: workspaceID,
+                    fileURL: candidateDocument.fileURL,
+                    permit: permit
+                )
+                return .recoveryPending
+            case .cancelled, .runtimeShutdownRequested:
+                return .recoveryPending
+            default:
                 if var current = records[workspaceID] {
                     current.health = .degradedReadOnly(
-                        reason: "workspace_external_reload_persistence_failed"
+                        reason: "workspace_external_observation_recovery_failed"
                     )
                     records[workspaceID] = current
                     publish(
@@ -1962,13 +2032,30 @@ actor DomainWorkspaceContextAuthority {
                         contextID: nil,
                         operationID: nil,
                         revisions: current.revisions,
-                        diagnostic: "workspace_external_reload_persistence_failed"
+                        diagnostic: "workspace_external_observation_recovery_failed"
                     )
                 }
                 return .failed
             }
+        } catch is CancellationError {
+            return .recoveryPending
+        } catch {
+            if var current = records[workspaceID] {
+                current.health = .degradedReadOnly(
+                    reason: "workspace_external_observation_recovery_failed"
+                )
+                records[workspaceID] = current
+                publish(
+                    kind: .degraded,
+                    workspaceID: workspaceID,
+                    contextID: nil,
+                    operationID: nil,
+                    revisions: current.revisions,
+                    diagnostic: "workspace_external_observation_recovery_failed"
+                )
+            }
+            return .failed
         }
-        return .recoveryPending
     }
 
     private func createWorkspace(

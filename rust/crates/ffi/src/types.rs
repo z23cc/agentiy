@@ -996,6 +996,72 @@ pub struct CoreWorkspaceSemanticPreflightV1 {
     pub diagnostic: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceExternalObservationDispositionV1 {
+    NoChange,
+    CleanReload,
+    DirtyConflict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceExternalObservationCandidateV1 {
+    None,
+    ExternalDocument,
+    ExistingWorkingDocument,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum CoreWorkspaceExternalObservationTransitionV1 {
+    None,
+    ExternalReload,
+    ConflictRebase,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceExternalObservationRecoveryRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub workspace_id: String,
+    pub expected_file_url: String,
+    pub expected_catalog_revision: u64,
+    pub expected_workspace_revision: u64,
+    pub current_document_digest: String,
+    pub saved_digest: String,
+    pub external_document_bytes: Vec<u8>,
+    pub updated_at: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceExternalObservationRecoveryPlanV1 {
+    pub workspace_id: String,
+    pub expected_file_url: String,
+    pub catalog_revision: u64,
+    pub workspace_revision: u64,
+    pub aggregate_generation: u64,
+    pub current_document_digest: String,
+    pub saved_digest: String,
+    pub external_document_digest: String,
+    pub changed_context_ids: Vec<String>,
+    pub added_context_ids: Vec<String>,
+    pub removed_context_ids: Vec<String>,
+    pub disposition: CoreWorkspaceExternalObservationDispositionV1,
+    pub candidate: CoreWorkspaceExternalObservationCandidateV1,
+    pub transition: CoreWorkspaceExternalObservationTransitionV1,
+    pub updated_at: f64,
+    pub revision_sidecar_id: Option<String>,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceExternalObservationRecoveryTransactionRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub contract_version: u16,
+    pub plan: CoreWorkspaceExternalObservationRecoveryPlanV1,
+    pub raw_journal_bytes: Option<Vec<u8>>,
+    pub effective_journal_bytes: Vec<u8>,
+    pub external_document_bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CoreWorkspaceRecordedOperationV1 {
     pub operation_id: String,
@@ -1629,6 +1695,157 @@ impl From<runtime::workspace_persistence_journal::WorkspaceCommandSemanticPrefli
             removed_context_ids: value.removed_context_ids,
             external_document_digest: value.external_document_digest,
             protected_context_ids: value.protected_context_ids,
+            diagnostic: value.diagnostic,
+        }
+    }
+}
+
+impl From<CoreWorkspaceExternalObservationRecoveryRequestV1>
+    for runtime::workspace_persistence_journal::WorkspaceExternalObservationRecoveryRequestV1
+{
+    fn from(value: CoreWorkspaceExternalObservationRecoveryRequestV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            expected_file_url: value.expected_file_url,
+            expected_catalog_revision: value.expected_catalog_revision,
+            expected_workspace_revision: value.expected_workspace_revision,
+            current_document_digest: value.current_document_digest,
+            saved_digest: value.saved_digest,
+            external_document_bytes: value.external_document_bytes,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<CoreWorkspaceExternalObservationRecoveryPlanV1>
+    for runtime::workspace_persistence_journal::WorkspaceExternalObservationRecoveryPlanV1
+{
+    fn from(value: CoreWorkspaceExternalObservationRecoveryPlanV1) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            expected_file_url: value.expected_file_url,
+            catalog_revision: value.catalog_revision,
+            workspace_revision: value.workspace_revision,
+            aggregate_generation: value.aggregate_generation,
+            current_document_digest: value.current_document_digest,
+            saved_digest: value.saved_digest,
+            external_document_digest: value.external_document_digest,
+            changed_context_ids: value.changed_context_ids,
+            added_context_ids: value.added_context_ids,
+            removed_context_ids: value.removed_context_ids,
+            disposition: value.disposition.into(),
+            candidate: value.candidate.into(),
+            transition: value.transition.into(),
+            updated_at: value.updated_at,
+            revision_sidecar_id: value.revision_sidecar_id,
+            diagnostic: value.diagnostic,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceExternalObservationDispositionV1>
+    for CoreWorkspaceExternalObservationDispositionV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceExternalObservationDispositionV1,
+    ) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationDispositionV1::NoChange => Self::NoChange,
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationDispositionV1::CleanReload => Self::CleanReload,
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationDispositionV1::DirtyConflict => Self::DirtyConflict,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceExternalObservationCandidateV1>
+    for CoreWorkspaceExternalObservationCandidateV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceExternalObservationCandidateV1,
+    ) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationCandidateV1::None => Self::None,
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationCandidateV1::ExternalDocument => Self::ExternalDocument,
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationCandidateV1::ExistingWorkingDocument => Self::ExistingWorkingDocument,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceExternalObservationTransitionV1>
+    for CoreWorkspaceExternalObservationTransitionV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceExternalObservationTransitionV1,
+    ) -> Self {
+        match value {
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationTransitionV1::None => Self::None,
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationTransitionV1::ExternalReload => Self::ExternalReload,
+            runtime::workspace_persistence_journal::WorkspaceExternalObservationTransitionV1::ConflictRebase => Self::ConflictRebase,
+        }
+    }
+}
+
+impl From<CoreWorkspaceExternalObservationDispositionV1>
+    for runtime::workspace_persistence_journal::WorkspaceExternalObservationDispositionV1
+{
+    fn from(value: CoreWorkspaceExternalObservationDispositionV1) -> Self {
+        match value {
+            CoreWorkspaceExternalObservationDispositionV1::NoChange => Self::NoChange,
+            CoreWorkspaceExternalObservationDispositionV1::CleanReload => Self::CleanReload,
+            CoreWorkspaceExternalObservationDispositionV1::DirtyConflict => Self::DirtyConflict,
+        }
+    }
+}
+
+impl From<CoreWorkspaceExternalObservationCandidateV1>
+    for runtime::workspace_persistence_journal::WorkspaceExternalObservationCandidateV1
+{
+    fn from(value: CoreWorkspaceExternalObservationCandidateV1) -> Self {
+        match value {
+            CoreWorkspaceExternalObservationCandidateV1::None => Self::None,
+            CoreWorkspaceExternalObservationCandidateV1::ExternalDocument => Self::ExternalDocument,
+            CoreWorkspaceExternalObservationCandidateV1::ExistingWorkingDocument => {
+                Self::ExistingWorkingDocument
+            }
+        }
+    }
+}
+
+impl From<CoreWorkspaceExternalObservationTransitionV1>
+    for runtime::workspace_persistence_journal::WorkspaceExternalObservationTransitionV1
+{
+    fn from(value: CoreWorkspaceExternalObservationTransitionV1) -> Self {
+        match value {
+            CoreWorkspaceExternalObservationTransitionV1::None => Self::None,
+            CoreWorkspaceExternalObservationTransitionV1::ExternalReload => Self::ExternalReload,
+            CoreWorkspaceExternalObservationTransitionV1::ConflictRebase => Self::ConflictRebase,
+        }
+    }
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceExternalObservationRecoveryPlanV1>
+    for CoreWorkspaceExternalObservationRecoveryPlanV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceExternalObservationRecoveryPlanV1,
+    ) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            expected_file_url: value.expected_file_url,
+            catalog_revision: value.catalog_revision,
+            workspace_revision: value.workspace_revision,
+            aggregate_generation: value.aggregate_generation,
+            current_document_digest: value.current_document_digest,
+            saved_digest: value.saved_digest,
+            external_document_digest: value.external_document_digest,
+            changed_context_ids: value.changed_context_ids,
+            added_context_ids: value.added_context_ids,
+            removed_context_ids: value.removed_context_ids,
+            disposition: value.disposition.into(),
+            candidate: value.candidate.into(),
+            transition: value.transition.into(),
+            updated_at: value.updated_at,
+            revision_sidecar_id: value.revision_sidecar_id,
             diagnostic: value.diagnostic,
         }
     }

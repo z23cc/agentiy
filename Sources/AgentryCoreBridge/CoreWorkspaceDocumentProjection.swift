@@ -149,6 +149,113 @@ public struct CoreWorkspaceSemanticPreflightV1: Sendable, Equatable {
     }
 }
 
+public enum CoreWorkspaceExternalObservationDispositionV1: Sendable, Equatable {
+    case noChange
+    case cleanReload
+    case dirtyConflict
+}
+
+public enum CoreWorkspaceExternalObservationCandidateV1: Sendable, Equatable {
+    case none
+    case externalDocument
+    case existingWorkingDocument
+}
+
+public enum CoreWorkspaceExternalObservationTransitionV1: Sendable, Equatable {
+    case none
+    case externalReload
+    case conflictRebase
+}
+
+public struct CoreWorkspaceExternalObservationRecoveryRequestV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let expectedFileURL: URL
+    public let expectedCatalogRevision: UInt64
+    public let expectedWorkspaceRevision: UInt64
+    public let currentDocumentDigest: String
+    public let savedDigest: String
+    public let externalDocumentBytes: Data
+    public let updatedAt: Date
+
+    public init(
+        workspaceID: UUID,
+        expectedFileURL: URL,
+        expectedCatalogRevision: UInt64,
+        expectedWorkspaceRevision: UInt64,
+        currentDocumentDigest: String,
+        savedDigest: String,
+        externalDocumentBytes: Data,
+        updatedAt: Date
+    ) {
+        self.workspaceID = workspaceID
+        self.expectedFileURL = expectedFileURL
+        self.expectedCatalogRevision = expectedCatalogRevision
+        self.expectedWorkspaceRevision = expectedWorkspaceRevision
+        self.currentDocumentDigest = currentDocumentDigest
+        self.savedDigest = savedDigest
+        self.externalDocumentBytes = externalDocumentBytes
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct CoreWorkspaceExternalObservationRecoveryPlanV1: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let expectedFileURL: URL
+    public let catalogRevision: UInt64
+    public let workspaceRevision: UInt64
+    public let aggregateGeneration: UInt64
+    public let currentDocumentDigest: String
+    public let savedDigest: String
+    public let externalDocumentDigest: String
+    public let changedContextIDs: [UUID]
+    public let addedContextIDs: [UUID]
+    public let removedContextIDs: [UUID]
+    public let disposition: CoreWorkspaceExternalObservationDispositionV1
+    public let candidate: CoreWorkspaceExternalObservationCandidateV1
+    public let transition: CoreWorkspaceExternalObservationTransitionV1
+    public let updatedAt: Date
+    public let revisionSidecarID: UUID?
+    public let diagnostic: String?
+
+    public init(
+        workspaceID: UUID,
+        expectedFileURL: URL,
+        catalogRevision: UInt64,
+        workspaceRevision: UInt64,
+        aggregateGeneration: UInt64,
+        currentDocumentDigest: String,
+        savedDigest: String,
+        externalDocumentDigest: String,
+        changedContextIDs: [UUID],
+        addedContextIDs: [UUID],
+        removedContextIDs: [UUID],
+        disposition: CoreWorkspaceExternalObservationDispositionV1,
+        candidate: CoreWorkspaceExternalObservationCandidateV1,
+        transition: CoreWorkspaceExternalObservationTransitionV1,
+        updatedAt: Date,
+        revisionSidecarID: UUID? = nil,
+        diagnostic: String?
+    ) {
+        self.workspaceID = workspaceID
+        self.expectedFileURL = expectedFileURL
+        self.catalogRevision = catalogRevision
+        self.workspaceRevision = workspaceRevision
+        self.aggregateGeneration = aggregateGeneration
+        self.currentDocumentDigest = currentDocumentDigest
+        self.savedDigest = savedDigest
+        self.externalDocumentDigest = externalDocumentDigest
+        self.changedContextIDs = changedContextIDs
+        self.addedContextIDs = addedContextIDs
+        self.removedContextIDs = removedContextIDs
+        self.disposition = disposition
+        self.candidate = candidate
+        self.transition = transition
+        self.updatedAt = updatedAt
+        self.revisionSidecarID = revisionSidecarID
+        self.diagnostic = diagnostic
+    }
+}
+
 public enum CoreWorkspaceTabLocationV1: Sendable, Equatable {
     case composed
     case stashed
@@ -731,6 +838,15 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         -> CorePreparedWorkspaceSemanticRecoveryV1
     private let semanticTargetRecoveryOperation: @Sendable (CoreWorkspaceSemanticTargetRecoveryV1) throws
         -> CorePreparedWorkspaceSemanticRecoveryV1
+    private let externalObservationRecoveryOperation: @Sendable (
+        CoreWorkspaceExternalObservationRecoveryRequestV1
+    ) throws -> CoreWorkspaceExternalObservationRecoveryPlanV1
+    private let externalObservationTransactionOperation: @Sendable (
+        CoreWorkspaceExternalObservationRecoveryPlanV1,
+        Data?,
+        Data,
+        Data
+    ) throws -> CoreWorkspaceJournalMutationTransactionV1
     private let diagnosticsOperation: @Sendable () throws
         -> CoreWorkspaceCommandAdmissionDiagnosticsV1
     private let publishAuthorityStateOperation: @Sendable (
@@ -752,6 +868,15 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
             -> CorePreparedWorkspaceSemanticRecoveryV1,
         prepareSemanticTargetRecovery: @escaping @Sendable (CoreWorkspaceSemanticTargetRecoveryV1) throws
             -> CorePreparedWorkspaceSemanticRecoveryV1,
+        prepareExternalObservationRecovery: @escaping @Sendable (
+            CoreWorkspaceExternalObservationRecoveryRequestV1
+        ) throws -> CoreWorkspaceExternalObservationRecoveryPlanV1,
+        beginExternalObservationRecoveryTransaction: @escaping @Sendable (
+            CoreWorkspaceExternalObservationRecoveryPlanV1,
+            Data?,
+            Data,
+            Data
+        ) throws -> CoreWorkspaceJournalMutationTransactionV1,
         diagnostics: @escaping @Sendable () throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1,
         publishAuthorityState: @escaping @Sendable (
             [CoreWorkspaceProjectionPublishedWorkspace],
@@ -768,6 +893,8 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         cancelOperation = cancel
         semanticFullRecoveryOperation = prepareSemanticFullRecovery
         semanticTargetRecoveryOperation = prepareSemanticTargetRecovery
+        externalObservationRecoveryOperation = prepareExternalObservationRecovery
+        externalObservationTransactionOperation = beginExternalObservationRecoveryTransaction
         diagnosticsOperation = diagnostics
         publishAuthorityStateOperation = publishAuthorityState
         synchronizeAuthorityProjectionOperation = synchronizeAuthorityProjection
@@ -801,6 +928,26 @@ public final class CorePreparedWorkspaceCommandAdmissionV1: @unchecked Sendable 
         _ recovery: CoreWorkspaceSemanticTargetRecoveryV1
     ) throws -> CorePreparedWorkspaceSemanticRecoveryV1 {
         try semanticTargetRecoveryOperation(recovery)
+    }
+
+    public func prepareExternalObservationRecovery(
+        _ request: CoreWorkspaceExternalObservationRecoveryRequestV1
+    ) throws -> CoreWorkspaceExternalObservationRecoveryPlanV1 {
+        try externalObservationRecoveryOperation(request)
+    }
+
+    public func beginExternalObservationRecoveryTransaction(
+        plan: CoreWorkspaceExternalObservationRecoveryPlanV1,
+        rawJournalBytes: Data?,
+        effectiveJournalBytes: Data,
+        externalDocumentBytes: Data
+    ) throws -> CoreWorkspaceJournalMutationTransactionV1 {
+        try externalObservationTransactionOperation(
+            plan,
+            rawJournalBytes,
+            effectiveJournalBytes,
+            externalDocumentBytes
+        )
     }
 
     public func diagnostics() throws -> CoreWorkspaceCommandAdmissionDiagnosticsV1 {

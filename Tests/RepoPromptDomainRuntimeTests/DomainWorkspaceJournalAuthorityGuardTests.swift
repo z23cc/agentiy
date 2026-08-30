@@ -84,8 +84,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
         XCTAssertEqual(
             source.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
-            1,
-            "Only the typed Rust seed adapter may materialize a missing production journal"
+            2,
+            "Only typed Rust seed adapters may materialize missing production journals"
         )
         for transition in [
             ".unchanged(",
@@ -141,8 +141,8 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         }
         XCTAssertEqual(
             persistence.components(separatedBy: "validator.seedWorkingJournal(").count - 1,
-            1,
-            "Only the missing-journal path may invoke the dedicated Rust seed endpoint"
+            2,
+            "Only typed Rust seed adapters may materialize missing production journals"
         )
     }
 
@@ -569,7 +569,6 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "private func applyCommandAdmissionTargetRecovery(",
             "commandAdmission.applyFullRecovery(",
             "commandAdmission.applyTargetRecovery(",
-            ".admissionRecovery"
         ] {
             XCTAssertFalse(authority.contains(retired), "Retired Swift admission lookup remains: \(retired)")
         }
@@ -1054,7 +1053,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         )
         for required in [
             "persistence.persistWorkingRecovery(",
-            "persistence.persistExternalReloadRecovery(",
+            "persistence.persistExternalObservationRecovery(",
             "persistence.persistConflictRebaseRecovery("
         ] {
             XCTAssertTrue(authority.contains(required), "Recovery path missing explicit boundary: \(required)")

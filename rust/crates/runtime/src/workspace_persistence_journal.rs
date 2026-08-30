@@ -26,6 +26,9 @@ use std::sync::{Arc, Mutex};
 
 pub const WORKSPACE_WORKING_JOURNAL_CONTRACT_VERSION_V1: u16 = 1;
 pub const WORKSPACE_SEMANTIC_PLANNER_VERSION_V1: u16 = 1;
+/// Contract for claimless filesystem observation.  Observation is deliberately separate from
+/// command admission: no operation id, fingerprint, or ledger entry is accepted on this path.
+pub const WORKSPACE_EXTERNAL_OBSERVATION_CONTRACT_VERSION_V1: u16 = 1;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1: usize = 128 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_OPERATION_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
@@ -84,6 +87,63 @@ pub struct WorkspaceCommandSemanticPreflightV1 {
     pub external_document_digest: Option<String>,
     /// Canonical UUID-ordered context identities blocked by the protected-agent policy.
     pub protected_context_ids: Vec<String>,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceExternalObservationDispositionV1 {
+    NoChange,
+    CleanReload,
+    DirtyConflict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceExternalObservationCandidateV1 {
+    None,
+    ExternalDocument,
+    ExistingWorkingDocument,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceExternalObservationTransitionV1 {
+    None,
+    ExternalReload,
+    ConflictRebase,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceExternalObservationRecoveryRequestV1 {
+    pub workspace_id: String,
+    pub expected_file_url: String,
+    pub expected_catalog_revision: u64,
+    pub expected_workspace_revision: u64,
+    pub current_document_digest: String,
+    pub saved_digest: String,
+    pub external_document_bytes: Vec<u8>,
+    pub updated_at: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceExternalObservationRecoveryPlanV1 {
+    pub workspace_id: String,
+    pub expected_file_url: String,
+    pub catalog_revision: u64,
+    pub workspace_revision: u64,
+    pub aggregate_generation: u64,
+    pub current_document_digest: String,
+    pub saved_digest: String,
+    pub external_document_digest: String,
+    pub changed_context_ids: Vec<String>,
+    pub added_context_ids: Vec<String>,
+    pub removed_context_ids: Vec<String>,
+    pub disposition: WorkspaceExternalObservationDispositionV1,
+    pub candidate: WorkspaceExternalObservationCandidateV1,
+    pub transition: WorkspaceExternalObservationTransitionV1,
+    /// Physical saved-revision sidecars still require an operation-shaped UUID. This value is
+    /// derived inside Rust from the observation facts and is never inserted into the command
+    /// ledger or exposed as a command operation.
+    pub updated_at: f64,
+    pub revision_sidecar_id: Option<String>,
     pub diagnostic: Option<String>,
 }
 
@@ -4288,6 +4348,246 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                 ))
             }
         }
+    }
+
+    /// Classifies one bounded external document against the immutable semantic aggregate. This is
+    /// claimless by design: automatic filesystem observation must not create command receipts or
+    /// consume command admission capacity.
+    pub fn prepare_external_observation_recovery(
+        &self,
+        request: WorkspaceExternalObservationRecoveryRequestV1,
+    ) -> Result<WorkspaceExternalObservationRecoveryPlanV1, WorkspaceWorkingJournalError> {
+        if request.external_document_bytes.len() > MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1 {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: request.external_document_bytes.len(),
+                maximum: MAXIMUM_WORKSPACE_DOCUMENT_PROJECTION_BYTES_V1,
+            });
+        }
+        let workspace_id = canonical_uuid(&request.workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        if !valid_file_url(&request.expected_file_url) {
+            return Err(WorkspaceWorkingJournalError::InvalidFileUrl);
+        }
+        if !is_sha256_digest(&request.current_document_digest)
+            || !is_sha256_digest(&request.saved_digest)
+            || !request.updated_at.is_finite()
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidDigest);
+        }
+        let external_projection =
+            project_workspace_document_v1(&request.external_document_bytes)
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidWorkingDocument)?;
+        if external_projection.workspace_id != workspace_id {
+            return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+        }
+        let external_document_digest =
+            format!("{:x}", Sha256::digest(&request.external_document_bytes));
+
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if inner.closed || inner.quarantined {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let catalog_revision = inner.authority_publication.catalog_revision;
+        if request.expected_catalog_revision != catalog_revision {
+            return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+        }
+        let aggregate_generation = inner.authority_snapshot.generation;
+        let entry = inner
+            .semantic_snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.projection.workspace_id == workspace_id)
+            .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?;
+        let authority = entry
+            .authority
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if request.expected_workspace_revision != authority.revisions.working_revision
+            || request.current_document_digest != entry.content_digest
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+        }
+        let current_context_digests =
+            workspace_document_context_digests_from_bytes_v1(&entry.document_bytes)?;
+        let external_context_digests =
+            workspace_document_context_digests_from_bytes_v1(&request.external_document_bytes)?;
+        let (changed_context_ids, added_context_ids, removed_context_ids) =
+            workspace_semantic_context_delta_from_maps_v1(
+                &current_context_digests,
+                &external_context_digests,
+            );
+        let (disposition, candidate, transition, diagnostic) =
+            if external_document_digest == entry.content_digest {
+                (
+                    WorkspaceExternalObservationDispositionV1::NoChange,
+                    WorkspaceExternalObservationCandidateV1::None,
+                    WorkspaceExternalObservationTransitionV1::None,
+                    Some("external_document_unchanged".to_owned()),
+                )
+            } else if authority.revisions.dirty_revision.is_none() {
+                if request.saved_digest != entry.content_digest {
+                    return Err(WorkspaceWorkingJournalError::InvalidOperationLedger);
+                }
+                (
+                    WorkspaceExternalObservationDispositionV1::CleanReload,
+                    WorkspaceExternalObservationCandidateV1::ExternalDocument,
+                    WorkspaceExternalObservationTransitionV1::ExternalReload,
+                    Some("external_document_clean_reload".to_owned()),
+                )
+            } else {
+                (
+                    WorkspaceExternalObservationDispositionV1::DirtyConflict,
+                    WorkspaceExternalObservationCandidateV1::ExistingWorkingDocument,
+                    WorkspaceExternalObservationTransitionV1::ConflictRebase,
+                    Some("external_document_dirty_conflict".to_owned()),
+                )
+            };
+        let mut plan = WorkspaceExternalObservationRecoveryPlanV1 {
+            workspace_id,
+            expected_file_url: request.expected_file_url,
+            catalog_revision,
+            workspace_revision: request.expected_workspace_revision,
+            aggregate_generation,
+            current_document_digest: request.current_document_digest,
+            saved_digest: request.saved_digest,
+            external_document_digest,
+            changed_context_ids,
+            added_context_ids,
+            removed_context_ids,
+            disposition,
+            candidate,
+            transition,
+            updated_at: request.updated_at,
+            revision_sidecar_id: None,
+            diagnostic,
+        };
+        if matches!(
+            plan.transition,
+            WorkspaceExternalObservationTransitionV1::ExternalReload
+        ) {
+            plan.revision_sidecar_id = Some(observation_revision_operation_id_v1(&plan));
+        }
+        Ok(plan)
+    }
+
+    /// Revalidates an observation plan against the current aggregate and builds the existing
+    /// claimless journal transaction. Swift supplies raw physical evidence only; it does not pick
+    /// a transition or invent a dirty working candidate.
+    pub fn begin_external_observation_recovery_transaction(
+        &self,
+        plan: WorkspaceExternalObservationRecoveryPlanV1,
+        raw_journal_bytes: Option<&[u8]>,
+        effective_journal_bytes: &[u8],
+        external_document_bytes: &[u8],
+    ) -> Result<PreparedWorkspaceJournalMutationTransactionV1, WorkspaceWorkingJournalError> {
+        let computed = self.prepare_external_observation_recovery(
+            WorkspaceExternalObservationRecoveryRequestV1 {
+                workspace_id: plan.workspace_id.clone(),
+                expected_file_url: plan.expected_file_url.clone(),
+                expected_catalog_revision: plan.catalog_revision,
+                expected_workspace_revision: plan.workspace_revision,
+                current_document_digest: plan.current_document_digest.clone(),
+                saved_digest: plan.saved_digest.clone(),
+                external_document_bytes: external_document_bytes.to_vec(),
+                updated_at: plan.updated_at,
+            },
+        )?;
+        if computed != plan {
+            return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+        }
+        if matches!(
+            plan.transition,
+            WorkspaceExternalObservationTransitionV1::None
+        ) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let effective = parse_validated_journal(
+            &validate_workspace_working_journal_v1(effective_journal_bytes)?.canonical_bytes,
+        )?;
+        if effective.workspace_id != plan.workspace_id
+            || effective.file_url != plan.expected_file_url
+            || effective.revisions.working_revision != plan.workspace_revision
+            || effective.saved_digest != plan.saved_digest
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
+        }
+        let candidate_document_bytes = match plan.candidate {
+            WorkspaceExternalObservationCandidateV1::ExternalDocument => {
+                external_document_bytes.to_vec()
+            }
+            WorkspaceExternalObservationCandidateV1::ExistingWorkingDocument => {
+                let inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+                inner
+                    .semantic_snapshot
+                    .entries
+                    .iter()
+                    .find(|entry| entry.projection.workspace_id == plan.workspace_id)
+                    .map(|entry| entry.document_bytes.clone())
+                    .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?
+            },
+            WorkspaceExternalObservationCandidateV1::None => {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+        };
+        if matches!(
+            plan.transition,
+            WorkspaceExternalObservationTransitionV1::ExternalReload
+        ) && format!("{:x}", Sha256::digest(&candidate_document_bytes))
+            != plan.external_document_digest
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidDigest);
+        }
+        let transition = match plan.transition {
+            WorkspaceExternalObservationTransitionV1::ExternalReload => {
+                WorkspaceWorkingJournalTransitionRequestV1::ExternalReload {
+                    expected_working_revision: plan.workspace_revision,
+                    operation_id: None,
+                    fingerprint: None,
+                    updated_at: Value::from(plan.updated_at),
+                }
+            }
+            WorkspaceExternalObservationTransitionV1::ConflictRebase => {
+                WorkspaceWorkingJournalTransitionRequestV1::ConflictRebase {
+                    expected_revisions: effective.revisions,
+                    external_saved_digest: plan.external_document_digest.clone(),
+                    operation_id: None,
+                    fingerprint: None,
+                    updated_at: Value::from(plan.updated_at),
+                }
+            }
+            WorkspaceExternalObservationTransitionV1::None => unreachable!(),
+        };
+        let revision_operation_id = match plan.transition {
+            WorkspaceExternalObservationTransitionV1::ExternalReload => {
+                plan.revision_sidecar_id.clone()
+            }
+            WorkspaceExternalObservationTransitionV1::ConflictRebase => None,
+            WorkspaceExternalObservationTransitionV1::None => unreachable!(),
+        };
+        let request = WorkspaceJournalMutationTransactionRequestV1 {
+            semantic_planner_version: WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
+            expected_workspace_id: plan.workspace_id,
+            expected_file_url: plan.expected_file_url,
+            catalog_revision: plan.catalog_revision,
+            revision_operation_id,
+            recovery_mode: true,
+            transition,
+        };
+        let request_bytes =
+            serde_json::to_vec(&request).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
+        prepare_workspace_journal_mutation_transaction_v1(
+            raw_journal_bytes,
+            effective_journal_bytes,
+            &request_bytes,
+            &candidate_document_bytes,
+            Some(external_document_bytes),
+        )
     }
 
     pub fn acquire(
@@ -9033,6 +9333,27 @@ fn base64_encode(bytes: &[u8]) -> String {
     output
 }
 
+fn observation_revision_operation_id_v1(
+    plan: &WorkspaceExternalObservationRecoveryPlanV1,
+) -> String {
+    let material = format!(
+        "workspace-external-reload-v1:{}:{}:{}:{}",
+        plan.workspace_id,
+        plan.workspace_revision,
+        plan.saved_digest,
+        plan.external_document_digest
+    );
+    let digest = format!("{:x}", Sha256::digest(material.as_bytes()));
+    format!(
+        "{}-{}-{}-{}-{}",
+        &digest[0..8],
+        &digest[8..12],
+        &digest[12..16],
+        &digest[16..20],
+        &digest[20..32]
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspacePersistenceMetadataValidationV1 {
     pub workspace_id: String,
@@ -10808,6 +11129,200 @@ mod tests {
             WorkspaceProjectionHealthKind::ExternalConflict
         );
         assert_eq!(row.saved_digest, format!("{:x}", Sha256::digest(&external)));
+    }
+
+    fn external_observation_admission(
+        working_revision: u64,
+    ) -> PreparedWorkspaceCommandAdmissionV1 {
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&[])
+            .expect("external observation admission");
+        let workspace = authority_workspace(WORKSPACE_ID, "saved", working_revision);
+        admission
+            .publish_authority_state(
+                std::slice::from_ref(&workspace),
+                global_authority_draft(7, WorkspaceProjectionPublicationKind::Bootstrapped),
+            )
+            .expect("publish observation baseline");
+        admission
+    }
+
+    fn external_observation_request(
+        working_revision: u64,
+        current: &[u8],
+        saved_digest: &str,
+        external: &[u8],
+    ) -> WorkspaceExternalObservationRecoveryRequestV1 {
+        WorkspaceExternalObservationRecoveryRequestV1 {
+            workspace_id: WORKSPACE_ID.to_owned(),
+            expected_file_url: "file:///tmp/Workspace.json".to_owned(),
+            expected_catalog_revision: 7,
+            expected_workspace_revision: working_revision,
+            current_document_digest: format!("{:x}", Sha256::digest(current)),
+            saved_digest: saved_digest.to_owned(),
+            external_document_bytes: external.to_vec(),
+            updated_at: 42.0,
+        }
+    }
+
+    #[test]
+    fn external_observation_classifies_clean_dirty_and_no_change_without_mutation() {
+        let saved = document("saved");
+        let external = document("external");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+
+        let clean_admission = external_observation_admission(0);
+        let no_change = clean_admission
+            .prepare_external_observation_recovery(external_observation_request(
+                0,
+                &saved,
+                &saved_digest,
+                &saved,
+            ))
+            .expect("no-change plan");
+        assert_eq!(
+            no_change.disposition,
+            WorkspaceExternalObservationDispositionV1::NoChange
+        );
+        assert_eq!(
+            no_change.candidate,
+            WorkspaceExternalObservationCandidateV1::None
+        );
+        assert_eq!(
+            no_change.transition,
+            WorkspaceExternalObservationTransitionV1::None
+        );
+        assert!(no_change.revision_sidecar_id.is_none());
+
+        let clean = clean_admission
+            .prepare_external_observation_recovery(external_observation_request(
+                0,
+                &saved,
+                &saved_digest,
+                &external,
+            ))
+            .expect("clean reload plan");
+        assert_eq!(
+            clean.disposition,
+            WorkspaceExternalObservationDispositionV1::CleanReload
+        );
+        assert_eq!(
+            clean.candidate,
+            WorkspaceExternalObservationCandidateV1::ExternalDocument
+        );
+        assert_eq!(
+            clean.transition,
+            WorkspaceExternalObservationTransitionV1::ExternalReload
+        );
+        assert!(clean.revision_sidecar_id.is_some());
+        assert_eq!(clean.changed_context_ids, vec![CONTEXT_ID.to_owned()]);
+        assert!(clean.added_context_ids.is_empty());
+        assert!(clean.removed_context_ids.is_empty());
+
+        let dirty_admission = external_observation_admission(1);
+        let dirty = dirty_admission
+            .prepare_external_observation_recovery(external_observation_request(
+                1,
+                &saved,
+                &saved_digest,
+                &external,
+            ))
+            .expect("dirty conflict plan");
+        assert_eq!(
+            dirty.disposition,
+            WorkspaceExternalObservationDispositionV1::DirtyConflict
+        );
+        assert_eq!(
+            dirty.candidate,
+            WorkspaceExternalObservationCandidateV1::ExistingWorkingDocument
+        );
+        assert_eq!(
+            dirty.transition,
+            WorkspaceExternalObservationTransitionV1::ConflictRebase
+        );
+        assert!(dirty.revision_sidecar_id.is_none());
+    }
+
+    #[test]
+    fn external_observation_rejects_stale_and_invalid_evidence_without_mutation() {
+        let saved = document("saved");
+        let external = document("external");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+        let admission = external_observation_admission(0);
+        let mut stale = external_observation_request(0, &saved, &saved_digest, &external);
+        stale.expected_catalog_revision = 8;
+        assert_eq!(
+            admission.prepare_external_observation_recovery(stale),
+            Err(WorkspaceWorkingJournalError::InvalidRevisionState)
+        );
+        let mut invalid_digest = external_observation_request(0, &saved, &saved_digest, &external);
+        invalid_digest.current_document_digest = "not-a-digest".to_owned();
+        assert_eq!(
+            admission.prepare_external_observation_recovery(invalid_digest),
+            Err(WorkspaceWorkingJournalError::InvalidDigest)
+        );
+        let read = admission
+            .authority_read(WORKSPACE_ID)
+            .expect("baseline remains readable");
+        assert_eq!(read.catalog_revision, 7);
+        assert_eq!(read.generation, 1);
+    }
+
+    #[test]
+    fn external_observation_plan_revalidation_rejects_changed_external_bytes() {
+        let saved = document("saved");
+        let external = document("external");
+        let replacement = document("replacement");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+        let admission = external_observation_admission(0);
+        let plan = admission
+            .prepare_external_observation_recovery(external_observation_request(
+                0,
+                &saved,
+                &saved_digest,
+                &external,
+            ))
+            .expect("clean plan");
+        let effective = journal_bytes(None);
+        let result = admission.begin_external_observation_recovery_transaction(
+            plan,
+            None,
+            &effective,
+            &replacement,
+        );
+        assert!(matches!(
+            result,
+            Err(WorkspaceWorkingJournalError::InvalidRevisionState)
+        ));
+        let read = admission
+            .authority_read(WORKSPACE_ID)
+            .expect("baseline remains readable");
+        assert_eq!(read.publication_sequence, 1);
+    }
+
+    #[test]
+    fn external_observation_transaction_uses_rust_selected_candidate() {
+        let saved = document("saved");
+        let external = document("external");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+        let admission = external_observation_admission(0);
+        let plan = admission
+            .prepare_external_observation_recovery(external_observation_request(
+                0,
+                &saved,
+                &saved_digest,
+                &external,
+            ))
+            .expect("clean plan");
+        let transaction = admission.begin_external_observation_recovery_transaction(
+            plan,
+            Some(&journal_bytes(None)),
+            &journal_bytes(None),
+            &external,
+        );
+        assert!(
+            transaction.is_ok(),
+            "unexpected transaction error: {transaction:?}"
+        );
     }
 
     #[test]
