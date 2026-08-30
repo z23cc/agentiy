@@ -12,20 +12,20 @@ use crate::types::{
     CoreCompactCodeMapBatchResultV1, CoreConfig, CoreFileSystemWatcherEventV1,
     CoreFileSystemWatcherPayloadV1, CoreFileSystemWatcherScopeConfigV1,
     CoreFileSystemWatcherScopeHandleV1, CoreFileSystemWatcherSnapshotV1, CoreHandshake,
-    CoreInventoryScopeConfigV1, CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1,
-    CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
-    CorePathSearchFindResultV1, CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1,
-    CoreTextDecodeRequestV1, CoreTextDecodeResultV1, CoreTokenAccountingRequestV1,
-    CoreTokenAccountingResultV1, CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
-    CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionAcquireKindV1,
-    CoreWorkspaceCommandAdmissionDiagnosticsV1, CoreWorkspaceCommandAdmissionLookupScopeV1,
-    CoreWorkspaceCommandAdmissionRecoveryReceiptV1, CoreWorkspaceCommandIdentityRequestV1,
-    CoreWorkspaceCommandIdentityResponseV1, CoreWorkspaceCommandIdentityV1,
-    CoreWorkspaceCommandLifecycleDirectiveV1, CoreWorkspaceCommandResultV1,
-    CoreWorkspaceCreateDirectiveV1, CoreWorkspaceCreateTransactionRequestV1,
-    CoreWorkspaceDeleteDirectiveV1, CoreWorkspaceDeleteTransactionRequestV1,
-    CoreWorkspaceDocumentProjectionRequestV1, CoreWorkspaceDocumentProjectionV1,
-    CoreWorkspaceExternalObservationRecoveryPlanV1,
+    CoreInventoryScopeConfigV1, CoreMcpToolCatalogV1, CorePathMatchResolveRequestV1,
+    CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1,
+    CorePathSearchFindRequestV1, CorePathSearchFindResultV1, CoreSearchScoreBatchRequestV1,
+    CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1, CoreTextDecodeResultV1,
+    CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1, CoreWorkspaceCatalogResponseV1,
+    CoreWorkspaceCatalogSeedRequestV1, CoreWorkspaceCatalogValidationRequestV1,
+    CoreWorkspaceCommandAdmissionAcquireKindV1, CoreWorkspaceCommandAdmissionDiagnosticsV1,
+    CoreWorkspaceCommandAdmissionLookupScopeV1, CoreWorkspaceCommandAdmissionRecoveryReceiptV1,
+    CoreWorkspaceCommandIdentityRequestV1, CoreWorkspaceCommandIdentityResponseV1,
+    CoreWorkspaceCommandIdentityV1, CoreWorkspaceCommandLifecycleDirectiveV1,
+    CoreWorkspaceCommandResultV1, CoreWorkspaceCreateDirectiveV1,
+    CoreWorkspaceCreateTransactionRequestV1, CoreWorkspaceDeleteDirectiveV1,
+    CoreWorkspaceDeleteTransactionRequestV1, CoreWorkspaceDocumentProjectionRequestV1,
+    CoreWorkspaceDocumentProjectionV1, CoreWorkspaceExternalObservationRecoveryPlanV1,
     CoreWorkspaceExternalObservationRecoveryRequestV1,
     CoreWorkspaceExternalObservationRecoveryTransactionRequestV1,
     CoreWorkspaceJournalMutationDirectiveV1, CoreWorkspaceJournalMutationTransactionRequestV1,
@@ -2250,6 +2250,32 @@ impl CoreRuntime {
                 payload_schema_versions: PAYLOAD_SCHEMA_VERSIONS.to_vec(),
                 build_fingerprint: CORE_BUILD_FINGERPRINT.to_owned(),
                 binding_checksum: BINDING_CHECKSUM.to_owned(),
+            })
+        })
+    }
+
+    /// Returns the immutable P8 MCP catalog projection. The identity argument keeps this
+    /// read-only export behind the same runtime lifecycle and stale-identity fence as every
+    /// other raw call; no Swift-side fallback is permitted when the catalog is unavailable.
+    pub fn mcp_tool_catalog_v1(
+        &self,
+        identity: RuntimeIdentity,
+    ) -> Result<CoreMcpToolCatalogV1, CoreError> {
+        self.guard(|| {
+            self.require_initialized()?;
+            self.validate_identity(&identity)?;
+            let catalog =
+                agentry_proto::mcp_catalog_v1().map_err(|_| CoreError::InvalidArgument)?;
+            Ok(CoreMcpToolCatalogV1 {
+                catalog_version: catalog.catalog_version,
+                definition_schema_version: catalog.definition_schema_version,
+                digest: agentry_proto::mcp_catalog_digest()
+                    .map_err(|_| CoreError::InvalidArgument)?,
+                tools: catalog
+                    .tools
+                    .iter()
+                    .map(crate::types::CoreMcpToolDefinitionV1::from)
+                    .collect(),
             })
         })
     }

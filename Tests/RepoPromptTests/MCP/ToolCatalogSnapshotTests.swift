@@ -39,7 +39,7 @@ final class ToolCatalogSnapshotTests: XCTestCase {
     }
 
     func testCanonicalDefinitionsMatchReadableGeneratedReviewSnapshot() throws {
-        let generated = try MCPDomainCanonicalToolDefinitions.reviewSnapshotData()
+        let generated = try MCPDomainGeneratedToolDefinitions.reviewSnapshotData()
         let repoRoot = try RepoRoot.url()
         let snapshotURL = repoRoot
             .appendingPathComponent("docs/spec/mcp-domain-canonical-tool-definitions.generated.json")
@@ -62,7 +62,7 @@ final class ToolCatalogSnapshotTests: XCTestCase {
 
     func testShippingAppRegistrationUsesCanonicalTwentySevenSchemaFingerprints() async throws {
         let window = Self.makeWindowWithoutAutoStart()
-        let expected = try Dictionary(uniqueKeysWithValues: MCPDomainCanonicalToolDefinitions.definitions.map {
+        let expected = try Dictionary(uniqueKeysWithValues: MCPDomainGeneratedToolDefinitions.definitions.map {
             try ($0.name, MCPDomainToolFingerprint(definition: $0))
         })
         try await AppGlobalMCPServiceComposition.shared.ensureRegistered()
@@ -71,7 +71,7 @@ final class ToolCatalogSnapshotTests: XCTestCase {
         )
         let snapshot = await AppDomainRuntimeComposition.shared.runtime.toolRegistry.snapshot()
 
-        XCTAssertEqual(MCPDomainCanonicalToolDefinitions.definitions.count, 27)
+        XCTAssertEqual(MCPDomainGeneratedToolDefinitions.definitions.count, 27)
         XCTAssertEqual(snapshot.fingerprintsByToolName, expected)
         XCTAssertEqual(Set(snapshot.toolNames), Set(MCPDomainToolCatalog.orderedToolNames))
         await AppDomainRuntimeComposition.shared.unregister(registration.handle)

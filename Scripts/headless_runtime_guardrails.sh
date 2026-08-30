@@ -52,9 +52,19 @@ if grep -R -n --include='*.swift' -E '@MainActor|^[[:space:]]*import[[:space:]]+
   exit 1
 fi
 
-canonical_file="$runtime_sources/MCPDomainCanonicalToolDefinitions.swift"
-if [[ ! -f "$canonical_file" ]]; then
-  echo "error: missing canonical Swift tool definitions" >&2
+generated_catalog="$runtime_sources/MCPDomainGeneratedToolDefinitions.swift"
+rust_catalog="rust/crates/proto/catalog/mcp_catalog_v1.json"
+if [[ ! -f "$generated_catalog" || ! -f "$rust_catalog" ]]; then
+  echo "error: missing generated Rust-owned MCP catalog projection" >&2
+  exit 1
+fi
+if [[ -f "$runtime_sources/MCPDomainCanonicalToolDefinitions.swift" ]] \
+  || grep -R -n --include='*.swift' -E 'Data\(base64Encoded|MCPDomainCanonicalToolDefinitions' "$runtime_sources" "$direct_sources"; then
+  echo "error: retired Swift MCP catalog authority remains in headless sources" >&2
+  exit 1
+fi
+if ! grep -q 'MCPDomainGeneratedToolDefinitions' "$direct_sources/DirectHeadlessMCPService.swift"; then
+  echo "error: headless backend must consume generated MCP catalog definitions" >&2
   exit 1
 fi
 

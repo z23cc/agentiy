@@ -589,7 +589,7 @@ final class HeadlessMCPDomainRuntimeM0ContractTests: XCTestCase {
                     XCTAssertTrue(hops.contains("MCPDomainReadToolProvider"), tool)
                     XCTAssertTrue(hops.contains("MCPAppToolBinder"), tool)
                     XCTAssertNotNil(
-                        MCPDomainCanonicalToolDefinitions.definition(named: tool),
+                        MCPDomainGeneratedToolDefinitions.definition(named: tool),
                         "\(tool) shared schema"
                     )
                     let appProviders = hops.filter { $0.hasSuffix("ToolProvider") && $0 != "MCPDomainReadToolProvider" }

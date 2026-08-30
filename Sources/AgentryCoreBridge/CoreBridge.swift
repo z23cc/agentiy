@@ -440,6 +440,9 @@ protocol CoreRuntimeTransport: Sendable {
         rootID: Data
     ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
 
+    // ---- P8: Rust-owned canonical MCP/tool catalog ---------------------------------------
+    func mcpToolCatalogV1(identity: CoreRuntimeIdentity) throws -> AgentryUniFFIRaw.CoreMcpToolCatalogV1
+
     // ---- P7: Rust-owned filesystem watcher ingress mailbox -------------------------------
     func fileSystemWatcherOpenScope(
         identity: CoreRuntimeIdentity,
@@ -518,6 +521,14 @@ protocol CoreRuntimeTransport: Sendable {
     /// after the runtime is poisoned/invalidated -- see
     /// `AgentryUniFFIRaw.CoreRuntime.panicForensics()`.
     func panicForensics() -> [String]
+}
+
+extension CoreRuntimeTransport {
+    /// Test transports and legacy adapters may omit the optional catalog read until they opt in;
+    /// production UniFFI transport overrides this with the Rust export.
+    func mcpToolCatalogV1(identity: CoreRuntimeIdentity) throws -> AgentryUniFFIRaw.CoreMcpToolCatalogV1 {
+        throw CoreTransportError.unexpected("MCP catalog projection unavailable")
+    }
 }
 
 final class UniFFILeafCancellationHandle: CoreLeafCancellationHandle, @unchecked Sendable {
@@ -5064,6 +5075,15 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    // ---- P8: Rust-owned canonical MCP/tool catalog --------------------------------------------
+    func mcpToolCatalogV1(identity: CoreRuntimeIdentity) throws -> AgentryUniFFIRaw.CoreMcpToolCatalogV1 {
+        do {
+            return try runtime.mcpToolCatalogV1(identity: Self.rawIdentity(identity))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     // ---- P6-6: agent-claude-v1 ------------------------------------------------------------------
 
     func fileSystemWatcherOpenScope(
@@ -5472,6 +5492,19 @@ public actor AgentryCoreBridge {
 
     public func runtimeIdentity() throws -> CoreRuntimeIdentity {
         try requireIdentity()
+    }
+
+    /// Returns the Rust-owned immutable MCP/tool catalog projection. Swift callers may use this
+    /// for diagnostics or composition checks, but must not synthesize a fallback catalog when the
+    /// projection is unavailable or its digest/version is invalid.
+    public func mcpToolCatalog() throws -> CoreMcpToolCatalogSnapshot {
+        let identity = try requireIdentity()
+        do {
+            let raw = try transport.mcpToolCatalogV1(identity: identity)
+            return try CoreMcpToolCatalogSnapshot(raw: raw)
+        } catch {
+            throw mapTransportError(error)
+        }
     }
 
     public nonisolated func execute(_ command: CoreCommand) async throws -> CoreAdmission {

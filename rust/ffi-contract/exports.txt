@@ -4,6 +4,8 @@
 
 CoreRuntime.new(CoreConfig) throws -> CoreRuntime
 CoreRuntime.initialize() throws -> CoreHandshake
+# P8: immutable Rust-owned MCP/tool catalog projection; Swift consumes generated artifacts.
+CoreRuntime.mcpToolCatalogV1(RuntimeIdentity) throws -> CoreMcpToolCatalogV1
 CoreRuntime.execute(CommandEnvelope) throws -> AdmissionReceipt
 CoreRuntime.cancelOperation(RuntimeIdentity, OperationId) throws -> CancelReceipt
 CoreRuntime.openSubscription(SubscriptionScope) throws -> SubscriptionBootstrap

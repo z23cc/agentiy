@@ -1876,6 +1876,13 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func inventorySnapshotPage(identity: RuntimeIdentity, scopeId: String, handleId: UInt64, offset: UInt64, limit: UInt64) throws  -> CompactInventoryPageV1
 
+    /**
+     * Returns the immutable P8 MCP catalog projection. The identity argument keeps this
+     * read-only export behind the same runtime lifecycle and stale-identity fence as every
+     * other raw call; no Swift-side fallback is permitted when the catalog is unavailable.
+     */
+    func mcpToolCatalogV1(identity: RuntimeIdentity) throws  -> CoreMcpToolCatalogV1
+
     func openSubscription(scope: SubscriptionScope) throws  -> SubscriptionBootstrap
 
     /**
@@ -2714,6 +2721,21 @@ open func inventorySnapshotPage(identity: RuntimeIdentity, scopeId: String, hand
         FfiConverterUInt64.lower(handleId),
         FfiConverterUInt64.lower(offset),
         FfiConverterUInt64.lower(limit),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Returns the immutable P8 MCP catalog projection. The identity argument keeps this
+     * read-only export behind the same runtime lifecycle and stale-identity fence as every
+     * other raw call; no Swift-side fallback is permitted when the catalog is unavailable.
+     */
+open func mcpToolCatalogV1(identity: RuntimeIdentity)throws  -> CoreMcpToolCatalogV1  {
+    return try  FfiConverterTypeCoreMcpToolCatalogV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_mcp_tool_catalog_v1(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),uniffiCallStatus
     )
 })
 }
@@ -6382,6 +6404,362 @@ public func FfiConverterTypeCoreInventoryScopeConfigV1_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeCoreInventoryScopeConfigV1_lower(_ value: CoreInventoryScopeConfigV1) -> RustBuffer {
     return FfiConverterTypeCoreInventoryScopeConfigV1.lower(value)
+}
+
+
+public struct CoreMcpToolAliasV1: Equatable, Hashable {
+    public let alias: String
+    public let canonicalOperation: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(alias: String, canonicalOperation: String) {
+        self.alias = alias
+        self.canonicalOperation = canonicalOperation
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreMcpToolAliasV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMcpToolAliasV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMcpToolAliasV1 {
+        return
+            try CoreMcpToolAliasV1(
+                alias: FfiConverterString.read(from: &buf),
+                canonicalOperation: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreMcpToolAliasV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.alias, into: &buf)
+        FfiConverterString.write(value.canonicalOperation, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolAliasV1_lift(_ buf: RustBuffer) throws -> CoreMcpToolAliasV1 {
+    return try FfiConverterTypeCoreMcpToolAliasV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolAliasV1_lower(_ value: CoreMcpToolAliasV1) -> RustBuffer {
+    return FfiConverterTypeCoreMcpToolAliasV1.lower(value)
+}
+
+
+public struct CoreMcpToolCatalogV1: Equatable, Hashable {
+    public let catalogVersion: UInt16
+    public let definitionSchemaVersion: UInt16
+    public let digest: String
+    public let tools: [CoreMcpToolDefinitionV1]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(catalogVersion: UInt16, definitionSchemaVersion: UInt16, digest: String, tools: [CoreMcpToolDefinitionV1]) {
+        self.catalogVersion = catalogVersion
+        self.definitionSchemaVersion = definitionSchemaVersion
+        self.digest = digest
+        self.tools = tools
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreMcpToolCatalogV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMcpToolCatalogV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMcpToolCatalogV1 {
+        return
+            try CoreMcpToolCatalogV1(
+                catalogVersion: FfiConverterUInt16.read(from: &buf),
+                definitionSchemaVersion: FfiConverterUInt16.read(from: &buf),
+                digest: FfiConverterString.read(from: &buf),
+                tools: FfiConverterSequenceTypeCoreMcpToolDefinitionV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreMcpToolCatalogV1, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.catalogVersion, into: &buf)
+        FfiConverterUInt16.write(value.definitionSchemaVersion, into: &buf)
+        FfiConverterString.write(value.digest, into: &buf)
+        FfiConverterSequenceTypeCoreMcpToolDefinitionV1.write(value.tools, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolCatalogV1_lift(_ buf: RustBuffer) throws -> CoreMcpToolCatalogV1 {
+    return try FfiConverterTypeCoreMcpToolCatalogV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolCatalogV1_lower(_ value: CoreMcpToolCatalogV1) -> RustBuffer {
+    return FfiConverterTypeCoreMcpToolCatalogV1.lower(value)
+}
+
+
+public struct CoreMcpToolDefinitionV1: Equatable, Hashable {
+    public let name: String
+    public let description: String
+    /**
+     * Canonical compact JSON object for the MCP input schema.
+     */
+    public let inputSchemaJson: String
+    public let title: String?
+    public let readOnlyHint: Bool?
+    public let destructiveHint: Bool?
+    public let idempotentHint: Bool?
+    public let openWorldHint: Bool?
+    public let enabledByDefault: Bool
+    public let scope: String
+    public let registrationScopes: [String]
+    public let capability: String
+    public let admissionClass: String
+    public let operationPolicy: CoreMcpToolOperationPolicyV1?
+    public let limits: CoreMcpToolLimitsV1
+    public let sharedRead: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, description: String,
+        /**
+         * Canonical compact JSON object for the MCP input schema.
+         */inputSchemaJson: String, title: String?, readOnlyHint: Bool?, destructiveHint: Bool?, idempotentHint: Bool?, openWorldHint: Bool?, enabledByDefault: Bool, scope: String, registrationScopes: [String], capability: String, admissionClass: String, operationPolicy: CoreMcpToolOperationPolicyV1?, limits: CoreMcpToolLimitsV1, sharedRead: Bool) {
+        self.name = name
+        self.description = description
+        self.inputSchemaJson = inputSchemaJson
+        self.title = title
+        self.readOnlyHint = readOnlyHint
+        self.destructiveHint = destructiveHint
+        self.idempotentHint = idempotentHint
+        self.openWorldHint = openWorldHint
+        self.enabledByDefault = enabledByDefault
+        self.scope = scope
+        self.registrationScopes = registrationScopes
+        self.capability = capability
+        self.admissionClass = admissionClass
+        self.operationPolicy = operationPolicy
+        self.limits = limits
+        self.sharedRead = sharedRead
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreMcpToolDefinitionV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMcpToolDefinitionV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMcpToolDefinitionV1 {
+        return
+            try CoreMcpToolDefinitionV1(
+                name: FfiConverterString.read(from: &buf),
+                description: FfiConverterString.read(from: &buf),
+                inputSchemaJson: FfiConverterString.read(from: &buf),
+                title: FfiConverterOptionString.read(from: &buf),
+                readOnlyHint: FfiConverterOptionBool.read(from: &buf),
+                destructiveHint: FfiConverterOptionBool.read(from: &buf),
+                idempotentHint: FfiConverterOptionBool.read(from: &buf),
+                openWorldHint: FfiConverterOptionBool.read(from: &buf),
+                enabledByDefault: FfiConverterBool.read(from: &buf),
+                scope: FfiConverterString.read(from: &buf),
+                registrationScopes: FfiConverterSequenceString.read(from: &buf),
+                capability: FfiConverterString.read(from: &buf),
+                admissionClass: FfiConverterString.read(from: &buf),
+                operationPolicy: FfiConverterOptionTypeCoreMcpToolOperationPolicyV1.read(from: &buf),
+                limits: FfiConverterTypeCoreMcpToolLimitsV1.read(from: &buf),
+                sharedRead: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreMcpToolDefinitionV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.description, into: &buf)
+        FfiConverterString.write(value.inputSchemaJson, into: &buf)
+        FfiConverterOptionString.write(value.title, into: &buf)
+        FfiConverterOptionBool.write(value.readOnlyHint, into: &buf)
+        FfiConverterOptionBool.write(value.destructiveHint, into: &buf)
+        FfiConverterOptionBool.write(value.idempotentHint, into: &buf)
+        FfiConverterOptionBool.write(value.openWorldHint, into: &buf)
+        FfiConverterBool.write(value.enabledByDefault, into: &buf)
+        FfiConverterString.write(value.scope, into: &buf)
+        FfiConverterSequenceString.write(value.registrationScopes, into: &buf)
+        FfiConverterString.write(value.capability, into: &buf)
+        FfiConverterString.write(value.admissionClass, into: &buf)
+        FfiConverterOptionTypeCoreMcpToolOperationPolicyV1.write(value.operationPolicy, into: &buf)
+        FfiConverterTypeCoreMcpToolLimitsV1.write(value.limits, into: &buf)
+        FfiConverterBool.write(value.sharedRead, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolDefinitionV1_lift(_ buf: RustBuffer) throws -> CoreMcpToolDefinitionV1 {
+    return try FfiConverterTypeCoreMcpToolDefinitionV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolDefinitionV1_lower(_ value: CoreMcpToolDefinitionV1) -> RustBuffer {
+    return FfiConverterTypeCoreMcpToolDefinitionV1.lower(value)
+}
+
+
+public struct CoreMcpToolLimitsV1: Equatable, Hashable {
+    public let connectionLane: UInt32
+    public let resourceLease: UInt32?
+    public let resourceScope: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(connectionLane: UInt32, resourceLease: UInt32?, resourceScope: String?) {
+        self.connectionLane = connectionLane
+        self.resourceLease = resourceLease
+        self.resourceScope = resourceScope
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreMcpToolLimitsV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMcpToolLimitsV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMcpToolLimitsV1 {
+        return
+            try CoreMcpToolLimitsV1(
+                connectionLane: FfiConverterUInt32.read(from: &buf),
+                resourceLease: FfiConverterOptionUInt32.read(from: &buf),
+                resourceScope: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreMcpToolLimitsV1, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.connectionLane, into: &buf)
+        FfiConverterOptionUInt32.write(value.resourceLease, into: &buf)
+        FfiConverterOptionString.write(value.resourceScope, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolLimitsV1_lift(_ buf: RustBuffer) throws -> CoreMcpToolLimitsV1 {
+    return try FfiConverterTypeCoreMcpToolLimitsV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolLimitsV1_lower(_ value: CoreMcpToolLimitsV1) -> RustBuffer {
+    return FfiConverterTypeCoreMcpToolLimitsV1.lower(value)
+}
+
+
+public struct CoreMcpToolOperationPolicyV1: Equatable, Hashable {
+    public let argumentKey: String
+    public let operations: [String]
+    public let aliases: [CoreMcpToolAliasV1]
+    public let defaultOperation: String?
+    public let normalization: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(argumentKey: String, operations: [String], aliases: [CoreMcpToolAliasV1], defaultOperation: String?, normalization: String) {
+        self.argumentKey = argumentKey
+        self.operations = operations
+        self.aliases = aliases
+        self.defaultOperation = defaultOperation
+        self.normalization = normalization
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreMcpToolOperationPolicyV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreMcpToolOperationPolicyV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreMcpToolOperationPolicyV1 {
+        return
+            try CoreMcpToolOperationPolicyV1(
+                argumentKey: FfiConverterString.read(from: &buf),
+                operations: FfiConverterSequenceString.read(from: &buf),
+                aliases: FfiConverterSequenceTypeCoreMcpToolAliasV1.read(from: &buf),
+                defaultOperation: FfiConverterOptionString.read(from: &buf),
+                normalization: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreMcpToolOperationPolicyV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.argumentKey, into: &buf)
+        FfiConverterSequenceString.write(value.operations, into: &buf)
+        FfiConverterSequenceTypeCoreMcpToolAliasV1.write(value.aliases, into: &buf)
+        FfiConverterOptionString.write(value.defaultOperation, into: &buf)
+        FfiConverterString.write(value.normalization, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolOperationPolicyV1_lift(_ buf: RustBuffer) throws -> CoreMcpToolOperationPolicyV1 {
+    return try FfiConverterTypeCoreMcpToolOperationPolicyV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreMcpToolOperationPolicyV1_lower(_ value: CoreMcpToolOperationPolicyV1) -> RustBuffer {
+    return FfiConverterTypeCoreMcpToolOperationPolicyV1.lower(value)
 }
 
 
@@ -21258,6 +21636,30 @@ fileprivate struct FfiConverterOptionTypeCoreFileSystemWatcherPayloadV1: FfiConv
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreMcpToolOperationPolicyV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreMcpToolOperationPolicyV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreMcpToolOperationPolicyV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreMcpToolOperationPolicyV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCorePathMatchResolveLocationV1: FfiConverterRustBuffer {
     typealias SwiftType = CorePathMatchResolveLocationV1?
 
@@ -22572,6 +22974,56 @@ fileprivate struct FfiConverterSequenceTypeCoreFileSystemWatcherEventV1: FfiConv
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCoreMcpToolAliasV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreMcpToolAliasV1]
+
+    public static func write(_ value: [CoreMcpToolAliasV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreMcpToolAliasV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreMcpToolAliasV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreMcpToolAliasV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreMcpToolAliasV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCoreMcpToolDefinitionV1: FfiConverterRustBuffer {
+    typealias SwiftType = [CoreMcpToolDefinitionV1]
+
+    public static func write(_ value: [CoreMcpToolDefinitionV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCoreMcpToolDefinitionV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CoreMcpToolDefinitionV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CoreMcpToolDefinitionV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCoreMcpToolDefinitionV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCoreSearchScoreCandidateV1: FfiConverterRustBuffer {
     typealias SwiftType = [CoreSearchScoreCandidateV1]
 
@@ -23405,6 +23857,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_snapshot_page() != 11462) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_mcp_tool_catalog_v1() != 8300) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_open_subscription() != 16674) {

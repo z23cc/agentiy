@@ -1,5 +1,6 @@
 mod codegen;
 mod identity;
+mod mcp_catalog;
 
 use anyhow::{Context, Result, bail};
 use std::env;
@@ -9,7 +10,7 @@ fn main() -> Result<()> {
     let repo_root = find_repo_root(&env::current_dir()?)?;
     let mut arguments = env::args().skip(1);
     let command = arguments.next().context(
-        "usage: cargo run -p xtask -- generate [--check] | regen [--check] | archive --profile debug|release",
+        "usage: cargo run -p xtask -- generate [--check] | regen [--check] | mcp-catalog generate|check | archive --profile debug|release",
     )?;
     match command.as_str() {
         "generate" | "regen" => {
@@ -21,7 +22,21 @@ fn main() -> Result<()> {
             if let Some(extra) = arguments.next() {
                 bail!("unexpected argument: {extra}");
             }
-            codegen::run(&repo_root, check)
+            codegen::run(&repo_root, check)?;
+            mcp_catalog::run(&repo_root, check)
+        }
+        "mcp-catalog" => {
+            let mode = arguments
+                .next()
+                .context("mcp-catalog requires generate or check")?;
+            if let Some(extra) = arguments.next() {
+                bail!("unexpected argument: {extra}");
+            }
+            match mode.as_str() {
+                "generate" => mcp_catalog::run(&repo_root, false),
+                "check" => mcp_catalog::run(&repo_root, true),
+                other => bail!("unknown mcp-catalog mode: {other}"),
+            }
         }
         "archive" => {
             if arguments.next().as_deref() != Some("--profile") {

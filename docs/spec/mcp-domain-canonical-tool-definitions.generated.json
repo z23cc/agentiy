@@ -2,8 +2,8 @@
   "provenance" : {
     "authority" : "generated-review-projection-only",
     "formatVersion" : 1,
-    "generatedFrom" : "Sources/RepoPromptDomainRuntime/MCPDomainCanonicalToolDefinitions.swift",
-    "regeneration" : "mkdir -p .build && touch .build/update-mcp-domain-schema-review-snapshot && make dev-test FILTER=ToolCatalogSnapshotTests/testCanonicalDefinitionsMatchReadableGeneratedReviewSnapshot"
+    "generatedFrom" : "rust/crates/proto/catalog/mcp_catalog_v1.json",
+    "regeneration" : "make dev-cargo-codegen && make dev-cargo-codegen-check"
   },
   "tools" : [
     {

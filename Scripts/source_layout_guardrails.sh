@@ -561,19 +561,15 @@ PY
   then
     fail "M5 AI/Agent contract fixture drifted or is invalid JSON"
   fi
-  m3_read_tools=(
-    "get_code_structure:getCodeStructure" "get_file_tree:getFileTree" "read_file:readFile" "file_search:search"
-    "workspace_context:workspaceContext" "prompt:prompt" "oracle_chat_log:oracleChatLog" "git:git" "history:history"
-  )
-  for entry in "${m3_read_tools[@]}"; do
-    tool="${entry%%:*}"
-    identifier="${entry##*:}"
-    if ! grep -q "MCPWindowToolName\.$identifier" "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
-      fail "M3 shared read definition missing: $tool"
-    fi
-  done
-  if ! grep -q 'MCPDomainCanonicalToolDefinitions.definition(named:' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
-    fail "M3 shared read definitions must delegate to the canonical 27-tool schema authority"
+  if ! grep -q 'MCPDomainGeneratedToolDefinitions.records' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift" \
+    || ! grep -q 'filter(\\.sharedRead)' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
+    fail "M3 shared read definitions must consume the generated Rust catalog projection"
+  fi
+  if [[ -f "$domain_runtime_source_dir/MCPDomainCanonicalToolDefinitions.swift" ]]; then
+    fail "Swift MCP schema authority was not retired after the Rust catalog handoff"
+  fi
+  if grep -R -n --include='*.swift' -E 'Data\(base64Encoded|static[[:space:]]+let[[:space:]]+entries:[[:space:]]*\[MCPDomainToolCatalogEntry[[:space:]]*\][[:space:]]*=[[:space:]]*\[' "$domain_runtime_source_dir"; then
+    fail "Swift MCP catalog must not contain an opaque base64 or hand-authored entry table"
   fi
   print_matches \
     "RepoPromptDomainRuntime contains app/UI/provider implementation" \
@@ -905,6 +901,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-m5-ai-agent-interaction.md"
   "docs/spec/headless-mcp-domain-runtime-m6-host-extraction.md"
   "docs/spec/headless-mcp-domain-runtime-m7-cutover.md"
+  "docs/spec/headless-mcp-domain-runtime-p8-rust-mcp-catalog-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"

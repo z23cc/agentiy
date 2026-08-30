@@ -8,7 +8,7 @@ import XCTest
 
 final class DirectHeadlessCompositionTests: XCTestCase {
     func testHeadlessAgentManageSchemaAdvertisesListWorkflows() throws {
-        let definition = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: "agent_manage"))
+        let definition = try XCTUnwrap(MCPDomainGeneratedToolDefinitions.definition(named: "agent_manage"))
         let encoded = try JSONEncoder().encode(definition.inputSchema)
         let schema = try XCTUnwrap(String(data: encoded, encoding: .utf8))
         XCTAssertTrue(schema.contains("\"list_workflows\""), schema)
@@ -515,7 +515,7 @@ final class DirectHeadlessCompositionTests: XCTestCase {
             "history": ["op": .string("list_sessions")]
         ]
         XCTAssertEqual(arguments.count, 27)
-        XCTAssertEqual(Set(arguments.keys), Set(MCPDomainCanonicalToolDefinitions.definitions.map(\.name)))
+        XCTAssertEqual(Set(arguments.keys), Set(MCPDomainGeneratedToolDefinitions.definitions.map(\.name)))
 
         var dispatched: Set<String> = []
         for name in MCPDomainToolCatalog.orderedToolNames {

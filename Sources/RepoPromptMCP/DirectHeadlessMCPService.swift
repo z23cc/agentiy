@@ -276,7 +276,7 @@ actor DirectHeadlessMCPService {
                 )
         })
         await server.withMethodHandler(ListTools.self) { _ in
-            let tools = MCPDomainCanonicalToolDefinitions.definitions.compactMap { definition -> MCP.Tool? in
+            let tools = MCPDomainGeneratedToolDefinitions.definitions.compactMap { definition -> MCP.Tool? in
                 guard visibleNames.contains(definition.name) else { return nil }
                 let projected = definition.annotations.projected(
                     for: classification.annotationProfile

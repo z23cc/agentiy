@@ -31,7 +31,7 @@ final class MCPDomainStandaloneCompositionTests: XCTestCase {
                 history: backend
             )
         )
-        let canonicalNames = MCPDomainCanonicalToolDefinitions.definitions.map(\.name)
+        let canonicalNames = MCPDomainGeneratedToolDefinitions.definitions.map(\.name)
         XCTAssertEqual(canonicalNames, MCPDomainToolCatalog.orderedToolNames)
         XCTAssertEqual(canonicalNames.count, 27)
         XCTAssertEqual(Set(canonicalNames).count, 27)
@@ -68,7 +68,7 @@ final class MCPDomainStandaloneCompositionTests: XCTestCase {
 
     func testCanonicalBindContextIsGlobalAndHasNoWindowSelector() throws {
         let definition = try XCTUnwrap(
-            MCPDomainCanonicalToolDefinitions.definition(named: MCPGlobalToolName.bindContext)
+            MCPDomainGeneratedToolDefinitions.definition(named: MCPGlobalToolName.bindContext)
         )
         let schema = try XCTUnwrap(definition.inputSchema.objectValue)
         let properties = try XCTUnwrap(schema["properties"]?.objectValue)

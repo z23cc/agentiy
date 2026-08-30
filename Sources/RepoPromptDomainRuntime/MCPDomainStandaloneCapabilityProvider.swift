@@ -185,7 +185,7 @@ package enum MCPDomainStandaloneToolInstaller {
         )
 
         var rawBindings = readProvider.bindings
-        rawBindings.append(contentsOf: capabilityBindings(backends: backends))
+        rawBindings.append(contentsOf: try capabilityBindings(backends: backends))
         let names = rawBindings.map(\.definition.name)
         guard names.count == MCPDomainToolCatalog.orderedToolNames.count,
               Set(names) == Set(MCPDomainToolCatalog.orderedToolNames),
@@ -265,35 +265,35 @@ package enum MCPDomainStandaloneToolInstaller {
 
     private static func capabilityBindings(
         backends: MCPDomainStandaloneCapabilityBackends
-    ) -> [MCPDomainToolBinding] {
+    ) throws -> [MCPDomainToolBinding] {
         [
-            binding(MCPGlobalToolName.appSettings, backends.global.accessSettings),
-            binding(MCPGlobalToolName.bindContext, backends.global.routeContext),
-            binding(MCPGlobalToolName.manageWorkspaces, backends.global.manageWorkspaceLifecycle),
-            binding(MCPWindowToolName.manageSelection, backends.workspace.mutateSelection),
-            binding(MCPWindowToolName.fileActions, backends.filesystem.manageFiles),
-            binding(MCPWindowToolName.applyEdits, backends.filesystem.applyFileEdits),
-            binding(MCPWindowToolName.oracleUtils, backends.conversation.accessOracleUtilities),
-            binding(MCPWindowToolName.askOracle, backends.conversation.startOracleConversation),
-            binding(MCPWindowToolName.oracleSend, backends.conversation.continueOracleConversation),
-            binding(MCPWindowToolName.manageWorktree, backends.versionControl.manageWorktree),
-            binding(MCPWindowToolName.contextBuilder, backends.conversation.buildContext),
-            binding(MCPWindowToolName.askUser, backends.conversation.requestUserInput),
-            binding(MCPWindowToolName.agentExplore, backends.agent.explore),
-            binding(MCPWindowToolName.agentRun, backends.agent.run),
-            binding(MCPWindowToolName.agentManage, backends.agent.manage),
-            binding(MCPWindowToolName.shareThoughts, backends.agent.shareThoughts),
-            binding(MCPWindowToolName.setStatus, backends.agent.publishStatus),
-            binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction),
+            try binding(MCPGlobalToolName.appSettings, backends.global.accessSettings),
+            try binding(MCPGlobalToolName.bindContext, backends.global.routeContext),
+            try binding(MCPGlobalToolName.manageWorkspaces, backends.global.manageWorkspaceLifecycle),
+            try binding(MCPWindowToolName.manageSelection, backends.workspace.mutateSelection),
+            try binding(MCPWindowToolName.fileActions, backends.filesystem.manageFiles),
+            try binding(MCPWindowToolName.applyEdits, backends.filesystem.applyFileEdits),
+            try binding(MCPWindowToolName.oracleUtils, backends.conversation.accessOracleUtilities),
+            try binding(MCPWindowToolName.askOracle, backends.conversation.startOracleConversation),
+            try binding(MCPWindowToolName.oracleSend, backends.conversation.continueOracleConversation),
+            try binding(MCPWindowToolName.manageWorktree, backends.versionControl.manageWorktree),
+            try binding(MCPWindowToolName.contextBuilder, backends.conversation.buildContext),
+            try binding(MCPWindowToolName.askUser, backends.conversation.requestUserInput),
+            try binding(MCPWindowToolName.agentExplore, backends.agent.explore),
+            try binding(MCPWindowToolName.agentRun, backends.agent.run),
+            try binding(MCPWindowToolName.agentManage, backends.agent.manage),
+            try binding(MCPWindowToolName.shareThoughts, backends.agent.shareThoughts),
+            try binding(MCPWindowToolName.setStatus, backends.agent.publishStatus),
+            try binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction),
         ]
     }
 
     private static func binding(
         _ name: String,
         _ operation: @escaping @Sendable (DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
-    ) -> MCPDomainToolBinding {
-        guard let definition = MCPDomainCanonicalToolDefinitions.definition(named: name) else {
-            preconditionFailure("Missing canonical definition for \(name)")
+    ) throws -> MCPDomainToolBinding {
+        guard let definition = MCPDomainGeneratedToolDefinitions.definition(named: name) else {
+            throw MCPDomainToolRegistryError.unknownToolName(name)
         }
         return MCPDomainToolBinding(definition: definition) { arguments in
             let request = try DomainPhysicalToolRequest(arguments: arguments)

@@ -125,10 +125,10 @@ package struct MCPDomainToolConfiguredLimits: Equatable, Sendable {
     package let resourceScope: MCPDomainToolResourceLimitScope?
 }
 
-private enum MCPDomainToolOperationNormalization: Hashable, Sendable {
+private enum MCPDomainToolOperationNormalization: String, Hashable, Sendable {
     case exact
     case lowercased
-    case trimmedLowercased
+    case trimmedLowercased = "trimmed_lowercased"
 }
 
 private struct MCPDomainToolOperationPolicy: Hashable, Sendable {
@@ -186,6 +186,7 @@ package struct MCPDomainToolCatalogEntry: Hashable, Sendable {
     package let capability: MCPToolCapability
     package let admissionClass: MCPToolAdmissionClass
     fileprivate let operationPolicy: MCPDomainToolOperationPolicy?
+    fileprivate let registrationScopes: [MCPDomainToolScopeKind]
 
     package init(
         name: String,
@@ -198,6 +199,7 @@ package struct MCPDomainToolCatalogEntry: Hashable, Sendable {
         self.capability = capability
         self.admissionClass = admissionClass
         operationPolicy = nil
+        registrationScopes = scope == .application ? [.application] : [.window, .standalone]
     }
 
     fileprivate init(
@@ -205,107 +207,88 @@ package struct MCPDomainToolCatalogEntry: Hashable, Sendable {
         scope: MCPDomainToolScopeKind,
         capability: MCPToolCapability,
         admissionClass: MCPToolAdmissionClass,
-        operationPolicy: MCPDomainToolOperationPolicy
+        operationPolicy: MCPDomainToolOperationPolicy?
     ) {
         self.name = name
         self.scope = scope
         self.capability = capability
         self.admissionClass = admissionClass
         self.operationPolicy = operationPolicy
+        self.registrationScopes = scope == .application ? [.application] : [.window, .standalone]
+    }
+
+    fileprivate init(
+        name: String,
+        scope: MCPDomainToolScopeKind,
+        capability: MCPToolCapability,
+        admissionClass: MCPToolAdmissionClass,
+        operationPolicy: MCPDomainToolOperationPolicy?,
+        registrationScopes: [MCPDomainToolScopeKind]
+    ) {
+        self.name = name
+        self.scope = scope
+        self.capability = capability
+        self.admissionClass = admissionClass
+        self.operationPolicy = operationPolicy
+        self.registrationScopes = registrationScopes
     }
 
     package func supports(registrationScope: MCPDomainToolRegistrationScope) -> Bool {
-        switch (scope, registrationScope) {
-        case (.application, .application), (.window, .window), (.window, .standalone):
-            true
-        default:
-            false
-        }
+        registrationScopes.contains(registrationScope.kind)
     }
 }
 
 package enum MCPDomainToolCatalog {
-    package static let entries: [MCPDomainToolCatalogEntry] = [
-        .init(name: MCPGlobalToolName.appSettings, scope: .application, capability: .appSettings, admissionClass: .exclusive, operationPolicy: .init(
-            operations: ["list", "get", "set", "options"],
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPGlobalToolName.bindContext, scope: .application, capability: .workspaceMutate, admissionClass: .exclusive, operationPolicy: .init(
-            operations: ["list", "status", "bind"],
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPGlobalToolName.manageWorkspaces, scope: .application, capability: .workspaceMutate, admissionClass: .exclusive, operationPolicy: .init(
-            argumentKey: "action",
-            operations: ["list", "switch", "create", "hide", "unhide", "delete", "add_folder", "remove_folder", "list_tabs", "select_tab", "create_tab", "close_tab"],
-            normalization: .lowercased
-        )),
-        .init(name: MCPWindowToolName.manageSelection, scope: .window, capability: .selectionMutate, admissionClass: .exclusive, operationPolicy: .init(
-            operations: ["get", "add", "remove", "set", "clear", "preview", "promote", "demote"],
-            defaultOperation: "get",
-            normalization: .lowercased
-        )),
-        .init(name: MCPWindowToolName.fileActions, scope: .window, capability: .fileManagement, admissionClass: .exclusive, operationPolicy: .init(
-            argumentKey: "action",
-            operations: ["create", "delete", "move"],
-            aliases: ["rename": "move"],
-            normalization: .lowercased
-        )),
-        .init(name: MCPWindowToolName.getCodeStructure, scope: .window, capability: .structuralExplore, admissionClass: .smallRead),
-        .init(name: MCPWindowToolName.getFileTree, scope: .window, capability: .structuralExplore, admissionClass: .smallRead),
-        .init(name: MCPWindowToolName.readFile, scope: .window, capability: .fileRead, admissionClass: .fileRead),
-        .init(name: MCPWindowToolName.search, scope: .window, capability: .fileSearch, admissionClass: .fileSearch),
-        .init(name: MCPWindowToolName.workspaceContext, scope: .window, capability: .workspaceRead, admissionClass: .exclusive, operationPolicy: .init(
-            operations: ["snapshot", "export", "list_presets", "select_preset"],
-            defaultOperation: "snapshot",
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPWindowToolName.prompt, scope: .window, capability: .promptMutate, admissionClass: .exclusive, operationPolicy: .init(
-            operations: ["get", "set", "append", "clear", "export", "list_presets", "select_preset"],
-            defaultOperation: "get",
-            normalization: .lowercased
-        )),
-        .init(name: MCPWindowToolName.applyEdits, scope: .window, capability: .fileContentEdit, admissionClass: .exclusive),
-        .init(name: MCPWindowToolName.oracleUtils, scope: .window, capability: .conversationHelper, admissionClass: .control, operationPolicy: .init(
-            operations: ["models", "sessions"],
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPWindowToolName.askOracle, scope: .window, capability: .agentConversationSend, admissionClass: .control),
-        .init(name: MCPWindowToolName.oracleSend, scope: .window, capability: .conversationSend, admissionClass: .control),
-        .init(name: MCPWindowToolName.oracleChatLog, scope: .window, capability: .conversationLog, admissionClass: .smallRead),
-        .init(name: MCPWindowToolName.git, scope: .window, capability: .gitRead, admissionClass: .gitRead, operationPolicy: .init(
-            operations: ["status", "diff", "log", "show", "blame"],
-            defaultOperation: "status",
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPWindowToolName.manageWorktree, scope: .window, capability: .worktreeManage, admissionClass: .exclusive, operationPolicy: .init(
-            operations: ["list", "show", "create", "bind", "select", "unbind", "preview", "apply", "status", "continue", "abort"],
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPWindowToolName.contextBuilder, scope: .window, capability: .discovery, admissionClass: .control),
-        .init(name: MCPWindowToolName.askUser, scope: .window, capability: .userInteraction, admissionClass: .control),
-        .init(name: MCPWindowToolName.agentExplore, scope: .window, capability: .agentExploreControl, admissionClass: .control, operationPolicy: .init(
-            operations: ["start", "poll", "wait", "cancel"],
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPWindowToolName.agentRun, scope: .window, capability: .agentExternalControl, admissionClass: .control, operationPolicy: .init(
-            operations: ["start", "poll", "wait", "cancel", "steer", "respond"],
-            defaultOperation: "wait",
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPWindowToolName.agentManage, scope: .window, capability: .agentExternalControl, admissionClass: .control, operationPolicy: .init(
-            operations: ["list_agents", "list_sessions", "get_log", "extract_handoff", "create_session", "resume_session", "stop_session", "cleanup_sessions", "list_workflows"],
-            aliases: ["handoff": "extract_handoff"],
-            defaultOperation: "list_sessions",
-            normalization: .trimmedLowercased
-        )),
-        .init(name: MCPWindowToolName.shareThoughts, scope: .window, capability: .agentReasoningControl, admissionClass: .control),
-        .init(name: MCPWindowToolName.setStatus, scope: .window, capability: .statusPublication, admissionClass: .control),
-        .init(name: MCPWindowToolName.waitForNextInstruction, scope: .window, capability: .agentReasoningControl, admissionClass: .control),
-        .init(name: MCPWindowToolName.history, scope: .window, capability: .historyRead, admissionClass: .control, operationPolicy: .init(
-            operations: ["list_sessions", "search", "time", "get_session"],
-            normalization: .exact
-        ))
-    ]
+    /// Generated from the Rust-owned `mcp_catalog_v1.json`; this projection contains no
+    /// hand-authored tool names, schemas, capabilities, or operation policies.
+    package static let entries: [MCPDomainToolCatalogEntry] = MCPDomainGeneratedToolDefinitions.records.compactMap { record in
+        guard let scope = MCPDomainToolScopeKind(rawValue: record.scope),
+              let capability = MCPToolCapability(rawValue: record.capability),
+              let admissionClass = MCPToolAdmissionClass(rawValue: record.admissionClass)
+        else {
+            return nil
+        }
+        let registrationScopes = record.registrationScopes.compactMap(MCPDomainToolScopeKind.init(rawValue:))
+        guard registrationScopes.count == record.registrationScopes.count,
+              !registrationScopes.isEmpty,
+              registrationScopes.contains(scope)
+        else {
+            return nil
+        }
+        let operationPolicy = record.operationPolicy.flatMap { policy -> MCPDomainToolOperationPolicy? in
+            guard let normalization = MCPDomainToolOperationNormalization(rawValue: policy.normalization),
+                  !policy.argumentKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !policy.operations.isEmpty,
+                  Set(policy.operations).count == policy.operations.count,
+                  policy.operations.allSatisfy({ !$0.isEmpty }),
+                  policy.aliases.allSatisfy({ alias, canonical in
+                      !alias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          && policy.operations.contains(canonical)
+                  }),
+                  policy.defaultOperation.map({ policy.operations.contains($0) }) ?? true
+            else {
+                return nil
+            }
+            return MCPDomainToolOperationPolicy(
+                argumentKey: policy.argumentKey,
+                operations: policy.operations,
+                aliases: policy.aliases,
+                defaultOperation: policy.defaultOperation,
+                normalization: normalization
+            )
+        }
+        if record.operationPolicy != nil, operationPolicy == nil {
+            return nil
+        }
+        return MCPDomainToolCatalogEntry(
+            name: record.name,
+            scope: scope,
+            capability: capability,
+            admissionClass: admissionClass,
+            operationPolicy: operationPolicy,
+            registrationScopes: registrationScopes
+        )
+    }
 
     package static let orderedToolNames = entries.map(\.name)
     package static let globalToolNames = entries.filter { $0.scope == .application }.map(\.name)
@@ -349,18 +332,12 @@ package enum MCPDomainToolCatalog {
     package static func configuredLimits(for toolName: String) -> MCPDomainToolConfiguredLimits? {
         guard let entry = entry(named: toolName) else { return nil }
         let connectionLane: Int = switch entry.admissionClass {
-        case .exclusive:
-            MCPDomainToolAdmissionLimits.exclusiveConnection
-        case .control:
-            MCPDomainToolAdmissionLimits.controlConnection
-        case .smallRead:
-            MCPDomainToolAdmissionLimits.smallReadConnection
-        case .fileRead:
-            MCPDomainToolAdmissionLimits.fileReadConnection
-        case .gitRead:
-            MCPDomainToolAdmissionLimits.gitReadConnection
-        case .fileSearch:
-            MCPDomainToolAdmissionLimits.fileSearchConnection
+        case .exclusive: MCPDomainToolAdmissionLimits.exclusiveConnection
+        case .control: MCPDomainToolAdmissionLimits.controlConnection
+        case .smallRead: MCPDomainToolAdmissionLimits.smallReadConnection
+        case .fileRead: MCPDomainToolAdmissionLimits.fileReadConnection
+        case .gitRead: MCPDomainToolAdmissionLimits.gitReadConnection
+        case .fileSearch: MCPDomainToolAdmissionLimits.fileSearchConnection
         }
         let resource: (limit: Int, scope: MCPDomainToolResourceLimitScope)? = switch entry.admissionClass {
         case .exclusive:
@@ -368,14 +345,10 @@ package enum MCPDomainToolCatalog {
                 MCPDomainToolAdmissionLimits.exclusiveConnection,
                 entry.scope == .application ? .application : .window
             )
-        case .smallRead:
-            (MCPDomainToolAdmissionLimits.smallReadPerWindow, .window)
-        case .fileRead:
-            (MCPDomainToolAdmissionLimits.fileReadPerWindow, .window)
-        case .gitRead:
-            (MCPDomainToolAdmissionLimits.gitReadPerRepository, .repository)
-        case .control, .fileSearch:
-            nil
+        case .smallRead: (MCPDomainToolAdmissionLimits.smallReadPerWindow, .window)
+        case .fileRead: (MCPDomainToolAdmissionLimits.fileReadPerWindow, .window)
+        case .gitRead: (MCPDomainToolAdmissionLimits.gitReadPerRepository, .repository)
+        case .control, .fileSearch: nil
         }
         return MCPDomainToolConfiguredLimits(
             connectionLane: connectionLane,

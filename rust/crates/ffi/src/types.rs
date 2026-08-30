@@ -1,6 +1,10 @@
 use crate::errors::CoreError;
 use agentry_runtime as runtime;
 
+#[path = "mcp_catalog_types.rs"]
+mod mcp_catalog_types;
+pub use mcp_catalog_types::*;
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct RuntimeIdentity {
     pub abi_epoch: u32,

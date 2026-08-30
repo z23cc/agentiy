@@ -3,15 +3,15 @@
   "target": "aarch64-apple-darwin",
   "profile": "debug",
   "abiEpoch": 1,
-  "buildFingerprint": "60f2b95c401d720fa594a0ab9f89efc00c5bf263bd465dc4fce2cdedf8bdae15",
-  "bindingChecksum": "092c3c12c71469cb3eaf3c7ee9393e08a4239c50d309da6c17a51d47ce9626c4",
+  "buildFingerprint": "fd0b262c3cdd732b52f77b114d98e2f82b29a355b081e56bde2b80a89cba14e4",
+  "bindingChecksum": "ffa14ed325e24e59d8af3124bb8d81bb110026af0616d9d4e2e9a5208e2e4b4e",
   "fingerprintInputs": {
     "abiEpoch": 1,
     "payloadSchemaSet": [
       "agentry-envelope-v1"
     ],
-    "rustSourceRevision": "tree:a68ffb5a7395729b721e7e99f6de38376fce18480c5986e355c6af53ce3e2ffa",
-    "cargoLockDigest": "a948f98cd991ec153b96e957a507a52462b111019ef73e04b6a9f1d9930d9e6b",
+    "rustSourceRevision": "tree:679b5b369b52386942653267bdc2c560973b65a23e8b02536d1ad627f555618c",
+    "cargoLockDigest": "2acecf983336c203ddd12c9ad8e301b74c798ab4efcd322f2971a7e9a096f5af",
     "toolchainDigest": "c0b35902c233c129ea2846dc4a2de134070c6c963dec1a24ae56be401e246f03",
     "toolchainChannel": "1.97.1",
     "featureSet": [],
@@ -19,10 +19,11 @@
     "target": "aarch64-apple-darwin",
     "minimumMacosVersion": "14.0"
   },
-  "archiveSha256": "673b5396a798ef1e162bb4b721beb13430aea68498d41df0d1b4f44fb3471f3c",
+  "archiveSha256": "8fe431d72dffea95e2854de1551870d3a9ecbf167fb3395c7c12dbdf20707532",
   "expectedExports": [
     "CoreRuntime.new(CoreConfig) throws -> CoreRuntime",
     "CoreRuntime.initialize() throws -> CoreHandshake",
+    "CoreRuntime.mcpToolCatalogV1(RuntimeIdentity) throws -> CoreMcpToolCatalogV1",
     "CoreRuntime.execute(CommandEnvelope) throws -> AdmissionReceipt",
     "CoreRuntime.cancelOperation(RuntimeIdentity, OperationId) throws -> CancelReceipt",
     "CoreRuntime.openSubscription(SubscriptionScope) throws -> SubscriptionBootstrap",
@@ -69,9 +70,9 @@
     "CoreRuntime.agentShutdown(RuntimeIdentity, string) throws"
   ],
   "artifactSha256": {
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "c4dfb37fd737c864548ca0c6df864539b4861290005f37f0e4a4834a480634e8",
-    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "30a178c801e354e60450f74ad91eb908873ce1388264b8f372d7430cd896bdb6",
-    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "40b1f5dda64abc06ce1bf4011eef1c95b3416e9834344bf23ff1cb5857bd2e12",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCore.swift": "d6991c4fa3207ca149ec47ce8c9661036e1c61f3c36923ca98e04d473d272c78",
+    "Sources/AgentryUniFFIRaw/Generated/AgentryCoreBindingIdentity.swift": "49509d186ff47da5047c897da6e8e41e3bef022029d6191fa18eb744c969426b",
+    "Sources/CAgentryRustCore/include/AgentryCoreFFI.h": "6bd1f5eedc346fdd56c217ef82c47e66fbd4712850f40eb9772433230301bd3c",
     "Sources/CAgentryRustCore/include/module.modulemap": "159b51e29c1eeac0dfa7918e699510eaa9808e4a3a8094d5d10f8e86d886caa5",
     "rust/crates/ffi/src/generated/contract_identity.rs": "483e41dfbdc886162cecf64054c60432bb61ef4806f938a808c921a74d909f8e"
   }
