@@ -1989,8 +1989,29 @@ actor DomainWorkspaceContextAuthority {
             current.health = .writable
             current.externalDocument = nil
             current.fileMetadata = fileMetadata
+            let authorityPublication = persisted.authorityPublication
+            let expectedKind: DomainWorkspaceEventKind = plan.transition == .externalReload
+                ? .externalReloaded
+                : .workingStateCommitted
+            guard authorityPublication.previousSemanticGeneration == plan.semanticGeneration,
+                  authorityPublication.semanticGeneration > authorityPublication.previousSemanticGeneration,
+                  authorityPublication.previousPublicationSequence == publicationSequence,
+                  authorityPublication.publicationSequence == authorityPublication.previousPublicationSequence + 1,
+                  authorityPublication.catalogRevision == persisted.catalogRevision,
+                  authorityPublication.event.sequence == authorityPublication.publicationSequence,
+                  authorityPublication.event.catalogRevision == authorityPublication.catalogRevision,
+                  authorityPublication.event.kind == expectedKind,
+                  authorityPublication.event.workspaceID == workspaceID,
+                  authorityPublication.event.contextID == nil,
+                  authorityPublication.event.operationID == nil,
+                  authorityPublication.event.revisions == current.revisions,
+                  isLowercaseSHA256(authorityPublication.projectionDigest)
+            else {
+                throw DomainWorkspaceCommandAdmissionError.invalidReceipt
+            }
             records[workspaceID] = current
             readRegistrations.removeValue(forKey: workspaceID)
+            publicationSequence = authorityPublication.publicationSequence
             let diagnostic: String? = if persisted.revisionSidecarMissing {
                 plan.transition == .externalReload
                     ? "external_reload_revision_sidecar_missing"
@@ -1998,16 +2019,22 @@ actor DomainWorkspaceContextAuthority {
             } else {
                 plan.diagnostic
             }
-            publish(
-                kind: plan.transition == .externalReload
-                    ? .externalReloaded
-                    : .workingStateCommitted,
-                workspaceID: workspaceID,
-                contextID: nil,
-                operationID: nil,
-                revisions: current.revisions,
+            let event = DomainWorkspaceEvent(
+                runtimeID: identity.runtimeID,
+                sequence: authorityPublication.publicationSequence,
+                catalogRevision: authorityPublication.catalogRevision,
+                kind: authorityPublication.event.kind,
+                workspaceID: authorityPublication.event.workspaceID,
+                contextID: authorityPublication.event.contextID,
+                operationID: authorityPublication.event.operationID,
+                origin: nil,
+                revisions: authorityPublication.event.revisions,
+                timestamp: Date(),
                 diagnostic: diagnostic
             )
+            for continuation in subscribers.values {
+                continuation.yield(event)
+            }
             return .applied
         } catch let error as DomainPersistenceError {
             switch error {

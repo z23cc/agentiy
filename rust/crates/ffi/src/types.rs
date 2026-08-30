@@ -1038,6 +1038,9 @@ pub struct CoreWorkspaceExternalObservationRecoveryPlanV1 {
     pub catalog_revision: u64,
     pub workspace_revision: u64,
     pub aggregate_generation: u64,
+    pub semantic_generation: u64,
+    pub publication_sequence: u64,
+    pub semantic_projection_digest: String,
     pub current_document_digest: String,
     pub saved_digest: String,
     pub external_document_digest: String,
@@ -1060,6 +1063,24 @@ pub struct CoreWorkspaceExternalObservationRecoveryTransactionRequestV1 {
     pub raw_journal_bytes: Option<Vec<u8>>,
     pub effective_journal_bytes: Vec<u8>,
     pub external_document_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceClaimlessAuthorityPublicationReceiptV1 {
+    pub previous_semantic_generation: u64,
+    pub semantic_generation: u64,
+    pub previous_publication_sequence: u64,
+    pub publication_sequence: u64,
+    pub catalog_revision: u64,
+    pub projection_digest: String,
+    pub event: CoreWorkspaceProjectionPublicationEventV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreWorkspaceClaimlessAuthorityPublicationResponseV1 {
+    pub receipt: Option<CoreWorkspaceClaimlessAuthorityPublicationReceiptV1>,
+    pub error_kind: Option<CoreWorkspaceWorkingJournalValidationErrorKindV1>,
+    pub future_schema_version: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -1727,6 +1748,9 @@ impl From<CoreWorkspaceExternalObservationRecoveryPlanV1>
             catalog_revision: value.catalog_revision,
             workspace_revision: value.workspace_revision,
             aggregate_generation: value.aggregate_generation,
+            semantic_generation: value.semantic_generation,
+            publication_sequence: value.publication_sequence,
+            semantic_projection_digest: value.semantic_projection_digest,
             current_document_digest: value.current_document_digest,
             saved_digest: value.saved_digest,
             external_document_digest: value.external_document_digest,
@@ -1835,6 +1859,9 @@ impl From<runtime::workspace_persistence_journal::WorkspaceExternalObservationRe
             catalog_revision: value.catalog_revision,
             workspace_revision: value.workspace_revision,
             aggregate_generation: value.aggregate_generation,
+            semantic_generation: value.semantic_generation,
+            publication_sequence: value.publication_sequence,
+            semantic_projection_digest: value.semantic_projection_digest,
             current_document_digest: value.current_document_digest,
             saved_digest: value.saved_digest,
             external_document_digest: value.external_document_digest,
@@ -3080,6 +3107,24 @@ pub struct CoreWorkspaceAuthorityPublicationReceiptV1 {
     pub event_log_count: u64,
     pub projection_digest: String,
     pub event: CoreWorkspaceProjectionPublicationEventV1,
+}
+
+impl From<runtime::workspace_persistence_journal::WorkspaceClaimlessAuthorityPublicationReceiptV1>
+    for CoreWorkspaceClaimlessAuthorityPublicationReceiptV1
+{
+    fn from(
+        value: runtime::workspace_persistence_journal::WorkspaceClaimlessAuthorityPublicationReceiptV1,
+    ) -> Self {
+        Self {
+            previous_semantic_generation: value.previous_semantic_generation,
+            semantic_generation: value.semantic_generation,
+            previous_publication_sequence: value.previous_publication_sequence,
+            publication_sequence: value.publication_sequence,
+            catalog_revision: value.catalog_revision,
+            projection_digest: value.projection_digest,
+            event: core_workspace_projection_publication_event_v1(value.event),
+        }
+    }
 }
 
 impl From<runtime::workspace_persistence_journal::WorkspaceAuthorityPublicationReceiptV1>

@@ -204,6 +204,9 @@ public struct CoreWorkspaceExternalObservationRecoveryPlanV1: Sendable, Equatabl
     public let catalogRevision: UInt64
     public let workspaceRevision: UInt64
     public let aggregateGeneration: UInt64
+    public let semanticGeneration: UInt64
+    public let publicationSequence: UInt64
+    public let semanticProjectionDigest: String
     public let currentDocumentDigest: String
     public let savedDigest: String
     public let externalDocumentDigest: String
@@ -223,6 +226,9 @@ public struct CoreWorkspaceExternalObservationRecoveryPlanV1: Sendable, Equatabl
         catalogRevision: UInt64,
         workspaceRevision: UInt64,
         aggregateGeneration: UInt64,
+        semanticGeneration: UInt64,
+        publicationSequence: UInt64,
+        semanticProjectionDigest: String,
         currentDocumentDigest: String,
         savedDigest: String,
         externalDocumentDigest: String,
@@ -241,6 +247,9 @@ public struct CoreWorkspaceExternalObservationRecoveryPlanV1: Sendable, Equatabl
         self.catalogRevision = catalogRevision
         self.workspaceRevision = workspaceRevision
         self.aggregateGeneration = aggregateGeneration
+        self.semanticGeneration = semanticGeneration
+        self.publicationSequence = publicationSequence
+        self.semanticProjectionDigest = semanticProjectionDigest
         self.currentDocumentDigest = currentDocumentDigest
         self.savedDigest = savedDigest
         self.externalDocumentDigest = externalDocumentDigest
@@ -762,6 +771,34 @@ public struct CoreWorkspaceAuthorityPublicationReceipt: Sendable, Equatable {
         self.publicationSequence = publicationSequence
         self.eventLogFloorSequence = eventLogFloorSequence
         self.eventLogCount = eventLogCount
+        self.projectionDigest = projectionDigest
+        self.event = event
+    }
+}
+
+public struct CoreWorkspaceClaimlessAuthorityPublicationReceipt: Sendable, Equatable {
+    public let previousSemanticGeneration: UInt64
+    public let semanticGeneration: UInt64
+    public let previousPublicationSequence: UInt64
+    public let publicationSequence: UInt64
+    public let catalogRevision: UInt64
+    public let projectionDigest: String
+    public let event: CoreWorkspaceProjectionPublicationEvent
+
+    public init(
+        previousSemanticGeneration: UInt64,
+        semanticGeneration: UInt64,
+        previousPublicationSequence: UInt64,
+        publicationSequence: UInt64,
+        catalogRevision: UInt64,
+        projectionDigest: String,
+        event: CoreWorkspaceProjectionPublicationEvent
+    ) {
+        self.previousSemanticGeneration = previousSemanticGeneration
+        self.semanticGeneration = semanticGeneration
+        self.previousPublicationSequence = previousPublicationSequence
+        self.publicationSequence = publicationSequence
+        self.catalogRevision = catalogRevision
         self.projectionDigest = projectionDigest
         self.event = event
     }
@@ -1385,6 +1422,8 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
     private let reportOperation: @Sendable (CoreWorkspaceSaveActionReportV1) throws
         -> CoreWorkspaceJournalMutationDirectiveV1
     private let finishCommandAuthorityOperation: @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1
+    private let finishClaimlessAuthorityPublicationOperation: @Sendable () throws
+        -> CoreWorkspaceClaimlessAuthorityPublicationReceipt
     private let closeOperation: @Sendable () -> Void
 
     init(
@@ -1394,12 +1433,17 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
         report: @escaping @Sendable (CoreWorkspaceSaveActionReportV1) throws
             -> CoreWorkspaceJournalMutationDirectiveV1,
         finishCommandAuthority: @escaping @Sendable () -> CoreWorkspaceCommandAuthorityFinalizationV1,
+        finishClaimlessAuthorityPublication: @escaping @Sendable () throws
+            -> CoreWorkspaceClaimlessAuthorityPublicationReceipt = {
+                throw CoreTransportError.unexpected("claimless authority publication is unavailable")
+            },
         close: @escaping @Sendable () -> Void
     ) {
         acquireAuthorityPermitOperation = acquireAuthorityPermit
         nextOperation = next
         reportOperation = report
         finishCommandAuthorityOperation = finishCommandAuthority
+        finishClaimlessAuthorityPublicationOperation = finishClaimlessAuthorityPublication
         closeOperation = close
     }
 
@@ -1423,6 +1467,10 @@ public final class CoreWorkspaceJournalMutationTransactionV1: @unchecked Sendabl
 
     public func finishCommandAuthority() -> CoreWorkspaceCommandAuthorityFinalizationV1 {
         finishCommandAuthorityOperation()
+    }
+
+    public func finishClaimlessAuthorityPublication() throws -> CoreWorkspaceClaimlessAuthorityPublicationReceipt {
+        try finishClaimlessAuthorityPublicationOperation()
     }
 
     public func close() {

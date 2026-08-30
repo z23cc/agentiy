@@ -1195,7 +1195,10 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                             "workspace external observation transaction receipt is invalid"
                         )
                     }
-                    return Self.workspaceJournalMutationTransaction(rawTransaction)
+                    return Self.workspaceJournalMutationTransaction(
+                        rawTransaction,
+                        expectedClaimlessWorkspaceID: plan.workspaceID
+                    )
                 } catch let error as CoreWorkspaceWorkingJournalValidationError {
                     throw error
                 } catch {
@@ -1325,6 +1328,58 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                     dirtyRevision: $0.dirtyRevision
                 )
             }
+        )
+    }
+
+    private static func workspaceClaimlessAuthorityPublicationResponse(
+        _ response: AgentryUniFFIRaw.CoreWorkspaceClaimlessAuthorityPublicationResponseV1,
+        expectedWorkspaceID: UUID?
+    ) throws -> CoreWorkspaceClaimlessAuthorityPublicationReceipt {
+        if let errorKind = response.errorKind {
+            guard response.receipt == nil else {
+                throw CoreTransportError.unexpected(
+                    "workspace claimless authority publication response contains success and error"
+                )
+            }
+            throw try workspaceWorkingJournalValidationError(
+                errorKind,
+                futureSchemaVersion: response.futureSchemaVersion
+            )
+        }
+        guard response.futureSchemaVersion == nil,
+              let raw = response.receipt,
+              raw.semanticGeneration == raw.previousSemanticGeneration.addingReportingOverflow(1).partialValue,
+              !raw.semanticGeneration.addingReportingOverflow(1).overflow,
+              raw.publicationSequence == raw.previousPublicationSequence.addingReportingOverflow(1).partialValue,
+              !raw.previousPublicationSequence.addingReportingOverflow(1).overflow,
+              isSHA256(raw.projectionDigest),
+              raw.event.sequence == raw.publicationSequence,
+              raw.event.catalogRevision == raw.catalogRevision,
+              raw.event.operationId == nil,
+              raw.event.contextId == nil,
+              raw.event.workspaceId != nil,
+              raw.event.revisions.map(workspaceRevisionStateIsValid) == true,
+              raw.event.kind == .externalReloaded || raw.event.kind == .workingStateCommitted
+        else {
+            throw CoreTransportError.unexpected(
+                "workspace claimless authority publication receipt is invalid"
+            )
+        }
+        if let expectedWorkspaceID,
+           raw.event.workspaceId.flatMap(UUID.init(uuidString:)) != expectedWorkspaceID
+        {
+            throw CoreTransportError.unexpected(
+                "workspace claimless authority publication workspace identity is invalid"
+            )
+        }
+        return CoreWorkspaceClaimlessAuthorityPublicationReceipt(
+            previousSemanticGeneration: raw.previousSemanticGeneration,
+            semanticGeneration: raw.semanticGeneration,
+            previousPublicationSequence: raw.previousPublicationSequence,
+            publicationSequence: raw.publicationSequence,
+            catalogRevision: raw.catalogRevision,
+            projectionDigest: raw.projectionDigest,
+            event: try workspaceProjectionPublicationEvent(raw.event)
         )
     }
 
@@ -3229,6 +3284,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             catalogRevision: plan.catalogRevision,
             workspaceRevision: plan.workspaceRevision,
             aggregateGeneration: plan.aggregateGeneration,
+            semanticGeneration: plan.semanticGeneration,
+            publicationSequence: plan.publicationSequence,
+            semanticProjectionDigest: plan.semanticProjectionDigest,
             currentDocumentDigest: plan.currentDocumentDigest,
             savedDigest: plan.savedDigest,
             externalDocumentDigest: plan.externalDocumentDigest,
@@ -3254,6 +3312,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
               expectedFileURL.standardizedFileURL == request.expectedFileURL.standardizedFileURL,
               raw.catalogRevision == request.expectedCatalogRevision,
               raw.workspaceRevision == request.expectedWorkspaceRevision,
+              (raw.semanticGeneration > 0 || raw.publicationSequence == 0),
+              isSHA256(raw.semanticProjectionDigest),
               raw.currentDocumentDigest.caseInsensitiveCompare(request.currentDocumentDigest) == .orderedSame,
               raw.savedDigest.caseInsensitiveCompare(request.savedDigest) == .orderedSame,
               isSHA256(raw.currentDocumentDigest),
@@ -3325,6 +3385,9 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             catalogRevision: raw.catalogRevision,
             workspaceRevision: raw.workspaceRevision,
             aggregateGeneration: raw.aggregateGeneration,
+            semanticGeneration: raw.semanticGeneration,
+            publicationSequence: raw.publicationSequence,
+            semanticProjectionDigest: raw.semanticProjectionDigest,
             currentDocumentDigest: raw.currentDocumentDigest,
             savedDigest: raw.savedDigest,
             externalDocumentDigest: raw.externalDocumentDigest,
@@ -3341,7 +3404,8 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     }
 
     private static func workspaceJournalMutationTransaction(
-        _ rawTransaction: AgentryUniFFIRaw.CorePreparedWorkspaceJournalMutationTransactionV1
+        _ rawTransaction: AgentryUniFFIRaw.CorePreparedWorkspaceJournalMutationTransactionV1,
+        expectedClaimlessWorkspaceID: UUID? = nil
     ) -> CoreWorkspaceJournalMutationTransactionV1 {
         CoreWorkspaceJournalMutationTransactionV1(
             acquireAuthorityPermit: {
@@ -3366,6 +3430,18 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
             finishCommandAuthority: {
                 do { return try Self.workspaceCommandAuthorityFinalization(rawTransaction.finishCommandAuthority()) }
                 catch { return .init(commandFinalization: .unreconciled, authorityPublication: nil) }
+            },
+            finishClaimlessAuthorityPublication: {
+                do {
+                    return try Self.workspaceClaimlessAuthorityPublicationResponse(
+                        rawTransaction.finishClaimlessAuthorityPublication(),
+                        expectedWorkspaceID: expectedClaimlessWorkspaceID
+                    )
+                } catch let error as CoreWorkspaceWorkingJournalValidationError {
+                    throw error
+                } catch {
+                    throw Self.map(error)
+                }
             },
             close: { rawTransaction.close() }
         )

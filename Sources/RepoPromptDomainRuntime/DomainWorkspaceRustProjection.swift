@@ -44,6 +44,16 @@ package struct DomainWorkspaceAuthoritativeProjectionRead: Sendable, Equatable {
     package let projectionDigest: String?
 }
 
+package struct DomainWorkspaceClaimlessAuthorityPublicationReceipt: Sendable, Equatable {
+    package let previousSemanticGeneration: UInt64
+    package let semanticGeneration: UInt64
+    package let previousPublicationSequence: UInt64
+    package let publicationSequence: UInt64
+    package let catalogRevision: UInt64
+    package let projectionDigest: String
+    package let event: DomainWorkspaceAuthorityPublicationEvent
+}
+
 package struct DomainWorkspaceAuthorityProjectionSyncReceipt: Sendable, Equatable {
     package let previousGeneration: UInt64
     package let generation: UInt64
@@ -100,6 +110,28 @@ package enum DomainWorkspaceRustProjection {
                         health: coreHealth(context.health)
                     )
                 }
+            )
+        )
+    }
+
+    package static func claimlessAuthorityPublicationReceipt(
+        _ receipt: CoreWorkspaceClaimlessAuthorityPublicationReceipt
+    ) -> DomainWorkspaceClaimlessAuthorityPublicationReceipt {
+        DomainWorkspaceClaimlessAuthorityPublicationReceipt(
+            previousSemanticGeneration: receipt.previousSemanticGeneration,
+            semanticGeneration: receipt.semanticGeneration,
+            previousPublicationSequence: receipt.previousPublicationSequence,
+            publicationSequence: receipt.publicationSequence,
+            catalogRevision: receipt.catalogRevision,
+            projectionDigest: receipt.projectionDigest,
+            event: DomainWorkspaceAuthorityPublicationEvent(
+                sequence: receipt.event.sequence,
+                catalogRevision: receipt.event.catalogRevision,
+                kind: domainPublicationKind(receipt.event.kind),
+                workspaceID: receipt.event.workspaceID,
+                contextID: receipt.event.contextID,
+                operationID: receipt.event.operationID,
+                revisions: receipt.event.revisions.map(domainRevisionState)
             )
         )
     }

@@ -29,6 +29,10 @@ pub const WORKSPACE_SEMANTIC_PLANNER_VERSION_V1: u16 = 1;
 /// Contract for claimless filesystem observation.  Observation is deliberately separate from
 /// command admission: no operation id, fingerprint, or ledger entry is accepted on this path.
 pub const WORKSPACE_EXTERNAL_OBSERVATION_CONTRACT_VERSION_V1: u16 = 1;
+/// Additive contract for transaction-owned claimless authority publication. It is carried by the
+/// external-observation transaction so the FFI cannot accidentally route recovery through the
+/// command publication API.
+pub const WORKSPACE_CLAIMLESS_AUTHORITY_PUBLICATION_CONTRACT_VERSION_V1: u16 = 1;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_BYTES_V1: usize = 128 * 1024 * 1024;
 pub const MAXIMUM_WORKSPACE_WORKING_JOURNAL_OPERATION_COUNT_V1: usize = 256;
 pub const MAXIMUM_WORKSPACE_COMMAND_PROTECTED_IDENTITY_COUNT_V1: usize = 256;
@@ -129,7 +133,12 @@ pub struct WorkspaceExternalObservationRecoveryPlanV1 {
     pub expected_file_url: String,
     pub catalog_revision: u64,
     pub workspace_revision: u64,
+    /// Visible projection generation retained for diagnostics and compatibility with P5-13.
     pub aggregate_generation: u64,
+    /// Canonical semantic head fence used by the claimless publication finish.
+    pub semantic_generation: u64,
+    pub publication_sequence: u64,
+    pub semantic_projection_digest: String,
     pub current_document_digest: String,
     pub saved_digest: String,
     pub external_document_digest: String,
@@ -145,6 +154,25 @@ pub struct WorkspaceExternalObservationRecoveryPlanV1 {
     pub updated_at: f64,
     pub revision_sidecar_id: Option<String>,
     pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceClaimlessAuthorityPublicationFenceV1 {
+    pub semantic_generation: u64,
+    pub catalog_revision: u64,
+    pub publication_sequence: u64,
+    pub semantic_projection_digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceClaimlessAuthorityPublicationReceiptV1 {
+    pub previous_semantic_generation: u64,
+    pub semantic_generation: u64,
+    pub previous_publication_sequence: u64,
+    pub publication_sequence: u64,
+    pub catalog_revision: u64,
+    pub projection_digest: String,
+    pub event: WorkspaceProjectionPublicationEvent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -4395,6 +4423,10 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             return Err(WorkspaceWorkingJournalError::InvalidRevisionState);
         }
         let aggregate_generation = inner.authority_snapshot.generation;
+        let semantic_generation = inner.semantic_snapshot.generation;
+        let publication_sequence = inner.authority_publication.publication_sequence;
+        let semantic_projection_digest =
+            workspace_authority_projection_digest_v1(&inner.semantic_snapshot.entries)?;
         let entry = inner
             .semantic_snapshot
             .entries
@@ -4451,6 +4483,9 @@ impl PreparedWorkspaceCommandAdmissionV1 {
             catalog_revision,
             workspace_revision: request.expected_workspace_revision,
             aggregate_generation,
+            semantic_generation,
+            publication_sequence,
+            semantic_projection_digest,
             current_document_digest: request.current_document_digest,
             saved_digest: request.saved_digest,
             external_document_digest,
@@ -4530,7 +4565,7 @@ impl PreparedWorkspaceCommandAdmissionV1 {
                     .find(|entry| entry.projection.workspace_id == plan.workspace_id)
                     .map(|entry| entry.document_bytes.clone())
                     .ok_or(WorkspaceWorkingJournalError::InvalidIdentity)?
-            },
+            }
             WorkspaceExternalObservationCandidateV1::None => {
                 return Err(WorkspaceWorkingJournalError::InvalidTransaction);
             }
@@ -4572,8 +4607,8 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         };
         let request = WorkspaceJournalMutationTransactionRequestV1 {
             semantic_planner_version: WORKSPACE_SEMANTIC_PLANNER_VERSION_V1,
-            expected_workspace_id: plan.workspace_id,
-            expected_file_url: plan.expected_file_url,
+            expected_workspace_id: plan.workspace_id.clone(),
+            expected_file_url: plan.expected_file_url.clone(),
             catalog_revision: plan.catalog_revision,
             revision_operation_id,
             recovery_mode: true,
@@ -4581,13 +4616,37 @@ impl PreparedWorkspaceCommandAdmissionV1 {
         };
         let request_bytes =
             serde_json::to_vec(&request).map_err(|_| WorkspaceWorkingJournalError::Malformed)?;
-        prepare_workspace_journal_mutation_transaction_v1(
+        let mut transaction = prepare_workspace_journal_mutation_transaction_v1(
             raw_journal_bytes,
             effective_journal_bytes,
             &request_bytes,
             &candidate_document_bytes,
             Some(external_document_bytes),
-        )
+        )?;
+        let fence = WorkspaceClaimlessAuthorityPublicationFenceV1 {
+            semantic_generation: plan.semantic_generation,
+            catalog_revision: plan.catalog_revision,
+            publication_sequence: plan.publication_sequence,
+            semantic_projection_digest: plan.semantic_projection_digest.clone(),
+        };
+        {
+            let mut state = transaction
+                .inner
+                .lock()
+                .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+            if state.admission_finalization.is_some() || state.claimless_publication.is_some() {
+                return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+            }
+            state.claimless_publication = Some(WorkspaceClaimlessAuthorityPublicationStateV1 {
+                workspace_id: plan.workspace_id.clone(),
+                expected_file_url: plan.expected_file_url.clone(),
+                transition: plan.transition,
+                fence,
+                receipt: None,
+            });
+        }
+        transaction.authority_inner = Some(Arc::clone(&self.inner));
+        Ok(transaction)
     }
 
     pub fn acquire(
@@ -5717,6 +5776,9 @@ pub enum WorkspacePendingSaveRecoveryV1 {
 #[derive(Debug)]
 pub struct PreparedWorkspaceJournalMutationTransactionV1 {
     inner: Mutex<WorkspaceJournalMutationTransactionStateV1>,
+    /// Set only for automatic external-observation recovery. Command transactions never carry
+    /// this aggregate pointer and therefore cannot invoke the claimless publication finish.
+    authority_inner: Option<Arc<Mutex<WorkspaceCommandAdmissionInnerV1>>>,
 }
 
 #[derive(Debug)]
@@ -5797,9 +5859,19 @@ struct WorkspaceJournalMutationTransactionStateV1 {
     receipt: WorkspaceJournalMutationCommitReceiptV1,
     admission_finalization: Option<WorkspaceCommandAdmissionFinalizationV1>,
     authority_publication_kind: WorkspaceProjectionPublicationKind,
+    claimless_publication: Option<WorkspaceClaimlessAuthorityPublicationStateV1>,
     stage: WorkspaceJournalMutationStageV1,
     last_report: Option<WorkspaceJournalMutationActionReportV1>,
     last_result: Option<WorkspaceJournalMutationDirectiveV1>,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceClaimlessAuthorityPublicationStateV1 {
+    workspace_id: String,
+    expected_file_url: String,
+    transition: WorkspaceExternalObservationTransitionV1,
+    fence: WorkspaceClaimlessAuthorityPublicationFenceV1,
+    receipt: Option<WorkspaceClaimlessAuthorityPublicationReceiptV1>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5993,6 +6065,234 @@ impl PreparedWorkspaceJournalMutationTransactionV1 {
             operation,
             context_id,
         )
+    }
+
+    /// Finalizes a claimless external-observation transaction into the Rust-owned semantic and
+    /// visible projections. Physical directives must already be committed; this operation is the
+    /// only recovery publication path and is idempotent for the lifetime of the transaction.
+    pub fn finish_claimless_authority_publication(
+        &self,
+    ) -> Result<WorkspaceClaimlessAuthorityPublicationReceiptV1, WorkspaceWorkingJournalError> {
+        let authority_inner = self
+            .authority_inner
+            .as_ref()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if matches!(state.stage, WorkspaceJournalMutationStageV1::Closed) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let claimless = state
+            .claimless_publication
+            .clone()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if let Some(receipt) = &claimless.receipt {
+            return Ok(receipt.clone());
+        }
+        if state.admission_finalization.is_some()
+            || !matches!(state.stage, WorkspaceJournalMutationStageV1::Terminal)
+            || !matches!(
+                state.last_result,
+                Some(WorkspaceJournalMutationDirectiveV1::Committed { .. })
+            )
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let target = workspace_authority_from_journal_v1(&state.document_bytes, &state.committed)?;
+        let parsed = parse_validated_journal(&state.committed.canonical_bytes)?;
+        if parsed.workspace_id != claimless.workspace_id
+            || parsed.file_url != claimless.expected_file_url
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+        }
+        if !matches!(
+            claimless.transition,
+            WorkspaceExternalObservationTransitionV1::ExternalReload
+                | WorkspaceExternalObservationTransitionV1::ConflictRebase
+        ) {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        let (_, prepared_entries, _) =
+            prepare_workspace_authority_snapshot_v1(std::slice::from_ref(&target))?;
+        let target_entry = prepared_entries
+            .into_iter()
+            .next()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let mut aggregate = authority_inner
+            .lock()
+            .map_err(|_| WorkspaceWorkingJournalError::InvalidTransaction)?;
+        if aggregate.closed || aggregate.quarantined || aggregate.state.is_none() {
+            return Err(WorkspaceWorkingJournalError::InvalidTransaction);
+        }
+        // A command-owned publication may hold this head only briefly. Treat that race as a
+        // retryable stale recovery snapshot rather than degrading a healthy workspace.
+        if aggregate.authority_publication_reservation.is_some() {
+            return Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot);
+        }
+        let current_semantic_digest =
+            workspace_authority_projection_digest_v1(&aggregate.semantic_snapshot.entries)?;
+        let current_fence = WorkspaceClaimlessAuthorityPublicationFenceV1 {
+            semantic_generation: aggregate.semantic_snapshot.generation,
+            catalog_revision: aggregate.authority_publication.catalog_revision,
+            publication_sequence: aggregate.authority_publication.publication_sequence,
+            semantic_projection_digest: current_semantic_digest,
+        };
+        if current_fence != claimless.fence {
+            return Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot);
+        }
+        let target_id = claimless.workspace_id.as_str();
+        if !aggregate
+            .semantic_snapshot
+            .entries
+            .iter()
+            .any(|entry| entry.projection.workspace_id == target_id)
+        {
+            return Err(WorkspaceWorkingJournalError::InvalidIdentity);
+        }
+
+        fn replace_target_entry_v1(
+            entries: &[Arc<WorkspaceProjectionEntry>],
+            target_id: &str,
+            replacement: &Arc<WorkspaceProjectionEntry>,
+        ) -> Vec<Arc<WorkspaceProjectionEntry>> {
+            let mut next = entries
+                .iter()
+                .filter(|entry| entry.projection.workspace_id != target_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            next.push(Arc::clone(replacement));
+            next.sort_by(|left, right| {
+                left.projection
+                    .workspace_id
+                    .cmp(&right.projection.workspace_id)
+            });
+            next
+        }
+
+        let semantic_entries = replace_target_entry_v1(
+            &aggregate.semantic_snapshot.entries,
+            target_id,
+            &target_entry,
+        );
+        let visible_entries = replace_target_entry_v1(
+            &aggregate.authority_snapshot.entries,
+            target_id,
+            &target_entry,
+        );
+        let limits = WorkspaceProjectionCatalogLimits::default();
+        if semantic_entries.len() > limits.maximum_workspace_count
+            || visible_entries.len() > limits.maximum_workspace_count
+        {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: semantic_entries.len().max(visible_entries.len()),
+                maximum: limits.maximum_workspace_count,
+            });
+        }
+        let semantic_retained_bytes =
+            semantic_entries.iter().try_fold(0usize, |total, entry| {
+                total
+                    .checked_add(entry.retained_bytes)
+                    .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
+            })?;
+        let visible_retained_bytes = visible_entries.iter().try_fold(0usize, |total, entry| {
+            total
+                .checked_add(entry.retained_bytes)
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)
+        })?;
+        if semantic_retained_bytes > limits.maximum_retained_bytes
+            || visible_retained_bytes > limits.maximum_retained_bytes
+        {
+            return Err(WorkspaceWorkingJournalError::InputTooLarge {
+                actual: semantic_retained_bytes.max(visible_retained_bytes),
+                maximum: limits.maximum_retained_bytes,
+            });
+        }
+        // A successful claimless recovery is a semantic transition even when the working document
+        // bytes are unchanged (for example, a dirty rebase that advances only the saved baseline).
+        // Always advance the semantic generation so the typed receipt cannot describe a mutation
+        // that Bridge later rejects as non-progressing.
+        let semantic_generation = aggregate
+            .semantic_snapshot
+            .generation
+            .checked_add(1)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let visible_changed = aggregate.authority_snapshot.entries != visible_entries;
+        let visible_generation = if visible_changed {
+            aggregate
+                .authority_snapshot
+                .generation
+                .checked_add(1)
+                .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?
+        } else {
+            aggregate.authority_snapshot.generation
+        };
+        let publication_sequence = aggregate
+            .authority_publication
+            .publication_sequence
+            .checked_add(1)
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?;
+        let kind = match claimless.transition {
+            WorkspaceExternalObservationTransitionV1::ExternalReload => {
+                WorkspaceProjectionPublicationKind::ExternalReloaded
+            }
+            WorkspaceExternalObservationTransitionV1::ConflictRebase => {
+                WorkspaceProjectionPublicationKind::WorkingStateCommitted
+            }
+            WorkspaceExternalObservationTransitionV1::None => unreachable!(),
+        };
+        let event = WorkspaceProjectionPublicationEvent {
+            sequence: publication_sequence,
+            catalog_revision: claimless.fence.catalog_revision,
+            kind,
+            workspace_id: Some(claimless.workspace_id.clone()),
+            context_id: None,
+            operation_id: None,
+            revisions: Some(target.authority.revisions),
+        };
+        let mut publication = aggregate.authority_publication.clone();
+        publication.catalog_revision = event.catalog_revision;
+        publication.publication_sequence = publication_sequence;
+        publication.events.push_back(event.clone());
+        while publication.events.len() > MAXIMUM_WORKSPACE_PROJECTION_PUBLICATION_EVENT_COUNT {
+            publication.events.pop_front();
+        }
+        publication.event_log_floor_sequence = publication
+            .events
+            .front()
+            .map(|event| event.sequence)
+            .unwrap_or_else(|| publication.publication_sequence.saturating_add(1));
+        let semantic_projection_digest =
+            workspace_authority_projection_digest_v1(&semantic_entries)?;
+        let visible_projection_digest = workspace_authority_projection_digest_v1(&visible_entries)?;
+        aggregate.semantic_snapshot = Arc::new(WorkspaceProjectionSnapshot {
+            generation: semantic_generation,
+            retained_bytes: semantic_retained_bytes,
+            entries: semantic_entries,
+        });
+        aggregate.authority_snapshot = Arc::new(WorkspaceProjectionSnapshot {
+            generation: visible_generation,
+            retained_bytes: visible_retained_bytes,
+            entries: visible_entries,
+        });
+        aggregate.authority_publication = publication;
+        aggregate.authority_projection_digest = visible_projection_digest;
+        let receipt = WorkspaceClaimlessAuthorityPublicationReceiptV1 {
+            previous_semantic_generation: claimless.fence.semantic_generation,
+            semantic_generation,
+            previous_publication_sequence: claimless.fence.publication_sequence,
+            publication_sequence,
+            catalog_revision: claimless.fence.catalog_revision,
+            projection_digest: semantic_projection_digest,
+            event,
+        };
+        state
+            .claimless_publication
+            .as_mut()
+            .ok_or(WorkspaceWorkingJournalError::InvalidTransaction)?
+            .receipt = Some(receipt.clone());
+        Ok(receipt)
     }
 
     pub fn is_authoritative(&self) -> bool {
@@ -7843,10 +8143,12 @@ pub fn prepare_workspace_journal_mutation_transaction_v1(
             receipt,
             admission_finalization,
             authority_publication_kind,
+            claimless_publication: None,
             stage: WorkspaceJournalMutationStageV1::Journal,
             last_report: None,
             last_result: None,
         }),
+        authority_inner: None,
     })
 }
 
@@ -11299,6 +11601,30 @@ mod tests {
         assert_eq!(read.publication_sequence, 1);
     }
 
+    fn complete_external_observation_transaction(
+        transaction: &PreparedWorkspaceJournalMutationTransactionV1,
+    ) -> WorkspaceJournalMutationCommitReceiptV1 {
+        let mut directive = transaction.next_directive().expect("first directive");
+        loop {
+            directive = match directive {
+                WorkspaceJournalMutationDirectiveV1::Action {
+                    action_id,
+                    content_digest,
+                    ..
+                } => transaction
+                    .report_action(WorkspaceSaveActionReportV1::Success {
+                        action_id,
+                        written_digest: content_digest,
+                    })
+                    .expect("physical action report"),
+                WorkspaceJournalMutationDirectiveV1::Committed { receipt, .. } => return receipt,
+                WorkspaceJournalMutationDirectiveV1::Failed { failure } => {
+                    panic!("unexpected recovery failure: {failure:?}")
+                }
+            };
+        }
+    }
+
     #[test]
     fn external_observation_transaction_uses_rust_selected_candidate() {
         let saved = document("saved");
@@ -11313,15 +11639,250 @@ mod tests {
                 &external,
             ))
             .expect("clean plan");
-        let transaction = admission.begin_external_observation_recovery_transaction(
-            plan,
-            Some(&journal_bytes(None)),
-            &journal_bytes(None),
-            &external,
+        let transaction = admission
+            .begin_external_observation_recovery_transaction(
+                plan,
+                Some(&journal_bytes(None)),
+                &journal_bytes(None),
+                &external,
+            )
+            .expect("recovery transaction");
+        let committed = complete_external_observation_transaction(&transaction);
+        assert_eq!(
+            decoded(&committed.committed_journal)
+                .revisions
+                .working_revision,
+            1
         );
-        assert!(
-            transaction.is_ok(),
-            "unexpected transaction error: {transaction:?}"
+        let receipt = transaction
+            .finish_claimless_authority_publication()
+            .expect("claimless publication");
+        assert_eq!(receipt.previous_semantic_generation, 1);
+        assert_eq!(receipt.semantic_generation, 2);
+        assert_eq!(receipt.previous_publication_sequence, 1);
+        assert_eq!(receipt.publication_sequence, 2);
+        assert_eq!(receipt.catalog_revision, 7);
+        assert_eq!(
+            receipt.event.kind,
+            WorkspaceProjectionPublicationKind::ExternalReloaded
+        );
+        assert_eq!(receipt.event.workspace_id.as_deref(), Some(WORKSPACE_ID));
+        assert!(receipt.event.operation_id.is_none());
+        assert_eq!(
+            transaction
+                .finish_claimless_authority_publication()
+                .expect("idempotent publication"),
+            receipt
+        );
+        let read = admission
+            .authority_read(WORKSPACE_ID)
+            .expect("published target");
+        assert_eq!(read.publication_sequence, 2);
+        let external_digest = format!("{:x}", Sha256::digest(&external));
+        assert_eq!(
+            read.content_digest.as_deref(),
+            Some(external_digest.as_str())
+        );
+        assert_eq!(
+            admission
+                .diagnostics()
+                .expect("claimless recovery has no command ledger entry")
+                .global_operation_count,
+            0
+        );
+    }
+
+    #[test]
+    fn external_observation_claimless_publication_advances_generation_for_dirty_rebase() {
+        let saved = document("saved");
+        let working = document("working");
+        let external = document("external");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&[])
+            .expect("external observation admission");
+        admission
+            .publish_authority_state(
+                &[authority_workspace(WORKSPACE_ID, "working", 1)],
+                global_authority_draft(7, WorkspaceProjectionPublicationKind::Bootstrapped),
+            )
+            .expect("publish dirty baseline");
+        let plan = admission
+            .prepare_external_observation_recovery(external_observation_request(
+                1,
+                &working,
+                &saved_digest,
+                &external,
+            ))
+            .expect("dirty conflict plan");
+        assert_eq!(
+            plan.transition,
+            WorkspaceExternalObservationTransitionV1::ConflictRebase
+        );
+        let transaction = admission
+            .begin_external_observation_recovery_transaction(
+                plan.clone(),
+                Some(&journal_bytes(Some(&working))),
+                &journal_bytes(Some(&working)),
+                &external,
+            )
+            .expect("recovery transaction");
+        complete_external_observation_transaction(&transaction);
+        let receipt = transaction
+            .finish_claimless_authority_publication()
+            .expect("dirty claimless publication");
+        assert_eq!(
+            receipt.previous_semantic_generation,
+            plan.semantic_generation
+        );
+        assert_eq!(receipt.semantic_generation, plan.semantic_generation + 1);
+        assert_eq!(
+            receipt.event.kind,
+            WorkspaceProjectionPublicationKind::WorkingStateCommitted
+        );
+        assert_eq!(
+            receipt.previous_publication_sequence,
+            plan.publication_sequence
+        );
+        assert_eq!(receipt.publication_sequence, plan.publication_sequence + 1);
+    }
+
+    #[test]
+    fn external_observation_claimless_publication_rejects_quarantine_and_close_without_mutation() {
+        let saved = document("saved");
+        let external = document("external");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+        let admission = external_observation_admission(0);
+        let plan = admission
+            .prepare_external_observation_recovery(external_observation_request(
+                0,
+                &saved,
+                &saved_digest,
+                &external,
+            ))
+            .expect("clean plan");
+        let transaction = admission
+            .begin_external_observation_recovery_transaction(
+                plan,
+                Some(&journal_bytes(None)),
+                &journal_bytes(None),
+                &external,
+            )
+            .expect("recovery transaction");
+        complete_external_observation_transaction(&transaction);
+        let before = {
+            let inner = admission.inner.lock().expect("admission lock");
+            (
+                inner.semantic_snapshot.generation,
+                inner.authority_publication.publication_sequence,
+            )
+        };
+        admission.inner.lock().expect("admission lock").quarantined = true;
+        assert_eq!(
+            transaction.finish_claimless_authority_publication(),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        let after_quarantine = {
+            let inner = admission.inner.lock().expect("admission lock");
+            (
+                inner.semantic_snapshot.generation,
+                inner.authority_publication.publication_sequence,
+            )
+        };
+        assert_eq!(after_quarantine, before);
+        admission.inner.lock().expect("admission lock").quarantined = false;
+        admission.close();
+        assert_eq!(
+            transaction.finish_claimless_authority_publication(),
+            Err(WorkspaceWorkingJournalError::InvalidTransaction)
+        );
+        let after_close = {
+            let inner = admission.inner.lock().expect("admission lock");
+            (
+                inner.semantic_snapshot.generation,
+                inner.authority_publication.publication_sequence,
+            )
+        };
+        assert_eq!(after_close, before);
+    }
+
+    #[test]
+    fn external_observation_claimless_publication_preserves_unrelated_rows() {
+        let saved = document("saved");
+        let external = document("external");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+        let admission = PreparedWorkspaceCommandAdmissionV1::prepare(&[])
+            .expect("external observation admission");
+        let target = authority_workspace(WORKSPACE_ID, "saved", 0);
+        let other = authority_workspace(OTHER_WORKSPACE_ID, "other", 0);
+        admission
+            .publish_authority_state(
+                &[target, other.clone()],
+                global_authority_draft(7, WorkspaceProjectionPublicationKind::Bootstrapped),
+            )
+            .expect("publish baseline");
+        let plan = admission
+            .prepare_external_observation_recovery(external_observation_request(
+                0,
+                &saved,
+                &saved_digest,
+                &external,
+            ))
+            .expect("clean plan");
+        let transaction = admission
+            .begin_external_observation_recovery_transaction(
+                plan,
+                Some(&journal_bytes(None)),
+                &journal_bytes(None),
+                &external,
+            )
+            .expect("recovery transaction");
+        complete_external_observation_transaction(&transaction);
+        transaction
+            .finish_claimless_authority_publication()
+            .expect("claimless publication");
+        let other_read = admission
+            .authority_read(OTHER_WORKSPACE_ID)
+            .expect("unrelated row remains");
+        let other_digest = format!("{:x}", Sha256::digest(other.document_bytes.as_slice()));
+        assert_eq!(
+            other_read.content_digest.as_deref(),
+            Some(other_digest.as_str())
+        );
+        assert_eq!(other_read.publication_sequence, 2);
+    }
+
+    #[test]
+    fn external_observation_claimless_publication_rejects_stale_fence() {
+        let saved = document("saved");
+        let external = document("external");
+        let saved_digest = format!("{:x}", Sha256::digest(&saved));
+        let admission = external_observation_admission(0);
+        let plan = admission
+            .prepare_external_observation_recovery(external_observation_request(
+                0,
+                &saved,
+                &saved_digest,
+                &external,
+            ))
+            .expect("clean plan");
+        let transaction = admission
+            .begin_external_observation_recovery_transaction(
+                plan,
+                Some(&journal_bytes(None)),
+                &journal_bytes(None),
+                &external,
+            )
+            .expect("recovery transaction");
+        complete_external_observation_transaction(&transaction);
+        admission
+            .publish_authority_state(
+                &[authority_workspace(WORKSPACE_ID, "intervening", 0)],
+                global_authority_draft(7, WorkspaceProjectionPublicationKind::RoutingChanged),
+            )
+            .expect("intervening publication");
+        assert_eq!(
+            transaction.finish_claimless_authority_publication(),
+            Err(WorkspaceWorkingJournalError::StaleRecoverySnapshot)
         );
     }
 

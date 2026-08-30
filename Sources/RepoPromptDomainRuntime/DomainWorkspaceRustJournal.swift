@@ -175,6 +175,9 @@ package struct DomainExternalObservationRecoveryPlan: Sendable, Equatable {
     package let catalogRevision: UInt64
     package let workspaceRevision: UInt64
     package let aggregateGeneration: UInt64
+    package let semanticGeneration: UInt64
+    package let publicationSequence: UInt64
+    package let semanticProjectionDigest: String
     package let currentDocumentDigest: String
     package let savedDigest: String
     package let externalDocumentDigest: String
@@ -1050,6 +1053,16 @@ enum DomainWorkspaceRustJournal {
             DomainWorkspaceRustJournal.commandAuthorityFinalization(core.finishCommandAuthority())
         }
 
+        func finishClaimlessAuthorityPublication() throws -> DomainWorkspaceClaimlessAuthorityPublicationReceipt {
+            do {
+                return DomainWorkspaceRustProjection.claimlessAuthorityPublicationReceipt(
+                    try core.finishClaimlessAuthorityPublication()
+                )
+            } catch {
+                throw validator.mapCommandAdmissionError(error)
+            }
+        }
+
         func close() {
             core.close()
         }
@@ -1642,6 +1655,8 @@ enum DomainWorkspaceRustJournal {
                       plan.expectedFileURL.standardizedFileURL == fileURL.standardizedFileURL,
                       plan.catalogRevision == catalogRevision,
                       plan.workspaceRevision == workspaceRevision,
+                      plan.semanticGeneration > 0 || plan.publicationSequence == 0,
+                      PreparedValidator.isSHA256Digest(plan.semanticProjectionDigest),
                       PreparedValidator.isSHA256Digest(plan.currentDocumentDigest),
                       PreparedValidator.isSHA256Digest(plan.savedDigest),
                       PreparedValidator.isSHA256Digest(plan.externalDocumentDigest),
@@ -1656,6 +1671,9 @@ enum DomainWorkspaceRustJournal {
                     catalogRevision: plan.catalogRevision,
                     workspaceRevision: plan.workspaceRevision,
                     aggregateGeneration: plan.aggregateGeneration,
+                    semanticGeneration: plan.semanticGeneration,
+                    publicationSequence: plan.publicationSequence,
+                    semanticProjectionDigest: plan.semanticProjectionDigest,
                     currentDocumentDigest: plan.currentDocumentDigest,
                     savedDigest: plan.savedDigest,
                     externalDocumentDigest: plan.externalDocumentDigest,
@@ -1720,6 +1738,9 @@ enum DomainWorkspaceRustJournal {
                 catalogRevision: plan.catalogRevision,
                 workspaceRevision: plan.workspaceRevision,
                 aggregateGeneration: plan.aggregateGeneration,
+                semanticGeneration: plan.semanticGeneration,
+                publicationSequence: plan.publicationSequence,
+                semanticProjectionDigest: plan.semanticProjectionDigest,
                 currentDocumentDigest: plan.currentDocumentDigest,
                 savedDigest: plan.savedDigest,
                 externalDocumentDigest: plan.externalDocumentDigest,

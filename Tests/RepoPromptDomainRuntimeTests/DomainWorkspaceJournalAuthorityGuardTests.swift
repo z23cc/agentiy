@@ -72,7 +72,7 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
             "guard actionID == expectedActionID, activatedReceipt == nil",
             "guard receiptsMatch(receipt, outcome.receipt)",
             "guard receiptsMatch(receipt, activatedReceipt)",
-            "if let outcome = activatedOutcome() { return outcome }",
+            "if let outcome = try activatedOutcome() { return outcome }",
             "if let committed = activatedCommit() { return committed }",
             "validation.canonicalBytes",
             "plannedTombstone.canonicalBytes",
@@ -1247,6 +1247,54 @@ final class DomainWorkspaceJournalAuthorityGuardTests: XCTestCase {
         XCTAssertTrue(spec.contains("## P5-12a amendment — claim-bound protected-agent admission"))
         XCTAssertTrue(spec.contains("document bytes remain a separate physical input"))
         XCTAssertTrue(spec.contains("P5-13"))
+    }
+
+    func testP514ClaimlessExternalRecoveryPublishesRustReceiptDirectly() throws {
+        let root = repositoryRoot()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+
+        let authority = try source(
+            "Sources/RepoPromptDomainRuntime/DomainWorkspaceContextAuthority.swift"
+        )
+        let persistence = try source("Sources/RepoPromptDomainRuntime/DomainPersistence.swift")
+        let adapter = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceRustJournal.swift")
+        let projection = try source("Sources/RepoPromptDomainRuntime/DomainWorkspaceRustProjection.swift")
+        let bridge = try source("Sources/AgentryCoreBridge/CoreBridge.swift")
+        let bridgeModels = try source(
+            "Sources/AgentryCoreBridge/CoreWorkspaceDocumentProjection.swift"
+        )
+        let ffi = try source("rust/crates/ffi/src/api.rs")
+        let ffiTypes = try source("rust/crates/ffi/src/types.rs")
+        let runtime = try source("rust/crates/runtime/src/workspace_persistence_journal.rs")
+        let spec = try source("docs/spec/rust-workspace-document-projection-v1.md")
+
+        let recoveryStart = try XCTUnwrap(authority.range(of: "private func reconcileExternalObservation("))
+        let recoveryEnd = try XCTUnwrap(
+            authority.range(
+                of: "    private func createWorkspace(",
+                range: recoveryStart.upperBound ..< authority.endIndex
+            )
+        )
+        let recoveryPath = authority[recoveryStart.lowerBound ..< recoveryEnd.lowerBound]
+        XCTAssertTrue(recoveryPath.contains("persisted.authorityPublication"))
+        XCTAssertTrue(recoveryPath.contains("for continuation in subscribers.values"))
+        XCTAssertFalse(recoveryPath.contains("commandAdmission.publishAuthorityState("))
+        XCTAssertFalse(recoveryPath.contains("canonicalReadSnapshots()"))
+
+        XCTAssertTrue(persistence.contains("claimlessAuthorityPublication: DomainWorkspaceClaimlessAuthorityPublicationReceipt?"))
+        XCTAssertTrue(persistence.contains("transaction.finishClaimlessAuthorityPublication()"))
+        XCTAssertTrue(adapter.contains("func finishClaimlessAuthorityPublication() throws"))
+        XCTAssertTrue(projection.contains("DomainWorkspaceClaimlessAuthorityPublicationReceipt"))
+        XCTAssertTrue(bridge.contains("workspaceClaimlessAuthorityPublicationResponse"))
+        XCTAssertTrue(bridgeModels.contains("finishClaimlessAuthorityPublicationOperation"))
+        XCTAssertTrue(bridgeModels.contains("CoreWorkspaceClaimlessAuthorityPublicationReceipt"))
+        XCTAssertTrue(ffi.contains("finish_claimless_authority_publication"))
+        XCTAssertTrue(ffiTypes.contains("CoreWorkspaceClaimlessAuthorityPublicationResponseV1"))
+        XCTAssertTrue(runtime.contains("WorkspaceClaimlessAuthorityPublicationFenceV1"))
+        XCTAssertTrue(runtime.contains("finish_claimless_authority_publication"))
+        XCTAssertTrue(spec.contains("## P5-14 amendment — Rust-owned claimless recovery publication"))
     }
 
     private func repositoryRoot() -> URL {

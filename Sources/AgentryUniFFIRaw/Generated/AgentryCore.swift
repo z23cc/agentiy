@@ -1215,6 +1215,8 @@ public protocol CorePreparedWorkspaceJournalMutationTransactionV1Protocol: AnyOb
 
     func close()
 
+    func finishClaimlessAuthorityPublication() throws  -> CoreWorkspaceClaimlessAuthorityPublicationResponseV1
+
     func finishCommandAuthority() throws  -> CoreWorkspaceCommandAuthorityFinalizationV1
 
     func nextDirective() throws  -> CoreWorkspaceJournalMutationDirectiveResponseV1
@@ -1290,6 +1292,15 @@ open func close()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+open func finishClaimlessAuthorityPublication()throws  -> CoreWorkspaceClaimlessAuthorityPublicationResponseV1  {
+    return try  FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_corepreparedworkspacejournalmutationtransactionv1_finish_claimless_authority_publication(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
 open func finishCommandAuthority()throws  -> CoreWorkspaceCommandAuthorityFinalizationV1  {
@@ -7513,6 +7524,138 @@ public func FfiConverterTypeCoreWorkspaceCatalogValidationV1_lower(_ value: Core
 }
 
 
+public struct CoreWorkspaceClaimlessAuthorityPublicationReceiptV1: Equatable, Hashable {
+    public let previousSemanticGeneration: UInt64
+    public let semanticGeneration: UInt64
+    public let previousPublicationSequence: UInt64
+    public let publicationSequence: UInt64
+    public let catalogRevision: UInt64
+    public let projectionDigest: String
+    public let event: CoreWorkspaceProjectionPublicationEventV1
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(previousSemanticGeneration: UInt64, semanticGeneration: UInt64, previousPublicationSequence: UInt64, publicationSequence: UInt64, catalogRevision: UInt64, projectionDigest: String, event: CoreWorkspaceProjectionPublicationEventV1) {
+        self.previousSemanticGeneration = previousSemanticGeneration
+        self.semanticGeneration = semanticGeneration
+        self.previousPublicationSequence = previousPublicationSequence
+        self.publicationSequence = publicationSequence
+        self.catalogRevision = catalogRevision
+        self.projectionDigest = projectionDigest
+        self.event = event
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceClaimlessAuthorityPublicationReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceClaimlessAuthorityPublicationReceiptV1 {
+        return
+            try CoreWorkspaceClaimlessAuthorityPublicationReceiptV1(
+                previousSemanticGeneration: FfiConverterUInt64.read(from: &buf),
+                semanticGeneration: FfiConverterUInt64.read(from: &buf),
+                previousPublicationSequence: FfiConverterUInt64.read(from: &buf),
+                publicationSequence: FfiConverterUInt64.read(from: &buf),
+                catalogRevision: FfiConverterUInt64.read(from: &buf),
+                projectionDigest: FfiConverterString.read(from: &buf),
+                event: FfiConverterTypeCoreWorkspaceProjectionPublicationEventV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceClaimlessAuthorityPublicationReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.previousSemanticGeneration, into: &buf)
+        FfiConverterUInt64.write(value.semanticGeneration, into: &buf)
+        FfiConverterUInt64.write(value.previousPublicationSequence, into: &buf)
+        FfiConverterUInt64.write(value.publicationSequence, into: &buf)
+        FfiConverterUInt64.write(value.catalogRevision, into: &buf)
+        FfiConverterString.write(value.projectionDigest, into: &buf)
+        FfiConverterTypeCoreWorkspaceProjectionPublicationEventV1.write(value.event, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceClaimlessAuthorityPublicationReceiptV1 {
+    return try FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1_lower(_ value: CoreWorkspaceClaimlessAuthorityPublicationReceiptV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1.lower(value)
+}
+
+
+public struct CoreWorkspaceClaimlessAuthorityPublicationResponseV1: Equatable, Hashable {
+    public let receipt: CoreWorkspaceClaimlessAuthorityPublicationReceiptV1?
+    public let errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?
+    public let futureSchemaVersion: UInt16?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(receipt: CoreWorkspaceClaimlessAuthorityPublicationReceiptV1?, errorKind: CoreWorkspaceWorkingJournalValidationErrorKindV1?, futureSchemaVersion: UInt16?) {
+        self.receipt = receipt
+        self.errorKind = errorKind
+        self.futureSchemaVersion = futureSchemaVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreWorkspaceClaimlessAuthorityPublicationResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreWorkspaceClaimlessAuthorityPublicationResponseV1 {
+        return
+            try CoreWorkspaceClaimlessAuthorityPublicationResponseV1(
+                receipt: FfiConverterOptionTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1.read(from: &buf),
+                errorKind: FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.read(from: &buf),
+                futureSchemaVersion: FfiConverterOptionUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreWorkspaceClaimlessAuthorityPublicationResponseV1, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1.write(value.receipt, into: &buf)
+        FfiConverterOptionTypeCoreWorkspaceWorkingJournalValidationErrorKindV1.write(value.errorKind, into: &buf)
+        FfiConverterOptionUInt16.write(value.futureSchemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationResponseV1_lift(_ buf: RustBuffer) throws -> CoreWorkspaceClaimlessAuthorityPublicationResponseV1 {
+    return try FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationResponseV1_lower(_ value: CoreWorkspaceClaimlessAuthorityPublicationResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationResponseV1.lower(value)
+}
+
+
 public struct CoreWorkspaceCommandAdmissionAcquireResponseV1 {
     public let kind: CoreWorkspaceCommandAdmissionAcquireKindV1?
     public let identity: CoreWorkspaceCommandIdentityV1?
@@ -9037,6 +9180,9 @@ public struct CoreWorkspaceExternalObservationRecoveryPlanV1: Equatable, Hashabl
     public let catalogRevision: UInt64
     public let workspaceRevision: UInt64
     public let aggregateGeneration: UInt64
+    public let semanticGeneration: UInt64
+    public let publicationSequence: UInt64
+    public let semanticProjectionDigest: String
     public let currentDocumentDigest: String
     public let savedDigest: String
     public let externalDocumentDigest: String
@@ -9052,12 +9198,15 @@ public struct CoreWorkspaceExternalObservationRecoveryPlanV1: Equatable, Hashabl
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceId: String, expectedFileUrl: String, catalogRevision: UInt64, workspaceRevision: UInt64, aggregateGeneration: UInt64, currentDocumentDigest: String, savedDigest: String, externalDocumentDigest: String, changedContextIds: [String], addedContextIds: [String], removedContextIds: [String], disposition: CoreWorkspaceExternalObservationDispositionV1, candidate: CoreWorkspaceExternalObservationCandidateV1, transition: CoreWorkspaceExternalObservationTransitionV1, updatedAt: Double, revisionSidecarId: String?, diagnostic: String?) {
+    public init(workspaceId: String, expectedFileUrl: String, catalogRevision: UInt64, workspaceRevision: UInt64, aggregateGeneration: UInt64, semanticGeneration: UInt64, publicationSequence: UInt64, semanticProjectionDigest: String, currentDocumentDigest: String, savedDigest: String, externalDocumentDigest: String, changedContextIds: [String], addedContextIds: [String], removedContextIds: [String], disposition: CoreWorkspaceExternalObservationDispositionV1, candidate: CoreWorkspaceExternalObservationCandidateV1, transition: CoreWorkspaceExternalObservationTransitionV1, updatedAt: Double, revisionSidecarId: String?, diagnostic: String?) {
         self.workspaceId = workspaceId
         self.expectedFileUrl = expectedFileUrl
         self.catalogRevision = catalogRevision
         self.workspaceRevision = workspaceRevision
         self.aggregateGeneration = aggregateGeneration
+        self.semanticGeneration = semanticGeneration
+        self.publicationSequence = publicationSequence
+        self.semanticProjectionDigest = semanticProjectionDigest
         self.currentDocumentDigest = currentDocumentDigest
         self.savedDigest = savedDigest
         self.externalDocumentDigest = externalDocumentDigest
@@ -9093,6 +9242,9 @@ public struct FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1: Ff
                 catalogRevision: FfiConverterUInt64.read(from: &buf),
                 workspaceRevision: FfiConverterUInt64.read(from: &buf),
                 aggregateGeneration: FfiConverterUInt64.read(from: &buf),
+                semanticGeneration: FfiConverterUInt64.read(from: &buf),
+                publicationSequence: FfiConverterUInt64.read(from: &buf),
+                semanticProjectionDigest: FfiConverterString.read(from: &buf),
                 currentDocumentDigest: FfiConverterString.read(from: &buf),
                 savedDigest: FfiConverterString.read(from: &buf),
                 externalDocumentDigest: FfiConverterString.read(from: &buf),
@@ -9114,6 +9266,9 @@ public struct FfiConverterTypeCoreWorkspaceExternalObservationRecoveryPlanV1: Ff
         FfiConverterUInt64.write(value.catalogRevision, into: &buf)
         FfiConverterUInt64.write(value.workspaceRevision, into: &buf)
         FfiConverterUInt64.write(value.aggregateGeneration, into: &buf)
+        FfiConverterUInt64.write(value.semanticGeneration, into: &buf)
+        FfiConverterUInt64.write(value.publicationSequence, into: &buf)
+        FfiConverterString.write(value.semanticProjectionDigest, into: &buf)
         FfiConverterString.write(value.currentDocumentDigest, into: &buf)
         FfiConverterString.write(value.savedDigest, into: &buf)
         FfiConverterString.write(value.externalDocumentDigest, into: &buf)
@@ -20272,6 +20427,30 @@ fileprivate struct FfiConverterOptionTypeCoreWorkspaceCatalogValidationV1: FfiCo
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1: FfiConverterRustBuffer {
+    typealias SwiftType = CoreWorkspaceClaimlessAuthorityPublicationReceiptV1?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCoreWorkspaceClaimlessAuthorityPublicationReceiptV1.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCoreWorkspaceCommandAdmissionDiagnosticsV1: FfiConverterRustBuffer {
     typealias SwiftType = CoreWorkspaceCommandAdmissionDiagnosticsV1?
 
@@ -22024,6 +22203,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_close() != 56432) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_finish_claimless_authority_publication() != 10827) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_corepreparedworkspacejournalmutationtransactionv1_finish_command_authority() != 15812) {

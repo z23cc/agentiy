@@ -2194,6 +2194,21 @@ is retried through the existing bounded refresh path. Explicit command conflict 
 restart/full/target recovery retain their existing claim-bound or artifact-bound contracts and do
 not route through this automatic observation plan.
 
+## P5-14 amendment — Rust-owned claimless recovery publication
+
+P5-14 closes the remaining automatic-observation authority split. A successful claimless external recovery transaction must finish with a Rust-owned publication fence and typed receipt; Swift may no longer rebuild the canonical semantic snapshot or call `publishAuthorityState` for that recovery. The recovery plan carries the exact semantic head evidence captured before physical I/O: semantic projection generation, publication sequence, catalog revision, and lowercase semantic projection digest. The plan and transaction remain claimless: no command operation, fingerprint, replay ledger entry, or command admission reservation is created.
+
+After all physical journal/document/sidecar actions have committed, the transaction exposes a single-use `finishClaimlessAuthorityPublication` operation. Rust rechecks runtime identity, closed/quarantined state, the exact recovery fence, target workspace/file identity, and the transaction's committed journal/candidate bytes under the aggregate mutex. It derives the target semantic row entirely from those Rust-owned bytes, replaces only that target in the canonical semantic snapshot, and replaces the target in the visible snapshot while preserving unrelated routing overlays. It then assigns the next publication sequence and emits `externalReloaded` for a clean reload or `workingStateCommitted` for a dirty conflict, with nil operation ID. The receipt contains the prior/new semantic generation, prior/new publication sequence, catalog revision, projection digest, and typed event. A repeated finish returns the identical receipt without another event or ledger mutation; a stale fence, second target mutation, runtime close, or quarantine fails closed without mutation. The physical commit and Rust publication remain a bounded two-phase crash window; restart artifact recovery is the existing repair boundary.
+
+Swift receives only the typed fence/receipt and keeps physical lease, metadata, actor record mirror, routing overlay, health, and subscriber delivery responsibilities. The actor installs the receipt and updates its target mirror directly in the same turn; it must not invoke the whole-snapshot publication API for automatic recovery. Durable schema, canonical bytes, lease ownership, file ordering, and external behavior remain unchanged.
+
+### P5-14 done-when
+
+- Runtime tests prove exact fence validation, successful clean/dirty claimless publication, target replacement with unrelated routing-overlay preservation, idempotent repeated finish, no command ledger growth, stale/closed/quarantined rejection, and no aggregate mutation on failure.
+- FFI, generated bindings, Bridge, and Domain adapters expose typed claimless fence/receipt finish with runtime identity and contract validation; success/error responses are mutually exclusive.
+- Automatic actor recovery installs the Rust receipt directly and contains no recovery call to `publishAuthorityState`, `canonicalReadSnapshots`, or a Swift semantic decision/revision CAS.
+- Focused Runtime/FFI/Bridge/Domain tests, deterministic codegen, product builds, style/lint, guardrails, formatting, and diff checks pass. Any unrelated full-suite infrastructure hang is reported separately.
+
 ### P5-13 done-when
 
 - Runtime tests cover no-change, clean reload, dirty conflict, ordered context deltas, invalid or

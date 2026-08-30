@@ -187,6 +187,7 @@ struct DomainPersistenceExternalObservationCommit {
     let journal: DomainWorkingJournal
     let catalogRevision: UInt64
     let revisionSidecarMissing: Bool
+    let authorityPublication: DomainWorkspaceClaimlessAuthorityPublicationReceipt
 }
 
 struct DomainPersistenceDeleteCommit {
@@ -2052,7 +2053,8 @@ package struct DomainPersistenceCoordinator {
     ) throws -> (
         receipt: DomainWorkspaceJournalMutationCommitReceipt,
         finalization: DomainWorkspaceJournalMutationFinalization,
-        authorityFinalization: DomainWorkspaceCommandAuthorityFinalization
+        authorityFinalization: DomainWorkspaceCommandAuthorityFinalization,
+        claimlessAuthorityPublication: DomainWorkspaceClaimlessAuthorityPublicationReceipt?
     ) {
         let rawJournalBytes: Data? = switch snapshot.raw {
         case .absent: nil
@@ -2133,16 +2135,23 @@ package struct DomainPersistenceCoordinator {
                 && lhs.commandResult == rhs.commandResult
         }
 
-        func activatedOutcome() -> (
+        func claimlessPublication() throws -> DomainWorkspaceClaimlessAuthorityPublicationReceipt? {
+            guard externalObservationPlan != nil else { return nil }
+            return try transaction.finishClaimlessAuthorityPublication()
+        }
+
+        func activatedOutcome() throws -> (
             receipt: DomainWorkspaceJournalMutationCommitReceipt,
             finalization: DomainWorkspaceJournalMutationFinalization,
-            authorityFinalization: DomainWorkspaceCommandAuthorityFinalization
+            authorityFinalization: DomainWorkspaceCommandAuthorityFinalization,
+            claimlessAuthorityPublication: DomainWorkspaceClaimlessAuthorityPublicationReceipt?
         )? {
             guard let activatedReceipt, let activatedFinalization else { return nil }
             return (
                 activatedReceipt,
                 activatedFinalization,
-                transaction.finishCommandAuthority()
+                transaction.finishCommandAuthority(),
+                try claimlessPublication()
             )
         }
 
@@ -2157,7 +2166,7 @@ package struct DomainPersistenceCoordinator {
                 postAuthoritySuccessFinalization
             ):
                 guard actionID == expectedActionID, activatedReceipt == nil else {
-                    if let outcome = activatedOutcome() { return outcome }
+                    if let outcome = try activatedOutcome() { return outcome }
                     throw DomainPersistenceError.corruptJournal
                 }
                 do {
@@ -2185,7 +2194,8 @@ package struct DomainPersistenceCoordinator {
                         return (
                             authorityReceipt,
                             postAuthoritySuccessFinalization,
-                            transaction.finishCommandAuthority()
+                            transaction.finishCommandAuthority(),
+                            try claimlessPublication()
                         )
                     }
                 } catch {
@@ -2208,7 +2218,7 @@ package struct DomainPersistenceCoordinator {
                 postAuthorityFailureFinalization
             ):
                 guard actionID == expectedActionID, activatedReceipt != nil else {
-                    if let outcome = activatedOutcome() { return outcome }
+                    if let outcome = try activatedOutcome() { return outcome }
                     throw DomainPersistenceError.corruptJournal
                 }
                 do {
@@ -2228,7 +2238,8 @@ package struct DomainPersistenceCoordinator {
                         return (
                             activatedReceipt,
                             postAuthoritySuccessFinalization,
-                            transaction.finishCommandAuthority()
+                            transaction.finishCommandAuthority(),
+                            try claimlessPublication()
                         )
                     }
                 } catch {
@@ -2245,13 +2256,14 @@ package struct DomainPersistenceCoordinator {
                         return (
                             activatedReceipt,
                             activatedFinalization,
-                            transaction.finishCommandAuthority()
+                            transaction.finishCommandAuthority(),
+                            try claimlessPublication()
                         )
                     }
                 }
 
             case let .committed(receipt, finalization):
-                guard let outcome = activatedOutcome() else {
+                guard let outcome = try activatedOutcome() else {
                     throw DomainPersistenceError.corruptJournal
                 }
                 guard receiptsMatch(receipt, outcome.receipt),
@@ -2260,11 +2272,12 @@ package struct DomainPersistenceCoordinator {
                 return (
                     receipt,
                     finalization,
-                    transaction.finishCommandAuthority()
+                    transaction.finishCommandAuthority(),
+                    try claimlessPublication()
                 )
 
             case let .failed(failure):
-                if let outcome = activatedOutcome() { return outcome }
+                if let outcome = try activatedOutcome() { return outcome }
                 switch failure {
                 case .cancelled:
                     throw DomainPersistenceError.cancelled
@@ -2888,10 +2901,14 @@ package struct DomainPersistenceCoordinator {
             case .finalized: false
             case .revisionSidecarMissing: true
             }
+            guard let authorityPublication = result.claimlessAuthorityPublication else {
+                throw DomainPersistenceError.corruptJournal
+            }
             return DomainPersistenceExternalObservationCommit(
                 journal: result.receipt.committedJournal.journal,
                 catalogRevision: result.receipt.catalogRevision,
-                revisionSidecarMissing: revisionSidecarMissing
+                revisionSidecarMissing: revisionSidecarMissing,
+                authorityPublication: authorityPublication
             )
         }
     }

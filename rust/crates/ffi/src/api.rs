@@ -56,6 +56,7 @@ use crate::types::{
 use crate::types::{
     CoreWorkspaceAuthorityProjectionSyncReceiptV1, CoreWorkspaceAuthorityPublicationDraftV1,
     CoreWorkspaceAuthorityPublicationReceiptV1, CoreWorkspaceAuthorityReadV1,
+    CoreWorkspaceClaimlessAuthorityPublicationResponseV1,
     CoreWorkspaceProjectionPublishedWorkspaceV1,
 };
 use agentry_proto::{Envelope, PayloadKind};
@@ -1258,6 +1259,33 @@ impl CorePreparedWorkspaceJournalMutationTransactionV1 {
 
 #[uniffi::export]
 impl CorePreparedWorkspaceJournalMutationTransactionV1 {
+    pub fn finish_claimless_authority_publication(
+        &self,
+    ) -> Result<CoreWorkspaceClaimlessAuthorityPublicationResponseV1, CoreError> {
+        self.panic_guard.call(|| {
+            let _terminal_guard = self
+                .terminal_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.require_live_runtime()?;
+            match self.inner.finish_claimless_authority_publication() {
+                Ok(receipt) => Ok(CoreWorkspaceClaimlessAuthorityPublicationResponseV1 {
+                    receipt: Some(receipt.into()),
+                    error_kind: None,
+                    future_schema_version: None,
+                }),
+                Err(error) => {
+                    let (error_kind, future_schema_version) = workspace_journal_error(error);
+                    Ok(CoreWorkspaceClaimlessAuthorityPublicationResponseV1 {
+                        receipt: None,
+                        error_kind: Some(error_kind),
+                        future_schema_version,
+                    })
+                }
+            }
+        })
+    }
+
     pub fn acquire_authority_permit(
         &self,
     ) -> Result<Arc<CoreWorkspaceCreateAuthorityPermitV1>, CoreError> {
