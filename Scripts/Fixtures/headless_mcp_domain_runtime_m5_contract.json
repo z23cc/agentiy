@@ -8,7 +8,7 @@
     "wait_for_next_user_instruction"
   ],
   "authority": {
-    "session_store": "DomainAgentRunSessionStore",
+    "session_store": "DomainAgentSessionAuthority",
     "interaction": "DomainInteractionBroker",
     "activity": "DomainActivityCenter",
     "credential_fallback": "DomainCredentialEnvelopeStore",

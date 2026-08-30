@@ -9,7 +9,7 @@ import RepoPromptDomainRuntime
 // execution boundary stays explicit about ownership:
 //
 // - Canonical lifecycle/durable settlement stays owned by the domain layer
-//   (`DomainAgentRunSessionStore`); `TerminalSettlementHooks` only adapts into
+//   (`DomainAgentSessionAuthority`); `TerminalSettlementHooks` only adapts into
 //   that authority and must remain exactly-once per run attempt ownership.
 // - Presentation, binding-observation, queued-work recovery, and persistence
 //   hooks are host projections. They must never become backend authority: a
@@ -120,7 +120,7 @@ extension AgentModeRunService {
     }
 
     /// Adapter into the canonical durable terminal settlement authority
-    /// (`DomainAgentRunSessionStore` behind the host's publication surface).
+    /// (`DomainAgentSessionAuthority` behind the host's publication surface).
     ///
     /// Authority: canonical lifecycle command/event adaptation. The terminal
     /// commit barrier drives these exactly once per settled run attempt.

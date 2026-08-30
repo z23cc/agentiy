@@ -7,7 +7,7 @@ import Foundation
 // vocabulary shared by every Agent run execution host (the app-hosted Agent Mode
 // runtime and the direct/headless composition). They intentionally carry no
 // session, tab, transcript, or UI state: canonical durable lifecycle remains
-// owned by `DomainAgentRunSessionStore`, and hosts adapt these values into their
+// owned by `DomainAgentSessionAuthority`, and hosts adapt these values into their
 // own projection layers.
 
 /// Why an Agent run is being cancelled.
@@ -52,7 +52,7 @@ package enum DomainAgentRunCancellationCompletion: Equatable, Hashable {
 /// authority: the execution host applies the disposition through its attachment
 /// persistence boundary. It carries no files, session state, or presentation
 /// policy, and does not change the canonical run lifecycle authority owned by
-/// `DomainAgentRunSessionStore`.
+/// `DomainAgentSessionAuthority`.
 package enum DomainAgentRunAttachmentTurnDisposition: Equatable, Hashable, Sendable {
     /// Return the turn's attachments to the host's pending attachment state.
     case restoreToPending
@@ -65,7 +65,7 @@ package enum DomainAgentRunAttachmentTurnDisposition: Equatable, Hashable, Senda
 /// Provider-neutral terminal result of one Agent run execution.
 ///
 /// Exactly one outcome may settle a run. Hosts map an outcome into their
-/// canonical settlement surface (`DomainAgentRunSessionStore.publishTerminal`
+/// canonical settlement surface (`DomainAgentSessionAuthority.publishTerminal`
 /// via a `DomainAgentRunTerminalPublicationEnvelope`); the store enforces
 /// exactly-once publication per epoch regardless of host.
 package struct DomainAgentRunTerminalOutcome: Equatable, Hashable {

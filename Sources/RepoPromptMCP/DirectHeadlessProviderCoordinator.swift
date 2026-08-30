@@ -7,7 +7,7 @@ actor DirectHeadlessProviderCoordinator {
     typealias BeginEpoch = @Sendable (
         _ registration: DomainAgentSessionRegistration,
         _ activationID: UUID
-    ) async -> DomainAgentRunSessionStore.EpochBeginResult
+    ) async -> DomainAgentSessionAuthority.EpochBeginResult
 
     struct ProviderDescriptor {
         let id: String
@@ -65,7 +65,7 @@ actor DirectHeadlessProviderCoordinator {
         self.context = context
         self.settingsStore = settingsStore
         self.environment = environment
-        let sessionStore = runtime.agentSessionStore
+        let sessionStore = runtime.agentSessionAuthority
         self.beginEpoch = beginEpoch ?? { registration, activationID in
             await sessionStore.beginEpoch(
                 registration: registration,
@@ -166,18 +166,18 @@ actor DirectHeadlessProviderCoordinator {
             arguments: args,
             connectionID: connectionID
         )
-        let registration = await runtime.agentSessionStore.register(sessionID: sessionID)
+        let registration = await runtime.agentSessionAuthority.register(sessionID: sessionID)
         let activationID = UUID()
         let epoch: DomainAgentRunTurnEpoch
         switch await beginEpoch(registration, activationID) {
         case let .accepted(value): epoch = value
         case let .rejected(reason):
             await context.rollbackSessionRootOverlay(rootOverlayPreparation)
-            await runtime.agentSessionStore.cleanup(registration: registration)
+            await runtime.agentSessionAuthority.cleanup(registration: registration)
             throw MCPError.internalError(reason)
         case .stale:
             await context.rollbackSessionRootOverlay(rootOverlayPreparation)
-            await runtime.agentSessionStore.cleanup(registration: registration)
+            await runtime.agentSessionAuthority.cleanup(registration: registration)
             throw MCPError.internalError("agent epoch changed during start")
         }
         let name = args["session_name"]?.stringValue
@@ -203,7 +203,7 @@ actor DirectHeadlessProviderCoordinator {
         )
         runningRecord.latestSnapshot = running
         agents[sessionID] = runningRecord
-        await runtime.agentSessionStore.noteSnapshot(
+        await runtime.agentSessionAuthority.noteSnapshot(
             running,
             cursor: DomainAgentSessionWaitCursor(registration: registration, epoch: epoch)
         )
@@ -231,7 +231,7 @@ actor DirectHeadlessProviderCoordinator {
             await finishAgent(sessionID: sessionID, outcome: outcome)
         }
         agents[sessionID]?.task = task
-        await runtime.agentSessionStore.installCancellationHandler(registration: registration) { [weak self] in
+        await runtime.agentSessionAuthority.installCancellationHandler(registration: registration) { [weak self] in
             await self?.cancelAgent(sessionID: sessionID)
         }
 
@@ -247,7 +247,7 @@ actor DirectHeadlessProviderCoordinator {
             return await restoredOrExpired(sessionID)
         }
         if timeout <= 0 {
-            return await runtime.agentSessionStore.snapshot(for: record.registration)
+            return await runtime.agentSessionAuthority.snapshot(for: record.registration)
                 ?? retainedSnapshot(record)
         }
         return await waitAgent(sessionID: sessionID, timeout: timeout)
@@ -255,7 +255,7 @@ actor DirectHeadlessProviderCoordinator {
 
     func waitAgent(sessionID: UUID, timeout: TimeInterval) async -> DomainAgentRunSnapshot {
         guard let record = agents[sessionID] else { return await restoredOrExpired(sessionID) }
-        let disposition = await runtime.agentSessionStore.waitUntilInteresting(
+        let disposition = await runtime.agentSessionAuthority.waitUntilInteresting(
             registration: record.registration,
             timeoutSeconds: max(0, timeout)
         )
@@ -265,14 +265,14 @@ actor DirectHeadlessProviderCoordinator {
         case let .noteworthySnapshot(wake):
             return wake.snapshot
         case .timedOut:
-            return await runtime.agentSessionStore.snapshot(for: record.registration)
+            return await runtime.agentSessionAuthority.snapshot(for: record.registration)
                 ?? retainedSnapshot(record)
         case .cancelled:
             return DomainAgentRunSnapshot.expired(sessionID: sessionID, statusText: "wait cancelled")
         case .expired:
             return retainedSnapshot(record)
         case let .epochAdvanced(epoch, _):
-            return await runtime.agentSessionStore.snapshot(
+            return await runtime.agentSessionAuthority.snapshot(
                 for: DomainAgentSessionWaitCursor(registration: record.registration, epoch: epoch)
             ) ?? retainedSnapshot(record)
         case let .terminalPublicationRejected(_, reason):
@@ -287,12 +287,12 @@ actor DirectHeadlessProviderCoordinator {
     func listAgents() async -> [Value] {
         var values: [Value] = []
         for record in agents.values {
-            let current = await runtime.agentSessionStore.snapshot(for: record.registration)
+            let current = await runtime.agentSessionAuthority.snapshot(for: record.registration)
                 ?? retainedSnapshot(record)
             values.append(current.toValue())
         }
         let activeIDs = Set(agents.keys)
-        for metadata in await runtime.agentSessionStore.restoredMetadata() where !activeIDs.contains(metadata.sessionID) {
+        for metadata in await runtime.agentSessionAuthority.restoredMetadata() where !activeIDs.contains(metadata.sessionID) {
             values.append(.object([
                 "session_id": .string(metadata.sessionID.uuidString),
                 "status": .string(metadata.state.rawValue),
@@ -305,7 +305,7 @@ actor DirectHeadlessProviderCoordinator {
 
     func updateStatus(sessionID: UUID, name: String?) async throws -> Value {
         guard var record = agents[sessionID] else { throw MCPError.invalidParams("unknown session_id") }
-        let previous = await runtime.agentSessionStore.snapshot(for: record.registration)
+        let previous = await runtime.agentSessionAuthority.snapshot(for: record.registration)
             ?? retainedSnapshot(record)
         record.name = name
         let current = snapshot(
@@ -317,7 +317,7 @@ actor DirectHeadlessProviderCoordinator {
         )
         record.latestSnapshot = current
         agents[sessionID] = record
-        await runtime.agentSessionStore.noteSnapshot(
+        await runtime.agentSessionAuthority.noteSnapshot(
             current,
             cursor: DomainAgentSessionWaitCursor(registration: record.registration, epoch: record.epoch)
         )
@@ -329,7 +329,7 @@ actor DirectHeadlessProviderCoordinator {
         let current = snapshot(record: record, status: .waitingForInput, statusText: "Thoughts shared", assistantText: text, failure: nil)
         record.latestSnapshot = current
         agents[sessionID] = record
-        await runtime.agentSessionStore.noteSnapshotAndWakeWaiters(
+        await runtime.agentSessionAuthority.noteSnapshotAndWakeWaiters(
             current,
             cursor: DomainAgentSessionWaitCursor(registration: record.registration, epoch: record.epoch),
             reason: .instructionDelivered
@@ -400,7 +400,7 @@ actor DirectHeadlessProviderCoordinator {
 
     /// Settles one agent run through the neutral terminal-outcome contract.
     /// The canonical exactly-once settlement stays owned by
-    /// `DomainAgentRunSessionStore.publishTerminal`.
+    /// `DomainAgentSessionAuthority.publishTerminal`.
     private func finishAgent(
         sessionID: UUID,
         outcome: DomainAgentRunTerminalOutcome
@@ -416,7 +416,7 @@ actor DirectHeadlessProviderCoordinator {
         )
         record.latestSnapshot = terminal
         agents[sessionID] = record
-        _ = await runtime.agentSessionStore.publishTerminal(
+        _ = await runtime.agentSessionAuthority.publishTerminal(
             DomainAgentRunTerminalPublicationEnvelope(epoch: record.epoch, snapshot: terminal),
             registration: record.registration,
             commitID: UUID(),
@@ -464,7 +464,7 @@ actor DirectHeadlessProviderCoordinator {
     }
 
     private func restoredOrExpired(_ sessionID: UUID) async -> DomainAgentRunSnapshot {
-        if let metadata = await runtime.agentSessionStore.restoredMetadata().first(where: { $0.sessionID == sessionID }) {
+        if let metadata = await runtime.agentSessionAuthority.restoredMetadata().first(where: { $0.sessionID == sessionID }) {
             return DomainAgentRunSnapshot.expired(
                 sessionID: sessionID,
                 statusText: "Session is \(metadata.state.rawValue) and has no live provider process in this runtime."

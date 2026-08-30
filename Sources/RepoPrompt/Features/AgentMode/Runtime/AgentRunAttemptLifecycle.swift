@@ -12,7 +12,7 @@ import Foundation
 /// named single-writer operations.
 ///
 /// Authority boundaries:
-/// - Canonical durable lifecycle stays owned by `DomainAgentRunSessionStore`;
+/// - Canonical durable lifecycle stays owned by `DomainAgentSessionAuthority`;
 ///   this facade never publishes durable state and never makes settlement
 ///   decisions.
 /// - `AgentRunTerminalCommitBarrier` remains the only settlement driver; the

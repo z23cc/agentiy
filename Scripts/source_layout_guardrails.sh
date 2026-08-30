@@ -509,6 +509,7 @@ if [[ -d "$domain_runtime_source_dir" ]]; then
     "MCPDomainReadToolProvider.swift"
     "DomainAgentSessionModels.swift"
     "DomainAgentRunSessionStore.swift"
+    "DomainAgentSessionAuthority.swift"
     "DomainInteractionBroker.swift"
     "DomainCredentialEnvelope.swift"
     "DomainActivityCenter.swift"
@@ -560,6 +561,10 @@ assert value["public_contract"]["proxy_behavior_changed"] is False
 PY
   then
     fail "M5 AI/Agent contract fixture drifted or is invalid JSON"
+  fi
+  if ! grep -q 'package actor DomainAgentSessionAuthority' "$domain_runtime_source_dir/DomainAgentRunSessionStore.swift" \
+    || ! grep -q 'typealias DomainAgentRunSessionStore = DomainAgentSessionAuthority' "$domain_runtime_source_dir/DomainAgentRunSessionStore.swift"; then
+    fail "agent-session lifecycle authority lost its canonical name or compatibility alias"
   fi
   if ! grep -q 'MCPDomainGeneratedToolDefinitions.records' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift" \
     || ! grep -q 'filter(\\.sharedRead)' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
@@ -905,6 +910,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p9-catalog-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p10-admission-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p11-execution-handoff.md"
+  "docs/spec/headless-mcp-domain-runtime-p12-agent-session-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"

@@ -924,7 +924,7 @@ actor DirectHeadlessHistoryBackend: DomainHistoryCapabilityBackend {
     func inspectHistory(_ request: DomainPhysicalReadRequest) async throws -> DomainPhysicalToolResult {
         let args = try request.request.mcpArguments()
         let op = args["op"]?.stringValue ?? "list_sessions"
-        let allMetadata = await runtime.agentSessionStore.restoredMetadata()
+        let allMetadata = await runtime.agentSessionAuthority.restoredMetadata()
         let sessionFilter = args["session_id"]?.stringValue.flatMap(UUID.init(uuidString:))
         let metadata = sessionFilter.map { id in allMetadata.filter { $0.sessionID == id } } ?? allMetadata
         let limit = max(1, min(args["limit"]?.intValue ?? 30, 100))

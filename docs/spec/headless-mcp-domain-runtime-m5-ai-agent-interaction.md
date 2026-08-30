@@ -8,7 +8,7 @@ The machine-readable gate is frozen in `Scripts/Fixtures/headless_mcp_domain_run
 
 | Concern | M5 authority | Compatibility boundary |
 |---|---|---|
-| Agent sessions | `DomainAgentRunSessionStore` and neutral `DomainAgentRun*` DTOs | `AgentRunSessionStore` and `AgentRunMCPSnapshot` are app adapters; view models project/provider-drive state but do not own lifecycle |
+| Agent sessions | `DomainAgentSessionAuthority` and neutral `DomainAgentRun*` DTOs | `DomainAgentSessionAuthority`/`AgentRunSessionStore` are source-compatible app adapters; view models project/provider-drive state but do not own lifecycle |
 | Oracle, Context Builder, Agent, and session-control invocation | `MCPDomainLongRunningToolProvider` wraps the canonical binding once | physical app providers retain public schemas, result envelopes, transcript/history behavior, and process implementation |
 | interaction | `DomainInteractionBroker` | negotiated elicitation is installed per capable MCP connection; app UI is a cancellable presentation adapter; absent providers return immediately unavailable |
 | child launch handoff | `DomainPrivateChildLaunchHarness`, `DomainChildLaunchCarrier`, and the M2 `DomainRunLaunchToken` issuer | injected tests prove carrier/token issuance; Claude/Codex/ACP launch boundaries consume the task-local carrier; real endpoint issuance/connectivity is M6B |
@@ -65,7 +65,7 @@ Every migrated call publishes runtime activity with a monotonic sequence. Active
 
 Focused evidence belongs to:
 
-- `DomainAgentRunSessionStoreTests` including concurrent cancel/publish/ingest/wake/shutdown and persistence CAS/degraded/retention cases;
+- `DomainAgentSessionAuthorityTests` including concurrent cancel/publish/ingest/wake/shutdown and persistence CAS/degraded/retention cases;
 - `DomainInteractionBrokerTests` and `DomainInteractionAppSeamTests`;
 - `DomainCredentialAndChildLaunchTests` with owned-byte inspection;
 - `DomainActivityAndLongRunningProviderTests` including typed routing denial and configured interaction timeout;

@@ -96,6 +96,8 @@ package struct DomainRuntimeSnapshot: Sendable {
     package let workspaceMutationAccess: DomainWorkspaceMutationAccessSnapshot
     package let routingRevision: UInt64
     package let agentSessionPersistenceHealth: DomainAgentSessionPersistenceHealth
+    package let agentSessionEventSequence: UInt64
+    package let agentSessionEventTailCount: Int
     package let activityPublicationSequence: UInt64
     package let activeActivityCount: Int
     package let recentTerminalActivityCount: Int
@@ -128,7 +130,12 @@ package actor MCPDomainRuntime {
     package nonisolated let mutationApprovalBroker: DomainMutationApprovalBroker
     package nonisolated let mutationJournal: DomainMutationJournal
     package nonisolated let protectedMutationProvider: MCPDomainProtectedMutationToolProvider
-    package nonisolated let agentSessionStore: DomainAgentRunSessionStore
+    /// Canonical durable/lifecycle authority for agent sessions. `agentSessionStore` below is
+    /// retained as a source-compatible run-control alias for MCP/provider adapters.
+    package nonisolated let agentSessionAuthority: DomainAgentSessionAuthority
+    package nonisolated var agentSessionStore: DomainAgentSessionAuthority {
+        agentSessionAuthority
+    }
     package nonisolated let agentWorktreeBindingStore: DomainAgentWorktreeBindingStore
     package nonisolated let interactionBroker: DomainInteractionBroker
     package nonisolated let activityCenter: DomainActivityCenter
@@ -230,7 +237,7 @@ package actor MCPDomainRuntime {
             policyStore: mutationPolicyStore,
             journal: mutationJournal
         )
-        agentSessionStore = DomainAgentRunSessionStore(
+        agentSessionAuthority = DomainAgentSessionAuthority(
             identity: runtimeIdentity,
             persistence: persistence,
             profileIdentifier: configuration.profileIdentifier
@@ -308,14 +315,14 @@ package actor MCPDomainRuntime {
         guard lifecycle == .starting, !Task.isCancelled else { return }
         await mutationPolicyStore.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
-        await agentSessionStore.bootstrap()
+        await agentSessionAuthority.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         await agentWorktreeBindingStore.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         let mutationAccess = await workspaceAuthority.activateMutationAccess()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         let workspaceSnapshot = await workspaceAuthority.snapshot()
-        let agentSessions = await agentSessionStore.snapshot()
+        let agentSessions = await agentSessionAuthority.snapshot()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         startTask = nil
         lifecycle = workspaceSnapshot.health.acceptsMutations
@@ -361,7 +368,7 @@ package actor MCPDomainRuntime {
         }
         await mutationApprovalBroker.shutdown()
         await interactionBroker.shutdown()
-        _ = await agentSessionStore.shutdown()
+        _ = await agentSessionAuthority.shutdown()
         await activityCenter.shutdown()
         await credentialEnvelopeStore.shutdown()
         await readSideEffectCoordinator.shutdown()
@@ -381,7 +388,7 @@ package actor MCPDomainRuntime {
         let workspaces = await workspaceAuthority.snapshot()
         let workspaceMutationAccess = await workspaceAuthority.mutationAccessStateSnapshot()
         let routing = await routingCoordinator.snapshot()
-        let agentSessions = await agentSessionStore.snapshot()
+        let agentSessions = await agentSessionAuthority.snapshot()
         let activities = await activityCenter.snapshot()
         let host = await domainHost.snapshot()
         if lifecycle == .ready || lifecycle == .degraded {
@@ -405,6 +412,8 @@ package actor MCPDomainRuntime {
             workspaceMutationAccess: workspaceMutationAccess,
             routingRevision: routing.revision,
             agentSessionPersistenceHealth: agentSessions.persistenceHealth,
+            agentSessionEventSequence: await agentSessionAuthority.currentSessionEventSequence(),
+            agentSessionEventTailCount: await agentSessionAuthority.sessionEventTailCount(),
             activityPublicationSequence: activities.publicationSequence,
             activeActivityCount: activities.active.count,
             recentTerminalActivityCount: activities.recentTerminal.count,
@@ -470,7 +479,7 @@ package actor MCPDomainRuntime {
     private func synchronizeLifecycleWithWorkspaceHealth() async {
         guard lifecycle == .ready || lifecycle == .degraded else { return }
         let snapshot = await workspaceAuthority.snapshot()
-        let agentSessions = await agentSessionStore.snapshot()
+        let agentSessions = await agentSessionAuthority.snapshot()
         let next = resolvedLifecycle(
             workspaceHealth: snapshot.health,
             agentPersistenceHealth: agentSessions.persistenceHealth

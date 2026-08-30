@@ -4,6 +4,63 @@ import MCP
 import XCTest
 
 final class DomainAgentRunSessionStoreTests: XCTestCase {
+    func testCanonicalSessionAuthorityPublishesBoundedOrderedHistory() async throws {
+        let fixture = makeStoreFixture()
+        let authority = fixture.store
+        let sessionID = UUID()
+        let registration = await authority.register(sessionID: sessionID)
+        let epochResult = await authority.beginEpoch(
+            registration: registration,
+            activationID: UUID(),
+            expectedCurrentEpoch: nil,
+            transitionKind: .initial
+        )
+        let epoch: DomainAgentRunTurnEpoch
+        if case let .accepted(value) = epochResult {
+            epoch = value
+        } else {
+            XCTFail("initial epoch was not accepted")
+            return
+        }
+        let snapshot = makeSnapshot(sessionID: sessionID, status: .running)
+        await authority.noteSnapshot(
+            snapshot,
+            cursor: .init(registration: registration, epoch: epoch)
+        )
+        let terminal = makeSnapshot(sessionID: sessionID, status: .completed)
+        _ = await authority.publishTerminal(
+            .init(epoch: epoch, snapshot: terminal),
+            registration: registration,
+            commitID: UUID(),
+            successorKind: nil
+        )
+
+        let history = await authority.sessionEventHistory(
+            .init(sessionID: sessionID, limit: 10)
+        )
+        XCTAssertEqual(
+            history.events.map(\.kind),
+            [.registered, .epochBegan, .snapshotPublished, .terminalPublished]
+        )
+        XCTAssertTrue(history.events.indices.dropFirst().allSatisfy { index in
+            history.events[index - 1].sequence < history.events[index].sequence
+        })
+        XCTAssertNil(history.nextSequence)
+        XCTAssertFalse(history.isTruncated)
+
+        let page = await authority.sessionEventHistory(
+            .init(sessionID: sessionID, limit: 2)
+        )
+        XCTAssertEqual(page.events.count, 2)
+        XCTAssertTrue(page.isTruncated)
+        let tail = await authority.sessionEventHistory(
+            .init(sessionID: sessionID, afterSequence: page.nextSequence, limit: 10)
+        )
+        XCTAssertEqual(tail.events.map(\.kind), [.snapshotPublished, .terminalPublished])
+
+        _ = await authority.shutdown(deadline: .milliseconds(20))
+    }
+
     func testRuntimeGenerationEpochContinuityAndTerminalCommitAreFenced() async throws {
         let fixture = makeStoreFixture()
         let store = fixture.store

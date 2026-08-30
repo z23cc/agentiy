@@ -21,12 +21,12 @@ extension DomainAgentSessionRegistration {
 enum AgentRunSessionStore {
     typealias Registration = DomainAgentSessionRegistration
     typealias WaitCursor = DomainAgentSessionWaitCursor
-    typealias EpochBeginResult = DomainAgentRunSessionStore.EpochBeginResult
-    typealias WaitDisposition = DomainAgentRunSessionStore.WaitDisposition
-    typealias WakeReason = DomainAgentRunSessionStore.WakeReason
-    typealias NoteworthyWake = DomainAgentRunSessionStore.NoteworthyWake
+    typealias EpochBeginResult = DomainAgentSessionAuthority.EpochBeginResult
+    typealias WaitDisposition = DomainAgentSessionAuthority.WaitDisposition
+    typealias WakeReason = DomainAgentSessionAuthority.WakeReason
+    typealias NoteworthyWake = DomainAgentSessionAuthority.NoteworthyWake
 
-    static var shared: DomainAgentRunSessionStore {
+    static var shared: DomainAgentSessionAuthority {
         AppDomainRuntimeComposition.shared.runtime.agentSessionStore
     }
 
@@ -149,6 +149,16 @@ enum AgentRunSessionStore {
             steeringMessage: steeringMessage,
             steeringOriginRunID: steeringOriginRunID
         )
+    }
+
+    static func sessionEventHistory(
+        _ request: DomainAgentSessionHistoryRequest = .init()
+    ) async -> DomainAgentSessionHistoryResult {
+        await shared.sessionEventHistory(request)
+    }
+
+    static func sessionEvents() async -> AsyncStream<DomainAgentSessionEvent> {
+        await shared.sessionEvents()
     }
 
     static func wakeCurrentWaiters(

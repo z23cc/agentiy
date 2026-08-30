@@ -131,7 +131,7 @@ private actor DomainAgentCancellationCompletionTracker {
     }
 }
 
-package actor DomainAgentRunSessionStore {
+package actor DomainAgentSessionAuthority {
     package typealias Registration = DomainAgentSessionRegistration
     package typealias WaitCursor = DomainAgentSessionWaitCursor
 
@@ -236,6 +236,13 @@ package actor DomainAgentRunSessionStore {
     private var isShuttingDown = false
     private var persistenceDebounceTask: Task<Void, Never>?
     private var activePersistenceFlush: (id: UUID, task: Task<Bool, Never>)?
+    // Canonical session lifecycle event tail. The compatibility run-store alias below
+    // keeps existing wait/MCP callers source-compatible while all new observers use the
+    // authority name and this single ordered event stream.
+    package var sessionEventTail: [DomainAgentSessionEvent] = []
+    package var sessionEventSubscribers: [UUID: AsyncStream<DomainAgentSessionEvent>.Continuation] = [:]
+    package var sessionEventSequence: UInt64 = 0
+    package var sessionEventTailLimit: Int = 256
     #if DEBUG
         private var testMetadataFlushBeforeCAS: (@Sendable () async -> Void)?
         private var testShutdownAfterDetach: (@Sendable () async -> Void)?
@@ -308,6 +315,7 @@ package actor DomainAgentRunSessionStore {
             dirtyMetadataSessionIDs.remove(sessionID)
             return .unavailable
         }
+        appendSessionEvent(.resumed, sessionID: sessionID, registration: registration)
         return .accepted(registration)
     }
 
@@ -335,6 +343,7 @@ package actor DomainAgentRunSessionStore {
         records[sessionID] = Record(registration: registration)
         updateMetadata(for: records[sessionID], state: .active, resumable: true)
         scheduleMetadataPersistence()
+        appendSessionEvent(.registered, sessionID: sessionID, registration: registration)
         return registration
     }
 
@@ -344,6 +353,7 @@ package actor DomainAgentRunSessionStore {
         records[sessionID] = Record(registration: registration)
         updateMetadata(for: records[sessionID], state: .active, resumable: true)
         scheduleMetadataPersistence()
+        appendSessionEvent(.registered, sessionID: sessionID, registration: registration)
         return registration
     }
 
@@ -393,6 +403,7 @@ package actor DomainAgentRunSessionStore {
         records[registration.sessionID] = record
         updateMetadata(for: record, state: .active, resumable: true)
         scheduleMetadataPersistence()
+        appendSessionEvent(.epochBegan, sessionID: registration.sessionID, registration: registration, epoch: epoch)
         resume(waiters, with: .epochAdvanced(epoch, transitionKind))
         return .accepted(epoch)
     }
@@ -517,6 +528,8 @@ package actor DomainAgentRunSessionStore {
             records[registration.sessionID] = record
             updateMetadata(for: record, state: .active, resumable: true)
             scheduleMetadataPersistence()
+            appendSessionEvent(.terminalPublished, sessionID: registration.sessionID, registration: registration, epoch: envelope.epoch, commitID: commitID)
+            appendSessionEvent(.epochBegan, sessionID: registration.sessionID, registration: registration, epoch: successor)
             resume(waiters, with: .epochAdvanced(successor, successorKind))
             return .accepted(successorEpoch: successor)
         }
@@ -527,6 +540,13 @@ package actor DomainAgentRunSessionStore {
         records[registration.sessionID] = record
         updateMetadata(for: record, state: .terminal, resumable: true)
         scheduleMetadataPersistence()
+        appendSessionEvent(
+            .terminalPublished,
+            sessionID: registration.sessionID,
+            registration: registration,
+            epoch: envelope.epoch,
+            commitID: commitID
+        )
         resume(waiters, with: .snapshotReady(envelope.snapshot))
         return .accepted(successorEpoch: nil)
     }
@@ -619,6 +639,19 @@ package actor DomainAgentRunSessionStore {
             scheduleExpiry(for: &record, cursor: cursor)
             updateMetadata(for: record, state: .terminal, resumable: true)
             scheduleMetadataPersistence()
+            appendSessionEvent(
+                .snapshotPublished,
+                sessionID: snapshot.sessionID,
+                registration: cursor.registration,
+                epoch: cursor.epoch
+            )
+        } else if acceptedSnapshot == snapshot {
+            appendSessionEvent(
+                .snapshotPublished,
+                sessionID: snapshot.sessionID,
+                registration: cursor.registration,
+                epoch: cursor.epoch
+            )
         }
         records[snapshot.sessionID] = record
         if let disposition {
@@ -767,6 +800,7 @@ package actor DomainAgentRunSessionStore {
         cancellationHandlers.removeValue(forKey: registration.sessionID)
         updateMetadata(for: record, state: .dormant, resumable: true)
         scheduleMetadataPersistence()
+        appendSessionEvent(.cleanedUp, sessionID: registration.sessionID, registration: registration)
     }
 
     @discardableResult
@@ -793,6 +827,7 @@ package actor DomainAgentRunSessionStore {
             return DomainAgentSessionShutdownResult(cooperativeSessionIDs: [], interruptedSessionIDs: [])
         }
         isShuttingDown = true
+        appendSessionEvent(.shutdownBegan, sessionID: nil, registration: nil)
         let activeRecords = records
         records.removeAll()
         let handlers = cancellationHandlers
@@ -841,6 +876,11 @@ package actor DomainAgentRunSessionStore {
             )
         }
         await persistMetadata()
+        appendSessionEvent(.shutdownCompleted, sessionID: nil, registration: nil)
+        for continuation in sessionEventSubscribers.values {
+            continuation.finish()
+        }
+        sessionEventSubscribers.removeAll()
         return DomainAgentSessionShutdownResult(
             cooperativeSessionIDs: cooperative.sorted { $0.uuidString < $1.uuidString },
             interruptedSessionIDs: interrupted.sorted { $0.uuidString < $1.uuidString }
@@ -1006,6 +1046,7 @@ package actor DomainAgentRunSessionStore {
         cancellationHandlers.removeValue(forKey: cursor.registration.sessionID)
         updateMetadata(for: record, state: .dormant, resumable: true)
         scheduleMetadataPersistence()
+        appendSessionEvent(.expired, sessionID: cursor.registration.sessionID, registration: cursor.registration, epoch: cursor.epoch)
     }
 
     private func makeRegistration(sessionID: UUID) -> Registration {
@@ -1317,8 +1358,12 @@ package actor DomainAgentRunSessionStore {
     }
 }
 
+/// Source-compatible name retained for existing MCP and provider adapters. New production
+/// code should depend on `DomainAgentSessionAuthority`; both names refer to the same actor.
+package typealias DomainAgentRunSessionStore = DomainAgentSessionAuthority
+
 #if DEBUG
-    extension DomainAgentRunSessionStore {
+    extension DomainAgentSessionAuthority {
         package func test_waiterCount(registration: Registration) -> Int {
             guard records[registration.sessionID]?.registration == registration else { return 0 }
             return records[registration.sessionID]?.waiters.count ?? 0
