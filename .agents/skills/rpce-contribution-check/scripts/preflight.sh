@@ -157,12 +157,31 @@ scan_staged_index_blobs() {
   gitleaks dir --no-banner --redact "$snapshot"
 }
 
+# CLAUDE.md keeps `docs/investigations/` unignored on purpose so RepoPrompt tooling
+# can read local reports, and it forbids committing them. Without this exemption the
+# only way to push is to stash them first, every time. Narrow by construction: only
+# *untracked* entries under that directory are tolerated. Tracked modifications there,
+# and untracked files anywhere else, still fail the gate, so the clean-boundary and
+# secret-scanning guarantees are unchanged.
+worktree_status_is_exempt() {
+  local status_entry="$1"
+  [[ "$status_entry" == '?? docs/investigations/'* ]]
+}
+
 require_clean_worktree() {
-  local status_file
+  local status_file entry unexpected=0
   ensure_tmp_root
   status_file="$tmp_root/status.z"
   git status --porcelain=v1 -z --untracked-files=all > "$status_file"
-  if [[ -s "$status_file" ]]; then
+  while IFS= read -r -d '' entry; do
+    [[ -n "$entry" ]] || continue
+    if worktree_status_is_exempt "$entry"; then
+      printf 'note: ignoring untracked local investigation artifact: %s\n' "${entry#?? }" >&2
+      continue
+    fi
+    unexpected=1
+  done < "$status_file"
+  if (( unexpected )); then
     git status --short
     fail "working tree is not clean; commit, stash, or discard changes before pushing"
   fi
