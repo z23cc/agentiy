@@ -1121,6 +1121,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p16-agent-run-terminal-settlement-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p17-agent-run-terminal-outcome-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p18-agent-run-process-identity-authority.md"
+  "docs/spec/headless-mcp-domain-runtime-m8-live-certification.md"
   "docs/spec/headless-mcp-domain-runtime-p6-provider-semantic-closure.md"
   "docs/spec/headless-mcp-domain-runtime-p6-11-claude-headless-rust-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
@@ -1405,6 +1406,25 @@ if [[ ! -f "$m7_contract_validator" || ! -f "$m7_certification_runner" || ! -f "
   fail "M7 backend release contract, certification runner, validator, or evidence fixture is missing"
 elif ! python3 "$m7_contract_validator" --fixture "$m7_contract_fixture" --evidence "$m7_evidence_fixture" --check >/dev/null; then
   fail "M7 backend release contract or evidence fixture is invalid"
+fi
+
+# M8 is an operational receipt gate, not a claim that live credentials or host
+# power/release services exist on every developer machine. Keep the contract,
+# redacted runner, and strict validator present and executable; blocked/deferred
+# receipts are the only valid outcome when prerequisites are absent.
+m8_contract="Scripts/Fixtures/headless_mcp_domain_runtime_m8_contract.json"
+m8_validator="Scripts/validate_m8_live_evidence.py"
+m8_runner="Scripts/m8_live_certification.sh"
+m8_tests="Scripts/test_validate_m8_live_evidence.py"
+if [[ ! -f "$m8_contract" || ! -f "$m8_validator" || ! -x "$m8_runner" || ! -f "$m8_tests" ]]; then
+  fail "M8 live certification contract, validator, runner, or tests are missing"
+else
+  if ! python3 -m py_compile "$m8_validator" "$ROOT/Scripts/m8_live_certification.py" "$m8_tests"; then
+    fail "M8 certification tooling does not compile"
+  fi
+  if ! python3 "$m8_tests" >/dev/null; then
+    fail "M8 certification validator self-tests failed"
+  fi
 fi
 mcp_main_source="Sources/RepoPromptMCP/main.swift"
 if [[ "$(grep -c 'MCPBackendSelection.decide(requested:' "$mcp_main_source" || true)" -ne 1 ]] \

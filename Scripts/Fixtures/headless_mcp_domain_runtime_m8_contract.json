@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "milestone": "M8",
+  "phase": "live_certification_release_candidate",
+  "required_checks": [
+    "live_provider_smoke",
+    "live_auto_matrix",
+    "sleep_wake_soak",
+    "signed_release_artifact"
+  ],
+  "provider_matrix": ["codexAppServer", "acp", "claudeHeadless"],
+  "allowed_statuses": ["passed", "blocked", "deferred"],
+  "receipt": {
+    "schema_version": 1,
+    "kind": "m8_live_certification",
+    "current_head_required": true,
+    "secret_free": true,
+    "required_environment_fields": [
+      "os",
+      "architecture",
+      "codex_cli_version",
+      "claude_cli_version",
+      "provider_credentials_present",
+      "signing_identity_present"
+    ]
+  },
+  "promotion": {
+    "current_default_backend": "app",
+    "target_default_backend": "auto",
+    "requires_all_checks_passed": true,
+    "requires_explicit_authorization": true,
+    "no_automatic_promotion": true
+  }
+}

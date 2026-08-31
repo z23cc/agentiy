@@ -189,6 +189,7 @@ IMPLEMENTED_OPERATIONS = {
     "codex-schema-check",
     "provider-conformance",
     "m7-backend-certification",
+    "m8-live-certification",
     "cargo-build",
     "cargo-test",
     "cargo-codegen",
@@ -252,6 +253,7 @@ Operation commands:
   ./conductor codex-schema-check      # validate bounded RPCE assumptions against generated Codex schemas
   ./conductor provider-conformance    # validate the offline P7-4 provider capability contract
   ./conductor m7-backend-certification # validate M7 backend cutover and release evidence
+  ./conductor m8-live-certification [--live] # run M8 live certification and write a redacted receipt
   ./conductor cargo-build [--profile debug|release]
   ./conductor cargo-test [--package proto|runtime|ffi|all]
   ./conductor cargo-codegen [--check]
@@ -2924,6 +2926,7 @@ def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -
         "rust-search-cargo-floors",
         "rust-search-three-layer-floors",
         "m7-backend-certification",
+        "m8-live-certification",
     }:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
@@ -3323,6 +3326,26 @@ class OperationRegistry:
         if operation == "m7-backend-certification":
             env = self._cargo_env(env)
             return [script("m7_backend_certification.sh")], ["build", "release"], cwd, env, effective_timeout
+        if operation == "m8-live-certification":
+            # Mark coordinated invocations so the runner can avoid enqueueing a
+            # nested visible-app job behind its own daemon job.
+            env["AGENTRY_M8_COORDINATED"] = "1"
+            argv = [script("m8_live_certification.sh")]
+            if args.get("live"):
+                argv.append("--live")
+            if args.get("providerMatrix"):
+                argv.append("--provider-matrix")
+            if args.get("autoMatrix"):
+                argv.append("--auto-matrix")
+            if args.get("systemSleep"):
+                argv.append("--system-sleep")
+            if args.get("authorizeAuto"):
+                argv.append("--authorize-auto")
+            if args.get("agentTimeout") is not None:
+                argv.extend(["--agent-timeout", str(args["agentTimeout"])])
+            if args.get("record"):
+                argv.extend(["--record", str(args["record"])])
+            return argv, ["build", "release"], cwd, env, effective_timeout
         if operation in CARGO_OPERATIONS:
             profile = str(args.get("profile") or "debug")
             package = str(args.get("package") or "all")
@@ -3624,7 +3647,7 @@ class OperationRegistry:
             return SHORT_TIMEOUT_SECONDS
         if operation == "app" and args.get("subcommand") in {"status", "stop"}:
             return SHORT_TIMEOUT_SECONDS
-        if operation == "m7-backend-certification":
+        if operation in {"m7-backend-certification", "m8-live-certification"}:
             return RELEASE_TIMEOUT_SECONDS
         if operation == "release" and args.get("subcommand") == "artifact":
             return RELEASE_ARTIFACT_TIMEOUT_SECONDS
@@ -8520,6 +8543,28 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "rust-ffi-swift-baseline-candidate",
     }:
         parse_no_args(f"conductor {operation}", rest)
+    elif operation == "m8-live-certification":
+        parser = argparse.ArgumentParser(prog="conductor m8-live-certification")
+        parser.add_argument("--live", action="store_true")
+        parser.add_argument("--provider-matrix", action="store_true")
+        parser.add_argument("--auto-matrix", action="store_true")
+        parser.add_argument("--system-sleep", action="store_true")
+        parser.add_argument("--authorize-auto", action="store_true")
+        parser.add_argument("--record")
+        parser.add_argument("--agent-timeout", type=int, default=120)
+        ns = parser.parse_args(rest)
+        if ns.agent_timeout < 1:
+            parser.error("--agent-timeout must be positive")
+        args.update({
+            "live": ns.live,
+            "providerMatrix": ns.provider_matrix,
+            "autoMatrix": ns.auto_matrix,
+            "systemSleep": ns.system_sleep,
+            "authorizeAuto": ns.authorize_auto,
+            "agentTimeout": ns.agent_timeout,
+        })
+        if ns.record:
+            args["record"] = ns.record
     elif operation == "rust-search-phase-profile":
         parser = argparse.ArgumentParser(prog=f"conductor {operation}")
         parser.add_argument("--fixture", choices=[

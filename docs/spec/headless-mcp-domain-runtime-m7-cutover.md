@@ -108,7 +108,7 @@ This phase freezes the machine-checkable backend and release boundary in:
 
 `make m7-backend-certification` (or coordinated `make dev-m7-backend-certification`) executes the offline backend-selection tests, deterministic FFI code-generation check, focused direct-process tests, source guardrails, and the strict contract/evidence validator. It requires no credentials, network access, visible-app launch, or workspace mutation. It rejects unknown/missing checks, duplicate JSON keys, probe-budget drift, protocol-byte probes, stale evidence paths, and any attempt to authorize `auto` as the default.
 
-The committed evidence intentionally records live provider smoke, app/no-app auto matrix, sleep/wake soak, and signed release artifact as `deferred`. These require separately authorized operational runs and are not inferred from synthetic tests. Consequently the gate does not change runtime routing and `app` remains the default. A future release decision must replace each deferred row with independently captured evidence before changing that default.
+The committed evidence intentionally records live provider smoke, app/no-app auto matrix, sleep/wake soak, and signed release artifact as `deferred`. These require separately authorized operational runs and are not inferred from synthetic tests. Consequently the gate does not change runtime routing and `app` remains the default. M8 owns that operational receipt surface (`Scripts/m8_live_certification.sh` and `Scripts/validate_m8_live_evidence.py`); a future release decision must replace each deferred row with independently captured evidence before changing that default.
 
 ## M7 completion criteria
 
