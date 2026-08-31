@@ -111,9 +111,11 @@ format:
 	./Scripts/swift_style.sh format
 
 format-check:
+	AGENTRY_FORMAT_TOOLS_AUTO_INSTALL=1 \
 	./Scripts/swift_style.sh format-check
 
 lint:
+	AGENTRY_FORMAT_TOOLS_AUTO_INSTALL=1 \
 	./Scripts/swift_style.sh lint
 
 install-debug-cli:
@@ -320,9 +322,11 @@ dev-format:
 	./conductor format
 
 dev-format-check:
+	AGENTRY_FORMAT_TOOLS_AUTO_INSTALL=1 \
 	./conductor format-check
 
 dev-lint:
+	AGENTRY_FORMAT_TOOLS_AUTO_INSTALL=1 \
 	./conductor lint
 
 dev-format-tools-status:

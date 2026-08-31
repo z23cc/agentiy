@@ -158,8 +158,24 @@ system version does not match. SwiftLint is installed with Homebrew when missing
 EOF
 }
 
+# `check` stays non-mutating by default, as documented. Callers that would
+# otherwise just print remediation and fail can opt in to provisioning the
+# pinned toolchain by exporting AGENTRY_FORMAT_TOOLS_AUTO_INSTALL=1. The install
+# is the same checksum-pinned download used by `install`, and it lands in the
+# repo-local .build/format-tools, so nothing outside the checkout is mutated.
 check_tools(){
     if ! all_tools_present; then
+        if [[ "${AGENTRY_FORMAT_TOOLS_AUTO_INSTALL:-0}" == "1" ]]; then
+            echo "Swift style tools missing or incompatible; provisioning pinned toolchain..."
+            install_missing_tools
+            if ! all_tools_present; then
+                print_status
+                print_remediation
+                fail "Missing or incompatible required Swift style tools."
+            fi
+            print_status
+            return
+        fi
         print_status
         print_remediation
         fail "Missing or incompatible required Swift style tools."
@@ -267,6 +283,17 @@ resolve_swiftformat(){
     if resolved_path="$(authoritative_swiftformat_path)"; then
         printf '%s\n' "$resolved_path"
         return
+    fi
+
+    # Opt-in provisioning: see check_tools. Resolution is what style runs actually
+    # call, so without this the auto-install flag would only help `check`.
+    if [[ "${AGENTRY_FORMAT_TOOLS_AUTO_INSTALL:-0}" == "1" ]]; then
+        echo "SwiftFormat $SWIFTFORMAT_REQUIRED_VERSION unavailable; provisioning pinned toolchain..." >&2
+        install_missing_tools >&2
+        if resolved_path="$(authoritative_swiftformat_path)"; then
+            printf '%s\n' "$resolved_path"
+            return
+        fi
     fi
 
     print_swiftformat_status >&2

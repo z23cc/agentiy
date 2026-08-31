@@ -204,7 +204,7 @@ Behavior notes:
 - `make dev-smoke` is the non-disruptive live-only check: it assumes the Agentry debug app is already running and the debug CLI is installed/resolvable.
 - `make dev-smoke-launch` (or `./conductor smoke --launch`) builds/packages and launches the debug app before smoke validation.
 - `./conductor smoke --agent-run` is opt-in, for when provider credentials and model access are available.
-- Style checks (`make dev-format-check`, `make dev-lint`) are non-mutating and do not auto-install tools; `make dev-install-format-tools` is the explicit install path.
+- Style checks (`make dev-format-check`, `make dev-lint`) never mutate your sources. They do provision the pinned Swift style toolchain on demand: the make targets export `AGENTRY_FORMAT_TOOLS_AUTO_INSTALL=1`, so a missing or version-mismatched SwiftFormat is downloaded from the checksum-pinned official release into repo-local `.build/format-tools/` instead of failing the run. Nothing outside the checkout is touched. Invoking `Scripts/install_format_tools.sh check` directly without that variable keeps the original fail-closed behavior, and `make dev-install-format-tools` remains the explicit install path.
 - Do not run `make dev-format` unless formatting mutation is intended. If a format job is canceled after starting, inspect `git diff` and rerun format or restore files as needed.
 
 Direct / uncoordinated commands — use only when the daemon is unavailable but required tooling, including `python3`, remains available:
