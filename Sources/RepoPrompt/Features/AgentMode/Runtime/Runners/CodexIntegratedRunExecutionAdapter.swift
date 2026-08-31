@@ -35,10 +35,10 @@ enum CodexIntegratedRunExecutionAdapter {
         operation: () async -> CodexAgentModeCoordinator.NativeSendOutcome
     ) async -> Result {
         var nativeOutcome: CodexAgentModeCoordinator.NativeSendOutcome?
-        let executionReport = await DomainAgentRunExecutionCore.execute {
+        let executionReport = await DomainAgentRunExecutionCore.executeProvider {
             let outcome = await operation()
             nativeOutcome = outcome
-            return try operationResult(for: outcome)
+            return operationResult(for: outcome)
         }
         guard let nativeOutcome else {
             preconditionFailure("Codex transient execution completed without a native outcome")
@@ -48,24 +48,19 @@ enum CodexIntegratedRunExecutionAdapter {
 
     private static func operationResult(
         for outcome: CodexAgentModeCoordinator.NativeSendOutcome
-    ) throws -> DomainAgentRunExecutionOperationResult {
+    ) -> DomainAgentRunProviderExecutionResult {
         switch outcome {
         case .sent, .queuedFallback:
             .completed(assistantText: nil)
         case .stale:
             .superseded
         case .cancelled:
-            throw CancellationError()
+            .cancelled(assistantText: nil)
         case let .preDispatchRejected(message), let .failed(message):
-            throw DispatchFailure(message: message)
-        }
-    }
-
-    private struct DispatchFailure: LocalizedError {
-        let message: String
-
-        var errorDescription: String? {
-            message
+            .failed(signal: .providerFailure(
+                assistantText: message,
+                reason: .agentError
+            ))
         }
     }
 }

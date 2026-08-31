@@ -4,11 +4,15 @@ import Foundation
 
 /// The host-controlled result of one provider operation.
 ///
-/// Cancellation and failure are expressed by thrown errors so every execution
-/// host shares the same classification order. Supersession is explicit because
-/// it must never be mistaken for a missing terminal result.
+/// Completion and supersession are explicit, while provider adapters may carry
+/// a typed terminal outcome. Thrown cancellation and failure remain supported
+/// for unclassified execution errors and share the same classification order.
 package enum DomainAgentRunExecutionOperationResult: Equatable, Sendable {
     case completed(assistantText: String?)
+    /// A provider adapter may supply a typed terminal signal after it has
+    /// translated its protocol event. The core carries the resulting outcome
+    /// without reclassifying it from display text.
+    case terminal(DomainAgentRunTerminalOutcome)
     case superseded
 }
 
@@ -66,6 +70,8 @@ package enum DomainAgentRunExecutionCore {
             case let .completed(assistantText):
                 let outcome = DomainAgentRunTerminalOutcome.completed(assistantText: assistantText)
                 return terminalReport(outcome, after: started)
+            case let .terminal(outcome):
+                return terminalReport(outcome, after: started)
             case .superseded:
                 return DomainAgentRunExecutionReport(
                     result: .superseded,
@@ -80,6 +86,31 @@ package enum DomainAgentRunExecutionCore {
                 ? DomainAgentRunTerminalOutcome.failedWithoutClassification(assistantText: assistantText)
                 : DomainAgentRunTerminalOutcome.failed(assistantText: assistantText, reason: failureReason)
             return terminalReport(outcome, after: started)
+        }
+    }
+
+    /// Executes a provider adapter operation after reducing its typed
+    /// termination signal through the shared semantic authority. Provider
+    /// adapters may still throw for an unclassified transport/setup error; in
+    /// that case the normal deferred failure path is preserved for transcript
+    /// settlement, while cancellation remains canonical.
+    package static func executeProvider(
+        isolation: isolated (any Actor)? = #isolation,
+        failureText: (any Error) -> String = { $0.localizedDescription },
+        operation: () async throws -> DomainAgentRunProviderExecutionResult
+    ) async -> DomainAgentRunExecutionReport {
+        await execute(
+            isolation: isolation,
+            deferFailureClassification: true,
+            failureText: failureText
+        ) {
+            let result = try await operation()
+            switch DomainAgentRunProviderSemanticAuthority.resolve(result.semanticSignal) {
+            case let .terminal(outcome):
+                return .terminal(outcome)
+            case .superseded:
+                return .superseded
+            }
         }
     }
 

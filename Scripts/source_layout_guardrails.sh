@@ -480,9 +480,9 @@ if [[ -d "$search_core_source_dir" ]]; then
 fi
 
 # RepoPromptDomainRuntime owns Sendable MCP catalog/runtime values, the M2
-# workspace/context authorities, M3 shared reads, M4 protected mutation policy, and
-# M5 long-running lifecycle wrappers. Physical app backends remain injected and the
-# owner stays free of UI/provider implementations.
+# workspace/context authorities, M3 shared reads, M4 protected mutation policy, M5
+# long-running lifecycle wrappers, and the P6 provider semantic closure. Physical app
+# backends remain injected and the owner stays free of UI/provider implementations.
 domain_runtime_source_dir="Sources/RepoPromptDomainRuntime"
 if [[ -d "$domain_runtime_source_dir" ]]; then
   unexpected_domain_runtime_files="$(find "$domain_runtime_source_dir" -type f ! -name '*.swift' -print)"
@@ -512,6 +512,7 @@ if [[ -d "$domain_runtime_source_dir" ]]; then
     "DomainAgentSessionAuthority.swift"
     "DomainAgentSessionLifecycleAuthority.swift"
     "DomainAgentRunLifecycleContracts.swift"
+    "DomainAgentRunProviderSemanticContracts.swift"
     "DomainAgentRunTerminalCommitContracts.swift"
     "DomainAgentRunTerminalSettlementContracts.swift"
     "DomainInteractionBroker.swift"
@@ -566,6 +567,8 @@ assert value["authority"]["process_identity"] == "DomainAgentRunProcessIdentityS
 assert value["authority"]["terminal_commit"] == "DomainAgentRunTerminalCommitState"
 assert value["authority"]["terminal_settlement"] == "DomainAgentRunTerminalSettlementCoordinator"
 assert value["authority"]["terminal_outcome"] == "DomainAgentRunTerminalOutcome"
+assert value["authority"]["provider_semantic"] == "DomainAgentRunProviderSemanticAuthority"
+assert value["authority"]["provider_execution"] == "DomainAgentRunExecutionCore.executeProvider"
 assert value["public_contract"]["schema_behavior"] == "wrapped_binding_definition_preserved"
 assert value["public_contract"]["proxy_behavior_changed"] is False
 PY
@@ -642,10 +645,42 @@ PY
   then
     fail "Agent terminal commit requests must carry only the Domain-owned terminal outcome"
   fi
-  if ! grep -q 'deferFailureClassification: true' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/HeadlessAgentModeRunner.swift" \
-    || ! grep -q 'deferFailureClassification: true' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ClaudeIntegratedAgentModeRunner.swift" \
-    || ! grep -q 'deferFailureClassification: true' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ACPIntegratedAgentModeRunner.swift"; then
-    fail "Provider terminal paths must preserve deferred transcript failure classification explicitly"
+  if ! grep -q 'executeProvider' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/HeadlessAgentModeRunner.swift" \
+    || ! grep -q 'executeProvider' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ClaudeIntegratedAgentModeRunner.swift" \
+    || ! grep -q 'executeProvider' "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ACPIntegratedAgentModeRunner.swift"; then
+    fail "Provider terminal paths must use the shared semantic execution authority"
+  fi
+  if ! grep -q 'package enum DomainAgentRunProviderSemanticAuthority' "$domain_runtime_source_dir/DomainAgentRunProviderSemanticContracts.swift" \
+    || ! grep -q 'package static func executeProvider' "$domain_runtime_source_dir/DomainAgentRunExecutionCore.swift"; then
+    fail "Provider semantic closure must be owned by the Domain execution authority"
+  fi
+  if ! grep -q 'executeProvider' \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/CodexIntegratedRunExecutionAdapter.swift" \
+    "Sources/RepoPromptMCP/DirectHeadlessProviderCoordinator.swift"; then
+    fail "Codex and direct-headless provider paths must use the shared semantic execution authority"
+  fi
+  if ! grep -q 'DomainAgentRunProviderSemanticAuthority' \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentModeRunService.swift"; then
+    fail "Provider startup failures must use the shared semantic execution authority"
+  fi
+  if grep -R -n --include='*.swift' -E 'DomainAgentRunExecutionCore\.execute\(' \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/HeadlessAgentModeRunner.swift" \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ClaudeIntegratedAgentModeRunner.swift" \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ACPIntegratedAgentModeRunner.swift" \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/CodexIntegratedRunExecutionAdapter.swift" \
+    "Sources/RepoPromptMCP/DirectHeadlessProviderCoordinator.swift"; then
+    fail "Provider adapters must not bypass the shared semantic execution entry"
+  fi
+  if grep -R -n --include='*.swift' -E 'NativeTerminalFailure|ExplicitTerminalFailure|DispatchFailure' \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners" \
+    "Sources/RepoPromptMCP/DirectHeadlessProviderCoordinator.swift"; then
+    fail "Provider adapters reintroduced a local terminal semantic reducer"
+  fi
+  if grep -R -n --include='*.swift' 'failedWithoutClassification' \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/HeadlessAgentModeRunner.swift" \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/ACPIntegratedAgentModeRunner.swift" \
+    "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentModeRunService.swift"; then
+    fail "Provider startup terminal paths must resolve through the shared semantic authority"
   fi
   if grep -q -E 'consumedProviderSuccessorIDs|consumedProviderSuccessorOrder|maxConsumedProviderSuccessorTombstones' \
     "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentRunTerminalCommitBarrier.swift"; then
@@ -1013,6 +1048,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p16-agent-run-terminal-settlement-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p17-agent-run-terminal-outcome-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p18-agent-run-process-identity-authority.md"
+  "docs/spec/headless-mcp-domain-runtime-p6-provider-semantic-closure.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"

@@ -8,6 +8,7 @@ final class ACPIntegratedAgentModeRunner {
         case completed
         case cancelled
         case failed(errorText: String?)
+        case unexpectedEnd(errorText: String?)
         case superseded
 
         var debugDescription: String {
@@ -18,6 +19,8 @@ final class ACPIntegratedAgentModeRunner {
                 "state=cancelled error=nil"
             case let .failed(errorText):
                 "state=failed error=\(errorText ?? "nil")"
+            case let .unexpectedEnd(errorText):
+                "state=unexpected_end error=\(errorText ?? "nil")"
             case .superseded:
                 "state=superseded error=nil"
             }
@@ -26,10 +29,6 @@ final class ACPIntegratedAgentModeRunner {
 
     private struct TransientExecutionClassification {
         let report: DomainAgentRunExecutionReport
-        let errorText: String?
-    }
-
-    private struct ExplicitTerminalFailure: Error {
         let errorText: String?
     }
 
@@ -96,32 +95,29 @@ final class ACPIntegratedAgentModeRunner {
     private static func executeTransientOperation(
         _ operation: () async throws -> TransientOperationResult
     ) async -> TransientExecutionClassification {
-        var explicitFailureText: String??
-        let report = await DomainAgentRunExecutionCore.execute(
-            deferFailureClassification: true,
+        let report = await DomainAgentRunExecutionCore.executeProvider(
             failureText: { error in
-                if let failure = error as? ExplicitTerminalFailure {
-                    return failure.errorText ?? ""
-                }
-                return displayText(for: error)
+                displayText(for: error)
             }
         ) {
             switch try await operation() {
             case .completed:
-                return .completed(assistantText: nil)
+                .completed(assistantText: nil)
             case .cancelled:
-                throw CancellationError()
+                .cancelled(assistantText: nil)
             case let .failed(errorText):
-                explicitFailureText = .some(errorText)
-                throw ExplicitTerminalFailure(errorText: errorText)
+                .failed(signal: .providerFailure(
+                    assistantText: errorText,
+                    reason: .agentError
+                ))
+            case let .unexpectedEnd(errorText):
+                .failed(signal: .unexpectedEnd(assistantText: errorText))
             case .superseded:
-                return .superseded
+                .superseded
             }
         }
 
-        let errorText: String? = if case let .some(explicitText) = explicitFailureText {
-            explicitText
-        } else if case let .terminal(outcome) = report.result, outcome.kind == .failed {
+        let errorText: String? = if case let .terminal(outcome) = report.result, outcome.kind == .failed {
             outcome.assistantText
         } else {
             nil
@@ -473,11 +469,16 @@ final class ACPIntegratedAgentModeRunner {
               ownership.attemptID == runAttemptID
         else { return }
         hooks.providerInput.recordPendingHandoffSendOutcome(session, false)
+        guard case let .terminal(outcome) = DomainAgentRunProviderSemanticAuthority.resolve(
+            .startupFailure(assistantText: nil)
+        ) else {
+            return
+        }
         await terminalCommitBarrier.commit(.init(
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: runID,
-            outcome: .failedWithoutClassification(),
+            outcome: outcome,
             source: "acp.startupFailure",
             errorText: errorText,
             attachmentReservationID: attachmentReservationID,
@@ -765,7 +766,11 @@ final class ACPIntegratedAgentModeRunner {
             let normalizedText = displayText(for: normalizedError)
             log("controller.prompt failed raw=\(String(describing: error)) normalized=\(normalizedText)", runID: runID)
             let outcome = await consumeTask.value
-            return .failed(errorText: promptFailureErrorText(outcome: outcome, fallback: normalizedText))
+            let failureText = promptFailureErrorText(outcome: outcome, fallback: normalizedText)
+            if case .unexpectedEnd = outcome {
+                return .unexpectedEnd(errorText: failureText)
+            }
+            return .failed(errorText: failureText)
         }
 
         let outcome = await consumeTask.value
@@ -856,6 +861,8 @@ final class ACPIntegratedAgentModeRunner {
         let trimmedFallback = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
         let outcomeError: String? = if case let .failed(errorText) = outcome {
             errorText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if case let .unexpectedEnd(errorText) = outcome {
+            errorText?.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             nil
         }
@@ -927,7 +934,7 @@ final class ACPIntegratedAgentModeRunner {
             }
         }
 
-        return .failed(errorText: "ACP events stream ended unexpectedly.")
+        return .unexpectedEnd(errorText: "ACP events stream ended unexpectedly.")
     }
 
     private func handleAcquireFailure(

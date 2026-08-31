@@ -4891,7 +4891,11 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                             reason: "stall-watchdog-explicit-error",
                             errorMessage: failure.message,
                             notifyOnCompleted: false,
-                            deleteDeferredFilesWhenFailureHasNoInFlight: true
+                            deleteDeferredFilesWhenFailureHasNoInFlight: true,
+                            terminationSignal: .providerFailure(
+                                assistantText: failure.message,
+                                reason: .agentError
+                            )
                         )
                         await probeController.acknowledgePendingTurnFailure(
                             turnID: activeTurnID,
@@ -5559,7 +5563,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                         turnStatus: .failed,
                         reason: "transport-closed-fallback",
                         errorMessage: errorMessage,
-                        deleteDeferredFilesWhenFailureHasNoInFlight: true
+                        deleteDeferredFilesWhenFailureHasNoInFlight: true,
+                        terminationSignal: .transportClosed(assistantText: errorMessage)
                     )
                 }
             }
@@ -6001,7 +6006,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                             turnStatus: .failed,
                             reason: "unexpected-stream-end",
                             errorMessage: errorMessage,
-                            deleteDeferredFilesWhenFailureHasNoInFlight: true
+                            deleteDeferredFilesWhenFailureHasNoInFlight: true,
+                            terminationSignal: .unexpectedEnd(assistantText: errorMessage)
                         )
                     }
                 }
@@ -7583,7 +7589,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         errorMessage: String? = nil,
         notifyOnCompleted: Bool = true,
         deleteDeferredFilesWhenFailureHasNoInFlight: Bool = false,
-        providerSuccessor: AgentRunTerminalCommitBarrier.ProviderSuccessor? = nil
+        providerSuccessor: AgentRunTerminalCommitBarrier.ProviderSuccessor? = nil,
+        terminationSignal: DomainAgentRunProviderTerminationSignal? = nil
     ) async {
         guard let ownership = session.activeRunOwnership,
               let terminalCommitBarrier,
@@ -7618,13 +7625,21 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         session.codexAssistantRowIDByScope.removeAll()
         clearCodexPendingInteractions(in: session)
 
-        let outcome: DomainAgentRunTerminalOutcome = switch turnStatus {
-        case .completed:
-            .completed(assistantText: nil)
-        case .interrupted:
-            .cancelled()
-        case .failed:
-            .failedWithoutClassification()
+        let semanticSignal: DomainAgentRunProviderTerminationSignal = if let terminationSignal {
+            terminationSignal
+        } else {
+            switch turnStatus {
+            case .completed:
+                .completed(assistantText: nil)
+            case .interrupted:
+                .cancelled(assistantText: nil)
+            case .failed:
+                .providerFailure(assistantText: errorMessage, reason: nil)
+            }
+        }
+        guard case let .terminal(outcome) = DomainAgentRunProviderSemanticAuthority.resolve(semanticSignal) else {
+            assertionFailure("Codex terminal finalization cannot be superseded")
+            return
         }
         let attachmentDisposition: AgentModeViewModel.AttachmentTurnDisposition = if turnStatus == .failed {
             if deleteDeferredFilesWhenFailureHasNoInFlight,
@@ -9604,7 +9619,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                             reason: "stall-watchdog",
                             errorMessage: errorMessage,
                             notifyOnCompleted: false,
-                            deleteDeferredFilesWhenFailureHasNoInFlight: true
+                            deleteDeferredFilesWhenFailureHasNoInFlight: true,
+                            terminationSignal: .timeout(assistantText: errorMessage)
                         )
                         codexStallWatchdogTasksByTabID.remove(tabID)
                         removedTaskEntry = true

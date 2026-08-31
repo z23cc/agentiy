@@ -211,9 +211,9 @@ actor DirectHeadlessProviderCoordinator {
         let capturedCarrierEnvironment = DomainChildLaunchContext.current?.environment ?? [:]
         let task = Task { [weak self] in
             guard let self else { return }
-            let report = await DomainAgentRunExecutionCore.execute {
+            let report = await DomainAgentRunExecutionCore.executeProvider {
                 do {
-                    let text = try await runProviderOnce(
+                    let text = try await self.runProviderOnce(
                         message: message,
                         providerID: descriptor.id,
                         model: args["model"]?.stringValue,
@@ -224,7 +224,10 @@ actor DirectHeadlessProviderCoordinator {
                     return .completed(assistantText: text)
                 } catch {
                     if Task.isCancelled { throw CancellationError() }
-                    throw error
+                    return .failed(signal: .providerFailure(
+                        assistantText: error.localizedDescription,
+                        reason: nil
+                    ))
                 }
             }
             guard case let .terminal(outcome) = report.result else { return }

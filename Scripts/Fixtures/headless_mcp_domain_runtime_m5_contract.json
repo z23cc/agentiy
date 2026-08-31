@@ -15,6 +15,8 @@
     "terminal_commit": "DomainAgentRunTerminalCommitState",
     "terminal_settlement": "DomainAgentRunTerminalSettlementCoordinator",
     "terminal_outcome": "DomainAgentRunTerminalOutcome",
+    "provider_semantic": "DomainAgentRunProviderSemanticAuthority",
+    "provider_execution": "DomainAgentRunExecutionCore.executeProvider",
     "interaction": "DomainInteractionBroker",
     "activity": "DomainActivityCenter",
     "credential_fallback": "DomainCredentialEnvelopeStore",

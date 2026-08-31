@@ -113,6 +113,7 @@ The remote-by-default policy avoids breaking checkouts that do not have a siblin
 | Agent provider process identity and terminal-drain generation | `RepoPromptDomainRuntime` (`DomainAgentRunProcessIdentityState`), projected through the lifecycle tracker; App retains transcript run-ID projection only |
 | Agent run terminal-commit phase, staged receipt, and publication-result fencing | `RepoPromptDomainRuntime` (`DomainAgentRunTerminalCommitState`); App retains full revision projection and teardown/publication adapters |
 | Agent run terminal outcome kind and failure classification input | `RepoPromptDomainRuntime` (`DomainAgentRunTerminalOutcome`); App derives `AgentSessionRunState` only as a presentation projection |
+| Provider terminal semantic signal reduction and execution entry | `RepoPromptDomainRuntime` (`DomainAgentRunProviderSemanticAuthority`, `DomainAgentRunExecutionCore.executeProvider`); adapters emit typed termination facts and retain protocol/UI/teardown work |
 | Agent run terminal successor exactly-once tombstones and teardown registration/completion fences | `RepoPromptDomainRuntime` (`DomainAgentRunTerminalSettlementCoordinator`); App retains only actual teardown Tasks and provider/UI callbacks |
 | Interactive process/NDJSON/turn/control authority (`agent_claude::AgentClaudeScope`) | Rust runtime |
 | Provider-neutral runtime contract (`NativeAgentRuntimeControlling`) | core |
@@ -221,6 +222,21 @@ protocol NativeAgentRuntimeControlling: Actor {
 The associated event/session/turn types are proper provider-neutral DTOs. The Rust-backed Claude adapter maps its FFI events into these values, so a future native provider can conform without depending on Claude implementation types.
 
 `ClaudeSessionControlling` is retained as a backwards-compatible alias for existing Claude call sites.
+
+## Provider terminal semantic closure
+
+The transport boundary and the terminal-semantic boundary are intentionally separate. Rust owns
+provider process/byte transport and emits ordered observations. App adapters parse provider
+protocols and retain transcript, recovery, permission, progress, and teardown behavior. Before
+any adapter reaches the Domain terminal commit barrier, it must call
+`DomainAgentRunExecutionCore.executeProvider` with a typed
+`DomainAgentRunProviderTerminationSignal`.
+
+This keeps completion, cancellation, supersession, startup failure, timeout, process exit,
+transport closure, and unexpected EOF consistent across Codex, ACP, Claude, headless, and
+DirectHeadless paths without deriving a failure class from display text. The existing Domain
+terminal commit and settlement authorities remain the only owners of ownership, replay, and
+publication decisions.
 
 ## ACP provider MCP tool-call timeouts
 

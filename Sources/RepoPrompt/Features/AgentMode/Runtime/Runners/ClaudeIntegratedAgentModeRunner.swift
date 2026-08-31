@@ -6,15 +6,12 @@ final class ClaudeIntegratedAgentModeRunner {
     private enum ConsumeEventsOutcome {
         case completed
         case cancelled
-        case failed(errorText: String?, shouldShutdownSession: Bool)
+        case failed(
+            errorText: String?,
+            shouldShutdownSession: Bool,
+            signal: DomainAgentRunProviderTerminationSignal
+        )
     }
-
-    /// Claude's native stream reports terminal cancellation and failure as values,
-    /// while the shared transient execution core accepts those classifications as
-    /// thrown errors. This marker is intentionally runner-local: the coordinator
-    /// and native controller remain the authorities for the underlying terminal
-    /// event and its provider-specific metadata.
-    private struct NativeTerminalFailure: Error {}
 
     private let claudeCoordinator: ClaudeAgentModeCoordinator
     private let hooks: AgentModeRunService.Hooks
@@ -121,8 +118,7 @@ final class ClaudeIntegratedAgentModeRunner {
                 let providerName = session.selectedAgent.rawValue
                 var didSendToProvider = false
                 var nativeFailureMetadata: (errorText: String?, shouldShutdownSession: Bool)?
-                let report = await DomainAgentRunExecutionCore.execute(
-                    deferFailureClassification: true,
+                let report = await DomainAgentRunExecutionCore.executeProvider(
                     failureText: { _ in nativeFailureMetadata?.errorText ?? "" }
                 ) {
                     await lease.providerInitializationStarted(provider: providerName)
@@ -151,7 +147,7 @@ final class ClaudeIntegratedAgentModeRunner {
                         self.hooks.providerInput.recordPendingHandoffSendOutcome(session, true)
                     case .failed:
                         nativeFailureMetadata = (errorText: nil, shouldShutdownSession: false)
-                        throw NativeTerminalFailure()
+                        return .failed(signal: .startupFailure(assistantText: nil))
                     case .superseded:
                         return .superseded
                     }
@@ -165,7 +161,9 @@ final class ClaudeIntegratedAgentModeRunner {
                             errorText: "Claude native events stream not available.",
                             shouldShutdownSession: false
                         )
-                        throw NativeTerminalFailure()
+                        return .failed(signal: .startupFailure(
+                            assistantText: "Claude native events stream not available."
+                        ))
                     }
 
                     session.recordRunProgress(ownership: ownership, kind: .stageTransition, stage: .running)
@@ -178,10 +176,10 @@ final class ClaudeIntegratedAgentModeRunner {
                     case .completed:
                         return .completed(assistantText: nil)
                     case .cancelled:
-                        throw CancellationError()
-                    case let .failed(errorText, shouldShutdownSession):
+                        return .cancelled(assistantText: nil)
+                    case let .failed(errorText, shouldShutdownSession, signal):
                         nativeFailureMetadata = (errorText, shouldShutdownSession)
-                        throw NativeTerminalFailure()
+                        return .failed(signal: signal)
                     }
                 }
 
@@ -278,7 +276,10 @@ final class ClaudeIntegratedAgentModeRunner {
                 if status.isRepoPromptServerFailed {
                     return .failed(
                         errorText: "RepoPrompt MCP failed to initialize for Claude (session \(status.sessionID ?? "unknown")).",
-                        shouldShutdownSession: true
+                        shouldShutdownSession: true,
+                        signal: .startupFailure(
+                            assistantText: "RepoPrompt MCP failed to initialize for Claude (session \(status.sessionID ?? "unknown"))."
+                        )
                     )
                 }
             case let .approvalRequest(request):
@@ -332,7 +333,11 @@ final class ClaudeIntegratedAgentModeRunner {
                 case .cancelled:
                     return .cancelled
                 case .failed:
-                    return .failed(errorText: nil, shouldShutdownSession: false)
+                    return .failed(
+                        errorText: nil,
+                        shouldShutdownSession: false,
+                        signal: .providerFailure(assistantText: nil, reason: nil)
+                    )
                 }
             case let .error(message):
                 session.clearClaudeReasoningStatus(clearDisplayedStatus: true)
@@ -361,9 +366,11 @@ final class ClaudeIntegratedAgentModeRunner {
         // The events stream ended without a terminal turnCompleted event while this
         // attempt was still active.  This means the stream was finished or the Claude
         // process exited unexpectedly.
+        let message = "Claude events stream ended unexpectedly. The run may need to be restarted."
         return .failed(
-            errorText: "Claude events stream ended unexpectedly. The run may need to be restarted.",
-            shouldShutdownSession: false
+            errorText: message,
+            shouldShutdownSession: false,
+            signal: .unexpectedEnd(assistantText: message)
         )
     }
 

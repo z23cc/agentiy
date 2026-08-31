@@ -51,11 +51,16 @@ final class HeadlessAgentModeRunner {
         hooks.bindingObservation.updateBindings(session)
 
         guard session.selectedAgent != .codexExec else {
+            guard case let .terminal(outcome) = DomainAgentRunProviderSemanticAuthority.resolve(
+                .startupFailure(assistantText: nil)
+            ) else {
+                return
+            }
             await terminalCommitBarrier.commit(.init(
                 binding: hooks.bindTerminalSession(session),
                 ownership: ownership,
                 expectedRunID: runID,
-                outcome: .failedWithoutClassification(),
+                outcome: outcome,
                 source: "headless.invalidRoute",
                 errorText: "Internal routing error: Codex native run attempted to use headless provider path.",
                 attachmentReservationID: attachmentReservationID,
@@ -168,37 +173,47 @@ final class HeadlessAgentModeRunner {
         lease: MCPBootstrapLease
     ) async {
         var providerInitializationCompleted = false
-        let report = await DomainAgentRunExecutionCore.execute(
-            deferFailureClassification: true,
+        let report = await DomainAgentRunExecutionCore.executeProvider(
             failureText: { "Agent failed: \($0.localizedDescription)" }
         ) {
-            await lease.providerInitializationStarted(provider: session.selectedAgent.rawValue)
-            let stream = try await provider.streamAgentMessage(initialMessage, runID: runID)
-            providerInitializationCompleted = true
-            await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "ready")
-            hooks.providerInput.recordPendingHandoffSendOutcome(session, true)
-            hooks.attachments.stageConsumedAttachmentFilesForDeferredCleanup(attachments, session)
-            hooks.attachments.markAttachmentsConsumed(session, attachmentReservationID)
-            _ = await lease.releaseWhenRouted()
-            if let ownership = session.activeRunOwnership, ownership.attemptID == runAttemptID {
-                session.recordRunProgress(ownership: ownership, kind: .stageTransition, stage: .running)
-            }
+            do {
+                await lease.providerInitializationStarted(provider: session.selectedAgent.rawValue)
+                let stream = try await provider.streamAgentMessage(initialMessage, runID: runID)
+                providerInitializationCompleted = true
+                await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "ready")
+                hooks.providerInput.recordPendingHandoffSendOutcome(session, true)
+                hooks.attachments.stageConsumedAttachmentFilesForDeferredCleanup(attachments, session)
+                hooks.attachments.markAttachmentsConsumed(session, attachmentReservationID)
+                _ = await lease.releaseWhenRouted()
+                if let ownership = session.activeRunOwnership, ownership.attemptID == runAttemptID {
+                    session.recordRunProgress(ownership: ownership, kind: .stageTransition, stage: .running)
+                }
 
-            for try await result in stream {
-                guard !Task.isCancelled else { break }
-                guard session.isCurrentRunAttempt(ownership, expectedRunID: runID) else {
+                for try await result in stream {
+                    guard !Task.isCancelled else {
+                        return .cancelled(assistantText: nil)
+                    }
+                    guard session.isCurrentRunAttempt(ownership, expectedRunID: runID) else {
+                        return .superseded
+                    }
+                    session.recordRunProgress(ownership: ownership, kind: .providerEvent, stage: .running)
+                    await hooks.transcript.handleHeadlessStreamResult(result, session, runID, runAttemptID)
+                }
+
+                guard session.runID == runID,
+                      session.activeRunAttemptID == runAttemptID
+                else {
                     return .superseded
                 }
-                session.recordRunProgress(ownership: ownership, kind: .providerEvent, stage: .running)
-                await hooks.transcript.handleHeadlessStreamResult(result, session, runID, runAttemptID)
+                return .completed(assistantText: nil)
+            } catch is CancellationError {
+                return .cancelled(assistantText: nil)
+            } catch {
+                return .failed(signal: .providerFailure(
+                    assistantText: "Agent failed: \(error.localizedDescription)",
+                    reason: nil
+                ))
             }
-
-            guard session.runID == runID,
-                  session.activeRunAttemptID == runAttemptID
-            else {
-                return .superseded
-            }
-            return .completed(assistantText: nil)
         }
 
         guard case let .terminal(outcome) = report.result else { return }

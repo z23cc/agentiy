@@ -434,11 +434,16 @@ final class AgentModeRunService {
     private func failBeforeProviderStartup(session: AgentTabSession, message: String) async {
         let ownership = session.activeRunOwnership ?? session.beginRunAttempt(source: "runService.startupFailure")
         hooks.providerInput.recordPendingHandoffSendOutcome(session, false)
+        guard case let .terminal(outcome) = DomainAgentRunProviderSemanticAuthority.resolve(
+            .startupFailure(assistantText: nil)
+        ) else {
+            return
+        }
         await terminalCommitBarrier.commit(.init(
             binding: hooks.bindTerminalSession(session),
             ownership: ownership,
             expectedRunID: session.runID,
-            outcome: .failedWithoutClassification(),
+            outcome: outcome,
             source: "runService.startupFailure",
             errorText: message,
             attachmentDisposition: .deleteFiles,
