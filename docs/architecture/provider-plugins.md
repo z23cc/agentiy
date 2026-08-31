@@ -118,10 +118,11 @@ The remote-by-default policy avoids breaking checkouts that do not have a siblin
 | Interactive process/NDJSON/turn/control authority (`agent_claude::AgentClaudeScope`) | Rust runtime |
 | Provider-neutral runtime contract (`NativeAgentRuntimeControlling`) | core |
 | Provider-neutral RepoPrompt workflow prompt catalog and renderers (`RepoPromptShared/Workflows`) | core |
-| Headless wrapper (`ClaudeCodeAgentProvider`) | core (delegates pure rules to package) |
+| Headless wrapper (`ClaudeRustBackedHeadlessAgentProvider`) | core (delegates pure rules to package) |
 | `AgentModel` raw values, option DTOs, defaults | core (adapter forwards plugin DTOs back to these) |
 | Plugin IDs (`ClaudeCompatibleProviderPluginID`), runtime variants, backend IDs | package DTOs |
-| Headless Claude SDK protocol codec and NDJSON translator | package |
+| Headless Claude prompt/argument DTOs and launch helpers | package |
+| Headless Claude NDJSON framing/translation and stream-result projection | Rust runtime (`agent_provider` + `agent_claude::Translator`) |
 | Interactive Claude codec, translator, recovery, and supervision | Rust runtime |
 | Prompt delivery rules (XML wrapping, system-prompt overrides) | package |
 | Compatible-backend environment builder, removed env keys, no-model raw values | package |
@@ -153,7 +154,7 @@ Files that depend on this bridge (illustrative):
 - `Infrastructure/AI/Providers/ClaudeCode/ClaudeCodeCompatibleBackendStore.swift` (env builder)
 - `Infrastructure/AI/Providers/ClaudeCode/ClaudeCodePromptDelivery.swift` (decorated user message)
 - `Infrastructure/AI/Providers/ClaudeCode/ClaudeAgentToolPreferences.swift` (prompt delivery rules)
-- `Infrastructure/AI/Providers/ClaudeCodeAgentProvider.swift` (headless arguments, user-message decoration)
+- `Infrastructure/AI/Providers/ClaudeRustBackedHeadlessAgentProvider.swift` (headless arguments, user-message decoration)
 
 ### `ClaudeCompatiblePluginBridge` (Agent Mode feature facade)
 
@@ -181,7 +182,7 @@ The Agent Mode side of the bridge keeps its interactive and headless façades un
 
 ### `ClaudeCompatibleHeadlessProviderAdapter`
 
-- Wraps a concrete `HeadlessAgentProvider` (currently `ClaudeCodeAgentProvider`) and carries a `ClaudeCompatiblePluginRuntimeConfig` for parity with the interactive adapter.
+- Wraps a concrete `HeadlessAgentProvider` (currently `ClaudeRustBackedHeadlessAgentProvider`) and carries a `ClaudeCompatiblePluginRuntimeConfig` for parity with the interactive adapter.
 - `AgentRuntimeProviderService.makeProvider(...)` branches for `.claudeCode | .claudeCodeGLM | .kimiCode | .customClaudeCompatible` build the underlying provider and wrap it in this adapter. Non-Claude providers (Codex, Gemini, OpenCode, Cursor) bypass the adapter.
 
 ### `ClaudeCompatibleModelCatalogAdapter`

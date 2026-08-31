@@ -1,13 +1,14 @@
 # Rust Agent Provider Runtime Authority v1
 
-Status: P6 whole-stage implementation baseline (Codex app-server and ACP)
+Status: P6 whole-stage implementation baseline (Codex app-server, ACP, and Claude headless one-shot)
 
 ## 1. Scope
 
 P6 moves the provider **process and byte transport data plane** behind one Rust
-runtime authority. The authority is shared by the native Codex app-server and
-ACP provider families; it is not a third Claude-compatible adapter and it does
-not interpret provider protocol semantics.
+runtime authority. The authority is shared by the native Codex app-server, ACP
+provider families, and Claude Code's headless one-shot mode. Codex/ACP remain
+opaque at this boundary; the Claude headless protocol tag opts into the
+already-reviewed Rust Claude NDJSON translator.
 
 The production path is:
 
@@ -17,12 +18,15 @@ Swift provider policy/controller
   -> AgentryCoreBridge / UniFFI
   -> runtime::agent_provider::ScopeRegistry
   -> child process, line framing, stdin serialization, reaper
+  (Claude headless additionally -> Claude NDJSON translator)
 ```
 
 Codex and ACP still own their protocol-specific request/response correlation,
 permission policy, model/configuration policy, normalized events, persistence,
 and user-facing diagnostics. They receive the same ordered provider payloads
-that their legacy readers handled.
+that their legacy readers handled. Claude headless receives a complete,
+translator-owned stream-result projection and only maps it into the existing
+provider-neutral DTO.
 
 ## 2. Rust ownership contract
 
@@ -31,7 +35,7 @@ For each provider scope Rust owns:
 - command/environment/working-directory launch configuration;
 - process-group spawn and registration with the shared reaper;
 - stdout line framing and stderr bounded-tail capture;
-- serialized stdin writes (the newline is appended exactly once);
+- serialized stdin writes: `sendLine` appends exactly one newline for Codex/ACP, while Claude headless `start_with_stdin` writes the exact prompt bytes and closes stdin for EOF-driven one-shot execution;
 - one monotonic sequence for outbound and inbound observations;
 - cancellation, idempotent shutdown, and process reaping;
 - runtime-identity validation and scope lifetime;
@@ -48,19 +52,26 @@ Every published provider observation is a UTF-8 JSON object:
 ```json
 {
   "v": 1,
-  "provider": "codexAppServer" | "acp",
+  "provider": "codexAppServer" | "acp" | "claudeHeadless",
   "scope_id": "32 lowercase hexadecimal characters",
   "sequence": 1,
-  "kind": "processStarted" | "providerMessage" | "outbound" |
-           "stderr" | "stderrTail" | "processExited" | "scopeClosed",
+  "kind": "processStarted" | "providerMessage" | "streamResult" |
+           "outbound" | "stderr" | "stderrTail" | "processExited" | "scopeClosed",
   "payload": {}
 }
 ```
 
+For `claudeHeadless`, `streamResult` carries `{ "pid": ..., "result": ... }`,
+where `result` uses the complete Rust `StreamResult` field projection. Startup
+uses one `start_with_stdin` operation that writes the prompt and closes stdin;
+the generic `sendLine` API remains unchanged for Codex/ACP.
+
 `sequence` is strictly monotonic within a scope and is assigned by Rust.
-Terminal kinds (`processExited` and `scopeClosed`) are lossless events. Provider
-payloads that are not valid JSON are retained as a UTF-8-lossy string inside a
-`providerMessage` payload instead of being silently discarded.
+Terminal kinds (`processExited` and `scopeClosed`) are lossless events. Claude headless
+`processExited` includes `timed_out: true` when Rust's 6,000-second one-shot deadline fires.
+For Codex/ACP, provider payloads that are not valid JSON are retained as a UTF-8-lossy string
+inside a `providerMessage` payload instead of being silently discarded; Claude headless keeps the
+translator's existing malformed-line suppression behavior.
 
 The generic core subscription queue remains the delivery boundary. Queue gaps
 and rejected payload markers retain their existing meaning and are never
@@ -81,7 +92,7 @@ transcript, and provider configuration behavior is unchanged.
 
 ## 5. Provider cutover
 
-Every production Codex and ACP factory (Agent Mode, headless discovery,
+Every production Codex, ACP, and Claude headless factory (Agent Mode, headless discovery,
 model polling, auth recovery, and conversation cleanup) supplies
 `CoreAgentProviderRuntimeTransport` to its controller/client. Tests and
 explicitly injected maintenance clients may continue to use their existing
@@ -90,9 +101,10 @@ is present, controller logic only translates:
 
 - Rust `providerMessage` payloads into the existing provider JSON-line parser;
 - Rust `stderr` observations into existing diagnostics;
-- Rust terminal observations into the existing process-failure state machine.
+- Rust terminal observations into the existing process-failure state machine;
+- Claude `streamResult` fields into the existing `AIStreamResult` DTO.
 
-No provider semantic result is synthesized by Rust or by the transport facade.
+No provider semantic result is synthesized by Swift or by the generic transport facade.
 
 ## 6. Done-when for P6
 

@@ -926,6 +926,67 @@ pub fn should_suppress_user_facing_stream_result(result: &StreamResult) -> bool 
     should_suppress_user_facing_error(text)
 }
 
+/// Lowers a translated result into the stable JSON field set consumed by the
+/// Swift provider adapters. The same field names are used by the interactive
+/// `AgentClaudeScope`; keeping this helper public lets the headless provider
+/// scope reuse the exact projection instead of growing a second mapper.
+pub fn stream_result_wire_fields(result: &StreamResult) -> Map<String, Value> {
+    let mut fields = Map::new();
+    fields.insert("type".to_string(), serde_json::json!(result.kind));
+    if let Some(value) = &result.text {
+        fields.insert("text".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.reasoning {
+        fields.insert("reasoning".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = result.prompt_tokens {
+        fields.insert("prompt_tokens".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = result.completion_tokens {
+        fields.insert("completion_tokens".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = result.cost {
+        fields.insert("cost".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.tool_name {
+        fields.insert("tool_name".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.tool_args {
+        fields.insert("tool_args".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.tool_output {
+        fields.insert("tool_output".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = result.tool_invocation_id {
+        fields.insert("invocation_id".to_string(), serde_json::json!(value.0));
+    }
+    if let Some(value) = &result.tool_result_json {
+        fields.insert("tool_result_json".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.tool_args_json {
+        fields.insert("tool_args_json".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = result.tool_is_error {
+        fields.insert("tool_is_error".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.provider_session_id {
+        fields.insert("provider_session_id".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.stop_reason {
+        fields.insert("stop_reason".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = result.model_context_window {
+        fields.insert("model_context_window".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = result.context_used_tokens {
+        fields.insert("context_used_tokens".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = &result.content_message_id {
+        fields.insert("content_message_id".to_string(), serde_json::json!(value));
+    }
+    fields
+}
+
 /// Port of `ClaudeAbortArtifactFilter.shouldSuppressUserFacingError` (`ProviderSupport.swift:29-62`).
 pub fn should_suppress_user_facing_error(message: &str) -> bool {
     let lowered = message.trim().to_lowercase();

@@ -81,6 +81,46 @@ final class CoreAgentProviderSessionTests: XCTestCase {
         await session.shutdown()
         _ = try await bridge.close()
     }
+
+    func testRustClaudeHeadlessSessionPublishesTranslatedResults() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let session = try await CoreAgentProviderSession.open(
+            bridge: bridge,
+            command: "/bin/sh",
+            arguments: [
+                "-c",
+                "cat >/dev/null; printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}' '{\"type\":\"result\",\"result\":\"hello\",\"session_id\":\"session-1\"}'"
+            ],
+            environment: [:],
+            workingDirectory: nil,
+            protocolKind: .claudeHeadless
+        )
+        let stream = try await session.events()
+        _ = try await session.startWithStdin(Data("prompt".utf8))
+
+        var iterator = stream.makeAsyncIterator()
+        var results: [[String: Any]] = []
+        var processExited = false
+        for _ in 0 ..< 12 {
+            guard let event = try await iterator.next() else { break }
+            if event.kind == "streamResult",
+               let envelope = event.payloadDictionary,
+               let result = envelope["result"] as? [String: Any]
+            {
+                results.append(result)
+            }
+            if event.kind == "processExited" {
+                processExited = true
+                break
+            }
+        }
+
+        XCTAssertTrue(results.contains { $0["type"] as? String == "content" && $0["text"] as? String == "hello" })
+        XCTAssertTrue(results.contains { $0["type"] as? String == "message_stop" && $0["provider_session_id"] as? String == "session-1" })
+        XCTAssertTrue(processExited)
+        await session.shutdown()
+        _ = try await bridge.close()
+    }
 }
 
 private extension Collection where Element: Comparable {

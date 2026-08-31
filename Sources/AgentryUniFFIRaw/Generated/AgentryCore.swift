@@ -1720,6 +1720,14 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
     func agentProviderStart(identity: RuntimeIdentity, scopeId: String) throws  -> AgentProviderStartReceiptV1
 
     /**
+     * Starts a provider scope and writes one raw stdin prompt before closing
+     * stdin. This is the Claude Code headless `-p` lifecycle: the child reads
+     * the complete prompt, observes EOF, then emits its stream-json result.
+     * The prompt is never logged or reinterpreted by the Rust transport.
+     */
+    func agentProviderStartWithStdin(identity: RuntimeIdentity, scopeId: String, payload: Data) throws  -> AgentProviderStartReceiptV1
+
+    /**
      * Contract §7.1's permission **protocol** half only -- policy (auto-approval matching,
      * secure-store decisions) stays Swift/core-owned; this call only encodes and writes the
      * caller's already-decided outcome back to the CLI.
@@ -2133,6 +2141,24 @@ open func agentProviderStart(identity: RuntimeIdentity, scopeId: String)throws  
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Starts a provider scope and writes one raw stdin prompt before closing
+     * stdin. This is the Claude Code headless `-p` lifecycle: the child reads
+     * the complete prompt, observes EOF, then emits its stream-json result.
+     * The prompt is never logged or reinterpreted by the Rust transport.
+     */
+open func agentProviderStartWithStdin(identity: RuntimeIdentity, scopeId: String, payload: Data)throws  -> AgentProviderStartReceiptV1  {
+    return try  FfiConverterTypeAgentProviderStartReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_start_with_stdin(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(payload),uniffiCallStatus
     )
 })
 }
@@ -16193,6 +16219,7 @@ public enum AgentProviderProtocolV1: Equatable, Hashable {
 
     case codexAppServer
     case acp
+    case claudeHeadless
 
 
 
@@ -16218,6 +16245,8 @@ public struct FfiConverterTypeAgentProviderProtocolV1: FfiConverterRustBuffer {
 
         case 2: return .acp
 
+        case 3: return .claudeHeadless
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -16232,6 +16261,10 @@ public struct FfiConverterTypeAgentProviderProtocolV1: FfiConverterRustBuffer {
 
         case .acp:
             writeInt(&buf, Int32(2))
+
+
+        case .claudeHeadless:
+            writeInt(&buf, Int32(3))
 
         }
     }
@@ -23875,6 +23908,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_start() != 49719) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_start_with_stdin() != 62814) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_respond_permission() != 30809) {

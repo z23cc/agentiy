@@ -63,7 +63,7 @@ pub use scope::{
 };
 pub use translator::{
     InvocationId, LIFECYCLE_TYPE, StreamResult, Translator,
-    should_suppress_user_facing_stream_result,
+    should_suppress_user_facing_stream_result, stream_result_wire_fields,
 };
 pub use turn_state::{TurnDiagnostic, TurnEvent, TurnState, TurnStatus};
 

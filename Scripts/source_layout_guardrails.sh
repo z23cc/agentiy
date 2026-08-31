@@ -1049,6 +1049,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p17-agent-run-terminal-outcome-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p18-agent-run-process-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p6-provider-semantic-closure.md"
+  "docs/spec/headless-mcp-domain-runtime-p6-11-claude-headless-rust-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p5-0-storage-lease.md"
   "docs/spec/history-query-tools.md"
   "docs/spec/rust-workspace-document-projection-v1.md"
@@ -1266,7 +1267,30 @@ print_matches \
   grep -R -n -E 'ClaudeAgentModeCoordinator\(|ClaudeNativeProcessSessionController\(|ClaudeRustBackedNativeSessionAdapter\(' \
     Sources/RepoPromptMCP
 
+# P6-11: Claude's headless one-shot adapter is Rust-transport-backed. The old Swift process runner
+# and parser were retired as a production authority; keep one composition-root construction site so a
+# future provider factory cannot silently restore a second stdout/NDJSON semantic path.
+retired_claude_headless_file="Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeCodeAgentProvider.swift"
+if [[ -e "$retired_claude_headless_file" ]]; then
+  fail "retired Claude headless Swift provider must not return: $retired_claude_headless_file"
+fi
+print_matches \
+  "retired Claude headless Swift provider symbol must not return" \
+  grep -R -n -E 'ClaudeCodeAgentProvider(\(|[[:space:]]*:)' Sources/RepoPrompt
+claude_headless_construction_sites="$(grep -R -n -F 'ClaudeRustBackedHeadlessAgentProvider(' Sources/RepoPrompt 2>/dev/null || true)"
+unexpected_claude_headless_construction_sites="$(printf '%s' "$claude_headless_construction_sites" \
+  | grep -v -F 'Sources/RepoPrompt/Features/AgentMode/Runtime/Providers/AgentRuntimeProviderService.swift:' || true)"
+if [[ -n "$unexpected_claude_headless_construction_sites" ]]; then
+  fail "ClaudeRustBackedHeadlessAgentProvider must be constructed only inside AgentRuntimeProviderService"
+  printf '%s' "$unexpected_claude_headless_construction_sites" >&2
+fi
+if grep -n -E 'CLIProcessRunner|Process\(' Sources/RepoPrompt/Infrastructure/AI/Providers/ClaudeRustBackedHeadlessAgentProvider.swift >/tmp/agentry-claude-headless-swift-process 2>/dev/null; then
+  fail "ClaudeRustBackedHeadlessAgentProvider must not own Swift process execution"
+  cat /tmp/agentry-claude-headless-swift-process >&2
+fi
+
 # M6B keeps child-launch semantics in the Domain authority and physical socket/process I/O in
+
 # RepoPromptMCP. The contract is intentionally separate from the historical M5 fixture.
 m6b_contract="Scripts/Fixtures/headless_mcp_domain_runtime_m6b_contract.json"
 if [[ ! -f "$m6b_contract" ]]; then

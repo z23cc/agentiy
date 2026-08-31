@@ -18,13 +18,25 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::agent_claude::framer::LineFramer;
+use crate::agent_claude::translator::{
+    Translator, should_suppress_user_facing_stream_result, stream_result_wire_fields,
+};
 use crate::agent_claude::process::{self, ReapOutcome, Reaper, SpawnConfig};
 use crate::{EventClass, EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, SubscriptionHub};
+
+/// Preserve the legacy headless provider's bounded one-shot lifetime while keeping the timeout
+/// decision in the Rust process authority. Codex/ACP scopes remain effectively unbounded here;
+/// their protocol controllers own their existing request deadlines.
+const CLAUDE_HEADLESS_TIMEOUT: Duration = Duration::from_secs(6_000);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderProtocol {
     CodexAppServer,
     Acp,
+    /// Claude Code's headless `-p --output-format stream-json` mode. Unlike the
+    /// generic protocols, Rust owns NDJSON translation for this variant so the
+    /// Swift headless adapter never reparses provider bytes.
+    ClaudeHeadless,
 }
 
 impl ProviderProtocol {
@@ -32,6 +44,7 @@ impl ProviderProtocol {
         match self {
             Self::CodexAppServer => "codexAppServer",
             Self::Acp => "acp",
+            Self::ClaudeHeadless => "claudeHeadless",
         }
     }
 }
@@ -96,7 +109,7 @@ pub enum ScopeRegistryError {
 struct RunningProcess {
     pid: i32,
     reaper_token: u64,
-    stdin: Arc<Mutex<File>>,
+    stdin: Option<Arc<Mutex<File>>>,
 }
 
 struct ScopeState {
@@ -162,7 +175,20 @@ impl AgentProviderScope {
         self: &Arc<Self>,
         identity: &RuntimeIdentity,
     ) -> Result<StartReceipt, AgentProviderScopeError> {
+        self.start_with_stdin(identity, None)
+    }
+
+    pub fn start_with_stdin(
+        self: &Arc<Self>,
+        identity: &RuntimeIdentity,
+        initial_stdin: Option<&[u8]>,
+    ) -> Result<StartReceipt, AgentProviderScopeError> {
         self.validate(identity)?;
+        if initial_stdin.is_some() && self.config.protocol != ProviderProtocol::ClaudeHeadless {
+            return Err(AgentProviderScopeError::InvalidArgument(
+                "initial_stdin requires claudeHeadless",
+            ));
+        }
         let mut state = self
             .state
             .lock()
@@ -196,7 +222,7 @@ impl AgentProviderScope {
         state.process = Some(RunningProcess {
             pid,
             reaper_token: token,
-            stdin,
+            stdin: Some(stdin),
         });
         drop(state);
 
@@ -209,6 +235,38 @@ impl AgentProviderScope {
         );
         self.spawn_stdout_reader(spawned.stdout_read, pid, token);
         self.spawn_stderr_reader(spawned.stderr_read, pid);
+        if let Some(payload) = initial_stdin {
+            let stdin = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state
+                    .process
+                    .as_mut()
+                    .and_then(|process| process.stdin.take())
+            };
+            let Some(stdin) = stdin else {
+                let error = AgentProviderScopeError::NotRunning;
+                let _ = self.shutdown(identity);
+                return Err(error);
+            };
+            let result = stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .write_all(payload);
+            if let Err(error) = result {
+                // The initial prompt is part of start's atomic one-shot handoff. If the child
+                // closes stdin before accepting it, terminate the scope so a failed start cannot
+                // leak a process or leave a reader pair behind.
+                let mapped = AgentProviderScopeError::TransportWrite(error.to_string());
+                let _ = self.shutdown(identity);
+                return Err(mapped);
+            }
+            // Dropping the last file handle is part of the one-shot contract:
+            // Claude starts processing a prompt only after stdin reaches EOF.
+            drop(stdin);
+        }
         Ok(StartReceipt {
             pid,
             process_group_id,
@@ -236,7 +294,13 @@ impl AgentProviderScope {
                 .process
                 .as_ref()
                 .ok_or(AgentProviderScopeError::NotRunning)
-                .map(|process| Arc::clone(&process.stdin))?;
+                .and_then(|process| {
+                    process
+                        .stdin
+                        .as_ref()
+                        .map(Arc::clone)
+                        .ok_or(AgentProviderScopeError::NotRunning)
+                })?;
             state.next_sequence = state.next_sequence.saturating_add(1);
             (stdin, state.next_sequence)
         };
@@ -289,6 +353,7 @@ impl AgentProviderScope {
     fn spawn_stdout_reader(self: &Arc<Self>, fd: std::os::fd::OwnedFd, pid: i32, token: u64) {
         let weak = Arc::downgrade(self);
         let reaper = Arc::clone(&self.reaper);
+        let is_claude_headless = self.config.protocol == ProviderProtocol::ClaudeHeadless;
         crate::agent_claude::process::thread_budget::increment();
         let result = thread::Builder::new()
             .name("agent-provider-stdout".into())
@@ -298,6 +363,8 @@ impl AgentProviderScope {
                     );
                 let mut file = File::from(fd);
                 let mut framer = LineFramer::default();
+                let mut translator = is_claude_headless
+                    .then(|| Translator::new(Box::new(crate::agent_claude::tool_owned::is_repoprompt_tool_name)));
                 let mut buffer = [0u8; 64 * 1024];
                 loop {
                     let count = match file.read(&mut buffer) {
@@ -310,17 +377,12 @@ impl AgentProviderScope {
                         framer.feed(
                             &buffer[..count],
                             |_diagnostic| {},
-                            |line| {
-                                let payload = serde_json::from_slice::<Value>(&line)
-                                    .unwrap_or_else(|_| {
-                                        Value::String(String::from_utf8_lossy(&line).into_owned())
-                                    });
-                                scope.publish(
-                                    "providerMessage",
-                                    json!({ "pid": pid, "payload": payload }),
-                                    false,
-                                );
-                            },
+                            |line| publish_provider_line(
+                                &scope,
+                                pid,
+                                &mut translator,
+                                &line,
+                            ),
                         );
                     } else {
                         break;
@@ -328,23 +390,36 @@ impl AgentProviderScope {
                 }
                 let Some(scope) = weak.upgrade() else { return };
                 framer.flush(|line| {
-                    let payload = serde_json::from_slice::<Value>(&line).unwrap_or_else(|_| {
-                        Value::String(String::from_utf8_lossy(&line).into_owned())
-                    });
-                    scope.publish(
-                        "providerMessage",
-                        json!({ "pid": pid, "payload": payload }),
-                        false,
-                    );
+                    publish_provider_line(&scope, pid, &mut translator, &line)
                 });
                 // stdout EOF is the only per-scope terminal wait. Reusing this reader keeps the
                 // shared reaper at one process-wide thread instead of adding an exit watcher per
                 // provider process.
-                let outcome =
-                    reaper.wait_for_exit(pid, token, Duration::from_secs(365 * 24 * 60 * 60));
+                let wait_timeout = if is_claude_headless {
+                    CLAUDE_HEADLESS_TIMEOUT
+                } else {
+                    Duration::from_secs(365 * 24 * 60 * 60)
+                };
+                let (outcome, timed_out) = match reaper.wait_for_exit(pid, token, wait_timeout) {
+                    Some(outcome) => (outcome, false),
+                    None if is_claude_headless => {
+                        // A timeout is a Rust-owned terminal fact. Reuse the same bounded
+                        // process-group termination path as explicit scope shutdown, then expose
+                        // the timeout bit alongside the final exit outcome.
+                        let outcome = process::terminate_and_reap(
+                            &reaper,
+                            pid,
+                            token,
+                            Duration::from_secs(1),
+                        )
+                        .unwrap_or(ReapOutcome::Lost);
+                        (outcome, true)
+                    }
+                    None => (ReapOutcome::Lost, false),
+                };
                 scope.wait_for_other_reader();
                 reaper.forget(pid, token);
-                scope.finish_process(pid, outcome.unwrap_or(ReapOutcome::Lost));
+                scope.finish_process(pid, outcome, timed_out);
                 // Keep processExited ahead of scopeClosed when shutdown is racing the reader.
                 scope.reader_finished();
             });
@@ -406,7 +481,7 @@ impl AgentProviderScope {
         result.expect("agent provider stderr reader must start");
     }
 
-    fn finish_process(&self, pid: i32, outcome: ReapOutcome) {
+    fn finish_process(&self, pid: i32, outcome: ReapOutcome, timed_out: bool) {
         {
             let mut state = self
                 .state
@@ -422,13 +497,13 @@ impl AgentProviderScope {
         }
         let payload = match outcome {
             ReapOutcome::Exited(code) => {
-                json!({ "pid": pid, "exit_code": code, "signal": null })
+                json!({ "pid": pid, "exit_code": code, "signal": null, "timed_out": timed_out })
             }
             ReapOutcome::Signaled(signal) => {
-                json!({ "pid": pid, "exit_code": null, "signal": signal })
+                json!({ "pid": pid, "exit_code": null, "signal": signal, "timed_out": timed_out })
             }
             ReapOutcome::Lost => {
-                json!({ "pid": pid, "exit_code": null, "signal": null, "ownership_lost": true })
+                json!({ "pid": pid, "exit_code": null, "signal": null, "timed_out": timed_out, "ownership_lost": true })
             }
         };
         self.publish("processExited", payload, true);
@@ -530,6 +605,41 @@ impl AgentProviderScope {
         };
         let _ = hub.publish(&self.identity, &scope, input);
     }
+}
+
+/// Converts one framed stdout line into either the legacy opaque provider event
+/// or Rust-owned Claude headless stream results. The translator is kept on the
+/// single stdout reader thread, preserving FIFO and tool-use correlation without
+/// introducing a second semantic consumer or an unbounded intermediate queue.
+fn publish_provider_line(
+    scope: &Arc<AgentProviderScope>,
+    pid: i32,
+    translator: &mut Option<Translator>,
+    line: &[u8],
+) {
+    if let Some(translator) = translator {
+        for result in translator.parse_ndjson_line(line) {
+            if should_suppress_user_facing_stream_result(&result) {
+                continue;
+            }
+            scope.publish(
+                "streamResult",
+                json!({
+                    "pid": pid,
+                    "result": stream_result_wire_fields(&result),
+                }),
+                false,
+            );
+        }
+        return;
+    }
+    let payload = serde_json::from_slice::<Value>(line)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(line).into_owned()));
+    scope.publish(
+        "providerMessage",
+        json!({ "pid": pid, "payload": payload }),
+        false,
+    );
 }
 
 impl Drop for AgentProviderScope {
@@ -699,6 +809,29 @@ mod tests {
     fn protocol_names_are_stable() {
         assert_eq!(ProviderProtocol::CodexAppServer.as_str(), "codexAppServer");
         assert_eq!(ProviderProtocol::Acp.as_str(), "acp");
+        assert_eq!(ProviderProtocol::ClaudeHeadless.as_str(), "claudeHeadless");
+    }
+
+    #[test]
+    fn initial_stdin_is_exclusive_to_claude_headless() {
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: Vec::new(),
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::Acp,
+                max_stderr_bytes: 1024,
+            },
+        );
+        assert_eq!(
+            scope.start_with_stdin(&identity(), Some(b"prompt")),
+            Err(AgentProviderScopeError::InvalidArgument(
+                "initial_stdin requires claudeHeadless",
+            ))
+        );
     }
 
     #[test]
@@ -837,5 +970,66 @@ mod tests {
         scope
             .shutdown(&runtime_identity)
             .expect("provider process should shut down");
+    }
+
+    #[test]
+    fn claude_headless_scope_translates_stream_json_and_closes_stdin() {
+        let runtime_identity = identity();
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            runtime_identity.clone(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "cat >/dev/null; printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}' '{\"type\":\"result\",\"result\":\"hello\",\"session_id\":\"session-1\"}'".into(),
+                ],
+                environment: vec![],
+                working_directory: None,
+                protocol: ProviderProtocol::ClaudeHeadless,
+                max_stderr_bytes: 1024,
+            },
+        );
+        let subscription_scope = scope.id().to_subscription_scope_id();
+        let hub = Arc::new(SubscriptionHub::new(runtime_identity.clone()).expect("hub"));
+        let bootstrap = hub
+            .open_subscription(
+                &runtime_identity,
+                subscription_scope.clone(),
+                SubscriptionConfig::default(),
+                Vec::new,
+            )
+            .expect("subscription");
+        scope.attach_event_sink(Arc::clone(&hub), subscription_scope);
+        scope
+            .start_with_stdin(&runtime_identity, Some(b"prompt"))
+            .expect("headless provider process should start");
+        std::thread::sleep(Duration::from_millis(100));
+        let drained = hub
+            .try_drain(
+                &runtime_identity,
+                bootstrap.subscription_id,
+                64,
+                SubscriptionConfig::default().max_queued_bytes,
+            )
+            .expect("events should drain");
+        let batch = match drained {
+            crate::DrainOutcome::Batch(batch) => batch,
+            crate::DrainOutcome::Oversize(_) => panic!("provider events should fit in the queue"),
+        };
+        let payloads: Vec<String> = batch
+            .events
+            .iter()
+            .map(|event| String::from_utf8_lossy(&event.payload).into_owned())
+            .collect();
+        assert!(payloads.iter().any(|payload| payload.contains("streamResult")));
+        assert!(payloads.iter().any(|payload| payload.contains("hello")));
+        assert!(payloads.iter().any(|payload| payload.contains("message_stop")));
+        assert!(payloads.iter().any(|payload| payload.contains("session-1")));
+        assert!(payloads.iter().any(|payload| payload.contains("processExited")));
+        assert!(!payloads.iter().any(|payload| payload.contains("providerMessage")));
+        scope
+            .shutdown(&runtime_identity)
+            .expect("headless provider process should shut down");
     }
 }

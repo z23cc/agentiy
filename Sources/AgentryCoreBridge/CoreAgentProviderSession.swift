@@ -3,17 +3,20 @@ import Foundation
 import os
 
 // P6 provider transport authority facade. This is deliberately smaller than CoreAgentSession:
-// Codex and ACP keep provider-specific request/response and event normalization in Swift, while
-// Rust owns process lifetime, framing, serialized writes, and sequence assignment.
+// Codex and ACP keep provider-specific request/response normalization in Swift, while the Claude
+// headless variant additionally asks Rust to translate its stream-json payloads. Rust always owns
+// process lifetime, framing, serialized writes, and sequence assignment.
 
 public enum CoreAgentProviderProtocol: Sendable {
     case codexAppServer
     case acp
+    case claudeHeadless
 
     var ffiValue: AgentryUniFFIRaw.AgentProviderProtocolV1 {
         switch self {
         case .codexAppServer: .codexAppServer
         case .acp: .acp
+        case .claudeHeadless: .claudeHeadless
         }
     }
 }
@@ -29,6 +32,14 @@ extension CoreRuntimeTransport {
     func agentProviderStart(
         identity: CoreRuntimeIdentity,
         scopeID: String
+    ) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1 {
+        throw CoreTransportError.unexpected("agent-provider-v1 transport is unavailable")
+    }
+
+    func agentProviderStartWithStdin(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        payload: Data
     ) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1 {
         throw CoreTransportError.unexpected("agent-provider-v1 transport is unavailable")
     }
@@ -59,6 +70,22 @@ extension AgentryCoreBridge {
         let identity = try requireIdentity()
         do { return try transport.agentProviderStart(identity: identity, scopeID: scopeID) }
         catch { throw mapTransportError(error) }
+    }
+
+    func agentProviderStartWithStdin(
+        scopeID: String,
+        payload: Data
+    ) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.agentProviderStartWithStdin(
+                identity: identity,
+                scopeID: scopeID,
+                payload: payload
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
     }
 
     @discardableResult
@@ -176,6 +203,14 @@ public final class CoreAgentProviderSession: @unchecked Sendable {
 
     public func start() async throws -> CoreAgentStartReceipt {
         let receipt = try await bridge.agentProviderStart(scopeID: scopeID)
+        return CoreAgentStartReceipt(pid: receipt.pid, processGroupID: receipt.processGroupId)
+    }
+
+    /// Claude Code headless `-p` startup. Rust writes the complete prompt and
+    /// closes stdin as one authority operation, preventing a Swift writer from
+    /// racing EOF or leaving the child waiting forever for more input.
+    public func startWithStdin(_ payload: Data) async throws -> CoreAgentStartReceipt {
+        let receipt = try await bridge.agentProviderStartWithStdin(scopeID: scopeID, payload: payload)
         return CoreAgentStartReceipt(pid: receipt.pid, processGroupID: receipt.processGroupId)
     }
 

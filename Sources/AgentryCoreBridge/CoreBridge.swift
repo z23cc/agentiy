@@ -478,6 +478,7 @@ protocol CoreRuntimeTransport: Sendable {
         config: AgentryUniFFIRaw.CoreAgentProviderScopeConfigV1
     ) throws -> AgentryUniFFIRaw.AgentProviderScopeHandleV1
     func agentProviderStart(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1
+    func agentProviderStartWithStdin(identity: CoreRuntimeIdentity, scopeID: String, payload: Data) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1
     func agentProviderSendLine(identity: CoreRuntimeIdentity, scopeID: String, payload: Data) throws -> UInt64
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
@@ -5191,6 +5192,22 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     func agentProviderStart(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1 {
         do {
             return try runtime.agentProviderStart(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderStartWithStdin(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        payload: Data
+    ) throws -> AgentryUniFFIRaw.AgentProviderStartReceiptV1 {
+        do {
+            return try runtime.agentProviderStartWithStdin(
+                identity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                payload: payload
+            )
         } catch {
             throw Self.map(error)
         }

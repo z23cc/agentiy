@@ -3993,6 +3993,7 @@ pub struct CoreAgentProviderEnvironmentEntryV1 {
 pub enum AgentProviderProtocolV1 {
     CodexAppServer,
     Acp,
+    ClaudeHeadless,
 }
 
 impl From<AgentProviderProtocolV1> for runtime::agent_provider::ProviderProtocol {
@@ -4000,6 +4001,7 @@ impl From<AgentProviderProtocolV1> for runtime::agent_provider::ProviderProtocol
         match value {
             AgentProviderProtocolV1::CodexAppServer => Self::CodexAppServer,
             AgentProviderProtocolV1::Acp => Self::Acp,
+            AgentProviderProtocolV1::ClaudeHeadless => Self::ClaudeHeadless,
         }
     }
 }

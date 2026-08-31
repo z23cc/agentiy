@@ -251,16 +251,7 @@ final class AgentRuntimeProviderService {
                 runtimeVariant: runtimeVariant,
                 enableDebugLogging: Self.enableDebugLogging
             )
-            var processConfig = CLIProcessConfiguration(
-                command: config.commandName,
-                enableDebugLogging: Self.enableDebugLogging,
-                captureStdoutTailBytes: 128 * 1024,
-                captureStderrTailBytes: 256 * 1024,
-                logStdinSampleBytes: 0
-            )
-            processConfig.ensureAdditionalPaths(config.additionalPathHints)
-            let runner = CLIProcessRunner(config: processConfig)
-            let wrappedProvider = ClaudeCodeAgentProvider(runner: runner, config: config)
+            let wrappedProvider = ClaudeRustBackedHeadlessAgentProvider(config: config)
             let runtimeConfig = ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .discovery)
             if Self.enableDebugLogging {
                 Self.logger.debug("Created ClaudeCompatibleHeadlessProviderAdapter")

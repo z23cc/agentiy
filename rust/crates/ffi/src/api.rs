@@ -4313,6 +4313,28 @@ impl CoreRuntime {
         })
     }
 
+    /// Starts a provider scope and writes one raw stdin prompt before closing
+    /// stdin. This is the Claude Code headless `-p` lifecycle: the child reads
+    /// the complete prompt, observes EOF, then emits its stream-json result.
+    /// The prompt is never logged or reinterpreted by the Rust transport.
+    pub fn agent_provider_start_with_stdin(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        payload: Vec<u8>,
+    ) -> Result<AgentProviderStartReceiptV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            let receipt = scope.start_with_stdin(&identity, Some(&payload))?;
+            Ok(AgentProviderStartReceiptV1 {
+                pid: receipt.pid,
+                process_group_id: receipt.process_group_id,
+            })
+        })
+    }
+
     /// Sends one already-encoded provider JSON-RPC frame. Rust appends exactly one newline,
     /// serializes writes, and returns a monotonic outbound sequence. Provider meaning remains
     /// Swift-owned; no protocol-specific request type crosses this boundary.

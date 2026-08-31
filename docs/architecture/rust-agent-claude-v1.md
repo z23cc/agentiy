@@ -1,6 +1,6 @@
 # Rust Agent Claude Vertical Contract v1
 
-Status: **P6-10 retired Swift runtime** (2026-08-24). The original P6-1 contract freeze remains the behavioral baseline; §15 records the implementation amendments and accepted cutover evidence. Scope covers all four interactive Claude-compatible variants (`claudeCode`, GLM, Kimi, and custom-compatible); the headless one-shot Claude provider remains outside this vertical.
+Status: **P6-11 retired Swift runtime** (2026-08-31). The original P6-1 contract freeze remains the behavioral baseline; §15 records the implementation amendments and accepted cutover evidence. Scope covers all four interactive Claude-compatible variants (`claudeCode`, GLM, Kimi, and custom-compatible); the headless one-shot Claude provider is now covered by P6-11.
 
 Every behavioral rule below is ported, not paraphrased, from the current Swift implementation. Anchors are cited so a future differential can be written directly against them. Where this document's line numbers drift from a later commit, the source file is authoritative; re-anchor rather than silently trusting this document.
 
@@ -36,7 +36,7 @@ No export accepts a single protocol line. The temporary DEBUG-only `agent_claude
 
 The interactive Claude native runtime is a GUI-scope capability with exactly one implementation and one topology, enforced structurally rather than assumed: `ClaudeRustBackedNativeSessionAdapter` is constructed only inside `ClaudeAgentModeCoordinator.makeDefaultController`; `ClaudeAgentModeCoordinator` is constructed only inside the `@MainActor` `AgentModeViewModel`; and `Sources/RepoPromptMCP` constructs neither interactive symbol. `Scripts/source_layout_guardrails.sh` §11 enforces that reachability chain and also rejects reintroduction of the deleted Swift controller/codec/shadow files and temporary DEBUG selection/shadow bridge.
 
-The headless Claude path (`ClaudeCodeAgentProvider`, one-shot `-p`, `HeadlessAgentProvider`) is a different implementation of a different capability and stays out of this vertical for its entire duration, including P6-9's variant-parity pass.
+The headless Claude path (`ClaudeRustBackedHeadlessAgentProvider`, one-shot `-p`, `HeadlessAgentProvider`) is covered by the separate P6-11 one-shot contract. It shares the Rust transport and translator authority but intentionally keeps its headless prompt/credential preparation seam separate from the interactive session lifecycle.
 
 ## 2. The `stream-json` wire subset actually consumed
 
@@ -414,7 +414,7 @@ P6-1 does not migrate or own, and no later Claude-vertical step migrates without
 
 - The Agent Mode transcript store, tool tracking, tool cards, run-state ownership, or approval UI (core-owned per `docs/architecture/provider-plugins.md`).
 - `AgentSession`/`AgentSessionIndex` persistence — format, schema version, and write path stay Swift-owned for the entire Claude vertical (design §6; charter §15.3 gate 4 exempt).
-- The headless one-shot Claude provider (`ClaudeCodeAgentProvider`, `HeadlessAgentProvider`).
+- The headless one-shot Claude provider is covered by P6-11 and is not part of the interactive session lifecycle described by this document.
 - GLM / Kimi / custom Claude-compatible before the §15.9 amendment; they now share the Rust authority.
 - Codex, ACP, or any other provider family.
 - The MCP-idle steering safe point's host-side facts (§7.2) — Phase 5 territory.
@@ -558,3 +558,15 @@ The defect was in `AgentryCoreBridge.wakeFired()`. Each `DispatchSourceRead` cal
 **Neutral seam.** `NativeAgentRuntimeEvent`, session/turn status, initialization snapshot, interrupt outcome, and controller errors are now provider-neutral DTOs rather than aliases to nested types on the deleted controller. `ClaudeRustBackedNativeSessionAdapter` is the only interactive Claude-compatible conformance and maps versioned Rust events into that seam. Host-owned raw-log path policy and permission matching live in `ClaudeNativeRuntimeHostPolicy`, outside the deleted transport runtime.
 
 **Post-oracle regression shape.** Tests no longer construct the retired Swift runtime as an executable oracle. The focused launch matrix asserts Rust output against frozen argv/environment facts for standard, GLM, Kimi, and custom-compatible variants; canonical lifecycle, restart/PID fencing, permission policy, and model-resolution tests remain on the production Rust path. Historical P6-3 through P6-9 two-arm evidence remains recorded above, while current guards prove there is no fallback implementation to drift.
+
+
+## P6-11 headless one-shot sibling
+
+P6-11 closes the previously separate headless Claude `-p` implementation. The
+interactive `AgentClaudeScope` remains the authority for session handshakes,
+permissions, turn lifecycle, and resumption. Headless runs instead use the
+`AgentProviderScope` protocol tag `claudeHeadless`: Rust writes the one-shot
+prompt and EOF, applies the same reviewed NDJSON translator, and emits the
+complete stream-result projection. Swift keeps only credential/config
+preparation, package-owned argument/prompt rules, and the provider-neutral DTO
+seam. See `headless-mcp-domain-runtime-p6-11-claude-headless-rust-authority.md`.
