@@ -346,6 +346,39 @@ actor CodexAppServerClient {
         let processFamilyCleanupWasCompleted: Bool
     }
 
+    private static func clientError(from error: Error, method: String) -> Error {
+        guard let bridgeError = error as? CoreBridgeError else { return error }
+        switch bridgeError {
+        case let .agentProviderCodexRemoteError(_, code, message, data):
+            let decodedData = data.flatMap { raw in
+                (try? JSONSerialization.jsonObject(with: raw)).flatMap(CodexJSONValue.from)
+            }
+            return ClientError.requestFailed(RequestFailure(
+                method: method,
+                code: Int(code),
+                message: message,
+                data: decodedData
+            ))
+        case let .agentProviderCodexTimedOut(timedOutMethod):
+            return ClientError.requestFailed(RequestFailure(
+                method: timedOutMethod,
+                code: nil,
+                message: "Request timed out",
+                data: nil
+            ))
+        case .agentProviderCodexCancelled:
+            return CancellationError()
+        case .agentProviderCodexInvalidResponse:
+            return ClientError.invalidResponse
+        case .agentProviderCodexInvalidJson:
+            return ClientError.jsonDecodeFailed
+        case .agentProviderNotRunning, .agentProviderScopeClosed, .agentProviderUnknownScope:
+            return ClientError.processNotRunning
+        default:
+            return error
+        }
+    }
+
     static func isTimeoutError(_ error: Error) -> Bool {
         if let clientError = error as? ClientError,
            case let .requestFailed(failure) = clientError
@@ -660,18 +693,30 @@ actor CodexAppServerClient {
         }
     }
 
-    func healthyTransportGeneration() -> UInt64? {
+    func healthyTransportGeneration() async -> UInt64? {
+        if let runtimeSession {
+            guard !didTerminateTransport else { return nil }
+            if let codexSession = runtimeSession as? any CodexAppServerRuntimeSession {
+                guard let state = try? await codexSession.codexState(), state.initialized else {
+                    isInitialized = false
+                    return nil
+                }
+                isInitialized = true
+                return transportGeneration
+            }
+            guard isInitialized else { return nil }
+            return transportGeneration
+        }
         if let activeTransport {
             guard isInitialized, !didTerminateTransport, livenessProbe(activeTransport.process) else { return nil }
             return activeTransport.generation
         }
-        guard runtimeSession != nil, isInitialized, !didTerminateTransport else { return nil }
-        return transportGeneration
+        return nil
     }
 
     func subscribeNotificationsWithTransportGeneration() async throws -> NotificationSubscription {
         await faultInjection.subscriptionPreparation()
-        guard let generation = healthyTransportGeneration() else {
+        guard let generation = await healthyTransportGeneration() else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
         return NotificationSubscription(
@@ -692,7 +737,7 @@ actor CodexAppServerClient {
 
     func subscribeServerRequestsWithTransportGeneration() async throws -> ServerRequestSubscription {
         await faultInjection.subscriptionPreparation()
-        guard let generation = healthyTransportGeneration() else {
+        guard let generation = await healthyTransportGeneration() else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
         return ServerRequestSubscription(
@@ -718,7 +763,7 @@ actor CodexAppServerClient {
         }
         if let activeTransport {
             let appearsAlive = livenessProbe(activeTransport.process)
-            if isInitialized, appearsAlive {
+            if await codexRuntimeIsInitialized(), appearsAlive {
                 return
             }
             if !appearsAlive {
@@ -729,7 +774,7 @@ actor CodexAppServerClient {
                 )
                 try ensureStartupAuthority(authority)
             }
-        } else if runtimeSession != nil, isInitialized, !didTerminateTransport {
+        } else if runtimeSession != nil, await codexRuntimeIsInitialized(), !didTerminateTransport {
             return
         }
         try ensureStartupAuthority(authority)
@@ -1360,6 +1405,36 @@ actor CodexAppServerClient {
         guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
+        if let codexSession = runtimeSession as? any CodexAppServerRuntimeSession {
+            let encodedParams: Data? = if let params {
+                try JSONSerialization.data(withJSONObject: params, options: [])
+            } else {
+                nil
+            }
+            let effectiveTimeout = timeout ?? (useDefaultTimeout ? config.requestTimeout : nil)
+            let cancellationToken = UUID().uuidString
+            return try await withTaskCancellationHandler {
+                do {
+                    let response = try await codexSession.codexRequest(
+                        method: method,
+                        params: encodedParams,
+                        timeoutMilliseconds: effectiveTimeout.map { UInt64(max(0, $0 * 1000)) },
+                        cancellationToken: cancellationToken
+                    )
+                    guard let object = try JSONSerialization.jsonObject(with: response) as? [String: Any] else {
+                        throw ClientError.invalidResponse
+                    }
+                    return object
+                } catch {
+                    throw Self.clientError(from: error, method: method)
+                }
+            } onCancel: {
+                Task {
+                    _ = try? await codexSession.codexCancel(cancellationToken: cancellationToken)
+                }
+            }
+        }
+
         let requestID = makeRequestID()
         let generation = transportGeneration
         let deadline = timeout ?? (useDefaultTimeout ? config.requestTimeout : nil)
@@ -1396,9 +1471,15 @@ actor CodexAppServerClient {
         }
     }
 
-    func respondToServerRequest(id: CodexAppServerRequestID, result: [String: Any]) throws {
+    func respondToServerRequest(id: CodexAppServerRequestID, result: [String: Any]) async throws {
         guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
+        }
+        if let codexSession = runtimeSession as? any CodexAppServerRuntimeSession {
+            let data = try JSONSerialization.data(withJSONObject: result, options: [])
+            let requestIDData = try JSONSerialization.data(withJSONObject: id.jsonValue, options: [])
+            _ = try await codexSession.codexRespond(requestID: requestIDData, result: data)
+            return
         }
         let payload: [String: Any] = [
             "id": id.jsonValue,
@@ -1412,7 +1493,7 @@ actor CodexAppServerClient {
         code: Int = -32601,
         message: String,
         data: [String: Any]? = nil
-    ) throws {
+    ) async throws {
         guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
         }
@@ -1423,6 +1504,17 @@ actor CodexAppServerClient {
         if let data {
             errorObject["data"] = data
         }
+        if let codexSession = runtimeSession as? any CodexAppServerRuntimeSession {
+            let data = data.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: []) }
+            let requestIDData = try JSONSerialization.data(withJSONObject: id.jsonValue, options: [])
+            _ = try await codexSession.codexRespondError(
+                requestID: requestIDData,
+                code: Int64(code),
+                message: message,
+                data: data
+            )
+            return
+        }
         let payload: [String: Any] = [
             "id": id.jsonValue,
             "error": errorObject
@@ -1430,9 +1522,14 @@ actor CodexAppServerClient {
         try sendJSONLine(payload, method: nil)
     }
 
-    func notify(method: String, params: [String: Any]?) throws {
+    func notify(method: String, params: [String: Any]?) async throws {
         guard activeTransport != nil || runtimeSession != nil, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
+        }
+        if let codexSession = runtimeSession as? any CodexAppServerRuntimeSession {
+            let data = try params.map { try JSONSerialization.data(withJSONObject: $0, options: []) }
+            _ = try await codexSession.codexNotify(method: method, params: data)
+            return
         }
         var payload: [String: Any] = [
             "method": method
@@ -1524,7 +1621,7 @@ actor CodexAppServerClient {
     }
 
     private func initializeIfNeeded(timeout: TimeInterval?) async throws {
-        if isInitialized {
+        if await codexRuntimeIsInitialized() {
             return
         }
         let clientInfo: [String: Any] = [
@@ -1544,8 +1641,21 @@ actor CodexAppServerClient {
             timeout: timeout,
             useDefaultTimeout: timeout == nil
         )
-        try notify(method: "initialized", params: nil)
+        try await notify(method: "initialized", params: nil)
         isInitialized = true
+    }
+
+    private func codexRuntimeIsInitialized() async -> Bool {
+        guard let runtimeSession else { return isInitialized }
+        guard let codexSession = runtimeSession as? any CodexAppServerRuntimeSession else {
+            return isInitialized
+        }
+        guard !didTerminateTransport, let state = try? await codexSession.codexState() else {
+            isInitialized = false
+            return false
+        }
+        isInitialized = state.initialized
+        return state.initialized
     }
 
     private func ensureStartupAuthority(_ authority: UInt64) throws {
@@ -1750,8 +1860,29 @@ actor CodexAppServerClient {
     private func handleRuntimeEvent(_ event: CoreAgentProviderEvent, generation: UInt64) async {
         guard generation == transportGeneration, !didTerminateTransport else { return }
         switch event.kind {
-        case "providerMessage":
+        case "notification":
             guard let envelope = event.payloadDictionary,
+                  let method = envelope["method"] as? String
+            else { return }
+            let params = envelope["params"] as? [String: Any] ?? [:]
+            broadcastNotification(method: method, params: codexJSONDictionary(from: params))
+        case "serverRequest":
+            guard let envelope = event.payloadDictionary,
+                  let method = envelope["method"] as? String,
+                  let rawID = envelope["id"],
+                  let requestID = CodexAppServerRequestID(raw: rawID)
+            else { return }
+            let params = envelope["params"] as? [String: Any] ?? [:]
+            broadcastServerRequest(id: requestID, method: method, params: codexJSONDictionary(from: params))
+        case "protocolError":
+            if config.enableDebugLogging, let envelope = event.payloadDictionary {
+                print("[CodexAppServer] Rust protocol error: \(envelope)")
+            }
+        case "providerMessage":
+            // Rust Codex sessions never emit opaque providerMessage events. Keep this
+            // compatibility branch only for explicitly injected legacy sessions.
+            guard runtimeSession == nil,
+                  let envelope = event.payloadDictionary,
                   let payload = envelope["payload"],
                   JSONSerialization.isValidJSONObject(payload),
                   let data = try? JSONSerialization.data(withJSONObject: payload, options: [])
@@ -2254,6 +2385,12 @@ actor CodexAppServerClient {
         var frame = data
         frame.append(0x0A)
         if let runtimeSession {
+            guard !(runtimeSession is any CodexAppServerRuntimeSession) else {
+                throw ClientError.transportWriteFailed(
+                    message: "Codex Rust sessions require semantic request/notify/respond APIs.",
+                    errno: nil
+                )
+            }
             let session = runtimeSession
             Task { [weak self] in
                 do {

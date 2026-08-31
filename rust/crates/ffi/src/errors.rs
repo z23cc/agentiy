@@ -177,6 +177,23 @@ pub enum CoreError {
     AgentProviderTransportWriteFailed { message: String },
     #[error("{message}")]
     AgentProviderInvalidRequest { message: String },
+    #[error("codex app-server protocol is unavailable for this scope")]
+    AgentProviderCodexProtocolMismatch,
+    #[error("codex app-server returned invalid JSON")]
+    AgentProviderCodexInvalidJson,
+    #[error("codex app-server request timed out: {method}")]
+    AgentProviderCodexTimedOut { method: String },
+    #[error("codex app-server request cancelled: {method}")]
+    AgentProviderCodexCancelled { method: String },
+    #[error("codex app-server request failed ({method}, {code}): {message}")]
+    AgentProviderCodexRemoteError {
+        method: String,
+        code: i64,
+        message: String,
+        data: Option<Vec<u8>>,
+    },
+    #[error("codex app-server returned an invalid response")]
+    AgentProviderCodexInvalidResponse,
     #[error("unknown watcher scope")]
     WatcherUnknownScope,
     #[error("watcher scope is closed")]
@@ -426,6 +443,30 @@ impl From<AgentProviderScopeError> for CoreError {
             AgentProviderScopeError::Reaper(message) => Self::AgentProviderReaperFailed { message },
             AgentProviderScopeError::TransportWrite(message) => {
                 Self::AgentProviderTransportWriteFailed { message }
+            }
+            AgentProviderScopeError::CodexProtocolMismatch => {
+                Self::AgentProviderCodexProtocolMismatch
+            }
+            AgentProviderScopeError::CodexInvalidJSON => Self::AgentProviderCodexInvalidJson,
+            AgentProviderScopeError::CodexTimedOut(method) => {
+                Self::AgentProviderCodexTimedOut { method }
+            }
+            AgentProviderScopeError::CodexCancelled(method) => {
+                Self::AgentProviderCodexCancelled { method }
+            }
+            AgentProviderScopeError::CodexRemoteError {
+                method,
+                code,
+                message,
+                data,
+            } => Self::AgentProviderCodexRemoteError {
+                method,
+                code,
+                message,
+                data,
+            },
+            AgentProviderScopeError::CodexInvalidResponse => {
+                Self::AgentProviderCodexInvalidResponse
             }
             AgentProviderScopeError::InvalidArgument(what) => Self::AgentProviderInvalidRequest {
                 message: what.to_string(),

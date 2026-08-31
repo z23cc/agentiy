@@ -8,7 +8,10 @@ final class CoreAgentProviderSessionTests: XCTestCase {
         let session = try await CoreAgentProviderSession.open(
             bridge: bridge,
             command: "/bin/sh",
-            arguments: ["-c", "printf '{\"jsonrpc\":\"2.0\",\"method\":\"ready\"}\\n'"],
+            arguments: [
+                "-c",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"ready\"}' '{\"jsonrpc\":\"2.0\",\"id\":\"server-1\",\"method\":\"approval/request\",\"params\":{\"reason\":\"confirm\"}}'"
+            ],
             environment: [:],
             workingDirectory: nil,
             protocolKind: .codexAppServer
@@ -27,14 +30,87 @@ final class CoreAgentProviderSessionTests: XCTestCase {
 
         XCTAssertTrue(events.contains(where: { $0.kind == "processStarted" }))
         XCTAssertTrue(events.contains(where: { event in
-            guard event.kind == "providerMessage",
-                  let payload = event.payloadDictionary?["payload"] as? [String: Any]
+            guard event.kind == "notification",
+                  let payload = event.payloadDictionary,
+                  let method = payload["method"] as? String
             else { return false }
-            return payload["method"] as? String == "ready"
+            return method == "ready"
+        }))
+        XCTAssertTrue(events.contains(where: { event in
+            guard event.kind == "serverRequest",
+                  let payload = event.payloadDictionary,
+                  let id = payload["id"] as? String,
+                  let method = payload["method"] as? String
+            else { return false }
+            return id == "server-1" && method == "approval/request"
         }))
         XCTAssertTrue(events.contains(where: { $0.kind == "processExited" }))
         XCTAssertTrue(events.map(\.sequence).isStrictlyIncreasing)
 
+        await session.shutdown()
+        _ = try await bridge.close()
+    }
+
+    func testRustCodexRequestAndStateAreRustOwned() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let session = try await CoreAgentProviderSession.open(
+            bridge: bridge,
+            command: "/bin/sh",
+            arguments: [
+                "-c",
+                "IFS= read -r line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}'"
+            ],
+            environment: [:],
+            workingDirectory: nil,
+            protocolKind: .codexAppServer
+        )
+        _ = try await session.start()
+        let result = try await session.codexRequest(
+            method: "initialize",
+            params: nil,
+            timeoutMilliseconds: 2_000
+        )
+        let response = try XCTUnwrap(try JSONSerialization.jsonObject(with: result) as? [String: Any])
+        XCTAssertEqual(response["ok"] as? Bool, true)
+        let state = try await session.codexState()
+        XCTAssertTrue(state.initialized)
+        XCTAssertEqual(state.lifecycle, "initialized")
+        XCTAssertEqual(state.pendingRequestCount, 0)
+        await session.shutdown()
+        _ = try await bridge.close()
+    }
+
+    func testRustCodexRequestCancellationSettlesTheMatchingPendingRequest() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let session = try await CoreAgentProviderSession.open(
+            bridge: bridge,
+            command: "/bin/sh",
+            arguments: ["-c", "IFS= read -r line; sleep 1"],
+            environment: [:],
+            workingDirectory: nil,
+            protocolKind: .codexAppServer
+        )
+        _ = try await session.start()
+        let cancellationToken = "codex-cancel-test"
+        let request = Task {
+            try await session.codexRequest(
+                method: "initialize",
+                params: nil,
+                timeoutMilliseconds: nil,
+                cancellationToken: cancellationToken
+            )
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        let didCancel = try await session.codexCancel(cancellationToken: cancellationToken)
+        XCTAssertTrue(didCancel)
+        do {
+            _ = try await request.value
+            XCTFail("cancelled Codex request must not remain pending")
+        } catch let error as CoreBridgeError {
+            XCTAssertEqual(error, .agentProviderCodexCancelled("initialize"))
+        }
+        let state = try await session.codexState()
+        XCTAssertEqual(state.pendingRequestCount, 0)
         await session.shutdown()
         _ = try await bridge.close()
     }

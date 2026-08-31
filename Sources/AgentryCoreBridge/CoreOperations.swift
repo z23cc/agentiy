@@ -179,6 +179,12 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case agentProviderReaperFailed(String)
     case agentProviderTransportWriteFailed(String)
     case agentProviderInvalidRequest(String)
+    case agentProviderCodexProtocolMismatch
+    case agentProviderCodexInvalidJson
+    case agentProviderCodexTimedOut(String)
+    case agentProviderCodexCancelled(String)
+    case agentProviderCodexRemoteError(method: String, code: Int64, message: String, data: Data?)
+    case agentProviderCodexInvalidResponse
     case watcherUnknownScope
     case watcherScopeClosed
     case watcherInvalidRequest(String)
@@ -232,6 +238,12 @@ extension CoreBridgeError: LocalizedError {
         case let .agentProviderReaperFailed(message): "Agent provider reaper registration failed: \(message)"
         case let .agentProviderTransportWriteFailed(message): "Agent provider transport write failed: \(message)"
         case let .agentProviderInvalidRequest(message): "Invalid agent provider request: \(message)"
+        case .agentProviderCodexProtocolMismatch: "Codex app-server semantic transport is unavailable for this scope."
+        case .agentProviderCodexInvalidJson: "Codex app-server returned invalid JSON."
+        case let .agentProviderCodexTimedOut(method): "Codex app-server request timed out: \(method)"
+        case let .agentProviderCodexCancelled(method): "Codex app-server request cancelled: \(method)"
+        case let .agentProviderCodexRemoteError(method, code, message, _): "Codex app-server request failed (\(method), \(code)): \(message)"
+        case .agentProviderCodexInvalidResponse: "Codex app-server returned an invalid response."
         case .watcherUnknownScope: "The file-system watcher scope is unknown or already closed."
         case .watcherScopeClosed: "The file-system watcher scope is closed."
         case let .watcherInvalidRequest(message): "The file-system watcher request is invalid: \(message)"

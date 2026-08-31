@@ -8,16 +8,17 @@ use crate::types::{
     AgentProviderStartReceiptV1, BulkChunkDiscoveryReceiptV1, BulkChunkReceiptV1, CancelReceipt,
     CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1,
     CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult, CoreAgentProviderScopeConfigV1,
-    CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCompactApplyEditsBatchResultV1,
-    CoreCompactCodeMapBatchResultV1, CoreConfig, CoreFileSystemWatcherEventV1,
-    CoreFileSystemWatcherPayloadV1, CoreFileSystemWatcherScopeConfigV1,
-    CoreFileSystemWatcherScopeHandleV1, CoreFileSystemWatcherSnapshotV1, CoreHandshake,
-    CoreInventoryScopeConfigV1, CoreMcpToolCatalogV1, CoreMcpToolOperationIdentityV1,
-    CoreMcpToolOperationInputV1, CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1,
-    CorePathMatchScoreRequestV1, CorePathMatchScoreResultV1, CorePathSearchFindRequestV1,
-    CorePathSearchFindResultV1, CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1,
-    CoreTextDecodeRequestV1, CoreTextDecodeResultV1, CoreTokenAccountingRequestV1,
-    CoreTokenAccountingResultV1, CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
+    CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCodexSessionStateV1,
+    CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig,
+    CoreFileSystemWatcherEventV1, CoreFileSystemWatcherPayloadV1,
+    CoreFileSystemWatcherScopeConfigV1, CoreFileSystemWatcherScopeHandleV1,
+    CoreFileSystemWatcherSnapshotV1, CoreHandshake, CoreInventoryScopeConfigV1,
+    CoreMcpToolCatalogV1, CoreMcpToolOperationIdentityV1, CoreMcpToolOperationInputV1,
+    CorePathMatchResolveRequestV1, CorePathMatchResolveResultV1, CorePathMatchScoreRequestV1,
+    CorePathMatchScoreResultV1, CorePathSearchFindRequestV1, CorePathSearchFindResultV1,
+    CoreSearchScoreBatchRequestV1, CoreSearchScoreBatchResultV1, CoreTextDecodeRequestV1,
+    CoreTextDecodeResultV1, CoreTokenAccountingRequestV1, CoreTokenAccountingResultV1,
+    CoreWorkspaceCatalogResponseV1, CoreWorkspaceCatalogSeedRequestV1,
     CoreWorkspaceCatalogValidationRequestV1, CoreWorkspaceCommandAdmissionAcquireKindV1,
     CoreWorkspaceCommandAdmissionDiagnosticsV1, CoreWorkspaceCommandAdmissionLookupScopeV1,
     CoreWorkspaceCommandAdmissionRecoveryReceiptV1, CoreWorkspaceCommandIdentityRequestV1,
@@ -4349,6 +4350,119 @@ impl CoreRuntime {
             let identity = self.validate_identity(&identity)?;
             let scope = self.agent_provider_scope(&scope_id)?;
             Ok(scope.send_line(&identity, &payload)?)
+        })
+    }
+
+    pub fn agent_provider_codex_request(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        method: String,
+        params: Option<Vec<u8>>,
+        timeout_milliseconds: Option<u64>,
+        cancellation_token: Option<String>,
+    ) -> Result<Vec<u8>, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            let timeout = timeout_milliseconds
+                .map(|milliseconds| std::time::Duration::from_millis(milliseconds.min(600_000)));
+            Ok(scope.codex_request(
+                &identity,
+                &method,
+                params.as_deref(),
+                timeout,
+                cancellation_token.as_deref(),
+            )?)
+        })
+    }
+
+    pub fn agent_provider_codex_cancel(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        cancellation_token: String,
+    ) -> Result<bool, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.codex_cancel(&identity, &cancellation_token)?)
+        })
+    }
+
+    pub fn agent_provider_codex_notify(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        method: String,
+        params: Option<Vec<u8>>,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.codex_notify(&identity, &method, params.as_deref())?)
+        })
+    }
+
+    pub fn agent_provider_codex_respond(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        request_id: Vec<u8>,
+        result: Vec<u8>,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.codex_respond(&identity, &request_id, &result)?)
+        })
+    }
+
+    pub fn agent_provider_codex_respond_error(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        request_id: Vec<u8>,
+        code: i64,
+        message: String,
+        data: Option<Vec<u8>>,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.codex_respond_error(
+                &identity,
+                &request_id,
+                code,
+                &message,
+                data.as_deref(),
+            )?)
+        })
+    }
+
+    pub fn agent_provider_codex_state(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<CoreCodexSessionStateV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            let state = scope.codex_state(&identity)?;
+            Ok(CoreCodexSessionStateV1 {
+                lifecycle: state.lifecycle,
+                initialized: state.initialized,
+                thread_id: state.thread_id,
+                turn_id: state.turn_id,
+                pending_request_count: u64::try_from(state.pending_request_count)
+                    .unwrap_or(u64::MAX),
+            })
         })
     }
 

@@ -2,10 +2,26 @@ import AgentryUniFFIRaw
 import Foundation
 import os
 
-// P6 provider transport authority facade. This is deliberately smaller than CoreAgentSession:
-// Codex and ACP keep provider-specific request/response normalization in Swift, while the Claude
-// headless variant additionally asks Rust to translate its stream-json payloads. Rust always owns
-// process lifetime, framing, serialized writes, and sequence assignment.
+// P7-1 provider transport authority facade. Rust owns Codex JSON-RPC correlation, pending
+// requests, timeout/error classification, lifecycle state, process lifetime, framing, serialized
+// writes, and sequence assignment. Swift retains only provider-facing decoding and policy/UI
+// adaptation; ACP remains an opaque transport and Claude uses the Rust stream translator.
+
+public struct CoreCodexSessionState: Sendable, Equatable {
+    public let lifecycle: String
+    public let initialized: Bool
+    public let threadID: String?
+    public let turnID: String?
+    public let pendingRequestCount: UInt64
+
+    public init(lifecycle: String, initialized: Bool, threadID: String?, turnID: String?, pendingRequestCount: UInt64) {
+        self.lifecycle = lifecycle
+        self.initialized = initialized
+        self.threadID = threadID
+        self.turnID = turnID
+        self.pendingRequestCount = pendingRequestCount
+    }
+}
 
 public enum CoreAgentProviderProtocol: Sendable {
     case codexAppServer
@@ -52,6 +68,61 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("agent-provider-v1 transport is unavailable")
     }
 
+    func agentProviderCodexRequest(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        method: String,
+        params: Data?,
+        timeoutMilliseconds: UInt64?,
+        cancellationToken: String?
+    ) throws -> Data {
+        throw CoreTransportError.unexpected("codex app-server semantic transport is unavailable")
+    }
+
+    func agentProviderCodexCancel(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        cancellationToken: String
+    ) throws -> Bool {
+        throw CoreTransportError.unexpected("codex app-server semantic transport is unavailable")
+    }
+
+    func agentProviderCodexNotify(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        method: String,
+        params: Data?
+    ) throws -> UInt64 {
+        throw CoreTransportError.unexpected("codex app-server semantic transport is unavailable")
+    }
+
+    func agentProviderCodexRespond(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        requestID: Data,
+        result: Data
+    ) throws -> UInt64 {
+        throw CoreTransportError.unexpected("codex app-server semantic transport is unavailable")
+    }
+
+    func agentProviderCodexRespondError(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        requestID: Data,
+        code: Int64,
+        message: String,
+        data: Data?
+    ) throws -> UInt64 {
+        throw CoreTransportError.unexpected("codex app-server semantic transport is unavailable")
+    }
+
+    func agentProviderCodexState(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.CoreCodexSessionStateV1 {
+        throw CoreTransportError.unexpected("codex app-server semantic transport is unavailable")
+    }
+
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws {
         throw CoreTransportError.unexpected("agent-provider-v1 transport is unavailable")
     }
@@ -92,6 +163,59 @@ extension AgentryCoreBridge {
     func agentProviderSendLine(scopeID: String, payload: Data) throws -> UInt64 {
         let identity = try requireIdentity()
         do { return try transport.agentProviderSendLine(identity: identity, scopeID: scopeID, payload: payload) }
+        catch { throw mapTransportError(error) }
+    }
+
+    func agentProviderCodexRequest(scopeID: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) async throws -> Data {
+        let identity = try requireIdentity()
+        let transport = transport
+        do {
+            return try await Task.detached(priority: .userInitiated) {
+                try transport.agentProviderCodexRequest(
+                    identity: identity,
+                    scopeID: scopeID,
+                    method: method,
+                    params: params,
+                    timeoutMilliseconds: timeoutMilliseconds,
+                    cancellationToken: cancellationToken
+                )
+            }.value
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    @discardableResult
+    func agentProviderCodexCancel(scopeID: String, cancellationToken: String) async throws -> Bool {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderCodexCancel(identity: identity, scopeID: scopeID, cancellationToken: cancellationToken) }
+        catch { throw mapTransportError(error) }
+    }
+
+    @discardableResult
+    func agentProviderCodexNotify(scopeID: String, method: String, params: Data?) async throws -> UInt64 {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderCodexNotify(identity: identity, scopeID: scopeID, method: method, params: params) }
+        catch { throw mapTransportError(error) }
+    }
+
+    @discardableResult
+    func agentProviderCodexRespond(scopeID: String, requestID: Data, result: Data) async throws -> UInt64 {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderCodexRespond(identity: identity, scopeID: scopeID, requestID: requestID, result: result) }
+        catch { throw mapTransportError(error) }
+    }
+
+    @discardableResult
+    func agentProviderCodexRespondError(scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderCodexRespondError(identity: identity, scopeID: scopeID, requestID: requestID, code: code, message: message, data: data) }
+        catch { throw mapTransportError(error) }
+    }
+
+    func agentProviderCodexState(scopeID: String) async throws -> AgentryUniFFIRaw.CoreCodexSessionStateV1 {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderCodexState(identity: identity, scopeID: scopeID) }
         catch { throw mapTransportError(error) }
     }
 
@@ -217,6 +341,52 @@ public final class CoreAgentProviderSession: @unchecked Sendable {
     @discardableResult
     public func sendLine(_ payload: Data) async throws -> UInt64 {
         try await bridge.agentProviderSendLine(scopeID: scopeID, payload: payload)
+    }
+
+    public func codexRequest(
+        method: String,
+        params: Data?,
+        timeoutMilliseconds: UInt64?,
+        cancellationToken: String? = nil
+    ) async throws -> Data {
+        try await bridge.agentProviderCodexRequest(
+            scopeID: scopeID,
+            method: method,
+            params: params,
+            timeoutMilliseconds: timeoutMilliseconds,
+            cancellationToken: cancellationToken
+        )
+    }
+
+    @discardableResult
+    public func codexCancel(cancellationToken: String) async throws -> Bool {
+        try await bridge.agentProviderCodexCancel(scopeID: scopeID, cancellationToken: cancellationToken)
+    }
+
+    @discardableResult
+    public func codexNotify(method: String, params: Data?) async throws -> UInt64 {
+        try await bridge.agentProviderCodexNotify(scopeID: scopeID, method: method, params: params)
+    }
+
+    @discardableResult
+    public func codexRespond(requestID: Data, result: Data) async throws -> UInt64 {
+        try await bridge.agentProviderCodexRespond(scopeID: scopeID, requestID: requestID, result: result)
+    }
+
+    @discardableResult
+    public func codexRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+        try await bridge.agentProviderCodexRespondError(scopeID: scopeID, requestID: requestID, code: code, message: message, data: data)
+    }
+
+    public func codexState() async throws -> CoreCodexSessionState {
+        let state = try await bridge.agentProviderCodexState(scopeID: scopeID)
+        return CoreCodexSessionState(
+            lifecycle: state.lifecycle,
+            initialized: state.initialized,
+            threadID: state.threadId,
+            turnID: state.turnId,
+            pendingRequestCount: state.pendingRequestCount
+        )
     }
 
     public func events(maxQueuedEvents: UInt64 = 256, maxQueuedBytes: UInt64 = 1_048_576) async throws -> CoreAgentProviderEventStream {

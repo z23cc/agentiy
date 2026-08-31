@@ -1,14 +1,15 @@
-//! P6 provider runtime authority for the non-Claude agent families.
+//! P7 provider runtime authority for Codex app-server, ACP, and Claude headless.
 //!
 //! Codex app-server and ACP providers intentionally share one process/transport ownership
-//! boundary. Provider-specific protocol meaning stays in Swift; this module owns the parts that
-//! must not be duplicated by each provider controller: spawn attributes, line framing, bounded
-//! stderr/event publication, serialized stdin writes, monotonically sequenced observations,
-//! cancellation and process reaping. Payloads are preserved as JSON values when possible and as
-//! UTF-8-lossy strings otherwise so malformed provider output is observable without panicking the
-//! authority.
+//! boundary. Rust additionally owns Codex JSON-RPC correlation, pending requests, timeout/error
+//! classification, and lifecycle projection; Swift receives typed notifications and server
+//! requests rather than reparsing opaque provider lines. ACP remains opaque for compatibility,
+//! while Claude headless retains its Rust stream translator. All variants share spawn attributes,
+//! line framing, bounded stderr/event publication, serialized stdin writes, monotonically
+//! sequenced observations, cancellation, and process reaping. Malformed provider output remains
+//! observable without panicking the authority.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::{Arc, Condvar, Mutex};
@@ -18,10 +19,10 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::agent_claude::framer::LineFramer;
+use crate::agent_claude::process::{self, ReapOutcome, Reaper, SpawnConfig};
 use crate::agent_claude::translator::{
     Translator, should_suppress_user_facing_stream_result, stream_result_wire_fields,
 };
-use crate::agent_claude::process::{self, ReapOutcome, Reaper, SpawnConfig};
 use crate::{EventClass, EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, SubscriptionHub};
 
 /// Preserve the legacy headless provider's bounded one-shot lifetime while keeping the timeout
@@ -74,6 +75,17 @@ pub enum AgentProviderScopeError {
     Spawn(String),
     Reaper(String),
     TransportWrite(String),
+    CodexProtocolMismatch,
+    CodexInvalidJSON,
+    CodexTimedOut(String),
+    CodexCancelled(String),
+    CodexRemoteError {
+        method: String,
+        code: i64,
+        message: String,
+        data: Option<Vec<u8>>,
+    },
+    CodexInvalidResponse,
     InvalidArgument(&'static str),
 }
 
@@ -92,6 +104,30 @@ impl std::fmt::Display for AgentProviderScopeError {
             }
             Self::TransportWrite(message) => {
                 write!(f, "agent provider transport write failed: {message}")
+            }
+            Self::CodexProtocolMismatch => {
+                f.write_str("codex app-server protocol is unavailable for this scope")
+            }
+            Self::CodexInvalidJSON => f.write_str("codex app-server returned invalid JSON"),
+            Self::CodexTimedOut(method) => {
+                write!(f, "codex app-server request timed out: {method}")
+            }
+            Self::CodexCancelled(method) => {
+                write!(f, "codex app-server request cancelled: {method}")
+            }
+            Self::CodexRemoteError {
+                method,
+                code,
+                message,
+                ..
+            } => {
+                write!(
+                    f,
+                    "codex app-server request failed ({method}, {code}): {message}"
+                )
+            }
+            Self::CodexInvalidResponse => {
+                f.write_str("codex app-server returned an invalid response")
             }
             Self::InvalidArgument(what) => write!(f, "invalid agent provider argument: {what}"),
         }
@@ -118,8 +154,37 @@ struct ScopeState {
     process: Option<RunningProcess>,
 }
 
-/// One Codex or ACP provider process. The scope never interprets provider JSON; it only wraps each
-/// line in a versioned event envelope and publishes it through the existing subscription hub.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexSessionState {
+    pub lifecycle: String,
+    pub initialized: bool,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub pending_request_count: usize,
+}
+
+struct CodexPending {
+    method: String,
+    cancellation_token: Option<String>,
+    result: Arc<(
+        Mutex<Option<Result<Value, AgentProviderScopeError>>>,
+        Condvar,
+    )>,
+}
+
+struct CodexState {
+    next_request_id: u64,
+    initialized: bool,
+    lifecycle: String,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+    pending: HashMap<String, CodexPending>,
+    cancelled_tokens: HashSet<String>,
+}
+
+/// One Codex or ACP provider process. Codex lines are interpreted by the Rust JSON-RPC reducer;
+/// ACP lines remain opaque. Every observation is wrapped in a versioned event envelope and
+/// published through the existing subscription hub.
 pub struct AgentProviderScope {
     identity: RuntimeIdentity,
     id: AgentProviderScopeId,
@@ -128,6 +193,7 @@ pub struct AgentProviderScope {
     state: Mutex<ScopeState>,
     event_sink: Mutex<Option<(Arc<SubscriptionHub>, ScopeId)>>,
     readers_remaining: Arc<(Mutex<u8>, Condvar)>,
+    codex: Option<Mutex<CodexState>>,
 }
 
 impl AgentProviderScope {
@@ -137,6 +203,7 @@ impl AgentProviderScope {
         config: AgentProviderScopeConfig,
         reaper: Arc<Reaper>,
     ) -> Arc<Self> {
+        let is_codex = config.protocol == ProviderProtocol::CodexAppServer;
         Arc::new(Self {
             identity,
             id,
@@ -149,6 +216,17 @@ impl AgentProviderScope {
             }),
             event_sink: Mutex::new(None),
             readers_remaining: Arc::new((Mutex::new(0), Condvar::new())),
+            codex: is_codex.then(|| {
+                Mutex::new(CodexState {
+                    next_request_id: 1,
+                    initialized: false,
+                    lifecycle: "created".to_owned(),
+                    thread_id: None,
+                    turn_id: None,
+                    pending: HashMap::new(),
+                    cancelled_tokens: HashSet::new(),
+                })
+            }),
         })
     }
 
@@ -273,7 +351,7 @@ impl AgentProviderScope {
         })
     }
 
-    pub fn send_line(
+    fn send_line_internal(
         &self,
         identity: &RuntimeIdentity,
         payload: &[u8],
@@ -308,13 +386,11 @@ impl AgentProviderScope {
         if frame.last().copied() != Some(b'\n') {
             frame.push(b'\n');
         }
-        let result = stdin
+        stdin
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .write_all(&frame);
-        if let Err(error) = result {
-            return Err(AgentProviderScopeError::TransportWrite(error.to_string()));
-        }
+            .write_all(&frame)
+            .map_err(|error| AgentProviderScopeError::TransportWrite(error.to_string()))?;
         self.publish_with_sequence(
             "outbound",
             Value::String(String::from_utf8_lossy(payload).into_owned()),
@@ -322,6 +398,375 @@ impl AgentProviderScope {
             false,
         );
         Ok(sequence)
+    }
+
+    fn require_codex(&self) -> Result<&Mutex<CodexState>, AgentProviderScopeError> {
+        self.codex
+            .as_ref()
+            .ok_or(AgentProviderScopeError::CodexProtocolMismatch)
+    }
+
+    pub fn codex_state(
+        &self,
+        identity: &RuntimeIdentity,
+    ) -> Result<CodexSessionState, AgentProviderScopeError> {
+        self.validate(identity)?;
+        let state = self
+            .require_codex()?
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(CodexSessionState {
+            lifecycle: state.lifecycle.clone(),
+            initialized: state.initialized,
+            thread_id: state.thread_id.clone(),
+            turn_id: state.turn_id.clone(),
+            pending_request_count: state.pending.len(),
+        })
+    }
+
+    pub fn codex_request(
+        &self,
+        identity: &RuntimeIdentity,
+        method: &str,
+        params: Option<&[u8]>,
+        timeout: Option<Duration>,
+        cancellation_token: Option<&str>,
+    ) -> Result<Vec<u8>, AgentProviderScopeError> {
+        self.validate(identity)?;
+        if method.trim().is_empty() {
+            return Err(AgentProviderScopeError::InvalidArgument("method"));
+        }
+        let codex = self.require_codex()?;
+        let params_value = match params {
+            Some(bytes) => Some(
+                serde_json::from_slice::<Value>(bytes)
+                    .map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?,
+            ),
+            None => None,
+        };
+        let cancellation_token = cancellation_token
+            .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned);
+        let (request_id, waiter) = {
+            let mut state = codex
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(token) = cancellation_token.as_ref()
+                && state.cancelled_tokens.remove(token)
+            {
+                return Err(AgentProviderScopeError::CodexCancelled(method.to_owned()));
+            }
+            if state.pending.len() >= 256 {
+                return Err(AgentProviderScopeError::InvalidArgument(
+                    "too many pending codex requests",
+                ));
+            }
+            let request_id = state.next_request_id;
+            state.next_request_id = state.next_request_id.saturating_add(1);
+            let waiter = Arc::new((Mutex::new(None), Condvar::new()));
+            state.pending.insert(
+                codex_numeric_id_key(request_id),
+                CodexPending {
+                    method: method.to_owned(),
+                    cancellation_token,
+                    result: Arc::clone(&waiter),
+                },
+            );
+            (request_id, waiter)
+        };
+        let mut request = json!({ "jsonrpc": "2.0", "id": request_id, "method": method });
+        if let Some(params) = params_value {
+            request["params"] = params;
+        }
+        let bytes =
+            serde_json::to_vec(&request).map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?;
+        if let Err(error) = self.send_line_internal(identity, &bytes) {
+            let mut state = codex
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.pending.remove(&codex_numeric_id_key(request_id));
+            return Err(error);
+        }
+        let (result_lock, result_wake) = &*waiter;
+        let mut result = result_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
+        loop {
+            if let Some(result_value) = result.take() {
+                return result_value.and_then(|value| {
+                    serde_json::to_vec(&value)
+                        .map_err(|_| AgentProviderScopeError::CodexInvalidResponse)
+                });
+            }
+            if let Some(deadline) = deadline {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    let mut state = codex
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.pending.remove(&codex_numeric_id_key(request_id));
+                    return Err(AgentProviderScopeError::CodexTimedOut(method.to_owned()));
+                }
+                let (next, _) = result_wake
+                    .wait_timeout(result, deadline.saturating_duration_since(now))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                result = next;
+            } else {
+                result = result_wake
+                    .wait(result)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+
+    pub fn codex_cancel(
+        &self,
+        identity: &RuntimeIdentity,
+        cancellation_token: &str,
+    ) -> Result<bool, AgentProviderScopeError> {
+        self.validate(identity)?;
+        self.require_codex()?;
+        if cancellation_token.is_empty() {
+            return Err(AgentProviderScopeError::InvalidArgument(
+                "cancellation token",
+            ));
+        }
+        let pending = {
+            let codex = self.require_codex()?;
+            let mut state = codex
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let request_id = state.pending.iter().find_map(|(request_id, pending)| {
+                (pending.cancellation_token.as_deref() == Some(cancellation_token))
+                    .then(|| request_id.clone())
+            });
+            if let Some(request_id) = request_id {
+                state.pending.remove(&request_id)
+            } else {
+                if state.cancelled_tokens.len() >= 256 {
+                    if let Some(oldest) = state.cancelled_tokens.iter().next().cloned() {
+                        state.cancelled_tokens.remove(&oldest);
+                    }
+                }
+                state.cancelled_tokens.insert(cancellation_token.to_owned());
+                None
+            }
+        };
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        let method = pending.method.clone();
+        let (lock, wake) = &*pending.result;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Err(AgentProviderScopeError::CodexCancelled(method)));
+        wake.notify_all();
+        Ok(true)
+    }
+
+    pub fn codex_notify(
+        &self,
+        identity: &RuntimeIdentity,
+        method: &str,
+        params: Option<&[u8]>,
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.validate(identity)?;
+        self.require_codex()?;
+        if method.trim().is_empty() {
+            return Err(AgentProviderScopeError::InvalidArgument("method"));
+        }
+        let mut payload = json!({ "jsonrpc": "2.0", "method": method });
+        if let Some(params) = params {
+            payload["params"] = serde_json::from_slice(params)
+                .map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?;
+        }
+        let bytes =
+            serde_json::to_vec(&payload).map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?;
+        self.send_line_internal(identity, &bytes)
+    }
+
+    pub fn codex_respond(
+        &self,
+        identity: &RuntimeIdentity,
+        request_id: &[u8],
+        result: &[u8],
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.codex_respond_inner(identity, request_id, Some(result), None)
+    }
+
+    pub fn codex_respond_error(
+        &self,
+        identity: &RuntimeIdentity,
+        request_id: &[u8],
+        code: i64,
+        message: &str,
+        data: Option<&[u8]>,
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.codex_respond_inner(identity, request_id, None, Some((code, message, data)))
+    }
+
+    fn codex_respond_inner(
+        &self,
+        identity: &RuntimeIdentity,
+        request_id: &[u8],
+        result: Option<&[u8]>,
+        error: Option<(i64, &str, Option<&[u8]>)>,
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.validate(identity)?;
+        self.require_codex()?;
+        let id: Value = serde_json::from_slice(request_id)
+            .map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?;
+        if codex_id_key(&id).is_none() {
+            return Err(AgentProviderScopeError::InvalidArgument("request id"));
+        }
+        let mut payload = json!({ "jsonrpc": "2.0", "id": id });
+        if let Some(result) = result {
+            payload["result"] = serde_json::from_slice(result)
+                .map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?;
+        } else if let Some((code, message, data)) = error {
+            let mut value = json!({ "code": code, "message": message });
+            if let Some(data) = data {
+                value["data"] = serde_json::from_slice(data)
+                    .map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?;
+            }
+            payload["error"] = value;
+        }
+        let bytes =
+            serde_json::to_vec(&payload).map_err(|_| AgentProviderScopeError::CodexInvalidJSON)?;
+        self.send_line_internal(identity, &bytes)
+    }
+
+    fn ingest_codex_line(&self, pid: i32, line: &[u8]) {
+        let value = match serde_json::from_slice::<Value>(line) {
+            Ok(value) => value,
+            Err(_) => {
+                self.publish(
+                    "protocolError",
+                    json!({ "pid": pid, "message": "invalid JSON" }),
+                    false,
+                );
+                return;
+            }
+        };
+        let Some(object) = value.as_object() else {
+            self.publish(
+                "protocolError",
+                json!({ "pid": pid, "message": "JSON-RPC message must be an object" }),
+                false,
+            );
+            return;
+        };
+        if let Some(method) = object.get("method").and_then(Value::as_str) {
+            let params = object.get("params").cloned().unwrap_or(Value::Null);
+            if let Some(id) = object.get("id") {
+                self.publish(
+                    "serverRequest",
+                    json!({ "pid": pid, "id": id, "method": method, "params": params }),
+                    false,
+                );
+            } else {
+                self.publish(
+                    "notification",
+                    json!({ "pid": pid, "method": method, "params": params }),
+                    false,
+                );
+            }
+            return;
+        }
+        let Some(id) = object.get("id").and_then(codex_id_key) else {
+            self.publish(
+                "protocolError",
+                json!({ "pid": pid, "message": "response is missing id" }),
+                false,
+            );
+            return;
+        };
+        let (pending, response) = {
+            let Some(codex) = self.codex.as_ref() else {
+                return;
+            };
+            let mut state = codex
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(pending) = state.pending.remove(&id) else {
+                return;
+            };
+            if let Some(error) = object.get("error").and_then(Value::as_object) {
+                let method = pending.method.clone();
+                let code = error.get("code").and_then(Value::as_i64).unwrap_or(-32000);
+                let message = error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("remote error")
+                    .to_owned();
+                (
+                    pending,
+                    Err(AgentProviderScopeError::CodexRemoteError {
+                        method,
+                        code,
+                        message,
+                        data: error
+                            .get("data")
+                            .and_then(|value| serde_json::to_vec(value).ok()),
+                    }),
+                )
+            } else if let Some(result) = object.get("result") {
+                update_codex_lifecycle(&mut state, &pending.method, result);
+                (pending, Ok(result.clone()))
+            } else {
+                (pending, Err(AgentProviderScopeError::CodexInvalidResponse))
+            }
+        };
+        let (lock, wake) = &*pending.result;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
+        wake.notify_all();
+    }
+
+    fn fail_codex_pending(&self, error: AgentProviderScopeError, mark_closed: bool) {
+        let Some(codex) = self.codex.as_ref() else {
+            return;
+        };
+        let pending = {
+            let mut state = codex
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if mark_closed {
+                state.lifecycle = "closed".to_owned();
+            }
+            state
+                .pending
+                .drain()
+                .map(|(_, pending)| pending)
+                .collect::<Vec<_>>()
+        };
+        for pending in pending {
+            let (lock, wake) = &*pending.result;
+            *lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(error.clone()));
+            wake.notify_all();
+        }
+    }
+
+    fn close_codex_pending(&self) {
+        self.fail_codex_pending(AgentProviderScopeError::ScopeClosed, true);
+    }
+
+    pub fn send_line(
+        &self,
+        identity: &RuntimeIdentity,
+        payload: &[u8],
+    ) -> Result<u64, AgentProviderScopeError> {
+        if self.config.protocol == ProviderProtocol::CodexAppServer {
+            return Err(AgentProviderScopeError::InvalidArgument(
+                "codex scopes require codex request/notify/respond APIs",
+            ));
+        }
+        self.send_line_internal(identity, payload)
     }
 
     pub fn shutdown(&self, identity: &RuntimeIdentity) -> Result<(), AgentProviderScopeError> {
@@ -337,6 +782,9 @@ impl AgentProviderScope {
             state.closed = true;
             state.process.take()
         };
+        // Transition scope admission before draining waiters so no concurrent request can insert
+        // a new pending entry between the lifecycle fence and the terminal settlement.
+        self.close_codex_pending();
         if let Some(process) = process {
             let _ = process::terminate_and_reap(
                 &self.reaper,
@@ -363,8 +811,11 @@ impl AgentProviderScope {
                     );
                 let mut file = File::from(fd);
                 let mut framer = LineFramer::default();
-                let mut translator = is_claude_headless
-                    .then(|| Translator::new(Box::new(crate::agent_claude::tool_owned::is_repoprompt_tool_name)));
+                let mut translator = is_claude_headless.then(|| {
+                    Translator::new(Box::new(
+                        crate::agent_claude::tool_owned::is_repoprompt_tool_name,
+                    ))
+                });
                 let mut buffer = [0u8; 64 * 1024];
                 loop {
                     let count = match file.read(&mut buffer) {
@@ -377,21 +828,14 @@ impl AgentProviderScope {
                         framer.feed(
                             &buffer[..count],
                             |_diagnostic| {},
-                            |line| publish_provider_line(
-                                &scope,
-                                pid,
-                                &mut translator,
-                                &line,
-                            ),
+                            |line| publish_provider_line(&scope, pid, &mut translator, &line),
                         );
                     } else {
                         break;
                     }
                 }
                 let Some(scope) = weak.upgrade() else { return };
-                framer.flush(|line| {
-                    publish_provider_line(&scope, pid, &mut translator, &line)
-                });
+                framer.flush(|line| publish_provider_line(&scope, pid, &mut translator, &line));
                 // stdout EOF is the only per-scope terminal wait. Reusing this reader keeps the
                 // shared reaper at one process-wide thread instead of adding an exit watcher per
                 // provider process.
@@ -482,6 +926,9 @@ impl AgentProviderScope {
     }
 
     fn finish_process(&self, pid: i32, outcome: ReapOutcome, timed_out: bool) {
+        // Natural process exit is terminal for Codex requests too; do not leave callers waiting
+        // for their individual deadlines after the child has already gone away.
+        self.fail_codex_pending(AgentProviderScopeError::NotRunning, true);
         {
             let mut state = self
                 .state
@@ -607,9 +1054,59 @@ impl AgentProviderScope {
     }
 }
 
-/// Converts one framed stdout line into either the legacy opaque provider event
-/// or Rust-owned Claude headless stream results. The translator is kept on the
-/// single stdout reader thread, preserving FIFO and tool-use correlation without
+fn codex_numeric_id_key(value: u64) -> String {
+    format!("n:{value}")
+}
+
+fn codex_id_key(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(number) => number.as_u64().map(codex_numeric_id_key),
+        Value::String(value) if !value.is_empty() => Some(format!("s:{value}")),
+        _ => None,
+    }
+}
+
+fn update_codex_lifecycle(state: &mut CodexState, method: &str, result: &Value) {
+    match method {
+        "initialize" => {
+            state.initialized = true;
+            state.lifecycle = "initialized".to_owned();
+        }
+        "thread/start" | "thread/resume" => {
+            state.lifecycle = "threadReady".to_owned();
+            state.thread_id = result
+                .get("thread")
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    result
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                });
+        }
+        "turn/start" => {
+            state.lifecycle = "turnStarted".to_owned();
+            state.turn_id = result
+                .get("turn")
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    result
+                        .get("turnId")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                });
+        }
+        _ => {}
+    }
+}
+
+/// Converts one framed stdout line into either the Rust-owned Codex semantic event,
+/// the legacy opaque ACP event, or Rust-owned Claude headless stream results. The translator is
+/// kept on the single stdout reader thread, preserving FIFO and tool-use correlation without
 /// introducing a second semantic consumer or an unbounded intermediate queue.
 fn publish_provider_line(
     scope: &Arc<AgentProviderScope>,
@@ -617,6 +1114,10 @@ fn publish_provider_line(
     translator: &mut Option<Translator>,
     line: &[u8],
 ) {
+    if scope.config.protocol == ProviderProtocol::CodexAppServer {
+        scope.ingest_codex_line(pid, line);
+        return;
+    }
     if let Some(translator) = translator {
         for result in translator.parse_ndjson_line(line) {
             if should_suppress_user_facing_stream_result(&result) {
@@ -810,6 +1311,139 @@ mod tests {
         assert_eq!(ProviderProtocol::CodexAppServer.as_str(), "codexAppServer");
         assert_eq!(ProviderProtocol::Acp.as_str(), "acp");
         assert_eq!(ProviderProtocol::ClaudeHeadless.as_str(), "claudeHeadless");
+    }
+
+    #[test]
+    fn codex_scope_rejects_opaque_send_line() {
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![],
+                environment: vec![],
+                working_directory: None,
+                protocol: ProviderProtocol::CodexAppServer,
+                max_stderr_bytes: 1024,
+            },
+        );
+        assert_eq!(
+            scope.send_line(&identity(), br#"{"method":"legacy"}"#),
+            Err(AgentProviderScopeError::InvalidArgument(
+                "codex scopes require codex request/notify/respond APIs",
+            ))
+        );
+    }
+
+    #[test]
+    fn codex_request_is_resolved_by_rust_and_tracks_lifecycle() {
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "IFS= read -r line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}'".into(),
+                ],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::CodexAppServer,
+                max_stderr_bytes: 1024,
+            },
+        );
+        scope
+            .start(&identity())
+            .expect("codex process should start");
+        let response = scope
+            .codex_request(
+                &identity(),
+                "initialize",
+                None,
+                Some(Duration::from_secs(2)),
+                None,
+            )
+            .expect("codex response should resolve");
+        let value: Value = serde_json::from_slice(&response).expect("response JSON");
+        assert_eq!(value["ok"], true);
+        let state = scope.codex_state(&identity()).expect("codex state");
+        assert!(state.pending_request_count == 0);
+        assert!(state.initialized);
+        assert_eq!(state.lifecycle, "initialized");
+        scope.shutdown(&identity()).expect("codex shutdown");
+    }
+
+    #[test]
+    fn codex_remote_error_and_timeout_are_typed_and_fail_closed() {
+        let registry = ScopeRegistry::new();
+        let error_scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "IFS= read -r line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"missing\",\"data\":{\"hint\":\"missing method\"}}}'".into(),
+                ],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::CodexAppServer,
+                max_stderr_bytes: 1024,
+            },
+        );
+        error_scope
+            .start(&identity())
+            .expect("codex error process should start");
+        assert_eq!(
+            error_scope.codex_request(
+                &identity(),
+                "models/list",
+                None,
+                Some(Duration::from_secs(2)),
+                None
+            ),
+            Err(AgentProviderScopeError::CodexRemoteError {
+                method: "models/list".into(),
+                code: -32601,
+                message: "missing".into(),
+                data: Some(br#"{"hint":"missing method"}"#.to_vec()),
+            })
+        );
+        error_scope.shutdown(&identity()).expect("error shutdown");
+
+        let timeout_scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec!["-c".into(), "IFS= read -r line; sleep 1".into()],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::CodexAppServer,
+                max_stderr_bytes: 1024,
+            },
+        );
+        timeout_scope
+            .start(&identity())
+            .expect("codex timeout process should start");
+        assert_eq!(
+            timeout_scope.codex_request(
+                &identity(),
+                "initialize",
+                None,
+                Some(Duration::from_millis(20)),
+                None
+            ),
+            Err(AgentProviderScopeError::CodexTimedOut("initialize".into()))
+        );
+        timeout_scope
+            .shutdown(&identity())
+            .expect("timeout shutdown");
+    }
+
+    #[test]
+    fn codex_request_id_keys_preserve_json_type() {
+        assert_ne!(codex_id_key(&json!(1)), codex_id_key(&json!("1")));
+        assert_eq!(codex_id_key(&json!(1)), Some("n:1".to_owned()));
+        assert_eq!(codex_id_key(&json!("1")), Some("s:1".to_owned()));
     }
 
     #[test]
@@ -1022,12 +1656,28 @@ mod tests {
             .iter()
             .map(|event| String::from_utf8_lossy(&event.payload).into_owned())
             .collect();
-        assert!(payloads.iter().any(|payload| payload.contains("streamResult")));
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.contains("streamResult"))
+        );
         assert!(payloads.iter().any(|payload| payload.contains("hello")));
-        assert!(payloads.iter().any(|payload| payload.contains("message_stop")));
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.contains("message_stop"))
+        );
         assert!(payloads.iter().any(|payload| payload.contains("session-1")));
-        assert!(payloads.iter().any(|payload| payload.contains("processExited")));
-        assert!(!payloads.iter().any(|payload| payload.contains("providerMessage")));
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.contains("processExited"))
+        );
+        assert!(
+            !payloads
+                .iter()
+                .any(|payload| payload.contains("providerMessage"))
+        );
         scope
             .shutdown(&runtime_identity)
             .expect("headless provider process should shut down");

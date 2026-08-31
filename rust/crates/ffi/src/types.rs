@@ -4054,6 +4054,15 @@ pub struct AgentProviderStartReceiptV1 {
     pub process_group_id: i32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreCodexSessionStateV1 {
+    pub lifecycle: String,
+    pub initialized: bool,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub pending_request_count: u64,
+}
+
 // ================================================================================================
 // P7: Rust-owned filesystem watcher ingress mailbox.
 // ================================================================================================

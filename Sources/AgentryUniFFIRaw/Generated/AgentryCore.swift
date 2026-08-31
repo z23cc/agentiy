@@ -1702,6 +1702,18 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScopeConfigV1) throws  -> AgentClaudeScopeHandleV1
 
+    func agentProviderCodexCancel(identity: RuntimeIdentity, scopeId: String, cancellationToken: String) throws  -> Bool
+
+    func agentProviderCodexNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?) throws  -> UInt64
+
+    func agentProviderCodexRequest(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) throws  -> Data
+
+    func agentProviderCodexRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data) throws  -> UInt64
+
+    func agentProviderCodexRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?) throws  -> UInt64
+
+    func agentProviderCodexState(identity: RuntimeIdentity, scopeId: String) throws  -> CoreCodexSessionStateV1
+
     func agentProviderOpenScope(identity: RuntimeIdentity, config: CoreAgentProviderScopeConfigV1) throws  -> AgentProviderScopeHandleV1
 
     /**
@@ -2088,6 +2100,85 @@ open func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScope
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(config),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderCodexCancel(identity: RuntimeIdentity, scopeId: String, cancellationToken: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_codex_cancel(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(cancellationToken),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderCodexNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_codex_notify(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(method),
+        FfiConverterOptionData.lower(params),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderCodexRequest(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_codex_request(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(method),
+        FfiConverterOptionData.lower(params),
+        FfiConverterOptionUInt64.lower(timeoutMilliseconds),
+        FfiConverterOptionString.lower(cancellationToken),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderCodexRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_codex_respond(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(requestId),
+        FfiConverterData.lower(result),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderCodexRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_codex_respond_error(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(requestId),
+        FfiConverterInt64.lower(code),
+        FfiConverterString.lower(message),
+        FfiConverterOptionData.lower(data),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderCodexState(identity: RuntimeIdentity, scopeId: String)throws  -> CoreCodexSessionStateV1  {
+    return try  FfiConverterTypeCoreCodexSessionStateV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_codex_state(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
     )
 })
 }
@@ -5434,6 +5525,72 @@ public func FfiConverterTypeCoreCodeMapSubjectRequestV1_lift(_ buf: RustBuffer) 
 #endif
 public func FfiConverterTypeCoreCodeMapSubjectRequestV1_lower(_ value: CoreCodeMapSubjectRequestV1) -> RustBuffer {
     return FfiConverterTypeCoreCodeMapSubjectRequestV1.lower(value)
+}
+
+
+public struct CoreCodexSessionStateV1: Equatable, Hashable {
+    public let lifecycle: String
+    public let initialized: Bool
+    public let threadId: String?
+    public let turnId: String?
+    public let pendingRequestCount: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lifecycle: String, initialized: Bool, threadId: String?, turnId: String?, pendingRequestCount: UInt64) {
+        self.lifecycle = lifecycle
+        self.initialized = initialized
+        self.threadId = threadId
+        self.turnId = turnId
+        self.pendingRequestCount = pendingRequestCount
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreCodexSessionStateV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreCodexSessionStateV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreCodexSessionStateV1 {
+        return
+            try CoreCodexSessionStateV1(
+                lifecycle: FfiConverterString.read(from: &buf),
+                initialized: FfiConverterBool.read(from: &buf),
+                threadId: FfiConverterOptionString.read(from: &buf),
+                turnId: FfiConverterOptionString.read(from: &buf),
+                pendingRequestCount: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreCodexSessionStateV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.lifecycle, into: &buf)
+        FfiConverterBool.write(value.initialized, into: &buf)
+        FfiConverterOptionString.write(value.threadId, into: &buf)
+        FfiConverterOptionString.write(value.turnId, into: &buf)
+        FfiConverterUInt64.write(value.pendingRequestCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodexSessionStateV1_lift(_ buf: RustBuffer) throws -> CoreCodexSessionStateV1 {
+    return try FfiConverterTypeCoreCodexSessionStateV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreCodexSessionStateV1_lower(_ value: CoreCodexSessionStateV1) -> RustBuffer {
+    return FfiConverterTypeCoreCodexSessionStateV1.lower(value)
 }
 
 
@@ -16636,6 +16793,15 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case AgentProviderInvalidRequest(message: String
     )
+    case AgentProviderCodexProtocolMismatch
+    case AgentProviderCodexInvalidJson
+    case AgentProviderCodexTimedOut(method: String
+    )
+    case AgentProviderCodexCancelled(method: String
+    )
+    case AgentProviderCodexRemoteError(method: String, code: Int64, message: String, data: Data?
+    )
+    case AgentProviderCodexInvalidResponse
     case WatcherUnknownScope
     case WatcherScopeClosed
     case WatcherInvalidRequest(message: String
@@ -16778,9 +16944,24 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         case 73: return .AgentProviderInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 74: return .WatcherUnknownScope
-        case 75: return .WatcherScopeClosed
-        case 76: return .WatcherInvalidRequest(
+        case 74: return .AgentProviderCodexProtocolMismatch
+        case 75: return .AgentProviderCodexInvalidJson
+        case 76: return .AgentProviderCodexTimedOut(
+            method: try FfiConverterString.read(from: &buf)
+            )
+        case 77: return .AgentProviderCodexCancelled(
+            method: try FfiConverterString.read(from: &buf)
+            )
+        case 78: return .AgentProviderCodexRemoteError(
+            method: try FfiConverterString.read(from: &buf),
+            code: try FfiConverterInt64.read(from: &buf),
+            message: try FfiConverterString.read(from: &buf),
+            data: try FfiConverterOptionData.read(from: &buf)
+            )
+        case 79: return .AgentProviderCodexInvalidResponse
+        case 80: return .WatcherUnknownScope
+        case 81: return .WatcherScopeClosed
+        case 82: return .WatcherInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -17105,16 +17286,46 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             FfiConverterString.write(message, into: &buf)
 
 
-        case .WatcherUnknownScope:
+        case .AgentProviderCodexProtocolMismatch:
             writeInt(&buf, Int32(74))
 
 
-        case .WatcherScopeClosed:
+        case .AgentProviderCodexInvalidJson:
             writeInt(&buf, Int32(75))
 
 
-        case let .WatcherInvalidRequest(message):
+        case let .AgentProviderCodexTimedOut(method):
             writeInt(&buf, Int32(76))
+            FfiConverterString.write(method, into: &buf)
+
+
+        case let .AgentProviderCodexCancelled(method):
+            writeInt(&buf, Int32(77))
+            FfiConverterString.write(method, into: &buf)
+
+
+        case let .AgentProviderCodexRemoteError(method,code,message,data):
+            writeInt(&buf, Int32(78))
+            FfiConverterString.write(method, into: &buf)
+            FfiConverterInt64.write(code, into: &buf)
+            FfiConverterString.write(message, into: &buf)
+            FfiConverterOptionData.write(data, into: &buf)
+
+
+        case .AgentProviderCodexInvalidResponse:
+            writeInt(&buf, Int32(79))
+
+
+        case .WatcherUnknownScope:
+            writeInt(&buf, Int32(80))
+
+
+        case .WatcherScopeClosed:
+            writeInt(&buf, Int32(81))
+
+
+        case let .WatcherInvalidRequest(message):
+            writeInt(&buf, Int32(82))
             FfiConverterString.write(message, into: &buf)
 
         }
@@ -23896,6 +24107,24 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_open_scope() != 12578) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_cancel() != 48574) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_notify() != 51388) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_request() != 24895) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_respond() != 63239) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_respond_error() != 7161) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_state() != 35119) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_open_scope() != 3803) {

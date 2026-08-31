@@ -4187,6 +4187,9 @@ actor WorkspaceCodemapBindingEngine {
                  .agentProviderUnknownScope, .agentProviderScopeClosed, .agentProviderAlreadyRunning,
                  .agentProviderNotRunning, .agentProviderSpawnFailed, .agentProviderReaperFailed,
                  .agentProviderTransportWriteFailed, .agentProviderInvalidRequest,
+                 .agentProviderCodexProtocolMismatch, .agentProviderCodexInvalidJson,
+                 .agentProviderCodexTimedOut, .agentProviderCodexCancelled, .agentProviderCodexRemoteError,
+                 .agentProviderCodexInvalidResponse,
                  .watcherUnknownScope, .watcherScopeClosed, .watcherInvalidRequest:
                 // P6-6: per-call agent-claude-v1 business-outcome/request errors (unknown/closed
                 // scope, already-running, spawn/reaper/transport failure scoped to one command, a

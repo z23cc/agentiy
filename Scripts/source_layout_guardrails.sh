@@ -697,6 +697,31 @@ PY
   if grep -q 'guard current.identity.sessionID' "Sources/RepoPrompt/Features/AgentMode/Runtime/AgentSessionLifecycleAuthority.swift"; then
     fail "App agent-session facade reintroduced a duplicate identity predicate"
   fi
+
+  # P7-1 Codex semantic authority: production Codex sessions must expose only the
+  # Rust-owned JSON-RPC capability. Generic line writes remain valid for ACP and
+  # injected legacy fixtures, but a Codex runtime session must never reach them.
+  codex_client_source="Sources/RepoPrompt/Infrastructure/AI/Providers/Codex/AppServer/CodexAppServerClient.swift"
+  codex_transport_source="Sources/RepoPrompt/Infrastructure/AI/RuntimeAuthority/AgentProviderRuntimeTransport.swift"
+  codex_bridge_source="Sources/AgentryCoreBridge/CoreAgentProviderSession.swift"
+  if ! grep -q 'CodexAppServerRuntimeSession' "$codex_client_source" \
+    || ! grep -q 'runtimeSession is any CodexAppServerRuntimeSession' "$codex_client_source" \
+    || ! grep -q 'case "notification"' "$codex_client_source" \
+    || ! grep -q 'case "serverRequest"' "$codex_client_source"; then
+    fail "Codex client must consume typed Rust notification/server-request events and reject generic transport fallback"
+  fi
+  if ! grep -q 'func codexRequest' "$codex_transport_source" \
+    || ! grep -q 'func codexRespondError' "$codex_transport_source" \
+    || ! grep -q 'CoreCodexSessionState' "$codex_bridge_source" \
+    || ! grep -q 'agentProviderCodexRequest' "$codex_bridge_source"; then
+    fail "Codex semantic capability is not exposed through the Rust FFI/Bridge seam"
+  fi
+  if ! grep -q 'codex_request' "rust/crates/runtime/src/agent_provider.rs" \
+    || ! grep -q 'codex_respond_error' "rust/crates/ffi/src/api.rs" \
+    || ! grep -q 'CodexSessionState' "rust/crates/runtime/src/agent_provider.rs"; then
+    fail "Rust Codex request, response-error, and lifecycle authority is missing"
+  fi
+
   if ! grep -q 'MCPDomainGeneratedToolDefinitions.records' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift" \
     || ! grep -q 'filter(\\.sharedRead)' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
     fail "M3 shared read definitions must consume the generated Rust catalog projection"
@@ -1041,6 +1066,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p9-catalog-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p10-admission-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p11-execution-handoff.md"
+  "docs/spec/rust-agent-provider-p7-1-codex-semantic-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p12-agent-session-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p13-agent-session-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p14-agent-run-lifecycle-authority.md"

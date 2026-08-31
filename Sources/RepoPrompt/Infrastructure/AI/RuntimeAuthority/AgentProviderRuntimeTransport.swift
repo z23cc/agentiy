@@ -23,6 +23,18 @@ protocol AgentProviderRuntimeSession: AnyObject, Sendable {
     func shutdown() async
 }
 
+/// Capability exposed only by Rust-owned Codex app-server sessions. ACP and legacy
+/// injected sessions intentionally do not conform, so production Codex calls cannot
+/// silently fall back to Swift request correlation.
+protocol CodexAppServerRuntimeSession: AgentProviderRuntimeSession {
+    func codexRequest(method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) async throws -> Data
+    func codexCancel(cancellationToken: String) async throws -> Bool
+    func codexNotify(method: String, params: Data?) async throws -> UInt64
+    func codexRespond(requestID: Data, result: Data) async throws -> UInt64
+    func codexRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64
+    func codexState() async throws -> CoreCodexSessionState
+}
+
 protocol AgentProviderRuntimeTransport: Sendable {
     func open(
         command: String,
@@ -66,12 +78,17 @@ struct CoreAgentProviderRuntimeTransport: AgentProviderRuntimeTransport {
             protocolKind: protocolKind.bridgeValue,
             maxStderrBytes: maxStderrBytes
         )
-        return CoreAgentProviderRuntimeSessionAdapter(session: session)
+        switch protocolKind {
+        case .codexAppServer:
+            return CodexAgentProviderRuntimeSessionAdapter(session: session)
+        case .acp:
+            return CoreAgentProviderRuntimeSessionAdapter(session: session)
+        }
     }
 }
 
-private final class CoreAgentProviderRuntimeSessionAdapter: AgentProviderRuntimeSession, @unchecked Sendable {
-    private let session: CoreAgentProviderSession
+private class CoreAgentProviderRuntimeSessionAdapter: AgentProviderRuntimeSession, @unchecked Sendable {
+    fileprivate let session: CoreAgentProviderSession
 
     init(session: CoreAgentProviderSession) {
         self.session = session
@@ -95,5 +112,31 @@ private final class CoreAgentProviderRuntimeSessionAdapter: AgentProviderRuntime
 
     func shutdown() async {
         await session.shutdown()
+    }
+}
+
+private final class CodexAgentProviderRuntimeSessionAdapter: CoreAgentProviderRuntimeSessionAdapter, CodexAppServerRuntimeSession {
+    func codexRequest(method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) async throws -> Data {
+        try await session.codexRequest(method: method, params: params, timeoutMilliseconds: timeoutMilliseconds, cancellationToken: cancellationToken)
+    }
+
+    func codexCancel(cancellationToken: String) async throws -> Bool {
+        try await session.codexCancel(cancellationToken: cancellationToken)
+    }
+
+    func codexNotify(method: String, params: Data?) async throws -> UInt64 {
+        try await session.codexNotify(method: method, params: params)
+    }
+
+    func codexRespond(requestID: Data, result: Data) async throws -> UInt64 {
+        try await session.codexRespond(requestID: requestID, result: result)
+    }
+
+    func codexRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+        try await session.codexRespondError(requestID: requestID, code: code, message: message, data: data)
+    }
+
+    func codexState() async throws -> CoreCodexSessionState {
+        try await session.codexState()
     }
 }
