@@ -151,10 +151,14 @@ build:
 run:
 	./Scripts/run.sh
 
+# Redirect Application Support to a scratch root so the suite cannot write
+# workspaces, domain-runtime state, or Codex state into the real container.
+TEST_SUPPORT_ROOT ?= $(shell mktemp -d /tmp/agentry-test-support.XXXXXX)
+
 test:
 	swift build --build-tests
 	./Scripts/stage_test_frameworks.sh
-	swift test
+	AGENTRY_APPLICATION_SUPPORT_ROOT="$(TEST_SUPPORT_ROOT)" swift test
 
 guardrails:
 	./Scripts/guardrails.sh
@@ -301,7 +305,7 @@ dev-m8-live-certification:
 
 dev-test:
 	@./Scripts/stage_test_frameworks.sh
-	./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(CONFIGURATION), --configuration $(CONFIGURATION))$(if $(SANITIZE), --sanitize $(SANITIZE))
+	AGENTRY_APPLICATION_SUPPORT_ROOT="$(TEST_SUPPORT_ROOT)" ./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(CONFIGURATION), --configuration $(CONFIGURATION))$(if $(SANITIZE), --sanitize $(SANITIZE))
 
 dev-provider-test:
 	./conductor provider-test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))
