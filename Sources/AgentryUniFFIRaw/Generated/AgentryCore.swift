@@ -1702,6 +1702,18 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScopeConfigV1) throws  -> AgentClaudeScopeHandleV1
 
+    func agentProviderAcpCancel(identity: RuntimeIdentity, scopeId: String, cancellationToken: String) throws  -> Bool
+
+    func agentProviderAcpNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?) throws  -> UInt64
+
+    func agentProviderAcpRequest(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) throws  -> CoreAgentProviderAcpResponseV1
+
+    func agentProviderAcpRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data) throws  -> UInt64
+
+    func agentProviderAcpRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?) throws  -> UInt64
+
+    func agentProviderAcpState(identity: RuntimeIdentity, scopeId: String) throws  -> CoreAgentProviderAcpSessionStateV1
+
     func agentProviderCodexCancel(identity: RuntimeIdentity, scopeId: String, cancellationToken: String) throws  -> Bool
 
     func agentProviderCodexNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?) throws  -> UInt64
@@ -2100,6 +2112,85 @@ open func agentOpenScope(identity: RuntimeIdentity, config: CoreAgentClaudeScope
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(config),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderAcpCancel(identity: RuntimeIdentity, scopeId: String, cancellationToken: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_cancel(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(cancellationToken),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderAcpNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_notify(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(method),
+        FfiConverterOptionData.lower(params),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderAcpRequest(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?)throws  -> CoreAgentProviderAcpResponseV1  {
+    return try  FfiConverterTypeCoreAgentProviderAcpResponseV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_request(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterString.lower(method),
+        FfiConverterOptionData.lower(params),
+        FfiConverterOptionUInt64.lower(timeoutMilliseconds),
+        FfiConverterOptionString.lower(cancellationToken),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderAcpRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_respond(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(requestId),
+        FfiConverterData.lower(result),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderAcpRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_respond_error(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),
+        FfiConverterData.lower(requestId),
+        FfiConverterInt64.lower(code),
+        FfiConverterString.lower(message),
+        FfiConverterOptionData.lower(data),uniffiCallStatus
+    )
+})
+}
+
+open func agentProviderAcpState(identity: RuntimeIdentity, scopeId: String)throws  -> CoreAgentProviderAcpSessionStateV1  {
+    return try  FfiConverterTypeCoreAgentProviderAcpSessionStateV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_state(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
     )
 })
 }
@@ -5083,6 +5174,118 @@ public func FfiConverterTypeCoreAgentClaudeScopeConfigV1_lift(_ buf: RustBuffer)
 #endif
 public func FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(_ value: CoreAgentClaudeScopeConfigV1) -> RustBuffer {
     return FfiConverterTypeCoreAgentClaudeScopeConfigV1.lower(value)
+}
+
+
+public struct CoreAgentProviderAcpResponseV1: Equatable, Hashable {
+    public let result: Data
+    public let inboundSequence: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(result: Data, inboundSequence: UInt64) {
+        self.result = result
+        self.inboundSequence = inboundSequence
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentProviderAcpResponseV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentProviderAcpResponseV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentProviderAcpResponseV1 {
+        return
+            try CoreAgentProviderAcpResponseV1(
+                result: FfiConverterData.read(from: &buf),
+                inboundSequence: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentProviderAcpResponseV1, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.result, into: &buf)
+        FfiConverterUInt64.write(value.inboundSequence, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderAcpResponseV1_lift(_ buf: RustBuffer) throws -> CoreAgentProviderAcpResponseV1 {
+    return try FfiConverterTypeCoreAgentProviderAcpResponseV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderAcpResponseV1_lower(_ value: CoreAgentProviderAcpResponseV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentProviderAcpResponseV1.lower(value)
+}
+
+
+public struct CoreAgentProviderAcpSessionStateV1: Equatable, Hashable {
+    public let lifecycle: String
+    public let initialized: Bool
+    public let pendingRequestCount: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lifecycle: String, initialized: Bool, pendingRequestCount: UInt64) {
+        self.lifecycle = lifecycle
+        self.initialized = initialized
+        self.pendingRequestCount = pendingRequestCount
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentProviderAcpSessionStateV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentProviderAcpSessionStateV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentProviderAcpSessionStateV1 {
+        return
+            try CoreAgentProviderAcpSessionStateV1(
+                lifecycle: FfiConverterString.read(from: &buf),
+                initialized: FfiConverterBool.read(from: &buf),
+                pendingRequestCount: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentProviderAcpSessionStateV1, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.lifecycle, into: &buf)
+        FfiConverterBool.write(value.initialized, into: &buf)
+        FfiConverterUInt64.write(value.pendingRequestCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderAcpSessionStateV1_lift(_ buf: RustBuffer) throws -> CoreAgentProviderAcpSessionStateV1 {
+    return try FfiConverterTypeCoreAgentProviderAcpSessionStateV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderAcpSessionStateV1_lower(_ value: CoreAgentProviderAcpSessionStateV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentProviderAcpSessionStateV1.lower(value)
 }
 
 
@@ -16802,6 +17005,15 @@ enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     case AgentProviderCodexRemoteError(method: String, code: Int64, message: String, data: Data?
     )
     case AgentProviderCodexInvalidResponse
+    case AgentProviderAcpProtocolMismatch
+    case AgentProviderAcpInvalidJson
+    case AgentProviderAcpTimedOut(method: String
+    )
+    case AgentProviderAcpCancelled(method: String
+    )
+    case AgentProviderAcpRemoteError(method: String, code: Int64, message: String, data: Data?
+    )
+    case AgentProviderAcpInvalidResponse
     case WatcherUnknownScope
     case WatcherScopeClosed
     case WatcherInvalidRequest(message: String
@@ -16959,9 +17171,24 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             data: try FfiConverterOptionData.read(from: &buf)
             )
         case 79: return .AgentProviderCodexInvalidResponse
-        case 80: return .WatcherUnknownScope
-        case 81: return .WatcherScopeClosed
-        case 82: return .WatcherInvalidRequest(
+        case 80: return .AgentProviderAcpProtocolMismatch
+        case 81: return .AgentProviderAcpInvalidJson
+        case 82: return .AgentProviderAcpTimedOut(
+            method: try FfiConverterString.read(from: &buf)
+            )
+        case 83: return .AgentProviderAcpCancelled(
+            method: try FfiConverterString.read(from: &buf)
+            )
+        case 84: return .AgentProviderAcpRemoteError(
+            method: try FfiConverterString.read(from: &buf),
+            code: try FfiConverterInt64.read(from: &buf),
+            message: try FfiConverterString.read(from: &buf),
+            data: try FfiConverterOptionData.read(from: &buf)
+            )
+        case 85: return .AgentProviderAcpInvalidResponse
+        case 86: return .WatcherUnknownScope
+        case 87: return .WatcherScopeClosed
+        case 88: return .WatcherInvalidRequest(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -17316,16 +17543,46 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(79))
 
 
-        case .WatcherUnknownScope:
+        case .AgentProviderAcpProtocolMismatch:
             writeInt(&buf, Int32(80))
 
 
-        case .WatcherScopeClosed:
+        case .AgentProviderAcpInvalidJson:
             writeInt(&buf, Int32(81))
 
 
-        case let .WatcherInvalidRequest(message):
+        case let .AgentProviderAcpTimedOut(method):
             writeInt(&buf, Int32(82))
+            FfiConverterString.write(method, into: &buf)
+
+
+        case let .AgentProviderAcpCancelled(method):
+            writeInt(&buf, Int32(83))
+            FfiConverterString.write(method, into: &buf)
+
+
+        case let .AgentProviderAcpRemoteError(method,code,message,data):
+            writeInt(&buf, Int32(84))
+            FfiConverterString.write(method, into: &buf)
+            FfiConverterInt64.write(code, into: &buf)
+            FfiConverterString.write(message, into: &buf)
+            FfiConverterOptionData.write(data, into: &buf)
+
+
+        case .AgentProviderAcpInvalidResponse:
+            writeInt(&buf, Int32(85))
+
+
+        case .WatcherUnknownScope:
+            writeInt(&buf, Int32(86))
+
+
+        case .WatcherScopeClosed:
+            writeInt(&buf, Int32(87))
+
+
+        case let .WatcherInvalidRequest(message):
+            writeInt(&buf, Int32(88))
             FfiConverterString.write(message, into: &buf)
 
         }
@@ -24107,6 +24364,24 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_open_scope() != 12578) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_cancel() != 3126) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_notify() != 22139) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_request() != 38635) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_respond() != 50052) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_respond_error() != 64809) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_state() != 56521) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_cancel() != 48574) {

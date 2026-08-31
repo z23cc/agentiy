@@ -5,7 +5,30 @@ import os
 // P7-1 provider transport authority facade. Rust owns Codex JSON-RPC correlation, pending
 // requests, timeout/error classification, lifecycle state, process lifetime, framing, serialized
 // writes, and sequence assignment. Swift retains only provider-facing decoding and policy/UI
-// adaptation; ACP remains an opaque transport and Claude uses the Rust stream translator.
+// adaptation; ACP uses the same Rust-owned JSON-RPC reducer and Claude uses the Rust stream
+// translator.
+
+public struct CoreAcpResponse: Sendable, Equatable {
+    public let result: Data
+    public let inboundSequence: UInt64
+
+    public init(result: Data, inboundSequence: UInt64) {
+        self.result = result
+        self.inboundSequence = inboundSequence
+    }
+}
+
+public struct CoreAcpSessionState: Sendable, Equatable {
+    public let lifecycle: String
+    public let initialized: Bool
+    public let pendingRequestCount: UInt64
+
+    public init(lifecycle: String, initialized: Bool, pendingRequestCount: UInt64) {
+        self.lifecycle = lifecycle
+        self.initialized = initialized
+        self.pendingRequestCount = pendingRequestCount
+    }
+}
 
 public struct CoreCodexSessionState: Sendable, Equatable {
     public let lifecycle: String
@@ -123,6 +146,61 @@ extension CoreRuntimeTransport {
         throw CoreTransportError.unexpected("codex app-server semantic transport is unavailable")
     }
 
+    func agentProviderAcpRequest(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        method: String,
+        params: Data?,
+        timeoutMilliseconds: UInt64?,
+        cancellationToken: String?
+    ) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpResponseV1 {
+        throw CoreTransportError.unexpected("acp semantic transport is unavailable")
+    }
+
+    func agentProviderAcpCancel(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        cancellationToken: String
+    ) throws -> Bool {
+        throw CoreTransportError.unexpected("acp semantic transport is unavailable")
+    }
+
+    func agentProviderAcpNotify(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        method: String,
+        params: Data?
+    ) throws -> UInt64 {
+        throw CoreTransportError.unexpected("acp semantic transport is unavailable")
+    }
+
+    func agentProviderAcpRespond(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        requestID: Data,
+        result: Data
+    ) throws -> UInt64 {
+        throw CoreTransportError.unexpected("acp semantic transport is unavailable")
+    }
+
+    func agentProviderAcpRespondError(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        requestID: Data,
+        code: Int64,
+        message: String,
+        data: Data?
+    ) throws -> UInt64 {
+        throw CoreTransportError.unexpected("acp semantic transport is unavailable")
+    }
+
+    func agentProviderAcpState(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpSessionStateV1 {
+        throw CoreTransportError.unexpected("acp semantic transport is unavailable")
+    }
+
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws {
         throw CoreTransportError.unexpected("agent-provider-v1 transport is unavailable")
     }
@@ -217,6 +295,68 @@ extension AgentryCoreBridge {
         let identity = try requireIdentity()
         do { return try transport.agentProviderCodexState(identity: identity, scopeID: scopeID) }
         catch { throw mapTransportError(error) }
+    }
+
+    func agentProviderAcpRequest(scopeID: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) async throws -> CoreAcpResponse {
+        let identity = try requireIdentity()
+        let transport = transport
+        do {
+            let response = try await Task.detached(priority: .userInitiated) {
+                try transport.agentProviderAcpRequest(
+                    identity: identity,
+                    scopeID: scopeID,
+                    method: method,
+                    params: params,
+                    timeoutMilliseconds: timeoutMilliseconds,
+                    cancellationToken: cancellationToken
+                )
+            }.value
+            return CoreAcpResponse(result: response.result, inboundSequence: response.inboundSequence)
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    @discardableResult
+    func agentProviderAcpCancel(scopeID: String, cancellationToken: String) async throws -> Bool {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderAcpCancel(identity: identity, scopeID: scopeID, cancellationToken: cancellationToken) }
+        catch { throw mapTransportError(error) }
+    }
+
+    @discardableResult
+    func agentProviderAcpNotify(scopeID: String, method: String, params: Data?) async throws -> UInt64 {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderAcpNotify(identity: identity, scopeID: scopeID, method: method, params: params) }
+        catch { throw mapTransportError(error) }
+    }
+
+    @discardableResult
+    func agentProviderAcpRespond(scopeID: String, requestID: Data, result: Data) async throws -> UInt64 {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderAcpRespond(identity: identity, scopeID: scopeID, requestID: requestID, result: result) }
+        catch { throw mapTransportError(error) }
+    }
+
+    @discardableResult
+    func agentProviderAcpRespondError(scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+        let identity = try requireIdentity()
+        do { return try transport.agentProviderAcpRespondError(identity: identity, scopeID: scopeID, requestID: requestID, code: code, message: message, data: data) }
+        catch { throw mapTransportError(error) }
+    }
+
+    func agentProviderAcpState(scopeID: String) async throws -> CoreAcpSessionState {
+        let identity = try requireIdentity()
+        do {
+            let state = try transport.agentProviderAcpState(identity: identity, scopeID: scopeID)
+            return CoreAcpSessionState(
+                lifecycle: state.lifecycle,
+                initialized: state.initialized,
+                pendingRequestCount: state.pendingRequestCount
+            )
+        } catch {
+            throw mapTransportError(error)
+        }
     }
 
     func agentProviderShutdown(scopeID: String) throws {
@@ -387,6 +527,45 @@ public final class CoreAgentProviderSession: @unchecked Sendable {
             turnID: state.turnId,
             pendingRequestCount: state.pendingRequestCount
         )
+    }
+
+    public func agentProviderAcpRequest(
+        method: String,
+        params: Data?,
+        timeoutMilliseconds: UInt64?,
+        cancellationToken: String? = nil
+    ) async throws -> CoreAcpResponse {
+        try await bridge.agentProviderAcpRequest(
+            scopeID: scopeID,
+            method: method,
+            params: params,
+            timeoutMilliseconds: timeoutMilliseconds,
+            cancellationToken: cancellationToken
+        )
+    }
+
+    @discardableResult
+    public func agentProviderAcpCancel(cancellationToken: String) async throws -> Bool {
+        try await bridge.agentProviderAcpCancel(scopeID: scopeID, cancellationToken: cancellationToken)
+    }
+
+    @discardableResult
+    public func agentProviderAcpNotify(method: String, params: Data?) async throws -> UInt64 {
+        try await bridge.agentProviderAcpNotify(scopeID: scopeID, method: method, params: params)
+    }
+
+    @discardableResult
+    public func agentProviderAcpRespond(requestID: Data, result: Data) async throws -> UInt64 {
+        try await bridge.agentProviderAcpRespond(scopeID: scopeID, requestID: requestID, result: result)
+    }
+
+    @discardableResult
+    public func agentProviderAcpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+        try await bridge.agentProviderAcpRespondError(scopeID: scopeID, requestID: requestID, code: code, message: message, data: data)
+    }
+
+    public func agentProviderAcpState() async throws -> CoreAcpSessionState {
+        try await bridge.agentProviderAcpState(scopeID: scopeID)
     }
 
     public func events(maxQueuedEvents: UInt64 = 256, maxQueuedBytes: UInt64 = 1_048_576) async throws -> CoreAgentProviderEventStream {

@@ -194,6 +194,23 @@ pub enum CoreError {
     },
     #[error("codex app-server returned an invalid response")]
     AgentProviderCodexInvalidResponse,
+    #[error("acp protocol is unavailable for this scope")]
+    AgentProviderAcpProtocolMismatch,
+    #[error("acp provider returned invalid JSON")]
+    AgentProviderAcpInvalidJson,
+    #[error("acp provider request timed out: {method}")]
+    AgentProviderAcpTimedOut { method: String },
+    #[error("acp provider request cancelled: {method}")]
+    AgentProviderAcpCancelled { method: String },
+    #[error("acp provider request failed ({method}, {code}): {message}")]
+    AgentProviderAcpRemoteError {
+        method: String,
+        code: i64,
+        message: String,
+        data: Option<Vec<u8>>,
+    },
+    #[error("acp provider returned an invalid response")]
+    AgentProviderAcpInvalidResponse,
     #[error("unknown watcher scope")]
     WatcherUnknownScope,
     #[error("watcher scope is closed")]
@@ -468,6 +485,26 @@ impl From<AgentProviderScopeError> for CoreError {
             AgentProviderScopeError::CodexInvalidResponse => {
                 Self::AgentProviderCodexInvalidResponse
             }
+            AgentProviderScopeError::AcpProtocolMismatch => Self::AgentProviderAcpProtocolMismatch,
+            AgentProviderScopeError::AcpInvalidJSON => Self::AgentProviderAcpInvalidJson,
+            AgentProviderScopeError::AcpTimedOut(method) => {
+                Self::AgentProviderAcpTimedOut { method }
+            }
+            AgentProviderScopeError::AcpCancelled(method) => {
+                Self::AgentProviderAcpCancelled { method }
+            }
+            AgentProviderScopeError::AcpRemoteError {
+                method,
+                code,
+                message,
+                data,
+            } => Self::AgentProviderAcpRemoteError {
+                method,
+                code,
+                message,
+                data,
+            },
+            AgentProviderScopeError::AcpInvalidResponse => Self::AgentProviderAcpInvalidResponse,
             AgentProviderScopeError::InvalidArgument(what) => Self::AgentProviderInvalidRequest {
                 message: what.to_string(),
             },

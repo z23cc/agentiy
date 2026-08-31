@@ -1,10 +1,12 @@
 //! P7 provider runtime authority for Codex app-server, ACP, and Claude headless.
 //!
+//! ACP and Codex share the provider-neutral JSON-RPC reducer in `provider_json_rpc`.
+
 //! Codex app-server and ACP providers intentionally share one process/transport ownership
-//! boundary. Rust additionally owns Codex JSON-RPC correlation, pending requests, timeout/error
-//! classification, and lifecycle projection; Swift receives typed notifications and server
-//! requests rather than reparsing opaque provider lines. ACP remains opaque for compatibility,
-//! while Claude headless retains its Rust stream translator. All variants share spawn attributes,
+//! boundary. Rust owns JSON-RPC correlation, pending requests, timeout/error classification,
+//! notification and server request classification, and lifecycle projection for both protocols;
+//! Swift receives typed notifications and server requests rather than reparsing opaque provider
+//! lines, while Claude headless retains its Rust stream translator. All variants share spawn attributes,
 //! line framing, bounded stderr/event publication, serialized stdin writes, monotonically
 //! sequenced observations, cancellation, and process reaping. Malformed provider output remains
 //! observable without panicking the authority.
@@ -24,6 +26,10 @@ use crate::agent_claude::translator::{
     Translator, should_suppress_user_facing_stream_result, stream_result_wire_fields,
 };
 use crate::{EventClass, EventInput, RuntimeEventKind, RuntimeIdentity, ScopeId, SubscriptionHub};
+
+#[path = "provider_json_rpc.rs"]
+mod provider_json_rpc;
+use provider_json_rpc::{JsonRpcCompletion, JsonRpcId, JsonRpcState, settle_pending};
 
 /// Preserve the legacy headless provider's bounded one-shot lifetime while keeping the timeout
 /// decision in the Rust process authority. Codex/ACP scopes remain effectively unbounded here;
@@ -86,6 +92,17 @@ pub enum AgentProviderScopeError {
         data: Option<Vec<u8>>,
     },
     CodexInvalidResponse,
+    AcpProtocolMismatch,
+    AcpInvalidJSON,
+    AcpTimedOut(String),
+    AcpCancelled(String),
+    AcpRemoteError {
+        method: String,
+        code: i64,
+        message: String,
+        data: Option<Vec<u8>>,
+    },
+    AcpInvalidResponse,
     InvalidArgument(&'static str),
 }
 
@@ -129,6 +146,19 @@ impl std::fmt::Display for AgentProviderScopeError {
             Self::CodexInvalidResponse => {
                 f.write_str("codex app-server returned an invalid response")
             }
+            Self::AcpProtocolMismatch => f.write_str("acp protocol is unavailable for this scope"),
+            Self::AcpInvalidJSON => f.write_str("acp returned invalid JSON"),
+            Self::AcpTimedOut(method) => write!(f, "acp request timed out: {method}"),
+            Self::AcpCancelled(method) => write!(f, "acp request cancelled: {method}"),
+            Self::AcpRemoteError {
+                method,
+                code,
+                message,
+                ..
+            } => {
+                write!(f, "acp request failed ({method}, {code}): {message}")
+            }
+            Self::AcpInvalidResponse => f.write_str("acp returned an invalid response"),
             Self::InvalidArgument(what) => write!(f, "invalid agent provider argument: {what}"),
         }
     }
@@ -163,6 +193,19 @@ pub struct CodexSessionState {
     pub pending_request_count: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcpSessionState {
+    pub lifecycle: String,
+    pub initialized: bool,
+    pub pending_request_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcpResponse {
+    pub result: Vec<u8>,
+    pub inbound_sequence: u64,
+}
+
 struct CodexPending {
     method: String,
     cancellation_token: Option<String>,
@@ -182,9 +225,15 @@ struct CodexState {
     cancelled_tokens: HashSet<String>,
 }
 
-/// One Codex or ACP provider process. Codex lines are interpreted by the Rust JSON-RPC reducer;
-/// ACP lines remain opaque. Every observation is wrapped in a versioned event envelope and
-/// published through the existing subscription hub.
+struct AcpState {
+    rpc: JsonRpcState,
+    initialized: bool,
+    lifecycle: String,
+}
+
+/// One Codex or ACP provider process. Codex and ACP lines are interpreted by the Rust JSON-RPC
+/// reducer; Claude headless retains its translator. Every observation is wrapped in a versioned
+/// event envelope and published through the existing subscription hub.
 pub struct AgentProviderScope {
     identity: RuntimeIdentity,
     id: AgentProviderScopeId,
@@ -194,6 +243,7 @@ pub struct AgentProviderScope {
     event_sink: Mutex<Option<(Arc<SubscriptionHub>, ScopeId)>>,
     readers_remaining: Arc<(Mutex<u8>, Condvar)>,
     codex: Option<Mutex<CodexState>>,
+    acp: Option<Mutex<AcpState>>,
 }
 
 impl AgentProviderScope {
@@ -204,6 +254,7 @@ impl AgentProviderScope {
         reaper: Arc<Reaper>,
     ) -> Arc<Self> {
         let is_codex = config.protocol == ProviderProtocol::CodexAppServer;
+        let is_acp = config.protocol == ProviderProtocol::Acp;
         Arc::new(Self {
             identity,
             id,
@@ -225,6 +276,13 @@ impl AgentProviderScope {
                     turn_id: None,
                     pending: HashMap::new(),
                     cancelled_tokens: HashSet::new(),
+                })
+            }),
+            acp: is_acp.then(|| {
+                Mutex::new(AcpState {
+                    rpc: JsonRpcState::new(),
+                    initialized: false,
+                    lifecycle: "created".to_owned(),
                 })
             }),
         })
@@ -302,6 +360,12 @@ impl AgentProviderScope {
             reaper_token: token,
             stdin: Some(stdin),
         });
+        if let Some(acp) = self.acp.as_ref() {
+            let mut acp = acp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            acp.lifecycle = "running".to_owned();
+        }
         drop(state);
 
         // Publish the lifecycle head before readers can observe a very short-lived child. This
@@ -404,6 +468,210 @@ impl AgentProviderScope {
         self.codex
             .as_ref()
             .ok_or(AgentProviderScopeError::CodexProtocolMismatch)
+    }
+
+    fn require_acp(&self) -> Result<&Mutex<AcpState>, AgentProviderScopeError> {
+        self.acp
+            .as_ref()
+            .ok_or(AgentProviderScopeError::AcpProtocolMismatch)
+    }
+
+    pub fn acp_state(
+        &self,
+        identity: &RuntimeIdentity,
+    ) -> Result<AcpSessionState, AgentProviderScopeError> {
+        self.validate(identity)?;
+        let state = self
+            .require_acp()?
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(AcpSessionState {
+            lifecycle: state.lifecycle.clone(),
+            initialized: state.initialized,
+            pending_request_count: state.rpc.pending_count(),
+        })
+    }
+
+    pub fn acp_request(
+        &self,
+        identity: &RuntimeIdentity,
+        method: &str,
+        params: Option<&[u8]>,
+        timeout: Option<Duration>,
+        cancellation_token: Option<&str>,
+    ) -> Result<AcpResponse, AgentProviderScopeError> {
+        self.validate(identity)?;
+        if method.trim().is_empty() {
+            return Err(AgentProviderScopeError::InvalidArgument("method"));
+        }
+        let acp = self.require_acp()?;
+        let params_value = match params {
+            Some(bytes) => Some(
+                serde_json::from_slice::<Value>(bytes)
+                    .map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?,
+            ),
+            None => None,
+        };
+        let (request_id, waiter) = {
+            let mut state = acp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.rpc.allocate_request(
+                method,
+                cancellation_token,
+                AgentProviderScopeError::AcpCancelled,
+            )?
+        };
+        let key = request_id.key();
+        let mut request = json!({
+            "jsonrpc": "2.0",
+            "id": request_id.value(),
+            "method": method
+        });
+        if let Some(params) = params_value {
+            request["params"] = params;
+        }
+        let bytes =
+            serde_json::to_vec(&request).map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
+        if let Err(error) = self.send_line_internal(identity, &bytes) {
+            let mut state = acp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.rpc.remove_pending_by_key(&key);
+            return Err(error);
+        }
+        let (result_lock, result_wake) = &*waiter;
+        let mut result = result_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
+        loop {
+            if let Some(completion) = result.take() {
+                let completion = completion?;
+                let result_json = serde_json::to_vec(&completion.result)
+                    .map_err(|_| AgentProviderScopeError::AcpInvalidResponse)?;
+                return Ok(AcpResponse {
+                    result: result_json,
+                    inbound_sequence: completion.inbound_sequence,
+                });
+            }
+            if let Some(deadline) = deadline {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    let mut state = acp
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.rpc.remove_pending_by_key(&key);
+                    return Err(AgentProviderScopeError::AcpTimedOut(method.to_owned()));
+                }
+                let (next, _) = result_wake
+                    .wait_timeout(result, deadline.saturating_duration_since(now))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                result = next;
+            } else {
+                result = result_wake
+                    .wait(result)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+
+    pub fn acp_cancel(
+        &self,
+        identity: &RuntimeIdentity,
+        cancellation_token: &str,
+    ) -> Result<bool, AgentProviderScopeError> {
+        self.validate(identity)?;
+        if cancellation_token.is_empty() {
+            return Err(AgentProviderScopeError::InvalidArgument(
+                "cancellation token",
+            ));
+        }
+        let acp = self.require_acp()?;
+        let pending = {
+            let mut state = acp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.rpc.cancel_token(cancellation_token)
+        };
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        let method = pending.method.clone();
+        settle_pending(pending, Err(AgentProviderScopeError::AcpCancelled(method)));
+        Ok(true)
+    }
+
+    pub fn acp_notify(
+        &self,
+        identity: &RuntimeIdentity,
+        method: &str,
+        params: Option<&[u8]>,
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.validate(identity)?;
+        self.require_acp()?;
+        if method.trim().is_empty() {
+            return Err(AgentProviderScopeError::InvalidArgument("method"));
+        }
+        let mut payload = json!({ "jsonrpc": "2.0", "method": method });
+        if let Some(params) = params {
+            payload["params"] = serde_json::from_slice(params)
+                .map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
+        }
+        let bytes =
+            serde_json::to_vec(&payload).map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
+        self.send_line_internal(identity, &bytes)
+    }
+
+    pub fn acp_respond(
+        &self,
+        identity: &RuntimeIdentity,
+        request_id: &[u8],
+        result: &[u8],
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.acp_respond_inner(identity, request_id, Some(result), None)
+    }
+
+    pub fn acp_respond_error(
+        &self,
+        identity: &RuntimeIdentity,
+        request_id: &[u8],
+        code: i64,
+        message: &str,
+        data: Option<&[u8]>,
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.acp_respond_inner(identity, request_id, None, Some((code, message, data)))
+    }
+
+    fn acp_respond_inner(
+        &self,
+        identity: &RuntimeIdentity,
+        request_id: &[u8],
+        result: Option<&[u8]>,
+        error: Option<(i64, &str, Option<&[u8]>)>,
+    ) -> Result<u64, AgentProviderScopeError> {
+        self.validate(identity)?;
+        self.require_acp()?;
+        let id: Value = serde_json::from_slice(request_id)
+            .map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
+        if JsonRpcId::from_value(&id).is_none() {
+            return Err(AgentProviderScopeError::InvalidArgument("request id"));
+        }
+        let mut payload = json!({ "jsonrpc": "2.0", "id": id });
+        if let Some(result) = result {
+            payload["result"] = serde_json::from_slice(result)
+                .map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
+        } else if let Some((code, message, data)) = error {
+            let mut value = json!({ "code": code, "message": message });
+            if let Some(data) = data {
+                value["data"] = serde_json::from_slice(data)
+                    .map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
+            }
+            payload["error"] = value;
+        }
+        let bytes =
+            serde_json::to_vec(&payload).map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
+        self.send_line_internal(identity, &bytes)
     }
 
     pub fn codex_state(
@@ -726,6 +994,206 @@ impl AgentProviderScope {
         wake.notify_all();
     }
 
+    fn ingest_acp_line(&self, pid: i32, line: &[u8]) {
+        let value = match serde_json::from_slice::<Value>(line) {
+            Ok(value) => value,
+            Err(_) => {
+                self.publish(
+                    "protocolError",
+                    json!({
+                        "pid": pid,
+                        "category": "invalidJson",
+                        "message": "invalid JSON",
+                        "raw_preview": bounded_provider_preview(line),
+                    }),
+                    false,
+                );
+                return;
+            }
+        };
+        let Some(object) = value.as_object() else {
+            self.publish(
+                "protocolError",
+                json!({
+                    "pid": pid,
+                    "category": "invalidMessage",
+                    "message": "JSON-RPC message must be an object",
+                    "raw_preview": bounded_provider_preview(line),
+                }),
+                false,
+            );
+            return;
+        };
+        let (acp, inbound_sequence) = match self.acp.as_ref() {
+            Some(acp) => {
+                let mut state = acp
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (acp, state.rpc.next_inbound_sequence())
+            }
+            None => return,
+        };
+        if let Some(method) = object.get("method").and_then(Value::as_str) {
+            let params = object
+                .get("params")
+                .cloned()
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            if let Some(id) = object.get("id") {
+                let Some(rpc_id) = JsonRpcId::from_value(id) else {
+                    self.publish(
+                        "protocolError",
+                        json!({
+                            "pid": pid,
+                            "category": "invalidRequestId",
+                            "message": "server request id is not a valid JSON-RPC id",
+                            "raw_preview": bounded_provider_preview(line),
+                        }),
+                        false,
+                    );
+                    return;
+                };
+                self.publish(
+                    "serverRequest",
+                    json!({
+                        "pid": pid,
+                        "id": rpc_id.value(),
+                        "id_json": String::from_utf8_lossy(&rpc_id.encoded()),
+                        "method": method,
+                        "params": params,
+                        "inbound_sequence": inbound_sequence,
+                    }),
+                    false,
+                );
+            } else {
+                self.publish(
+                    "notification",
+                    json!({
+                        "pid": pid,
+                        "method": method,
+                        "params": params,
+                        "inbound_sequence": inbound_sequence,
+                    }),
+                    false,
+                );
+            }
+            return;
+        }
+        let Some(id_value) = object.get("id") else {
+            self.publish(
+                "protocolError",
+                json!({
+                    "pid": pid,
+                    "category": "missingId",
+                    "message": "response is missing id",
+                    "raw_preview": bounded_provider_preview(line),
+                }),
+                false,
+            );
+            return;
+        };
+        let Some(id) = JsonRpcId::from_value(id_value) else {
+            self.publish(
+                "protocolError",
+                json!({
+                    "pid": pid,
+                    "category": "invalidResponseId",
+                    "message": "response id is not a valid JSON-RPC id",
+                    "raw_preview": bounded_provider_preview(line),
+                }),
+                false,
+            );
+            return;
+        };
+        let pending = {
+            let mut state = acp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.rpc.take_pending(&id)
+        };
+        let Some(pending) = pending else {
+            self.publish(
+                "protocolError",
+                json!({
+                    "pid": pid,
+                    "category": "unmatchedResponse",
+                    "message": format!("received unmatched ACP response id {}", String::from_utf8_lossy(&id.encoded())),
+                    "raw_preview": bounded_provider_preview(line),
+                    "inbound_sequence": inbound_sequence,
+                }),
+                false,
+            );
+            return;
+        };
+        if let Some(error) = object.get("error").and_then(Value::as_object) {
+            let code = error.get("code").and_then(Value::as_i64).unwrap_or(-32000);
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("remote error")
+                .to_owned();
+            let method = pending.method.clone();
+            let data = error
+                .get("data")
+                .and_then(|value| serde_json::to_vec(value).ok());
+            settle_pending(
+                pending,
+                Err(AgentProviderScopeError::AcpRemoteError {
+                    method,
+                    code,
+                    message,
+                    data,
+                }),
+            );
+            return;
+        }
+        let Some(result) = object.get("result") else {
+            self.publish(
+                "protocolError",
+                json!({
+                    "pid": pid,
+                    "category": "missingResultOrError",
+                    "message": "response is missing result/error",
+                    "raw_preview": bounded_provider_preview(line),
+                    "inbound_sequence": inbound_sequence,
+                }),
+                false,
+            );
+            settle_pending(pending, Err(AgentProviderScopeError::AcpInvalidResponse));
+            return;
+        };
+        if let Ok(mut state) = acp.lock() {
+            if pending.method == "initialize" {
+                state.initialized = true;
+                state.lifecycle = "initialized".to_owned();
+            }
+        }
+        settle_pending(
+            pending,
+            Ok(JsonRpcCompletion {
+                result: result.clone(),
+                inbound_sequence,
+            }),
+        );
+    }
+
+    fn fail_acp_pending(&self, error: AgentProviderScopeError, mark_closed: bool) {
+        let Some(acp) = self.acp.as_ref() else {
+            return;
+        };
+        let pending = {
+            let mut state = acp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if mark_closed {
+                state.lifecycle = "closed".to_owned();
+            }
+            state.rpc.drain_pending()
+        };
+        for pending in pending {
+            settle_pending(pending, Err(error.clone()));
+        }
+    }
+
     fn fail_codex_pending(&self, error: AgentProviderScopeError, mark_closed: bool) {
         let Some(codex) = self.codex.as_ref() else {
             return;
@@ -766,6 +1234,11 @@ impl AgentProviderScope {
                 "codex scopes require codex request/notify/respond APIs",
             ));
         }
+        if self.config.protocol == ProviderProtocol::Acp {
+            return Err(AgentProviderScopeError::InvalidArgument(
+                "acp scopes require acp request/notify/respond APIs",
+            ));
+        }
         self.send_line_internal(identity, payload)
     }
 
@@ -785,6 +1258,7 @@ impl AgentProviderScope {
         // Transition scope admission before draining waiters so no concurrent request can insert
         // a new pending entry between the lifecycle fence and the terminal settlement.
         self.close_codex_pending();
+        self.fail_acp_pending(AgentProviderScopeError::ScopeClosed, true);
         if let Some(process) = process {
             let _ = process::terminate_and_reap(
                 &self.reaper,
@@ -926,9 +1400,10 @@ impl AgentProviderScope {
     }
 
     fn finish_process(&self, pid: i32, outcome: ReapOutcome, timed_out: bool) {
-        // Natural process exit is terminal for Codex requests too; do not leave callers waiting
-        // for their individual deadlines after the child has already gone away.
+        // Natural process exit is terminal for semantic provider requests too; do not leave
+        // callers waiting for their individual deadlines after the child has already gone away.
         self.fail_codex_pending(AgentProviderScopeError::NotRunning, true);
+        self.fail_acp_pending(AgentProviderScopeError::NotRunning, true);
         {
             let mut state = self
                 .state
@@ -1054,6 +1529,11 @@ impl AgentProviderScope {
     }
 }
 
+fn bounded_provider_preview(line: &[u8]) -> String {
+    let bytes = &line[..line.len().min(300)];
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 fn codex_numeric_id_key(value: u64) -> String {
     format!("n:{value}")
 }
@@ -1104,8 +1584,8 @@ fn update_codex_lifecycle(state: &mut CodexState, method: &str, result: &Value) 
     }
 }
 
-/// Converts one framed stdout line into either the Rust-owned Codex semantic event,
-/// the legacy opaque ACP event, or Rust-owned Claude headless stream results. The translator is
+/// Converts one framed stdout line into either a Rust-owned Codex/ACP semantic event or
+/// Rust-owned Claude headless stream results. The translator is
 /// kept on the single stdout reader thread, preserving FIFO and tool-use correlation without
 /// introducing a second semantic consumer or an unbounded intermediate queue.
 fn publish_provider_line(
@@ -1116,6 +1596,10 @@ fn publish_provider_line(
 ) {
     if scope.config.protocol == ProviderProtocol::CodexAppServer {
         scope.ingest_codex_line(pid, line);
+        return;
+    }
+    if scope.config.protocol == ProviderProtocol::Acp {
+        scope.ingest_acp_line(pid, line);
         return;
     }
     if let Some(translator) = translator {
@@ -1314,6 +1798,28 @@ mod tests {
     }
 
     #[test]
+    fn acp_scope_rejects_opaque_send_line() {
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![],
+                environment: vec![],
+                working_directory: None,
+                protocol: ProviderProtocol::Acp,
+                max_stderr_bytes: 1024,
+            },
+        );
+        assert_eq!(
+            scope.send_line(&identity(), br#"{"method":"legacy"}"#),
+            Err(AgentProviderScopeError::InvalidArgument(
+                "acp scopes require acp request/notify/respond APIs",
+            ))
+        );
+    }
+
+    #[test]
     fn codex_scope_rejects_opaque_send_line() {
         let registry = ScopeRegistry::new();
         let scope = registry.open_scope(
@@ -1437,6 +1943,199 @@ mod tests {
         timeout_scope
             .shutdown(&identity())
             .expect("timeout shutdown");
+    }
+
+    #[test]
+    fn acp_request_tracks_typed_response_and_lifecycle() {
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "IFS= read -r line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"sessionId\":\"s-1\"}}'".into(),
+                ],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::Acp,
+                max_stderr_bytes: 1024,
+            },
+        );
+        scope.start(&identity()).expect("acp process should start");
+        let response = scope
+            .acp_request(
+                &identity(),
+                "session/new",
+                Some(br#"{"cwd":"/tmp"}"#),
+                Some(Duration::from_secs(2)),
+                Some("acp-request-test"),
+            )
+            .expect("acp response should resolve");
+        let value: Value = serde_json::from_slice(&response.result).expect("response JSON");
+        assert_eq!(value["sessionId"], "s-1");
+        assert!(response.inbound_sequence > 0);
+        let state = scope.acp_state(&identity()).expect("acp state");
+        assert!(state.initialized == false);
+        assert_eq!(state.pending_request_count, 0);
+        assert_eq!(state.lifecycle, "running");
+        scope.shutdown(&identity()).expect("acp shutdown");
+    }
+
+    #[test]
+    fn acp_remote_error_and_timeout_are_typed() {
+        let registry = ScopeRegistry::new();
+        let error_scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "IFS= read -r line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"missing\",\"data\":{\"hint\":\"nope\"}}}'".into(),
+                ],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::Acp,
+                max_stderr_bytes: 1024,
+            },
+        );
+        error_scope
+            .start(&identity())
+            .expect("acp error process should start");
+        assert_eq!(
+            error_scope.acp_request(
+                &identity(),
+                "session/new",
+                None,
+                Some(Duration::from_secs(2)),
+                None
+            ),
+            Err(AgentProviderScopeError::AcpRemoteError {
+                method: "session/new".into(),
+                code: -32601,
+                message: "missing".into(),
+                data: Some(br#"{"hint":"nope"}"#.to_vec()),
+            })
+        );
+        error_scope
+            .shutdown(&identity())
+            .expect("acp error shutdown");
+
+        let timeout_scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec!["-c".into(), "IFS= read -r line; sleep 1".into()],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::Acp,
+                max_stderr_bytes: 1024,
+            },
+        );
+        timeout_scope
+            .start(&identity())
+            .expect("acp timeout process should start");
+        assert_eq!(
+            timeout_scope.acp_request(
+                &identity(),
+                "initialize",
+                None,
+                Some(Duration::from_millis(20)),
+                None
+            ),
+            Err(AgentProviderScopeError::AcpTimedOut("initialize".into()))
+        );
+        timeout_scope
+            .shutdown(&identity())
+            .expect("acp timeout shutdown");
+    }
+
+    #[test]
+    fn acp_events_are_typed_and_protocol_failures_are_observable() {
+        let runtime_identity = identity();
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            runtime_identity.clone(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"ok\":true}}' '{\"jsonrpc\":\"2.0\",\"id\":\"server-1\",\"method\":\"session/request_permission\",\"params\":{}}' 'not-json'".into(),
+                ],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::Acp,
+                max_stderr_bytes: 1024,
+            },
+        );
+        let subscription_scope = scope.id().to_subscription_scope_id();
+        let hub = Arc::new(SubscriptionHub::new(runtime_identity.clone()).expect("hub"));
+        let bootstrap = hub
+            .open_subscription(
+                &runtime_identity,
+                subscription_scope.clone(),
+                SubscriptionConfig::default(),
+                Vec::new,
+            )
+            .expect("subscription");
+        scope.attach_event_sink(Arc::clone(&hub), subscription_scope);
+        scope
+            .start(&runtime_identity)
+            .expect("acp process should start");
+        std::thread::sleep(Duration::from_millis(100));
+        let drained = hub
+            .try_drain(
+                &runtime_identity,
+                bootstrap.subscription_id,
+                64,
+                SubscriptionConfig::default().max_queued_bytes,
+            )
+            .expect("events should drain");
+        let batch = match drained {
+            crate::DrainOutcome::Batch(batch) => batch,
+            crate::DrainOutcome::Oversize(_) => panic!("acp events should fit in the queue"),
+        };
+        let payloads: Vec<String> = batch
+            .events
+            .iter()
+            .map(|event| String::from_utf8_lossy(&event.payload).into_owned())
+            .collect();
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.contains("\"kind\":\"notification\""))
+        );
+        assert!(payloads.iter().any(|payload| payload.contains("server-1")));
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.contains("invalidJson"))
+        );
+        assert!(
+            !payloads
+                .iter()
+                .any(|payload| payload.contains("providerMessage"))
+        );
+        assert!(
+            batch
+                .events
+                .iter()
+                .map(|event| event.authority_sequence)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+        scope.shutdown(&runtime_identity).expect("acp shutdown");
+    }
+
+    #[test]
+    fn acp_request_ids_preserve_json_type_and_wire_encoding() {
+        let decimal: Value = serde_json::from_str("1.0").expect("decimal id");
+        let numeric = JsonRpcId::from_value(&decimal).expect("numeric id");
+        let string = JsonRpcId::from_value(&json!("1")).expect("string id");
+        assert_eq!(numeric.encoded(), b"1.0");
+        assert_ne!(numeric.key(), string.key());
+        assert_eq!(string.encoded(), vec![b'\"', b'1', b'\"']);
     }
 
     #[test]
@@ -1594,7 +2293,7 @@ mod tests {
         assert!(
             payloads
                 .iter()
-                .any(|payload| payload.contains("providerMessage"))
+                .any(|payload| payload.contains("\"kind\":\"notification\""))
         );
         assert!(
             payloads

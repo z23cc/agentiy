@@ -128,6 +128,7 @@ actor ACPAgentSessionController {
 
     private struct PendingPermissionRequest {
         let rpcID: JSONRPCID
+        let wireID: Data?
         let options: [PermissionOption]
         let request: AgentApprovalRequest
     }
@@ -1042,7 +1043,7 @@ actor ACPAgentSessionController {
                 "jsonrpc": "2.0",
                 "id": pending.rpcID.jsonValue,
                 "result": result
-            ])
+            ], wireID: pending.wireID)
         } catch {
             let message = "Failed to submit ACP approval decision: \(error.localizedDescription)"
             emit(.stream(AIStreamResult(
@@ -1142,7 +1143,7 @@ actor ACPAgentSessionController {
                             "outcome": "cancelled"
                         ]
                     ]
-                ])
+                ], wireID: request.wireID)
             } catch {
                 log("Failed to cancel ACP permission request \(request.rpcID.displayValue): \(error.localizedDescription)")
             }
@@ -1405,7 +1406,12 @@ actor ACPAgentSessionController {
 
         if let id = parseJSONRPCID(json["id"]) {
             if let method = json["method"] as? String {
-                handleServerRequest(id: id, method: method, params: json["params"] as? [String: Any] ?? [:])
+                handleServerRequest(
+                    id: id,
+                    method: method,
+                    params: json["params"] as? [String: Any] ?? [:],
+                    wireID: try? JSONSerialization.data(withJSONObject: json["id"] as Any, options: [])
+                )
                 return
             }
             for storageKey in candidateStorageKeys(for: id) {
@@ -1440,10 +1446,15 @@ actor ACPAgentSessionController {
         }
     }
 
-    private func handleServerRequest(id: JSONRPCID, method: String, params: [String: Any]) {
+    private func handleServerRequest(
+        id: JSONRPCID,
+        method: String,
+        params: [String: Any],
+        wireID: Data? = nil
+    ) {
         switch method {
         case "session/request_permission":
-            handlePermissionRequest(id: id, params: params)
+            handlePermissionRequest(id: id, params: params, wireID: wireID)
         default:
             do {
                 try sendJSONLine([
@@ -1453,7 +1464,7 @@ actor ACPAgentSessionController {
                         "code": -32601,
                         "message": "Unsupported ACP client method: \(method)"
                     ]
-                ])
+                ], wireID: wireID)
             } catch {
                 log("Failed to reject unsupported ACP request \(method): \(error.localizedDescription)")
             }
@@ -1537,7 +1548,7 @@ actor ACPAgentSessionController {
         }
     }
 
-    private func handlePermissionRequest(id: JSONRPCID, params: [String: Any]) {
+    private func handlePermissionRequest(id: JSONRPCID, params: [String: Any], wireID: Data? = nil) {
         guard
             let sessionID = params["sessionId"] as? String,
             let toolCall = params["toolCall"] as? [String: Any]
@@ -1590,7 +1601,7 @@ actor ACPAgentSessionController {
             options: options
         ) {
             do {
-                try sendPermissionSelectionResponse(id: id, optionID: autoApproval.optionID)
+                try sendPermissionSelectionResponse(id: id, optionID: autoApproval.optionID, wireID: wireID)
                 log("Auto-approved ACP permission request for \(toolTitle ?? toolCallID) via option \(autoApproval.optionID) matchSource=\(autoApproval.match.source.rawValue) normalizedTool=\(autoApproval.match.normalizedToolName ?? "nil") serverIdentifier=\(autoApproval.match.serverIdentifier ?? "nil")")
                 return
             } catch {
@@ -1600,7 +1611,7 @@ actor ACPAgentSessionController {
 
         if let fullAccessOptionID = fullAccessAutoApprovalOptionID(for: options) {
             do {
-                try sendPermissionSelectionResponse(id: id, optionID: fullAccessOptionID)
+                try sendPermissionSelectionResponse(id: id, optionID: fullAccessOptionID, wireID: wireID)
                 log("Auto-approved ACP permission request for \(toolTitle ?? toolCallID) via \(provider.providerID.rawValue) full access option \(fullAccessOptionID)")
                 return
             } catch {
@@ -1610,6 +1621,7 @@ actor ACPAgentSessionController {
 
         pendingPermissionRequests[id.displayValue] = PendingPermissionRequest(
             rpcID: id,
+            wireID: wireID,
             options: options,
             request: request
         )
@@ -1618,18 +1630,40 @@ actor ACPAgentSessionController {
 
     private func handleRuntimeEvent(_ event: CoreAgentProviderEvent) async {
         switch event.kind {
-        case "providerMessage":
+        case "notification":
             guard let envelope = event.payloadDictionary,
-                  let payload = envelope["payload"] else { return }
-            guard JSONSerialization.isValidJSONObject(payload) else {
-                handleProtocolViolation("Rust ACP transport returned a non-JSON provider payload.")
+                  let method = envelope["method"] as? String
+            else { return }
+            handleNotification(
+                method: method,
+                params: envelope["params"] as? [String: Any] ?? [:],
+                inboundSequence: (envelope["inbound_sequence"] as? NSNumber)?.uint64Value ?? event.sequence
+            )
+        case "serverRequest":
+            guard let envelope = event.payloadDictionary,
+                  let method = envelope["method"] as? String,
+                  let id = parseJSONRPCID(envelope["id"])
+            else {
+                handleProtocolViolation("Rust ACP transport returned a malformed server request.")
                 return
             }
-            do {
-                try handleJSONLine(JSONSerialization.data(withJSONObject: payload, options: []))
-            } catch {
-                handleProtocolViolation("Rust ACP transport payload encoding failed: \(error.localizedDescription)")
-            }
+            let wireID = (envelope["id_json"] as? String)?.data(using: .utf8)
+            handleServerRequest(
+                id: id,
+                method: method,
+                params: envelope["params"] as? [String: Any] ?? [:],
+                wireID: wireID
+            )
+        case "protocolError":
+            let envelope = event.payloadDictionary ?? [:]
+            let category = envelope["category"] as? String ?? "protocol"
+            let message = envelope["message"] as? String ?? "ACP protocol error"
+            let preview = envelope["raw_preview"] as? String
+            let detail = preview.map { "\(message) [\(category)] raw=\($0)" } ?? "\(message) [\(category)]"
+            invalidACPLineCount += 1
+            lastInvalidACPLinePreview = preview.map { Self.truncatedDiagnosticPreview($0) }
+            diagnose(.invalidJSON(detail))
+            handleProtocolViolation(detail)
         case "stderr":
             guard let envelope = event.payloadDictionary,
                   let text = envelope["text"] as? String else { return }
@@ -1637,7 +1671,8 @@ actor ACPAgentSessionController {
         case "processExited":
             let envelope = event.payloadDictionary ?? [:]
             let exitCode = (envelope["exit_code"] as? NSNumber)?.int32Value ?? 0
-            await handleProcessExit(exitCode, timedOut: false)
+            let timedOut = (envelope["timed_out"] as? NSNumber)?.boolValue ?? false
+            await handleProcessExit(exitCode, timedOut: timedOut)
             await shutdownRuntimeSession()
         case "scopeClosed":
             if state != .closing, state != .closed {
@@ -1821,6 +1856,54 @@ actor ACPAgentSessionController {
     ) async throws -> RequestResponse {
         guard process != nil || runtimeSession != nil else { throw ControllerError.processNotRunning }
 
+        if let runtimeSession {
+            guard let acpSession = runtimeSession as? any AcpRuntimeSession else {
+                throw ControllerError.protocolViolation("ACP runtime session does not expose semantic request capability.")
+            }
+            let paramsData = try JSONSerialization.data(withJSONObject: params, options: [])
+            let timeoutSeconds = requestTimeoutInterval(for: method)
+            let timeoutMilliseconds = timeoutSeconds.map {
+                UInt64(max(1, ($0 * 1000).rounded()))
+            }
+            let cancellationToken = UUID().uuidString
+            do {
+                let response = try await withTaskCancellationHandler {
+                    try await acpSession.acpRequest(
+                        method: method,
+                        params: paramsData,
+                        timeoutMilliseconds: timeoutMilliseconds,
+                        cancellationToken: cancellationToken
+                    )
+                } onCancel: {
+                    Task {
+                        _ = try? await acpSession.acpCancel(cancellationToken: cancellationToken)
+                    }
+                }
+                guard let result = try JSONSerialization.jsonObject(with: response.result) as? [String: Any] else {
+                    throw ControllerError.protocolViolation("ACP response for \(method) was not a JSON object.")
+                }
+                return RequestResponse(result: result, inboundSequence: response.inboundSequence)
+            } catch let error as CoreBridgeError {
+                switch error {
+                case .agentProviderAcpTimedOut:
+                    throw ControllerError.requestTimedOut(
+                        method: method,
+                        timeoutSeconds: timeoutSeconds ?? requestTimeouts.bootstrapSeconds,
+                        launchDescription: launchDescription,
+                        diagnosticHint: timeoutDiagnosticHint()
+                    )
+                case .agentProviderAcpCancelled:
+                    throw CancellationError()
+                case let .agentProviderAcpRemoteError(_, code, message, _):
+                    throw ControllerError.requestFailed(message, code: Int(code))
+                case .agentProviderAcpInvalidJson, .agentProviderAcpInvalidResponse:
+                    throw ControllerError.protocolViolation("ACP semantic transport rejected response for \(method).")
+                default:
+                    throw error
+                }
+            }
+        }
+
         let requestID = JSONRPCID.int(nextRequestID)
         nextRequestID += 1
 
@@ -1846,7 +1929,7 @@ actor ACPAgentSessionController {
         }
     }
 
-    private func sendJSONLine(_ payload: [String: Any]) throws {
+    private func sendJSONLine(_ payload: [String: Any], wireID: Data? = nil) throws {
         #if DEBUG
             captureRawACPEvent(kind: "jsonrpc.outbound", payload: payload)
         #endif
@@ -1857,15 +1940,43 @@ actor ACPAgentSessionController {
             diagnose(.outboundJSON(line))
         }
         if let runtimeSession {
-            let session = runtimeSession
-            Task { [weak self] in
+            guard let acpSession = runtimeSession as? any AcpRuntimeSession else {
+                throw ControllerError.protocolViolation("ACP runtime session does not expose semantic request capability.")
+            }
+            let task = Task { [weak self] in
                 do {
-                    _ = try await session.sendLine(frame)
+                    if let method = payload["method"] as? String {
+                        guard payload["id"] == nil else {
+                            throw ControllerError.protocolViolation("ACP request must use acpRequest, not the response adapter.")
+                        }
+                        let params = payload["params"].flatMap { try? JSONSerialization.data(withJSONObject: $0, options: []) }
+                        _ = try await acpSession.acpNotify(method: method, params: params)
+                    } else {
+                        guard let rawID = payload["id"],
+                              let requestID = wireID ?? (try? JSONSerialization.data(withJSONObject: rawID, options: []))
+                        else {
+                            throw ControllerError.protocolViolation("ACP response is missing a valid id.")
+                        }
+                        if let error = payload["error"] as? [String: Any] {
+                            let code = (error["code"] as? NSNumber)?.int64Value ?? -32603
+                            let message = error["message"] as? String ?? "ACP client error"
+                            let data = error["data"].flatMap { try? JSONSerialization.data(withJSONObject: $0, options: []) }
+                            _ = try await acpSession.acpRespondError(requestID: requestID, code: code, message: message, data: data)
+                        } else {
+                            guard let resultValue = payload["result"],
+                                  let result = try? JSONSerialization.data(withJSONObject: resultValue, options: [])
+                            else {
+                                throw ControllerError.protocolViolation("ACP response is missing a valid result.")
+                            }
+                            _ = try await acpSession.acpRespond(requestID: requestID, result: result)
+                        }
+                    }
                 } catch {
                     guard let self else { return }
                     await handleRuntimeWriteFailure(error)
                 }
             }
+            _ = task
             return
         }
         guard let stdinDescriptor = process?.stdinDescriptor else {
@@ -3054,7 +3165,7 @@ actor ACPAgentSessionController {
         return normalized
     }
 
-    private func sendPermissionSelectionResponse(id: JSONRPCID, optionID: String) throws {
+    private func sendPermissionSelectionResponse(id: JSONRPCID, optionID: String, wireID: Data? = nil) throws {
         try sendJSONLine([
             "jsonrpc": "2.0",
             "id": id.jsonValue,
@@ -3064,7 +3175,7 @@ actor ACPAgentSessionController {
                     "optionId": optionID
                 ]
             ]
-        ])
+        ], wireID: wireID)
     }
 
     private func preferredAllowOptionID(for options: [PermissionOption], sessionScoped: Bool) -> String {

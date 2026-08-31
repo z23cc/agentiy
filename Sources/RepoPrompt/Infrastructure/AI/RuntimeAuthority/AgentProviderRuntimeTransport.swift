@@ -35,6 +35,18 @@ protocol CodexAppServerRuntimeSession: AgentProviderRuntimeSession {
     func codexState() async throws -> CoreCodexSessionState
 }
 
+/// Capability exposed by Rust-owned ACP sessions. ACP controllers retain provider policy and
+/// decoding, while request IDs, pending correlation, response validation, and inbound ordering
+/// remain in the runtime authority.
+protocol AcpRuntimeSession: AgentProviderRuntimeSession {
+    func acpRequest(method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) async throws -> CoreAcpResponse
+    func acpCancel(cancellationToken: String) async throws -> Bool
+    func acpNotify(method: String, params: Data?) async throws -> UInt64
+    func acpRespond(requestID: Data, result: Data) async throws -> UInt64
+    func acpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64
+    func acpState() async throws -> CoreAcpSessionState
+}
+
 protocol AgentProviderRuntimeTransport: Sendable {
     func open(
         command: String,
@@ -82,7 +94,7 @@ struct CoreAgentProviderRuntimeTransport: AgentProviderRuntimeTransport {
         case .codexAppServer:
             return CodexAgentProviderRuntimeSessionAdapter(session: session)
         case .acp:
-            return CoreAgentProviderRuntimeSessionAdapter(session: session)
+            return AcpAgentProviderRuntimeSessionAdapter(session: session)
         }
     }
 }
@@ -112,6 +124,32 @@ private class CoreAgentProviderRuntimeSessionAdapter: AgentProviderRuntimeSessio
 
     func shutdown() async {
         await session.shutdown()
+    }
+}
+
+private final class AcpAgentProviderRuntimeSessionAdapter: CoreAgentProviderRuntimeSessionAdapter, AcpRuntimeSession {
+    func acpRequest(method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) async throws -> CoreAcpResponse {
+        try await session.agentProviderAcpRequest(method: method, params: params, timeoutMilliseconds: timeoutMilliseconds, cancellationToken: cancellationToken)
+    }
+
+    func acpCancel(cancellationToken: String) async throws -> Bool {
+        try await session.agentProviderAcpCancel(cancellationToken: cancellationToken)
+    }
+
+    func acpNotify(method: String, params: Data?) async throws -> UInt64 {
+        try await session.agentProviderAcpNotify(method: method, params: params)
+    }
+
+    func acpRespond(requestID: Data, result: Data) async throws -> UInt64 {
+        try await session.agentProviderAcpRespond(requestID: requestID, result: result)
+    }
+
+    func acpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+        try await session.agentProviderAcpRespondError(requestID: requestID, code: code, message: message, data: data)
+    }
+
+    func acpState() async throws -> CoreAcpSessionState {
+        try await session.agentProviderAcpState()
     }
 }
 

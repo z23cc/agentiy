@@ -8,7 +8,8 @@ P6 owns provider process lifetime and byte transport. P7-1 moves the Codex
 app-server JSON-RPC semantic boundary into the same Rust scope. Rust allocates
 request IDs, records pending requests before writing, settles responses exactly
 once, applies an optional request deadline, supports token-scoped cancellation,
-and classifies notifications and server requests. ACP is not changed by this phase.
+and classifies notifications and server requests. ACP was intentionally not
+changed by P7-1; it is completed by the follow-on P7-2 contract.
 
 A Codex request is admitted only after runtime identity and scope checks. Method,
 params, response, and server-request IDs are validated at the Rust boundary. Numeric and string
@@ -32,10 +33,11 @@ Request responses are consumed by Rust and are never emitted as
 `providerMessage`. Swift maps only the typed event payloads into existing Codex
 controller streams.
 
-The generic provider `sendLine` operation rejects Codex scopes. ACP keeps the
-legacy opaque `providerMessage` and `sendLine` behavior. Swift's old request
+The generic provider `sendLine` operation rejects Codex scopes. P7-2 applies the
+same rejection and typed semantic capability to ACP; see
+`rust-agent-provider-p7-2-acp-semantic-authority.md`. Swift's old request
 correlation and JSON recovery remain available only to explicitly injected
-legacy test doubles, not to a Rust-backed production Codex session.
+legacy test doubles, not to a Rust-backed production Codex or ACP session.
 
 ## Lifecycle and compatibility
 
@@ -43,7 +45,8 @@ Rust state records `created`, `initialized`, `threadReady`, and `turnStarted`
 facts, with optional thread and turn identifiers and a bounded pending count.
 Process-start, stderr, process-exit, and scope-close events retain their P6
 ordering and sequence semantics. No Codex wire method, request shape, permission
-policy, model pagination behavior, persistence format, or ACP behavior changes.
+policy, model pagination behavior, persistence format, or ACP behavior changes
+as part of P7-1; ACP compatibility is covered by the P7-2 contract.
 
 ## Verification gates
 

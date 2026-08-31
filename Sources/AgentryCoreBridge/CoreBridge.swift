@@ -107,6 +107,12 @@ enum CoreTransportError: Error, Sendable, Equatable {
     case agentProviderCodexCancelled(String)
     case agentProviderCodexRemoteError(method: String, code: Int64, message: String, data: Data?)
     case agentProviderCodexInvalidResponse
+    case agentProviderAcpProtocolMismatch
+    case agentProviderAcpInvalidJson
+    case agentProviderAcpTimedOut(String)
+    case agentProviderAcpCancelled(String)
+    case agentProviderAcpRemoteError(method: String, code: Int64, message: String, data: Data?)
+    case agentProviderAcpInvalidResponse
     case watcherUnknownScope
     case watcherScopeClosed
     case watcherInvalidRequest(String)
@@ -492,6 +498,12 @@ protocol CoreRuntimeTransport: Sendable {
     func agentProviderCodexRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> UInt64
     func agentProviderCodexRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> UInt64
     func agentProviderCodexState(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreCodexSessionStateV1
+    func agentProviderAcpRequest(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpResponseV1
+    func agentProviderAcpCancel(identity: CoreRuntimeIdentity, scopeID: String, cancellationToken: String) throws -> Bool
+    func agentProviderAcpNotify(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?) throws -> UInt64
+    func agentProviderAcpRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> UInt64
+    func agentProviderAcpRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> UInt64
+    func agentProviderAcpState(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpSessionStateV1
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
     // ---- P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md) -------------------
@@ -5281,6 +5293,54 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
+    func agentProviderAcpRequest(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpResponseV1 {
+        do {
+            return try runtime.agentProviderAcpRequest(identity: Self.rawIdentity(identity), scopeId: scopeID, method: method, params: params, timeoutMilliseconds: timeoutMilliseconds, cancellationToken: cancellationToken)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderAcpCancel(identity: CoreRuntimeIdentity, scopeID: String, cancellationToken: String) throws -> Bool {
+        do {
+            return try runtime.agentProviderAcpCancel(identity: Self.rawIdentity(identity), scopeId: scopeID, cancellationToken: cancellationToken)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderAcpNotify(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?) throws -> UInt64 {
+        do {
+            return try runtime.agentProviderAcpNotify(identity: Self.rawIdentity(identity), scopeId: scopeID, method: method, params: params)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderAcpRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> UInt64 {
+        do {
+            return try runtime.agentProviderAcpRespond(identity: Self.rawIdentity(identity), scopeId: scopeID, requestId: requestID, result: result)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderAcpRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> UInt64 {
+        do {
+            return try runtime.agentProviderAcpRespondError(identity: Self.rawIdentity(identity), scopeId: scopeID, requestId: requestID, code: code, message: message, data: data)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderAcpState(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpSessionStateV1 {
+        do {
+            return try runtime.agentProviderAcpState(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws {
         do {
             try runtime.agentProviderShutdown(identity: Self.rawIdentity(identity), scopeId: scopeID)
@@ -5468,6 +5528,12 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         case let .AgentProviderCodexCancelled(method): .agentProviderCodexCancelled(method)
         case let .AgentProviderCodexRemoteError(method, code, message, data): .agentProviderCodexRemoteError(method: method, code: code, message: message, data: data)
         case .AgentProviderCodexInvalidResponse: .agentProviderCodexInvalidResponse
+        case .AgentProviderAcpProtocolMismatch: .agentProviderAcpProtocolMismatch
+        case .AgentProviderAcpInvalidJson: .agentProviderAcpInvalidJson
+        case let .AgentProviderAcpTimedOut(method): .agentProviderAcpTimedOut(method)
+        case let .AgentProviderAcpCancelled(method): .agentProviderAcpCancelled(method)
+        case let .AgentProviderAcpRemoteError(method, code, message, data): .agentProviderAcpRemoteError(method: method, code: code, message: message, data: data)
+        case .AgentProviderAcpInvalidResponse: .agentProviderAcpInvalidResponse
         case .WatcherUnknownScope: .watcherUnknownScope
         case .WatcherScopeClosed: .watcherScopeClosed
         case let .WatcherInvalidRequest(message): .watcherInvalidRequest(message)
@@ -6219,6 +6285,12 @@ public actor AgentryCoreBridge {
         case let .agentProviderCodexCancelled(method): return .agentProviderCodexCancelled(method)
         case let .agentProviderCodexRemoteError(method, code, message, data): return .agentProviderCodexRemoteError(method: method, code: code, message: message, data: data)
         case .agentProviderCodexInvalidResponse: return .agentProviderCodexInvalidResponse
+        case .agentProviderAcpProtocolMismatch: return .agentProviderAcpProtocolMismatch
+        case .agentProviderAcpInvalidJson: return .agentProviderAcpInvalidJson
+        case let .agentProviderAcpTimedOut(method): return .agentProviderAcpTimedOut(method)
+        case let .agentProviderAcpCancelled(method): return .agentProviderAcpCancelled(method)
+        case let .agentProviderAcpRemoteError(method, code, message, data): return .agentProviderAcpRemoteError(method: method, code: code, message: message, data: data)
+        case .agentProviderAcpInvalidResponse: return .agentProviderAcpInvalidResponse
         case .watcherUnknownScope: return .watcherUnknownScope
         case .watcherScopeClosed: return .watcherScopeClosed
         case let .watcherInvalidRequest(message): return .watcherInvalidRequest(message)

@@ -185,6 +185,12 @@ public enum CoreBridgeError: Error, Equatable, Sendable {
     case agentProviderCodexCancelled(String)
     case agentProviderCodexRemoteError(method: String, code: Int64, message: String, data: Data?)
     case agentProviderCodexInvalidResponse
+    case agentProviderAcpProtocolMismatch
+    case agentProviderAcpInvalidJson
+    case agentProviderAcpTimedOut(String)
+    case agentProviderAcpCancelled(String)
+    case agentProviderAcpRemoteError(method: String, code: Int64, message: String, data: Data?)
+    case agentProviderAcpInvalidResponse
     case watcherUnknownScope
     case watcherScopeClosed
     case watcherInvalidRequest(String)
@@ -244,6 +250,12 @@ extension CoreBridgeError: LocalizedError {
         case let .agentProviderCodexCancelled(method): "Codex app-server request cancelled: \(method)"
         case let .agentProviderCodexRemoteError(method, code, message, _): "Codex app-server request failed (\(method), \(code)): \(message)"
         case .agentProviderCodexInvalidResponse: "Codex app-server returned an invalid response."
+        case .agentProviderAcpProtocolMismatch: "ACP semantic transport is unavailable for this scope."
+        case .agentProviderAcpInvalidJson: "ACP provider returned invalid JSON."
+        case let .agentProviderAcpTimedOut(method): "ACP provider request timed out: \(method)"
+        case let .agentProviderAcpCancelled(method): "ACP provider request cancelled: \(method)"
+        case let .agentProviderAcpRemoteError(method, code, message, _): "ACP provider request failed (\(method), \(code)): \(message)"
+        case .agentProviderAcpInvalidResponse: "ACP provider returned an invalid response."
         case .watcherUnknownScope: "The file-system watcher scope is unknown or already closed."
         case .watcherScopeClosed: "The file-system watcher scope is closed."
         case let .watcherInvalidRequest(message): "The file-system watcher request is invalid: \(message)"

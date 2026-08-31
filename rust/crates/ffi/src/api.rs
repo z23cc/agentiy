@@ -7,7 +7,8 @@ use crate::types::{
     AdmissionDisposition, AdmissionReceipt, AgentProviderScopeHandleV1,
     AgentProviderStartReceiptV1, BulkChunkDiscoveryReceiptV1, BulkChunkReceiptV1, CancelReceipt,
     CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1,
-    CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult, CoreAgentProviderScopeConfigV1,
+    CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult, CoreAgentProviderAcpResponseV1,
+    CoreAgentProviderAcpSessionStateV1, CoreAgentProviderScopeConfigV1,
     CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCodexSessionStateV1,
     CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig,
     CoreFileSystemWatcherEventV1, CoreFileSystemWatcherPayloadV1,
@@ -4460,6 +4461,115 @@ impl CoreRuntime {
                 initialized: state.initialized,
                 thread_id: state.thread_id,
                 turn_id: state.turn_id,
+                pending_request_count: u64::try_from(state.pending_request_count)
+                    .unwrap_or(u64::MAX),
+            })
+        })
+    }
+
+    pub fn agent_provider_acp_request(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        method: String,
+        params: Option<Vec<u8>>,
+        timeout_milliseconds: Option<u64>,
+        cancellation_token: Option<String>,
+    ) -> Result<CoreAgentProviderAcpResponseV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            let timeout = timeout_milliseconds
+                .map(|milliseconds| std::time::Duration::from_millis(milliseconds.min(600_000)));
+            let response = scope.acp_request(
+                &identity,
+                &method,
+                params.as_deref(),
+                timeout,
+                cancellation_token.as_deref(),
+            )?;
+            Ok(CoreAgentProviderAcpResponseV1 {
+                result: response.result,
+                inbound_sequence: response.inbound_sequence,
+            })
+        })
+    }
+
+    pub fn agent_provider_acp_cancel(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        cancellation_token: String,
+    ) -> Result<bool, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.acp_cancel(&identity, &cancellation_token)?)
+        })
+    }
+
+    pub fn agent_provider_acp_notify(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        method: String,
+        params: Option<Vec<u8>>,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.acp_notify(&identity, &method, params.as_deref())?)
+        })
+    }
+
+    pub fn agent_provider_acp_respond(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        request_id: Vec<u8>,
+        result: Vec<u8>,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.acp_respond(&identity, &request_id, &result)?)
+        })
+    }
+
+    pub fn agent_provider_acp_respond_error(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+        request_id: Vec<u8>,
+        code: i64,
+        message: String,
+        data: Option<Vec<u8>>,
+    ) -> Result<u64, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.acp_respond_error(&identity, &request_id, code, &message, data.as_deref())?)
+        })
+    }
+
+    pub fn agent_provider_acp_state(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<CoreAgentProviderAcpSessionStateV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            let state = scope.acp_state(&identity)?;
+            Ok(CoreAgentProviderAcpSessionStateV1 {
+                lifecycle: state.lifecycle,
+                initialized: state.initialized,
                 pending_request_count: u64::try_from(state.pending_request_count)
                     .unwrap_or(u64::MAX),
             })

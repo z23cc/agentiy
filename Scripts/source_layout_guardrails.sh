@@ -698,9 +698,9 @@ PY
     fail "App agent-session facade reintroduced a duplicate identity predicate"
   fi
 
-  # P7-1 Codex semantic authority: production Codex sessions must expose only the
-  # Rust-owned JSON-RPC capability. Generic line writes remain valid for ACP and
-  # injected legacy fixtures, but a Codex runtime session must never reach them.
+  # P7-1/P7-2 provider semantic authority: production Codex and ACP sessions
+  # expose only their Rust-owned JSON-RPC capabilities. Generic line writes remain
+  # valid only for Claude headless and explicitly injected legacy fixtures.
   codex_client_source="Sources/RepoPrompt/Infrastructure/AI/Providers/Codex/AppServer/CodexAppServerClient.swift"
   codex_transport_source="Sources/RepoPrompt/Infrastructure/AI/RuntimeAuthority/AgentProviderRuntimeTransport.swift"
   codex_bridge_source="Sources/AgentryCoreBridge/CoreAgentProviderSession.swift"
@@ -721,6 +721,43 @@ PY
     || ! grep -q 'CodexSessionState' "rust/crates/runtime/src/agent_provider.rs"; then
     fail "Rust Codex request, response-error, and lifecycle authority is missing"
   fi
+
+  acp_controller_source="Sources/RepoPrompt/Infrastructure/AI/ACP/ACPAgentSessionController.swift"
+  acp_transport_source="Sources/RepoPrompt/Infrastructure/AI/RuntimeAuthority/AgentProviderRuntimeTransport.swift"
+  if ! grep -q 'AcpRuntimeSession' "$acp_controller_source" \
+    || ! grep -q 'case "notification"' "$acp_controller_source" \
+    || ! grep -q 'case "serverRequest"' "$acp_controller_source" \
+    || ! grep -q 'case "protocolError"' "$acp_controller_source"; then
+    fail "ACP controller must consume typed Rust notification/server-request/protocol-error events"
+  fi
+  if ! grep -q 'func acpRequest' "$acp_transport_source" \
+    || ! grep -q 'func acpRespondError' "$acp_transport_source" \
+    || ! grep -q 'CoreAcpSessionState' "$codex_bridge_source" \
+    || ! grep -q 'agentProviderAcpRequest' "$codex_bridge_source"; then
+    fail "ACP semantic capability is not exposed through the Rust FFI/Bridge seam"
+  fi
+  if ! grep -q 'acp_request' "rust/crates/runtime/src/agent_provider.rs" \
+    || ! grep -q 'agent_provider_acp_respond_error' "rust/crates/ffi/src/api.rs" \
+    || ! grep -q 'AcpSessionState' "rust/crates/runtime/src/agent_provider.rs" \
+    || ! grep -q 'provider_json_rpc' "rust/crates/runtime/src/agent_provider.rs"; then
+    fail "Rust ACP request, response-error, shared reducer, and lifecycle authority is missing"
+  fi
+  if grep -q 'providerMessage' "$acp_controller_source"; then
+    fail "ACP production controller must not retain opaque providerMessage handling"
+  fi
+  acp_factory_sources=(
+    "Sources/RepoPrompt/Infrastructure/AI/Providers/OpenCode/OpenCodeACPHeadlessAgentProvider.swift"
+    "Sources/RepoPrompt/Infrastructure/AI/Providers/OpenCode/OpenCodeACPModelPollingService.swift"
+    "Sources/RepoPrompt/Infrastructure/AI/Providers/Cursor/CursorACPHeadlessAgentProvider.swift"
+    "Sources/RepoPrompt/Infrastructure/AI/Providers/Cursor/CursorACPModelPollingService.swift"
+    "Sources/RepoPrompt/Infrastructure/AI/Providers/GrokBuild/GrokBuildACPHeadlessAgentProvider.swift"
+    "Sources/RepoPrompt/Infrastructure/AI/Providers/GrokBuild/GrokBuildACPModelPollingService.swift"
+  )
+  for acp_factory_source in "${acp_factory_sources[@]}"; do
+    if ! grep -q 'runtimeTransport: CoreAgentProviderRuntimeTransport()' "$acp_factory_source"; then
+      fail "ACP production factory must inject the Rust semantic runtime transport: $acp_factory_source"
+    fi
+  done
 
   if ! grep -q 'MCPDomainGeneratedToolDefinitions.records' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift" \
     || ! grep -q 'filter(\\.sharedRead)' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
@@ -1066,7 +1103,8 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p9-catalog-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p10-admission-handoff.md"
   "docs/spec/headless-mcp-domain-runtime-p11-execution-handoff.md"
-  "docs/spec/rust-agent-provider-p7-1-codex-semantic-authority.md"
+    "docs/spec/rust-agent-provider-p7-1-codex-semantic-authority.md"
+    "docs/spec/rust-agent-provider-p7-2-acp-semantic-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p12-agent-session-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p13-agent-session-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p14-agent-run-lifecycle-authority.md"

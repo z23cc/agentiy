@@ -4063,6 +4063,19 @@ pub struct CoreCodexSessionStateV1 {
     pub pending_request_count: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentProviderAcpResponseV1 {
+    pub result: Vec<u8>,
+    pub inbound_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentProviderAcpSessionStateV1 {
+    pub lifecycle: String,
+    pub initialized: bool,
+    pub pending_request_count: u64,
+}
+
 // ================================================================================================
 // P7: Rust-owned filesystem watcher ingress mailbox.
 // ================================================================================================
