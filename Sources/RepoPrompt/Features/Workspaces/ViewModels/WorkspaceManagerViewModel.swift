@@ -2580,6 +2580,23 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     // MARK: - CREATE
 
+    /// Create-time persistence work, keyed by workspace ID.
+    ///
+    /// `createWorkspace` is synchronous and performs its disk/authority write in a
+    /// detached task, so its return value says nothing about whether the workspace was
+    /// actually persisted. Callers that must report a truthful result await this instead.
+    private var pendingCreatePersistenceTasks: [UUID: Task<Void, Error>] = [:]
+
+    /// Awaits create-time persistence for `workspaceID`, rethrowing the write failure.
+    ///
+    /// Returns immediately when no create is pending, so it is safe to call for
+    /// workspaces that already existed or were created ephemerally.
+    func awaitCreatePersistence(for workspaceID: UUID) async throws {
+        guard let task = pendingCreatePersistenceTasks[workspaceID] else { return }
+        pendingCreatePersistenceTasks[workspaceID] = nil
+        try await task.value
+    }
+
     @discardableResult
     func createWorkspace(name: String, repoPaths: [String], ephemeral: Bool = false) -> WorkspaceModel {
         var newWorkspace = WorkspaceModel(name: name, repoPaths: repoPaths)
@@ -2601,7 +2618,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         // Only save to disk and index if not ephemeral
         if !ephemeral {
-            Task {
+            let persistenceTask = Task<Void, Error> {
                 do {
                     _ = try ensureWorkspaceDirectoryExists(for: newWorkspace)
                     // Persist this new workspace file and flush before proceeding
@@ -2632,8 +2649,12 @@ class WorkspaceManagerViewModel: ObservableObject {
                             "Legacy workspace creation failed: \(error.localizedDescription, privacy: .public)"
                         )
                     }
+                    // Surface the failure to callers that await persistence. Fire-and-forget
+                    // callers are unaffected because an unobserved task result is discarded.
+                    throw error
                 }
             }
+            pendingCreatePersistenceTasks[newWorkspace.id] = persistenceTask
         } else {
             // For ephemeral workspaces, notify immediately since there's no disk write
             NotificationCenter.default.post(

@@ -1339,6 +1339,16 @@ final class WindowRoutingService: Service {
         switchToCreated: Bool
     ) async throws -> WorkspaceModel {
         let newWorkspace = window.workspaceManager.createWorkspace(name: name, repoPaths: repoPaths)
+        // `createWorkspace` returns before its disk/authority write finishes, so reporting
+        // success here without awaiting would claim a workspace exists even when nothing
+        // was persisted.
+        do {
+            try await window.workspaceManager.awaitCreatePersistence(for: newWorkspace.id)
+        } catch {
+            throw MCPError.internalError(
+                "Workspace '\(name)' could not be persisted: \(error.localizedDescription)"
+            )
+        }
         if switchToCreated {
             let switchResult = await window.workspaceManager.requestWorkspaceSwitch(to: newWorkspace, saveState: true)
             if !switchResult.didSwitch {
@@ -2537,6 +2547,15 @@ final class WindowRoutingService: Service {
                         let newWorkspace = await MainActor.run {
                             newWindow.workspaceManager.createWorkspace(name: workspaceName, repoPaths: initialRepoPaths)
                         }
+                        // `createWorkspace` returns before its disk/authority write finishes.
+                        // Await it so a failed write is reported instead of claiming success.
+                        do {
+                            try await newWindow.workspaceManager.awaitCreatePersistence(for: newWorkspace.id)
+                        } catch {
+                            throw MCPError.internalError(
+                                "Workspace '\(workspaceName)' could not be persisted: \(error.localizedDescription)"
+                            )
+                        }
                         if switchToCreated {
                             let switchResult = await newWindow.workspaceManager.requestWorkspaceSwitch(to: newWorkspace, saveState: true)
                             if !switchResult.didSwitch {
@@ -2565,6 +2584,15 @@ final class WindowRoutingService: Service {
                     // Create the workspace in the target window
                     let newWorkspace = await MainActor.run {
                         approvalWindow.workspaceManager.createWorkspace(name: workspaceName, repoPaths: initialRepoPaths)
+                    }
+                    // `createWorkspace` returns before its disk/authority write finishes.
+                    // Await it so a failed write is reported instead of claiming success.
+                    do {
+                        try await approvalWindow.workspaceManager.awaitCreatePersistence(for: newWorkspace.id)
+                    } catch {
+                        throw MCPError.internalError(
+                            "Workspace '\(workspaceName)' could not be persisted: \(error.localizedDescription)"
+                        )
                     }
 
                     if switchToCreated {
