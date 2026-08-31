@@ -151,6 +151,23 @@ Maintainers track release signing, Sparkle metadata, dependency pins, and
 third-party notices in
 [`docs/open-source-readiness.md`](docs/open-source-readiness.md).
 
+## In Tribute to RepoPrompt / 致敬 RepoPrompt
+
+Agentry is a community-driven fork and secondary development based on the
+open-source [RepoPrompt project](https://github.com/repoprompt/repoprompt-ce).
+It builds on the
+upstream project's open-source foundation and carries forward its founding
+idea: give coding agents the right context before they act.
+
+We gratefully acknowledge the RepoPrompt maintainers and contributors whose
+architecture, code, and context-engineering vision make this work possible.
+Agentry extends and adapts that foundation for its own experiments, features,
+and release cadence while preserving the upstream attribution and
+Apache-2.0 license.
+
+Agentry is an independent project, not an official RepoPrompt distribution and
+not affiliated with or endorsed by the RepoPrompt maintainers.
+
 ## Contributor Documentation
 
 - [`AGENTS.md`](AGENTS.md): coordinated builds, tests, launches, live MCP
