@@ -88,7 +88,7 @@ final class GitBlobIdentityServiceTests: XCTestCase {
         XCTAssertEqual(eligibleOID(retargeted), expectedOID)
     }
 
-    func testNestedRepositoryMarkersBlockOuterBlobIdentityWhileNestedRootRemainsEligible() async throws {
+    func testNestedRepositoryMarkersUseValidatedLeafBytesAndRetainOwnRootBlobEligibility() async throws {
         let fixture = try ReviewGitRepositoryFixture(name: #function)
         let contents = SwiftFixtureSource.emptyStruct("BoundaryOwned")
         let repository = try fixture.makeRepository(
@@ -123,7 +123,10 @@ final class GitBlobIdentityServiceTests: XCTestCase {
         XCTAssertNil(outer.failure)
         XCTAssertEqual(
             outer.classifications.map(\.outcome),
-            [.unavailable(.repositoryUnavailable), .unavailable(.repositoryUnavailable)]
+            [
+                .requiresValidatedWorktreeBytes(.nestedRepository),
+                .requiresValidatedWorktreeBytes(.nestedRepository)
+            ]
         )
         XCTAssertTrue(outer.classifications.allSatisfy { classification in
             classification.indexEntries.contains { entry in
