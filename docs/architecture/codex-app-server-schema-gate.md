@@ -128,6 +128,35 @@ layer:
 overrides older than 0.151.0 are now refused. This floor decision was taken deliberately for a
 single-operator deployment with no other external-override consumers.
 
+### Post-rotation behavioral verification
+
+Packaging propagation was verified separately from artifact acquisition, because
+`make codex-acquire` only stages into `.build/codex-runtime/` while `Scripts/package_app.sh` is a
+distinct path running against the new manifest's tree and signing description for the first time.
+Before the rebuild the packaged bundle reported Codex `0.147.0`; after it, both the bundled
+`codex-package.json` and `bin/codex --version` report `0.151.0`.
+
+No version-specific compatibility layer was introduced: the rotation's only change under
+`Sources/` is the `bundledVersion` constant, and the sole `version >=` comparison in the Codex tree
+remains the pre-existing external override floor check in `CodexRuntimeAuthority.swift`.
+
+MCP direct-only behavior survives the rotation. The isolated Codex config still carries
+`[features.code_mode] enabled = true` with
+`direct_only_tool_namespaces = ["mcp__RepoPromptCE"]`.
+
+Still unverified: `memory_mode` initialization across fresh and resumed threads, and live
+`thread/start` / `thread/resume` request/response shapes and reconnect behavior. These need a real
+Codex session, and `agent_run` is currently blocked in this environment (see below). The bounded
+projection does validate the *shapes* of `thread/start`, `thread/resume`, and
+`thread/memoryMode/set` against the 0.151.0 schema, but per this document's own gate philosophy a
+valid contract projection does not prove runtime behavior, so these remain open.
+
+The blocker is unrelated to Codex: workspaces created through MCP (`workspace create` or
+`bind_context create_if_missing`) bind to a window and function normally, yet never enter the
+persisted workspace inventory. `agent_run` validates against that inventory and therefore refuses
+with `workspace_removed`. The same inconsistency explains an earlier unexplained
+`make dev-smoke` failure at the `workspace switch` stage. Tracked separately.
+
 Not performed: universal release-candidate packaging (this fork is arm64-only since M0 and the
 local release preflight has no provisioned Sparkle release configuration) and the Tip/stable soak
 process.
