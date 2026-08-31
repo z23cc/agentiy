@@ -38,7 +38,7 @@ When every `AGENTRY_MCP_WORKING_DIRS` entry is an existing Git worktree of exact
 
 ## Validation owners
 
-- Backend-selection tests own the app default, explicit selection, one-shot auto probing, unavailable-app fallback, parser rejection, and no-protocol-bytes probe contract.
+- Backend-selection tests own the app default, explicit selection, one-shot auto probing, unavailable-app fallback, parser rejection, immutable final decision, and no-protocol-bytes probe contract.
 - Domain host tests own catalog digest/limit handoff, admission/drain/generation/watchdog/delivery invariants.
 - Canonical catalog tests own all 27 fingerprints, single execution envelopes, fail-closed materialization, and headless `bind_context` semantics.
 - Routing tests own exact presentation-to-context capture and rejection when no authoritative context exists.
@@ -46,4 +46,5 @@ When every `AGENTRY_MCP_WORKING_DIRS` entry is an existing Git worktree of exact
 - Direct process tests launch the built executable with no app, exercise canonical state roots and the advertised policy surface, verify denied mutations do not execute, and validate EOF drain.
 - Direct worktree-routing tests use real linked Git worktrees and a saved workspace fixture to prove automatic canonical binding, exact existing-worktree selection, coordinator-level detached lifecycle reconciliation, child and provider-conversation inheritance and opt-out, use-time identity revalidation for mappings that carry worktree identity, physical root fencing, stable repository/worktree identities, and zero workspace or worktree-binding persistence. End-to-end `orchestrate` dispatch remains owned by the direct-headless workflow/tool-policy integration boundary rather than this routing fixture.
 - Stdio and private-endpoint tests own terminal provenance, bounded broken-pipe behavior, half-close response drain, identity fencing, token redemption, replay, expiry, and foreign-runtime rejection.
+- `Scripts/m7_backend_certification.sh` executes the offline backend-selection/codegen/direct-process/guardrail checks, while `Scripts/validate_m7_backend_release.py` owns the machine-readable contract/evidence validation and rejects probe, state-root, compatibility, stale-path, and unauthorized-default drift.
 - `Scripts/headless_runtime_guardrails.sh` rejects duplicate schema/backend/workspace authorities, flat dependency-bag storage, retired registry/window-tool compatibility types, and MainActor/UI dependencies in the domain runtime.

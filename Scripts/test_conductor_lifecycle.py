@@ -2176,6 +2176,21 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(cwd, repo_root)
         self.assertEqual(timeout, conductor.SHORT_TIMEOUT_SECONDS)
 
+    def test_m7_backend_certification_delegates_release_evidence_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            registry = conductor.OperationRegistry(repo_root)
+            argv, lanes, cwd, _env, timeout = registry.prepare(
+                {"operation": "m7-backend-certification", "args": {}}
+            )
+
+        self.assertEqual(Path(argv[0]).name, "m7_backend_certification.sh")
+        self.assertEqual(argv[1:], [])
+        self.assertEqual(lanes, ["build", "release"])
+        self.assertEqual(cwd, repo_root)
+        self.assertEqual(timeout, conductor.RELEASE_TIMEOUT_SECONDS)
+        self.assertTrue(conductor.operation_requires_global_heavy_slot("m7-backend-certification", {}))
+
     def test_cargo_operations_are_bounded_build_lane_heavy_jobs_with_controlled_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             conductor.shutil, "which", return_value="/fixture/bin/cargo"

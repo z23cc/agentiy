@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import RepoPromptShared
 
-enum MCPBackend: String, CaseIterable {
+enum MCPBackend: String, CaseIterable, Equatable {
     case app
     case headless
     case auto
@@ -13,19 +13,43 @@ enum MCPResolvedBackend: String, Equatable {
     case headless
 }
 
+/// The immutable result of the one backend decision made before MCP initialize.
+/// Keeping the probe budget in the value makes a later retry or backend switch
+/// observable in tests instead of silently creating a second authority.
+struct MCPBackendDecision: Equatable {
+    let requested: MCPBackend
+    let resolved: MCPResolvedBackend
+    let probeCount: Int
+
+    var isFinal: Bool {
+        true
+    }
+}
+
 enum MCPBackendSelection {
+    static func decide(
+        requested: MCPBackend,
+        appIsAvailable: () -> Bool = MCPAppSocketAvailabilityProbe.isAvailable
+    ) -> MCPBackendDecision {
+        switch requested {
+        case .app:
+            MCPBackendDecision(requested: requested, resolved: .app, probeCount: 0)
+        case .headless:
+            MCPBackendDecision(requested: requested, resolved: .headless, probeCount: 0)
+        case .auto:
+            MCPBackendDecision(
+                requested: requested,
+                resolved: appIsAvailable() ? .app : .headless,
+                probeCount: 1
+            )
+        }
+    }
+
     static func resolve(
         requested: MCPBackend,
         appIsAvailable: () -> Bool = MCPAppSocketAvailabilityProbe.isAvailable
     ) -> MCPResolvedBackend {
-        switch requested {
-        case .app:
-            .app
-        case .headless:
-            .headless
-        case .auto:
-            appIsAvailable() ? .app : .headless
-        }
+        decide(requested: requested, appIsAvailable: appIsAvailable).resolved
     }
 }
 

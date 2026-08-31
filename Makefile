@@ -1,4 +1,4 @@
-.PHONY: help doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status codex-acquire codex-status codex-update-candidate resolve build run test guardrails codex-schema-check provider-conformance conductor-selftest ci-app-test-runner-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production xcode xcode-open xcode-generate xcode-check xcode-validate xcode-rust-link-validate xcode-generator-test xcode-clean dev-status dev-build dev-swift-build dev-cargo-build dev-cargo-test dev-cargo-codegen dev-cargo-codegen-check dev-cargo-archive dev-cargo-deny dev-cargo-audit dev-cargo-fuzz dev-rust-ffi-swift-baseline-export dev-rust-ffi-swift-baseline-check dev-rust-ffi-swift-baseline-measure dev-rust-ffi-swift-baseline-candidate dev-rust-search-phase-profile dev-run dev-launch-existing dev-codex-schema-check dev-provider-conformance dev-test dev-provider-test dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
+.PHONY: help doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status codex-acquire codex-status codex-update-candidate resolve build run test guardrails codex-schema-check provider-conformance m7-backend-certification conductor-selftest ci-app-test-runner-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production xcode xcode-open xcode-generate xcode-check xcode-validate xcode-rust-link-validate xcode-generator-test xcode-clean dev-status dev-build dev-swift-build dev-cargo-build dev-cargo-test dev-cargo-codegen dev-cargo-codegen-check dev-cargo-archive dev-cargo-deny dev-cargo-audit dev-cargo-fuzz dev-rust-ffi-swift-baseline-export dev-rust-ffi-swift-baseline-check dev-rust-ffi-swift-baseline-measure dev-rust-ffi-swift-baseline-candidate dev-rust-search-phase-profile dev-run dev-launch-existing dev-codex-schema-check dev-provider-conformance dev-m7-backend-certification dev-test dev-provider-test dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
 
 PRODUCT ?= all
 CODEX_ARCH ?= all
@@ -20,6 +20,7 @@ help:
 	@printf '  %-30s %s\n' 'guardrails' 'Run source layout and repository guardrails'
 	@printf '  %-30s %s\n' 'codex-schema-check' 'Validate bounded app-server assumptions against generated Codex schemas'
 	@printf '  %-30s %s\n' 'provider-conformance' 'Validate offline P7-4 provider capability contract'
+	@printf '  %-30s %s\n' 'm7-backend-certification' 'Validate M7 backend cutover and release evidence gate'
 	@printf '  %-30s %s\n' 'clean' 'Remove .build'
 	@printf '\n%s\n' 'Coordinated developer daemon targets:'
 	@printf '  %-30s %s\n' 'dev-status' 'Show conductor daemon status'
@@ -41,6 +42,7 @@ help:
 	@printf '  %-30s %s\n' 'dev-launch-existing' 'Launch existing coordinated debug app without building'
 	@printf '  %-30s %s\n' 'dev-codex-schema-check' 'Coordinated Codex app-server schema validation'
 	@printf '  %-30s %s\n' 'dev-provider-conformance' 'Coordinated offline P7-4 provider certification contract validation'
+	@printf '  %-30s %s\n' 'dev-m7-backend-certification' 'Coordinated M7 backend/release evidence gate'
 	@printf '  %-30s %s\n' 'dev-test' 'Coordinated test run; override with FILTER=name'
 	@printf '  %-30s %s\n' 'dev-provider-test' 'Run provider package tests; override with FILTER=name'
 	@printf '  %-30s %s\n' 'dev-smoke' 'Run non-disruptive live debug app smoke checks'
@@ -158,9 +160,13 @@ codex-schema-check:
 provider-conformance:
 	python3 Scripts/validate_rust_agent_provider_p7_4.py --check
 
+m7-backend-certification:
+	Scripts/m7_backend_certification.sh
+
 conductor-selftest:
 	python3 Scripts/test_codex_app_server_schema.py
 	python3 Scripts/test_validate_rust_agent_provider_p7_4.py
+	python3 Scripts/test_validate_m7_backend_release.py
 	python3 Scripts/test_debug_app_process.py
 	python3 Scripts/test_contribution_preflight.py
 	python3 Scripts/test_ci_app_test_runner.py
@@ -277,6 +283,9 @@ dev-codex-schema-check:
 
 dev-provider-conformance:
 	./conductor provider-conformance
+
+dev-m7-backend-certification:
+	./conductor m7-backend-certification
 
 dev-test:
 	./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(CONFIGURATION), --configuration $(CONFIGURATION))$(if $(SANITIZE), --sanitize $(SANITIZE))

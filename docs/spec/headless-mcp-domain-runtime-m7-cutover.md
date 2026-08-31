@@ -20,7 +20,7 @@ Review addressed: `docs/reviews/headless-runtime-m7-cutover-prepush-review-2026-
 - interactive and exec modes are app-only and reject explicit `headless` and `auto`;
 - bare backend values and duplicate backend options fail with usage status.
 
-The probe verifies a Unix socket node, connects with a 150 ms bound, transmits no protocol bytes, closes its descriptor, and never examines the private M6 child endpoint. All app-generated MCP configurations, including provider child configuration, explicitly pass `--backend app`.
+The probe verifies a Unix socket node, connects with a 150 ms bound, transmits no protocol bytes, closes its descriptor, and never examines the private M6 child endpoint. All app-generated MCP configurations, including provider child configuration, explicitly pass `--backend app`. The production entry point records this result as one immutable `MCPBackendDecision`; the older `resolve` method remains only a compatibility projection for existing callers and tests.
 
 ## Canonical state and workspace semantics
 
@@ -97,3 +97,22 @@ Final exact-ID verification used fresh list tickets `bc4a0410-ffae-4315-8191-86c
 - No live app proxy/no-app auto matrix, packaging, release artifact, latency comparison, or state-loss/retry evidence was produced. The task explicitly forbids app relaunch and requires the branch to remain local.
 
 These gaps are why `app` remains the default. Moving the default to `auto` is a later release decision, not part of this M7 correction.
+
+## M7 backend cutover and release evidence gate (2026-08-31)
+
+This phase freezes the machine-checkable backend and release boundary in:
+
+- `Scripts/Fixtures/headless_mcp_domain_runtime_m7_contract.json`
+- `Scripts/Fixtures/headless_mcp_domain_runtime_m7_evidence.json`
+- `Scripts/validate_m7_backend_release.py`
+
+`make m7-backend-certification` (or coordinated `make dev-m7-backend-certification`) executes the offline backend-selection tests, deterministic FFI code-generation check, focused direct-process tests, source guardrails, and the strict contract/evidence validator. It requires no credentials, network access, visible-app launch, or workspace mutation. It rejects unknown/missing checks, duplicate JSON keys, probe-budget drift, protocol-byte probes, stale evidence paths, and any attempt to authorize `auto` as the default.
+
+The committed evidence intentionally records live provider smoke, app/no-app auto matrix, sleep/wake soak, and signed release artifact as `deferred`. These require separately authorized operational runs and are not inferred from synthetic tests. Consequently the gate does not change runtime routing and `app` remains the default. A future release decision must replace each deferred row with independently captured evidence before changing that default.
+
+## M7 completion criteria
+
+- Backend resolution is one immutable pre-initialize `MCPBackendDecision` with an explicit probe budget.
+- App and direct modes continue to share the canonical `Workspaces` state root; no `Headless` storage is created.
+- Offline certification executes and source guardrails are machine-checked through the coordinated release lane.
+- Live credentials, visible-app lifecycle, sleep/wake, signing, and automatic default cutover remain explicit deferred gates.

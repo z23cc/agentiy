@@ -3633,18 +3633,22 @@ if case .proxy = mode {
     }
 }
 
-let resolvedBackend: MCPResolvedBackend? = if case let .proxy(requestedBackend) = mode {
-    MCPBackendSelection.resolve(requested: requestedBackend)
+let backendDecision: MCPBackendDecision? = if case let .proxy(requestedBackend) = mode {
+    MCPBackendSelection.decide(requested: requestedBackend)
 } else {
     nil
 }
 
-if let resolvedBackend {
+let resolvedBackend = backendDecision?.resolved
+
+if let backendDecision {
     log.debug(
         "Selected MCP backend before initialize",
         metadata: [
-            "requested": "\(String(describing: mode))",
-            "selected": "\(resolvedBackend.rawValue)"
+            "requested": .string(backendDecision.requested.rawValue),
+            "selected": .string(backendDecision.resolved.rawValue),
+            "probeCount": .string("\(backendDecision.probeCount)"),
+            "final": .string("\(backendDecision.isFinal)")
         ]
     )
 }

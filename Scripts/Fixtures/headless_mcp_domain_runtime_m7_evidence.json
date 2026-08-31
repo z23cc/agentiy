@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "milestone": "M7",
+  "offline": {
+    "backend_selection_matrix": {
+      "status": "passed",
+      "evidence": "MCPBackendSelectionTests and DirectHeadlessProcessTests"
+    },
+    "canonical_state_root": {
+      "status": "passed",
+      "evidence": "DirectHeadlessProcessTests canonical Workspaces root and no Headless root"
+    },
+    "provider_conformance": {
+      "status": "passed",
+      "evidence": "P7-4 credential-free provider conformance contract"
+    },
+    "ffi_codegen": {
+      "status": "passed",
+      "evidence": "deterministic UniFFI generation check"
+    },
+    "source_guardrails": {
+      "status": "passed",
+      "evidence": "Scripts/guardrails.sh"
+    }
+  },
+  "live": {
+    "live_provider_smoke": {
+      "status": "deferred",
+      "reason": "Requires separately authorized provider credentials and network access."
+    },
+    "live_auto_matrix": {
+      "status": "deferred",
+      "reason": "Requires controlled app-available and no-app visible lifecycle runs."
+    },
+    "sleep_wake_soak": {
+      "status": "deferred",
+      "reason": "Requires a separately authorized sleep/wake operational run."
+    },
+    "signed_release_artifact": {
+      "status": "deferred",
+      "reason": "Requires release signing identity and artifact publication credentials."
+    }
+  },
+  "cutover": {
+    "default_backend": "app",
+    "status": "not_authorized",
+    "reason": "The default remains app until every live deferred check has independently produced evidence."
+  }
+}

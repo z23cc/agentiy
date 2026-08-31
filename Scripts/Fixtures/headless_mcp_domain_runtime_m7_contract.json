@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "milestone": "M7",
+  "phase": "backend_cutover_release_evidence",
+  "backend_policy": {
+    "allowed": ["app", "headless", "auto"],
+    "default": "app",
+    "interactive_exec_allowed": ["app"],
+    "auto": {
+      "probe": "bootstrap_socket_connect_only",
+      "max_probe_count": 1,
+      "probe_timeout_milliseconds": 150,
+      "sends_protocol_bytes": false,
+      "private_endpoint_inspected": false,
+      "selection_before_initialize": true,
+      "post_initialize_switch": "forbidden",
+      "retry_after_selection": "forbidden",
+      "available_result": "app",
+      "unavailable_result": "headless"
+    }
+  },
+  "state_continuity": {
+    "canonical_relative_root": "Workspaces",
+    "forbidden_relative_roots": ["Headless"],
+    "app_and_headless_same_root": true,
+    "selection_without_window_id": true,
+    "backend_specific_durable_schema": false,
+    "overlay_persistence": false
+  },
+  "release_gate": {
+    "offline_required_checks": [
+      "backend_selection_matrix",
+      "canonical_state_root",
+      "provider_conformance",
+      "ffi_codegen",
+      "source_guardrails"
+    ],
+    "live_deferred_checks": [
+      "live_provider_smoke",
+      "live_auto_matrix",
+      "sleep_wake_soak",
+      "signed_release_artifact"
+    ],
+    "default_cutover": "blocked_until_live_evidence",
+    "evidence_manifest": "Scripts/Fixtures/headless_mcp_domain_runtime_m7_evidence.json",
+    "runner": "Scripts/m7_backend_certification.sh"
+  },
+  "compatibility": {
+    "mcp_wire_schema_changed": false,
+    "mcp_catalog_changed": false,
+    "interactive_exec_behavior_changed": false,
+    "private_endpoint_behavior_changed": false,
+    "automatic_default_enabled": false
+  }
+}

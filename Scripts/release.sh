@@ -115,6 +115,10 @@ run_preflight() {
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/sync_mcp_cli_version.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_embedded_mcp_helper_layout.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_required_swiftpm_resource_bundles.sh"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_m7_backend_release.py"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/m7_backend_certification.sh"
+    require_file "$ROOT_DIR/Scripts/Fixtures/headless_mcp_domain_runtime_m7_contract.json"
+    require_file "$ROOT_DIR/Scripts/Fixtures/headless_mcp_domain_runtime_m7_evidence.json"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/patch_keyboard_shortcuts_resource_lookup.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/patches/keyboardshortcuts-2.3.0-resource-lookup.patch"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh"
@@ -149,6 +153,9 @@ run_preflight() {
         "$CONTROL_PLANE_SCRIPTS_DIR/codex_vendor_guardrails.sh"
     REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         "$CONTROL_PLANE_SCRIPTS_DIR/sync_mcp_cli_version.sh" --check
+    REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
+        REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR="$CONTROL_PLANE_SCRIPTS_DIR" \
+        "$CONTROL_PLANE_SCRIPTS_DIR/m7_backend_certification.sh"
 
     printf 'OK: release preflight passed for %s %s (%s) with Sparkle %s.\n' \
         "$DISPLAY_NAME" "$MARKETING_VERSION" "$BUILD_NUMBER" "$sparkle_version"

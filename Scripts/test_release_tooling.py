@@ -4139,6 +4139,15 @@ label_generated_beta_appcast""",
         self.assertIn('"$CONTROL_PLANE_SCRIPTS_DIR/sync_mcp_cli_version.sh" --check', release_script)
         self.assertIn("sync-cli-version) sync_mcp_cli_version", release_script)
 
+    def test_release_preflight_requires_m7_backend_evidence_gate(self) -> None:
+        release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")
+
+        self.assertIn('require_file "$CONTROL_PLANE_SCRIPTS_DIR/validate_m7_backend_release.py"', release_script)
+        self.assertIn('require_file "$CONTROL_PLANE_SCRIPTS_DIR/m7_backend_certification.sh"', release_script)
+        self.assertIn('headless_mcp_domain_runtime_m7_contract.json', release_script)
+        self.assertIn('headless_mcp_domain_runtime_m7_evidence.json', release_script)
+        self.assertIn('"$CONTROL_PLANE_SCRIPTS_DIR/m7_backend_certification.sh"', release_script)
+
     def test_remote_release_commit_helper_rejects_moved_tag(self) -> None:
         remote, work = self.make_git_remote()
         first = self.commit_file(work, "first")

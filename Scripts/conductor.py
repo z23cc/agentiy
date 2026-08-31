@@ -188,6 +188,7 @@ IMPLEMENTED_OPERATIONS = {
     "guardrails",
     "codex-schema-check",
     "provider-conformance",
+    "m7-backend-certification",
     "cargo-build",
     "cargo-test",
     "cargo-codegen",
@@ -250,6 +251,7 @@ Operation commands:
   ./conductor guardrails
   ./conductor codex-schema-check      # validate bounded RPCE assumptions against generated Codex schemas
   ./conductor provider-conformance    # validate the offline P7-4 provider capability contract
+  ./conductor m7-backend-certification # validate M7 backend cutover and release evidence
   ./conductor cargo-build [--profile debug|release]
   ./conductor cargo-test [--package proto|runtime|ffi|all]
   ./conductor cargo-codegen [--check]
@@ -2921,6 +2923,7 @@ def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -
         "rust-search-comparability-audit-v2",
         "rust-search-cargo-floors",
         "rust-search-three-layer-floors",
+        "m7-backend-certification",
     }:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
@@ -3317,6 +3320,9 @@ class OperationRegistry:
             return [sys.executable, script("check_codex_app_server_schema.py")], lanes, cwd, env, effective_timeout
         if operation == "provider-conformance":
             return [sys.executable, script("validate_rust_agent_provider_p7_4.py"), "--check"], lanes, cwd, env, effective_timeout
+        if operation == "m7-backend-certification":
+            env = self._cargo_env(env)
+            return [script("m7_backend_certification.sh")], ["build", "release"], cwd, env, effective_timeout
         if operation in CARGO_OPERATIONS:
             profile = str(args.get("profile") or "debug")
             package = str(args.get("package") or "all")
@@ -3618,6 +3624,8 @@ class OperationRegistry:
             return SHORT_TIMEOUT_SECONDS
         if operation == "app" and args.get("subcommand") in {"status", "stop"}:
             return SHORT_TIMEOUT_SECONDS
+        if operation == "m7-backend-certification":
+            return RELEASE_TIMEOUT_SECONDS
         if operation == "release" and args.get("subcommand") == "artifact":
             return RELEASE_ARTIFACT_TIMEOUT_SECONDS
         if operation in {"package", "release"} and (args.get("config") == "release" or args.get("subcommand") in {"package", "local-install"}):
@@ -8493,6 +8501,7 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "guardrails",
         "codex-schema-check",
         "provider-conformance",
+        "m7-backend-certification",
         "build",
         "install-debug-cli",
         "debug-cli-status",

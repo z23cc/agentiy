@@ -1394,6 +1394,33 @@ if ! grep -q 'package actor DomainChildLaunchAuthority' Sources/RepoPromptDomain
   fail "M6B production child launch must use DomainChildLaunchAuthority without the legacy harness"
 fi
 
+# M7 freezes backend selection as a one-shot, pre-initialize decision. The checked-in
+# contract/evidence validator is the release gate; production must not call the old
+# projection directly or silently authorize an automatic default cutover.
+m7_contract_validator="Scripts/validate_m7_backend_release.py"
+m7_certification_runner="Scripts/m7_backend_certification.sh"
+m7_contract_fixture="Scripts/Fixtures/headless_mcp_domain_runtime_m7_contract.json"
+m7_evidence_fixture="Scripts/Fixtures/headless_mcp_domain_runtime_m7_evidence.json"
+if [[ ! -f "$m7_contract_validator" || ! -f "$m7_certification_runner" || ! -f "$m7_contract_fixture" || ! -f "$m7_evidence_fixture" ]]; then
+  fail "M7 backend release contract, certification runner, validator, or evidence fixture is missing"
+elif ! python3 "$m7_contract_validator" --fixture "$m7_contract_fixture" --evidence "$m7_evidence_fixture" --check >/dev/null; then
+  fail "M7 backend release contract or evidence fixture is invalid"
+fi
+mcp_main_source="Sources/RepoPromptMCP/main.swift"
+if [[ "$(grep -c 'MCPBackendSelection.decide(requested:' "$mcp_main_source" || true)" -ne 1 ]] \
+  || grep -q 'MCPBackendSelection.resolve(requested:' "$mcp_main_source" \
+  || ! grep -q 'let backendDecision: MCPBackendDecision?' "$mcp_main_source"; then
+  fail "MCP production startup must make exactly one immutable backend decision before initialize"
+fi
+mcp_backend_resolve_refs="$(grep -R -n --include='*.swift' 'MCPBackendSelection\.resolve(requested:' Sources/RepoPromptMCP 2>/dev/null || true)"
+if [[ -n "$mcp_backend_resolve_refs" ]]; then
+  fail "MCP production sources must not use the retired backend resolve projection"
+  printf '%s\n' "$mcp_backend_resolve_refs" >&2
+fi
+if ! grep -q 'var backend = MCPBackend.app' Sources/RepoPromptMCP/main.swift; then
+  fail "M7 must keep app as the default backend until live evidence authorizes cutover"
+fi
+
 if [[ "$failures" -ne 0 ]]; then
   printf 'Source layout guardrails failed (%s issue%s).\n' "$failures" "$([[ "$failures" == 1 ]] && printf '' || printf 's')" >&2
   exit 1

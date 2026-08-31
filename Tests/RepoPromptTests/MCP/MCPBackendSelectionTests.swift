@@ -4,6 +4,39 @@ import Foundation
 import XCTest
 
 final class MCPBackendSelectionTests: XCTestCase {
+    func testDecisionRecordsFinalBackendAndProbeBudget() {
+        let explicit = MCPBackendSelection.decide(requested: .headless) {
+            XCTFail("explicit backends must not probe")
+            return true
+        }
+        XCTAssertEqual(
+            explicit,
+            MCPBackendDecision(requested: .headless, resolved: .headless, probeCount: 0)
+        )
+        XCTAssertTrue(explicit.isFinal)
+
+        var probeCount = 0
+        let automatic = MCPBackendSelection.decide(requested: .auto) {
+            probeCount += 1
+            return false
+        }
+        XCTAssertEqual(automatic.resolved, .headless)
+        XCTAssertEqual(automatic.probeCount, 1)
+        XCTAssertEqual(probeCount, 1)
+        XCTAssertTrue(automatic.isFinal)
+    }
+
+    func testResolveCompatibilityProjectionMatchesFinalDecision() {
+        XCTAssertEqual(
+            MCPBackendSelection.resolve(requested: .app),
+            MCPBackendSelection.decide(requested: .app).resolved
+        )
+        XCTAssertEqual(
+            MCPBackendSelection.resolve(requested: .auto, appIsAvailable: { true }),
+            MCPBackendSelection.decide(requested: .auto, appIsAvailable: { true }).resolved
+        )
+    }
+
     func testExplicitBackendsNeverProbeAppSocket() {
         var probeCount = 0
         let probe: () -> Bool = {
