@@ -152,6 +152,8 @@ run:
 	./Scripts/run.sh
 
 test:
+	swift build --build-tests
+	./Scripts/stage_test_frameworks.sh
 	swift test
 
 guardrails:
@@ -298,6 +300,7 @@ dev-m8-live-certification:
 	./conductor m8-live-certification $(M8_ARGS)
 
 dev-test:
+	@./Scripts/stage_test_frameworks.sh
 	./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(CONFIGURATION), --configuration $(CONFIGURATION))$(if $(SANITIZE), --sanitize $(SANITIZE))
 
 dev-provider-test:
