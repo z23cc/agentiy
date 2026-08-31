@@ -18,6 +18,12 @@ build/
 !Vendor/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Updater.app/
 !Vendor/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Updater.app/**
 *.dSYM/
+# Sparkle's vendored xcframework Info.plist declares DebugSymbolsPath=dSYMs.
+# SwiftPM refuses to plan a build when that directory is absent, so the tracked
+# xcframework must ship its debug symbols instead of having them swallowed by
+# the *.dSYM/ rule above.
+!Vendor/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/dSYMs/*.dSYM/
+!Vendor/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/dSYMs/**
 *.dSYM.zip
 *.ipa
 *.xcarchive
