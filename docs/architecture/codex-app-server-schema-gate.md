@@ -21,9 +21,9 @@ consumes at its current integration boundary.
 
 ## Version contract
 
-- The contract floor is **Codex CLI 0.147.0**.
-- Local validation accepts 0.147.0 or newer so a developer can detect drift before CI moves.
-- CI installs exactly `@openai/codex@0.147.0`, making the required check deterministic.
+- The contract floor is **Codex CLI 0.151.0**.
+- Local validation accepts 0.151.0 or newer so a developer can detect drift before CI moves.
+- CI installs exactly `@openai/codex@0.151.0`, making the required check deterministic.
 - The gate fails before generation when the installed CLI is older than the floor.
 
 When advancing Codex, install the intended version, run the gate, reconcile Agentry with the generated
@@ -60,7 +60,7 @@ hook-key → `{trusted_hash}` object shape cannot be expressed by the current ch
 After a trust write, the post-write `hooks/list` result is the semantic success authority;
 `config/batchWrite.status` alone is not.
 
-The hardened 0.147.0 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
+The hardened 0.151.0 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
 the union, method, and exact missing field, required field, response path, or enum value.
 
 This is intentionally not a complete protocol mirror. New upstream methods do not fail the gate
@@ -81,7 +81,7 @@ differences:
    eligibility, but resume config does not reconcile an existing stored thread's persisted mode. Agentry
    therefore calls experimental `thread/memoryMode/set` with `enabled` or `disabled` before
    `thread/resume` so resumed startup observes the requested mode. It does not issue a redundant
-   post-start request. The 0.147.0 runtime floor and `experimentalApi` initialization capability make
+   post-start request. The 0.151.0 runtime floor and `experimentalApi` initialization capability make
    resume reconciliation a required contract rather than an optional compatibility fallback.
 6. The generated `goal.status` enum includes `blocked` and `usageLimited`, while Agentry previously
    rejected both as invalid responses. The same six-value enum is also declared for
@@ -98,6 +98,39 @@ None removes or changes a field Agentry sends or consumes. The exact tagged sour
 confirmed that existing thread memory eligibility must be reconciled through experimental
 `thread/memoryMode/set`; resume config keys alone are insufficient for stored threads, while fresh
 thread eligibility is initialized by `thread/start` config.
+
+## 0.151.0 rotation findings (2026-09-01)
+
+The repository candidate flow (`Scripts/codex_update_candidate.py --latest-stable`) verified
+official `rust-v0.151.0` artifacts against the known-good 0.147.0 baseline: package path/kind/
+executable layout, Mach-O inventory, thin per-target architecture policy, pinned OpenAI signing
+identities, hardened runtime, and trusted timestamps all matched. Only five payloads changed per
+target (`bin/codex`, `bin/codex-code-mode-host`, `codex-package.json`, `codex-path/rg`,
+`codex-resources/zsh/bin/zsh`). Archive SHA-256:
+`cb6e78eba80c1bc310a533f6f1c6c948377733bc06f9e837949334e04abde9c6` (aarch64) and
+`e8348e1192f155edb21bdbaaf3231c2321087910bb1472b1306f94fb1108ad70` (x86_64).
+
+The bounded projection is unchanged in size at 45 methods, 193 parameter paths, and 93 response
+paths. Three declared assumptions drifted and were reconciled in
+`Scripts/Fixtures/codex-app-server-contract.json`; none required a version-specific compatibility
+layer:
+
+- `thread/read` `thread.turns[].items[].status` gained `interrupted`. Agentry already mapped that
+  value at every consuming switch (`CodexNativeSessionController.swift:2749` to `.terminal`,
+  `:2901` to `.interrupted`, `:5704` to `.interrupted`), each with a `default` fallback, so only
+  the `consumedEnumValues` declaration had fallen behind the implementation.
+- `hooks/list` `data[].hooks[].command` tightened from optional/nullable to conditional/non-null.
+  Agentry decodes it as `String?` and guards with `if let`
+  (`CodexHookTrustModels.swift:65,285`), so the stricter schema is safe and only the declaration
+  moved.
+
+`CodexRuntimeAuthority.minimumExternalVersion` continues to track `bundledVersion`, so external
+overrides older than 0.151.0 are now refused. This floor decision was taken deliberately for a
+single-operator deployment with no other external-override consumers.
+
+Not performed: universal release-candidate packaging (this fork is arm64-only since M0 and the
+local release preflight has no provisioned Sparkle release configuration) and the Tip/stable soak
+process.
 
 ## 0.147.0 rotation findings (2026-08-08)
 

@@ -1444,7 +1444,7 @@ final class CodexNativeSessionControllerHookApprovalTests: XCTestCase {
         import sys
 
         if sys.argv[1:] == ["--version"]:
-            print("codex 0.147.0")
+            print("codex 0.151.0")
             raise SystemExit(0)
 
         process_count_path = \(String(reflecting: processCountURL.path))
