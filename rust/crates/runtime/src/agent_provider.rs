@@ -56,6 +56,209 @@ impl ProviderProtocol {
     }
 }
 
+/// Version of the offline provider conformance report. This is deliberately separate from the
+/// transport/event payload schemas: changing it is an additive diagnostic contract decision.
+pub const AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION: u16 = 1;
+
+/// Stable, provider-neutral capability profile used by P7-4 certification. The profile describes
+/// existing production ownership boundaries; creating or validating one never starts a process,
+/// allocates a request, publishes an event, or consults credentials/network state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentProviderConformanceSnapshot {
+    pub schema_version: u16,
+    pub protocol: ProviderProtocol,
+    pub owns_process_lifetime: bool,
+    pub owns_line_framing: bool,
+    pub serializes_stdin_writes: bool,
+    pub emits_ordered_events: bool,
+    pub bounds_stderr: bool,
+    pub emits_process_exit_terminal_event: bool,
+    pub supports_semantic_requests: bool,
+    pub supports_typed_notifications: bool,
+    pub supports_typed_server_requests: bool,
+    pub supports_typed_state: bool,
+    pub supports_token_cancellation: bool,
+    pub supports_typed_control_receipts: bool,
+    pub preserves_json_rpc_id_type: bool,
+    pub supports_generic_send_line: bool,
+    pub supports_start_with_stdin: bool,
+    pub translates_stream_results: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentProviderConformanceViolation {
+    SchemaVersionMismatch,
+    ProtocolProfileMismatch,
+    ProcessLifetimeMismatch,
+    FramingMismatch,
+    SerializedWritesMismatch,
+    OrderedEventsMismatch,
+    StderrBoundMismatch,
+    ProcessExitEventMismatch,
+    SemanticRequestsMismatch,
+    TypedNotificationsMismatch,
+    TypedServerRequestsMismatch,
+    TypedStateMismatch,
+    TokenCancellationMismatch,
+    TypedControlReceiptsMismatch,
+    JsonRpcIdTypePreservationMismatch,
+    GenericSendLineMismatch,
+    StartWithStdinMismatch,
+    StreamResultTranslationMismatch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentProviderConformanceValidation {
+    pub schema_version: u16,
+    pub protocol: ProviderProtocol,
+    pub valid: bool,
+    pub violations: Vec<AgentProviderConformanceViolation>,
+}
+
+/// Return the canonical P7-4 ownership profile for one provider protocol.
+pub fn agent_provider_conformance_snapshot(
+    protocol: ProviderProtocol,
+) -> AgentProviderConformanceSnapshot {
+    let common = (
+        true,  // owns_process_lifetime
+        true,  // owns_line_framing
+        true,  // serializes_stdin_writes
+        true,  // emits_ordered_events
+        true,  // bounds_stderr
+        true,  // emits_process_exit_terminal_event
+    );
+    match protocol {
+        ProviderProtocol::CodexAppServer => AgentProviderConformanceSnapshot {
+            schema_version: AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION,
+            protocol,
+            owns_process_lifetime: common.0,
+            owns_line_framing: common.1,
+            serializes_stdin_writes: common.2,
+            emits_ordered_events: common.3,
+            bounds_stderr: common.4,
+            emits_process_exit_terminal_event: common.5,
+            supports_semantic_requests: true,
+            supports_typed_notifications: true,
+            supports_typed_server_requests: true,
+            supports_typed_state: true,
+            supports_token_cancellation: true,
+            supports_typed_control_receipts: false,
+            preserves_json_rpc_id_type: true,
+            supports_generic_send_line: false,
+            supports_start_with_stdin: false,
+            translates_stream_results: false,
+        },
+        ProviderProtocol::Acp => AgentProviderConformanceSnapshot {
+            schema_version: AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION,
+            protocol,
+            owns_process_lifetime: common.0,
+            owns_line_framing: common.1,
+            serializes_stdin_writes: common.2,
+            emits_ordered_events: common.3,
+            bounds_stderr: common.4,
+            emits_process_exit_terminal_event: common.5,
+            supports_semantic_requests: true,
+            supports_typed_notifications: true,
+            supports_typed_server_requests: true,
+            supports_typed_state: true,
+            supports_token_cancellation: true,
+            supports_typed_control_receipts: true,
+            preserves_json_rpc_id_type: true,
+            supports_generic_send_line: false,
+            supports_start_with_stdin: false,
+            translates_stream_results: false,
+        },
+        ProviderProtocol::ClaudeHeadless => AgentProviderConformanceSnapshot {
+            schema_version: AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION,
+            protocol,
+            owns_process_lifetime: common.0,
+            owns_line_framing: common.1,
+            serializes_stdin_writes: common.2,
+            emits_ordered_events: common.3,
+            bounds_stderr: common.4,
+            emits_process_exit_terminal_event: common.5,
+            supports_semantic_requests: false,
+            supports_typed_notifications: false,
+            supports_typed_server_requests: false,
+            supports_typed_state: false,
+            supports_token_cancellation: false,
+            supports_typed_control_receipts: false,
+            preserves_json_rpc_id_type: false,
+            supports_generic_send_line: true,
+            supports_start_with_stdin: true,
+            translates_stream_results: true,
+        },
+    }
+}
+
+/// Validate a report against the canonical profile in deterministic field order.
+pub fn validate_agent_provider_conformance(
+    snapshot: &AgentProviderConformanceSnapshot,
+) -> AgentProviderConformanceValidation {
+    let expected = agent_provider_conformance_snapshot(snapshot.protocol);
+    let mut violations = Vec::new();
+    if snapshot.schema_version != AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION {
+        violations.push(AgentProviderConformanceViolation::SchemaVersionMismatch);
+    }
+    if snapshot.protocol != expected.protocol {
+        violations.push(AgentProviderConformanceViolation::ProtocolProfileMismatch);
+    }
+    if snapshot.owns_process_lifetime != expected.owns_process_lifetime {
+        violations.push(AgentProviderConformanceViolation::ProcessLifetimeMismatch);
+    }
+    if snapshot.owns_line_framing != expected.owns_line_framing {
+        violations.push(AgentProviderConformanceViolation::FramingMismatch);
+    }
+    if snapshot.serializes_stdin_writes != expected.serializes_stdin_writes {
+        violations.push(AgentProviderConformanceViolation::SerializedWritesMismatch);
+    }
+    if snapshot.emits_ordered_events != expected.emits_ordered_events {
+        violations.push(AgentProviderConformanceViolation::OrderedEventsMismatch);
+    }
+    if snapshot.bounds_stderr != expected.bounds_stderr {
+        violations.push(AgentProviderConformanceViolation::StderrBoundMismatch);
+    }
+    if snapshot.emits_process_exit_terminal_event != expected.emits_process_exit_terminal_event {
+        violations.push(AgentProviderConformanceViolation::ProcessExitEventMismatch);
+    }
+    if snapshot.supports_semantic_requests != expected.supports_semantic_requests {
+        violations.push(AgentProviderConformanceViolation::SemanticRequestsMismatch);
+    }
+    if snapshot.supports_typed_notifications != expected.supports_typed_notifications {
+        violations.push(AgentProviderConformanceViolation::TypedNotificationsMismatch);
+    }
+    if snapshot.supports_typed_server_requests != expected.supports_typed_server_requests {
+        violations.push(AgentProviderConformanceViolation::TypedServerRequestsMismatch);
+    }
+    if snapshot.supports_typed_state != expected.supports_typed_state {
+        violations.push(AgentProviderConformanceViolation::TypedStateMismatch);
+    }
+    if snapshot.supports_token_cancellation != expected.supports_token_cancellation {
+        violations.push(AgentProviderConformanceViolation::TokenCancellationMismatch);
+    }
+    if snapshot.supports_typed_control_receipts != expected.supports_typed_control_receipts {
+        violations.push(AgentProviderConformanceViolation::TypedControlReceiptsMismatch);
+    }
+    if snapshot.preserves_json_rpc_id_type != expected.preserves_json_rpc_id_type {
+        violations.push(AgentProviderConformanceViolation::JsonRpcIdTypePreservationMismatch);
+    }
+    if snapshot.supports_generic_send_line != expected.supports_generic_send_line {
+        violations.push(AgentProviderConformanceViolation::GenericSendLineMismatch);
+    }
+    if snapshot.supports_start_with_stdin != expected.supports_start_with_stdin {
+        violations.push(AgentProviderConformanceViolation::StartWithStdinMismatch);
+    }
+    if snapshot.translates_stream_results != expected.translates_stream_results {
+        violations.push(AgentProviderConformanceViolation::StreamResultTranslationMismatch);
+    }
+    AgentProviderConformanceValidation {
+        schema_version: snapshot.schema_version,
+        protocol: snapshot.protocol,
+        valid: violations.is_empty(),
+        violations,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentProviderScopeConfig {
     pub command: String,
@@ -501,6 +704,25 @@ impl AgentProviderScope {
         self.acp
             .as_ref()
             .ok_or(AgentProviderScopeError::AcpProtocolMismatch)
+    }
+
+    /// Return the immutable protocol capability profile for this scope. The scope identity is
+    /// checked, but process state is intentionally not read or mutated so certification can run
+    /// before startup and remain side-effect free.
+    pub fn conformance_snapshot(
+        &self,
+        identity: &RuntimeIdentity,
+    ) -> Result<AgentProviderConformanceSnapshot, AgentProviderScopeError> {
+        self.validate(identity)?;
+        Ok(agent_provider_conformance_snapshot(self.config.protocol))
+    }
+
+    pub fn validate_conformance(
+        &self,
+        identity: &RuntimeIdentity,
+    ) -> Result<AgentProviderConformanceValidation, AgentProviderScopeError> {
+        let snapshot = self.conformance_snapshot(identity)?;
+        Ok(validate_agent_provider_conformance(&snapshot))
     }
 
     pub fn acp_state(
@@ -1967,6 +2189,158 @@ mod tests {
         assert_eq!(ProviderProtocol::CodexAppServer.as_str(), "codexAppServer");
         assert_eq!(ProviderProtocol::Acp.as_str(), "acp");
         assert_eq!(ProviderProtocol::ClaudeHeadless.as_str(), "claudeHeadless");
+    }
+
+    #[test]
+    fn conformance_profiles_match_exact_provider_matrix() {
+        let codex = agent_provider_conformance_snapshot(ProviderProtocol::CodexAppServer);
+        assert_eq!(codex.schema_version, AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION);
+        assert!(codex.owns_process_lifetime);
+        assert!(codex.owns_line_framing);
+        assert!(codex.serializes_stdin_writes);
+        assert!(codex.emits_ordered_events);
+        assert!(codex.bounds_stderr);
+        assert!(codex.emits_process_exit_terminal_event);
+        assert!(codex.supports_semantic_requests);
+        assert!(codex.supports_typed_notifications);
+        assert!(codex.supports_typed_server_requests);
+        assert!(codex.supports_typed_state);
+        assert!(codex.supports_token_cancellation);
+        assert!(!codex.supports_typed_control_receipts);
+        assert!(codex.preserves_json_rpc_id_type);
+        assert!(!codex.supports_generic_send_line);
+        assert!(!codex.supports_start_with_stdin);
+        assert!(!codex.translates_stream_results);
+
+        let acp = agent_provider_conformance_snapshot(ProviderProtocol::Acp);
+        assert_eq!(acp.protocol, ProviderProtocol::Acp);
+        assert!(acp.supports_semantic_requests);
+        assert!(acp.supports_typed_notifications);
+        assert!(acp.supports_typed_server_requests);
+        assert!(acp.supports_typed_state);
+        assert!(acp.supports_token_cancellation);
+        assert!(acp.supports_typed_control_receipts);
+        assert!(acp.preserves_json_rpc_id_type);
+        assert!(!acp.supports_generic_send_line);
+        assert!(!acp.supports_start_with_stdin);
+        assert!(!acp.translates_stream_results);
+
+        let claude = agent_provider_conformance_snapshot(ProviderProtocol::ClaudeHeadless);
+        assert_eq!(claude.protocol, ProviderProtocol::ClaudeHeadless);
+        assert!(claude.owns_process_lifetime);
+        assert!(claude.owns_line_framing);
+        assert!(claude.serializes_stdin_writes);
+        assert!(claude.emits_ordered_events);
+        assert!(claude.bounds_stderr);
+        assert!(claude.emits_process_exit_terminal_event);
+        assert!(!claude.supports_semantic_requests);
+        assert!(!claude.supports_typed_notifications);
+        assert!(!claude.supports_typed_server_requests);
+        assert!(!claude.supports_typed_state);
+        assert!(!claude.supports_token_cancellation);
+        assert!(!claude.supports_typed_control_receipts);
+        assert!(!claude.preserves_json_rpc_id_type);
+        assert!(claude.supports_generic_send_line);
+        assert!(claude.supports_start_with_stdin);
+        assert!(claude.translates_stream_results);
+    }
+
+    #[test]
+    fn conformance_validator_accepts_profiles_and_reports_deterministic_mutations() {
+        let protocols = [
+            ProviderProtocol::CodexAppServer,
+            ProviderProtocol::Acp,
+            ProviderProtocol::ClaudeHeadless,
+        ];
+        for protocol in protocols {
+            let snapshot = agent_provider_conformance_snapshot(protocol);
+            let validation = validate_agent_provider_conformance(&snapshot);
+            assert!(validation.valid);
+            assert!(validation.violations.is_empty());
+            assert_eq!(validation.schema_version, AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION);
+            assert_eq!(validation.protocol, protocol);
+        }
+
+        let mut snapshot = agent_provider_conformance_snapshot(ProviderProtocol::Acp);
+        snapshot.schema_version = 99;
+        snapshot.owns_process_lifetime = false;
+        snapshot.owns_line_framing = false;
+        snapshot.serializes_stdin_writes = false;
+        snapshot.emits_ordered_events = false;
+        snapshot.bounds_stderr = false;
+        snapshot.emits_process_exit_terminal_event = false;
+        snapshot.supports_semantic_requests = false;
+        snapshot.supports_typed_notifications = false;
+        snapshot.supports_typed_server_requests = false;
+        snapshot.supports_typed_state = false;
+        snapshot.supports_token_cancellation = false;
+        snapshot.supports_typed_control_receipts = false;
+        snapshot.preserves_json_rpc_id_type = false;
+        snapshot.supports_generic_send_line = true;
+        snapshot.supports_start_with_stdin = true;
+        snapshot.translates_stream_results = true;
+        let validation = validate_agent_provider_conformance(&snapshot);
+        assert!(!validation.valid);
+        assert_eq!(
+            validation.violations,
+            vec![
+                AgentProviderConformanceViolation::SchemaVersionMismatch,
+                AgentProviderConformanceViolation::ProcessLifetimeMismatch,
+                AgentProviderConformanceViolation::FramingMismatch,
+                AgentProviderConformanceViolation::SerializedWritesMismatch,
+                AgentProviderConformanceViolation::OrderedEventsMismatch,
+                AgentProviderConformanceViolation::StderrBoundMismatch,
+                AgentProviderConformanceViolation::ProcessExitEventMismatch,
+                AgentProviderConformanceViolation::SemanticRequestsMismatch,
+                AgentProviderConformanceViolation::TypedNotificationsMismatch,
+                AgentProviderConformanceViolation::TypedServerRequestsMismatch,
+                AgentProviderConformanceViolation::TypedStateMismatch,
+                AgentProviderConformanceViolation::TokenCancellationMismatch,
+                AgentProviderConformanceViolation::TypedControlReceiptsMismatch,
+                AgentProviderConformanceViolation::JsonRpcIdTypePreservationMismatch,
+                AgentProviderConformanceViolation::GenericSendLineMismatch,
+                AgentProviderConformanceViolation::StartWithStdinMismatch,
+                AgentProviderConformanceViolation::StreamResultTranslationMismatch,
+            ]
+        );
+    }
+
+    #[test]
+    fn conformance_queries_are_identity_bound_and_side_effect_free() {
+        let runtime_identity = identity();
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            runtime_identity.clone(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec!["-c".into(), "sleep 1".into()],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::CodexAppServer,
+                max_stderr_bytes: 1024,
+            },
+        );
+        let before = scope
+            .conformance_snapshot(&runtime_identity)
+            .expect("snapshot before start");
+        assert_eq!(before, agent_provider_conformance_snapshot(ProviderProtocol::CodexAppServer));
+        assert_eq!(
+            scope.validate_conformance(&runtime_identity).expect("validation").valid,
+            true
+        );
+        assert_eq!(
+            scope.conformance_snapshot(&RuntimeIdentity::new(
+                1,
+                "0123456789abcdef0123456789abcdef",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde0",
+                "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+            ).unwrap()),
+            Err(AgentProviderScopeError::IdentityMismatch)
+        );
+        scope.start(&runtime_identity).expect("start");
+        let after = scope.conformance_snapshot(&runtime_identity).expect("snapshot after start");
+        assert_eq!(after, before);
+        scope.shutdown(&runtime_identity).expect("shutdown");
     }
 
     #[test]

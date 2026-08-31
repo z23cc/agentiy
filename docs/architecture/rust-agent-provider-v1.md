@@ -1,18 +1,21 @@
 # Rust Agent Provider Runtime Authority v1
 
-Status: P7-3 whole-stage implementation baseline (Codex/ACP semantic and ACP lifecycle authority; Claude headless remains on the P6 translator contract)
+Status: P7-4 implementation baseline (Codex/ACP semantic and lifecycle authority; Claude headless remains on the P6 translator contract; all three profiles have an offline conformance validator)
 
 ## 1. Scope
 
 P6 moved provider process and byte transport ownership behind one Rust runtime
-boundary. P7-1 completed the Codex app-server semantic handoff; P7-2 completes
-the equivalent ACP handoff without changing either wire protocol. Rust owns
-JSON-RPC request IDs, pending response settlement, bounded deadlines,
-response/error decoding, notification and server-request classification, and the
-ACP lifecycle/control receipts needed by controllers. ACP session and prompt
-identity are generation-fenced by Rust; Swift cannot acknowledge an outbound
-control write until the Rust serialized writer returns its receipt. Claude headless remains translator-
-owned because its stream-json output is not JSON-RPC.
+boundary. P7-1 completed the Codex app-server semantic handoff; P7-2 and P7-3
+complete the equivalent ACP semantic and lifecycle handoff without changing
+any wire protocol. Rust owns JSON-RPC request IDs, pending response settlement,
+bounded deadlines, response/error decoding, notification and server-request
+classification, and ACP lifecycle/control receipts needed by controllers. ACP
+session and prompt identity are generation-fenced by Rust; Swift cannot
+acknowledge an outbound control write until the Rust serialized writer returns
+its receipt. Claude headless remains translator-owned because its stream-json
+output is not JSON-RPC. P7-4 adds an immutable, offline conformance snapshot and
+validator for all three profiles; this diagnostic surface does not participate in
+production request routing or terminal settlement.
 
 The production path is:
 
@@ -114,7 +117,28 @@ Swift translates only Rust `notification`, `serverRequest`, `protocolError`,
 `stderr`, and terminal observations into existing controller events. No Codex or
 ACP semantic result is synthesized by the generic transport facade.
 
-## 6. Done-when for P7
+## 6. P7-4 conformance and release gate
+
+P7-4 exposes `agent_provider_conformance_snapshot` and
+`agent_provider_validate_conformance` as read-only FFI diagnostics. The snapshot
+contains the schema version, protocol profile, process/framing/stderr/event
+ownership facts, semantic request capabilities, JSON-RPC ID preservation, and
+the explicitly supported generic/start-with-stdin/stream-result operations. Rust
+constructs the canonical profile and validates it in deterministic field order;
+Swift and Bridge only project the typed report for tests and certification
+artifacts. These calls are identity-bound but do not start a child, allocate an
+ID, mutate lifecycle state, or publish an event.
+
+The committed fixture
+`Scripts/Fixtures/rust_agent_provider_p7_4_conformance.json` is checked by
+`Scripts/validate_rust_agent_provider_p7_4.py`. It requires a credential-free,
+network-free synthetic matrix for Codex app-server, ACP, and Claude headless.
+Live provider credentials, external network access, and visible-app lifecycle
+soaks remain explicitly deferred and cannot be represented as synthetic success.
+The additive records retain ABI epoch 1; any schema or capability change must
+update the contract and validator together.
+
+## 7. Done-when for P7
 
 - Codex and ACP production sessions use Rust semantic request/response authority.
 - No Rust-backed Codex or ACP call uses opaque `providerMessage`, generic

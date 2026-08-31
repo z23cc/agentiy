@@ -187,6 +187,7 @@ IMPLEMENTED_OPERATIONS = {
     "doctor",
     "guardrails",
     "codex-schema-check",
+    "provider-conformance",
     "cargo-build",
     "cargo-test",
     "cargo-codegen",
@@ -248,6 +249,7 @@ Operation commands:
   ./conductor doctor
   ./conductor guardrails
   ./conductor codex-schema-check      # validate bounded RPCE assumptions against generated Codex schemas
+  ./conductor provider-conformance    # validate the offline P7-4 provider capability contract
   ./conductor cargo-build [--profile debug|release]
   ./conductor cargo-test [--package proto|runtime|ffi|all]
   ./conductor cargo-codegen [--check]
@@ -3313,6 +3315,8 @@ class OperationRegistry:
             return [script("guardrails.sh")], lanes, cwd, env, effective_timeout
         if operation == "codex-schema-check":
             return [sys.executable, script("check_codex_app_server_schema.py")], lanes, cwd, env, effective_timeout
+        if operation == "provider-conformance":
+            return [sys.executable, script("validate_rust_agent_provider_p7_4.py"), "--check"], lanes, cwd, env, effective_timeout
         if operation in CARGO_OPERATIONS:
             profile = str(args.get("profile") or "debug")
             package = str(args.get("package") or "all")
@@ -8488,6 +8492,7 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "doctor",
         "guardrails",
         "codex-schema-check",
+        "provider-conformance",
         "build",
         "install-debug-cli",
         "debug-cli-status",

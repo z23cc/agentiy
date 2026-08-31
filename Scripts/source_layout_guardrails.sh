@@ -1113,6 +1113,7 @@ allowed_tracked_docs=(
     "docs/spec/rust-agent-provider-p7-1-codex-semantic-authority.md"
     "docs/spec/rust-agent-provider-p7-2-acp-semantic-authority.md"
     "docs/spec/rust-agent-provider-p7-3-acp-lifecycle-authority.md"
+    "docs/spec/rust-agent-provider-p7-4-production-certification.md"
   "docs/spec/headless-mcp-domain-runtime-p12-agent-session-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p13-agent-session-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p14-agent-run-lifecycle-authority.md"

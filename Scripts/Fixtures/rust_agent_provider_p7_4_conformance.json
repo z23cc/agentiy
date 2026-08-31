@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "milestone": "P7-4",
+  "protocols": {
+    "codexAppServer": {
+      "owns_process_lifetime": true,
+      "owns_line_framing": true,
+      "serializes_stdin_writes": true,
+      "emits_ordered_events": true,
+      "bounds_stderr": true,
+      "emits_process_exit_terminal_event": true,
+      "supports_semantic_requests": true,
+      "supports_typed_notifications": true,
+      "supports_typed_server_requests": true,
+      "supports_typed_state": true,
+      "supports_token_cancellation": true,
+      "supports_typed_control_receipts": false,
+      "preserves_json_rpc_id_type": true,
+      "supports_generic_send_line": false,
+      "supports_start_with_stdin": false,
+      "translates_stream_results": false
+    },
+    "acp": {
+      "owns_process_lifetime": true,
+      "owns_line_framing": true,
+      "serializes_stdin_writes": true,
+      "emits_ordered_events": true,
+      "bounds_stderr": true,
+      "emits_process_exit_terminal_event": true,
+      "supports_semantic_requests": true,
+      "supports_typed_notifications": true,
+      "supports_typed_server_requests": true,
+      "supports_typed_state": true,
+      "supports_token_cancellation": true,
+      "supports_typed_control_receipts": true,
+      "preserves_json_rpc_id_type": true,
+      "supports_generic_send_line": false,
+      "supports_start_with_stdin": false,
+      "translates_stream_results": false
+    },
+    "claudeHeadless": {
+      "owns_process_lifetime": true,
+      "owns_line_framing": true,
+      "serializes_stdin_writes": true,
+      "emits_ordered_events": true,
+      "bounds_stderr": true,
+      "emits_process_exit_terminal_event": true,
+      "supports_semantic_requests": false,
+      "supports_typed_notifications": false,
+      "supports_typed_server_requests": false,
+      "supports_typed_state": false,
+      "supports_token_cancellation": false,
+      "supports_typed_control_receipts": false,
+      "preserves_json_rpc_id_type": false,
+      "supports_generic_send_line": true,
+      "supports_start_with_stdin": true,
+      "translates_stream_results": true
+    }
+  },
+  "synthetic_certification": {
+    "required": true,
+    "credential_free": true,
+    "network_required": false,
+    "processes": ["synthetic_shell_child"],
+    "swift_test_filter": "CoreAgentProviderConformanceTests",
+    "rust_test_filter": "conformance"
+  },
+  "live_soak": {
+    "deferred": true,
+    "credential_dependent": true,
+    "visible_app_required": true,
+    "reason": "Live provider credentials, network access, and visible-app lifecycle require a separately authorized operational run."
+  },
+  "abi_epoch_decision": {
+    "epoch": 1,
+    "reason": "Conformance exports are additive diagnostic records and do not alter existing wire payloads."
+  }
+}

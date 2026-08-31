@@ -4093,6 +4093,142 @@ pub struct CoreAgentProviderAcpSessionStateV1 {
     pub pending_request_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum AgentProviderConformanceViolationV1 {
+    SchemaVersionMismatch,
+    ProtocolProfileMismatch,
+    ProcessLifetimeMismatch,
+    FramingMismatch,
+    SerializedWritesMismatch,
+    OrderedEventsMismatch,
+    StderrBoundMismatch,
+    ProcessExitEventMismatch,
+    SemanticRequestsMismatch,
+    TypedNotificationsMismatch,
+    TypedServerRequestsMismatch,
+    TypedStateMismatch,
+    TokenCancellationMismatch,
+    TypedControlReceiptsMismatch,
+    JsonRpcIdTypePreservationMismatch,
+    GenericSendLineMismatch,
+    StartWithStdinMismatch,
+    StreamResultTranslationMismatch,
+}
+
+impl From<runtime::agent_provider::AgentProviderConformanceViolation>
+    for AgentProviderConformanceViolationV1
+{
+    fn from(value: runtime::agent_provider::AgentProviderConformanceViolation) -> Self {
+        use runtime::agent_provider::AgentProviderConformanceViolation as Violation;
+        match value {
+            Violation::SchemaVersionMismatch => Self::SchemaVersionMismatch,
+            Violation::ProtocolProfileMismatch => Self::ProtocolProfileMismatch,
+            Violation::ProcessLifetimeMismatch => Self::ProcessLifetimeMismatch,
+            Violation::FramingMismatch => Self::FramingMismatch,
+            Violation::SerializedWritesMismatch => Self::SerializedWritesMismatch,
+            Violation::OrderedEventsMismatch => Self::OrderedEventsMismatch,
+            Violation::StderrBoundMismatch => Self::StderrBoundMismatch,
+            Violation::ProcessExitEventMismatch => Self::ProcessExitEventMismatch,
+            Violation::SemanticRequestsMismatch => Self::SemanticRequestsMismatch,
+            Violation::TypedNotificationsMismatch => Self::TypedNotificationsMismatch,
+            Violation::TypedServerRequestsMismatch => Self::TypedServerRequestsMismatch,
+            Violation::TypedStateMismatch => Self::TypedStateMismatch,
+            Violation::TokenCancellationMismatch => Self::TokenCancellationMismatch,
+            Violation::TypedControlReceiptsMismatch => Self::TypedControlReceiptsMismatch,
+            Violation::JsonRpcIdTypePreservationMismatch => Self::JsonRpcIdTypePreservationMismatch,
+            Violation::GenericSendLineMismatch => Self::GenericSendLineMismatch,
+            Violation::StartWithStdinMismatch => Self::StartWithStdinMismatch,
+            Violation::StreamResultTranslationMismatch => Self::StreamResultTranslationMismatch,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentProviderConformanceSnapshotV1 {
+    pub schema_version: u16,
+    pub protocol: AgentProviderProtocolV1,
+    pub owns_process_lifetime: bool,
+    pub owns_line_framing: bool,
+    pub serializes_stdin_writes: bool,
+    pub emits_ordered_events: bool,
+    pub bounds_stderr: bool,
+    pub emits_process_exit_terminal_event: bool,
+    pub supports_semantic_requests: bool,
+    pub supports_typed_notifications: bool,
+    pub supports_typed_server_requests: bool,
+    pub supports_typed_state: bool,
+    pub supports_token_cancellation: bool,
+    pub supports_typed_control_receipts: bool,
+    pub preserves_json_rpc_id_type: bool,
+    pub supports_generic_send_line: bool,
+    pub supports_start_with_stdin: bool,
+    pub translates_stream_results: bool,
+}
+
+impl From<runtime::agent_provider::AgentProviderConformanceSnapshot>
+    for CoreAgentProviderConformanceSnapshotV1
+{
+    fn from(value: runtime::agent_provider::AgentProviderConformanceSnapshot) -> Self {
+        Self {
+            schema_version: value.schema_version,
+            protocol: match value.protocol {
+                runtime::agent_provider::ProviderProtocol::CodexAppServer => {
+                    AgentProviderProtocolV1::CodexAppServer
+                }
+                runtime::agent_provider::ProviderProtocol::Acp => AgentProviderProtocolV1::Acp,
+                runtime::agent_provider::ProviderProtocol::ClaudeHeadless => {
+                    AgentProviderProtocolV1::ClaudeHeadless
+                }
+            },
+            owns_process_lifetime: value.owns_process_lifetime,
+            owns_line_framing: value.owns_line_framing,
+            serializes_stdin_writes: value.serializes_stdin_writes,
+            emits_ordered_events: value.emits_ordered_events,
+            bounds_stderr: value.bounds_stderr,
+            emits_process_exit_terminal_event: value.emits_process_exit_terminal_event,
+            supports_semantic_requests: value.supports_semantic_requests,
+            supports_typed_notifications: value.supports_typed_notifications,
+            supports_typed_server_requests: value.supports_typed_server_requests,
+            supports_typed_state: value.supports_typed_state,
+            supports_token_cancellation: value.supports_token_cancellation,
+            supports_typed_control_receipts: value.supports_typed_control_receipts,
+            preserves_json_rpc_id_type: value.preserves_json_rpc_id_type,
+            supports_generic_send_line: value.supports_generic_send_line,
+            supports_start_with_stdin: value.supports_start_with_stdin,
+            translates_stream_results: value.translates_stream_results,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentProviderConformanceValidationV1 {
+    pub schema_version: u16,
+    pub protocol: AgentProviderProtocolV1,
+    pub valid: bool,
+    pub violations: Vec<AgentProviderConformanceViolationV1>,
+}
+
+impl From<runtime::agent_provider::AgentProviderConformanceValidation>
+    for CoreAgentProviderConformanceValidationV1
+{
+    fn from(value: runtime::agent_provider::AgentProviderConformanceValidation) -> Self {
+        Self {
+            schema_version: value.schema_version,
+            protocol: match value.protocol {
+                runtime::agent_provider::ProviderProtocol::CodexAppServer => {
+                    AgentProviderProtocolV1::CodexAppServer
+                }
+                runtime::agent_provider::ProviderProtocol::Acp => AgentProviderProtocolV1::Acp,
+                runtime::agent_provider::ProviderProtocol::ClaudeHeadless => {
+                    AgentProviderProtocolV1::ClaudeHeadless
+                }
+            },
+            valid: value.valid,
+            violations: value.violations.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 // ================================================================================================
 // P7: Rust-owned filesystem watcher ingress mailbox.
 // ================================================================================================

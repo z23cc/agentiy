@@ -99,7 +99,7 @@ public struct CoreCodexSessionState: Sendable, Equatable {
     }
 }
 
-public enum CoreAgentProviderProtocol: Sendable {
+public enum CoreAgentProviderProtocol: Sendable, Equatable {
     case codexAppServer
     case acp
     case claudeHeadless
@@ -110,6 +110,114 @@ public enum CoreAgentProviderProtocol: Sendable {
         case .acp: .acp
         case .claudeHeadless: .claudeHeadless
         }
+    }
+
+    init(rawValue: AgentryUniFFIRaw.AgentProviderProtocolV1) {
+        switch rawValue {
+        case .codexAppServer: self = .codexAppServer
+        case .acp: self = .acp
+        case .claudeHeadless: self = .claudeHeadless
+        }
+    }
+}
+
+public enum CoreAgentProviderConformanceViolation: String, Sendable, Equatable {
+    case schemaVersionMismatch
+    case protocolProfileMismatch
+    case processLifetimeMismatch
+    case framingMismatch
+    case serializedWritesMismatch
+    case orderedEventsMismatch
+    case stderrBoundMismatch
+    case processExitEventMismatch
+    case semanticRequestsMismatch
+    case typedNotificationsMismatch
+    case typedServerRequestsMismatch
+    case typedStateMismatch
+    case tokenCancellationMismatch
+    case typedControlReceiptsMismatch
+    case jsonRpcIdTypePreservationMismatch
+    case genericSendLineMismatch
+    case startWithStdinMismatch
+    case streamResultTranslationMismatch
+
+    init(rawValue: AgentryUniFFIRaw.AgentProviderConformanceViolationV1) {
+        switch rawValue {
+        case .schemaVersionMismatch: self = .schemaVersionMismatch
+        case .protocolProfileMismatch: self = .protocolProfileMismatch
+        case .processLifetimeMismatch: self = .processLifetimeMismatch
+        case .framingMismatch: self = .framingMismatch
+        case .serializedWritesMismatch: self = .serializedWritesMismatch
+        case .orderedEventsMismatch: self = .orderedEventsMismatch
+        case .stderrBoundMismatch: self = .stderrBoundMismatch
+        case .processExitEventMismatch: self = .processExitEventMismatch
+        case .semanticRequestsMismatch: self = .semanticRequestsMismatch
+        case .typedNotificationsMismatch: self = .typedNotificationsMismatch
+        case .typedServerRequestsMismatch: self = .typedServerRequestsMismatch
+        case .typedStateMismatch: self = .typedStateMismatch
+        case .tokenCancellationMismatch: self = .tokenCancellationMismatch
+        case .typedControlReceiptsMismatch: self = .typedControlReceiptsMismatch
+        case .jsonRpcIdTypePreservationMismatch: self = .jsonRpcIdTypePreservationMismatch
+        case .genericSendLineMismatch: self = .genericSendLineMismatch
+        case .startWithStdinMismatch: self = .startWithStdinMismatch
+        case .streamResultTranslationMismatch: self = .streamResultTranslationMismatch
+        }
+    }
+}
+
+public struct CoreAgentProviderConformanceSnapshot: Sendable, Equatable {
+    public let schemaVersion: UInt16
+    public let protocolKind: CoreAgentProviderProtocol
+    public let ownsProcessLifetime: Bool
+    public let ownsLineFraming: Bool
+    public let serializesStdinWrites: Bool
+    public let emitsOrderedEvents: Bool
+    public let boundsStderr: Bool
+    public let emitsProcessExitTerminalEvent: Bool
+    public let supportsSemanticRequests: Bool
+    public let supportsTypedNotifications: Bool
+    public let supportsTypedServerRequests: Bool
+    public let supportsTypedState: Bool
+    public let supportsTokenCancellation: Bool
+    public let supportsTypedControlReceipts: Bool
+    public let preservesJSONRPCIDType: Bool
+    public let supportsGenericSendLine: Bool
+    public let supportsStartWithStdin: Bool
+    public let translatesStreamResults: Bool
+
+    init(raw: AgentryUniFFIRaw.CoreAgentProviderConformanceSnapshotV1) {
+        schemaVersion = raw.schemaVersion
+        protocolKind = CoreAgentProviderProtocol(rawValue: raw.protocol)
+        ownsProcessLifetime = raw.ownsProcessLifetime
+        ownsLineFraming = raw.ownsLineFraming
+        serializesStdinWrites = raw.serializesStdinWrites
+        emitsOrderedEvents = raw.emitsOrderedEvents
+        boundsStderr = raw.boundsStderr
+        emitsProcessExitTerminalEvent = raw.emitsProcessExitTerminalEvent
+        supportsSemanticRequests = raw.supportsSemanticRequests
+        supportsTypedNotifications = raw.supportsTypedNotifications
+        supportsTypedServerRequests = raw.supportsTypedServerRequests
+        supportsTypedState = raw.supportsTypedState
+        supportsTokenCancellation = raw.supportsTokenCancellation
+        supportsTypedControlReceipts = raw.supportsTypedControlReceipts
+        preservesJSONRPCIDType = raw.preservesJsonRpcIdType
+        supportsGenericSendLine = raw.supportsGenericSendLine
+        supportsStartWithStdin = raw.supportsStartWithStdin
+        translatesStreamResults = raw.translatesStreamResults
+    }
+}
+
+public struct CoreAgentProviderConformanceValidation: Sendable, Equatable {
+    public let schemaVersion: UInt16
+    public let protocolKind: CoreAgentProviderProtocol
+    public let valid: Bool
+    public let violations: [CoreAgentProviderConformanceViolation]
+
+    init(raw: AgentryUniFFIRaw.CoreAgentProviderConformanceValidationV1) {
+        schemaVersion = raw.schemaVersion
+        protocolKind = CoreAgentProviderProtocol(rawValue: raw.protocol)
+        valid = raw.valid
+        violations = raw.violations.map(CoreAgentProviderConformanceViolation.init(rawValue:))
     }
 }
 
@@ -253,6 +361,20 @@ extension CoreRuntimeTransport {
         scopeID: String
     ) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpSessionStateV1 {
         throw CoreTransportError.unexpected("acp semantic transport is unavailable")
+    }
+
+    func agentProviderConformanceSnapshot(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.CoreAgentProviderConformanceSnapshotV1 {
+        throw CoreTransportError.unexpected("agent-provider conformance snapshot is unavailable")
+    }
+
+    func agentProviderValidateConformance(
+        identity: CoreRuntimeIdentity,
+        scopeID: String
+    ) throws -> AgentryUniFFIRaw.CoreAgentProviderConformanceValidationV1 {
+        throw CoreTransportError.unexpected("agent-provider conformance validation is unavailable")
     }
 
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws {
@@ -441,6 +563,26 @@ extension AgentryCoreBridge {
                 activePromptGeneration: state.activePromptGeneration,
                 pendingRequestCount: state.pendingRequestCount
             )
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func agentProviderConformanceSnapshot(scopeID: String) async throws -> CoreAgentProviderConformanceSnapshot {
+        let identity = try requireIdentity()
+        do {
+            let snapshot = try transport.agentProviderConformanceSnapshot(identity: identity, scopeID: scopeID)
+            return CoreAgentProviderConformanceSnapshot(raw: snapshot)
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func agentProviderValidateConformance(scopeID: String) async throws -> CoreAgentProviderConformanceValidation {
+        let identity = try requireIdentity()
+        do {
+            let validation = try transport.agentProviderValidateConformance(identity: identity, scopeID: scopeID)
+            return CoreAgentProviderConformanceValidation(raw: validation)
         } catch {
             throw mapTransportError(error)
         }
@@ -653,6 +795,16 @@ public final class CoreAgentProviderSession: @unchecked Sendable {
 
     public func agentProviderAcpState() async throws -> CoreAcpSessionState {
         try await bridge.agentProviderAcpState(scopeID: scopeID)
+    }
+
+    /// Returns the immutable provider capability profile used by offline P7-4 certification.
+    public func conformanceSnapshot() async throws -> CoreAgentProviderConformanceSnapshot {
+        try await bridge.agentProviderConformanceSnapshot(scopeID: scopeID)
+    }
+
+    /// Validates the provider capability profile without starting the child process.
+    public func validateConformance() async throws -> CoreAgentProviderConformanceValidation {
+        try await bridge.agentProviderValidateConformance(scopeID: scopeID)
     }
 
     public func events(maxQueuedEvents: UInt64 = 256, maxQueuedBytes: UInt64 = 1_048_576) async throws -> CoreAgentProviderEventStream {

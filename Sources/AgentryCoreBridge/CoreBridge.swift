@@ -504,6 +504,8 @@ protocol CoreRuntimeTransport: Sendable {
     func agentProviderAcpRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1
     func agentProviderAcpRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1
     func agentProviderAcpState(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpSessionStateV1
+    func agentProviderConformanceSnapshot(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderConformanceSnapshotV1
+    func agentProviderValidateConformance(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderConformanceValidationV1
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
     // ---- P6-6: agent-claude-v1 (docs/architecture/rust-agent-claude-v1.md) -------------------
@@ -5336,6 +5338,22 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
     func agentProviderAcpState(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpSessionStateV1 {
         do {
             return try runtime.agentProviderAcpState(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderConformanceSnapshot(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderConformanceSnapshotV1 {
+        do {
+            return try runtime.agentProviderConformanceSnapshot(identity: Self.rawIdentity(identity), scopeId: scopeID)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func agentProviderValidateConformance(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderConformanceValidationV1 {
+        do {
+            return try runtime.agentProviderValidateConformance(identity: Self.rawIdentity(identity), scopeId: scopeID)
         } catch {
             throw Self.map(error)
         }

@@ -1726,6 +1726,11 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func agentProviderCodexState(identity: RuntimeIdentity, scopeId: String) throws  -> CoreCodexSessionStateV1
 
+    /**
+     * Returns the immutable, offline P7-4 provider capability profile for a scope.
+     */
+    func agentProviderConformanceSnapshot(identity: RuntimeIdentity, scopeId: String) throws  -> CoreAgentProviderConformanceSnapshotV1
+
     func agentProviderOpenScope(identity: RuntimeIdentity, config: CoreAgentProviderScopeConfigV1) throws  -> AgentProviderScopeHandleV1
 
     /**
@@ -1750,6 +1755,12 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
      * The prompt is never logged or reinterpreted by the Rust transport.
      */
     func agentProviderStartWithStdin(identity: RuntimeIdentity, scopeId: String, payload: Data) throws  -> AgentProviderStartReceiptV1
+
+    /**
+     * Validates a provider scope against the canonical P7-4 profile without starting or
+     * inspecting its child process. Invalid profiles are returned as data, not transport errors.
+     */
+    func agentProviderValidateConformance(identity: RuntimeIdentity, scopeId: String) throws  -> CoreAgentProviderConformanceValidationV1
 
     /**
      * Contract §7.1's permission **protocol** half only -- policy (auto-approval matching,
@@ -2275,6 +2286,20 @@ open func agentProviderCodexState(identity: RuntimeIdentity, scopeId: String)thr
 })
 }
 
+    /**
+     * Returns the immutable, offline P7-4 provider capability profile for a scope.
+     */
+open func agentProviderConformanceSnapshot(identity: RuntimeIdentity, scopeId: String)throws  -> CoreAgentProviderConformanceSnapshotV1  {
+    return try  FfiConverterTypeCoreAgentProviderConformanceSnapshotV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_conformance_snapshot(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
+    )
+})
+}
+
 open func agentProviderOpenScope(identity: RuntimeIdentity, config: CoreAgentProviderScopeConfigV1)throws  -> AgentProviderScopeHandleV1  {
     return try  FfiConverterTypeAgentProviderScopeHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
@@ -2342,6 +2367,21 @@ open func agentProviderStartWithStdin(identity: RuntimeIdentity, scopeId: String
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterString.lower(scopeId),
         FfiConverterData.lower(payload),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Validates a provider scope against the canonical P7-4 profile without starting or
+     * inspecting its child process. Invalid profiles are returned as data, not transport errors.
+     */
+open func agentProviderValidateConformance(identity: RuntimeIdentity, scopeId: String)throws  -> CoreAgentProviderConformanceValidationV1  {
+    return try  FfiConverterTypeCoreAgentProviderConformanceValidationV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_validate_conformance(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRuntimeIdentity_lower(identity),
+        FfiConverterString.lower(scopeId),uniffiCallStatus
     )
 })
 }
@@ -5385,6 +5425,186 @@ public func FfiConverterTypeCoreAgentProviderAcpSessionStateV1_lift(_ buf: RustB
 #endif
 public func FfiConverterTypeCoreAgentProviderAcpSessionStateV1_lower(_ value: CoreAgentProviderAcpSessionStateV1) -> RustBuffer {
     return FfiConverterTypeCoreAgentProviderAcpSessionStateV1.lower(value)
+}
+
+
+public struct CoreAgentProviderConformanceSnapshotV1: Equatable, Hashable {
+    public let schemaVersion: UInt16
+    public let `protocol`: AgentProviderProtocolV1
+    public let ownsProcessLifetime: Bool
+    public let ownsLineFraming: Bool
+    public let serializesStdinWrites: Bool
+    public let emitsOrderedEvents: Bool
+    public let boundsStderr: Bool
+    public let emitsProcessExitTerminalEvent: Bool
+    public let supportsSemanticRequests: Bool
+    public let supportsTypedNotifications: Bool
+    public let supportsTypedServerRequests: Bool
+    public let supportsTypedState: Bool
+    public let supportsTokenCancellation: Bool
+    public let supportsTypedControlReceipts: Bool
+    public let preservesJsonRpcIdType: Bool
+    public let supportsGenericSendLine: Bool
+    public let supportsStartWithStdin: Bool
+    public let translatesStreamResults: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(schemaVersion: UInt16, `protocol`: AgentProviderProtocolV1, ownsProcessLifetime: Bool, ownsLineFraming: Bool, serializesStdinWrites: Bool, emitsOrderedEvents: Bool, boundsStderr: Bool, emitsProcessExitTerminalEvent: Bool, supportsSemanticRequests: Bool, supportsTypedNotifications: Bool, supportsTypedServerRequests: Bool, supportsTypedState: Bool, supportsTokenCancellation: Bool, supportsTypedControlReceipts: Bool, preservesJsonRpcIdType: Bool, supportsGenericSendLine: Bool, supportsStartWithStdin: Bool, translatesStreamResults: Bool) {
+        self.schemaVersion = schemaVersion
+        self.`protocol` = `protocol`
+        self.ownsProcessLifetime = ownsProcessLifetime
+        self.ownsLineFraming = ownsLineFraming
+        self.serializesStdinWrites = serializesStdinWrites
+        self.emitsOrderedEvents = emitsOrderedEvents
+        self.boundsStderr = boundsStderr
+        self.emitsProcessExitTerminalEvent = emitsProcessExitTerminalEvent
+        self.supportsSemanticRequests = supportsSemanticRequests
+        self.supportsTypedNotifications = supportsTypedNotifications
+        self.supportsTypedServerRequests = supportsTypedServerRequests
+        self.supportsTypedState = supportsTypedState
+        self.supportsTokenCancellation = supportsTokenCancellation
+        self.supportsTypedControlReceipts = supportsTypedControlReceipts
+        self.preservesJsonRpcIdType = preservesJsonRpcIdType
+        self.supportsGenericSendLine = supportsGenericSendLine
+        self.supportsStartWithStdin = supportsStartWithStdin
+        self.translatesStreamResults = translatesStreamResults
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentProviderConformanceSnapshotV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentProviderConformanceSnapshotV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentProviderConformanceSnapshotV1 {
+        return
+            try CoreAgentProviderConformanceSnapshotV1(
+                schemaVersion: FfiConverterUInt16.read(from: &buf),
+                protocol: FfiConverterTypeAgentProviderProtocolV1.read(from: &buf),
+                ownsProcessLifetime: FfiConverterBool.read(from: &buf),
+                ownsLineFraming: FfiConverterBool.read(from: &buf),
+                serializesStdinWrites: FfiConverterBool.read(from: &buf),
+                emitsOrderedEvents: FfiConverterBool.read(from: &buf),
+                boundsStderr: FfiConverterBool.read(from: &buf),
+                emitsProcessExitTerminalEvent: FfiConverterBool.read(from: &buf),
+                supportsSemanticRequests: FfiConverterBool.read(from: &buf),
+                supportsTypedNotifications: FfiConverterBool.read(from: &buf),
+                supportsTypedServerRequests: FfiConverterBool.read(from: &buf),
+                supportsTypedState: FfiConverterBool.read(from: &buf),
+                supportsTokenCancellation: FfiConverterBool.read(from: &buf),
+                supportsTypedControlReceipts: FfiConverterBool.read(from: &buf),
+                preservesJsonRpcIdType: FfiConverterBool.read(from: &buf),
+                supportsGenericSendLine: FfiConverterBool.read(from: &buf),
+                supportsStartWithStdin: FfiConverterBool.read(from: &buf),
+                translatesStreamResults: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentProviderConformanceSnapshotV1, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.schemaVersion, into: &buf)
+        FfiConverterTypeAgentProviderProtocolV1.write(value.`protocol`, into: &buf)
+        FfiConverterBool.write(value.ownsProcessLifetime, into: &buf)
+        FfiConverterBool.write(value.ownsLineFraming, into: &buf)
+        FfiConverterBool.write(value.serializesStdinWrites, into: &buf)
+        FfiConverterBool.write(value.emitsOrderedEvents, into: &buf)
+        FfiConverterBool.write(value.boundsStderr, into: &buf)
+        FfiConverterBool.write(value.emitsProcessExitTerminalEvent, into: &buf)
+        FfiConverterBool.write(value.supportsSemanticRequests, into: &buf)
+        FfiConverterBool.write(value.supportsTypedNotifications, into: &buf)
+        FfiConverterBool.write(value.supportsTypedServerRequests, into: &buf)
+        FfiConverterBool.write(value.supportsTypedState, into: &buf)
+        FfiConverterBool.write(value.supportsTokenCancellation, into: &buf)
+        FfiConverterBool.write(value.supportsTypedControlReceipts, into: &buf)
+        FfiConverterBool.write(value.preservesJsonRpcIdType, into: &buf)
+        FfiConverterBool.write(value.supportsGenericSendLine, into: &buf)
+        FfiConverterBool.write(value.supportsStartWithStdin, into: &buf)
+        FfiConverterBool.write(value.translatesStreamResults, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderConformanceSnapshotV1_lift(_ buf: RustBuffer) throws -> CoreAgentProviderConformanceSnapshotV1 {
+    return try FfiConverterTypeCoreAgentProviderConformanceSnapshotV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderConformanceSnapshotV1_lower(_ value: CoreAgentProviderConformanceSnapshotV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentProviderConformanceSnapshotV1.lower(value)
+}
+
+
+public struct CoreAgentProviderConformanceValidationV1: Equatable, Hashable {
+    public let schemaVersion: UInt16
+    public let `protocol`: AgentProviderProtocolV1
+    public let valid: Bool
+    public let violations: [AgentProviderConformanceViolationV1]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(schemaVersion: UInt16, `protocol`: AgentProviderProtocolV1, valid: Bool, violations: [AgentProviderConformanceViolationV1]) {
+        self.schemaVersion = schemaVersion
+        self.`protocol` = `protocol`
+        self.valid = valid
+        self.violations = violations
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentProviderConformanceValidationV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentProviderConformanceValidationV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentProviderConformanceValidationV1 {
+        return
+            try CoreAgentProviderConformanceValidationV1(
+                schemaVersion: FfiConverterUInt16.read(from: &buf),
+                protocol: FfiConverterTypeAgentProviderProtocolV1.read(from: &buf),
+                valid: FfiConverterBool.read(from: &buf),
+                violations: FfiConverterSequenceTypeAgentProviderConformanceViolationV1.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentProviderConformanceValidationV1, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.schemaVersion, into: &buf)
+        FfiConverterTypeAgentProviderProtocolV1.write(value.`protocol`, into: &buf)
+        FfiConverterBool.write(value.valid, into: &buf)
+        FfiConverterSequenceTypeAgentProviderConformanceViolationV1.write(value.violations, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderConformanceValidationV1_lift(_ buf: RustBuffer) throws -> CoreAgentProviderConformanceValidationV1 {
+    return try FfiConverterTypeCoreAgentProviderConformanceValidationV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderConformanceValidationV1_lower(_ value: CoreAgentProviderConformanceValidationV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentProviderConformanceValidationV1.lower(value)
 }
 
 
@@ -16674,6 +16894,184 @@ public func FfiConverterTypeAgentClaudePermissionDecisionV1_lower(_ value: Agent
 
 
 
+public enum AgentProviderConformanceViolationV1: Equatable, Hashable {
+
+    case schemaVersionMismatch
+    case protocolProfileMismatch
+    case processLifetimeMismatch
+    case framingMismatch
+    case serializedWritesMismatch
+    case orderedEventsMismatch
+    case stderrBoundMismatch
+    case processExitEventMismatch
+    case semanticRequestsMismatch
+    case typedNotificationsMismatch
+    case typedServerRequestsMismatch
+    case typedStateMismatch
+    case tokenCancellationMismatch
+    case typedControlReceiptsMismatch
+    case jsonRpcIdTypePreservationMismatch
+    case genericSendLineMismatch
+    case startWithStdinMismatch
+    case streamResultTranslationMismatch
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentProviderConformanceViolationV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentProviderConformanceViolationV1: FfiConverterRustBuffer {
+    typealias SwiftType = AgentProviderConformanceViolationV1
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentProviderConformanceViolationV1 {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .schemaVersionMismatch
+
+        case 2: return .protocolProfileMismatch
+
+        case 3: return .processLifetimeMismatch
+
+        case 4: return .framingMismatch
+
+        case 5: return .serializedWritesMismatch
+
+        case 6: return .orderedEventsMismatch
+
+        case 7: return .stderrBoundMismatch
+
+        case 8: return .processExitEventMismatch
+
+        case 9: return .semanticRequestsMismatch
+
+        case 10: return .typedNotificationsMismatch
+
+        case 11: return .typedServerRequestsMismatch
+
+        case 12: return .typedStateMismatch
+
+        case 13: return .tokenCancellationMismatch
+
+        case 14: return .typedControlReceiptsMismatch
+
+        case 15: return .jsonRpcIdTypePreservationMismatch
+
+        case 16: return .genericSendLineMismatch
+
+        case 17: return .startWithStdinMismatch
+
+        case 18: return .streamResultTranslationMismatch
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentProviderConformanceViolationV1, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .schemaVersionMismatch:
+            writeInt(&buf, Int32(1))
+
+
+        case .protocolProfileMismatch:
+            writeInt(&buf, Int32(2))
+
+
+        case .processLifetimeMismatch:
+            writeInt(&buf, Int32(3))
+
+
+        case .framingMismatch:
+            writeInt(&buf, Int32(4))
+
+
+        case .serializedWritesMismatch:
+            writeInt(&buf, Int32(5))
+
+
+        case .orderedEventsMismatch:
+            writeInt(&buf, Int32(6))
+
+
+        case .stderrBoundMismatch:
+            writeInt(&buf, Int32(7))
+
+
+        case .processExitEventMismatch:
+            writeInt(&buf, Int32(8))
+
+
+        case .semanticRequestsMismatch:
+            writeInt(&buf, Int32(9))
+
+
+        case .typedNotificationsMismatch:
+            writeInt(&buf, Int32(10))
+
+
+        case .typedServerRequestsMismatch:
+            writeInt(&buf, Int32(11))
+
+
+        case .typedStateMismatch:
+            writeInt(&buf, Int32(12))
+
+
+        case .tokenCancellationMismatch:
+            writeInt(&buf, Int32(13))
+
+
+        case .typedControlReceiptsMismatch:
+            writeInt(&buf, Int32(14))
+
+
+        case .jsonRpcIdTypePreservationMismatch:
+            writeInt(&buf, Int32(15))
+
+
+        case .genericSendLineMismatch:
+            writeInt(&buf, Int32(16))
+
+
+        case .startWithStdinMismatch:
+            writeInt(&buf, Int32(17))
+
+
+        case .streamResultTranslationMismatch:
+            writeInt(&buf, Int32(18))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderConformanceViolationV1_lift(_ buf: RustBuffer) throws -> AgentProviderConformanceViolationV1 {
+    return try FfiConverterTypeAgentProviderConformanceViolationV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentProviderConformanceViolationV1_lower(_ value: AgentProviderConformanceViolationV1) -> RustBuffer {
+    return FfiConverterTypeAgentProviderConformanceViolationV1.lower(value)
+}
+
+
+
+
 public enum AgentProviderProtocolV1: Equatable, Hashable {
 
     case codexAppServer
@@ -24211,6 +24609,31 @@ fileprivate struct FfiConverterSequenceTypeRuntimeEvent: FfiConverterRustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeAgentProviderConformanceViolationV1: FfiConverterRustBuffer {
+    typealias SwiftType = [AgentProviderConformanceViolationV1]
+
+    public static func write(_ value: [AgentProviderConformanceViolationV1], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAgentProviderConformanceViolationV1.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AgentProviderConformanceViolationV1] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AgentProviderConformanceViolationV1]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAgentProviderConformanceViolationV1.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCoreWorkspaceSemanticRecoveryRowV1: FfiConverterRustBuffer {
     typealias SwiftType = [CoreWorkspaceSemanticRecoveryRowV1]
 
@@ -24501,6 +24924,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_codex_state() != 35119) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_conformance_snapshot() != 33739) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_open_scope() != 3803) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -24514,6 +24940,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_start_with_stdin() != 62814) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_validate_conformance() != 60164) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_respond_permission() != 30809) {

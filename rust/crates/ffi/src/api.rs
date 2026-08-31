@@ -9,7 +9,8 @@ use crate::types::{
     CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1,
     CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult,
     CoreAgentProviderAcpControlReceiptV1, CoreAgentProviderAcpResponseV1,
-    CoreAgentProviderAcpSessionStateV1, CoreAgentProviderScopeConfigV1,
+    CoreAgentProviderAcpSessionStateV1, CoreAgentProviderConformanceSnapshotV1,
+    CoreAgentProviderConformanceValidationV1, CoreAgentProviderScopeConfigV1,
     CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCodexSessionStateV1,
     CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig,
     CoreFileSystemWatcherEventV1, CoreFileSystemWatcherPayloadV1,
@@ -4608,6 +4609,35 @@ impl CoreRuntime {
                 pending_request_count: u64::try_from(state.pending_request_count)
                     .unwrap_or(u64::MAX),
             })
+        })
+    }
+
+    /// Returns the immutable, offline P7-4 provider capability profile for a scope.
+    pub fn agent_provider_conformance_snapshot(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<CoreAgentProviderConformanceSnapshotV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.conformance_snapshot(&identity)?.into())
+        })
+    }
+
+    /// Validates a provider scope against the canonical P7-4 profile without starting or
+    /// inspecting its child process. Invalid profiles are returned as data, not transport errors.
+    pub fn agent_provider_validate_conformance(
+        &self,
+        identity: RuntimeIdentity,
+        scope_id: String,
+    ) -> Result<CoreAgentProviderConformanceValidationV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&identity)?;
+            let scope = self.agent_provider_scope(&scope_id)?;
+            Ok(scope.validate_conformance(&identity)?.into())
         })
     }
 
