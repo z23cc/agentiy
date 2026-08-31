@@ -500,9 +500,9 @@ protocol CoreRuntimeTransport: Sendable {
     func agentProviderCodexState(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreCodexSessionStateV1
     func agentProviderAcpRequest(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpResponseV1
     func agentProviderAcpCancel(identity: CoreRuntimeIdentity, scopeID: String, cancellationToken: String) throws -> Bool
-    func agentProviderAcpNotify(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?) throws -> UInt64
-    func agentProviderAcpRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> UInt64
-    func agentProviderAcpRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> UInt64
+    func agentProviderAcpNotify(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?, expectedSessionGeneration: UInt64?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1
+    func agentProviderAcpRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1
+    func agentProviderAcpRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1
     func agentProviderAcpState(identity: CoreRuntimeIdentity, scopeID: String) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpSessionStateV1
     func agentProviderShutdown(identity: CoreRuntimeIdentity, scopeID: String) throws
 
@@ -5309,15 +5309,15 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    func agentProviderAcpNotify(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?) throws -> UInt64 {
+    func agentProviderAcpNotify(identity: CoreRuntimeIdentity, scopeID: String, method: String, params: Data?, expectedSessionGeneration: UInt64?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1 {
         do {
-            return try runtime.agentProviderAcpNotify(identity: Self.rawIdentity(identity), scopeId: scopeID, method: method, params: params)
+            return try runtime.agentProviderAcpNotify(identity: Self.rawIdentity(identity), scopeId: scopeID, method: method, params: params, expectedSessionGeneration: expectedSessionGeneration)
         } catch {
             throw Self.map(error)
         }
     }
 
-    func agentProviderAcpRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> UInt64 {
+    func agentProviderAcpRespond(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, result: Data) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1 {
         do {
             return try runtime.agentProviderAcpRespond(identity: Self.rawIdentity(identity), scopeId: scopeID, requestId: requestID, result: result)
         } catch {
@@ -5325,7 +5325,7 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
         }
     }
 
-    func agentProviderAcpRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> UInt64 {
+    func agentProviderAcpRespondError(identity: CoreRuntimeIdentity, scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1 {
         do {
             return try runtime.agentProviderAcpRespondError(identity: Self.rawIdentity(identity), scopeId: scopeID, requestId: requestID, code: code, message: message, data: data)
         } catch {

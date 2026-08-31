@@ -4064,15 +4064,32 @@ pub struct CoreCodexSessionStateV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct CoreAgentProviderAcpControlReceiptV1 {
+    pub outbound_sequence: u64,
+    pub lifecycle: String,
+    pub session_generation: u64,
+    pub prompt_generation: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreAgentProviderAcpResponseV1 {
     pub result: Vec<u8>,
     pub inbound_sequence: u64,
+    pub outbound_sequence: u64,
+    pub lifecycle: String,
+    pub session_generation: u64,
+    pub prompt_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreAgentProviderAcpSessionStateV1 {
     pub lifecycle: String,
     pub initialized: bool,
+    pub authenticated: bool,
+    pub session_id: Option<String>,
+    pub session_generation: u64,
+    pub prompt_generation: u64,
+    pub active_prompt_generation: Option<u64>,
     pub pending_request_count: u64,
 }
 

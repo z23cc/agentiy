@@ -733,14 +733,21 @@ PY
   if ! grep -q 'func acpRequest' "$acp_transport_source" \
     || ! grep -q 'func acpRespondError' "$acp_transport_source" \
     || ! grep -q 'CoreAcpSessionState' "$codex_bridge_source" \
+    || ! grep -q 'CoreAcpControlReceipt' "$codex_bridge_source" \
     || ! grep -q 'agentProviderAcpRequest' "$codex_bridge_source"; then
     fail "ACP semantic capability is not exposed through the Rust FFI/Bridge seam"
   fi
   if ! grep -q 'acp_request' "rust/crates/runtime/src/agent_provider.rs" \
     || ! grep -q 'agent_provider_acp_respond_error' "rust/crates/ffi/src/api.rs" \
     || ! grep -q 'AcpSessionState' "rust/crates/runtime/src/agent_provider.rs" \
+    || ! grep -q 'AcpControlReceipt' "rust/crates/runtime/src/agent_provider.rs" \
     || ! grep -q 'provider_json_rpc' "rust/crates/runtime/src/agent_provider.rs"; then
-    fail "Rust ACP request, response-error, shared reducer, and lifecycle authority is missing"
+    fail "Rust ACP request, response-error, typed control receipt, and lifecycle authority is missing"
+  fi
+  if ! grep -q 'sendRuntimeJSONLine' "$acp_controller_source" \
+    || ! grep -q 'ACP runtime writes must use the awaited typed control path' "$acp_controller_source" \
+    || grep -q 'let task = Task' "$acp_controller_source"; then
+    fail "ACP production outbound control writes must be awaited typed receipts, never fire-and-forget tasks"
   fi
   if grep -q 'providerMessage' "$acp_controller_source"; then
     fail "ACP production controller must not retain opaque providerMessage handling"
@@ -1105,6 +1112,7 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-p11-execution-handoff.md"
     "docs/spec/rust-agent-provider-p7-1-codex-semantic-authority.md"
     "docs/spec/rust-agent-provider-p7-2-acp-semantic-authority.md"
+    "docs/spec/rust-agent-provider-p7-3-acp-lifecycle-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p12-agent-session-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p13-agent-session-identity-authority.md"
   "docs/spec/headless-mcp-domain-runtime-p14-agent-run-lifecycle-authority.md"

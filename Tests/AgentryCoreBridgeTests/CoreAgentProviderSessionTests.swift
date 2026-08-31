@@ -195,10 +195,41 @@ final class CoreAgentProviderSessionTests: XCTestCase {
         let result = try XCTUnwrap(try JSONSerialization.jsonObject(with: response.result) as? [String: Any])
         XCTAssertEqual(result["sessionId"] as? String, "s-1")
         XCTAssertGreaterThan(response.inboundSequence, 0)
+        XCTAssertGreaterThan(response.outboundSequence, 0)
+        XCTAssertEqual(response.lifecycle, "sessionOpen")
+        XCTAssertEqual(response.sessionGeneration, 1)
         let state = try await session.agentProviderAcpState()
-        XCTAssertTrue(["running", "closed"].contains(state.lifecycle))
+        XCTAssertEqual(state.lifecycle, "sessionOpen")
         XCTAssertFalse(state.initialized)
+        XCTAssertFalse(state.authenticated)
+        XCTAssertEqual(state.sessionID, "s-1")
+        XCTAssertEqual(state.sessionGeneration, 1)
+        XCTAssertEqual(state.promptGeneration, 0)
+        XCTAssertNil(state.activePromptGeneration)
         XCTAssertEqual(state.pendingRequestCount, 0)
+        await session.shutdown()
+        _ = try await bridge.close()
+    }
+
+    func testRustAcpControlWritesReturnLifecycleReceipts() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let session = try await CoreAgentProviderSession.open(
+            bridge: bridge,
+            command: "/bin/sh",
+            arguments: ["-c", "IFS= read -r line; sleep 1"],
+            environment: [:],
+            workingDirectory: nil,
+            protocolKind: .acp
+        )
+        _ = try await session.start()
+        let receipt = try await session.agentProviderAcpNotify(
+            method: "session/cancel",
+            params: Data("{\"sessionId\":\"unbound\"}".utf8)
+        )
+        XCTAssertGreaterThan(receipt.outboundSequence, 0)
+        XCTAssertEqual(receipt.lifecycle, "running")
+        XCTAssertEqual(receipt.sessionGeneration, 0)
+        XCTAssertNil(receipt.promptGeneration)
         await session.shutdown()
         _ = try await bridge.close()
     }

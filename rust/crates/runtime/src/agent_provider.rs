@@ -197,13 +197,30 @@ pub struct CodexSessionState {
 pub struct AcpSessionState {
     pub lifecycle: String,
     pub initialized: bool,
+    pub authenticated: bool,
+    pub session_id: Option<String>,
+    pub session_generation: u64,
+    pub prompt_generation: u64,
+    pub active_prompt_generation: Option<u64>,
     pub pending_request_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcpControlReceipt {
+    pub outbound_sequence: u64,
+    pub lifecycle: String,
+    pub session_generation: u64,
+    pub prompt_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcpResponse {
     pub result: Vec<u8>,
     pub inbound_sequence: u64,
+    pub outbound_sequence: u64,
+    pub lifecycle: String,
+    pub session_generation: u64,
+    pub prompt_generation: Option<u64>,
 }
 
 struct CodexPending {
@@ -228,7 +245,12 @@ struct CodexState {
 struct AcpState {
     rpc: JsonRpcState,
     initialized: bool,
+    authenticated: bool,
     lifecycle: String,
+    session_id: Option<String>,
+    session_generation: u64,
+    prompt_generation: u64,
+    active_prompt_generation: Option<u64>,
 }
 
 /// One Codex or ACP provider process. Codex and ACP lines are interpreted by the Rust JSON-RPC
@@ -282,7 +304,12 @@ impl AgentProviderScope {
                 Mutex::new(AcpState {
                     rpc: JsonRpcState::new(),
                     initialized: false,
+                    authenticated: false,
                     lifecycle: "created".to_owned(),
+                    session_id: None,
+                    session_generation: 0,
+                    prompt_generation: 0,
+                    active_prompt_generation: None,
                 })
             }),
         })
@@ -488,6 +515,11 @@ impl AgentProviderScope {
         Ok(AcpSessionState {
             lifecycle: state.lifecycle.clone(),
             initialized: state.initialized,
+            authenticated: state.authenticated,
+            session_id: state.session_id.clone(),
+            session_generation: state.session_generation,
+            prompt_generation: state.prompt_generation,
+            active_prompt_generation: state.active_prompt_generation,
             pending_request_count: state.rpc.pending_count(),
         })
     }
@@ -533,12 +565,21 @@ impl AgentProviderScope {
         }
         let bytes =
             serde_json::to_vec(&request).map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
-        if let Err(error) = self.send_line_internal(identity, &bytes) {
+        let outbound_sequence = match self.send_line_internal(identity, &bytes) {
+            Ok(sequence) => sequence,
+            Err(error) => {
+                let mut state = acp
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.rpc.remove_pending_by_key(&key);
+                return Err(error);
+            }
+        };
+        {
             let mut state = acp
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.rpc.remove_pending_by_key(&key);
-            return Err(error);
+            apply_acp_request_started(&mut state, method);
         }
         let (result_lock, result_wake) = &*waiter;
         let mut result = result_lock
@@ -550,9 +591,28 @@ impl AgentProviderScope {
                 let completion = completion?;
                 let result_json = serde_json::to_vec(&completion.result)
                     .map_err(|_| AgentProviderScopeError::AcpInvalidResponse)?;
+                let (lifecycle, session_generation, prompt_generation) = {
+                    let mut state = acp
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    apply_acp_request_succeeded(&mut state, method, &completion.result);
+                    (
+                        state.lifecycle.clone(),
+                        state.session_generation,
+                        if method == "session/prompt" {
+                            Some(state.prompt_generation)
+                        } else {
+                            state.active_prompt_generation
+                        },
+                    )
+                };
                 return Ok(AcpResponse {
                     result: result_json,
                     inbound_sequence: completion.inbound_sequence,
+                    outbound_sequence,
+                    lifecycle,
+                    session_generation,
+                    prompt_generation,
                 });
             }
             if let Some(deadline) = deadline {
@@ -562,6 +622,7 @@ impl AgentProviderScope {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state.rpc.remove_pending_by_key(&key);
+                    apply_acp_request_failed(&mut state, method);
                     return Err(AgentProviderScopeError::AcpTimedOut(method.to_owned()));
                 }
                 let (next, _) = result_wake
@@ -598,6 +659,9 @@ impl AgentProviderScope {
             return Ok(false);
         };
         let method = pending.method.clone();
+        if let Ok(mut state) = acp.lock() {
+            apply_acp_request_failed(&mut state, &method);
+        }
         settle_pending(pending, Err(AgentProviderScopeError::AcpCancelled(method)));
         Ok(true)
     }
@@ -607,8 +671,22 @@ impl AgentProviderScope {
         identity: &RuntimeIdentity,
         method: &str,
         params: Option<&[u8]>,
-    ) -> Result<u64, AgentProviderScopeError> {
+        expected_session_generation: Option<u64>,
+    ) -> Result<AcpControlReceipt, AgentProviderScopeError> {
         self.validate(identity)?;
+        let acp_state = self.require_acp()?;
+        if method == "session/cancel"
+            && expected_session_generation.is_some_and(|expected| {
+                let state = acp_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                expected != state.session_generation
+            })
+        {
+            return Err(AgentProviderScopeError::InvalidArgument(
+                "stale ACP session generation",
+            ));
+        }
         self.require_acp()?;
         if method.trim().is_empty() {
             return Err(AgentProviderScopeError::InvalidArgument("method"));
@@ -620,7 +698,25 @@ impl AgentProviderScope {
         }
         let bytes =
             serde_json::to_vec(&payload).map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
-        self.send_line_internal(identity, &bytes)
+        let outbound_sequence = self.send_line_internal(identity, &bytes)?;
+        let (lifecycle, session_generation, prompt_generation) = {
+            let mut state = self
+                .require_acp()?
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            apply_acp_notification(&mut state, method, &payload);
+            (
+                state.lifecycle.clone(),
+                state.session_generation,
+                state.active_prompt_generation,
+            )
+        };
+        Ok(AcpControlReceipt {
+            outbound_sequence,
+            lifecycle,
+            session_generation,
+            prompt_generation,
+        })
     }
 
     pub fn acp_respond(
@@ -628,7 +724,7 @@ impl AgentProviderScope {
         identity: &RuntimeIdentity,
         request_id: &[u8],
         result: &[u8],
-    ) -> Result<u64, AgentProviderScopeError> {
+    ) -> Result<AcpControlReceipt, AgentProviderScopeError> {
         self.acp_respond_inner(identity, request_id, Some(result), None)
     }
 
@@ -639,7 +735,7 @@ impl AgentProviderScope {
         code: i64,
         message: &str,
         data: Option<&[u8]>,
-    ) -> Result<u64, AgentProviderScopeError> {
+    ) -> Result<AcpControlReceipt, AgentProviderScopeError> {
         self.acp_respond_inner(identity, request_id, None, Some((code, message, data)))
     }
 
@@ -649,7 +745,7 @@ impl AgentProviderScope {
         request_id: &[u8],
         result: Option<&[u8]>,
         error: Option<(i64, &str, Option<&[u8]>)>,
-    ) -> Result<u64, AgentProviderScopeError> {
+    ) -> Result<AcpControlReceipt, AgentProviderScopeError> {
         self.validate(identity)?;
         self.require_acp()?;
         let id: Value = serde_json::from_slice(request_id)
@@ -671,7 +767,17 @@ impl AgentProviderScope {
         }
         let bytes =
             serde_json::to_vec(&payload).map_err(|_| AgentProviderScopeError::AcpInvalidJSON)?;
-        self.send_line_internal(identity, &bytes)
+        let outbound_sequence = self.send_line_internal(identity, &bytes)?;
+        let state = self
+            .require_acp()?
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(AcpControlReceipt {
+            outbound_sequence,
+            lifecycle: state.lifecycle.clone(),
+            session_generation: state.session_generation,
+            prompt_generation: state.active_prompt_generation,
+        })
     }
 
     pub fn codex_state(
@@ -1135,6 +1241,9 @@ impl AgentProviderScope {
             let data = error
                 .get("data")
                 .and_then(|value| serde_json::to_vec(value).ok());
+            if let Ok(mut state) = acp.lock() {
+                apply_acp_request_failed(&mut state, &method);
+            }
             settle_pending(
                 pending,
                 Err(AgentProviderScopeError::AcpRemoteError {
@@ -1162,10 +1271,7 @@ impl AgentProviderScope {
             return;
         };
         if let Ok(mut state) = acp.lock() {
-            if pending.method == "initialize" {
-                state.initialized = true;
-                state.lifecycle = "initialized".to_owned();
-            }
+            apply_acp_request_succeeded(&mut state, &pending.method, result);
         }
         settle_pending(
             pending,
@@ -1543,6 +1649,72 @@ fn codex_id_key(value: &Value) -> Option<String> {
         Value::Number(number) => number.as_u64().map(codex_numeric_id_key),
         Value::String(value) if !value.is_empty() => Some(format!("s:{value}")),
         _ => None,
+    }
+}
+
+fn apply_acp_request_started(state: &mut AcpState, method: &str) {
+    if method == "session/prompt" {
+        state.prompt_generation = state.prompt_generation.saturating_add(1);
+        state.active_prompt_generation = Some(state.prompt_generation);
+        state.lifecycle = "promptRunning".to_owned();
+    }
+}
+
+fn apply_acp_request_succeeded(state: &mut AcpState, method: &str, result: &Value) {
+    match method {
+        "initialize" => {
+            state.initialized = true;
+            state.lifecycle = "initialized".to_owned();
+        }
+        "authenticate" => {
+            state.authenticated = true;
+            state.lifecycle = "authenticated".to_owned();
+        }
+        "session/new" | "session/load" => {
+            if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
+                if state.session_id.as_deref() != Some(session_id) {
+                    state.session_generation = state.session_generation.saturating_add(1);
+                }
+                state.session_id = Some(session_id.to_owned());
+                state.lifecycle = "sessionOpen".to_owned();
+            }
+        }
+        "session/prompt" => {
+            state.active_prompt_generation = None;
+            state.lifecycle = "sessionOpen".to_owned();
+        }
+        "session/cancel" => {
+            state.active_prompt_generation = None;
+            if state.session_id.is_some() {
+                state.lifecycle = "sessionOpen".to_owned();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_acp_request_failed(state: &mut AcpState, method: &str) {
+    if method == "session/prompt" {
+        state.active_prompt_generation = None;
+        if state.session_id.is_some() {
+            state.lifecycle = "sessionOpen".to_owned();
+        }
+    }
+}
+
+fn apply_acp_notification(state: &mut AcpState, method: &str, payload: &Value) {
+    if method != "session/cancel" {
+        return;
+    }
+    let requested_session = payload
+        .get("params")
+        .and_then(|params| params.get("sessionId"))
+        .and_then(Value::as_str);
+    if requested_session.is_none() || state.session_id.as_deref() == requested_session {
+        state.active_prompt_generation = None;
+        if state.session_id.is_some() {
+            state.lifecycle = "sessionOpen".to_owned();
+        }
     }
 }
 
@@ -1976,10 +2148,52 @@ mod tests {
         assert_eq!(value["sessionId"], "s-1");
         assert!(response.inbound_sequence > 0);
         let state = scope.acp_state(&identity()).expect("acp state");
-        assert!(state.initialized == false);
+        assert!(!state.initialized);
+        assert!(!state.authenticated);
         assert_eq!(state.pending_request_count, 0);
-        assert_eq!(state.lifecycle, "running");
+        assert_eq!(state.session_id.as_deref(), Some("s-1"));
+        assert_eq!(state.session_generation, 1);
+        assert_eq!(state.prompt_generation, 0);
+        assert_eq!(state.active_prompt_generation, None);
+        assert_eq!(state.lifecycle, "sessionOpen");
         scope.shutdown(&identity()).expect("acp shutdown");
+    }
+
+    #[test]
+    fn acp_lifecycle_transitions_are_generation_fenced() {
+        let mut state = AcpState {
+            rpc: JsonRpcState::new(),
+            initialized: false,
+            authenticated: false,
+            lifecycle: "running".to_owned(),
+            session_id: None,
+            session_generation: 0,
+            prompt_generation: 0,
+            active_prompt_generation: None,
+        };
+        apply_acp_request_succeeded(&mut state, "initialize", &json!({}));
+        assert!(state.initialized);
+        assert_eq!(state.lifecycle, "initialized");
+        apply_acp_request_succeeded(&mut state, "authenticate", &json!({}));
+        assert!(state.authenticated);
+        assert_eq!(state.lifecycle, "authenticated");
+        apply_acp_request_succeeded(&mut state, "session/new", &json!({ "sessionId": "s-1" }));
+        assert_eq!(state.session_generation, 1);
+        assert_eq!(state.session_id.as_deref(), Some("s-1"));
+        apply_acp_request_started(&mut state, "session/prompt");
+        assert_eq!(state.prompt_generation, 1);
+        assert_eq!(state.active_prompt_generation, Some(1));
+        assert_eq!(state.lifecycle, "promptRunning");
+        apply_acp_request_succeeded(&mut state, "session/prompt", &json!({}));
+        assert_eq!(state.active_prompt_generation, None);
+        assert_eq!(state.lifecycle, "sessionOpen");
+        apply_acp_notification(
+            &mut state,
+            "session/cancel",
+            &json!({ "params": { "sessionId": "s-1" } }),
+        );
+        assert_eq!(state.session_generation, 1);
+        assert_eq!(state.prompt_generation, 1);
     }
 
     #[test]
@@ -2048,6 +2262,52 @@ mod tests {
         timeout_scope
             .shutdown(&identity())
             .expect("acp timeout shutdown");
+    }
+
+    #[test]
+    fn acp_cancel_notification_rejects_stale_session_generation() {
+        let registry = ScopeRegistry::new();
+        let scope = registry.open_scope(
+            identity(),
+            AgentProviderScopeConfig {
+                command: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "IFS= read -r line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"sessionId\":\"s-1\"}}'; IFS= read -r line; sleep 1".into(),
+                ],
+                environment: Vec::new(),
+                working_directory: None,
+                protocol: ProviderProtocol::Acp,
+                max_stderr_bytes: 1024,
+            },
+        );
+        scope.start(&identity()).expect("acp process should start");
+        let response = scope
+            .acp_request(
+                &identity(),
+                "session/new",
+                None,
+                Some(Duration::from_secs(2)),
+                None,
+            )
+            .expect("session should open");
+        assert_eq!(response.session_generation, 1);
+        assert_eq!(
+            scope.acp_notify(&identity(), "session/cancel", None, Some(0)),
+            Err(AgentProviderScopeError::InvalidArgument(
+                "stale ACP session generation",
+            ))
+        );
+        let receipt = scope
+            .acp_notify(
+                &identity(),
+                "session/cancel",
+                Some(br#"{"sessionId":"s-1"}"#),
+                Some(1),
+            )
+            .expect("current session cancellation should write");
+        assert_eq!(receipt.session_generation, 1);
+        scope.shutdown(&identity()).expect("acp shutdown");
     }
 
     #[test]

@@ -271,6 +271,9 @@ actor ACPAgentSessionController {
     private var activePromptNormalizedReasoningCount = 0
     private var promptSettlementWaitersByTurnID: [UUID: [PromptSettlementWaiter]] = [:]
     private var sessionID: String?
+    /// Rust-owned ACP session generation used to fence cancellation notifications against ABA
+    /// when a controller is reused across session transitions.
+    private var runtimeSessionGeneration: UInt64?
     private var providerSessionIdentity: ACPProviderSessionIdentity
     private var didEmitTerminal = false
     private var eventStreamFinished = false
@@ -547,6 +550,7 @@ actor ACPAgentSessionController {
             ]
         )
         diagnose(.phaseCompleted("initialize"))
+        try await verifyRuntimeACPState(expectedSessionID: nil, requireInitialized: true)
         state = .initialized
 
         let authMethods = initializeResponse["authMethods"] as? [[String: Any]] ?? []
@@ -572,6 +576,10 @@ actor ACPAgentSessionController {
         logSessionMCPInjection()
         let openSessionResult = try await openSession()
         sessionID = openSessionResult.sessionID
+        try await verifyRuntimeACPState(
+            expectedSessionID: openSessionResult.sessionID,
+            requireInitialized: true
+        )
         state = .sessionOpen
 
         return BootstrapResult(
@@ -1039,11 +1047,16 @@ actor ACPAgentSessionController {
         }
 
         do {
-            try sendJSONLine([
+            let payload: [String: Any] = [
                 "jsonrpc": "2.0",
                 "id": pending.rpcID.jsonValue,
                 "result": result
-            ], wireID: pending.wireID)
+            ]
+            if runtimeSession != nil {
+                _ = try await sendRuntimeJSONLine(payload, wireID: pending.wireID)
+            } else {
+                try sendJSONLine(payload, wireID: pending.wireID)
+            }
         } catch {
             let message = "Failed to submit ACP approval decision: \(error.localizedDescription)"
             emit(.stream(AIStreamResult(
@@ -1061,11 +1074,22 @@ actor ACPAgentSessionController {
     func cancelPrompt() async {
         guard sessionID != nil else { return }
         do {
-            try sendSessionCancelNotification()
+            if runtimeSession != nil {
+                _ = try await sendRuntimeSessionCancelNotification()
+            } else {
+                try sendSessionCancelNotification()
+            }
         } catch {
             log("ACP cancel send failed: \(error.localizedDescription)")
+            if runtimeSession != nil {
+                handleRuntimeWriteFailure(error)
+            }
         }
-        cancelPendingPermissionRequestsLocally()
+        if runtimeSession != nil {
+            await cancelRuntimePendingPermissionRequests()
+        } else {
+            cancelPendingPermissionRequestsLocally()
+        }
     }
 
     #if DEBUG
@@ -1086,11 +1110,19 @@ actor ACPAgentSessionController {
             }
             if state == .promptRunning {
                 log("ACP steering interrupt sending session/cancel turn=\(promptTurnID)")
-                try sendSessionCancelNotification()
+                if runtimeSession != nil {
+                    _ = try await sendRuntimeSessionCancelNotification()
+                } else {
+                    try sendSessionCancelNotification()
+                }
             } else {
                 log("ACP steering interrupt waiting stale active turn=\(promptTurnID) state=\(state.rawValue)")
             }
-            cancelPendingPermissionRequestsLocally()
+            if runtimeSession != nil {
+                await cancelRuntimePendingPermissionRequests()
+            } else {
+                cancelPendingPermissionRequestsLocally()
+            }
             try await waitForPromptSettlement(turnID: promptTurnID, timeoutSeconds: timeoutSeconds)
             if activePromptTurnID == promptTurnID {
                 log("ACP steering interrupt clearing settled turn still marked active turn=\(promptTurnID) state=\(state.rawValue)")
@@ -1119,6 +1151,22 @@ actor ACPAgentSessionController {
         resetPerTurnStateForSteeringPrompt()
     }
 
+    private func sendRuntimeSessionCancelNotification() async throws -> CoreAcpControlReceipt {
+        guard let sessionID else {
+            throw ControllerError.invalidState(expected: "sessionOpen or promptRunning", actual: state)
+        }
+        return try await sendRuntimeJSONLine(
+            [
+                "jsonrpc": "2.0",
+                "method": "session/cancel",
+                "params": [
+                    "sessionId": sessionID
+                ]
+            ],
+            expectedSessionGeneration: runtimeSessionGeneration
+        )
+    }
+
     private func sendSessionCancelNotification() throws {
         guard let sessionID else { return }
         try sendJSONLine([
@@ -1128,6 +1176,27 @@ actor ACPAgentSessionController {
                 "sessionId": sessionID
             ]
         ])
+    }
+
+    private func cancelRuntimePendingPermissionRequests() async {
+        let pending = pendingPermissionRequests.values
+        pendingPermissionRequests.removeAll()
+        for request in pending {
+            do {
+                _ = try await sendRuntimeJSONLine([
+                    "jsonrpc": "2.0",
+                    "id": request.rpcID.jsonValue,
+                    "result": [
+                        "outcome": [
+                            "outcome": "cancelled"
+                        ]
+                    ]
+                ], wireID: request.wireID)
+            } catch {
+                handleRuntimeWriteFailure(error)
+            }
+            emit(.approvalCancelled(request.request.requestID))
+        }
     }
 
     private func cancelPendingPermissionRequestsLocally() {
@@ -1279,6 +1348,7 @@ actor ACPAgentSessionController {
         lastAppliedConfigurationSequence = 0
         bufferedConfigOptionUpdates.removeAll()
         sessionID = nil
+        runtimeSessionGeneration = nil
         suppressSessionLoadReplayUpdates = false
         state = .closed
         finishEventsIfNeeded()
@@ -1471,6 +1541,124 @@ actor ACPAgentSessionController {
         }
     }
 
+    private func handleRuntimeServerRequest(
+        id: JSONRPCID,
+        method: String,
+        params: [String: Any],
+        wireID: Data?
+    ) async {
+        switch method {
+        case "session/request_permission":
+            await handleRuntimePermissionRequest(id: id, params: params, wireID: wireID)
+        default:
+            do {
+                _ = try await sendRuntimeJSONLine([
+                    "jsonrpc": "2.0",
+                    "id": id.jsonValue,
+                    "error": [
+                        "code": -32601,
+                        "message": "Unsupported ACP client method: \(method)"
+                    ]
+                ], wireID: wireID)
+            } catch {
+                handleRuntimeWriteFailure(error)
+            }
+        }
+    }
+
+    private func handleRuntimePermissionRequest(
+        id: JSONRPCID,
+        params: [String: Any],
+        wireID: Data?
+    ) async {
+        guard
+            let sessionID = params["sessionId"] as? String,
+            let toolCall = params["toolCall"] as? [String: Any]
+        else {
+            return
+        }
+
+        let toolCallID = (toolCall["toolCallId"] as? String) ?? UUID().uuidString
+        let toolTitle = (toolCall["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toolKind = (toolCall["kind"] as? String)?.lowercased()
+        let rawInputJSON = serializeJSON(toolCall["rawInput"])
+        let optionDictionaries = params["options"] as? [[String: Any]] ?? []
+        let options = optionDictionaries.compactMap { optionDictionary -> PermissionOption? in
+            guard
+                let optionID = optionDictionary["optionId"] as? String,
+                let kind = optionDictionary["kind"] as? String
+            else { return nil }
+            return PermissionOption(optionID: optionID, kind: kind)
+        }
+        let rawInput = toolCall["rawInput"] as? [String: Any]
+        let autoApprovalPayload = repoPromptPermissionAutoApprovalPayload(
+            toolTitle: toolTitle,
+            toolKind: toolKind,
+            toolCall: toolCall,
+            rawInput: rawInput,
+            options: optionDictionaries
+        )
+        let request = AgentApprovalRequest(
+            requestID: .acp(id.displayValue),
+            method: "session/request_permission",
+            kind: approvalKind(for: toolKind),
+            threadID: sessionID,
+            turnID: sessionID,
+            itemID: toolCallID,
+            reason: toolTitle,
+            command: rawInputJSON,
+            cwd: sessionConfiguration.workingDirectory,
+            details: approvalDetails(
+                toolTitle: toolTitle,
+                toolKind: toolKind,
+                rawInputJSON: rawInputJSON,
+                options: optionDictionaries
+            )
+        )
+
+        if let autoApproval = autoApprovalSelection(
+            requestToolName: toolTitle,
+            requestPayload: autoApprovalPayload,
+            options: options
+        ) {
+            do {
+                _ = try await sendRuntimePermissionSelectionResponse(
+                    id: id,
+                    optionID: autoApproval.optionID,
+                    wireID: wireID
+                )
+                log("Auto-approved ACP permission request for \(toolTitle ?? toolCallID) via option \(autoApproval.optionID) matchSource=\(autoApproval.match.source.rawValue) normalizedTool=\(autoApproval.match.normalizedToolName ?? "nil") serverIdentifier=\(autoApproval.match.serverIdentifier ?? "nil")")
+                return
+            } catch {
+                handleRuntimeWriteFailure(error)
+                return
+            }
+        }
+
+        if let fullAccessOptionID = fullAccessAutoApprovalOptionID(for: options) {
+            do {
+                _ = try await sendRuntimePermissionSelectionResponse(
+                    id: id,
+                    optionID: fullAccessOptionID,
+                    wireID: wireID
+                )
+                log("Auto-approved ACP permission request for \(toolTitle ?? toolCallID) via \(provider.providerID.rawValue) full access option \(fullAccessOptionID)")
+                return
+            } catch {
+                handleRuntimeWriteFailure(error)
+                return
+            }
+        }
+
+        pendingPermissionRequests[id.displayValue] = PendingPermissionRequest(
+            rpcID: id,
+            wireID: wireID,
+            options: options,
+            request: request
+        )
+        emit(.approvalRequested(request))
+    }
+
     private func handleNotification(method: String, params: [String: Any], inboundSequence: UInt64) {
         guard method == "session/update" else { return }
         #if DEBUG
@@ -1648,7 +1836,7 @@ actor ACPAgentSessionController {
                 return
             }
             let wireID = (envelope["id_json"] as? String)?.data(using: .utf8)
-            handleServerRequest(
+            await handleRuntimeServerRequest(
                 id: id,
                 method: method,
                 params: envelope["params"] as? [String: Any] ?? [:],
@@ -1681,6 +1869,29 @@ actor ACPAgentSessionController {
             await shutdownRuntimeSession()
         default:
             break
+        }
+    }
+
+    private func verifyRuntimeACPState(
+        expectedSessionID: String?,
+        requireInitialized: Bool
+    ) async throws {
+        guard let runtimeSession,
+              let acpSession = runtimeSession as? any AcpRuntimeSession
+        else { return }
+        let runtimeState = try await acpSession.acpState()
+        guard !requireInitialized || runtimeState.initialized else {
+            throw ControllerError.protocolViolation("Rust ACP lifecycle did not reach initialized state.")
+        }
+        if let expectedSessionID,
+           runtimeState.sessionID != expectedSessionID || runtimeState.sessionGeneration == 0
+        {
+            throw ControllerError.protocolViolation(
+                "Rust ACP lifecycle session generation does not match the opened session."
+            )
+        }
+        if expectedSessionID != nil {
+            runtimeSessionGeneration = runtimeState.sessionGeneration
         }
     }
 
@@ -1939,50 +2150,80 @@ actor ACPAgentSessionController {
         if let line = String(data: data, encoding: .utf8) {
             diagnose(.outboundJSON(line))
         }
-        if let runtimeSession {
-            guard let acpSession = runtimeSession as? any AcpRuntimeSession else {
-                throw ControllerError.protocolViolation("ACP runtime session does not expose semantic request capability.")
-            }
-            let task = Task { [weak self] in
-                do {
-                    if let method = payload["method"] as? String {
-                        guard payload["id"] == nil else {
-                            throw ControllerError.protocolViolation("ACP request must use acpRequest, not the response adapter.")
-                        }
-                        let params = payload["params"].flatMap { try? JSONSerialization.data(withJSONObject: $0, options: []) }
-                        _ = try await acpSession.acpNotify(method: method, params: params)
-                    } else {
-                        guard let rawID = payload["id"],
-                              let requestID = wireID ?? (try? JSONSerialization.data(withJSONObject: rawID, options: []))
-                        else {
-                            throw ControllerError.protocolViolation("ACP response is missing a valid id.")
-                        }
-                        if let error = payload["error"] as? [String: Any] {
-                            let code = (error["code"] as? NSNumber)?.int64Value ?? -32603
-                            let message = error["message"] as? String ?? "ACP client error"
-                            let data = error["data"].flatMap { try? JSONSerialization.data(withJSONObject: $0, options: []) }
-                            _ = try await acpSession.acpRespondError(requestID: requestID, code: code, message: message, data: data)
-                        } else {
-                            guard let resultValue = payload["result"],
-                                  let result = try? JSONSerialization.data(withJSONObject: resultValue, options: [])
-                            else {
-                                throw ControllerError.protocolViolation("ACP response is missing a valid result.")
-                            }
-                            _ = try await acpSession.acpRespond(requestID: requestID, result: result)
-                        }
-                    }
-                } catch {
-                    guard let self else { return }
-                    await handleRuntimeWriteFailure(error)
-                }
-            }
-            _ = task
-            return
+        if runtimeSession != nil {
+            throw ControllerError.protocolViolation(
+                "ACP runtime writes must use the awaited typed control path."
+            )
         }
         guard let stdinDescriptor = process?.stdinDescriptor else {
             throw ControllerError.processNotRunning
         }
         try FDWriteSupport.writeAll(frame, to: stdinDescriptor)
+    }
+
+    /// Sends an ACP notification or server response through the Rust-owned serialized writer.
+    /// Unlike the legacy parser path, production calls await this receipt so a closed stdin or
+    /// stale runtime scope is observed by the initiating actor operation.
+    private func sendRuntimeJSONLine(
+        _ payload: [String: Any],
+        wireID: Data? = nil,
+        expectedSessionGeneration: UInt64? = nil
+    ) async throws -> CoreAcpControlReceipt {
+        guard let runtimeSession else {
+            throw ControllerError.processNotRunning
+        }
+        guard let acpSession = runtimeSession as? any AcpRuntimeSession else {
+            throw ControllerError.protocolViolation(
+                "ACP runtime session does not expose semantic request capability."
+            )
+        }
+        #if DEBUG
+            captureRawACPEvent(kind: "jsonrpc.outbound", payload: payload)
+        #endif
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+        if let line = String(data: data, encoding: .utf8) {
+            diagnose(.outboundJSON(line))
+        }
+        if let method = payload["method"] as? String {
+            guard payload["id"] == nil else {
+                throw ControllerError.protocolViolation(
+                    "ACP request must use acpRequest, not the response adapter."
+                )
+            }
+            let params = payload["params"].flatMap {
+                try? JSONSerialization.data(withJSONObject: $0, options: [])
+            }
+            return try await acpSession.acpNotify(
+                method: method,
+                params: params,
+                expectedSessionGeneration: expectedSessionGeneration
+            )
+        }
+        guard let rawID = payload["id"],
+              let requestID = wireID
+              ?? (try? JSONSerialization.data(withJSONObject: rawID, options: []))
+        else {
+            throw ControllerError.protocolViolation("ACP response is missing a valid id.")
+        }
+        if let error = payload["error"] as? [String: Any] {
+            let code = (error["code"] as? NSNumber)?.int64Value ?? -32603
+            let message = error["message"] as? String ?? "ACP client error"
+            let errorData = error["data"].flatMap {
+                try? JSONSerialization.data(withJSONObject: $0, options: [])
+            }
+            return try await acpSession.acpRespondError(
+                requestID: requestID,
+                code: code,
+                message: message,
+                data: errorData
+            )
+        }
+        guard let resultValue = payload["result"],
+              let result = try? JSONSerialization.data(withJSONObject: resultValue, options: [])
+        else {
+            throw ControllerError.protocolViolation("ACP response is missing a valid result.")
+        }
+        return try await acpSession.acpRespond(requestID: requestID, result: result)
     }
 
     private func failPendingRequests(with error: Error) {
@@ -3167,6 +3408,23 @@ actor ACPAgentSessionController {
 
     private func sendPermissionSelectionResponse(id: JSONRPCID, optionID: String, wireID: Data? = nil) throws {
         try sendJSONLine([
+            "jsonrpc": "2.0",
+            "id": id.jsonValue,
+            "result": [
+                "outcome": [
+                    "outcome": "selected",
+                    "optionId": optionID
+                ]
+            ]
+        ], wireID: wireID)
+    }
+
+    private func sendRuntimePermissionSelectionResponse(
+        id: JSONRPCID,
+        optionID: String,
+        wireID: Data?
+    ) async throws -> CoreAcpControlReceipt {
+        try await sendRuntimeJSONLine([
             "jsonrpc": "2.0",
             "id": id.jsonValue,
             "result": [

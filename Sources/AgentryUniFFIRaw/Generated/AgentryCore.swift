@@ -1704,13 +1704,13 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func agentProviderAcpCancel(identity: RuntimeIdentity, scopeId: String, cancellationToken: String) throws  -> Bool
 
-    func agentProviderAcpNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?) throws  -> UInt64
+    func agentProviderAcpNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?, expectedSessionGeneration: UInt64?) throws  -> CoreAgentProviderAcpControlReceiptV1
 
     func agentProviderAcpRequest(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) throws  -> CoreAgentProviderAcpResponseV1
 
-    func agentProviderAcpRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data) throws  -> UInt64
+    func agentProviderAcpRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data) throws  -> CoreAgentProviderAcpControlReceiptV1
 
-    func agentProviderAcpRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?) throws  -> UInt64
+    func agentProviderAcpRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?) throws  -> CoreAgentProviderAcpControlReceiptV1
 
     func agentProviderAcpState(identity: RuntimeIdentity, scopeId: String) throws  -> CoreAgentProviderAcpSessionStateV1
 
@@ -2128,15 +2128,16 @@ open func agentProviderAcpCancel(identity: RuntimeIdentity, scopeId: String, can
 })
 }
 
-open func agentProviderAcpNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?)throws  -> UInt64  {
-    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+open func agentProviderAcpNotify(identity: RuntimeIdentity, scopeId: String, method: String, params: Data?, expectedSessionGeneration: UInt64?)throws  -> CoreAgentProviderAcpControlReceiptV1  {
+    return try  FfiConverterTypeCoreAgentProviderAcpControlReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_notify(
             self.uniffiCloneHandle(),
         FfiConverterTypeRuntimeIdentity_lower(identity),
         FfiConverterString.lower(scopeId),
         FfiConverterString.lower(method),
-        FfiConverterOptionData.lower(params),uniffiCallStatus
+        FfiConverterOptionData.lower(params),
+        FfiConverterOptionUInt64.lower(expectedSessionGeneration),uniffiCallStatus
     )
 })
 }
@@ -2156,8 +2157,8 @@ open func agentProviderAcpRequest(identity: RuntimeIdentity, scopeId: String, me
 })
 }
 
-open func agentProviderAcpRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data)throws  -> UInt64  {
-    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+open func agentProviderAcpRespond(identity: RuntimeIdentity, scopeId: String, requestId: Data, result: Data)throws  -> CoreAgentProviderAcpControlReceiptV1  {
+    return try  FfiConverterTypeCoreAgentProviderAcpControlReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_respond(
             self.uniffiCloneHandle(),
@@ -2169,8 +2170,8 @@ open func agentProviderAcpRespond(identity: RuntimeIdentity, scopeId: String, re
 })
 }
 
-open func agentProviderAcpRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?)throws  -> UInt64  {
-    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+open func agentProviderAcpRespondError(identity: RuntimeIdentity, scopeId: String, requestId: Data, code: Int64, message: String, data: Data?)throws  -> CoreAgentProviderAcpControlReceiptV1  {
+    return try  FfiConverterTypeCoreAgentProviderAcpControlReceiptV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
         uniffiCallStatus in
     uniffi_agentry_ffi_fn_method_coreruntime_agent_provider_acp_respond_error(
             self.uniffiCloneHandle(),
@@ -5177,15 +5178,85 @@ public func FfiConverterTypeCoreAgentClaudeScopeConfigV1_lower(_ value: CoreAgen
 }
 
 
-public struct CoreAgentProviderAcpResponseV1: Equatable, Hashable {
-    public let result: Data
-    public let inboundSequence: UInt64
+public struct CoreAgentProviderAcpControlReceiptV1: Equatable, Hashable {
+    public let outboundSequence: UInt64
+    public let lifecycle: String
+    public let sessionGeneration: UInt64
+    public let promptGeneration: UInt64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(result: Data, inboundSequence: UInt64) {
+    public init(outboundSequence: UInt64, lifecycle: String, sessionGeneration: UInt64, promptGeneration: UInt64?) {
+        self.outboundSequence = outboundSequence
+        self.lifecycle = lifecycle
+        self.sessionGeneration = sessionGeneration
+        self.promptGeneration = promptGeneration
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CoreAgentProviderAcpControlReceiptV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCoreAgentProviderAcpControlReceiptV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CoreAgentProviderAcpControlReceiptV1 {
+        return
+            try CoreAgentProviderAcpControlReceiptV1(
+                outboundSequence: FfiConverterUInt64.read(from: &buf),
+                lifecycle: FfiConverterString.read(from: &buf),
+                sessionGeneration: FfiConverterUInt64.read(from: &buf),
+                promptGeneration: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CoreAgentProviderAcpControlReceiptV1, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.outboundSequence, into: &buf)
+        FfiConverterString.write(value.lifecycle, into: &buf)
+        FfiConverterUInt64.write(value.sessionGeneration, into: &buf)
+        FfiConverterOptionUInt64.write(value.promptGeneration, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderAcpControlReceiptV1_lift(_ buf: RustBuffer) throws -> CoreAgentProviderAcpControlReceiptV1 {
+    return try FfiConverterTypeCoreAgentProviderAcpControlReceiptV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCoreAgentProviderAcpControlReceiptV1_lower(_ value: CoreAgentProviderAcpControlReceiptV1) -> RustBuffer {
+    return FfiConverterTypeCoreAgentProviderAcpControlReceiptV1.lower(value)
+}
+
+
+public struct CoreAgentProviderAcpResponseV1: Equatable, Hashable {
+    public let result: Data
+    public let inboundSequence: UInt64
+    public let outboundSequence: UInt64
+    public let lifecycle: String
+    public let sessionGeneration: UInt64
+    public let promptGeneration: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(result: Data, inboundSequence: UInt64, outboundSequence: UInt64, lifecycle: String, sessionGeneration: UInt64, promptGeneration: UInt64?) {
         self.result = result
         self.inboundSequence = inboundSequence
+        self.outboundSequence = outboundSequence
+        self.lifecycle = lifecycle
+        self.sessionGeneration = sessionGeneration
+        self.promptGeneration = promptGeneration
     }
 
 
@@ -5205,13 +5276,21 @@ public struct FfiConverterTypeCoreAgentProviderAcpResponseV1: FfiConverterRustBu
         return
             try CoreAgentProviderAcpResponseV1(
                 result: FfiConverterData.read(from: &buf),
-                inboundSequence: FfiConverterUInt64.read(from: &buf)
+                inboundSequence: FfiConverterUInt64.read(from: &buf),
+                outboundSequence: FfiConverterUInt64.read(from: &buf),
+                lifecycle: FfiConverterString.read(from: &buf),
+                sessionGeneration: FfiConverterUInt64.read(from: &buf),
+                promptGeneration: FfiConverterOptionUInt64.read(from: &buf)
         )
     }
 
     public static func write(_ value: CoreAgentProviderAcpResponseV1, into buf: inout [UInt8]) {
         FfiConverterData.write(value.result, into: &buf)
         FfiConverterUInt64.write(value.inboundSequence, into: &buf)
+        FfiConverterUInt64.write(value.outboundSequence, into: &buf)
+        FfiConverterString.write(value.lifecycle, into: &buf)
+        FfiConverterUInt64.write(value.sessionGeneration, into: &buf)
+        FfiConverterOptionUInt64.write(value.promptGeneration, into: &buf)
     }
 }
 
@@ -5234,13 +5313,23 @@ public func FfiConverterTypeCoreAgentProviderAcpResponseV1_lower(_ value: CoreAg
 public struct CoreAgentProviderAcpSessionStateV1: Equatable, Hashable {
     public let lifecycle: String
     public let initialized: Bool
+    public let authenticated: Bool
+    public let sessionId: String?
+    public let sessionGeneration: UInt64
+    public let promptGeneration: UInt64
+    public let activePromptGeneration: UInt64?
     public let pendingRequestCount: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(lifecycle: String, initialized: Bool, pendingRequestCount: UInt64) {
+    public init(lifecycle: String, initialized: Bool, authenticated: Bool, sessionId: String?, sessionGeneration: UInt64, promptGeneration: UInt64, activePromptGeneration: UInt64?, pendingRequestCount: UInt64) {
         self.lifecycle = lifecycle
         self.initialized = initialized
+        self.authenticated = authenticated
+        self.sessionId = sessionId
+        self.sessionGeneration = sessionGeneration
+        self.promptGeneration = promptGeneration
+        self.activePromptGeneration = activePromptGeneration
         self.pendingRequestCount = pendingRequestCount
     }
 
@@ -5262,6 +5351,11 @@ public struct FfiConverterTypeCoreAgentProviderAcpSessionStateV1: FfiConverterRu
             try CoreAgentProviderAcpSessionStateV1(
                 lifecycle: FfiConverterString.read(from: &buf),
                 initialized: FfiConverterBool.read(from: &buf),
+                authenticated: FfiConverterBool.read(from: &buf),
+                sessionId: FfiConverterOptionString.read(from: &buf),
+                sessionGeneration: FfiConverterUInt64.read(from: &buf),
+                promptGeneration: FfiConverterUInt64.read(from: &buf),
+                activePromptGeneration: FfiConverterOptionUInt64.read(from: &buf),
                 pendingRequestCount: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -5269,6 +5363,11 @@ public struct FfiConverterTypeCoreAgentProviderAcpSessionStateV1: FfiConverterRu
     public static func write(_ value: CoreAgentProviderAcpSessionStateV1, into buf: inout [UInt8]) {
         FfiConverterString.write(value.lifecycle, into: &buf)
         FfiConverterBool.write(value.initialized, into: &buf)
+        FfiConverterBool.write(value.authenticated, into: &buf)
+        FfiConverterOptionString.write(value.sessionId, into: &buf)
+        FfiConverterUInt64.write(value.sessionGeneration, into: &buf)
+        FfiConverterUInt64.write(value.promptGeneration, into: &buf)
+        FfiConverterOptionUInt64.write(value.activePromptGeneration, into: &buf)
         FfiConverterUInt64.write(value.pendingRequestCount, into: &buf)
     }
 }
@@ -24369,16 +24468,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_cancel() != 3126) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_notify() != 22139) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_notify() != 22088) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_request() != 38635) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_respond() != 50052) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_respond() != 25076) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_respond_error() != 64809) {
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_respond_error() != 21823) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_agent_provider_acp_state() != 56521) {

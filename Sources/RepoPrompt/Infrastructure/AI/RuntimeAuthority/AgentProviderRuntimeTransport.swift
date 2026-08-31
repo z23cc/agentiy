@@ -41,9 +41,9 @@ protocol CodexAppServerRuntimeSession: AgentProviderRuntimeSession {
 protocol AcpRuntimeSession: AgentProviderRuntimeSession {
     func acpRequest(method: String, params: Data?, timeoutMilliseconds: UInt64?, cancellationToken: String?) async throws -> CoreAcpResponse
     func acpCancel(cancellationToken: String) async throws -> Bool
-    func acpNotify(method: String, params: Data?) async throws -> UInt64
-    func acpRespond(requestID: Data, result: Data) async throws -> UInt64
-    func acpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64
+    func acpNotify(method: String, params: Data?, expectedSessionGeneration: UInt64?) async throws -> CoreAcpControlReceipt
+    func acpRespond(requestID: Data, result: Data) async throws -> CoreAcpControlReceipt
+    func acpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> CoreAcpControlReceipt
     func acpState() async throws -> CoreAcpSessionState
 }
 
@@ -136,15 +136,15 @@ private final class AcpAgentProviderRuntimeSessionAdapter: CoreAgentProviderRunt
         try await session.agentProviderAcpCancel(cancellationToken: cancellationToken)
     }
 
-    func acpNotify(method: String, params: Data?) async throws -> UInt64 {
-        try await session.agentProviderAcpNotify(method: method, params: params)
+    func acpNotify(method: String, params: Data?, expectedSessionGeneration: UInt64?) async throws -> CoreAcpControlReceipt {
+        try await session.agentProviderAcpNotify(method: method, params: params, expectedSessionGeneration: expectedSessionGeneration)
     }
 
-    func acpRespond(requestID: Data, result: Data) async throws -> UInt64 {
+    func acpRespond(requestID: Data, result: Data) async throws -> CoreAcpControlReceipt {
         try await session.agentProviderAcpRespond(requestID: requestID, result: result)
     }
 
-    func acpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+    func acpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> CoreAcpControlReceipt {
         try await session.agentProviderAcpRespondError(requestID: requestID, code: code, message: message, data: data)
     }
 

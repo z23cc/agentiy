@@ -8,24 +8,77 @@ import os
 // adaptation; ACP uses the same Rust-owned JSON-RPC reducer and Claude uses the Rust stream
 // translator.
 
+public struct CoreAcpControlReceipt: Sendable, Equatable {
+    public let outboundSequence: UInt64
+    public let lifecycle: String
+    public let sessionGeneration: UInt64
+    public let promptGeneration: UInt64?
+
+    public init(
+        outboundSequence: UInt64,
+        lifecycle: String,
+        sessionGeneration: UInt64,
+        promptGeneration: UInt64?
+    ) {
+        self.outboundSequence = outboundSequence
+        self.lifecycle = lifecycle
+        self.sessionGeneration = sessionGeneration
+        self.promptGeneration = promptGeneration
+    }
+}
+
 public struct CoreAcpResponse: Sendable, Equatable {
     public let result: Data
     public let inboundSequence: UInt64
+    public let outboundSequence: UInt64
+    public let lifecycle: String
+    public let sessionGeneration: UInt64
+    public let promptGeneration: UInt64?
 
-    public init(result: Data, inboundSequence: UInt64) {
+    public init(
+        result: Data,
+        inboundSequence: UInt64,
+        outboundSequence: UInt64 = 0,
+        lifecycle: String = "unknown",
+        sessionGeneration: UInt64 = 0,
+        promptGeneration: UInt64? = nil
+    ) {
         self.result = result
         self.inboundSequence = inboundSequence
+        self.outboundSequence = outboundSequence
+        self.lifecycle = lifecycle
+        self.sessionGeneration = sessionGeneration
+        self.promptGeneration = promptGeneration
     }
 }
 
 public struct CoreAcpSessionState: Sendable, Equatable {
     public let lifecycle: String
     public let initialized: Bool
+    public let authenticated: Bool
+    public let sessionID: String?
+    public let sessionGeneration: UInt64
+    public let promptGeneration: UInt64
+    public let activePromptGeneration: UInt64?
     public let pendingRequestCount: UInt64
 
-    public init(lifecycle: String, initialized: Bool, pendingRequestCount: UInt64) {
+    public init(
+        lifecycle: String,
+        initialized: Bool,
+        authenticated: Bool = false,
+        sessionID: String? = nil,
+        sessionGeneration: UInt64 = 0,
+        promptGeneration: UInt64 = 0,
+        activePromptGeneration: UInt64? = nil,
+        pendingRequestCount: UInt64
+    ) {
         self.lifecycle = lifecycle
         self.initialized = initialized
+        self.authenticated = authenticated
+        self.sessionID = sessionID
+        self.sessionGeneration = sessionGeneration
+        self.promptGeneration = promptGeneration
+        self.activePromptGeneration = activePromptGeneration
         self.pendingRequestCount = pendingRequestCount
     }
 }
@@ -169,8 +222,9 @@ extension CoreRuntimeTransport {
         identity: CoreRuntimeIdentity,
         scopeID: String,
         method: String,
-        params: Data?
-    ) throws -> UInt64 {
+        params: Data?,
+        expectedSessionGeneration: UInt64?
+    ) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1 {
         throw CoreTransportError.unexpected("acp semantic transport is unavailable")
     }
 
@@ -179,7 +233,7 @@ extension CoreRuntimeTransport {
         scopeID: String,
         requestID: Data,
         result: Data
-    ) throws -> UInt64 {
+    ) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1 {
         throw CoreTransportError.unexpected("acp semantic transport is unavailable")
     }
 
@@ -190,7 +244,7 @@ extension CoreRuntimeTransport {
         code: Int64,
         message: String,
         data: Data?
-    ) throws -> UInt64 {
+    ) throws -> AgentryUniFFIRaw.CoreAgentProviderAcpControlReceiptV1 {
         throw CoreTransportError.unexpected("acp semantic transport is unavailable")
     }
 
@@ -311,7 +365,14 @@ extension AgentryCoreBridge {
                     cancellationToken: cancellationToken
                 )
             }.value
-            return CoreAcpResponse(result: response.result, inboundSequence: response.inboundSequence)
+            return CoreAcpResponse(
+                result: response.result,
+                inboundSequence: response.inboundSequence,
+                outboundSequence: response.outboundSequence,
+                lifecycle: response.lifecycle,
+                sessionGeneration: response.sessionGeneration,
+                promptGeneration: response.promptGeneration
+            )
         } catch {
             throw mapTransportError(error)
         }
@@ -325,24 +386,45 @@ extension AgentryCoreBridge {
     }
 
     @discardableResult
-    func agentProviderAcpNotify(scopeID: String, method: String, params: Data?) async throws -> UInt64 {
+    func agentProviderAcpNotify(scopeID: String, method: String, params: Data?, expectedSessionGeneration: UInt64? = nil) async throws -> CoreAcpControlReceipt {
         let identity = try requireIdentity()
-        do { return try transport.agentProviderAcpNotify(identity: identity, scopeID: scopeID, method: method, params: params) }
-        catch { throw mapTransportError(error) }
+        do {
+            let receipt = try transport.agentProviderAcpNotify(identity: identity, scopeID: scopeID, method: method, params: params, expectedSessionGeneration: expectedSessionGeneration)
+            return CoreAcpControlReceipt(
+                outboundSequence: receipt.outboundSequence,
+                lifecycle: receipt.lifecycle,
+                sessionGeneration: receipt.sessionGeneration,
+                promptGeneration: receipt.promptGeneration
+            )
+        } catch { throw mapTransportError(error) }
     }
 
     @discardableResult
-    func agentProviderAcpRespond(scopeID: String, requestID: Data, result: Data) async throws -> UInt64 {
+    func agentProviderAcpRespond(scopeID: String, requestID: Data, result: Data) async throws -> CoreAcpControlReceipt {
         let identity = try requireIdentity()
-        do { return try transport.agentProviderAcpRespond(identity: identity, scopeID: scopeID, requestID: requestID, result: result) }
-        catch { throw mapTransportError(error) }
+        do {
+            let receipt = try transport.agentProviderAcpRespond(identity: identity, scopeID: scopeID, requestID: requestID, result: result)
+            return CoreAcpControlReceipt(
+                outboundSequence: receipt.outboundSequence,
+                lifecycle: receipt.lifecycle,
+                sessionGeneration: receipt.sessionGeneration,
+                promptGeneration: receipt.promptGeneration
+            )
+        } catch { throw mapTransportError(error) }
     }
 
     @discardableResult
-    func agentProviderAcpRespondError(scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+    func agentProviderAcpRespondError(scopeID: String, requestID: Data, code: Int64, message: String, data: Data?) async throws -> CoreAcpControlReceipt {
         let identity = try requireIdentity()
-        do { return try transport.agentProviderAcpRespondError(identity: identity, scopeID: scopeID, requestID: requestID, code: code, message: message, data: data) }
-        catch { throw mapTransportError(error) }
+        do {
+            let receipt = try transport.agentProviderAcpRespondError(identity: identity, scopeID: scopeID, requestID: requestID, code: code, message: message, data: data)
+            return CoreAcpControlReceipt(
+                outboundSequence: receipt.outboundSequence,
+                lifecycle: receipt.lifecycle,
+                sessionGeneration: receipt.sessionGeneration,
+                promptGeneration: receipt.promptGeneration
+            )
+        } catch { throw mapTransportError(error) }
     }
 
     func agentProviderAcpState(scopeID: String) async throws -> CoreAcpSessionState {
@@ -352,6 +434,11 @@ extension AgentryCoreBridge {
             return CoreAcpSessionState(
                 lifecycle: state.lifecycle,
                 initialized: state.initialized,
+                authenticated: state.authenticated,
+                sessionID: state.sessionId,
+                sessionGeneration: state.sessionGeneration,
+                promptGeneration: state.promptGeneration,
+                activePromptGeneration: state.activePromptGeneration,
                 pendingRequestCount: state.pendingRequestCount
             )
         } catch {
@@ -550,17 +637,17 @@ public final class CoreAgentProviderSession: @unchecked Sendable {
     }
 
     @discardableResult
-    public func agentProviderAcpNotify(method: String, params: Data?) async throws -> UInt64 {
-        try await bridge.agentProviderAcpNotify(scopeID: scopeID, method: method, params: params)
+    public func agentProviderAcpNotify(method: String, params: Data?, expectedSessionGeneration: UInt64? = nil) async throws -> CoreAcpControlReceipt {
+        try await bridge.agentProviderAcpNotify(scopeID: scopeID, method: method, params: params, expectedSessionGeneration: expectedSessionGeneration)
     }
 
     @discardableResult
-    public func agentProviderAcpRespond(requestID: Data, result: Data) async throws -> UInt64 {
+    public func agentProviderAcpRespond(requestID: Data, result: Data) async throws -> CoreAcpControlReceipt {
         try await bridge.agentProviderAcpRespond(scopeID: scopeID, requestID: requestID, result: result)
     }
 
     @discardableResult
-    public func agentProviderAcpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> UInt64 {
+    public func agentProviderAcpRespondError(requestID: Data, code: Int64, message: String, data: Data?) async throws -> CoreAcpControlReceipt {
         try await bridge.agentProviderAcpRespondError(scopeID: scopeID, requestID: requestID, code: code, message: message, data: data)
     }
 

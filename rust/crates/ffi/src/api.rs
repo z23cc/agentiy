@@ -7,7 +7,8 @@ use crate::types::{
     AdmissionDisposition, AdmissionReceipt, AgentProviderScopeHandleV1,
     AgentProviderStartReceiptV1, BulkChunkDiscoveryReceiptV1, BulkChunkReceiptV1, CancelReceipt,
     CommandEnvelope, CompactInventoryPageV1, CompactLookupResultV1, CompactQueryResultV1,
-    CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult, CoreAgentProviderAcpResponseV1,
+    CompactQueryV1, CompactRecordBlockV1, CompactRegexBatchResult,
+    CoreAgentProviderAcpControlReceiptV1, CoreAgentProviderAcpResponseV1,
     CoreAgentProviderAcpSessionStateV1, CoreAgentProviderScopeConfigV1,
     CoreApplyEditsBatchRequestV1, CoreCodeMapBatchRequestV1, CoreCodexSessionStateV1,
     CoreCompactApplyEditsBatchResultV1, CoreCompactCodeMapBatchResultV1, CoreConfig,
@@ -4492,6 +4493,10 @@ impl CoreRuntime {
             Ok(CoreAgentProviderAcpResponseV1 {
                 result: response.result,
                 inbound_sequence: response.inbound_sequence,
+                outbound_sequence: response.outbound_sequence,
+                lifecycle: response.lifecycle,
+                session_generation: response.session_generation,
+                prompt_generation: response.prompt_generation,
             })
         })
     }
@@ -4516,12 +4521,24 @@ impl CoreRuntime {
         scope_id: String,
         method: String,
         params: Option<Vec<u8>>,
-    ) -> Result<u64, CoreError> {
+        expected_session_generation: Option<u64>,
+    ) -> Result<CoreAgentProviderAcpControlReceiptV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let scope = self.agent_provider_scope(&scope_id)?;
-            Ok(scope.acp_notify(&identity, &method, params.as_deref())?)
+            let receipt = scope.acp_notify(
+                &identity,
+                &method,
+                params.as_deref(),
+                expected_session_generation,
+            )?;
+            Ok(CoreAgentProviderAcpControlReceiptV1 {
+                outbound_sequence: receipt.outbound_sequence,
+                lifecycle: receipt.lifecycle,
+                session_generation: receipt.session_generation,
+                prompt_generation: receipt.prompt_generation,
+            })
         })
     }
 
@@ -4531,12 +4548,18 @@ impl CoreRuntime {
         scope_id: String,
         request_id: Vec<u8>,
         result: Vec<u8>,
-    ) -> Result<u64, CoreError> {
+    ) -> Result<CoreAgentProviderAcpControlReceiptV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let scope = self.agent_provider_scope(&scope_id)?;
-            Ok(scope.acp_respond(&identity, &request_id, &result)?)
+            let receipt = scope.acp_respond(&identity, &request_id, &result)?;
+            Ok(CoreAgentProviderAcpControlReceiptV1 {
+                outbound_sequence: receipt.outbound_sequence,
+                lifecycle: receipt.lifecycle,
+                session_generation: receipt.session_generation,
+                prompt_generation: receipt.prompt_generation,
+            })
         })
     }
 
@@ -4548,12 +4571,19 @@ impl CoreRuntime {
         code: i64,
         message: String,
         data: Option<Vec<u8>>,
-    ) -> Result<u64, CoreError> {
+    ) -> Result<CoreAgentProviderAcpControlReceiptV1, CoreError> {
         self.guard(|| {
             self.require_running()?;
             let identity = self.validate_identity(&identity)?;
             let scope = self.agent_provider_scope(&scope_id)?;
-            Ok(scope.acp_respond_error(&identity, &request_id, code, &message, data.as_deref())?)
+            let receipt =
+                scope.acp_respond_error(&identity, &request_id, code, &message, data.as_deref())?;
+            Ok(CoreAgentProviderAcpControlReceiptV1 {
+                outbound_sequence: receipt.outbound_sequence,
+                lifecycle: receipt.lifecycle,
+                session_generation: receipt.session_generation,
+                prompt_generation: receipt.prompt_generation,
+            })
         })
     }
 
@@ -4570,6 +4600,11 @@ impl CoreRuntime {
             Ok(CoreAgentProviderAcpSessionStateV1 {
                 lifecycle: state.lifecycle,
                 initialized: state.initialized,
+                authenticated: state.authenticated,
+                session_id: state.session_id,
+                session_generation: state.session_generation,
+                prompt_generation: state.prompt_generation,
+                active_prompt_generation: state.active_prompt_generation,
                 pending_request_count: u64::try_from(state.pending_request_count)
                     .unwrap_or(u64::MAX),
             })
