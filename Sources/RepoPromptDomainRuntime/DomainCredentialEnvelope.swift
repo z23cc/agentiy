@@ -430,76 +430,154 @@ package actor DomainCredentialEnvelopeStore {
 
 package struct DomainChildLaunchCarrier: Sendable {
     package static let endpointEnvironmentKey = "REPOPROMPT_MCP_PRIVATE_ENDPOINT"
+    package static let endpointIdentityEnvironmentKey = "REPOPROMPT_MCP_PRIVATE_ENDPOINT_IDENTITY"
     package static let launchTokenEnvironmentKey = "REPOPROMPT_MCP_LAUNCH_TOKEN"
     package static let credentialEnvelopeEnvironmentKey = "REPOPROMPT_MCP_CREDENTIAL_ENVELOPE"
     package static let clientPrincipalEnvironmentKey = "REPOPROMPT_MCP_CLIENT_PRINCIPAL"
     package static let providerIdentifierEnvironmentKey = "REPOPROMPT_MCP_PROVIDER_IDENTIFIER"
     package static let runIDEnvironmentKey = "REPOPROMPT_MCP_RUN_ID"
 
+    /// The complete private launch authority envelope. Every key is stripped at each
+    /// process boundary before a newer task-local carrier is merged.
+    package static let environmentKeys: Set<String> = [
+        endpointEnvironmentKey,
+        endpointIdentityEnvironmentKey,
+        launchTokenEnvironmentKey,
+        credentialEnvelopeEnvironmentKey,
+        clientPrincipalEnvironmentKey,
+        providerIdentifierEnvironmentKey,
+        runIDEnvironmentKey
+    ]
+
     package let runID: UUID
     package let launchTokenID: UUID
     package let credentialEnvelope: DomainCredentialEnvelopeDescriptor?
+    package let endpointIdentity: String?
+    package let runtimeID: UUID?
+    package let runtimeGeneration: UInt64?
     package let environment: [String: String]
 
     package init(
         runID: UUID,
         launchTokenID: UUID,
         credentialEnvelope: DomainCredentialEnvelopeDescriptor?,
+        endpointIdentity: String? = nil,
+        runtimeID: UUID? = nil,
+        runtimeGeneration: UInt64? = nil,
         environment: [String: String]
     ) {
         self.runID = runID
         self.launchTokenID = launchTokenID
         self.credentialEnvelope = credentialEnvelope
+        self.endpointIdentity = endpointIdentity
+        self.runtimeID = runtimeID
+        self.runtimeGeneration = runtimeGeneration
         self.environment = environment
     }
 }
 
-package struct DomainPrivateChildLaunchHarness: Sendable {
+package enum DomainChildLaunchAuthorityError: Error, Equatable, Sendable {
+    case invalidEndpointDescriptor
+    case invalidEndpointIdentity
+    case invalidLaunchToken
+    case credentialScopeMismatch
+}
+
+/// Production child-launch authority. It owns the ordering between routing token
+/// reservation and credential-envelope issuance; socket/process I/O remains in the
+/// RepoPromptMCP adapter.
+package actor DomainChildLaunchAuthority {
     package typealias IssueLaunchToken = @Sendable (
         _ request: DomainRunLaunchReservationRequest
     ) async throws -> DomainRunLaunchToken
+    package typealias RevokeLaunchToken = @Sendable (_ tokenID: UUID) async -> Void
 
     private let endpointDescriptor: String
-    private let issueLaunchToken: IssueLaunchToken
+    private let endpointIdentity: String
+    private let runtimeID: UUID
+    private let runtimeGeneration: UInt64
     private let credentialStore: DomainCredentialEnvelopeStore
+    private let issueLaunchToken: IssueLaunchToken
+    private let revokeLaunchToken: RevokeLaunchToken
 
     package init(
         endpointDescriptor: String,
+        endpointIdentity: String,
+        runtimeID: UUID,
+        runtimeGeneration: UInt64,
         credentialStore: DomainCredentialEnvelopeStore,
-        issueLaunchToken: @escaping IssueLaunchToken
+        issueLaunchToken: @escaping IssueLaunchToken,
+        revokeLaunchToken: @escaping RevokeLaunchToken = { _ in }
     ) {
         self.endpointDescriptor = endpointDescriptor
+        self.endpointIdentity = endpointIdentity
+        self.runtimeID = runtimeID
+        self.runtimeGeneration = runtimeGeneration
         self.credentialStore = credentialStore
         self.issueLaunchToken = issueLaunchToken
+        self.revokeLaunchToken = revokeLaunchToken
     }
 
     package func prepare(
         request: DomainRunLaunchReservationRequest,
         credential: (bytes: [UInt8], scope: DomainCredentialScope)? = nil
     ) async throws -> DomainChildLaunchCarrier {
+        guard Self.isSafeDescriptor(endpointDescriptor) else {
+            throw DomainChildLaunchAuthorityError.invalidEndpointDescriptor
+        }
+        guard Self.isSafeDescriptor(endpointIdentity) else {
+            throw DomainChildLaunchAuthorityError.invalidEndpointIdentity
+        }
+        if let credential,
+           credential.scope.runID != request.runID
+               || credential.scope.providerIdentifier != request.providerIdentifier
+               || credential.scope.purpose != request.runPurpose
+        {
+            throw DomainChildLaunchAuthorityError.credentialScopeMismatch
+        }
         let token = try await issueLaunchToken(request)
-        let descriptor: DomainCredentialEnvelopeDescriptor?
-        if let credential {
-            descriptor = try await credentialStore.issue(bytes: credential.bytes, scope: credential.scope)
-        } else {
-            descriptor = nil
+        guard Self.isSafeDescriptor(token.material) else {
+            await revokeLaunchToken(token.tokenID)
+            throw DomainChildLaunchAuthorityError.invalidLaunchToken
         }
-        var environment = [
-            DomainChildLaunchCarrier.endpointEnvironmentKey: endpointDescriptor,
-            DomainChildLaunchCarrier.launchTokenEnvironmentKey: token.material,
-            DomainChildLaunchCarrier.clientPrincipalEnvironmentKey: request.clientPrincipal,
-            DomainChildLaunchCarrier.providerIdentifierEnvironmentKey: request.providerIdentifier,
-            DomainChildLaunchCarrier.runIDEnvironmentKey: request.runID.uuidString
-        ]
-        if let descriptor {
-            environment[DomainChildLaunchCarrier.credentialEnvelopeEnvironmentKey] =
-                descriptor.envelopeID.uuidString
+        do {
+            let descriptor: DomainCredentialEnvelopeDescriptor?
+            if let credential {
+                descriptor = try await credentialStore.issue(bytes: credential.bytes, scope: credential.scope)
+            } else {
+                descriptor = nil
+            }
+            var environment = [
+                DomainChildLaunchCarrier.endpointEnvironmentKey: endpointDescriptor,
+                DomainChildLaunchCarrier.launchTokenEnvironmentKey: token.material,
+                DomainChildLaunchCarrier.clientPrincipalEnvironmentKey: request.clientPrincipal,
+                DomainChildLaunchCarrier.providerIdentifierEnvironmentKey: request.providerIdentifier,
+                DomainChildLaunchCarrier.runIDEnvironmentKey: request.runID.uuidString
+            ]
+            environment[DomainChildLaunchCarrier.endpointIdentityEnvironmentKey] = endpointIdentity
+            if let descriptor {
+                environment[DomainChildLaunchCarrier.credentialEnvelopeEnvironmentKey] =
+                    descriptor.envelopeID.uuidString
+            }
+            return DomainChildLaunchCarrier(
+                runID: request.runID,
+                launchTokenID: token.tokenID,
+                credentialEnvelope: descriptor,
+                endpointIdentity: endpointIdentity,
+                runtimeID: runtimeID,
+                runtimeGeneration: runtimeGeneration,
+                environment: environment
+            )
+        } catch {
+            await revokeLaunchToken(token.tokenID)
+            throw error
         }
-        return DomainChildLaunchCarrier(
-            runID: request.runID,
-            launchTokenID: token.tokenID,
-            credentialEnvelope: descriptor,
-            environment: environment
-        )
+    }
+
+    private static func isSafeDescriptor(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        return value.unicodeScalars.allSatisfy { scalar in
+            scalar.value != 0 && scalar.value != 10 && scalar.value != 13
+        }
     }
 }

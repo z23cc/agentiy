@@ -63,8 +63,8 @@ coordinator.
 
 No provider wire schema, command-line argument, transcript text, MCP schema, permission policy,
 model catalog, persistence format, or external terminal message is intentionally changed. The
-phase removes duplicate semantic mapping only. Real private endpoint/carrier issuance and the
-M6B end-to-end credential/connectivity procedure remain deferred as recorded in the M5 contract.
+phase removes duplicate semantic mapping only. The subsequent M6B closure now provides the
+production private endpoint/carrier handoff without changing this provider semantic boundary.
 
 ## Verification gates
 

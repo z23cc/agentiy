@@ -1,8 +1,27 @@
 import Foundation
+import RepoPromptDomainRuntime
 @testable import RepoPromptMCP
 import XCTest
 
 final class DirectHeadlessProcessTests: XCTestCase {
+    func testChildBridgeRejectsPartialCarrierWithoutEndpointIdentity() async throws {
+        let environment = [
+            DomainChildLaunchCarrier.endpointEnvironmentKey: "/tmp/private.sock",
+            DomainChildLaunchCarrier.launchTokenEnvironmentKey: "token",
+            DomainChildLaunchCarrier.clientPrincipalEnvironmentKey: "principal",
+            DomainChildLaunchCarrier.providerIdentifierEnvironmentKey: "provider",
+            DomainChildLaunchCarrier.runIDEnvironmentKey: UUID().uuidString
+        ]
+        do {
+            try await DirectHeadlessChildBridge.run(environment: environment)
+            XCTFail("partial private-child carriers must fail closed")
+        } catch let error as DirectHeadlessChildBridge.BridgeError {
+            guard case .incompleteCarrier = error else {
+                return XCTFail("unexpected bridge error: \(error)")
+            }
+        }
+    }
+
     func testDirectProcessChildEnvironmentUsesAllowlistAndPrivateCarrier() {
         let inherited = [
             "PATH": "/usr/bin:/bin",
@@ -18,6 +37,7 @@ final class DirectHeadlessProcessTests: XCTestCase {
         ]
         let carrier = [
             "REPOPROMPT_MCP_PRIVATE_ENDPOINT": "unix:///tmp/private.sock",
+            "REPOPROMPT_MCP_PRIVATE_ENDPOINT_IDENTITY": "1:2",
             "REPOPROMPT_MCP_LAUNCH_TOKEN": "single-use-token",
             "REPOPROMPT_MCP_CREDENTIAL_ENVELOPE": "envelope-id",
             "REPOPROMPT_MCP_CLIENT_PRINCIPAL": "headless-client",
@@ -43,6 +63,7 @@ final class DirectHeadlessProcessTests: XCTestCase {
     func testDirectProcessStripsStalePrivateCarrierBeforeCurrentCarrierMerge() {
         let staleCarrier = [
             "REPOPROMPT_MCP_PRIVATE_ENDPOINT": "unix:///tmp/stale.sock",
+            "REPOPROMPT_MCP_PRIVATE_ENDPOINT_IDENTITY": "stale:identity",
             "REPOPROMPT_MCP_LAUNCH_TOKEN": "stale-token",
             "REPOPROMPT_MCP_CREDENTIAL_ENVELOPE": "stale-envelope",
             "REPOPROMPT_MCP_CLIENT_PRINCIPAL": "stale-client",
@@ -51,6 +72,7 @@ final class DirectHeadlessProcessTests: XCTestCase {
         ]
         let currentCarrier = [
             "REPOPROMPT_MCP_PRIVATE_ENDPOINT": "unix:///tmp/current.sock",
+            "REPOPROMPT_MCP_PRIVATE_ENDPOINT_IDENTITY": "current:identity",
             "REPOPROMPT_MCP_LAUNCH_TOKEN": "current-token"
         ]
         let inherited = ["PATH": "/usr/bin:/bin"].merging(staleCarrier) { _, supplied in supplied }

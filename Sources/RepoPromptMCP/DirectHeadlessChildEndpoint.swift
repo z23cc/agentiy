@@ -10,6 +10,27 @@ actor DirectHeadlessChildEndpoint {
         let clientPrincipal: String
         let providerIdentifier: String
         let runID: UUID
+        let endpointIdentity: String?
+
+        init(
+            launchToken: String,
+            clientPrincipal: String,
+            providerIdentifier: String,
+            runID: UUID,
+            endpointIdentity: String? = nil
+        ) {
+            self.launchToken = launchToken
+            self.clientPrincipal = clientPrincipal
+            self.providerIdentifier = providerIdentifier
+            self.runID = runID
+            self.endpointIdentity = endpointIdentity
+        }
+    }
+
+    struct Descriptor: Equatable {
+        let socketPath: String
+        let socketIdentity: String
+        let ownerProcessID: Int32
     }
 
     enum EndpointError: Error, Equatable {
@@ -17,6 +38,9 @@ actor DirectHeadlessChildEndpoint {
         case socket(errno: Int32)
         case bind(errno: Int32)
         case listen(errno: Int32)
+        case invalidDirectory
+        case untrustedPeer
+        case endpointIdentityMismatch
         case handshakeTimeout
         case handshakeTooLarge
         case handshakeRead(errno: Int32)
@@ -40,6 +64,7 @@ actor DirectHeadlessChildEndpoint {
     }
 
     nonisolated let socketURL: URL
+    nonisolated let ownerProcessID: Int32
     private let directoryURL: URL
     private let logger: Logger
     private var listenFD: Int32 = -1
@@ -51,7 +76,17 @@ actor DirectHeadlessChildEndpoint {
     init(directory: URL, logger: Logger) {
         directoryURL = directory
         socketURL = directory.appendingPathComponent("c-\(UUID().uuidString.prefix(12)).sock", isDirectory: false)
+        ownerProcessID = getpid()
         self.logger = logger
+    }
+
+    func descriptor() -> Descriptor? {
+        guard let socketIdentity else { return nil }
+        return Descriptor(
+            socketPath: socketURL.path,
+            socketIdentity: Self.identityDescription(socketIdentity),
+            ownerProcessID: ownerProcessID
+        )
     }
 
     func start(handler: @escaping ClientHandler) throws {
@@ -63,10 +98,18 @@ actor DirectHeadlessChildEndpoint {
             attributes: [.posixPermissions: 0o700]
         )
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        directoryIdentity = Self.identity(at: directory.path)
+        guard Self.privateDirectoryIsTrusted(at: directory.path),
+              let directoryIdentity = Self.identity(at: directory.path)
+        else {
+            throw EndpointError.invalidDirectory
+        }
+        self.directoryIdentity = directoryIdentity
 
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw EndpointError.socket(errno: errno) }
+        guard fd >= 0 else {
+            cleanupDirectoryIfOwned()
+            throw EndpointError.socket(errno: errno)
+        }
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         var address = sockaddr_un()
@@ -74,6 +117,7 @@ actor DirectHeadlessChildEndpoint {
         let bytes = socketURL.path.utf8CString
         guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
             Darwin.close(fd)
+            cleanupDirectoryIfOwned()
             throw EndpointError.pathTooLong
         }
         withUnsafeMutablePointer(to: &address.sun_path) { pointer in
@@ -91,29 +135,40 @@ actor DirectHeadlessChildEndpoint {
         guard bindResult == 0 else {
             let code = errno
             Darwin.close(fd)
+            cleanupDirectoryIfOwned()
             throw EndpointError.bind(errno: code)
         }
         guard chmod(socketURL.path, 0o600) == 0 else {
             let code = errno
             Darwin.close(fd)
             unlink(socketURL.path)
+            cleanupDirectoryIfOwned()
             throw EndpointError.bind(errno: code)
         }
         guard Darwin.listen(fd, 8) == 0 else {
             let code = errno
             Darwin.close(fd)
             unlink(socketURL.path)
+            cleanupDirectoryIfOwned()
             throw EndpointError.listen(errno: code)
         }
+        guard let socketIdentity = Self.identity(at: socketURL.path),
+              Self.privateSocketIsTrusted(at: socketURL.path)
+        else {
+            Darwin.close(fd)
+            unlink(socketURL.path)
+            cleanupDirectoryIfOwned()
+            throw EndpointError.bind(errno: EACCES)
+        }
         listenFD = fd
-        socketIdentity = Self.identity(at: socketURL.path)
+        self.socketIdentity = socketIdentity
         acceptTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             await Self.acceptLoop(endpoint: self, fd: fd, handler: handler)
         }
     }
 
-    func stop() async {
+    func stop(timeout: Duration = .seconds(5)) async {
         let listener = listenFD
         listenFD = -1
         if listener >= 0 {
@@ -124,14 +179,19 @@ actor DirectHeadlessChildEndpoint {
         let accept = acceptTask
         acceptTask = nil
         let clients = Array(clientTasks.values)
-        clientTasks.removeAll()
         for client in clients {
             Darwin.shutdown(client.fd, SHUT_RDWR)
             client.task.cancel()
         }
         await accept?.value
-        for client in clients {
-            await client.task.value
+        let deadline = ContinuousClock().now.advanced(by: timeout)
+        while !clientTasks.isEmpty, ContinuousClock().now < deadline {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        if !clientTasks.isEmpty {
+            logger.warning("Private child endpoint stop timed out", metadata: ["remaining_clients": "\(clientTasks.count)"])
+            clientTasks.removeAll()
         }
         if socketIdentity == Self.identity(at: socketURL.path) {
             unlink(socketURL.path)
@@ -179,21 +239,53 @@ actor DirectHeadlessChildEndpoint {
         let id = UUID()
         let logger = logger
         let task = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let endpoint = self else {
+                Darwin.close(fd)
+                return
+            }
             defer { Darwin.close(fd) }
             do {
                 let handshake = try Self.readHandshake(fd: fd)
+                let currentSocketIdentity = await endpoint.socketIdentitySnapshot()
+                let expectedEndpointIdentity = Self.identityDescription(currentSocketIdentity)
+                guard let endpointIdentity = handshake.endpointIdentity,
+                      endpointIdentity == expectedEndpointIdentity
+                else {
+                    throw EndpointError.endpointIdentityMismatch
+                }
                 let peerPID = Self.peerPID(fd: fd)
+                let ownerProcessID = await endpoint.ownerProcessIDSnapshot()
+                guard let peerPID, Self.isDescendant(peerPID, of: ownerProcessID) else {
+                    throw EndpointError.untrustedPeer
+                }
                 await handler(fd, peerPID, handshake)
             } catch {
                 logger.warning("Rejected private child endpoint connection", metadata: ["error": "\(error)"])
             }
-            await self?.clientFinished(id)
+            await endpoint.clientFinished(id)
         }
         clientTasks[id] = ClientTask(fd: fd, task: task)
     }
 
     private func clientFinished(_ id: UUID) {
         clientTasks.removeValue(forKey: id)
+    }
+
+    private func cleanupDirectoryIfOwned() {
+        guard let directoryIdentity,
+              directoryIdentity == Self.identity(at: directoryURL.path),
+              (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path).isEmpty) == true
+        else { return }
+        try? FileManager.default.removeItem(at: directoryURL)
+        self.directoryIdentity = nil
+    }
+
+    private func socketIdentitySnapshot() -> SocketIdentity? {
+        socketIdentity
+    }
+
+    private func ownerProcessIDSnapshot() -> Int32 {
+        ownerProcessID
     }
 
     private nonisolated static func readHandshake(fd: Int32) throws -> Handshake {
@@ -233,6 +325,58 @@ actor DirectHeadlessChildEndpoint {
         return pid
     }
 
+    private nonisolated static func privateDirectoryIsTrusted(at path: String) -> Bool {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              info.st_uid == geteuid(),
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              (info.st_mode & 0o077) == 0
+        else { return false }
+        return true
+    }
+
+    private nonisolated static func privateSocketIsTrusted(at path: String) -> Bool {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              info.st_uid == geteuid(),
+              (info.st_mode & S_IFMT) == S_IFSOCK,
+              (info.st_mode & 0o077) == 0
+        else { return false }
+        return true
+    }
+
+    private nonisolated static func identityDescription(_ identity: SocketIdentity) -> String {
+        "\(UInt64(identity.device)):\(UInt64(identity.inode))"
+    }
+
+    private nonisolated static func identityDescription(_ identity: SocketIdentity?) -> String? {
+        identity.map(identityDescription)
+    }
+
+    private nonisolated static func isDescendant(_ pid: Int32, of ownerPID: Int32) -> Bool {
+        guard pid > 0, ownerPID > 0 else { return false }
+        if pid == ownerPID { return true }
+        var current = pid_t(pid)
+        for _ in 0 ..< 32 {
+            guard let parent = parentPID(of: current), parent > 1, parent != current else {
+                return false
+            }
+            if parent == pid_t(ownerPID) { return true }
+            current = parent
+        }
+        return false
+    }
+
+    private nonisolated static func parentPID(of pid: pid_t) -> pid_t? {
+        var info = kinfo_proc()
+        var size = MemoryLayout.stride(ofValue: info)
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else {
+            return nil
+        }
+        return info.kp_eproc.e_ppid
+    }
+
     private nonisolated static func identity(at path: String) -> SocketIdentity? {
         var info = stat()
         guard lstat(path, &info) == 0 else { return nil }
@@ -247,15 +391,25 @@ actor DirectHeadlessChildLaunchCoordinator {
     }
 
     private var runtime: MCPDomainRuntime?
-    private var harness: DomainPrivateChildLaunchHarness?
+    private var authority: DomainChildLaunchAuthority?
 
-    func configure(runtime: MCPDomainRuntime, endpointDescriptor: String) {
+    func configure(
+        runtime: MCPDomainRuntime,
+        endpointDescriptor: String,
+        endpointIdentity: String
+    ) {
         self.runtime = runtime
-        harness = DomainPrivateChildLaunchHarness(
+        authority = DomainChildLaunchAuthority(
             endpointDescriptor: endpointDescriptor,
+            endpointIdentity: endpointIdentity,
+            runtimeID: runtime.identity.runtimeID,
+            runtimeGeneration: runtime.identity.lifecycleGeneration,
             credentialStore: runtime.credentialEnvelopeStore,
             issueLaunchToken: { request in
                 try await runtime.routingCoordinator.issueLaunchToken(request)
+            },
+            revokeLaunchToken: { tokenID in
+                await runtime.routingCoordinator.revokeLaunchToken(tokenID)
             }
         )
     }
@@ -265,7 +419,7 @@ actor DirectHeadlessChildLaunchCoordinator {
         arguments: [String: MCP.Value],
         securityContext: DomainToolInvocationSecurityContext
     ) async throws -> DomainChildLaunchCarrier? {
-        guard let runtime, let harness else { throw CoordinatorError.unavailable }
+        guard let runtime, let authority else { throw CoordinatorError.unavailable }
         let registration = try await runtime.routingCoordinator.currentRegistration(
             connectionID: securityContext.connectionID
         )
@@ -290,7 +444,7 @@ actor DirectHeadlessChildLaunchCoordinator {
             expectedProcessID: nil,
             lifetime: .seconds(60)
         )
-        return try await harness.prepare(request: request)
+        return try await authority.prepare(request: request)
     }
 
     nonisolated static func resolvedRunID(

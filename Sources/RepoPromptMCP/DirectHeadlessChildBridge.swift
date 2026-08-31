@@ -26,6 +26,7 @@ enum DirectHeadlessChildBridge {
 
     static func run(environment: [String: String] = ProcessInfo.processInfo.environment) async throws {
         guard let endpoint = environment[DomainChildLaunchCarrier.endpointEnvironmentKey],
+              let endpointIdentity = environment[DomainChildLaunchCarrier.endpointIdentityEnvironmentKey],
               let launchToken = environment[DomainChildLaunchCarrier.launchTokenEnvironmentKey],
               let principal = environment[DomainChildLaunchCarrier.clientPrincipalEnvironmentKey],
               let provider = environment[DomainChildLaunchCarrier.providerIdentifierEnvironmentKey],
@@ -34,14 +35,15 @@ enum DirectHeadlessChildBridge {
         else {
             throw BridgeError.incompleteCarrier
         }
-        try validatePrivateEndpoint(path: endpoint)
+        try validatePrivateEndpoint(path: endpoint, expectedIdentity: endpointIdentity)
         let fd = try connect(path: endpoint)
         defer { Darwin.close(fd) }
         let handshake = DirectHeadlessChildEndpoint.Handshake(
             launchToken: launchToken,
             clientPrincipal: principal,
             providerIdentifier: provider,
-            runID: runID
+            runID: runID,
+            endpointIdentity: endpointIdentity
         )
         var bytes = try JSONEncoder().encode(handshake)
         bytes.append(0x0A)
@@ -71,12 +73,16 @@ enum DirectHeadlessChildBridge {
         }
     }
 
-    private static func validatePrivateEndpoint(path: String) throws {
+    private static func validatePrivateEndpoint(
+        path: String,
+        expectedIdentity: String
+    ) throws {
         var socketInfo = stat()
         guard lstat(path, &socketInfo) == 0,
               socketInfo.st_uid == geteuid(),
               (socketInfo.st_mode & S_IFMT) == S_IFSOCK,
-              (socketInfo.st_mode & 0o077) == 0
+              (socketInfo.st_mode & 0o077) == 0,
+              identityDescription(device: socketInfo.st_dev, inode: socketInfo.st_ino) == expectedIdentity
         else {
             throw BridgeError.untrustedEndpoint
         }
@@ -89,6 +95,10 @@ enum DirectHeadlessChildBridge {
         else {
             throw BridgeError.untrustedEndpoint
         }
+    }
+
+    private static func identityDescription(device: dev_t, inode: ino_t) -> String {
+        "\(UInt64(device)):\(UInt64(inode))"
     }
 
     private static func connect(path: String) throws -> Int32 {

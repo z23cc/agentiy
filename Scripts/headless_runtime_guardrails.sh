@@ -114,6 +114,52 @@ if grep -E -q '(^|[^[:alnum:]_])StdioTransport\(' "$direct_sources/DirectHeadles
   exit 1
 fi
 
+m6b_contract="Scripts/Fixtures/headless_mcp_domain_runtime_m6b_contract.json"
+if [[ ! -f "$m6b_contract" ]] || ! python3 - "$m6b_contract" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+assert value["schema_version"] == 1
+assert value["milestone"] == "M6B"
+assert value["authority"]["production"] == "DomainChildLaunchAuthority"
+assert value["authority"]["routing_token_owner"] == "DomainRoutingCoordinator"
+assert value["authority"]["credential_binding"] == "run_id_provider_purpose_exact"
+assert value["endpoint"]["identity"] == "device_inode_fenced"
+assert value["endpoint"]["cleanup"] == "bounded_identity_fenced_idempotent"
+assert value["token"]["format"] == "nonempty_control_free"
+assert value["token"]["run_fence"] == "run_id_checked_before_consumption"
+assert value["token"]["replay"] == "bounded_consumed_revoked_expired_tombstones"
+assert value["lifecycle"]["admission"] == "token_and_endpoint_identity_before_mcp_handler"
+assert value["carrier"]["inherited_values"] == "all_stripped_before_current_task_local_merge"
+assert len(value["carrier"]["environment_keys"]) == 7
+assert value["compatibility"]["mcp_wire_schema_changed"] is False
+PY
+then
+  echo "error: M6B private child endpoint contract fixture drifted or is invalid JSON" >&2
+  exit 1
+fi
+
+if ! grep -q 'package actor DomainChildLaunchAuthority' "$runtime_sources/DomainCredentialEnvelope.swift" \
+  || ! grep -q 'DomainChildLaunchAuthority(' "$direct_sources/DirectHeadlessChildEndpoint.swift" \
+  || grep -q 'DomainPrivateChildLaunchHarness(' "$direct_sources/DirectHeadlessChildEndpoint.swift"; then
+  echo "error: production child launch must use the explicit DomainChildLaunchAuthority" >&2
+  exit 1
+fi
+
+for carrier_key in \
+  endpointEnvironmentKey endpointIdentityEnvironmentKey launchTokenEnvironmentKey \
+  credentialEnvelopeEnvironmentKey clientPrincipalEnvironmentKey \
+  providerIdentifierEnvironmentKey runIDEnvironmentKey; do
+  if ! grep -q "$carrier_key" "$runtime_sources/DomainCredentialEnvelope.swift" \
+    || ! grep -q 'environmentKeys' "$direct_sources/DirectHeadlessCapabilityBackends.swift" \
+    || ! grep -q 'environmentKeys' Sources/RepoPrompt/Infrastructure/AI/Agents/DomainChildLaunchEnvironmentBridge.swift; then
+    echo "error: private child carrier key set is not single-sourced across launch boundaries" >&2
+    exit 1
+  fi
+done
+
 canonical_workspace_service="$runtime_sources/MCPDomainCanonicalWorkspaceService.swift"
 direct_workspace_adapter="$direct_sources/DirectHeadlessWorkspaceBackends.swift"
 if [[ ! -f "$canonical_workspace_service" ]] \

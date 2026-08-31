@@ -1091,6 +1091,232 @@ final class DomainCredentialAndChildLaunchTests: XCTestCase {
         await tombstoneStore.shutdown()
     }
 
+    func testChildLaunchAuthorityPublishesCompleteRuntimeBoundCarrier() async throws {
+        let identity = makeIdentity()
+        let store = DomainCredentialEnvelopeStore(identity: identity)
+        let tokenID = UUID()
+        let runID = UUID()
+        let context = DomainContextIdentity(workspaceID: UUID(), contextID: UUID())
+        let request = DomainRunLaunchReservationRequest(
+            runID: runID,
+            context: context,
+            expectedContextRevision: 3,
+            windowID: nil,
+            clientPrincipal: "principal:test",
+            providerIdentifier: "codex",
+            runPurpose: "agent_run"
+        )
+        let authority = DomainChildLaunchAuthority(
+            endpointDescriptor: "/tmp/private-child.sock",
+            endpointIdentity: "1:2",
+            runtimeID: identity.runtimeID,
+            runtimeGeneration: identity.lifecycleGeneration,
+            credentialStore: store,
+            issueLaunchToken: { request in
+                XCTAssertEqual(request.runID, runID)
+                return DomainRunLaunchToken(tokenID: tokenID, material: "opaque-token")
+            }
+        )
+
+        let scope = DomainCredentialScope(
+            providerIdentifier: request.providerIdentifier,
+            runID: runID,
+            principalID: UUID(),
+            purpose: request.runPurpose
+        )
+        let carrier = try await authority.prepare(
+            request: request,
+            credential: (bytes: [7, 8], scope: scope)
+        )
+        XCTAssertEqual(carrier.runID, runID)
+        XCTAssertEqual(carrier.launchTokenID, tokenID)
+        XCTAssertEqual(carrier.endpointIdentity, "1:2")
+        XCTAssertEqual(carrier.runtimeID, identity.runtimeID)
+        XCTAssertEqual(carrier.runtimeGeneration, identity.lifecycleGeneration)
+        XCTAssertEqual(
+            Set(carrier.environment.keys),
+            DomainChildLaunchCarrier.environmentKeys
+        )
+        XCTAssertEqual(
+            carrier.environment[DomainChildLaunchCarrier.endpointEnvironmentKey],
+            "/tmp/private-child.sock"
+        )
+        XCTAssertEqual(
+            carrier.environment[DomainChildLaunchCarrier.endpointIdentityEnvironmentKey],
+            "1:2"
+        )
+        XCTAssertEqual(
+            carrier.environment[DomainChildLaunchCarrier.runIDEnvironmentKey],
+            runID.uuidString
+        )
+        let descriptor = try XCTUnwrap(carrier.credentialEnvelope)
+        let payload = try await store.redeem(descriptor, scope: scope)
+        XCTAssertEqual(try payload.withConsumedBytes { Array($0) }, [7, 8])
+        await store.shutdown()
+    }
+
+    func testChildLaunchAuthorityRejectsUnsafeEndpointBeforeTokenIssue() async throws {
+        let identity = makeIdentity()
+        let store = DomainCredentialEnvelopeStore(identity: identity)
+        let issueCount = ChildLaunchIssueCounter()
+        let authority = DomainChildLaunchAuthority(
+            endpointDescriptor: "unsafe\nendpoint",
+            endpointIdentity: "1:2",
+            runtimeID: identity.runtimeID,
+            runtimeGeneration: identity.lifecycleGeneration,
+            credentialStore: store,
+            issueLaunchToken: { _ in
+                await issueCount.increment()
+                return DomainRunLaunchToken(tokenID: UUID(), material: "must-not-issue")
+            }
+        )
+        let request = DomainRunLaunchReservationRequest(
+            runID: UUID(),
+            context: .init(workspaceID: UUID(), contextID: UUID()),
+            expectedContextRevision: 0,
+            windowID: nil,
+            clientPrincipal: "principal:test",
+            providerIdentifier: "codex",
+            runPurpose: "agent_run"
+        )
+        do {
+            _ = try await authority.prepare(request: request)
+            XCTFail("unsafe endpoint descriptors must fail before token reservation")
+        } catch let error as DomainChildLaunchAuthorityError {
+            XCTAssertEqual(error, .invalidEndpointDescriptor)
+        }
+        let issuedCount = await issueCount.value()
+        XCTAssertEqual(issuedCount, 0)
+        await store.shutdown()
+    }
+
+    func testChildLaunchAuthorityRejectsCredentialScopeMismatchBeforeReservation() async throws {
+        let identity = makeIdentity()
+        let store = DomainCredentialEnvelopeStore(identity: identity)
+        let issued = ChildLaunchIssueCounter()
+        let authority = DomainChildLaunchAuthority(
+            endpointDescriptor: "/tmp/private-child.sock",
+            endpointIdentity: "1:2",
+            runtimeID: identity.runtimeID,
+            runtimeGeneration: identity.lifecycleGeneration,
+            credentialStore: store,
+            issueLaunchToken: { _ in
+                await issued.increment()
+                return DomainRunLaunchToken(tokenID: UUID(), material: "must-not-issue")
+            }
+        )
+        let request = DomainRunLaunchReservationRequest(
+            runID: UUID(),
+            context: .init(workspaceID: UUID(), contextID: UUID()),
+            expectedContextRevision: 0,
+            windowID: nil,
+            clientPrincipal: "principal:test",
+            providerIdentifier: "codex",
+            runPurpose: "agent_run"
+        )
+        let mismatchedScope = DomainCredentialScope(
+            providerIdentifier: "acp",
+            runID: UUID(),
+            principalID: UUID(),
+            purpose: "agent_explore"
+        )
+        do {
+            _ = try await authority.prepare(
+                request: request,
+                credential: (bytes: [1], scope: mismatchedScope)
+            )
+            XCTFail("credential scope must match the launch reservation")
+        } catch let error as DomainChildLaunchAuthorityError {
+            XCTAssertEqual(error, .credentialScopeMismatch)
+        }
+        let issueCount = await issued.value()
+        XCTAssertEqual(issueCount, 0)
+        await store.shutdown()
+    }
+
+    func testChildLaunchAuthorityRejectsMalformedTokenAndRevokesReservation() async throws {
+        let identity = makeIdentity()
+        let store = DomainCredentialEnvelopeStore(identity: identity)
+        let revoked = ChildLaunchIssueCounter()
+        let authority = DomainChildLaunchAuthority(
+            endpointDescriptor: "/tmp/private-child.sock",
+            endpointIdentity: "1:2",
+            runtimeID: identity.runtimeID,
+            runtimeGeneration: identity.lifecycleGeneration,
+            credentialStore: store,
+            issueLaunchToken: { _ in
+                DomainRunLaunchToken(tokenID: UUID(), material: "bad\nmaterial")
+            },
+            revokeLaunchToken: { _ in
+                await revoked.increment()
+            }
+        )
+        let request = DomainRunLaunchReservationRequest(
+            runID: UUID(),
+            context: .init(workspaceID: UUID(), contextID: UUID()),
+            expectedContextRevision: 0,
+            windowID: nil,
+            clientPrincipal: "principal:test",
+            providerIdentifier: "codex",
+            runPurpose: "agent_run"
+        )
+        do {
+            _ = try await authority.prepare(request: request)
+            XCTFail("malformed token material must fail closed")
+        } catch let error as DomainChildLaunchAuthorityError {
+            XCTAssertEqual(error, .invalidLaunchToken)
+        }
+        let revokeCount = await revoked.value()
+        XCTAssertEqual(revokeCount, 1)
+        await store.shutdown()
+    }
+
+    func testChildLaunchAuthorityRevokesTokenWhenCredentialIssuanceFails() async throws {
+        let identity = makeIdentity()
+        let store = DomainCredentialEnvelopeStore(identity: identity)
+        let revoked = ChildLaunchIssueCounter()
+        let authority = DomainChildLaunchAuthority(
+            endpointDescriptor: "/tmp/private-child.sock",
+            endpointIdentity: "1:2",
+            runtimeID: identity.runtimeID,
+            runtimeGeneration: identity.lifecycleGeneration,
+            credentialStore: store,
+            issueLaunchToken: { _ in
+                DomainRunLaunchToken(tokenID: UUID(), material: "opaque-token")
+            },
+            revokeLaunchToken: { _ in
+                await revoked.increment()
+            }
+        )
+        let request = DomainRunLaunchReservationRequest(
+            runID: UUID(),
+            context: .init(workspaceID: UUID(), contextID: UUID()),
+            expectedContextRevision: 0,
+            windowID: nil,
+            clientPrincipal: "principal:test",
+            providerIdentifier: "codex",
+            runPurpose: "agent_run"
+        )
+        let scope = DomainCredentialScope(
+            providerIdentifier: request.providerIdentifier,
+            runID: request.runID,
+            principalID: UUID(),
+            purpose: request.runPurpose
+        )
+        do {
+            _ = try await authority.prepare(
+                request: request,
+                credential: (bytes: [], scope: scope)
+            )
+            XCTFail("credential issuance failure must not return a carrier")
+        } catch let error as DomainCredentialEnvelopeError {
+            XCTAssertEqual(error, .unavailable)
+        }
+        let revokeCount = await revoked.value()
+        XCTAssertEqual(revokeCount, 1)
+        await store.shutdown()
+    }
+
     func testInjectedPrivateChildHarnessCarriesSingleUseTokenAndEnvelopeReference() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1108,7 +1334,9 @@ final class DomainCredentialAndChildLaunchTests: XCTestCase {
         try await runtime.start()
         let workspaceID = UUID()
         let contextID = UUID()
-        let documentURL = root.appendingPathComponent("child-harness-workspace.json")
+        let documentURL = root
+            .appendingPathComponent("Workspaces", isDirectory: true)
+            .appendingPathComponent("child-harness-workspace.json")
         let documentObject: [String: Any] = [
             "id": workspaceID.uuidString,
             "schemaVersion": 1,
@@ -1136,8 +1364,11 @@ final class DomainCredentialAndChildLaunchTests: XCTestCase {
             command: .createWorkspace(document)
         ))
         XCTAssertEqual(created.disposition, .applied)
-        let harness = DomainPrivateChildLaunchHarness(
+        let harness = DomainChildLaunchAuthority(
             endpointDescriptor: "injected-private-child://fixture",
+            endpointIdentity: "fixture:1",
+            runtimeID: runtime.identity.runtimeID,
+            runtimeGeneration: runtime.identity.lifecycleGeneration,
             credentialStore: runtime.credentialEnvelopeStore
         ) { request in
             try await runtime.routingCoordinator.issueLaunchToken(request)
@@ -1185,6 +1416,17 @@ final class DomainCredentialAndChildLaunchTests: XCTestCase {
         let material = try XCTUnwrap(
             carrier.environment[DomainChildLaunchCarrier.launchTokenEnvironmentKey]
         )
+        let wrongRunID = await runtime.routingCoordinator.redeemLaunchToken(
+            material: material,
+            runtimeID: runtime.identity.runtimeID,
+            runtimeGeneration: runtime.identity.lifecycleGeneration,
+            connectionID: UUID(),
+            processID: nil,
+            clientPrincipal: request.clientPrincipal,
+            providerIdentifier: request.providerIdentifier,
+            runID: UUID()
+        )
+        XCTAssertEqual(wrongRunID, .identityMismatch)
         let accepted = await runtime.routingCoordinator.redeemLaunchToken(
             material: material,
             runtimeID: runtime.identity.runtimeID,
@@ -1192,7 +1434,8 @@ final class DomainCredentialAndChildLaunchTests: XCTestCase {
             connectionID: UUID(),
             processID: nil,
             clientPrincipal: request.clientPrincipal,
-            providerIdentifier: request.providerIdentifier
+            providerIdentifier: request.providerIdentifier,
+            runID: request.runID
         )
         guard case let .accepted(redemption) = accepted else {
             return XCTFail("Injected harness token was not accepted: \(accepted)")
@@ -1766,6 +2009,18 @@ private func makePersistence(
         externalReloadInterval: nil
     )
     return DomainPersistenceCoordinator(configuration: configuration, identity: identity)
+}
+
+private actor ChildLaunchIssueCounter {
+    private var count = 0
+
+    func increment() {
+        count += 1
+    }
+
+    func value() -> Int {
+        count
+    }
 }
 
 private func makeIdentity(

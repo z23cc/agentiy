@@ -1,17 +1,12 @@
 import Foundation
 import RepoPromptDomainRuntime
 
-/// The app-side launch boundary for M5's single-use private-child carrier.
+/// The app-side launch boundary for the single-use private-child carrier.
 ///
-/// The bridge removes inherited carrier keys before adding the current task-local
-/// values so a process can never receive stale launch authority from its parent.
-/// Creation of a real private endpoint and token redemption remain M6B work.
+/// Every authority field is removed before adding the current task-local values so
+/// nested providers cannot inherit a stale endpoint, identity, token, or run binding.
 enum DomainChildLaunchEnvironmentBridge {
-    private static let carrierKeys: Set<String> = [
-        DomainChildLaunchCarrier.endpointEnvironmentKey,
-        DomainChildLaunchCarrier.launchTokenEnvironmentKey,
-        DomainChildLaunchCarrier.credentialEnvelopeEnvironmentKey
-    ]
+    private static let carrierKeys = DomainChildLaunchCarrier.environmentKeys
 
     static func mergingCurrentCarrier(
         into environment: [String: String]

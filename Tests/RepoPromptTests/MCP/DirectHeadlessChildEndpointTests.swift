@@ -78,10 +78,15 @@ final class DirectHeadlessChildEndpointTests: XCTestCase {
             Darwin.shutdown(fd, SHUT_RDWR)
         }
 
+        guard let endpointDescriptor = await endpoint.descriptor() else {
+            XCTFail("endpoint did not publish a descriptor")
+            return
+        }
         let process = Process()
         process.executableURL = try executableURL()
         var environment = ProcessInfo.processInfo.environment
-        environment[DomainChildLaunchCarrier.endpointEnvironmentKey] = endpoint.socketURL.path
+        environment[DomainChildLaunchCarrier.endpointEnvironmentKey] = endpointDescriptor.socketPath
+        environment[DomainChildLaunchCarrier.endpointIdentityEnvironmentKey] = endpointDescriptor.socketIdentity
         environment[DomainChildLaunchCarrier.launchTokenEnvironmentKey] = "single-use-token"
         environment[DomainChildLaunchCarrier.clientPrincipalEnvironmentKey] = "principal:test"
         environment[DomainChildLaunchCarrier.providerIdentifierEnvironmentKey] = "provider:test"
@@ -110,6 +115,35 @@ final class DirectHeadlessChildEndpointTests: XCTestCase {
         await endpoint.stop()
     }
 
+    func testEndpointRejectsHandshakeWithoutEndpointIdentity() async throws {
+        let directory = URL(fileURLWithPath: "/tmp/rpce-child-identity-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let endpoint = DirectHeadlessChildEndpoint(
+            directory: directory,
+            logger: Logger(label: "DirectHeadlessChildEndpointTests")
+        )
+        let probe = ChildEndpointProbe()
+        try await endpoint.start { _, _, handshake in
+            await probe.record(peerPID: nil, handshake: handshake)
+        }
+        let fd = try connect(to: endpoint.socketURL.path)
+        defer { Darwin.close(fd) }
+        let handshake = DirectHeadlessChildEndpoint.Handshake(
+            launchToken: "token",
+            clientPrincipal: "principal",
+            providerIdentifier: "provider",
+            runID: UUID()
+        )
+        var bytes = try JSONEncoder().encode(handshake)
+        bytes.append(0x0A)
+        _ = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        Darwin.shutdown(fd, SHUT_RDWR)
+        try await Task.sleep(for: .milliseconds(150))
+        let rejectedHandshake = await probe.snapshot()
+        XCTAssertNil(rejectedHandshake)
+        await endpoint.stop()
+    }
+
     func testEndpointTeardownDoesNotUnlinkReplacementNode() async throws {
         let directory = URL(fileURLWithPath: "/tmp/rpce-child-fence-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -123,6 +157,36 @@ final class DirectHeadlessChildEndpointTests: XCTestCase {
         try Data("replacement".utf8).write(to: endpoint.socketURL)
         await endpoint.stop()
         XCTAssertEqual(try String(contentsOf: endpoint.socketURL, encoding: .utf8), "replacement")
+    }
+
+    private func connect(to path: String) throws -> Int32 {
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = path.utf8CString
+        guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+            Darwin.close(fd)
+            throw XCTSkip("socket path too long")
+        }
+        withUnsafeMutablePointer(to: &address.sun_path) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: bytes.count) { destination in
+                for (index, byte) in bytes.enumerated() {
+                    destination[index] = byte
+                }
+            }
+        }
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard result == 0 else {
+            let code = errno
+            Darwin.close(fd)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        return fd
     }
 
     private func executableURL() throws -> URL {

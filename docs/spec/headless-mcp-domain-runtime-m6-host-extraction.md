@@ -214,6 +214,46 @@ The production direct composition:
 `MCPFoundationStandaloneBackend`, generated schema manifests/recorders, and live-window schema
 authorities are absent. `Scripts/headless_runtime_guardrails.sh` enforces those constraints.
 
+### Gate 6B private child endpoint closure (M6B)
+
+The nested-provider handoff is now a production boundary rather than an injected harness claim.
+`DomainChildLaunchAuthority` validates the exact run/provider/purpose credential scope, then orders
+routing-token reservation and optional credential-envelope issuance; it rolls the token back if
+envelope creation fails or token material is malformed. `DirectHeadlessChildEndpoint` owns
+only the private Unix socket: it creates an owner-only `0700` directory and `0600` socket, publishes
+a device/inode descriptor after `listen`, rejects non-descendant peer PIDs, and performs bounded,
+identity-fenced cleanup. `DirectHeadlessChildBridge` captures and verifies that descriptor immediately
+before connecting and sends it in the private handshake.
+
+The routing coordinator validates the run ID before transitioning a launch token to `consumed`;
+wrong-run, wrong-principal, wrong-provider, generation-stale, expired, and replayed handshakes
+therefore leave the active token untouched or return its bounded tombstone. MCP handlers are
+installed only after endpoint and token admission succeeds. All seven carrier fields (endpoint,
+endpoint identity, token, envelope reference, principal, provider, and run ID) are stripped before
+any task-local carrier is merged at a final provider spawn boundary. The public MCP wire catalog and
+provider arguments remain unchanged; automatic app/headless selection remains a later M7 concern.
+
+M6B closure validation (current):
+
+- `make dev-swift-build PRODUCT=all` — ticket `638835a0-eb4d-40f9-8117-9d6deec1fa82`, both
+  Agentry and agentry-mcp products passed after the verified Rust FFI archive;
+- `make dev-test FILTER=DomainCredentialAndChildLaunchTests` — ticket
+  `09bdeb8c-39f8-4b4d-87a7-73b4ca9bcf10`, 11 passed, covering complete carriers, credential-scope
+  mismatch, malformed-token
+  rollback, credential-failure rollback, run-ID fencing, replay, foreign-runtime rejection, and
+  expiry;
+- `make dev-test FILTER=DirectHeadlessChildEndpointTests` — ticket
+  `1da8da4c-dc7c-4007-88ff-84e86c621f4f`, 3 passed and 1 environment skip, including strict
+  endpoint-identity handshake rejection and identity-fenced replacement cleanup;
+- `make dev-test FILTER=DirectHeadlessProcessTests` — ticket
+  `ae70b6c8-fec6-4063-a6f3-5149c3f6372b`, 6 passed, including partial-carrier rejection and
+  seven-key stale-carrier stripping;
+- `make dev-test FILTER=DomainInteractionAppSeamTests` — ticket
+  `c8abcf96-5566-43aa-bf81-e35481cbe282`, 6 passed with current/stale carrier isolation;
+- `make dev-lint` — ticket `c26980d3-9f99-4f68-9b6c-69c047d7cdbf`; `make guardrails`,
+  `./Scripts/headless_runtime_guardrails.sh`, and `./Scripts/source_layout_guardrails.sh` all
+  passed at phase close.
+
 Focused evidence:
 
 - `make dev-swift-build PRODUCT=repoprompt-mcp` — ticket

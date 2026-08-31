@@ -1051,14 +1051,7 @@ enum DirectProcess {
         "XDG_DATA_HOME"
     ]
 
-    private static let childLaunchEnvironmentKeys: Set<String> = [
-        DomainChildLaunchCarrier.endpointEnvironmentKey,
-        DomainChildLaunchCarrier.launchTokenEnvironmentKey,
-        DomainChildLaunchCarrier.credentialEnvelopeEnvironmentKey,
-        DomainChildLaunchCarrier.clientPrincipalEnvironmentKey,
-        DomainChildLaunchCarrier.providerIdentifierEnvironmentKey,
-        DomainChildLaunchCarrier.runIDEnvironmentKey
-    ]
+    private static let childLaunchEnvironmentKeys = DomainChildLaunchCarrier.environmentKeys
 
     /// Removes private launch-carrier values from a stored parent environment before
     /// the current request carrier is merged in.

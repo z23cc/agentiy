@@ -95,6 +95,14 @@ actor DirectHeadlessMCPService {
                     prepared: prepared
                 )
             }
+            guard let endpointDescriptor = await prepared.childEndpoint.descriptor() else {
+                throw DirectHeadlessChildEndpoint.EndpointError.invalidDirectory
+            }
+            await prepared.childLaunchCoordinator.configure(
+                runtime: prepared.runtime,
+                endpointDescriptor: endpointDescriptor.socketPath,
+                endpointIdentity: endpointDescriptor.socketIdentity
+            )
             try await server.start(transport: transport)
             let terminal = await transport.waitUntilTerminal()
             logger.debug("Headless stdio terminal", metadata: ["reason": "\(terminal)"])
@@ -245,10 +253,6 @@ actor DirectHeadlessMCPService {
                 directory: privateEndpointDirectory,
                 logger: logger
             )
-            await childLaunchCoordinator.configure(
-                runtime: runtime,
-                endpointDescriptor: childEndpoint.socketURL.path
-            )
             let parentProcessID = getppid()
             let verifiedFingerprint = Self.verifiedExecutableFingerprint(processID: parentProcessID)
             let principal = DomainClientPrincipal(
@@ -381,11 +385,11 @@ actor DirectHeadlessMCPService {
             connectionID: connectionID,
             processID: peerPID,
             clientPrincipal: handshake.clientPrincipal,
-            providerIdentifier: handshake.providerIdentifier
+            providerIdentifier: handshake.providerIdentifier,
+            runID: handshake.runID
         )
         guard case let .accepted(accepted) = redemption,
-              case let .runScoped(runID, _) = accepted.binding.binding,
-              runID == handshake.runID
+              case .runScoped = accepted.binding.binding
         else {
             logger.warning("Rejected private child launch token", metadata: ["result": "\(redemption)"])
             Darwin.shutdown(fd, SHUT_RDWR)

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "milestone": "M6B",
+  "authority": {
+    "production": "DomainChildLaunchAuthority",
+    "routing_token_owner": "DomainRoutingCoordinator",
+    "physical_endpoint_owner": "RepoPromptMCP.DirectHeadlessChildEndpoint",
+    "credential_owner": "DomainCredentialEnvelopeStore",
+    "credential_binding": "run_id_provider_purpose_exact",
+    "rust_scope": "provider_process_and_byte_transport_only"
+  },
+  "endpoint": {
+    "transport": "owner_only_unix_stream",
+    "directory_mode": "0700",
+    "socket_mode": "0600",
+    "identity": "device_inode_fenced",
+    "owner": "current_euid_and_host_process",
+    "peer": "required_local_peer_pid_descendant",
+    "ancestry_max_depth": 32,
+    "descriptor_capture": "after_listen_before_carrier_issue",
+    "replacement": "child_preflight_and_parent_handshake_reject_mismatch",
+    "cleanup": "bounded_identity_fenced_idempotent"
+  },
+  "carrier": {
+    "environment_keys": [
+      "REPOPROMPT_MCP_PRIVATE_ENDPOINT",
+      "REPOPROMPT_MCP_PRIVATE_ENDPOINT_IDENTITY",
+      "REPOPROMPT_MCP_LAUNCH_TOKEN",
+      "REPOPROMPT_MCP_CREDENTIAL_ENVELOPE",
+      "REPOPROMPT_MCP_CLIENT_PRINCIPAL",
+      "REPOPROMPT_MCP_PROVIDER_IDENTIFIER",
+      "REPOPROMPT_MCP_RUN_ID"
+    ],
+    "merge_boundary": "final_provider_process_spawn_only",
+    "inherited_values": "all_stripped_before_current_task_local_merge",
+    "secrets": "opaque_token_and_envelope_id_only"
+  },
+  "token": {
+    "material": "opaque_random_capability",
+    "format": "nonempty_control_free",
+    "use": "single_use",
+    "runtime_fence": "runtime_id_and_lifecycle_generation",
+    "identity_fence": "principal_provider_process_id_when_declared",
+    "run_fence": "run_id_checked_before_consumption",
+    "replay": "bounded_consumed_revoked_expired_tombstones"
+  },
+  "lifecycle": {
+    "endpoint_states": ["created", "listening", "draining", "stopped"],
+    "admission": "token_and_endpoint_identity_before_mcp_handler",
+    "shutdown": "listener_close_client_cancel_bounded_wait_then_cleanup",
+    "timeout": "degraded_cleanup_without_runtime_shutdown_block",
+    "terminal_cleanup": "connection_cancel_release_unregister_once"
+  },
+  "compatibility": {
+    "mcp_wire_schema_changed": false,
+    "mcp_catalog_changed": false,
+    "provider_arguments_changed": false,
+    "legacy_partial_carrier": "fail_closed_incomplete_carrier",
+    "automatic_backend_cutover": "deferred_to_M7"
+  },
+  "exclusions": [
+    "Rust Darwin socket implementation",
+    "durable token or endpoint persistence",
+    "automatic app/headless backend selection",
+    "legacy proxy compatibility removal"
+  ]
+}

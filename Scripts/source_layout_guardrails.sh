@@ -1266,6 +1266,37 @@ print_matches \
   grep -R -n -E 'ClaudeAgentModeCoordinator\(|ClaudeNativeProcessSessionController\(|ClaudeRustBackedNativeSessionAdapter\(' \
     Sources/RepoPromptMCP
 
+# M6B keeps child-launch semantics in the Domain authority and physical socket/process I/O in
+# RepoPromptMCP. The contract is intentionally separate from the historical M5 fixture.
+m6b_contract="Scripts/Fixtures/headless_mcp_domain_runtime_m6b_contract.json"
+if [[ ! -f "$m6b_contract" ]]; then
+  fail "M6B private child endpoint contract fixture missing: $m6b_contract"
+else
+  if ! python3 - "$m6b_contract" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+assert value["milestone"] == "M6B"
+assert value["authority"]["production"] == "DomainChildLaunchAuthority"
+assert value["authority"]["credential_binding"] == "run_id_provider_purpose_exact"
+assert value["endpoint"]["identity"] == "device_inode_fenced"
+assert value["token"]["format"] == "nonempty_control_free"
+assert value["token"]["run_fence"] == "run_id_checked_before_consumption"
+assert value["lifecycle"]["timeout"] == "degraded_cleanup_without_runtime_shutdown_block"
+assert len(value["carrier"]["environment_keys"]) == 7
+PY
+  then
+    fail "M6B private child endpoint contract fixture is invalid or drifted"
+  fi
+fi
+if ! grep -q 'package actor DomainChildLaunchAuthority' Sources/RepoPromptDomainRuntime/DomainCredentialEnvelope.swift \
+  || ! grep -q 'DomainChildLaunchAuthority(' Sources/RepoPromptMCP/DirectHeadlessChildEndpoint.swift \
+  || grep -q 'DomainPrivateChildLaunchHarness(' Sources/RepoPromptMCP/DirectHeadlessChildEndpoint.swift; then
+  fail "M6B production child launch must use DomainChildLaunchAuthority without the legacy harness"
+fi
+
 if [[ "$failures" -ne 0 ]]; then
   printf 'Source layout guardrails failed (%s issue%s).\n' "$failures" "$([[ "$failures" == 1 ]] && printf '' || printf 's')" >&2
   exit 1

@@ -550,7 +550,8 @@ package actor DomainRoutingCoordinator {
         connectionID: UUID,
         processID: Int32?,
         clientPrincipal: String,
-        providerIdentifier: String
+        providerIdentifier: String,
+        runID: UUID? = nil
     ) -> DomainRunLaunchRedemptionResult {
         let digest = DomainContentDigest.sha256(Data(material.utf8))
         guard var record = tokenRecords[digest] else { return .unknown }
@@ -574,7 +575,8 @@ package actor DomainRoutingCoordinator {
             return .generationMismatch
         }
         guard record.request.clientPrincipal == clientPrincipal,
-              record.request.providerIdentifier == providerIdentifier
+              record.request.providerIdentifier == providerIdentifier,
+              runID == nil || record.request.runID == runID
         else {
             return .identityMismatch
         }

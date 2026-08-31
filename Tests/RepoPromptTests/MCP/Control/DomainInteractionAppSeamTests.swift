@@ -133,13 +133,21 @@ final class DomainInteractionAppSeamTests: XCTestCase {
             credentialEnvelope: nil,
             environment: [
                 DomainChildLaunchCarrier.endpointEnvironmentKey: "private://endpoint",
-                DomainChildLaunchCarrier.launchTokenEnvironmentKey: "one-shot-token"
+                DomainChildLaunchCarrier.endpointIdentityEnvironmentKey: "1:2",
+                DomainChildLaunchCarrier.launchTokenEnvironmentKey: "one-shot-token",
+                DomainChildLaunchCarrier.clientPrincipalEnvironmentKey: "current-principal",
+                DomainChildLaunchCarrier.providerIdentifierEnvironmentKey: "current-provider",
+                DomainChildLaunchCarrier.runIDEnvironmentKey: UUID().uuidString
             ]
         )
         let inherited = [
             "PATH": "/bin",
+            DomainChildLaunchCarrier.endpointIdentityEnvironmentKey: "stale-endpoint",
             DomainChildLaunchCarrier.launchTokenEnvironmentKey: "stale-token",
-            DomainChildLaunchCarrier.credentialEnvelopeEnvironmentKey: "stale-envelope"
+            DomainChildLaunchCarrier.credentialEnvelopeEnvironmentKey: "stale-envelope",
+            DomainChildLaunchCarrier.clientPrincipalEnvironmentKey: "stale-principal",
+            DomainChildLaunchCarrier.providerIdentifierEnvironmentKey: "stale-provider",
+            DomainChildLaunchCarrier.runIDEnvironmentKey: "stale-run"
         ]
         let carried = DomainChildLaunchContext.$current.withValue(carrier) {
             DomainChildLaunchEnvironmentBridge.mergingCurrentCarrier(into: inherited)
@@ -147,6 +155,10 @@ final class DomainInteractionAppSeamTests: XCTestCase {
         XCTAssertEqual(carried["PATH"], "/bin")
         XCTAssertEqual(carried[DomainChildLaunchCarrier.endpointEnvironmentKey], "private://endpoint")
         XCTAssertEqual(carried[DomainChildLaunchCarrier.launchTokenEnvironmentKey], "one-shot-token")
+        XCTAssertEqual(carried[DomainChildLaunchCarrier.endpointIdentityEnvironmentKey], "1:2")
+        XCTAssertEqual(carried[DomainChildLaunchCarrier.clientPrincipalEnvironmentKey], "current-principal")
+        XCTAssertEqual(carried[DomainChildLaunchCarrier.providerIdentifierEnvironmentKey], "current-provider")
+        XCTAssertNotEqual(carried[DomainChildLaunchCarrier.runIDEnvironmentKey], "stale-run")
         XCTAssertNil(carried[DomainChildLaunchCarrier.credentialEnvelopeEnvironmentKey])
 
         let stripped = DomainChildLaunchEnvironmentBridge.mergingCurrentCarrier(into: inherited)
