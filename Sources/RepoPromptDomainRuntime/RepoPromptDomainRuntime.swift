@@ -462,17 +462,25 @@ package actor MCPDomainRuntime {
 
     private func runWorkspaceMutationAccessRecovery() async {
         defer { workspaceMutationAccessRecoveryTask = nil }
+        let minimumInterval: Duration = .milliseconds(100)
+        let maximumInterval: Duration = .seconds(30)
+        var retryInterval = minimumInterval
         while !Task.isCancelled {
             let current = await workspaceAuthority.mutationAccessStateSnapshot()
             guard !current.acceptsMutations else { return }
             do {
-                try await Task.sleep(for: .milliseconds(100))
+                try await Task.sleep(for: retryInterval)
             } catch {
                 return
             }
             guard !Task.isCancelled, lifecycle == .ready || lifecycle == .degraded else { return }
-            _ = await workspaceAuthority.activateMutationAccess()
+            let next = await workspaceAuthority.activateMutationAccess()
             await synchronizeLifecycleWithWorkspaceHealth()
+            if next.acceptsMutations {
+                retryInterval = minimumInterval
+            } else {
+                retryInterval = min(retryInterval * 2, maximumInterval)
+            }
         }
     }
 

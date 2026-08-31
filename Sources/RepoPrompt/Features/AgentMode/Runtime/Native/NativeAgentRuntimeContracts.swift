@@ -23,6 +23,10 @@ protocol NativeAgentRuntimeControlling: Actor {
     func currentSessionRef() async -> NativeAgentRuntimeSessionRef
     func applyModelAndEffort(model: String?, effortLevel: NativeAgentRuntimeEffortLevel?) async throws
     func sendUserMessage(_ text: String) async throws -> UUID
+    /// Sends a message with a caller-reserved turn identity. The identity is reserved before
+    /// crossing the provider boundary so an immediately-completing provider cannot publish its
+    /// terminal event before the coordinator has installed its stale-event fence.
+    func sendUserMessage(_ text: String, turnID: UUID) async throws -> UUID
     /// Sends a reasoned interrupt request to the provider runtime.
     /// - Parameter reason: "interrupt" for steering (graceful), "cancel" for forceful stop.
     func interruptTurn(reason: String) async -> NativeAgentRuntimeInterruptOutcome

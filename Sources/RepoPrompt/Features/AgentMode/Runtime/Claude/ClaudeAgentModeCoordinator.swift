@@ -1029,22 +1029,33 @@ final class ClaudeAgentModeCoordinator {
                 continue
             }
 
+            let reservedTurnID = UUID()
+            session.claudeExpectedTurnIDs.insert(reservedTurnID)
             do {
                 let outboundText = hostCapabilities.prependPendingHandoff(text, session)
                 let instructions = agentModeInstructionInjection(for: session)
                 let providerBoundText = providerBoundUserMessage(outboundText, instructions: instructions)
-                let turnID = try await controller.sendUserMessage(providerBoundText)
+                let returnedTurnID = try await controller.sendUserMessage(providerBoundText, turnID: reservedTurnID)
+                guard returnedTurnID == reservedTurnID else {
+                    session.claudeExpectedTurnIDs.remove(reservedTurnID)
+                    return recordSendFailure(
+                        "Claude native send failed because the provider returned a mismatched turn identity.",
+                        session: session,
+                        intent: intent
+                    )
+                }
                 guard intentIsCurrent(intent, for: session),
                       sessionOwnsClaudeController(controller, for: session)
                 else {
+                    session.claudeExpectedTurnIDs.remove(reservedTurnID)
                     if !sessionOwnsClaudeController(controller, for: session) {
                         await controller.shutdown()
                     }
                     return .superseded
                 }
-                session.claudeExpectedTurnIDs.insert(turnID)
                 return .sent
             } catch {
+                session.claudeExpectedTurnIDs.remove(reservedTurnID)
                 guard intentIsCurrent(intent, for: session),
                       sessionOwnsClaudeController(controller, for: session)
                 else {

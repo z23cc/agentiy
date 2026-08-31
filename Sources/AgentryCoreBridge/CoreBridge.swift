@@ -6123,27 +6123,49 @@ public actor AgentryCoreBridge {
         wakeDrainRequested = true
         guard !wakeDrainInProgress else { return }
         wakeDrainInProgress = true
-        defer { wakeDrainInProgress = false }
+        defer {
+            wakeDrainInProgress = false
+        }
 
         while wakeDrainRequested {
             wakeDrainRequested = false
             guard let identity, lifecycle == .running else { return }
             do {
-                repeat {
+                while true {
                     try await drainAll(identity: identity)
                     // Guaranteed suspension per pass: if a registration-order bug ever
                     // reappears, the loop degrades to a yielding poll instead of a
                     // non-yielding actor monopoly that starves the registration path.
                     await Task.yield()
-                } while try transport.rearmWake(identity: identity)
+                    let hasMore = try transport.rearmWake(identity: identity)
+                    if !hasMore { break }
+                }
                 try await drainAll(identity: identity)
             } catch {
                 let mapped = mapTransportError(error)
                 if mapped == .runtimeInvalidated {
                     noteInvalidationTrigger("wakeFired transport error: \(String(describing: error))")
                     invalidate()
+                    wakeDrainRequested = false
+                } else if lifecycle == .running {
+                    // A subscription may close while `drain` is suspended in the async decoder.
+                    // The batch has already been removed from Rust, so the failure is recoverable;
+                    // always rearm the shared wake hub or one stale consumer can leave every later
+                    // provider event queued behind a permanently-armed (but unread) pipe.
+                    do {
+                        let hasMore = try transport.rearmWake(identity: identity)
+                        wakeDrainRequested = hasMore
+                    } catch {
+                        let rearmError = mapTransportError(error)
+                        if rearmError == .runtimeInvalidated {
+                            noteInvalidationTrigger("wakeFired rearm error: \(String(describing: error))")
+                            invalidate()
+                        }
+                        wakeDrainRequested = false
+                    }
+                } else {
+                    wakeDrainRequested = false
                 }
-                return
             }
         }
     }

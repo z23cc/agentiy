@@ -1235,6 +1235,10 @@ actor LifecycleFakeNativeController: NativeAgentRuntimeControlling {
     func applyModelAndEffort(model: String?, effortLevel: NativeAgentRuntimeEffortLevel?) async throws {}
 
     func sendUserMessage(_ text: String) async throws -> UUID {
+        try await sendUserMessage(text, turnID: UUID())
+    }
+
+    func sendUserMessage(_ text: String, turnID: UUID) async throws -> UUID {
         recorder.record("\(label):send")
         if let sendUserMessageGate {
             await sendUserMessageGate.arriveAndWait()
@@ -1246,7 +1250,6 @@ actor LifecycleFakeNativeController: NativeAgentRuntimeControlling {
         if failSend {
             throw LifecycleTestError.expectedClaudeSendFailure
         }
-        let turnID = UUID()
         if let runtimeInitStatusOnSend {
             eventsContinuation.yield(.runtimeInit(runtimeInitStatusOnSend))
         }

@@ -643,6 +643,46 @@ final class ClaudeRustBackedTurnLevelDifferentialTests: XCTestCase {
         await controller.shutdown()
     }
 
+    func testImmediateResultIsRetainedUntilTurnIdentityIsBound() async throws {
+        _ = await ServerNetworkManager.shared.start()
+        let cliPath = try syntheticCLIPath()
+        let sessionID = "p6-7-immediate-\(UUID().uuidString.prefix(8))"
+        let scriptURL = try writeScript([
+            // Keep only the startup margin; the turn itself has no delay. This reproduces a
+            // provider that emits assistant/result frames before the awaited Rust send returns.
+            "SLEEP 500",
+            #"OUT {"type":"system","subtype":"init","session_id":"\#(sessionID)"}"#,
+            #"OUT {"type":"assistant","message":{"content":[{"type":"text","text":"immediate result"}]}}"#,
+            #"OUT {"type":"result","subtype":"success","session_id":"\#(sessionID)"}"#
+        ])
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let resolver = ScriptedSyntheticCLIEnvironmentResolver(
+            overrides: ["AGENT_CLAUDE_SYNTHETIC_CLI_ARGS": "scripted\n\(scriptURL.path)"]
+        )
+        let config = makeConfig(commandPath: cliPath)
+        let controller = ClaudeRustBackedNativeSessionAdapter(
+            runID: UUID(),
+            tabID: UUID(),
+            windowID: 1,
+            workspacePath: FileManager.default.temporaryDirectory.path,
+            config: config,
+            runtimeConfig: ClaudeCompatiblePluginBridge.runtimeConfig(from: config, mode: .agentMode),
+            environmentResolver: resolver
+        )
+
+        let collector = try await drive(controller: controller)
+        let events = await collector.events
+        XCTAssertEqual(
+            events.count(where: {
+                if case .turnCompleted = $0 { true } else { false }
+            }),
+            1,
+            "an immediately-completing provider must not lose its terminal event while the send is awaited"
+        )
+        await controller.shutdown()
+    }
+
     func testScriptedTurnProducesTheFrozenCanonicalEventSequence() async throws {
         // `startOrResume` requires the embedded MCP server to be reachable before spawning; the
         // Rust adapter's MCP config lease acquisition calls into the same service. Other

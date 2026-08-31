@@ -142,6 +142,13 @@ actor ClaudeRustBackedNativeSessionAdapter: NativeAgentRuntimeControlling {
 
     private var turnIDByGeneration: [UInt64: UUID] = [:]
     private var pendingGenerations: Set<UInt64> = []
+    /// A very fast provider can publish `turnCompleted` while the awaited Rust write is still
+    /// returning its generation. Keep that authoritative status until the caller-supplied UUID
+    /// can be bound; otherwise the coordinator would (correctly) reject a randomly synthesized
+    /// identity as stale.
+    private static let maximumBufferedTurnCompletions = 8
+    private var bufferedTurnCompletions: [UInt64: NativeAgentRuntimeTurnStatus] = [:]
+    private var awaitingTurnReservations = 0
     private var latestGeneration: UInt64 = 0
     private var invocationUUIDByRustID: [UInt64: UUID] = [:]
 
@@ -466,17 +473,26 @@ actor ClaudeRustBackedNativeSessionAdapter: NativeAgentRuntimeControlling {
     }
 
     func sendUserMessage(_ text: String) async throws -> UUID {
+        try await sendUserMessage(text, turnID: UUID())
+    }
+
+    func sendUserMessage(_ text: String, turnID: UUID) async throws -> UUID {
         guard let session else { throw NativeAgentRuntimeControllerError.processNotRunning }
+        awaitingTurnReservations += 1
+        defer { awaitingTurnReservations = max(0, awaitingTurnReservations - 1) }
         let generation: UInt64
         do {
             generation = try await session.sendUserMessage(text)
         } catch {
             throw NativeAgentRuntimeControllerError.inputWriteFailed(String(describing: error))
         }
-        let turnID = UUID()
         turnIDByGeneration[generation] = turnID
         pendingGenerations.insert(generation)
         latestGeneration = max(latestGeneration, generation)
+        if let bufferedStatus = bufferedTurnCompletions.removeValue(forKey: generation) {
+            pendingGenerations.remove(generation)
+            emit(.turnCompleted(turnID: turnID, status: bufferedStatus))
+        }
         return turnID
     }
 
@@ -582,9 +598,22 @@ actor ClaudeRustBackedNativeSessionAdapter: NativeAgentRuntimeControlling {
             )))
         case "turnCompleted":
             guard let generation = decoded.turnID else { return }
-            let turnID = turnIDByGeneration.removeValue(forKey: generation) ?? UUID()
+            let status = mapTurnStatus(decoded.stringField("status"))
+            guard let turnID = turnIDByGeneration.removeValue(forKey: generation) else {
+                // The Rust scope may finish before the awaited send returns its generation.
+                // Buffer only during an in-flight reservation; an otherwise unknown completion
+                // is stale and must remain fail-closed.
+                guard awaitingTurnReservations > 0 else { return }
+                if bufferedTurnCompletions.count >= Self.maximumBufferedTurnCompletions,
+                   let oldestGeneration = bufferedTurnCompletions.keys.min()
+                {
+                    bufferedTurnCompletions.removeValue(forKey: oldestGeneration)
+                }
+                bufferedTurnCompletions[generation] = status
+                return
+            }
             pendingGenerations.remove(generation)
-            emit(.turnCompleted(turnID: turnID, status: mapTurnStatus(decoded.stringField("status"))))
+            emit(.turnCompleted(turnID: turnID, status: status))
         case "approvalRequest":
             if await autoApproveRepoPromptPermissionIfNeeded(decoded) {
                 break
@@ -614,6 +643,8 @@ actor ClaudeRustBackedNativeSessionAdapter: NativeAgentRuntimeControlling {
             activeLaunchEnvironmentSignature = nil
             pendingGenerations.removeAll()
             turnIDByGeneration.removeAll()
+            bufferedTurnCompletions.removeAll()
+            awaitingTurnReservations = 0
             latestGeneration = 0
             invocationUUIDByRustID.removeAll()
             configLease?.release()
