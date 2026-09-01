@@ -311,6 +311,11 @@ package actor MCPDomainRuntime {
                 return
             }
         }
+        // The catalog work above suspends, so a cancellation between that guard and here would
+        // otherwise still start the workspace authority -- which takes the durable lease and runs
+        // catalog recovery. Every other bootstrap step in this sequence is guarded immediately
+        // before its `await`; this one was not.
+        guard lifecycle == .starting, !Task.isCancelled else { return }
         await workspaceAuthority.bootstrap()
         guard lifecycle == .starting, !Task.isCancelled else { return }
         await mutationPolicyStore.bootstrap()
