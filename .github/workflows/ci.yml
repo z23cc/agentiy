@@ -242,6 +242,12 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
         run: cargo fuzz run claude_ndjson_v1 corpus/claude_ndjson_v1 -- -max_total_time=60
 
+      - name: Fuzz agent-command-v1 event envelope decode for 60 seconds
+        working-directory: rust/fuzz
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.build/cargo-fuzz
+        run: cargo fuzz run agent_command_v1 corpus/agent_command_v1 -- -max_total_time=60
+
       - name: Test Rust bridge in debug configuration
         run: make dev-test TEST_PRODUCT=AgentryCoreBridgeTests CONFIGURATION=debug
 
