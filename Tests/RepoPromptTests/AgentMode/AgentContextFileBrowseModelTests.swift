@@ -802,15 +802,15 @@ final class AgentContextFileBrowseModelTests: XCTestCase {
     func testTenThousandNestedFilesKeepExpansionLazyAndSelectionMembershipCorrect() async throws {
         throw XCTSkip(
             """
-            Quarantined 2026-09-01: hangs indefinitely instead of failing.
-            Reproduced in isolation (single `xcrun xctest` invocation, >90s with no completion) and
-            under conductor's AGENTRY_APPLICATION_SUPPORT_ROOT isolation, so it is neither an
-            ordering effect nor environment-specific. Main thread parks in XCTWaiter
-            waitForExpectations, i.e. an `await` in the test body never resumes.
-            Blocks the whole `root_tests` lane: `make dev-test` cannot finish, so it burns
-            conductor's 3600s default timeout and reports nothing. Skipping keeps the gate usable
-            and, unlike a bare timeout, does not risk masking a real product regression as a pass.
-            Root-cause work is per-test; see docs/investigations/upstream-comparison-20260901.md.
+            Quarantined 2026-09-01, corrected same day: this test does not hang, it takes
+            ~386s. It builds a ten-thousand-file nested fixture, so it is a scale test whose cost
+            is real work. The original quarantine reason said "hangs indefinitely"; that was
+            inferred from a 120s census timeout rather than measured, and re-running it without
+            the skip completes successfully.
+            It stays skipped because 386s in a single test blows any sane suite timeout and
+            dominates the `root_tests` lane on its own. The right fix is to shrink the fixture or
+            move it behind an opt-in scale lane, not to keep paying it per run.
+            See docs/investigations/upstream-comparison-20260901.md.
             """
         )
         let files = (0 ..< 10000).map { "Nested/File\($0).swift" }

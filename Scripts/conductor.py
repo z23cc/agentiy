@@ -136,6 +136,7 @@ XCTEST_STALL_DIAGNOSTIC_MAX_PROCESSES = 64
 XCTEST_STALL_SAMPLE_MAX_BYTES = 128 * 1024
 XCTEST_STALL_FAILURE_EXIT_CODE = 70
 XCTEST_WATCHDOG_JOIN_SECONDS = 25.0
+OPERATION_STREAM_JOIN_SECONDS = 10.0
 FORCE_STOP_RPC_TIMEOUT_SECONDS = 30.0
 APP_STOP_POLL_SECONDS = 0.2
 APP_STOP_QUIET_SECONDS = 1.0
@@ -7297,45 +7298,76 @@ def run_operation_command(
     allow_exit_codes: Optional[set[int]] = None,
     timeout: Optional[float] = None,
 ) -> Tuple[int, str, str]:
+    """Run a child command, streaming its output live while still returning it.
+
+    Output is streamed rather than captured-then-printed because the daemon's XCTest stall
+    watchdog arms itself from `Test Case ... started` markers it observes in job output. Under
+    the previous `subprocess.run(..., capture_output=True)` nothing reached the daemon until the
+    child exited, so a child that never exits produced no markers, the watchdog never armed, and
+    `--xctest-stall-seconds` was inert: a hung `swift test` burned the full job timeout and
+    reported nothing. The case that most needs diagnostics was the one guaranteed not to produce
+    any.
+
+    stdout and stderr are pumped by separate threads because reading them sequentially deadlocks
+    once either pipe buffer fills. Lines interleave as they are produced, which no caller parses:
+    the retired `--- stdout ---` / `--- stderr ---` banners were printed but never matched, and
+    `summarize()` consumes a flat line list.
+    """
     allowed = allow_exit_codes if allow_exit_codes is not None else {0}
     print(f"\n==> {name}", flush=True)
     print(f"$ {format_argv(argv)}", flush=True)
+    process = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_chunks: List[str] = []
+    stderr_chunks: List[str] = []
+    write_lock = threading.Lock()
+
+    def pump(stream: Any, sink: List[str]) -> None:
+        try:
+            for line in stream:
+                sink.append(line)
+                with write_lock:
+                    print(line, end="" if line.endswith("\n") else "\n", flush=True)
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    pumps = [
+        threading.Thread(target=pump, args=(process.stdout, stdout_chunks), daemon=True),
+        threading.Thread(target=pump, args=(process.stderr, stderr_chunks), daemon=True),
+    ]
+    for thread in pumps:
+        thread.start()
+
+    timed_out = False
     try:
-        completed = subprocess.run(
-            list(argv),
-            cwd=str(cwd),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        returncode = process.wait()
+    for thread in pumps:
+        thread.join(timeout=OPERATION_STREAM_JOIN_SECONDS)
+
+    stdout = "".join(stdout_chunks)
+    stderr = "".join(stderr_chunks)
+    if timed_out:
         print(f"status: timed out after {timeout}s", flush=True)
-        _print_captured(stdout, stderr)
         return 124, stdout, stderr
-    stdout = completed.stdout or ""
-    stderr = completed.stderr or ""
-    print(f"status: {completed.returncode}", flush=True)
-    _print_captured(stdout, stderr)
-    if completed.returncode not in allowed:
-        print(f"FAILED stage '{name}' with status {completed.returncode}", flush=True)
-    return int(completed.returncode), stdout, stderr
-
-
-def _print_captured(stdout: str, stderr: str) -> None:
-    print("--- stdout ---", flush=True)
-    if stdout:
-        print(stdout, end="" if stdout.endswith("\n") else "\n", flush=True)
-    print("--- stderr ---", flush=True)
-    if stderr:
-        print(stderr, end="" if stderr.endswith("\n") else "\n", flush=True)
+    print(f"status: {returncode}", flush=True)
+    if returncode not in allowed:
+        print(f"FAILED stage '{name}' with status {returncode}", flush=True)
+    return int(returncode), stdout, stderr
 
 
 def is_already_on_workspace(stderr: str, workspace: str) -> bool:
