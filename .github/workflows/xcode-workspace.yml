@@ -4,29 +4,11 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '17 9 * * 1'
-  push:
-    branches:
-      - main
-    paths:
-      - 'Package.swift'
-      - 'Package.resolved'
-      - 'Makefile'
-      - 'Scripts/generate_xcode_workspace.py'
-      - 'Scripts/xcode_developer_workflow.sh'
-      - 'Scripts/test_xcode_workspace_generator.py'
-      - '.github/workflows/xcode-workspace.yml'
-      - 'docs/architecture/xcode-workspace.md'
-  pull_request:
-    paths:
-      - 'Package.swift'
-      - 'Package.resolved'
-      - 'Makefile'
-      - 'Scripts/generate_xcode_workspace.py'
-      - 'Scripts/xcode_developer_workflow.sh'
-      - 'Scripts/test_xcode_workspace_generator.py'
-      - '.github/workflows/xcode-workspace.yml'
-      - 'docs/architecture/xcode-workspace.md'
 
+# Cost policy (2026-09-01): the weekly schedule and manual dispatch above are the
+# entry points; the former path-filtered `push: main` trigger is covered by
+# `preflight.sh pr-ready`, which selects the xcode_workspace_validation lane locally
+# whenever those same paths change.
 permissions:
   contents: read
 

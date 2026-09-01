@@ -1,10 +1,10 @@
 name: Release Candidate
 
+# Cost policy (2026-09-01): dispatch-only. This packaged an ad-hoc candidate on every
+# push to main -- on a macOS runner, for a build that is only wanted when a candidate is
+# actually being cut.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
