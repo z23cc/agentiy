@@ -1,10 +1,24 @@
 name: CI
 
+# Cost policy (2026-09-01): every job here runs on `macos-26`, which GitHub bills at a
+# 10x minute multiplier -- one full run measured ~27 macOS minutes (~273 billable). Heavy
+# validation is therefore on-demand only, and the per-PR path keeps just the secret scan.
+#
+# The replacement gate is local, not absent: `.agents/skills/rpce-contribution-check/scripts/
+# preflight.sh pr-ready` runs dev-lint, dev-test, dev-provider-test, both dev-swift-build
+# products, xcode-validate, dev-cargo-{test,codegen-check,deny,audit} and `make guardrails`,
+# path-selected against the computed outgoing range, and `preflight.sh push` already performs
+# outgoing-range secret scanning. That covers this workflow apart from fuzz and the bridge
+# debug/release/TSan matrix, which the weekly schedule below owns.
+#
+# `push: main` was removed deliberately. Leaving it while gating the heavy jobs off would let
+# `main-beta.yml` (`workflow_run: workflows: [CI], branches: [main]`) observe a *successful* CI
+# run that had validated nothing, and publish a beta from an unvalidated commit.
 on:
   pull_request:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
@@ -16,6 +30,7 @@ permissions:
 jobs:
   style:
     name: Style
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -58,6 +73,7 @@ jobs:
 
   build-and-test:
     name: Build and Test (app shard ${{ matrix.shard }})
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     strategy:
       fail-fast: false
@@ -110,6 +126,7 @@ jobs:
 
   sentry-enabled-build:
     name: Sentry-enabled Build
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -143,6 +160,7 @@ jobs:
 
   rust-ffi:
     name: Rust FFI
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -259,6 +277,7 @@ jobs:
 
   provider-tests:
     name: Provider Tests
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
