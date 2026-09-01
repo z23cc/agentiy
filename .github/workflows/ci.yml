@@ -95,9 +95,25 @@ jobs:
           path: |
             .build
             Packages/RepoPromptAgentProviders/.build
+            ~/.cargo/registry
+            ~/.cargo/git
           key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', 'Packages/RepoPromptAgentProviders/Package.swift', 'Packages/RepoPromptAgentProviders/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-swiftpm-
+
+      - name: Build Rust FFI archive
+        # `CAgentryRustCore` links `.build/agentry-rust/current/libagentry_ffi.a` and includes
+        # `AgentryRustArchiveReady.h` from the same directory, so every Swift build of `Agentry`
+        # depends on that archive existing. Without it `shim.c` stops at its actionable
+        # "Missing Agentry Rust FFI archive" marker -- which is exactly how all four app shards
+        # and this job failed on every run before this step existed.
+        #
+        # `make dev-cargo-archive` rather than a raw `cargo build`: conductor owns staging the
+        # archive into `.build/agentry-rust/generations/<fingerprint>/` and atomically selecting
+        # it through the `current` symlink `Package.swift` resolves. It also revalidates an
+        # archive restored from the Swift-keyed cache above against the current build
+        # fingerprint and rebuilds when stale, so that cache cannot serve a mismatched archive.
+        run: make dev-cargo-archive PROFILE=debug
 
       - name: Build app product
         run: swift build --arch arm64 --product Agentry
@@ -144,9 +160,25 @@ jobs:
           path: |
             .build
             Packages/RepoPromptAgentProviders/.build
+            ~/.cargo/registry
+            ~/.cargo/git
           key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-sentry-${{ hashFiles('Package.swift', 'Package.resolved', 'Packages/RepoPromptAgentProviders/Package.swift', 'Packages/RepoPromptAgentProviders/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-swiftpm-
+
+      - name: Build Rust FFI archive
+        # `CAgentryRustCore` links `.build/agentry-rust/current/libagentry_ffi.a` and includes
+        # `AgentryRustArchiveReady.h` from the same directory, so every Swift build of `Agentry`
+        # depends on that archive existing. Without it `shim.c` stops at its actionable
+        # "Missing Agentry Rust FFI archive" marker -- which is exactly how all four app shards
+        # and this job failed on every run before this step existed.
+        #
+        # `make dev-cargo-archive` rather than a raw `cargo build`: conductor owns staging the
+        # archive into `.build/agentry-rust/generations/<fingerprint>/` and atomically selecting
+        # it through the `current` symlink `Package.swift` resolves. It also revalidates an
+        # archive restored from the Swift-keyed cache above against the current build
+        # fingerprint and rebuilds when stale, so that cache cannot serve a mismatched archive.
+        run: make dev-cargo-archive PROFILE=debug
 
       - name: Build app product with Sentry SDK linked
         env:
