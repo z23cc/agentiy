@@ -1357,7 +1357,20 @@ fn workspace_authority_catalog_error_v1(
                 WorkspaceWorkingJournalError::InvalidContextTable
             }
         },
-        _ => WorkspaceWorkingJournalError::InvalidTransaction,
+        // Exhaustive on purpose: no `_` arm. The catch-all this replaces mapped four unrelated
+        // catalog failures onto InvalidTransaction, which reached Swift as
+        // "workspace_save_transaction_invalid" and described none of them. That relabelling is
+        // what made an ordering defect in is_valid_authority_state read as a flaky transaction
+        // error. A new catalog variant must now fail to compile here rather than inherit a
+        // misleading label.
+        WorkspaceProjectionCatalogError::InvalidAuthorityState => {
+            WorkspaceWorkingJournalError::InvalidRevisionState
+        }
+        WorkspaceProjectionCatalogError::GenerationMismatch { .. }
+        | WorkspaceProjectionCatalogError::GenerationExhausted
+        | WorkspaceProjectionCatalogError::StateUnavailable => {
+            WorkspaceWorkingJournalError::InvalidTransaction
+        }
     }
 }
 

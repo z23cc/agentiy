@@ -542,18 +542,32 @@ fn is_valid_authority_state(
     projection: &WorkspaceDocumentProjection,
     authority: &WorkspaceProjectionAuthorityState,
 ) -> bool {
-    is_valid_revision_state(authority.revisions)
-        && is_valid_health(&authority.health)
-        && authority.contexts.len() == projection.contexts.len()
-        && authority
-            .contexts
-            .iter()
-            .zip(&projection.contexts)
-            .all(|(authority, context)| {
-                authority.context_id == context.context_id
-                    && is_valid_revision_state(authority.revisions)
-                    && is_valid_health(&authority.health)
+    if !is_valid_revision_state(authority.revisions) || !is_valid_health(&authority.health) {
+        return false;
+    }
+    if authority.contexts.len() != projection.contexts.len() {
+        return false;
+    }
+    // Correspondence is by context id, not by position. Both sides describe the same set of
+    // contexts, but neither producer promises a shared ordering, and zipping them made a valid
+    // state fail whenever the two happened to be ordered differently -- non-deterministically,
+    // since the ordering follows generated context ids. Building the index also rejects
+    // duplicate ids on the authority side, which a positional walk could not see.
+    let authority_by_context: BTreeMap<&str, &WorkspaceContextAuthorityState> = authority
+        .contexts
+        .iter()
+        .map(|context| (context.context_id.as_str(), context))
+        .collect();
+    if authority_by_context.len() != authority.contexts.len() {
+        return false;
+    }
+    projection.contexts.iter().all(|context| {
+        authority_by_context
+            .get(context.context_id.as_str())
+            .is_some_and(|authority| {
+                is_valid_revision_state(authority.revisions) && is_valid_health(&authority.health)
             })
+    })
 }
 
 pub(crate) fn is_valid_revision_state(revisions: WorkspaceProjectionRevisionState) -> bool {
@@ -847,6 +861,62 @@ mod tests {
             catalog.replace_published_workspaces(0, &[invalid]),
             Err(WorkspaceProjectionCatalogError::InvalidAuthorityState)
         );
+
+        // Regression: authority contexts described the same set as the projection but in a
+        // different order, and the previous positional zip rejected them. Ordering follows
+        // generated context ids, so this failed non-deterministically, and the catalog-error
+        // catch-all then relabelled it as the unrelated "invalid transaction".
+        let context_a = "11111111-1111-1111-1111-111111111111";
+        let context_b = "22222222-2222-2222-2222-222222222222";
+        let projection = WorkspaceDocumentProjection {
+            workspace_id: WORKSPACE_ID.to_owned(),
+            schema_version: 1,
+            name: "Ordered".to_owned(),
+            repo_paths: Vec::new(),
+            active_context_id: None,
+            contexts: vec![context_projection(context_a), context_projection(context_b)],
+        };
+        let healthy = WorkspaceProjectionHealth {
+            kind: WorkspaceProjectionHealthKind::Writable,
+            reason: None,
+        };
+        let reversed = WorkspaceProjectionAuthorityState {
+            revisions: revision(1),
+            health: healthy.clone(),
+            contexts: vec![
+                WorkspaceContextAuthorityState {
+                    context_id: context_b.to_owned(),
+                    revisions: revision(1),
+                    health: healthy.clone(),
+                },
+                WorkspaceContextAuthorityState {
+                    context_id: context_a.to_owned(),
+                    revisions: revision(1),
+                    health: healthy.clone(),
+                },
+            ],
+        };
+        assert!(is_valid_authority_state(&projection, &reversed));
+
+        // Same length, but a duplicate id means one projection context has no authority state.
+        // A positional walk could not see this; the id index rejects it.
+        let duplicated = WorkspaceProjectionAuthorityState {
+            revisions: revision(1),
+            health: healthy.clone(),
+            contexts: vec![
+                WorkspaceContextAuthorityState {
+                    context_id: context_a.to_owned(),
+                    revisions: revision(1),
+                    health: healthy.clone(),
+                },
+                WorkspaceContextAuthorityState {
+                    context_id: context_a.to_owned(),
+                    revisions: revision(1),
+                    health: healthy,
+                },
+            ],
+        };
+        assert!(!is_valid_authority_state(&projection, &duplicated));
         assert_eq!(catalog.snapshot().expect("unchanged").generation, 0);
 
         let too_many = [
@@ -882,6 +952,17 @@ mod tests {
             working_revision: value,
             saved_revision: value,
             dirty_revision: None,
+        }
+    }
+
+    fn context_projection(context_id: &str) -> WorkspaceContextProjection {
+        WorkspaceContextProjection {
+            context_id: context_id.to_owned(),
+            name: "Context".to_owned(),
+            active_agent_session_id: None,
+            active_chat_session_id: None,
+            prompt: String::new(),
+            selection: Vec::new(),
         }
     }
 
