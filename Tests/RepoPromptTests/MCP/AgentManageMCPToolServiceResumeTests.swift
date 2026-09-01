@@ -97,7 +97,7 @@ final class AgentManageMCPToolServiceResumeTests: XCTestCase {
 
         let workspace = window.workspaceManager.createWorkspace(
             name: "Resume Ownership \(UUID().uuidString.prefix(8))",
-            repoPaths: [FileManager.default.currentDirectoryPath],
+            repoPaths: [MCPTestWorkspaceRoot.makeEmptyRepoRoot()],
             ephemeral: true
         )
         await window.workspaceManager.switchWorkspace(
