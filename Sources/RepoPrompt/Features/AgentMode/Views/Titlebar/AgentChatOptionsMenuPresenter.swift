@@ -9,6 +9,27 @@ struct AgentChatOptionsMenuTarget: Equatable {
 }
 
 enum AgentSessionHandoffPrompt {
+    /// Renders a session title as exactly one human-readable, quoted line.
+    ///
+    /// `String(reflecting:)` gives quoting and backslash escaping, but leaves real control and
+    /// separator scalars intact -- a title containing a newline, NEL, LS or PS would otherwise
+    /// split the handoff prompt across lines and corrupt the key/value block that follows it.
+    /// Those categories are re-encoded as `\u{...}` so the title can never break the layout.
+    private static func quotedSingleLineTitle(_ title: String) -> String {
+        let reflected = String(reflecting: title)
+        var rendered = ""
+        rendered.reserveCapacity(reflected.utf8.count)
+        for scalar in reflected.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .control, .lineSeparator, .paragraphSeparator:
+                rendered += "\\u{\(String(scalar.value, radix: 16, uppercase: true))}"
+            default:
+                rendered.unicodeScalars.append(scalar)
+            }
+        }
+        return rendered
+    }
+
     static func render(
         target: AgentChatOptionsMenuTarget,
         cliCommandName: String,
@@ -17,6 +38,7 @@ enum AgentSessionHandoffPrompt {
         let prompt = """
         Use Agentry to continue this exact Agent Mode session.
 
+        Session title: \(quotedSingleLineTitle(target.tabName))
         Window ID: \(target.windowID)
         Workspace ID: \(target.workspaceID.uuidString)
         Context ID (compose tab): \(target.tabID.uuidString)
