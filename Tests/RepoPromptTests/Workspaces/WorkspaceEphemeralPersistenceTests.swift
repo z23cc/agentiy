@@ -462,7 +462,12 @@ import XCTest
             )
             XCTAssertEqual(Set(firstApply.deletedWorkspaceIDs), [removableLeak.id, persistentReadLeak.id])
             XCTAssertEqual(Set(firstApply.skippedReasonsByWorkspaceID.keys), [protectedLeak.id])
-            XCTAssertTrue(firstApply.failedReasonsByWorkspaceID.isEmpty)
+            XCTAssertTrue(
+                firstApply.failedReasonsByWorkspaceID.isEmpty,
+                "delete reported failures: \(firstApply.failedReasonsByWorkspaceID); "
+                    + "skipped: \(firstApply.skippedReasonsByWorkspaceID); "
+                    + "requestFailureReason: \(String(describing: firstApply.requestFailureReason))"
+            )
             XCTAssertFalse(FileManager.default.fileExists(atPath: workspaceFileURL(for: removableLeak).path))
             XCTAssertFalse(FileManager.default.fileExists(atPath: workspaceFileURL(for: persistentReadLeak).path))
 
