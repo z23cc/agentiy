@@ -72,7 +72,13 @@ class SecurityInventoryTests(unittest.TestCase):
     def test_inconsistent_identity_capture_is_rejected(self) -> None:
         fixture = json.loads(IDENTITY_FIXTURE_PATH.read_text(encoding="utf-8"))
         inconsistent = copy.deepcopy(fixture)
-        inconsistent["valid_identity_output"] += f'  2) {SHA1_C} "{CERTIFICATE_NAME}"\n'
+        # Must be the name *this fixture* carries, not the module default: `collect_inventory`
+        # parses the fixture's output with `fixture["certificate_name"]`, so a line naming anything
+        # else is filtered out before the consistency check and the test passes vacuously. That is
+        # what happened when the product was renamed to Agentry and the captured fixture kept its
+        # original name -- derive it here so a future rename cannot silently disarm this again.
+        fixture_certificate_name = inconsistent.get("certificate_name", CERTIFICATE_NAME)
+        inconsistent["valid_identity_output"] += f'  2) {SHA1_C} "{fixture_certificate_name}"\n'
 
         with self.assertRaisesRegex(ValueError, "Valid identities missing from all identities"):
             identity_inventory.collect_inventory(
