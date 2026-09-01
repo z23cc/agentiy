@@ -1909,10 +1909,19 @@ import XCTest
                             $0.id == fixture.contextB.workspaceID
                         }
                     )
-                    let authorityDirectory = fixture.rootURL.appendingPathComponent(
-                        "inactive-workspace-authority-\(fixture.contextB.workspaceID.uuidString)",
-                        isDirectory: true
-                    )
+                    // Must sit inside the authority runtime's own workspace storage directory.
+                    // ADR-0006's single-writer lease only covers that root, so a document placed
+                    // in a sibling directory is correctly refused with
+                    // `workspace_document_outside_lease_scope`: nothing would arbitrate two
+                    // runtimes writing it, which is the hazard the lease exists to prevent. This
+                    // fixture predates the lease (2026-08-20 vs P5-0b on 2026-08-25) and still
+                    // assumed a workspace could live anywhere on disk.
+                    let authorityDirectory = authorityRuntimeRoot
+                        .appendingPathComponent("Workspaces", isDirectory: true)
+                        .appendingPathComponent(
+                            "inactive-workspace-authority-\(fixture.contextB.workspaceID.uuidString)",
+                            isDirectory: true
+                        )
                     sourceWorkspaceB.isEphemeral = false
                     sourceWorkspaceB.customStoragePath = authorityDirectory
                     let authorityURL = authorityDirectory.appendingPathComponent("workspace.json")
