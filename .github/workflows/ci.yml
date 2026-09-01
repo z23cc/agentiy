@@ -1,8 +1,20 @@
 name: CI
 
-# Cost policy (2026-09-01): every job here runs on `macos-26`, which GitHub bills at a
-# 10x minute multiplier -- one full run measured ~27 macOS minutes (~273 billable). Heavy
-# validation is therefore on-demand only, and the per-PR path keeps just the secret scan.
+# Cost policy (2026-09-01): every macOS job here is billed at GitHub's 10x minute
+# multiplier. Heavy validation is therefore on-demand only, and the per-PR path keeps just
+# the secret scan.
+#
+# There is deliberately no `schedule:` for the macOS jobs. The earlier weekly cron was
+# registered while every heavy job still failed within ~3 minutes (missing Rust archive,
+# `cargo fmt` drift), so its measured cost was meaningless. Now that those jobs run to
+# completion the true per-run cost is unknown and plausibly four figures of billable
+# minutes, which is not something to commit to a recurring trigger before measuring it.
+# Run `workflow_dispatch` once, read the actual numbers, then choose a cadence.
+#
+# The one check that genuinely degrades with time rather than with changes -- a new advisory
+# filed against unchanged dependencies -- is split out into `dependency-audit` below, which
+# runs weekly on Linux at 1x billing instead of paying 10x for a macOS runner to parse
+# `Cargo.lock`.
 #
 # The replacement gate is local, not absent: `.agents/skills/rpce-contribution-check/scripts/
 # preflight.sh pr-ready` runs dev-lint, dev-test, dev-provider-test, both dev-swift-build
@@ -18,6 +30,8 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
+    # Consumed only by `dependency-audit` (Linux, 1x billing). Every macOS job below is
+    # gated to `workflow_dispatch` so this cron cannot pull them in.
     - cron: '23 4 * * 1'
 
 concurrency:
@@ -30,7 +44,8 @@ permissions:
 jobs:
   style:
     name: Style
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -73,12 +88,13 @@ jobs:
 
   build-and-test:
     name: Build and Test (app shard ${{ matrix.shard }})
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
     runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1]
     steps:
       - name: Require arm64 runner
         run: |
@@ -136,13 +152,14 @@ jobs:
             --suite-timeout-seconds 180 \
             --silent-timeout-retries 1 \
             --silent-startup-seconds 60 \
-            --shard-count 4 \
+            --shard-count 1 \
             --shard-index "${{ matrix.shard }}"
 
 
   sentry-enabled-build:
     name: Sentry-enabled Build
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 90
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -192,7 +209,8 @@ jobs:
 
   rust-ffi:
     name: Rust FFI
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -309,7 +327,8 @@ jobs:
 
   provider-tests:
     name: Provider Tests
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -337,6 +356,8 @@ jobs:
 
   secret-scan:
     name: Secret Scan
+    if: github.event_name != 'schedule'
+    timeout-minutes: 15
     runs-on: macos-26
     steps:
       - name: Require arm64 runner
@@ -372,3 +393,28 @@ jobs:
 
       - name: Scan checked-in source tree
         run: gitleaks dir --redact .
+
+  dependency-audit:
+    name: Dependency Audit
+    # Linux at 1x billing, not macOS at 10x: `cargo audit` parses `rust/Cargo.lock` against
+    # the RustSec advisory database and builds nothing, so it has no reason to occupy an
+    # arm64 macOS runner. This is the only scheduled job here -- ADR-0007 makes advisory
+    # coverage a fail-closed gate, and a new advisory can land against dependencies that
+    # never changed, so it is the one check that must run on a clock rather than on a diff.
+    # The full `cargo deny`/`cargo audit` pair still runs in `rust-ffi` on dispatch and in
+    # local `preflight.sh pr-ready` on Rust-path changes.
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Rust dependencies
+        working-directory: rust
+        run: cargo audit --file Cargo.lock
