@@ -702,10 +702,15 @@ impl AgentClaudeScope {
             })),
         );
         let write_request_id = request_id.clone();
-        let outcome = control::send_control_request_blocking(&self.control, &request_id, || {
-            let line = codec::encode_control_request(&write_request_id, request);
-            self.write_line(line)
-        });
+        let outcome = control::send_control_request(
+            &self.control,
+            &request_id,
+            Self::STARTUP_HANDSHAKE_ACK_TIMEOUT,
+            || {
+                let line = codec::encode_control_request(&write_request_id, request);
+                self.write_line(line)
+            },
+        );
         match outcome {
             ControlOutcome::Response(response) if response.subtype == "success" => {
                 Ok(response.response.unwrap_or_default())
@@ -717,14 +722,10 @@ impl AgentClaudeScope {
                 Err(AgentScopeError::ControlResponseError(message))
             }
             ControlOutcome::WriteFailed(reason) => Err(AgentScopeError::TransportWrite(reason)),
-            ControlOutcome::Timeout => {
-                // `send_control_request_blocking` never produces this variant (module doc); treated
-                // as a control-response error rather than `unreachable!()` per charter §14.1's
-                // panic-avoidance policy for authority code.
-                Err(AgentScopeError::ControlResponseError(
-                    "unexpected timeout outcome from a blocking control request".to_string(),
-                ))
-            }
+            ControlOutcome::Timeout => Err(AgentScopeError::ControlResponseError(format!(
+                "agent did not answer the startup control request within {:?}",
+                Self::STARTUP_HANDSHAKE_ACK_TIMEOUT
+            ))),
         }
     }
 
@@ -1109,6 +1110,20 @@ impl AgentClaudeScope {
     /// out of scope here, since that path has no Rust FFI-crossing counterpart at all (it runs
     /// entirely inside `start_or_resume`, contract §2.5).
     const FLAG_SETTINGS_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// The startup handshake was the one control request in this scope with no bound at all. It
+    /// used `send_control_request_blocking`, whose contract is that an unanswered request resolves
+    /// only through a real `control_response` or `fail_all` on stdout EOF/shutdown. A CLI that
+    /// starts successfully but never speaks the protocol -- a version mismatch, a wrapper, or one
+    /// wedged in its own init -- supplies neither, so `start_or_resume` waited forever with no
+    /// recovery path, and shutdown could not run because the caller was still inside the request.
+    /// Swift's original handshake call site did bound this (see `FLAG_SETTINGS_ACK_TIMEOUT`'s note
+    /// about `sendControlRequest(request:)`'s own default); the port dropped the bound.
+    ///
+    /// This is a hang detector, not a latency budget: it is deliberately far above any plausible
+    /// answer time for an already-spawned process, so shortening it to tune startup would be
+    /// reading it wrong.
+    const STARTUP_HANDSHAKE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 
     fn run_flag_settings_roundtrip(
         &self,
