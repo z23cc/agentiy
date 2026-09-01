@@ -4426,6 +4426,68 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     }
 
+    /// A gitignored file the user explicitly selected must render in the file tree. The store has
+    /// always computed `explicitlyIncludedManagedOnlyFileIDs` for exactly this, but the branch was
+    /// unreachable: the page index behind the tree is read from the published generation, which
+    /// excludes managed-only records, so those ids were never in the index to be let through.
+    ///
+    /// The hidden sibling in the same folder is the other half of the assertion -- selecting one
+    /// ignored file must not unhide the rest.
+    func testFileTreeRendersExplicitlySelectedIgnoredFileAndKeepsItsSiblingHidden() async throws {
+        let root = try makeTemporaryRoot(name: "FileTreeSelectedIgnoredFile")
+        try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
+        try write("visible", to: root.appendingPathComponent("App.swift"))
+
+        let store = WorkspaceFileContextStore()
+        let record = try await store.loadRoot(path: root.path)
+        // Creating through the edit host is what indexes a gitignored file as managed-only --
+        // `ensureIndexedFiles` declines it, the same path
+        // `testSearchCatalogSnapshotCacheKeepsManagedOnlyIgnoredFileHiddenAndReflectsPromotion` uses.
+        for name in ["secret.ignored", "other.ignored"] {
+            let host = WorkspaceFileEditHost(
+                store: store,
+                target: .create(path: name),
+                lookupRootScope: .visibleWorkspace,
+                createPathResolutionPolicy: .canonicalAliasFirst,
+                selectCreatedFiles: false
+            )
+            try await host.writeText(path: name, content: name, overwrite: false)
+        }
+        let selected = await store.file(rootID: record.id, relativePath: "secret.ignored")
+        XCTAssertNotNil(selected, "the ignored file must be indexed (managed-only) to be selectable")
+
+        let snapshot = await store.makeFileTreeSelectionSnapshot(
+            selection: StoredSelection(selectedPaths: ["secret.ignored"]),
+            request: WorkspaceFileTreeSnapshotRequest(
+                mode: .selected,
+                filePathDisplay: .relative,
+                onlyIncludeRootsWithSelectedFiles: false,
+                includeLegend: false,
+                showCodeMapMarkers: false,
+                rootScope: .visibleWorkspace
+            ),
+            profile: .mcpRead
+        )
+
+        func fileNames(_ folder: FileTreeFolderSnapshot) -> [String] {
+            folder.children.flatMap { child -> [String] in
+                switch child {
+                case let .file(file): [file.name]
+                case let .folder(sub): fileNames(sub)
+                }
+            }
+        }
+        let rendered = Set(snapshot.roots.flatMap(fileNames))
+        XCTAssertTrue(
+            rendered.contains("secret.ignored"),
+            "the explicitly selected ignored file must render; rendered = \(rendered.sorted())"
+        )
+        XCTAssertFalse(
+            rendered.contains("other.ignored"),
+            "selecting one ignored file must not unhide its ignored sibling"
+        )
+    }
+
     #if DEBUG
         func testEnsureIndexedFilesSkipsEligibleFileWhenRootUnloadsDuringEligibilitySuspension() async throws {
             let root = try makeTemporaryRoot(name: "EnsureIndexedUnloadDuringEligibility")

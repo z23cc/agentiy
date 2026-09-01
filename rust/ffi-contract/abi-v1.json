@@ -222,7 +222,7 @@
   },
   "inventoryScopeV1": {
     "additiveInAbiEpoch": 1,
-    "abiEpochDecision": "no bump: additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9 (P3-3/P3-4), each of which added CoreRuntime exports without bumping abiEpoch",
+    "abiEpochDecision": "no bump: additive-only, no existing export's signature changed; same precedent as cc22c7e1/a756190d/2803d3d9 (P3-3/P3-4), each of which added CoreRuntime exports without bumping abiEpoch. Amendment: inventoryOpenTreeProjectionShard adds a projection query whose visibility policy is supplied by the caller (InventoryTreeProjectionRequestV1). Same rationale -- a new export with a new request record, no existing export's shape changed. It introduces no wire message kind: the policy travels in the existing resolveRequest block's file-id section, so messageKinds and the table strides above are unchanged.",
     "contractDoc": "docs/architecture/rust-inventory-scope-v1.md",
     "designDoc": "docs/designs/p4-workspace-inventory-authority-v2-2026-08-22.md",
     "wireContractVersion": 1,

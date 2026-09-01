@@ -5029,3 +5029,16 @@ pub struct InventoryProjectedShardRequestV1 {
     pub scope_id: String,
     pub root_id: Vec<u8>,
 }
+
+/// The caller-supplied visibility policy for `inventory_open_tree_projection_shard`. `bytes` is a
+/// `resolveRequest` wire block reused verbatim rather than a new format: its file-id section names
+/// the managed-only files the caller wants projected as visible. Folders are not a policy input:
+/// the runtime derives the ancestor folders those files need, so the block's folder-id section
+/// carries nothing for this query.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct InventoryTreeProjectionRequestV1 {
+    pub runtime_identity: RuntimeIdentity,
+    pub scope_id: String,
+    pub root_id: Vec<u8>,
+    pub bytes: Vec<u8>,
+}

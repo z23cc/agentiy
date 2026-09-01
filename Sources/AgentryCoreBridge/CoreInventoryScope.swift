@@ -208,6 +208,15 @@ extension CoreRuntimeTransport {
     ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
         throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
     }
+
+    func inventoryOpenTreeProjectionShard(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
+        throw CoreTransportError.unexpected("inventory-scope-v1 transport is unavailable")
+    }
 }
 
 extension AgentryCoreBridge {
@@ -556,6 +565,17 @@ extension AgentryCoreBridge {
         let identity = try requireIdentity()
         do {
             return try transport.inventoryOpenProjectedShard(identity: identity, scopeID: scopeID, rootID: coreInventoryUUIDData(rootID))
+        } catch {
+            throw mapTransportError(error)
+        }
+    }
+
+    func inventoryOpenTreeProjectionShard(scopeID: String, rootID: UUID, bytes: Data) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
+        let identity = try requireIdentity()
+        do {
+            return try transport.inventoryOpenTreeProjectionShard(
+                identity: identity, scopeID: scopeID, rootID: coreInventoryUUIDData(rootID), bytes: bytes
+            )
         } catch {
             throw mapTransportError(error)
         }
@@ -1055,6 +1075,29 @@ public final class CoreInventoryScope: @unchecked Sendable {
     /// projected shard is consumed the same way any other snapshot is, via `page`/`query`.
     public func openProjectedShard(rootID: UUID) async throws -> CoreInventorySnapshot {
         let handle = try await bridge.inventoryOpenProjectedShard(scopeID: scopeID, rootID: rootID)
+        return CoreInventorySnapshot(
+            bridge: bridge,
+            scopeID: scopeID,
+            handleID: handle.handleId,
+            generation: handle.generation,
+            rootLifetimeID: handle.rootLifetimeId
+        )
+    }
+
+    /// `inventoryOpenTreeProjectionShard`: the same snapshot, projected under a visibility policy
+    /// this caller supplies. `includedManagedOnlyFileIDs` names managed-only files to project as
+    /// visible; everything else keeps its normal visibility, and passing an empty set is exactly
+    /// what the root would publish. The published generation is not read or replaced.
+    public func openTreeProjectionShard(
+        rootID: UUID,
+        includedManagedOnlyFileIDs: [UUID]
+    ) async throws -> CoreInventorySnapshot {
+        let bytes = CoreInventoryScopeWire.encodeResolveRequest(
+            fileIDs: includedManagedOnlyFileIDs, folderIDs: []
+        )
+        let handle = try await bridge.inventoryOpenTreeProjectionShard(
+            scopeID: scopeID, rootID: rootID, bytes: bytes
+        )
         return CoreInventorySnapshot(
             bridge: bridge,
             scopeID: scopeID,

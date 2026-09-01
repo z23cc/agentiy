@@ -451,6 +451,15 @@ protocol CoreRuntimeTransport: Sendable {
         scopeID: String,
         rootID: Data
     ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
+    /// Additive sibling of the above: the visibility policy travels with the call instead of being
+    /// fixed in Rust. `bytes` is a `resolveRequest` wire block whose file-id section names the
+    /// managed-only files the caller wants projected as visible.
+    func inventoryOpenTreeProjectionShard(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1
 
     // ---- P9: Rust-owned canonical MCP/tool catalog ---------------------------------------
     func mcpToolCatalogV1(identity: CoreRuntimeIdentity) throws -> AgentryUniFFIRaw.CoreMcpToolCatalogV1
@@ -5109,6 +5118,24 @@ final class UniFFICoreRuntimeTransport: CoreRuntimeTransport, @unchecked Sendabl
                 runtimeIdentity: Self.rawIdentity(identity),
                 scopeId: scopeID,
                 rootId: rootID
+            ))
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func inventoryOpenTreeProjectionShard(
+        identity: CoreRuntimeIdentity,
+        scopeID: String,
+        rootID: Data,
+        bytes: Data
+    ) throws -> AgentryUniFFIRaw.InventorySnapshotHandleV1 {
+        do {
+            return try runtime.inventoryOpenTreeProjectionShard(request: .init(
+                runtimeIdentity: Self.rawIdentity(identity),
+                scopeId: scopeID,
+                rootId: rootID,
+                bytes: bytes
             ))
         } catch {
             throw Self.map(error)

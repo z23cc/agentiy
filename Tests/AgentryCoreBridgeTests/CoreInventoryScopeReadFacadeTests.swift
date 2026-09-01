@@ -238,4 +238,53 @@ final class CoreInventoryScopeReadFacadeTests: XCTestCase {
         await scope.close()
         _ = try await bridge.close()
     }
+
+    // MARK: - openTreeProjectionShard
+
+    /// End-to-end for the caller-supplied visibility policy: one managed-only file is named by the
+    /// caller and projects, its managed-only sibling stays hidden, and the empty policy is the
+    /// identity case that matches what the root publishes.
+    func testTreeProjectionShardProjectsOnlyTheManagedOnlyFilesTheCallerNames() async throws {
+        let bridge = try await AgentryCoreBridge.start()
+        let rootID = UUID()
+        let scope = try await CoreInventoryScope.open(bridge: bridge, config: .init(codemapCapableExtensions: []))
+        let rootLifetimeID = try await scope.openRoot(rootID: rootID, name: "root", standardizedFullPath: "/repo")
+        let visibleID = UUID()
+        let wantedID = UUID()
+        let hiddenID = UUID()
+        let bulkLoadID = try await scope.beginBulkLoad(rootID: rootID, rootLifetimeID: rootLifetimeID)
+        _ = try await scope.pushBulkChunk(
+            bulkLoadID: bulkLoadID, rootID: rootID,
+            files: [
+                sampleFile(id: visibleID, rootID: rootID, name: "App.swift", relativePath: "App.swift"),
+                sampleFile(id: wantedID, rootID: rootID, name: "secret.ignored", relativePath: "secret.ignored"),
+                sampleFile(id: hiddenID, rootID: rootID, name: "other.ignored", relativePath: "other.ignored"),
+            ],
+            folders: []
+        )
+        _ = try await scope.commitBulkLoad(bulkLoadID: bulkLoadID)
+        try await scope.setFileManagedOnly(rootID: rootID, fileID: wantedID, managedOnly: true)
+        try await scope.setFileManagedOnly(rootID: rootID, fileID: hiddenID, managedOnly: true)
+
+        let selected = try await scope.openTreeProjectionShard(
+            rootID: rootID, includedManagedOnlyFileIDs: [wantedID]
+        )
+        let selectedPage = try await selected.page(offset: 0, limit: 10)
+        XCTAssertEqual(
+            selectedPage.files.map(\.name).sorted(), ["App.swift", "secret.ignored"],
+            "the caller's explicitly named managed-only file must project; its sibling must not"
+        )
+        await selected.close()
+
+        let empty = try await scope.openTreeProjectionShard(rootID: rootID, includedManagedOnlyFileIDs: [])
+        let emptyPage = try await empty.page(offset: 0, limit: 10)
+        XCTAssertEqual(
+            emptyPage.files.map(\.name), ["App.swift"],
+            "an empty policy must be the identity case -- exactly what the root publishes"
+        )
+        await empty.close()
+
+        await scope.close()
+        _ = try await bridge.close()
+    }
 }

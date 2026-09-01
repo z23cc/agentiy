@@ -11575,11 +11575,23 @@ actor WorkspaceFileContextStore {
         let explicitlyIncludedManagedOnlyFileIDs = request.mode == .selected
             ? Set(selectedFileIDs.filter { managedOnlyFileIDs.contains($0) })
             : []
-        let explicitlyIncludedManagedOnlyFolderIDs = await managedOnlyAncestorFolderIDs(for: explicitlyIncludedManagedOnlyFileIDs)
+        /// The ancestor closure is read back off the projection rather than recomputed here. The
+        /// runtime derives it alongside the files (`unhidden_ancestor_folder_ids` in
+        /// `inventory_scope/resolve.rs`), so whatever managed-only folders it chose to include are
+        /// by construction the ones its files need. Walking the chain a second time in Swift would
+        /// be two definitions of one walk on opposite sides of the boundary, and a disagreement
+        /// renders a file whose parent folder was dropped.
+        func includedManagedOnlyFolderIDs(in pageIndex: FileTreePageIndex) -> Set<UUID> {
+            guard !explicitlyIncludedManagedOnlyFileIDs.isEmpty else { return [] }
+            return Set(pageIndex.foldersByID.keys.filter { managedOnlyFolderIDs.contains($0) })
+        }
         var roots: [FileTreeFolderSnapshot] = []
         if let startFolder,
            let root = rootStatesByID[startFolder.rootID]?.root,
-           let pageIndex = await fetchFileTreePageIndex(rootID: startFolder.rootID)
+           let pageIndex = await fetchFileTreePageIndex(
+               rootID: startFolder.rootID,
+               includedManagedOnlyFileIDs: explicitlyIncludedManagedOnlyFileIDs
+           )
         {
             var visited = Set<UUID>()
             roots = makeFileTreeFolderSnapshot(
@@ -11589,13 +11601,16 @@ actor WorkspaceFileContextStore {
                 visited: &visited,
                 renderableCodemapFileIDs: renderableCodemapFileIDs,
                 explicitlyIncludedManagedOnlyFileIDs: explicitlyIncludedManagedOnlyFileIDs,
-                explicitlyIncludedManagedOnlyFolderIDs: explicitlyIncludedManagedOnlyFolderIDs
+                explicitlyIncludedManagedOnlyFolderIDs: includedManagedOnlyFolderIDs(in: pageIndex)
             ).map { [$0] } ?? []
         } else if request.startPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             roots = []
         } else {
             for root in rootsForPathLookup(scope: request.rootScope) {
-                guard let pageIndex = await fetchFileTreePageIndex(rootID: root.id) else { continue }
+                guard let pageIndex = await fetchFileTreePageIndex(
+                    rootID: root.id,
+                    includedManagedOnlyFileIDs: explicitlyIncludedManagedOnlyFileIDs
+                ) else { continue }
                 // The root's own self-referencing folder marker (id == rootID, relativePath == "")
                 // is never sent to Rust (root-marker exclusion, see
                 // `WorkspaceInventoryScopeShadowForwarder`'s doc comment) -- constructed here rather
@@ -11612,7 +11627,7 @@ actor WorkspaceFileContextStore {
                     visited: &visited,
                     renderableCodemapFileIDs: renderableCodemapFileIDs,
                     explicitlyIncludedManagedOnlyFileIDs: explicitlyIncludedManagedOnlyFileIDs,
-                    explicitlyIncludedManagedOnlyFolderIDs: explicitlyIncludedManagedOnlyFolderIDs
+                    explicitlyIncludedManagedOnlyFolderIDs: includedManagedOnlyFolderIDs(in: pageIndex)
                 ) {
                     roots.append(snapshot)
                 }
@@ -11650,7 +11665,16 @@ actor WorkspaceFileContextStore {
     /// page index. Lifetime rotation, cancellation, malformed progress, and transport/page errors
     /// return `nil` so callers cannot mistake a failed or stale read for an authoritative empty
     /// root. The root lifetime is also revalidated after the authority await.
-    private func fetchFileTreePageIndex(rootID: UUID) async -> FileTreePageIndex? {
+    /// `includedManagedOnlyFileIDs` is the file tree's visibility policy: the managed-only files the
+    /// user explicitly selected. It is empty for every caller except the selection snapshot, and an
+    /// empty policy reads the published generation exactly as before -- the codemap catalog shard
+    /// builder is a second consumer of this index and depends on that unchanged path, including its
+    /// `compositionSource.expectedGeneration` fence, which a projection's synthetic generation would
+    /// break. A projection read therefore carries no `compositionSource` at all.
+    private func fetchFileTreePageIndex(
+        rootID: UUID,
+        includedManagedOnlyFileIDs: Set<UUID> = []
+    ) async -> FileTreePageIndex? {
         guard let state = rootStatesByID[rootID],
               let authority = try? await inventoryScopeAuthorityInstance()
         else { return nil }
@@ -11658,7 +11682,8 @@ actor WorkspaceFileContextStore {
         do {
             read = try await authority.readOrderedSnapshot(
                 rootID: rootID,
-                expectedSwiftLifetimeID: state.lifetimeID
+                expectedSwiftLifetimeID: state.lifetimeID,
+                includedManagedOnlyFileIDs: Array(includedManagedOnlyFileIDs)
             )
         } catch CoreBridgeError.inventoryScopeNoPublishedGeneration {
             guard rootStatesByID[rootID]?.lifetimeID == state.lifetimeID,
@@ -11673,12 +11698,16 @@ actor WorkspaceFileContextStore {
             return nil
         }
         guard rootStatesByID[rootID]?.lifetimeID == state.lifetimeID else { return nil }
-        var index = FileTreePageIndex(compositionSource: WorkspaceInventoryScopeAuthority.CompositionSource(
-            rootID: rootID,
-            expectedSwiftLifetimeID: state.lifetimeID,
-            rootLifetimeID: read.rootLifetimeID,
-            expectedGeneration: read.generation
-        ))
+        var index = FileTreePageIndex(
+            compositionSource: includedManagedOnlyFileIDs.isEmpty
+                ? WorkspaceInventoryScopeAuthority.CompositionSource(
+                    rootID: rootID,
+                    expectedSwiftLifetimeID: state.lifetimeID,
+                    rootLifetimeID: read.rootLifetimeID,
+                    expectedGeneration: read.generation
+                )
+                : nil
+        )
         for coreFile in read.files {
             let file = WorkspaceInventoryScopeRepublicationAdapter.workspaceFileRecord(coreFile)
             index.filesByID[file.id] = file
@@ -22919,21 +22948,6 @@ actor WorkspaceFileContextStore {
             throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
         }
         return state
-    }
-
-    private func managedOnlyAncestorFolderIDs(for fileIDs: Set<UUID>) async -> Set<UUID> {
-        guard !fileIDs.isEmpty, let authority = try? await inventoryScopeAuthorityInstance() else { return [] }
-        var folderIDs = Set<UUID>()
-        guard let fileBlock = try? await authority.resolveRecordsScopeWide(fileIDs: Array(fileIDs), folderIDs: []) else { return [] }
-        var pendingFolderID = Set(fileIDs.compactMap { fileBlock.filesByID[$0]?.parentFolderID })
-        while !pendingFolderID.isEmpty {
-            let newlyInserted = pendingFolderID.subtracting(folderIDs)
-            guard !newlyInserted.isEmpty else { break }
-            folderIDs.formUnion(newlyInserted)
-            guard let folderBlock = try? await authority.resolveRecordsScopeWide(fileIDs: [], folderIDs: Array(newlyInserted)) else { break }
-            pendingFolderID = Set(newlyInserted.compactMap { folderBlock.foldersByID[$0]?.parentFolderID })
-        }
-        return folderIDs
     }
 
     private func makeFileTreeFolderSnapshot(

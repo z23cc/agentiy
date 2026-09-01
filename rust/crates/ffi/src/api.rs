@@ -50,11 +50,11 @@ use crate::types::{
     InventoryDiagnosticsV1, InventoryGenerationReceiptV1, InventoryHandleInvalidationReasonV1,
     InventoryProjectedShardRequestV1, InventoryPublishModeV1, InventoryResolveRequestV1,
     InventoryRootLifetimeV1, InventoryRootOpenV1, InventoryRootUnloadReceiptV1,
-    InventoryScopeHandleV1, InventorySnapshotHandleV1, InventorySnapshotRequestV1, OperationState,
-    OversizeEvent, PathFilterRequest, PathFilterResult, RegexSearchBatchRequest,
-    RegexSearchRequest, RegexSearchResult, RuntimeEvent, RuntimeIdentity, ScopeId, ShutdownReceipt,
-    SubscriptionBootstrap, SubscriptionId, SubscriptionScope, parse_inventory_scope_id,
-    parse_root_id, parse_root_lifetime_id, wire_error,
+    InventoryScopeHandleV1, InventorySnapshotHandleV1, InventorySnapshotRequestV1,
+    InventoryTreeProjectionRequestV1, OperationState, OversizeEvent, PathFilterRequest,
+    PathFilterResult, RegexSearchBatchRequest, RegexSearchRequest, RegexSearchResult, RuntimeEvent,
+    RuntimeIdentity, ScopeId, ShutdownReceipt, SubscriptionBootstrap, SubscriptionId,
+    SubscriptionScope, parse_inventory_scope_id, parse_root_id, parse_root_lifetime_id, wire_error,
 };
 use crate::types::{
     AgentClaudeFlagSettingsDispositionV1, AgentClaudeFlagSettingsReceiptV1,
@@ -4237,6 +4237,42 @@ impl CoreRuntime {
             let root_id = parse_root_id(&request.root_id)?;
             let handle_id =
                 scope.open_projected_shard(&identity, root_id, "ffi-projected-shard")?;
+            match scope.read_snapshot(handle_id) {
+                runtime::inventory_scope::HandleReadOutcome::Open { generation } => {
+                    Ok(InventorySnapshotHandleV1 {
+                        handle_id: handle_id.raw(),
+                        generation: generation.generation,
+                        root_lifetime_id: generation.root_lifetime.to_string(),
+                    })
+                }
+                runtime::inventory_scope::HandleReadOutcome::HandleInvalidated { reason } => {
+                    Err(handle_invalidated(reason))
+                }
+            }
+        })
+    }
+
+    /// Additive counterpart to `inventory_open_projected_shard`: the same snapshot handle shape,
+    /// but built under a visibility policy the caller supplies instead of one fixed in Rust.
+    pub fn inventory_open_tree_projection_shard(
+        &self,
+        request: InventoryTreeProjectionRequestV1,
+    ) -> Result<InventorySnapshotHandleV1, CoreError> {
+        self.guard(|| {
+            self.require_running()?;
+            let identity = self.validate_identity(&request.runtime_identity)?;
+            let scope = self.inventory_scope(&request.scope_id)?;
+            let root_id = parse_root_id(&request.root_id)?;
+            let (file_ids, _folder_ids) =
+                runtime::inventory_scope::decode_resolve_request(&request.bytes)
+                    .map_err(wire_error)?;
+            let included = file_ids.into_iter().collect();
+            let handle_id = scope.open_tree_projection_shard(
+                &identity,
+                root_id,
+                &included,
+                "ffi-tree-projection-shard",
+            )?;
             match scope.read_snapshot(handle_id) {
                 runtime::inventory_scope::HandleReadOutcome::Open { generation } => {
                     Ok(InventorySnapshotHandleV1 {

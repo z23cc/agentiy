@@ -446,10 +446,19 @@ actor WorkspaceInventoryScopeAuthority {
         )
     }
 
+    /// `includedManagedOnlyFileIDs` selects the source: empty (the default, and every pre-existing
+    /// caller) reads the published generation, which is the already-built `Arc` and costs nothing to
+    /// open. A non-empty policy reads a tree projection instead, which the runtime builds per call.
+    /// The branch is deliberate -- routing the common path through the projection would pay for a
+    /// rebuild on every tree read to get a result the published generation already gives.
+    ///
+    /// A projection read's `generation` is synthetic (`u64::MAX - n`, minted per open) and must not
+    /// be handed to `compositionSource` as an `expectedGeneration` staleness fence.
     func readOrderedSnapshot(
         rootID: UUID,
         expectedSwiftLifetimeID: UUID?,
-        pageSize: UInt64 = 4096
+        pageSize: UInt64 = 4096,
+        includedManagedOnlyFileIDs: [UUID] = []
     ) async throws -> OrderedSnapshotRead {
         guard pageSize > 0 else {
             throw WorkspaceInventoryScopeAuthorityError.invalidPageSize(pageSize)
@@ -459,7 +468,11 @@ actor WorkspaceInventoryScopeAuthority {
             throw WorkspaceInventoryScopeAuthorityError.swiftLifetimeMismatch(rootID)
         }
         let scope = try await requireScope()
-        let snapshot = try await scope.openSnapshot(rootID: rootID)
+        let snapshot = includedManagedOnlyFileIDs.isEmpty
+            ? try await scope.openSnapshot(rootID: rootID)
+            : try await scope.openTreeProjectionShard(
+                rootID: rootID, includedManagedOnlyFileIDs: includedManagedOnlyFileIDs
+            )
         do {
             guard snapshot.rootLifetimeID == binding.rustLifetimeID else {
                 throw WorkspaceInventoryScopeAuthorityError.rustLifetimeMismatch(rootID)
@@ -599,6 +612,18 @@ actor WorkspaceInventoryScopeAuthority {
     func openProjectedShard(rootID: UUID) async throws -> CoreInventorySnapshot {
         let scope = try await requireScope()
         return try await scope.openProjectedShard(rootID: rootID)
+    }
+
+    /// The file-tree projection under a caller-supplied visibility policy: managed-only files the
+    /// caller explicitly selected are projected as visible without being published as discoverable.
+    func openTreeProjectionShard(
+        rootID: UUID,
+        includedManagedOnlyFileIDs: [UUID]
+    ) async throws -> CoreInventorySnapshot {
+        let scope = try await requireScope()
+        return try await scope.openTreeProjectionShard(
+            rootID: rootID, includedManagedOnlyFileIDs: includedManagedOnlyFileIDs
+        )
     }
 
     func query(

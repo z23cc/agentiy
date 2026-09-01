@@ -1877,6 +1877,12 @@ public protocol CoreRuntimeProtocol: AnyObject, Sendable {
 
     func inventoryOpenSnapshot(request: InventorySnapshotRequestV1) throws  -> InventorySnapshotHandleV1
 
+    /**
+     * Additive counterpart to `inventory_open_projected_shard`: the same snapshot handle shape,
+     * but built under a visibility policy the caller supplies instead of one fixed in Rust.
+     */
+    func inventoryOpenTreeProjectionShard(request: InventoryTreeProjectionRequestV1) throws  -> InventorySnapshotHandleV1
+
     func inventoryPushBulkChunk(identity: RuntimeIdentity, scopeId: String, bulkLoadId: UInt64, rootId: Data, bytes: Data) throws  -> BulkChunkReceiptV1
 
     /**
@@ -2841,6 +2847,20 @@ open func inventoryOpenSnapshot(request: InventorySnapshotRequestV1)throws  -> I
     uniffi_agentry_ffi_fn_method_coreruntime_inventory_open_snapshot(
             self.uniffiCloneHandle(),
         FfiConverterTypeInventorySnapshotRequestV1_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Additive counterpart to `inventory_open_projected_shard`: the same snapshot handle shape,
+     * but built under a visibility policy the caller supplies instead of one fixed in Rust.
+     */
+open func inventoryOpenTreeProjectionShard(request: InventoryTreeProjectionRequestV1)throws  -> InventorySnapshotHandleV1  {
+    return try  FfiConverterTypeInventorySnapshotHandleV1_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_agentry_ffi_fn_method_coreruntime_inventory_open_tree_projection_shard(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeInventoryTreeProjectionRequestV1_lower(request),uniffiCallStatus
     )
 })
 }
@@ -15417,6 +15437,75 @@ public func FfiConverterTypeInventorySnapshotRequestV1_lower(_ value: InventoryS
 }
 
 
+/**
+ * The caller-supplied visibility policy for `inventory_open_tree_projection_shard`. `bytes` is a
+ * `resolveRequest` wire block reused verbatim rather than a new format: its file-id section names
+ * the managed-only files the caller wants projected as visible. Folders are not a policy input:
+ * the runtime derives the ancestor folders those files need, so the block's folder-id section
+ * carries nothing for this query.
+ */
+public struct InventoryTreeProjectionRequestV1: Equatable, Hashable {
+    public let runtimeIdentity: RuntimeIdentity
+    public let scopeId: String
+    public let rootId: Data
+    public let bytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(runtimeIdentity: RuntimeIdentity, scopeId: String, rootId: Data, bytes: Data) {
+        self.runtimeIdentity = runtimeIdentity
+        self.scopeId = scopeId
+        self.rootId = rootId
+        self.bytes = bytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InventoryTreeProjectionRequestV1: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInventoryTreeProjectionRequestV1: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InventoryTreeProjectionRequestV1 {
+        return
+            try InventoryTreeProjectionRequestV1(
+                runtimeIdentity: FfiConverterTypeRuntimeIdentity.read(from: &buf),
+                scopeId: FfiConverterString.read(from: &buf),
+                rootId: FfiConverterData.read(from: &buf),
+                bytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InventoryTreeProjectionRequestV1, into buf: inout [UInt8]) {
+        FfiConverterTypeRuntimeIdentity.write(value.runtimeIdentity, into: &buf)
+        FfiConverterString.write(value.scopeId, into: &buf)
+        FfiConverterData.write(value.rootId, into: &buf)
+        FfiConverterData.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryTreeProjectionRequestV1_lift(_ buf: RustBuffer) throws -> InventoryTreeProjectionRequestV1 {
+    return try FfiConverterTypeInventoryTreeProjectionRequestV1.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInventoryTreeProjectionRequestV1_lower(_ value: InventoryTreeProjectionRequestV1) -> RustBuffer {
+    return FfiConverterTypeInventoryTreeProjectionRequestV1.lower(value)
+}
+
+
 public struct OperationId: Equatable, Hashable {
     public let value: String
 
@@ -25060,6 +25149,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_open_snapshot() != 44371) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_open_tree_projection_shard() != 5292) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_agentry_ffi_checksum_method_coreruntime_inventory_push_bulk_chunk() != 34942) {

@@ -1795,6 +1795,42 @@ impl InventoryScope {
         })
     }
 
+    /// A tree projection built under a caller-supplied visibility policy: the managed-only files
+    /// named by `included_managed_only_file_ids` are projected as if discoverable, everything else
+    /// keeps its normal visibility. Additive to `open_projected_shard`; the published generation is
+    /// not read, not rebuilt, and not replaced. See `resolve::build_tree_projection_shard`.
+    pub fn open_tree_projection_shard(
+        &self,
+        identity: &RuntimeIdentity,
+        root_id: RootId,
+        included_managed_only_file_ids: &HashSet<InventoryUuid>,
+        origin_tag: &'static str,
+    ) -> Result<SnapshotHandleId, ScopeError> {
+        if identity != &self.identity {
+            return Err(ScopeError::IdentityMismatch);
+        }
+        self.with_state(|state| {
+            if state.closed {
+                return Err(ScopeError::ScopeClosed);
+            }
+            let root = state
+                .roots
+                .get_mut(&root_id)
+                .ok_or(ScopeError::UnknownRoot)?;
+            let synthetic_generation = root.mint_projected_shard_generation();
+            let shard = super::resolve::build_tree_projection_shard(
+                root,
+                included_managed_only_file_ids,
+                synthetic_generation,
+            )
+            // The builder can only reject a malformed root/record set here, which is the same
+            // shape `InvalidComposition` already reports; no new error variant, no error-inventory
+            // change.
+            .map_err(|_| ScopeError::InvalidComposition)?;
+            Ok(state.handles.open_handle(root_id, shard, origin_tag))
+        })
+    }
+
     // ------------------------------------------------------------------------------ diagnostics
 
     pub fn diagnostics(

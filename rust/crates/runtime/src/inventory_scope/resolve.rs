@@ -14,7 +14,9 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::inventory::{InventoryFileRecord, InventoryFolderRecord, InventoryUuid};
+use crate::inventory::{
+    self as builders, InventoryError, InventoryFileRecord, InventoryFolderRecord, InventoryUuid,
+};
 
 use super::generation::RootGeneration;
 use super::handles::InvalidationReason;
@@ -251,6 +253,88 @@ pub fn build_projected_shard(
     }))
 }
 
+/// A tree projection whose visibility policy is supplied by the caller rather than fixed in Rust
+/// (the P4-4 precedent: Swift owns policy definition, Rust owns the data and applies it -- see
+/// `InventoryScopeConfig::codemap_capable_extensions`).
+///
+/// Sourced from `IdentityMaps`, **not** from the published generation, because the published
+/// generation is built by `build_authoritative_catalog_components` with managed-only records
+/// already filtered out -- they are not there to project. The published generation and the
+/// path-search invariant it feeds are therefore completely untouched by this query.
+///
+/// The policy is expressed as a set of managed-only file ids the caller wants visible anyway;
+/// everything else keeps its normal discoverability. Files and folders are filtered independently
+/// by the builder, so an included file needs no ancestor-folder fixup.
+///
+/// The resulting shard carries a real `path_index`: a projected shard is consumed like any other
+/// snapshot, via `page`/`query` (see `CoreInventoryScope.openProjectedShard`'s doc comment), so an
+/// empty index would silently return zero candidates rather than the rows the caller asked for.
+/// A caller-policy projection containing exactly what the caller requested is this query's
+/// contract; `managed_only_files_are_never_marked_discoverable_via_resolve` is unaffected because
+/// `is_discoverable` is still derived from the maps, never from this shard.
+pub fn build_tree_projection_shard(
+    root: &RootState,
+    included_managed_only_file_ids: &HashSet<InventoryUuid>,
+    synthetic_generation: u64,
+) -> Result<Arc<RootGeneration>, InventoryError> {
+    let mut managed_only_file_ids = root.maps.managed_only_file_ids.clone();
+    managed_only_file_ids.retain(|id| !included_managed_only_file_ids.contains(id));
+    let mut managed_only_folder_ids = root.maps.managed_only_folder_ids.clone();
+    for id in unhidden_ancestor_folder_ids(&root.maps, included_managed_only_file_ids) {
+        managed_only_folder_ids.remove(&id);
+    }
+    let root_record = root.root_record();
+    let components = builders::build_authoritative_catalog_components(
+        std::slice::from_ref(&root_record),
+        &root.maps.files_by_id,
+        &root.maps.folders_by_id,
+        &managed_only_file_ids,
+        &managed_only_folder_ids,
+    )?;
+    let path_index = Arc::new(RootPathIndex::full(&components.entries));
+    Ok(Arc::new(RootGeneration {
+        root_id: root_record.id,
+        root_lifetime: root.root_lifetime,
+        generation: synthetic_generation,
+        token: GenerationToken::new(root.root_lifetime, synthetic_generation),
+        files: components.files,
+        folders: components.folders,
+        entries: components.entries,
+        path_index,
+    }))
+}
+
+/// The managed-only folders that must come along when the caller's chosen files are projected:
+/// walk each included file's `parent_folder_id` chain and collect every managed-only ancestor.
+/// Without this a projected file's parent folder would be missing and the tree could not render it
+/// -- this is what `WorkspaceFileContextStore.managedOnlyAncestorFolderIDs` used to compute in
+/// Swift. It is derivation over records the runtime already owns, not policy: the caller still
+/// decides which *files* are visible, and nothing outside their ancestry is unhidden.
+///
+/// The `visited` set also terminates a cyclic parent chain, which the record maps do not forbid.
+fn unhidden_ancestor_folder_ids(
+    maps: &IdentityMaps,
+    included_file_ids: &HashSet<InventoryUuid>,
+) -> HashSet<InventoryUuid> {
+    let mut unhidden = HashSet::new();
+    for file_id in included_file_ids {
+        let Some(file) = maps.files_by_id.get(file_id) else {
+            continue;
+        };
+        let mut next = file.parent_folder_id;
+        while let Some(folder_id) = next {
+            if !unhidden.insert(folder_id) {
+                break;
+            }
+            next = maps
+                .folders_by_id
+                .get(&folder_id)
+                .and_then(|folder| folder.parent_folder_id);
+        }
+    }
+    unhidden
+}
+
 fn extension_of(name: &str) -> Option<String> {
     name.rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
@@ -280,6 +364,83 @@ mod tests {
             parent_folder_id: None,
             modification_date: None,
         }
+    }
+
+    fn folder(id: u8, name: &str, relative_path: &str) -> InventoryFolderRecord {
+        InventoryFolderRecord {
+            id: [id; 16],
+            root_id: [1; 16],
+            name: name.to_owned(),
+            relative_path: relative_path.to_owned(),
+            standardized_relative_path: relative_path.to_owned(),
+            full_path: format!("/root/{relative_path}"),
+            standardized_full_path: format!("/root/{relative_path}"),
+            parent_folder_id: None,
+            modification_date: None,
+        }
+    }
+
+    /// The discriminating case for the caller-policy projection: an explicitly included
+    /// managed-only file that lives under a managed-only *folder*. The builder filters files and
+    /// folders independently, so the file must project without any ancestor-folder fixup, while
+    /// the still-managed-only sibling stays hidden.
+    #[test]
+    fn tree_projection_includes_requested_managed_only_file_under_a_managed_only_folder() {
+        let mut root = new_root();
+        root.maps.upsert_folder(folder(2, "build", "build"));
+        root.maps.set_folder_managed_only([2; 16], true);
+        root.maps.upsert_folder(folder(5, "cache", "cache"));
+        root.maps.set_folder_managed_only([5; 16], true);
+        // The folder that would expose an over-broad closure: managed-only, and it *has* a
+        // managed-only file, just not one the caller asked for. It must stay out, or Swift's
+        // "every managed-only folder the projection returned" derivation would over-admit.
+        let mut unrelated = file(6, "Stale.swift", "cache/Stale.swift");
+        unrelated.parent_folder_id = Some([5; 16]);
+        root.maps.upsert_file(unrelated);
+        root.maps.set_file_managed_only([6; 16], true);
+        let mut wanted = file(3, "Out.swift", "build/Out.swift");
+        wanted.parent_folder_id = Some([2; 16]);
+        root.maps.upsert_file(wanted);
+        root.maps.set_file_managed_only([3; 16], true);
+        let mut hidden = file(4, "Other.swift", "build/Other.swift");
+        hidden.parent_folder_id = Some([2; 16]);
+        root.maps.upsert_file(hidden);
+        root.maps.set_file_managed_only([4; 16], true);
+
+        let included: HashSet<InventoryUuid> = [[3; 16]].into_iter().collect();
+        let shard = build_tree_projection_shard(&root, &included, 42).expect("projection builds");
+
+        let ids: Vec<_> = shard.files.iter().map(|file| file.id).collect();
+        assert_eq!(ids, vec![[3; 16]], "only the requested file projects");
+        assert!(
+            shard.entries.iter().any(|entry| entry.id == [3; 16]),
+            "the requested file must reach the search entries, not just the file list"
+        );
+        assert_eq!(shard.generation, 42);
+        assert_eq!(
+            shard.folders.iter().map(|f| f.id).collect::<Vec<_>>(),
+            vec![[2; 16]],
+            "the included file's managed-only ancestor folder must come with it, or the tree has \
+             a file whose parent folder does not exist -- and no unrelated managed-only folder \
+             may ride along"
+        );
+    }
+
+    /// The empty policy is the identity case: it must match what the root would publish, so the
+    /// query cannot become a second, divergent definition of discoverability.
+    #[test]
+    fn tree_projection_with_an_empty_policy_hides_every_managed_only_file() {
+        let mut root = new_root();
+        root.maps.upsert_file(file(3, "App.swift", "src/App.swift"));
+        root.maps
+            .upsert_file(file(4, "Out.swift", "build/Out.swift"));
+        root.maps.set_file_managed_only([4; 16], true);
+
+        let shard =
+            build_tree_projection_shard(&root, &HashSet::new(), 1).expect("projection builds");
+
+        let ids: Vec<_> = shard.files.iter().map(|file| file.id).collect();
+        assert_eq!(ids, vec![[3; 16]]);
     }
 
     #[test]

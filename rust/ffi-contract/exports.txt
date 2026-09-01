@@ -51,6 +51,11 @@ CoreRuntime.inventoryLookupPaths(RuntimeIdentity, string, u64, bytes) throws -> 
 CoreRuntime.inventoryQuery(CompactQueryV1) throws -> CompactQueryResultV1
 CoreRuntime.inventoryResolveRecords(InventoryResolveRequestV1) throws -> CompactRecordBlockV1
 CoreRuntime.inventoryOpenProjectedShard(InventoryProjectedShardRequestV1) throws -> InventorySnapshotHandleV1
+# Additive sibling of inventoryOpenProjectedShard: same handle shape, but the visibility policy is
+# supplied by the caller rather than fixed in Rust (the P4-4 precedent -- Swift owns policy
+# definition, Rust owns the data and applies it). abiEpoch stays 1: a new export with a new request
+# record, no change to any existing export's shape.
+CoreRuntime.inventoryOpenTreeProjectionShard(InventoryTreeProjectionRequestV1) throws -> InventorySnapshotHandleV1
 
 # P6-6: agent-claude-v1 FFI surface (docs/architecture/rust-agent-claude-v1.md; design
 # docs/designs/p6-claude-vertical-2026-08-23.md §11 P6-6). ABI epoch unchanged at 1: additive-only,
