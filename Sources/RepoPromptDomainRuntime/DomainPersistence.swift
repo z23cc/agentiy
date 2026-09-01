@@ -1432,6 +1432,14 @@ package struct DomainPersistenceCoordinator {
             guard let workspaceID = UUID(
                 uuidString: journalURL.deletingPathExtension().lastPathComponent
             ) else { continue }
+            // A deleted workspace must never be recovered back into the catalog. Deletion writes
+            // its tombstone before removing the working journal, and that removal is best-effort
+            // (`removeDeletedArtifact` downgrades failures to `artifactCleanupWarnings`), so a
+            // journal surviving a completed delete is a state this loop can actually meet. The
+            // create-recovery transaction below is not given the tombstones, so it cannot make this
+            // judgement itself -- without this check a leftover journal is republished as a live
+            // workspace.
+            guard !fileManager.fileExists(atPath: deletionURL(workspaceID).path) else { continue }
             let validation: DomainWorkspaceWorkingJournalValidation
             switch loadJournal(workspaceID: workspaceID, validator: validator) {
             case let .success(candidate?):

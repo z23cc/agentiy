@@ -396,6 +396,26 @@ import XCTest
                 Set(allWorkspaces.map(\.id))
             )
 
+            // Materialize the runtime catalog while the legacy index still lists every fixture.
+            // `runtime.start()` alone does not create `workspace-catalog.json`: the catalog is
+            // seeded by `ensureLazyMigration`, which reads `workspacesIndex.json` and runs on the
+            // first persistence mutation, not at bootstrap. Truncating the index before that point
+            // seeds the catalog from the truncated index, so the fixtures never reach the catalog
+            // at all and the "split" below is not a split -- it is simply four workspaces the
+            // catalog has never heard of, which then fail to delete.
+            // Must go through a composition: `makeManager` leaves `domainWorkspaceAuthorityClient`
+            // nil, so a bare manager never reaches the persistence layer and never triggers the
+            // migration.
+            let catalogSeeder = WindowStateCompositionFactory.make(
+                windowID: -762,
+                deferredInitialAgentSystemWorkspaceRefresh: true,
+                sharedMCPService: MCPService(),
+                domainRuntime: runtime,
+                workspaceFileContextStore: WorkspaceFileContextStore()
+            ).workspaceManager
+            managers.append(catalogSeeder)
+            await catalogSeeder.awaitInitialized()
+
             // Reproduce the production split: the runtime catalog retains the fixtures while the
             // legacy inventory consulted by manage_workspaces lists only the ordinary workspace.
             try writeLegacyIndex([normal])
