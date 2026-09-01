@@ -20,6 +20,7 @@ import itertools
 import json
 import math
 import os
+import pty
 import queue
 import re
 import selectors
@@ -137,6 +138,7 @@ XCTEST_STALL_SAMPLE_MAX_BYTES = 128 * 1024
 XCTEST_STALL_FAILURE_EXIT_CODE = 70
 XCTEST_WATCHDOG_JOIN_SECONDS = 25.0
 OPERATION_STREAM_JOIN_SECONDS = 10.0
+OPERATION_PTY_READ_BYTES = 65536
 FORCE_STOP_RPC_TIMEOUT_SECONDS = 30.0
 APP_STOP_POLL_SECONDS = 0.2
 APP_STOP_QUIET_SECONDS = 1.0
@@ -3500,7 +3502,16 @@ class OperationRegistry:
             if args.get("filter"):
                 argv.extend(["--filter", str(args["filter"])])
             env = self._cargo_env(env)
-            return self._rust_archive_then_command(argv, configuration), ["build"], cwd, env, effective_timeout
+            # `swift test` block-buffers on a pipe and flushes only at exit, so a hung run emits
+            # no `Test Case ... started` markers and the stall watchdog can never arm. A pty makes
+            # it line-buffer. Safe here because this path discards both returned streams.
+            return (
+                self._rust_archive_then_command(argv, configuration, stream_pty=True),
+                ["build"],
+                cwd,
+                env,
+                effective_timeout,
+            )
         if operation == "provider-test":
             argv = ["swift", "test"]
             if args.get("testProduct"):
@@ -3623,13 +3634,23 @@ class OperationRegistry:
         controlled["CARGO_INCREMENTAL"] = "0"
         return controlled
 
-    def _rust_archive_then_command(self, command: Sequence[str], profile: str) -> List[str]:
+    def _rust_archive_then_command(
+        self,
+        command: Sequence[str],
+        profile: str,
+        stream_pty: bool = False,
+    ) -> List[str]:
         cargo = shutil.which("cargo")
         if cargo is None:
             raise ConductorError("cargo is unavailable; run `make doctor` and install the pinned Rust toolchain")
         return self._internal_argv(
             "rust_archive_then_command",
-            {"cargo": cargo, "profile": profile, "command": list(command)},
+            {
+                "cargo": cargo,
+                "profile": profile,
+                "command": list(command),
+                "streamPty": bool(stream_pty),
+            },
         )
 
     def _internal_argv(self, kind: str, args: Dict[str, Any]) -> List[str]:
@@ -7297,6 +7318,7 @@ def run_operation_command(
     env: Optional[Dict[str, str]] = None,
     allow_exit_codes: Optional[set[int]] = None,
     timeout: Optional[float] = None,
+    use_pty: bool = False,
 ) -> Tuple[int, str, str]:
     """Run a child command, streaming its output live while still returning it.
 
@@ -7316,6 +7338,8 @@ def run_operation_command(
     allowed = allow_exit_codes if allow_exit_codes is not None else {0}
     print(f"\n==> {name}", flush=True)
     print(f"$ {format_argv(argv)}", flush=True)
+    if use_pty:
+        return _run_operation_command_on_pty(name, argv, cwd, env, allowed, timeout)
     process = subprocess.Popen(
         list(argv),
         cwd=str(cwd),
@@ -7368,6 +7392,84 @@ def run_operation_command(
     if returncode not in allowed:
         print(f"FAILED stage '{name}' with status {returncode}", flush=True)
     return int(returncode), stdout, stderr
+
+
+def _run_operation_command_on_pty(
+    name: str,
+    argv: Sequence[str],
+    cwd: Path,
+    env: Optional[Dict[str, str]],
+    allowed: set[int],
+    timeout: Optional[float],
+) -> Tuple[int, str, str]:
+    """Run a child attached to a pty so it line-buffers instead of block-buffering.
+
+    Streaming the child's pipes is not enough for `swift test`: with stdout on a pipe it
+    block-buffers its test output and flushes only at exit. Measured on a 57s suite, the first
+    `Test Case ... started` line reached the reader at 60s -- when the suite had already
+    finished. A `swift test` that never exits therefore never emits a marker, so the daemon's
+    stall watchdog can never arm no matter how promptly the parent forwards what it receives.
+
+    stdout and stderr share one pty, which is why this is opt-in rather than the default: the
+    merged text is returned as stdout with an empty stderr, and callers that parse the two
+    separately must not use it. The test path discards both.
+    """
+    master_fd, slave_fd = pty.openpty()
+    try:
+        process = subprocess.Popen(
+            list(argv),
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+    except BaseException:
+        os.close(master_fd)
+        os.close(slave_fd)
+        raise
+    os.close(slave_fd)
+
+    chunks: List[str] = []
+
+    def pump() -> None:
+        while True:
+            try:
+                data = os.read(master_fd, OPERATION_PTY_READ_BYTES)
+            except OSError:
+                # The pty master reports EIO rather than EOF once every slave fd is closed.
+                return
+            if not data:
+                return
+            text = data.decode("utf-8", errors="replace").replace("\r\n", "\n")
+            chunks.append(text)
+            print(text, end="", flush=True)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        returncode = process.wait()
+    reader.join(timeout=OPERATION_STREAM_JOIN_SECONDS)
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+
+    merged = "".join(chunks)
+    if timed_out:
+        print(f"status: timed out after {timeout}s", flush=True)
+        return 124, merged, ""
+    print(f"status: {returncode}", flush=True)
+    if returncode not in allowed:
+        print(f"FAILED stage '{name}' with status {returncode}", flush=True)
+    return int(returncode), merged, ""
 
 
 def is_already_on_workspace(stderr: str, workspace: str) -> bool:
@@ -8454,6 +8556,7 @@ def operation_rust_archive_then_command(repo_root: Path, args: Dict[str, Any]) -
         [str(value) for value in command],
         repo_root,
         env=os.environ.copy(),
+        use_pty=bool(args.get("streamPty")),
     )
     return code
 
