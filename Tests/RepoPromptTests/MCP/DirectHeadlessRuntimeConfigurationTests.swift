@@ -569,6 +569,10 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         )
         let prepared = try await service.prepareRuntime()
         addTeardownBlock { await service.teardown(prepared) }
+        // Mirrors the run loop: prepareRuntime leaves the child launch coordinator unconfigured
+        // because it needs the endpoint's socket descriptor, which only exists once the endpoint
+        // is listening. Without this the coordinator throws CoordinatorError.unavailable.
+        try await service.activateChildLaunchEndpoint(prepared)
 
         let processSnapshot = try await prepared.context.snapshot(connectionID: prepared.connectionID)
         XCTAssertEqual(processSnapshot.identity.workspaceID, fixture.workspaceID)
