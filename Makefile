@@ -46,7 +46,7 @@ help:
 	@printf '  %-30s %s\n' 'dev-provider-conformance' 'Coordinated offline P7-4 provider certification contract validation'
 	@printf '  %-30s %s\n' 'dev-m7-backend-certification' 'Coordinated M7 backend/release evidence gate'
 	@printf '  %-30s %s\n' 'dev-m8-live-certification' 'Coordinated M8 live certification; pass M8_ARGS="--live" to attempt operational gates'
-	@printf '  %-30s %s\n' 'dev-test' 'Coordinated test run; override with FILTER=name'
+	@printf '  %-30s %s\n' 'dev-test' 'Coordinated test run; FILTER=name, XCTEST_STALL_SECONDS=300'
 	@printf '  %-30s %s\n' 'dev-provider-test' 'Run provider package tests; override with FILTER=name'
 	@printf '  %-30s %s\n' 'dev-smoke' 'Run non-disruptive live debug app smoke checks'
 	@printf '  %-30s %s\n' 'dev-smoke-launch' 'Launch debug app, then run smoke checks'
@@ -305,12 +305,20 @@ dev-m7-backend-certification:
 dev-m8-live-certification:
 	./conductor m8-live-certification $(M8_ARGS)
 
+# Default XCTest stall budget for coordinated test runs. Without it a hung test blocks the
+# lane until conductor's 3600s job timeout kills it with no diagnostics; with it the run fails
+# in bounded time naming the test that stopped making progress. 300s is ~40x the slowest
+# non-quarantined single test observed (7.5s), so it cannot trip on legitimate work. Raise it
+# with XCTEST_STALL_SECONDS=600, or disable with XCTEST_STALL_SECONDS= for a deliberately
+# long-running lane.
+XCTEST_STALL_SECONDS ?= 300
+
 dev-test:
 	@./Scripts/stage_test_frameworks.sh
-	AGENTRY_APPLICATION_SUPPORT_ROOT="$(TEST_SUPPORT_ROOT)" ./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(CONFIGURATION), --configuration $(CONFIGURATION))$(if $(SANITIZE), --sanitize $(SANITIZE))
+	AGENTRY_APPLICATION_SUPPORT_ROOT="$(TEST_SUPPORT_ROOT)" ./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(CONFIGURATION), --configuration $(CONFIGURATION))$(if $(SANITIZE), --sanitize $(SANITIZE))$(if $(XCTEST_STALL_SECONDS), --xctest-stall-seconds $(XCTEST_STALL_SECONDS))
 
 dev-provider-test:
-	./conductor provider-test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))
+	./conductor provider-test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))$(if $(XCTEST_STALL_SECONDS), --xctest-stall-seconds $(XCTEST_STALL_SECONDS))
 
 dev-smoke:
 	./conductor smoke
