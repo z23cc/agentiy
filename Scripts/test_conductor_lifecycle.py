@@ -2751,14 +2751,40 @@ time.sleep(60)
         self.assertFalse(pid_is_executing(grandchild_pid))
 
     def test_run_operation_command_uses_devnull_stdin(self) -> None:
-        completed = subprocess.CompletedProcess(["echo", "ok"], 0, "ok\n", "")
-        with mock.patch.object(conductor.subprocess, "run", return_value=completed) as run, contextlib.redirect_stdout(io.StringIO()):
-            code, stdout, stderr = conductor.run_operation_command("fixture", ["echo", "ok"], Path.cwd())
+        # Asserts the contract (a child must never inherit the daemon's stdin), not the
+        # mechanism: the call moved from subprocess.run to Popen so output can be streamed
+        # live, which is what arms the XCTest stall watchdog.
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            code, stdout, stderr = conductor.run_operation_command(
+                "fixture", [sys.executable, "-c", "print('ok')"], Path.cwd()
+            )
 
         self.assertEqual((code, stdout, stderr), (0, "ok\n", ""))
-        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
-        self.assertTrue(run.call_args.kwargs["capture_output"])
-        self.assertTrue(run.call_args.kwargs["text"])
+        self.assertIn("ok", captured.getvalue())
+
+    def test_run_operation_command_streams_output_before_child_exits(self) -> None:
+        # The regression streaming exists for: a child that emits a line and then blocks must
+        # have that line reach the daemon while it is still running. Under the previous
+        # capture-then-print path nothing was emitted until the child exited, so a hung
+        # `swift test` produced no `Test Case ... started` markers, the XCTest stall watchdog
+        # never armed, and `--xctest-stall-seconds` was inert.
+        #
+        # Ordering is the assertion that proves liveness: the marker must be printed before the
+        # timeout notice, which can only happen if it was flushed while the child was alive.
+        script = "import time; print('MARKER-LIVE', flush=True); time.sleep(30)"
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            code, stdout, _stderr = conductor.run_operation_command(
+                "fixture", [sys.executable, "-c", script], Path.cwd(), timeout=2.0
+            )
+
+        self.assertEqual(code, 124)
+        self.assertIn("MARKER-LIVE", stdout)
+        text = captured.getvalue()
+        self.assertLess(
+            text.index("MARKER-LIVE"),
+            text.index("status: timed out"),
+            "marker must be printed before the timeout notice, i.e. while the child was alive",
+        )
 
     def test_release_local_install_job_succeeds_with_closed_parent_fd0(self) -> None:
         child_code = textwrap.dedent(
