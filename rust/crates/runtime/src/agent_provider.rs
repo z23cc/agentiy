@@ -120,12 +120,12 @@ pub fn agent_provider_conformance_snapshot(
     protocol: ProviderProtocol,
 ) -> AgentProviderConformanceSnapshot {
     let common = (
-        true,  // owns_process_lifetime
-        true,  // owns_line_framing
-        true,  // serializes_stdin_writes
-        true,  // emits_ordered_events
-        true,  // bounds_stderr
-        true,  // emits_process_exit_terminal_event
+        true, // owns_process_lifetime
+        true, // owns_line_framing
+        true, // serializes_stdin_writes
+        true, // emits_ordered_events
+        true, // bounds_stderr
+        true, // emits_process_exit_terminal_event
     );
     match protocol {
         ProviderProtocol::CodexAppServer => AgentProviderConformanceSnapshot {
@@ -2194,7 +2194,10 @@ mod tests {
     #[test]
     fn conformance_profiles_match_exact_provider_matrix() {
         let codex = agent_provider_conformance_snapshot(ProviderProtocol::CodexAppServer);
-        assert_eq!(codex.schema_version, AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION);
+        assert_eq!(
+            codex.schema_version,
+            AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION
+        );
         assert!(codex.owns_process_lifetime);
         assert!(codex.owns_line_framing);
         assert!(codex.serializes_stdin_writes);
@@ -2257,7 +2260,10 @@ mod tests {
             let validation = validate_agent_provider_conformance(&snapshot);
             assert!(validation.valid);
             assert!(validation.violations.is_empty());
-            assert_eq!(validation.schema_version, AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION);
+            assert_eq!(
+                validation.schema_version,
+                AGENT_PROVIDER_CONFORMANCE_SCHEMA_VERSION
+            );
             assert_eq!(validation.protocol, protocol);
         }
 
@@ -2323,22 +2329,33 @@ mod tests {
         let before = scope
             .conformance_snapshot(&runtime_identity)
             .expect("snapshot before start");
-        assert_eq!(before, agent_provider_conformance_snapshot(ProviderProtocol::CodexAppServer));
         assert_eq!(
-            scope.validate_conformance(&runtime_identity).expect("validation").valid,
+            before,
+            agent_provider_conformance_snapshot(ProviderProtocol::CodexAppServer)
+        );
+        assert_eq!(
+            scope
+                .validate_conformance(&runtime_identity)
+                .expect("validation")
+                .valid,
             true
         );
         assert_eq!(
-            scope.conformance_snapshot(&RuntimeIdentity::new(
-                1,
-                "0123456789abcdef0123456789abcdef",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde0",
-                "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
-            ).unwrap()),
+            scope.conformance_snapshot(
+                &RuntimeIdentity::new(
+                    1,
+                    "0123456789abcdef0123456789abcdef",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde0",
+                    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                )
+                .unwrap()
+            ),
             Err(AgentProviderScopeError::IdentityMismatch)
         );
         scope.start(&runtime_identity).expect("start");
-        let after = scope.conformance_snapshot(&runtime_identity).expect("snapshot after start");
+        let after = scope
+            .conformance_snapshot(&runtime_identity)
+            .expect("snapshot after start");
         assert_eq!(after, before);
         scope.shutdown(&runtime_identity).expect("shutdown");
     }
