@@ -265,7 +265,47 @@ fn stage_archive(
         "profile archive",
     )?;
     atomic_symlink(&generation, &root.join("current"), "current archive")?;
+    prune_generations(&generation)?;
     Ok(generation.join("libagentry_ffi.a"))
+}
+
+/// Generations are content-addressed, so every fingerprint change stages a new ~180 MiB directory
+/// and nothing ever removed the old ones -- an ordinary week of Rust edits had accumulated 20 of
+/// them, 3.6 GiB. Keep the generation just published plus the next most recent
+/// `ARCHIVE_GENERATIONS_KEPT - 1`, which is enough to step back to the previous build without a
+/// rebuild, and delete the rest.
+///
+/// Only the just-published generation's own profile directory is pruned, and that generation is
+/// always kept, so neither the `<target>/<profile>` nor the `current` symlink can be left dangling.
+/// The other profile's directory is untouched, so a release archive is never removed by a debug
+/// build. Concurrent runs are not a concern: conductor serializes archive work on the `build` lane,
+/// and separate worktrees have separate `.build` trees.
+const ARCHIVE_GENERATIONS_KEPT: usize = 3;
+
+fn prune_generations(published: &Path) -> Result<()> {
+    let Some(profile_directory) = published.parent() else {
+        return Ok(());
+    };
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in fs::read_dir(profile_directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path == published || !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        candidates.push((modified, path));
+    }
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    for (_, path) in candidates.into_iter().skip(ARCHIVE_GENERATIONS_KEPT - 1) {
+        // Best-effort: a generation that cannot be removed (permissions, a reader holding it) must
+        // not fail a build whose real work already succeeded.
+        let _ = fs::remove_dir_all(&path);
+    }
+    Ok(())
 }
 
 fn write_archive_bundle(

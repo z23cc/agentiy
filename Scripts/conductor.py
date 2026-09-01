@@ -91,6 +91,13 @@ CARGO_FUZZ_TARGETS = {
 }
 CARGO_FUZZ_TOOLCHAIN = "nightly-2026-08-15"
 CARGO_TARGET = "aarch64-apple-darwin"
+# xtask is a build tool, not a product: build it optimized. Its work is dominated by SHA-256 over
+# the 192 MiB static archive, which `archive` digests three times on the unchanged path (stage,
+# verify-existing-generation, and the printed receipt). In a debug build that is ~6-7s per pass, so
+# a fully cached, zero-change `archive` cost ~29s of pure CPU; optimized it is ~1.9s. Measured
+# 2026-09-01, identical output (same buildFingerprint, same archive digest, same staged path).
+# Safe because xtask contains no `debug_assert!`/`cfg(debug_assertions)` behaviour.
+XTASK_PROFILE_ARGS = ("--release",)
 CARGO_PACKAGE_NAMES = {
     "proto": "agentry-proto",
     "runtime": "agentry-runtime",
@@ -3389,7 +3396,7 @@ class OperationRegistry:
                     argv = [cargo, "test", "--locked", "--target", CARGO_TARGET, "-p", CARGO_PACKAGE_NAMES[package]]
                 return argv, ["build"], cwd, env, effective_timeout
             if operation == "cargo-codegen":
-                argv = [cargo, "run", "--locked", "-p", "xtask", "--", "generate"]
+                argv = [cargo, "run", "--locked", *XTASK_PROFILE_ARGS, "-p", "xtask", "--", "generate"]
                 if args.get("check"):
                     argv.append("--check")
                 return argv, ["build"], cwd, env, effective_timeout
@@ -3414,6 +3421,7 @@ class OperationRegistry:
                 cargo,
                 "run",
                 "--locked",
+                *XTASK_PROFILE_ARGS,
                 "-p",
                 "xtask",
                 "--",
