@@ -1339,17 +1339,17 @@ enum DomainWorkspaceRustJournal {
                       preflight.externalDocumentDigest.map(PreparedValidator.isSHA256Digest) ?? true,
                       revisionsValid
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 if let externalDocumentBytes {
                     guard preflight.externalDocumentDigest
                         == DomainContentDigest.sha256(externalDocumentBytes)
                     else {
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                 } else {
                     guard preflight.externalDocumentDigest == nil else {
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                 }
                 let disposition: DomainWorkspaceSemanticPreflightDisposition = switch preflight.disposition {
@@ -1481,7 +1481,7 @@ enum DomainWorkspaceRustJournal {
                       ) == preview.admissionDisposition,
                       commit.projectionDigest == preview.projectionDigest
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 let receipt = try commit.admissionReceipt.map {
                     try validator.materializeCommandAdmissionRecoveryReceipt(
@@ -1677,7 +1677,7 @@ enum DomainWorkspaceRustJournal {
                       abs(plan.updatedAt.timeIntervalSinceReferenceDate - updatedAt.timeIntervalSinceReferenceDate) <= 0.000001,
                       (transition == .externalReload) == (plan.revisionSidecarID != nil)
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return DomainExternalObservationRecoveryPlan(
                     workspaceID: plan.workspaceID,
@@ -1729,7 +1729,7 @@ enum DomainWorkspaceRustJournal {
                     updatedAt: plan.updatedAt
                 )
             case .none:
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             let coreDisposition: CoreWorkspaceExternalObservationDispositionV1 = switch plan.disposition {
             case .noChange: .noChange
@@ -1925,7 +1925,7 @@ enum DomainWorkspaceRustJournal {
                       identity.commandKind == request.commandKind,
                       Self.isSHA256Digest(identity.fingerprint)
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return identity.fingerprint
             } catch {
@@ -2123,12 +2123,12 @@ enum DomainWorkspaceRustJournal {
             _ operation: CoreWorkspaceRecordedOperationV1
         ) throws -> DomainRecordedOperation {
             guard let disposition = DomainCommandDisposition(rawValue: operation.disposition) else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             let errorCode: DomainCommandErrorCode?
             if let rawErrorCode = operation.errorCode {
                 guard let value = DomainCommandErrorCode(rawValue: rawErrorCode) else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 errorCode = value
             } else {
@@ -2230,7 +2230,7 @@ enum DomainWorkspaceRustJournal {
             guard document.workspaceID == active.workspaceID,
                   document.contentDigest == active.documentDigest
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             let externalDocument = try active.externalDocumentBytes.map { bytes in
                 let external = try DomainWorkspaceDocument.decode(
@@ -2238,7 +2238,7 @@ enum DomainWorkspaceRustJournal {
                     fileURL: active.fileURL
                 )
                 guard external.workspaceID == active.workspaceID else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return external
             }
@@ -2312,7 +2312,7 @@ enum DomainWorkspaceRustJournal {
                   Self.isSHA256Digest(receipt.catalogDigest),
                   receipt.targetWorkspaceID == expectedTargetWorkspaceID
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             return DomainWorkspaceCommandAdmissionRecoveryReceipt(
                 catalogRevision: receipt.catalogRevision,
@@ -2347,7 +2347,7 @@ enum DomainWorkspaceRustJournal {
                      .writeFailed("working_journal_rust_unavailable"):
                     throw mapped
                 default:
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption("catalog_validation_rejected")
                 }
             }
         }
@@ -2370,7 +2370,7 @@ enum DomainWorkspaceRustJournal {
                       validated.schemaVersion == UInt16(DomainDeletionTombstone.schemaVersion),
                       DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 let tombstone = try JSONDecoder().decode(
                     DomainDeletionTombstone.self,
@@ -2402,7 +2402,7 @@ enum DomainWorkspaceRustJournal {
                                       && $0.count > "artifact_cleanup_incomplete: ".count
                               } == true)
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return DomainWorkspaceDeletionTombstoneValidation(
                     tombstone: tombstone,
@@ -2422,7 +2422,7 @@ enum DomainWorkspaceRustJournal {
                 guard validated.schemaVersion == UInt16(DomainDeletionTombstone.schemaVersion),
                       DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 let tombstone = try JSONDecoder().decode(
                     DomainDeletionTombstone.self,
@@ -2432,7 +2432,7 @@ enum DomainWorkspaceRustJournal {
                       tombstone.workspaceID == validated.workspaceID,
                       tombstone.operation.operationID == validated.operationID
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return DomainWorkspaceDeletionTombstoneValidation(
                     tombstone: tombstone,
@@ -2446,7 +2446,7 @@ enum DomainWorkspaceRustJournal {
                      .writeFailed("working_journal_rust_unavailable"):
                     throw mapped
                 default:
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
             }
         }
@@ -2481,7 +2481,7 @@ enum DomainWorkspaceRustJournal {
                       candidate.catalog.entries == entries,
                       candidate.catalog.deletions?.isEmpty == true
                 else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return candidate
             } catch {
@@ -2815,7 +2815,7 @@ enum DomainWorkspaceRustJournal {
                     guard clean.journal.pendingSave == nil,
                           clean.journal.savedDigest == documentDigest
                     else {
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     return .committed(
                         cleanJournal: clean,
@@ -2855,7 +2855,7 @@ enum DomainWorkspaceRustJournal {
                               authorityReceipt == nil,
                               let expectedOperation,
                               let logicalExpectedRevision
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let journal = try materialize(
                             CoreWorkspaceWorkingJournalValidationV1(
                                 workspaceID: expectedWorkspaceID,
@@ -2871,7 +2871,7 @@ enum DomainWorkspaceRustJournal {
                                 && $0.fingerprint == expectedOperation.fingerprint
                                 && $0.recordedAt == expectedOperation.recordedAt
                         }) else {
-                            throw DomainPersistenceError.corruptJournal
+                            throw DomainPersistenceError.journalCorruption()
                         }
                         if kind == .writePendingJournal {
                             return .writePendingJournal(
@@ -2882,7 +2882,7 @@ enum DomainWorkspaceRustJournal {
                             )
                         }
                         guard let expectedRawDigest else {
-                            throw DomainPersistenceError.corruptJournal
+                            throw DomainPersistenceError.journalCorruption()
                         }
                         return .writeCommittedJournal(
                             actionID: actionID,
@@ -2896,7 +2896,7 @@ enum DomainWorkspaceRustJournal {
                               let expectedOperation,
                               expectedRawDigest == nil,
                               logicalExpectedRevision == nil
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let validation = try materializeSavedRevision(
                             CoreWorkspacePersistenceMetadataValidationV1(
                                 workspaceID: expectedWorkspaceID,
@@ -2919,7 +2919,7 @@ enum DomainWorkspaceRustJournal {
                               logicalExpectedRevision == nil,
                               contentDigest == expectedDocumentDigest,
                               canonicalBytes.count <= CoreWorkspaceDocumentProjectionV1.maximumDocumentBytes
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         return .publishWorkspaceDocument(
                             actionID: actionID,
                             bytes: canonicalBytes,
@@ -2931,7 +2931,7 @@ enum DomainWorkspaceRustJournal {
                               expectedRawDigest == nil,
                               logicalExpectedRevision == nil,
                               canonicalBytes.isEmpty
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         return .removeDeletionSidecar(
                             actionID: actionID,
                             contentDigest: contentDigest
@@ -2940,7 +2940,7 @@ enum DomainWorkspaceRustJournal {
                         guard let authorityReceipt,
                               authorityReceipt.requestDigest == requestDigest,
                               let logicalExpectedRevision
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let receipt = try materializeCreateCommitReceipt(
                             authorityReceipt,
                             expectedWorkspaceID: expectedWorkspaceID,
@@ -2954,7 +2954,7 @@ enum DomainWorkspaceRustJournal {
                         guard receipt.catalog.canonicalBytes == canonicalBytes,
                               receipt.catalog.contentDigest == contentDigest,
                               logicalExpectedRevision == expectedCatalogRevision
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         return .publishCatalog(
                             actionID: actionID,
                             expectedRawDigest: expectedRawDigest,
@@ -3002,7 +3002,7 @@ enum DomainWorkspaceRustJournal {
             guard !nextRevision.overflow,
                   receipt.workspaceID == expectedWorkspaceID,
                   receipt.documentDigest == expectedDocumentDigest
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let catalog = try materializeCatalog(receipt.catalog)
             let journal = try materialize(
                 receipt.committedJournal,
@@ -3035,7 +3035,7 @@ enum DomainWorkspaceRustJournal {
                   journal.journal.savedDigest == expectedDocumentDigest,
                   operationMatches,
                   receipt.savedRevision == nil ? isRecovery : !isRecovery
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let savedRevision = try receipt.savedRevision.map {
                 try materializeSavedRevision(
                     $0,
@@ -3051,7 +3051,7 @@ enum DomainWorkspaceRustJournal {
             )
             if isRecovery {
                 guard commandResult == nil else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
             } else {
                 guard let commandResult,
@@ -3061,7 +3061,7 @@ enum DomainWorkspaceRustJournal {
                       commandResult.operation.fingerprint == expectedOperation.fingerprint,
                       commandResult.operation.recordedAt == expectedOperation.recordedAt,
                       commandResult.catalogRevision == catalog.catalog.revision
-                else { throw DomainPersistenceError.corruptJournal }
+                else { throw DomainPersistenceError.journalCorruption() }
             }
             return DomainWorkspaceCreateCommitReceipt(
                 workspaceID: expectedWorkspaceID,
@@ -3096,7 +3096,7 @@ enum DomainWorkspaceRustJournal {
                 ):
                     guard logicalExpectedRevision == expectedCatalogRevision,
                           authorityReceipt.requestDigest == requestDigest
-                    else { throw DomainPersistenceError.corruptJournal }
+                    else { throw DomainPersistenceError.journalCorruption() }
                     let receipt = try materializeDeleteCommitReceipt(
                         authorityReceipt,
                         expectedWorkspaceID: expectedWorkspaceID,
@@ -3108,7 +3108,7 @@ enum DomainWorkspaceRustJournal {
                     let materializedCatalog = try materializeCatalog(catalog)
                     guard materializedCatalog.canonicalBytes == receipt.catalog.canonicalBytes,
                           materializedCatalog.contentDigest == receipt.catalog.contentDigest
-                    else { throw DomainPersistenceError.corruptJournal }
+                    else { throw DomainPersistenceError.journalCorruption() }
                     return .publishCatalog(
                         actionID: actionID,
                         expectedRawDigest: expectedRawCatalogDigest,
@@ -3151,24 +3151,24 @@ enum DomainWorkspaceRustJournal {
             guard !nextRevision.overflow,
                   receipt.workspaceID == expectedWorkspaceID,
                   receipt.operationID == expectedOperation.operationID
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let catalog = try materializeCatalog(receipt.catalog)
             guard catalog.catalog.revision == nextRevision.partialValue,
                   catalog.catalog.updatedAt == expectedDeletedAt
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let tombstoneBytes = receipt.tombstone.canonicalBytes
             guard receipt.tombstone.workspaceID == expectedWorkspaceID,
                   receipt.tombstone.operationID == expectedOperation.operationID,
                   receipt.tombstone.schemaVersion == UInt16(DomainDeletionTombstone.schemaVersion),
                   DomainContentDigest.sha256(tombstoneBytes) == receipt.tombstone.contentDigest
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let tombstone = try JSONDecoder().decode(
                 DomainDeletionTombstone.self,
                 from: tombstoneBytes
             )
             guard let commandResult = try receipt.commandResult.map(
                 DomainWorkspaceRustJournal.materializeCommandResult
-            ) else { throw DomainPersistenceError.corruptJournal }
+            ) else { throw DomainPersistenceError.journalCorruption() }
             guard commandResult.workspaceID == expectedWorkspaceID,
                   commandResult.operation.operationID == expectedOperation.operationID,
                   commandResult.operation.fingerprint == expectedOperation.fingerprint,
@@ -3187,7 +3187,7 @@ enum DomainWorkspaceRustJournal {
                       $0.workspaceID == expectedWorkspaceID
                   }),
                   catalog.catalog.deletions?.contains(tombstone) == true
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             return DomainWorkspaceDeleteCommitReceipt(
                 workspaceID: expectedWorkspaceID,
                 operationID: expectedOperation.operationID,
@@ -3258,7 +3258,7 @@ enum DomainWorkspaceRustJournal {
                               let authorityReceipt,
                               let successFinalization,
                               authorityReceipt.requestDigest == requestDigest
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let receipt = try materializeJournalMutationCommitReceipt(
                             authorityReceipt,
                             expectedWorkspaceID: expectedWorkspaceID,
@@ -3287,7 +3287,7 @@ enum DomainWorkspaceRustJournal {
                                   receipt.savedRevision == nil ? .finalized : .revisionSidecarMissing
                               ),
                               failureFinalization == nil
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         return .writeJournal(
                             actionID: actionID,
                             expectedRawDigest: expectedRawJournalDigest,
@@ -3306,7 +3306,7 @@ enum DomainWorkspaceRustJournal {
                               failureFinalization == .revisionSidecarMissing,
                               let revisionOperationID,
                               let expectedSavedRevision = expectedTransition.resultingSavedRevision
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let validation = try materializeSavedRevision(
                             CoreWorkspacePersistenceMetadataValidationV1(
                                 workspaceID: expectedWorkspaceID,
@@ -3370,7 +3370,7 @@ enum DomainWorkspaceRustJournal {
         ) throws -> DomainWorkspaceJournalMutationCommitReceipt {
             guard receipt.workspaceID == expectedWorkspaceID,
                   receipt.catalogRevision == expectedCatalogRevision
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let validation = try materialize(
                 receipt.committedJournal,
                 expectedWorkspaceID: expectedWorkspaceID,
@@ -3382,7 +3382,7 @@ enum DomainWorkspaceRustJournal {
                 && Self.datesEqual(journal.updatedAt, expectedUpdatedAt)
                 && journal.revisions.workingRevision == expectedTransition.resultingWorkingRevision
             if !revisionShape {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
 
             let expectedSavedRevision = expectedTransition.resultingSavedRevision
@@ -3391,7 +3391,7 @@ enum DomainWorkspaceRustJournal {
                 savedRevision = try receipt.savedRevision.map { raw in
                 guard let revisionOperationID,
                       let expectedSavedRevision
-                else { throw DomainPersistenceError.corruptJournal }
+                else { throw DomainPersistenceError.journalCorruption() }
                 return try materializeSavedRevision(
                     raw,
                     expectedWorkspaceID: expectedWorkspaceID,
@@ -3405,27 +3405,27 @@ enum DomainWorkspaceRustJournal {
                 throw error
             }
             guard (savedRevision != nil) == (revisionOperationID != nil) else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             let transitionMatches = expectedTransition.matches(
                 journal: journal,
                 documentDigest: expectedDocumentDigest
             )
             guard transitionMatches else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             let commandResult = try receipt.commandResult.map(
                 DomainWorkspaceRustJournal.materializeCommandResult
             )
             if isRecovery {
                 guard commandResult == nil else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
             } else {
                 guard let commandResult,
                       commandResult.workspaceID == expectedWorkspaceID,
                       commandResult.catalogRevision == expectedCatalogRevision
-                else { throw DomainPersistenceError.corruptJournal }
+                else { throw DomainPersistenceError.journalCorruption() }
             }
             return DomainWorkspaceJournalMutationCommitReceipt(
                 workspaceID: expectedWorkspaceID,
@@ -3473,7 +3473,7 @@ enum DomainWorkspaceRustJournal {
                               logicalExpectedRevision == expectedWorkingRevision,
                               successFinalization == nil,
                               failureFinalization == nil
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let validation = try materialize(
                             CoreWorkspaceWorkingJournalValidationV1(
                                 workspaceID: expectedWorkspaceID,
@@ -3485,7 +3485,7 @@ enum DomainWorkspaceRustJournal {
                             expectedFileURL: expectedFileURL
                         )
                         guard validation.journal.pendingSave?.operationID == expectedOperationID else {
-                            throw DomainPersistenceError.corruptJournal
+                            throw DomainPersistenceError.journalCorruption()
                         }
                         return .writePendingJournal(
                             actionID: actionID,
@@ -3502,7 +3502,7 @@ enum DomainWorkspaceRustJournal {
                               successFinalization == .pendingJournalRetained,
                               failureFinalization == nil,
                               receipt.requestDigest == requestDigest
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         return .publishWorkspaceDocument(
                             actionID: actionID,
                             bytes: canonicalBytes,
@@ -3527,7 +3527,7 @@ enum DomainWorkspaceRustJournal {
                               let failureFinalization,
                               successFinalization == .revisionSidecarMissing,
                               failureFinalization == .pendingJournalRetained
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let validation = try materialize(
                             CoreWorkspaceWorkingJournalValidationV1(
                                 workspaceID: expectedWorkspaceID,
@@ -3540,7 +3540,7 @@ enum DomainWorkspaceRustJournal {
                         )
                         guard validation.journal.pendingSave == nil,
                               validation.journal.savedDigest == expectedDocumentDigest
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         return .writeCommittedJournal(
                             actionID: actionID,
                             expectedRawDigest: expectedRawJournalDigest,
@@ -3557,7 +3557,7 @@ enum DomainWorkspaceRustJournal {
                               let failureFinalization,
                               successFinalization == .finalized,
                               failureFinalization == .revisionSidecarMissing
-                        else { throw DomainPersistenceError.corruptJournal }
+                        else { throw DomainPersistenceError.journalCorruption() }
                         let validation = try materializeSavedRevision(
                             CoreWorkspacePersistenceMetadataValidationV1(
                                 workspaceID: expectedWorkspaceID,
@@ -3623,7 +3623,7 @@ enum DomainWorkspaceRustJournal {
                   receipt.documentDigest == expectedDocumentDigest,
                   receipt.resultingWorkingRevision == expectedWorkingRevision,
                   receipt.resultingSavedRevision == expectedWorkingRevision
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let journal = try materialize(
                 receipt.committedJournal,
                 expectedWorkspaceID: expectedWorkspaceID,
@@ -3634,7 +3634,7 @@ enum DomainWorkspaceRustJournal {
                   journal.journal.revisions.dirtyRevision == nil,
                   journal.journal.pendingSave == nil,
                   journal.journal.savedDigest == expectedDocumentDigest
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             let revision = try materializeSavedRevision(
                 receipt.savedRevision,
                 expectedWorkspaceID: expectedWorkspaceID,
@@ -3645,11 +3645,11 @@ enum DomainWorkspaceRustJournal {
             )
             guard let commandResult = try receipt.commandResult.map(
                 DomainWorkspaceRustJournal.materializeCommandResult
-            ) else { throw DomainPersistenceError.corruptJournal }
+            ) else { throw DomainPersistenceError.journalCorruption() }
             guard commandResult.workspaceID == expectedWorkspaceID,
                   commandResult.operation.operationID == expectedOperationID,
                   commandResult.catalogRevision == expectedCatalogRevision
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             return DomainWorkspaceSaveCommitReceipt(
                 workspaceID: expectedWorkspaceID,
                 operationID: expectedOperationID,
@@ -3737,7 +3737,7 @@ enum DomainWorkspaceRustJournal {
             ),
             DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             let catalog = try JSONDecoder().decode(
                 DomainPersistenceCoordinator.RuntimeWorkspaceCatalog.self,
@@ -3748,7 +3748,7 @@ enum DomainWorkspaceRustJournal {
                   UInt64(catalog.entries.count) == validated.entryCount,
                   UInt64(catalog.deletions?.count ?? 0) == validated.deletionCount
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             return DomainWorkspaceCatalogValidation(
                 catalog: catalog,
@@ -3770,7 +3770,7 @@ enum DomainWorkspaceRustJournal {
                   validated.schemaVersion == UInt16(DomainSavedRevisionRecord.schemaVersion),
                   DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             let record = try JSONDecoder().decode(
                 DomainSavedRevisionRecord.self,
@@ -3783,7 +3783,7 @@ enum DomainWorkspaceRustJournal {
                   expectedSavedRevision == nil || record.savedRevision == expectedSavedRevision,
                   expectedUpdatedAt.map { Self.datesEqual(record.updatedAt, $0) } ?? true
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             return DomainWorkspaceSavedRevisionValidation(
                 record: record,
@@ -3812,7 +3812,7 @@ enum DomainWorkspaceRustJournal {
                   validated.journalVersion == UInt16(DomainWorkingJournal.schemaVersion),
                   DomainContentDigest.sha256(validated.canonicalBytes) == validated.contentDigest
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption("journal_validation_identity_or_digest")
             }
             let journal: DomainWorkingJournal
             do {
@@ -3821,14 +3821,14 @@ enum DomainWorkspaceRustJournal {
                     from: validated.canonicalBytes
                 )
             } catch {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption("journal_decode_failed")
             }
             guard journal.workspaceID == validated.workspaceID,
                   journal.version == DomainWorkingJournal.schemaVersion,
                   expectedFileURL == nil
                   || journal.fileURL.standardizedFileURL == expectedFileURL?.standardizedFileURL
             else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption("journal_decoded_fields_mismatch")
             }
             return DomainWorkspaceWorkingJournalValidation(
                 journal: journal,
@@ -3861,7 +3861,10 @@ enum DomainWorkspaceRustJournal {
                  .invalidOperationLedger,
                  .invalidPendingSave,
                  .invalidTimestamp:
-                return .corruptJournal
+                // Ten distinct Rust journal errors used to arrive here as one indistinguishable
+                // value. Keeping the variant name is the difference between "the journal is broken
+                // somewhere" and "the catalog has no entry for this workspace".
+                return .journalCorruption("rust:\(error)")
             case .externalDocumentConflict:
                 return .externalDocumentConflict
             case .staleRecoverySnapshot:
@@ -3884,7 +3887,7 @@ enum DomainWorkspaceRustJournal {
               value.operation.errorCode == nil,
               value.operation.diagnostic == nil
         else {
-            throw DomainPersistenceError.corruptJournal
+            throw DomainPersistenceError.journalCorruption()
         }
         let disposition: DomainWorkspaceCommandResultDisposition = switch value.disposition {
         case .applied: .applied
@@ -3898,7 +3901,7 @@ enum DomainWorkspaceRustJournal {
         guard value.operation.disposition == expectedOperationDisposition,
               let operationDisposition = DomainCommandDisposition(rawValue: value.operation.disposition)
         else {
-            throw DomainPersistenceError.corruptJournal
+            throw DomainPersistenceError.journalCorruption()
         }
         let operation = DomainRecordedOperation(
             fingerprint: value.operation.fingerprint,

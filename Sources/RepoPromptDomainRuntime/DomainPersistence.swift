@@ -203,7 +203,13 @@ enum DomainPersistenceError: Error, Equatable {
     case admissionRecoveryStale
     case admissionFullRecoveryRequired
     case futureJournal(Int)
-    case corruptJournal
+    /// The journal or catalog could not be interpreted. The payload names *where* that
+    /// conclusion was reached, because this case is reachable from ~90 distinct checks in this
+    /// module and from a ten-way collapse of Rust journal errors in
+    /// `DomainWorkspaceRustJournal`. Without it the value is unattributable, which is exactly how
+    /// one occurrence cost a full diagnostic session and 93 temporary probes to localize.
+    /// Construct it with `journalCorruption(...)`, which captures the site automatically.
+    case corruptJournal(String)
     case operationIDCollision
     case invalidWorkspaceDocument
     case writeFailed(String)
@@ -213,6 +219,19 @@ enum DomainPersistenceError: Error, Equatable {
     case mutationPermitInvalid
     case workspaceOutsideMutationScope
 }
+
+extension DomainPersistenceError {
+    /// Builds `corruptJournal` with its origin attached. Callers pass a reason only when they know
+    /// something the call site does not already say; the file and line come for free.
+    static func journalCorruption(
+        _ reason: String? = nil,
+        file: String = #fileID,
+        line: Int = #line
+    ) -> DomainPersistenceError {
+        .corruptJournal(reason.map { "\($0) @\(file):\(line)" } ?? "\(file):\(line)")
+    }
+}
+
 
 package struct DomainPersistenceDataSnapshot: Sendable {
     package let data: Data?
@@ -1244,7 +1263,7 @@ package struct DomainPersistenceCoordinator {
             preview = try prepared.preview()
             guard preview.journalRewrites.isEmpty else {
                 prepared.close()
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
         }
         guard preview.catalogRevision == validation.catalog.revision,
@@ -1253,7 +1272,7 @@ package struct DomainPersistenceCoordinator {
               case let .target(directive) = preview.projection
         else {
             prepared.close()
-            throw DomainPersistenceError.corruptJournal
+            throw DomainPersistenceError.journalCorruption()
         }
 
         let workspace: DomainPersistenceBootstrap.Workspace?
@@ -1342,7 +1361,7 @@ package struct DomainPersistenceCoordinator {
             preview = try prepared.preview()
             guard preview.journalRewrites.isEmpty else {
                 prepared.close()
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
         }
         guard preview.catalogRevision == validation.catalog.revision,
@@ -1351,7 +1370,7 @@ package struct DomainPersistenceCoordinator {
               case let .full(rows) = preview.projection
         else {
             prepared.close()
-            throw DomainPersistenceError.corruptJournal
+            throw DomainPersistenceError.journalCorruption()
         }
 
         let evidenceByWorkspaceID = Dictionary(uniqueKeysWithValues: evidence.workspaces.map {
@@ -1365,7 +1384,7 @@ package struct DomainPersistenceCoordinator {
             case let .active(active):
                 guard let physical = evidenceByWorkspaceID[active.document.workspaceID] else {
                     prepared.close()
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 workspaces.append(persistenceWorkspace(
                     active,
@@ -1821,7 +1840,7 @@ package struct DomainPersistenceCoordinator {
                 throw DomainPersistenceError.stateConflict(expected: 0, actual: 1)
             }
             guard operation.operationID == operationID else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
 
             return try withLock(at: lockURL(document.workspaceID)) {
@@ -1889,7 +1908,7 @@ package struct DomainPersistenceCoordinator {
                             logicalExpectedRevision
                         ):
                             guard rawJournal.digest == expectedRawDigest else {
-                                throw DomainPersistenceError.corruptJournal
+                                throw DomainPersistenceError.journalCorruption()
                             }
                             rawJournal = try replaceJournal(
                                 expected: rawJournal,
@@ -1918,7 +1937,7 @@ package struct DomainPersistenceCoordinator {
                             logicalExpectedRevision
                         ):
                             guard rawJournal.digest == expectedRawDigest else {
-                                throw DomainPersistenceError.corruptJournal
+                                throw DomainPersistenceError.journalCorruption()
                             }
                             rawJournal = try replaceJournal(
                                 expected: rawJournal,
@@ -1961,7 +1980,7 @@ package struct DomainPersistenceCoordinator {
                             attachedReceipt
                         ):
                             guard currentCatalogSnapshot.raw.digest == expectedRawDigest else {
-                                throw DomainPersistenceError.corruptJournal
+                                throw DomainPersistenceError.journalCorruption()
                             }
                             do {
                                 let authorityPermit = try transaction.acquireAuthorityPermit()
@@ -2028,7 +2047,7 @@ package struct DomainPersistenceCoordinator {
                     throw error
                 }
                 guard let authorityReceipt else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return DomainPersistenceSavedCommit(
                     journal: authorityReceipt.committedJournal.journal,
@@ -2175,7 +2194,7 @@ package struct DomainPersistenceCoordinator {
             ):
                 guard actionID == expectedActionID, activatedReceipt == nil else {
                     if let outcome = try activatedOutcome() { return outcome }
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 do {
                     let authorityPermit = try transaction.acquireAuthorityPermit()
@@ -2227,7 +2246,7 @@ package struct DomainPersistenceCoordinator {
             ):
                 guard actionID == expectedActionID, activatedReceipt != nil else {
                     if let outcome = try activatedOutcome() { return outcome }
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 do {
                     try DomainPersistenceLock.atomicWrite(
@@ -2272,7 +2291,7 @@ package struct DomainPersistenceCoordinator {
 
             case let .committed(receipt, finalization):
                 guard let outcome = try activatedOutcome() else {
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 guard receiptsMatch(receipt, outcome.receipt),
                       finalization == outcome.finalization
@@ -2540,7 +2559,7 @@ package struct DomainPersistenceCoordinator {
                 ):
                     guard actionID == expectedActionID, activatedReceipt == nil else {
                         if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     do {
                         _ = try replaceJournal(
@@ -2580,10 +2599,10 @@ package struct DomainPersistenceCoordinator {
                 ):
                     guard actionID == expectedActionID, activatedReceipt == nil else {
                         if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     guard bytes == document.documentBytes else {
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     do {
                         let authorityPermit = try transaction.acquireAuthorityPermit()
@@ -2629,7 +2648,7 @@ package struct DomainPersistenceCoordinator {
                 ):
                     guard actionID == expectedActionID, activatedReceipt != nil else {
                         if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     do {
                         _ = try replaceJournal(
@@ -2676,7 +2695,7 @@ package struct DomainPersistenceCoordinator {
                 ):
                     guard actionID == expectedActionID, activatedReceipt != nil else {
                         if let committed = activatedCommit() { return committed }
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     do {
                         try DomainPersistenceLock.atomicWrite(
@@ -2711,7 +2730,7 @@ package struct DomainPersistenceCoordinator {
 
                 case let .committed(receipt, finalization):
                     guard let activatedReceipt, let activatedFinalization else {
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     guard receiptsMatch(receipt, activatedReceipt),
                           finalization == activatedFinalization
@@ -2914,7 +2933,7 @@ package struct DomainPersistenceCoordinator {
             case .revisionSidecarMissing: true
             }
             guard let authorityPublication = result.claimlessAuthorityPublication else {
-                throw DomainPersistenceError.corruptJournal
+                throw DomainPersistenceError.journalCorruption()
             }
             return DomainPersistenceExternalObservationCommit(
                 journal: result.receipt.committedJournal.journal,
@@ -3075,7 +3094,7 @@ package struct DomainPersistenceCoordinator {
                         case let .present(digest, _): digest
                         }
                         guard capturedDigest == expectedRawDigest else {
-                            throw DomainPersistenceError.corruptJournal
+                            throw DomainPersistenceError.journalCorruption()
                         }
                         do {
                             let authorityPermit = try transaction.acquireAuthorityPermit()
@@ -3396,7 +3415,7 @@ package struct DomainPersistenceCoordinator {
     ) throws -> (validation: DomainWorkspaceWorkingJournalValidation, document: DomainWorkspaceDocument)? {
         let journal = validation.journal
         guard journal.workspaceID == expectedWorkspaceID else {
-            throw DomainPersistenceError.corruptJournal
+            throw DomainPersistenceError.journalCorruption()
         }
         let savedBytes = try boundedWorkspaceDocumentBytes(at: journal.fileURL)
         switch try validator.resolvePendingSave(
@@ -3415,7 +3434,7 @@ package struct DomainPersistenceCoordinator {
                       fileURL: journal.fileURL,
                       expectedWorkspaceID: expectedWorkspaceID
                   )
-            else { throw DomainPersistenceError.corruptJournal }
+            else { throw DomainPersistenceError.journalCorruption() }
             return (cleanJournal, document)
         }
     }
@@ -3741,7 +3760,7 @@ package struct DomainPersistenceCoordinator {
                     attachedReceipt
                 ):
                     guard catalogSnapshot.raw.digest == expectedRawDigest else {
-                        throw DomainPersistenceError.corruptJournal
+                        throw DomainPersistenceError.journalCorruption()
                     }
                     do {
                         let authorityPermit = try transaction.acquireAuthorityPermit()
@@ -3809,7 +3828,7 @@ package struct DomainPersistenceCoordinator {
                      .writeCommittedJournal,
                      .writeSavedRevision,
                      .removeDeletionSidecar:
-                    throw DomainPersistenceError.corruptJournal
+                    throw DomainPersistenceError.journalCorruption()
                 }
                 return try body(receipt.catalog.catalog.revision)
             }

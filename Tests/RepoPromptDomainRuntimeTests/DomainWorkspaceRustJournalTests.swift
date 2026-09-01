@@ -79,7 +79,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             )
             XCTFail("mismatched workspace identity unexpectedly validated")
         } catch {
-            XCTAssertEqual(error as? DomainPersistenceError, .corruptJournal)
+            assertCorruptJournal(error, "journal_validation_identity_or_digest")
         }
     }
 
@@ -575,7 +575,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             expectedWorkspaceID: workspaceID,
             expectedFileURL: URL(fileURLWithPath: "/tmp/other.json")
         )) { error in
-            XCTAssertEqual(error as? DomainPersistenceError, .corruptJournal)
+            assertCorruptJournal(error, "journal_decoded_fields_mismatch")
         }
     }
 
@@ -685,7 +685,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             expectedWorkspaceID: workspaceID,
             expectedDocumentDigest: String(repeating: "0", count: 64)
         )) { error in
-            XCTAssertEqual(error as? DomainPersistenceError, .corruptJournal)
+            assertCorruptJournal(error, "catalog_validation_rejected")
         }
 
         let originalTombstone = DomainDeletionTombstone(
@@ -948,7 +948,7 @@ final class DomainWorkspaceRustJournalTests: XCTestCase {
             )
             XCTFail("invalid journal unexpectedly validated")
         } catch {
-            XCTAssertEqual(error as? DomainPersistenceError, .corruptJournal)
+            assertCorruptJournal(error, "rust:malformed")
         }
 
         let future = try JSONSerialization.data(withJSONObject: [
@@ -1224,5 +1224,29 @@ private actor CommandIdentityAuthorityResolverScript {
         case .failure:
             throw CommandIdentityAuthorityTestError.projectorFailed
         }
+    }
+}
+
+/// `corruptJournal` carries its origin now, so these tests assert the specific Rust journal error
+/// that produced it instead of the collapsed case -- a stronger check than the equality they used
+/// to make, and one that fails if a different corruption path starts answering.
+private func assertCorruptJournal(
+    _ error: Error,
+    _ expectedDetail: String? = nil,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    guard case let .corruptJournal(detail)? = error as? DomainPersistenceError else {
+        return XCTFail("expected corruptJournal, got \(error)", file: file, line: line)
+    }
+    if let expectedDetail {
+        XCTAssertTrue(
+            detail.contains(expectedDetail),
+            "corruptJournal detail \(detail) does not mention \(expectedDetail)",
+            file: file,
+            line: line
+        )
+    } else {
+        XCTFail("corruptJournal carried no reason: \(detail)", file: file, line: line)
     }
 }
