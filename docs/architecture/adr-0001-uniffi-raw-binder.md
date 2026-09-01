@@ -1,7 +1,7 @@
 # ADR-0001: UniFFI as the Raw Binder for the Rust Core Boundary
 
 **Status:** Accepted（用户裁决，2026-08-20）
-**Accepted scope:** raw binder only — capabilities proven by the §15.2 gates; G4/G7/G8 conditional gaps remain registered follow-ups in rust-ffi.md and do not expand this acceptance
+**Accepted scope:** raw binder only — capabilities proven by the §15.2 gates. G4 and G7 are closed; G8's originally registered blockers are closed with one caveat recorded in the 2026-09-01 update below. Closing a gate does not expand this acceptance: the verified capability boundary and the prohibited-capability list further down remain exactly as ruled on 2026-08-20.
 **Date:** 2026-08-20
 **Decision owner:** User
 
@@ -27,6 +27,44 @@ The project gate IDs remain the primary keys; the charter mapping is the same ma
 | G8 Governance | 8 fuzz/security; cross-gate authority | Conditional pass | Conductor/Make authority, Rust CI, fuzz smoke, and guardrails exist; Rust PR-ready selection and fail-closed CI security/fuzz coverage remain open. |
 
 This ADR does not convert conditional gates into passes. Accept/Reject remains a user decision after reviewing the open conditions.
+
+## Update (2026-09-01): G4/G7/G8 follow-ups closed; capability boundary unchanged
+
+**Decision owner:** User (ruling); orchestrator (verification). Recorded as an amendment rather than an
+edit to the table above, following the ADR-0008 precedent — the 2026-08-20 gate conclusions stay
+readable as what was known at ruling time.
+
+1. **G4 closed.** The representative same-semantics measurement the original row called a P1
+   prerequisite was satisfied by the cargo-first authoritative harness; the superseded
+   `swift-search-reference` was firstMatch-semantics and not comparable. No SLO cap or ratio was
+   relaxed. Evidence: `rust/benchmarks/results/v1/rust-search-cargo-floors-v1.json`.
+2. **G7 closed 2026-08-21.** The missing standalone dead-strip/link-map and dSYM Rust-frame evidence
+   is registered: 1268 Rust symbols survive dead-strip in the release test bundle, and `atos`
+   resolves a Rust frame to `types.rs:1124` through the `.dSYM`.
+3. **G8's three registered blockers are closed.** Verified against the workflow and preflight script
+   rather than against the neighbouring documentation rows: Rust PR-ready path selection exists
+   (`preflight.sh:229,269,332-351`); `cargo deny`/`cargo audit` are pinned, `--locked`, and invoked
+   unconditionally; bounded fuzz and the bridge debug/release/TSan matrix are all wired.
+
+**Caveat that keeps G8 short of an unqualified pass.** Two facts are recorded rather than smoothed over:
+
+- Until 2026-09-01 the `rust-ffi` job died at `cargo fmt --all -- --check`, so every step after it —
+  workspace tests, `xtask generate --check`, `cargo deny`, `cargo audit`, all fuzz targets, and the
+  bridge matrix — had **never executed**. The gate was configured, not running. That is precisely how
+  the G1 export inventory drifted to 48 declared against 148 actual exports, and how a declared fuzz
+  target went unrun for eight days. The formatting blocker is fixed and both drifts are now guarded by
+  `Scripts/rust_ffi_guardrails.py`, but "configured" and "executing" are now understood to be
+  different claims, and only the latter is evidence.
+- As of 2026-09-01 the macOS jobs run on `workflow_dispatch` only, for cost reasons recorded in
+  `ci.yml`. Advisory coverage — the part of ADR-0007 that degrades with time rather than with changes
+  — is preserved by a weekly Linux `dependency-audit` job. Per-change coverage moved to local
+  `preflight.sh pr-ready`. Anyone re-reading G8 as "fail-closed in CI on every change" should read it
+  instead as "fail-closed locally on every change, and in CI on demand."
+
+**Unchanged by this update.** The verified capability boundary and the prohibited-capability list below
+are untouched. Closing evidence gaps does not authorize UniFFI async exports, foreign callbacks,
+blocking exports, raw generated types escaping the bridge, or any other listed prohibition; those still
+require a new ADR and full gate revalidation.
 
 ## Proposed decision
 
