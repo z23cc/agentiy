@@ -7865,11 +7865,17 @@ fn changed_context_id_v1(
 ) -> Option<String> {
     let before = context_digest_map_v1(&before.context_digests)?;
     let after = context_digest_map_v1(&after.context_digests)?;
-    let changed = before
+    // Only contexts that still exist after the transition can name the publication. The single
+    // consumer of this value is the authority publication's `context_id`, and
+    // `validate_workspace_authority_publication_draft_v1` requires that context to be present in
+    // both the post-state projection and the post-state authority.
+    //
+    // Unioning the two key sets made a *removed* context qualify -- `Some(digest) != None` reads
+    // as "changed" -- so closing the second-to-last tab published the id of the tab that had just
+    // been deleted, and the validator then rejected the whole transaction as an invalid context
+    // table. Additions are unaffected: an added context is present in `after`.
+    let changed = after
         .keys()
-        .chain(after.keys())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .filter(|context_id| before.get(*context_id) != after.get(*context_id))
         .cloned()
         .collect::<Vec<_>>();
@@ -10672,6 +10678,68 @@ mod tests {
     const OPERATION_ID: &str = "66666666-7777-8888-9999-aaaaaaaaaaaa";
     const BASE_OPERATION_ID: &str = "eeeeeeee-ffff-aaaa-bbbb-cccccccccccc";
     const OTHER_WORKSPACE_ID: &str = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+
+    fn journal_with_context_digests(pairs: &[(&str, &str)]) -> WorkspaceWorkingJournalV1 {
+        WorkspaceWorkingJournalV1 {
+            version: 1,
+            workspace_id: WORKSPACE_ID.to_owned(),
+            file_url: "file:///tmp/workspace.json".to_owned(),
+            revisions: WorkspaceProjectionRevisionState {
+                working_revision: 1,
+                saved_revision: 0,
+                dirty_revision: Some(1),
+            },
+            saved_digest: String::new(),
+            working_document: None,
+            context_revisions: Value::Object(serde_json::Map::new()),
+            // context_digest_map_v1 reads a flat [id, digest, id, digest, ...] array, not an
+            // object. Building an object here makes the whole function return None, which would
+            // make these assertions pass without exercising anything.
+            context_digests: Value::Array(
+                pairs
+                    .iter()
+                    .flat_map(|(id, digest)| {
+                        [
+                            Value::String((*id).to_owned()),
+                            Value::String((*digest).to_owned()),
+                        ]
+                    })
+                    .collect(),
+            ),
+            context_tombstones: Value::Object(serde_json::Map::new()),
+            operations: Vec::new(),
+            pending_save: None,
+            updated_at: Value::Null,
+        }
+    }
+
+    #[test]
+    fn changed_context_id_ignores_a_removed_context() {
+        // Closing a tab leaves exactly one difference between the two journals, but the context
+        // it names no longer exists. The publication's context_id must refer to a context that
+        // survives, because validate_workspace_authority_publication_draft_v1 requires it to be
+        // present in both the post-state projection and the post-state authority. Counting the
+        // removal here made close_tab publish a deleted id and fail as InvalidContextTable.
+        let before = journal_with_context_digests(&[(CONTEXT_ID, "aa"), (CONTEXT_ID_TWO, "bb")]);
+        let after = journal_with_context_digests(&[(CONTEXT_ID, "aa")]);
+        assert_eq!(changed_context_id_v1(&before, &after), None);
+    }
+
+    #[test]
+    fn changed_context_id_still_reports_edits_and_additions() {
+        let before = journal_with_context_digests(&[(CONTEXT_ID, "aa")]);
+        let edited = journal_with_context_digests(&[(CONTEXT_ID, "cc")]);
+        assert_eq!(
+            changed_context_id_v1(&before, &edited),
+            Some(CONTEXT_ID.to_owned())
+        );
+
+        let added = journal_with_context_digests(&[(CONTEXT_ID, "aa"), (CONTEXT_ID_TWO, "bb")]);
+        assert_eq!(
+            changed_context_id_v1(&before, &added),
+            Some(CONTEXT_ID_TWO.to_owned())
+        );
+    }
 
     fn authority_workspace(
         workspace_id: &str,
