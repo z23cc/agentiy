@@ -87,22 +87,7 @@ actor DirectHeadlessMCPService {
         )
 
         do {
-            try await prepared.childEndpoint.start { [weak self] fd, peerPID, handshake in
-                await self?.servePrivateChild(
-                    fd: fd,
-                    peerPID: peerPID,
-                    handshake: handshake,
-                    prepared: prepared
-                )
-            }
-            guard let endpointDescriptor = await prepared.childEndpoint.descriptor() else {
-                throw DirectHeadlessChildEndpoint.EndpointError.invalidDirectory
-            }
-            await prepared.childLaunchCoordinator.configure(
-                runtime: prepared.runtime,
-                endpointDescriptor: endpointDescriptor.socketPath,
-                endpointIdentity: endpointDescriptor.socketIdentity
-            )
+            try await activateChildLaunchEndpoint(prepared)
             try await server.start(transport: transport)
             let terminal = await transport.waitUntilTerminal()
             logger.debug("Headless stdio terminal", metadata: ["reason": "\(terminal)"])
@@ -124,6 +109,36 @@ actor DirectHeadlessMCPService {
             await teardown(prepared)
             throw error
         }
+    }
+
+    /// Starts the private child endpoint and configures the launch coordinator against it.
+    ///
+    /// `prepareRuntime()` cannot fold this in: the coordinator needs the endpoint's socket
+    /// descriptor, which only exists once the endpoint is listening. But leaving the sequence
+    /// inline in the run loop made `prepareRuntime()` return a `PreparedRuntime` whose
+    /// `childLaunchCoordinator` was constructed and unusable, with the required follow-up
+    /// discoverable only by reading the run loop. A caller that skipped it -- the routing tests
+    /// did -- got `CoordinatorError.unavailable` from an object that looked ready.
+    ///
+    /// Naming the sequence gives every caller one supported entry point instead of a three-step
+    /// protocol each has to rediscover.
+    func activateChildLaunchEndpoint(_ prepared: PreparedRuntime) async throws {
+        try await prepared.childEndpoint.start { [weak self] fd, peerPID, handshake in
+            await self?.servePrivateChild(
+                fd: fd,
+                peerPID: peerPID,
+                handshake: handshake,
+                prepared: prepared
+            )
+        }
+        guard let endpointDescriptor = await prepared.childEndpoint.descriptor() else {
+            throw DirectHeadlessChildEndpoint.EndpointError.invalidDirectory
+        }
+        await prepared.childLaunchCoordinator.configure(
+            runtime: prepared.runtime,
+            endpointDescriptor: endpointDescriptor.socketPath,
+            endpointIdentity: endpointDescriptor.socketIdentity
+        )
     }
 
     func prepareRuntime() async throws -> PreparedRuntime {
