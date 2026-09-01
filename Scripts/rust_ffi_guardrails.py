@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -24,6 +25,268 @@ PRODUCT_MANIFESTS = {
     "agentry-runtime": RUST / "crates/runtime/Cargo.toml",
     "agentry-ffi": RUST / "crates/ffi/Cargo.toml",
 }
+
+
+# --- Export-inventory completeness (ADR-0001 G1 "raw export inventory") ---------------------
+#
+# `rust/ffi-contract/exports.txt` is the hand-authored capability-boundary inventory that
+# ADR-0001's G1 Contract gate cites as evidence for "UniFFI is accepted only for these
+# capabilities". Nothing verified it against the real export surface, so it silently stopped
+# being maintained around P4/P7: 48 entries are declared while the generated header exposes
+# 148 method/constructor exports.
+#
+# The generated C header is the authoritative, machine-produced inventory -- UniFFI emits one
+# `uniffi_agentry_ffi_checksum_{kind}_{owner}_{fn}` symbol per export, and
+# `xtask generate --check` already proves the committed header is byte-identical to a clean
+# regeneration. This check derives the actual surface from it and fails when a NEW export
+# appears that exports.txt does not claim.
+#
+# Direction matters: `Owner.methodName` -> `owner_method_name` is deterministic, while the
+# reverse is not (`corepreparedworkspacecommandadmissionv1` cannot be recovered to its
+# original casing). So we lower/snake the DECLARED entries and check the actual symbols are
+# claimed -- never the other way round.
+#
+# Free functions (`_func_` kind) are skipped: exports.txt's `Owner.method(...)` grammar has no
+# form for them.
+#
+# ponytail: the 100 pre-existing unregistered exports are pinned below rather than backfilled.
+# Backfilling exports.txt rotates bindingChecksum (sha256(abi-v1.json || 0x00 || exports.txt))
+# AND buildFingerprint (exports.txt is in xtask's BUILD_INPUT_PATHS), which invalidates the
+# committed AgentryCoreBindingIdentity.swift and fails every raw call with staleRuntimeIdentity
+# until `cargo run -p xtask -- generate` plus an archive rebuild land together. That is a
+# maintainer change with its own regen/rebuild/test cycle, not a guardrail edit. Upgrade path:
+# backfill the signatures, regenerate, then delete this baseline entirely.
+UNREGISTERED_EXPORT_BASELINE = {
+    "corepreparedworkspacecommandadmissionv1_acquire",
+    "corepreparedworkspacecommandadmissionv1_authority_read",
+    "corepreparedworkspacecommandadmissionv1_begin_external_observation_recovery_transaction",
+    "corepreparedworkspacecommandadmissionv1_close",
+    "corepreparedworkspacecommandadmissionv1_diagnostics",
+    "corepreparedworkspacecommandadmissionv1_prepare_external_observation_recovery",
+    "corepreparedworkspacecommandadmissionv1_prepare_semantic_full_recovery",
+    "corepreparedworkspacecommandadmissionv1_prepare_semantic_target_recovery",
+    "corepreparedworkspacecommandadmissionv1_publish_authority_state",
+    "corepreparedworkspacecommandadmissionv1_synchronize_authority_projection",
+    "corepreparedworkspacecreatetransactionv1_acquire_authority_permit",
+    "corepreparedworkspacecreatetransactionv1_close",
+    "corepreparedworkspacecreatetransactionv1_finish_command_authority",
+    "corepreparedworkspacecreatetransactionv1_next_directive",
+    "corepreparedworkspacecreatetransactionv1_report_action",
+    "corepreparedworkspacedeletetransactionv1_acquire_authority_permit",
+    "corepreparedworkspacedeletetransactionv1_close",
+    "corepreparedworkspacedeletetransactionv1_finish_command_authority",
+    "corepreparedworkspacedeletetransactionv1_next_directive",
+    "corepreparedworkspacedeletetransactionv1_plan_cleanup",
+    "corepreparedworkspacedeletetransactionv1_report_action",
+    "corepreparedworkspacejournalmutationtransactionv1_acquire_authority_permit",
+    "corepreparedworkspacejournalmutationtransactionv1_close",
+    "corepreparedworkspacejournalmutationtransactionv1_finish_claimless_authority_publication",
+    "corepreparedworkspacejournalmutationtransactionv1_finish_command_authority",
+    "corepreparedworkspacejournalmutationtransactionv1_next_directive",
+    "corepreparedworkspacejournalmutationtransactionv1_report_action",
+    "corepreparedworkspacesavetransactionv1_acquire_authority_permit",
+    "corepreparedworkspacesavetransactionv1_close",
+    "corepreparedworkspacesavetransactionv1_finish_command_authority",
+    "corepreparedworkspacesavetransactionv1_next_directive",
+    "corepreparedworkspacesavetransactionv1_report_action",
+    "corepreparedworkspacesemanticrecoveryv1_close",
+    "corepreparedworkspacesemanticrecoveryv1_commit",
+    "corepreparedworkspacesemanticrecoveryv1_preview",
+    "coreruntime_agent_provider_acp_cancel",
+    "coreruntime_agent_provider_acp_notify",
+    "coreruntime_agent_provider_acp_request",
+    "coreruntime_agent_provider_acp_respond",
+    "coreruntime_agent_provider_acp_respond_error",
+    "coreruntime_agent_provider_acp_state",
+    "coreruntime_agent_provider_codex_cancel",
+    "coreruntime_agent_provider_codex_notify",
+    "coreruntime_agent_provider_codex_request",
+    "coreruntime_agent_provider_codex_respond",
+    "coreruntime_agent_provider_codex_respond_error",
+    "coreruntime_agent_provider_codex_state",
+    "coreruntime_agent_provider_conformance_snapshot",
+    "coreruntime_agent_provider_open_scope",
+    "coreruntime_agent_provider_send_line",
+    "coreruntime_agent_provider_shutdown",
+    "coreruntime_agent_provider_start",
+    "coreruntime_agent_provider_start_with_stdin",
+    "coreruntime_agent_provider_validate_conformance",
+    "coreruntime_file_system_watcher_capture_watermark",
+    "coreruntime_file_system_watcher_close_scope",
+    "coreruntime_file_system_watcher_ingest",
+    "coreruntime_file_system_watcher_open_scope",
+    "coreruntime_file_system_watcher_reset",
+    "coreruntime_file_system_watcher_snapshot",
+    "coreruntime_file_system_watcher_start_accepting",
+    "coreruntime_file_system_watcher_take_next",
+    "coreruntime_inventory_apply_delta_discovery_v1",
+    "coreruntime_inventory_close_composed_snapshot",
+    "coreruntime_inventory_composed_snapshot_page",
+    "coreruntime_inventory_open_composed_snapshot",
+    "coreruntime_inventory_push_bulk_chunk_discovery",
+    "coreruntime_inventory_resolve_records_scope_wide",
+    "coreruntime_inventory_set_file_managed_only",
+    "coreruntime_inventory_set_folder_managed_only",
+    "coreruntime_panic_forensics",
+    "coreruntime_path_match_locate_many_v1",
+    "coreruntime_path_match_score_v1",
+    "coreruntime_path_search_find_v1",
+    "coreruntime_text_decode_v1",
+    "coreruntime_token_accounting_v1",
+    "coreruntime_workspace_catalog_seed_v1",
+    "coreruntime_workspace_catalog_validate_v1",
+    "coreruntime_workspace_command_identity_v1",
+    "coreruntime_workspace_create_transaction_begin_v1",
+    "coreruntime_workspace_delete_transaction_begin_v1",
+    "coreruntime_workspace_deletion_tombstone_validate_v1",
+    "coreruntime_workspace_document_projection_v1",
+    "coreruntime_workspace_journal_mutation_transaction_begin_v1",
+    "coreruntime_workspace_pending_save_resolve_v1",
+    "coreruntime_workspace_save_transaction_begin_v1",
+    "coreruntime_workspace_saved_revision_validate_v1",
+    "coreruntime_workspace_semantic_initial_recovery_prepare_v1",
+    "coreruntime_workspace_working_journal_seed_v1",
+    "coreruntime_workspace_working_journal_validate_v1",
+    "coreworkspacecommandexecutionclaimv1_abandon",
+    "coreworkspacecommandexecutionclaimv1_checkpoint",
+    "coreworkspacecommandexecutionclaimv1_close",
+    "coreworkspacecommandexecutionclaimv1_finalize_transient",
+    "coreworkspacecommandexecutionclaimv1_fingerprint",
+    "coreworkspacecommandexecutionclaimv1_generation",
+    "coreworkspacecommandexecutionclaimv1_operation_id",
+    "coreworkspacecommandexecutionclaimv1_semantic_preflight",
+    "coreworkspacecommandexecutionclaimv1_workspace_id",
+    "coreworkspacecreateauthoritypermitv1_close",
+}
+
+
+def camel_to_snake(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def declared_export_keys(text: str) -> set[str]:
+    """`CoreRuntime.agentOpenScope(...) throws -> X` -> `coreruntime_agent_open_scope`."""
+    keys: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"([A-Za-z0-9]+)\.([A-Za-z0-9]+)", line)
+        if match:
+            owner, method = match.groups()
+            keys.add(f"{owner.lower()}_{camel_to_snake(method)}")
+    return keys
+
+
+def check_fuzz_target_coverage(failures: list[str]) -> None:
+    """Every declared fuzz target must actually run in CI.
+
+    Same failure class as the export inventory above: a hand-maintained list (ci.yml's fuzz
+    steps) silently drifting from the real surface (rust/fuzz/Cargo.toml's declared targets).
+    This drifted for real -- `agent_command_v1` and `claude_ndjson_v1` were added the same day
+    (2026-08-24); only the latter was wired into CI, so the one hand-rolled wire decode in the
+    Claude vertical went unfuzzed while `rust-ffi.md` still advertised "five bounded fuzz jobs".
+    ADR-0007 makes fuzz/advisory coverage a fail-closed CI gate, so an unrun target is a gate
+    hole, not a cosmetic gap.
+
+    Ceiling: the declared surface is `rust/fuzz/Cargo.toml`'s `[[bin]]` list, so a
+    `fuzz_targets/*.rs` file with no `[[bin]]` entry is invisible here (it is also unbuildable
+    by `cargo fuzz`, so it cannot silently pass CI either). Verified 9/9 in sync at the time
+    this check landed.
+    """
+    manifest_path = RUST / "fuzz/Cargo.toml"
+    workflow_path = ROOT / ".github/workflows/ci.yml"
+    manifest = load_toml(manifest_path, failures)
+    if not manifest:
+        return
+    try:
+        workflow = workflow_path.read_text(encoding="utf-8")
+    except OSError as error:
+        failures.append(f"cannot read {workflow_path.relative_to(ROOT)}: {error}")
+        return
+
+    declared = {
+        binary["name"]
+        for binary in manifest.get("bin", [])
+        if isinstance(binary, dict) and "name" in binary
+    }
+    if not declared:
+        failures.append(
+            "rust/fuzz/Cargo.toml declares no [[bin]] fuzz targets; the coverage check cannot "
+            "run fail-closed"
+        )
+        return
+
+    invoked = set(re.findall(r"cargo fuzz run ([A-Za-z0-9_]+)", workflow))
+    for name in sorted(declared - invoked):
+        failures.append(
+            f"fuzz target `{name}` is declared in rust/fuzz/Cargo.toml but never run in "
+            ".github/workflows/ci.yml (ADR-0007 fail-closed fuzz coverage); add a "
+            "`cargo fuzz run` step"
+        )
+    for name in sorted(invoked - declared):
+        failures.append(
+            f".github/workflows/ci.yml runs fuzz target `{name}`, which rust/fuzz/Cargo.toml "
+            "does not declare; the CI step will fail"
+        )
+
+
+def check_export_inventory(failures: list[str]) -> None:
+    header = ROOT / "Sources/CAgentryRustCore/include/AgentryCoreFFI.h"
+    exports = RUST / "ffi-contract/exports.txt"
+    try:
+        header_text = header.read_text(encoding="utf-8")
+        exports_text = exports.read_text(encoding="utf-8")
+    except OSError as error:
+        failures.append(f"cannot read generated header or export inventory: {error}")
+        return
+
+    actual = set(
+        re.findall(
+            r"uniffi_agentry_ffi_checksum_(?:method|constructor)_([a-z0-9_]+)", header_text
+        )
+    )
+    if not actual:
+        failures.append(
+            "no UniFFI checksum symbols found in AgentryCoreFFI.h; the export-inventory "
+            "completeness check cannot run fail-closed"
+        )
+        return
+
+    declared = declared_export_keys(exports_text)
+
+    # Self-check for the Owner.method -> owner_method_name mapping above. Every declared entry
+    # must resolve to a real symbol; an orphan means either exports.txt claims a capability that
+    # is not exported (an inventory-integrity bug) or this parser's casing rule has drifted from
+    # UniFFI's. Without this arm a broken mapping would degrade silently into "everything is
+    # unregistered" with no indication of the real cause.
+    for name in sorted(declared - actual):
+        failures.append(
+            f"exports.txt declares `{name}`, which matches no UniFFI export symbol; either the "
+            "entry is stale or Owner.method -> owner_method_name mapping drifted"
+        )
+
+    unclaimed = actual - declared - UNREGISTERED_EXPORT_BASELINE
+    for name in sorted(unclaimed):
+        failures.append(
+            f"FFI export `{name}` is exported across the boundary but not registered in "
+            "rust/ffi-contract/exports.txt (ADR-0001 G1 capability-boundary inventory); "
+            "add its signature line, then regenerate identity artifacts"
+        )
+
+    stale = UNREGISTERED_EXPORT_BASELINE - actual
+    for name in sorted(stale):
+        failures.append(
+            f"UNREGISTERED_EXPORT_BASELINE lists `{name}`, which no longer exists; "
+            "remove it from the baseline"
+        )
+
+    redundant = UNREGISTERED_EXPORT_BASELINE & declared
+    for name in sorted(redundant):
+        failures.append(
+            f"`{name}` is now registered in exports.txt; remove it from "
+            "UNREGISTERED_EXPORT_BASELINE"
+        )
 
 
 def load_toml(path: Path, failures: list[str]) -> dict[str, Any]:
@@ -222,6 +485,9 @@ def main() -> int:
             failures.append("ABI contract maximum envelope must be 1 MiB")
     except (OSError, json.JSONDecodeError) as error:
         failures.append(f"cannot read valid ABI contract: {error}")
+
+    check_export_inventory(failures)
+    check_fuzz_target_coverage(failures)
 
     fixture_check = subprocess.run(
         [sys.executable, "Scripts/extract_rust_ffi_baselines.py", "--check"],
