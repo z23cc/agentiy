@@ -52,12 +52,8 @@ struct ChatMessagesView: View {
     /// Used to force-refresh the ScrollView.
     @State private var refreshToken = UUID()
 
-    /// If < macOS 15.0, we never allow autoScrollEnabled to be true.
     private var supportsAutoScroll: Bool {
-        if #available(macOS 15.0, *) {
-            return true
-        }
-        return false
+        true
     }
 
     init(
@@ -187,30 +183,18 @@ struct ChatMessagesView: View {
     // MARK: - Versioned Scrollable Content
 
     /// Uses `.onScrollPhaseChange` on macOS 15+ to detect manual scrolling.
-    @ViewBuilder
     private func versionedScrollableContent(proxy: ScrollViewProxy) -> some View {
-        if #available(macOS 15.0, *) {
-            ScrollView {
-                messageListContent
-            }
-            .id(refreshToken)
-            .transaction { txn in
-                if didChatChange { txn.disablesAnimations = true }
-            }
-            .onScrollPhaseChange { _, newPhase in
-                if newPhase == .interacting {
-                    // User manually scrolled => disable auto-scroll
-                    setAutoScrollEnabled(false)
-                }
-            }
-        } else {
-            // For older macOS, we just present the scroll view without auto-scroll functionality.
-            ScrollView {
-                messageListContent
-            }
-            .id(refreshToken)
-            .transaction { txn in
-                if didChatChange { txn.disablesAnimations = true }
+        ScrollView {
+            messageListContent
+        }
+        .id(refreshToken)
+        .transaction { txn in
+            if didChatChange { txn.disablesAnimations = true }
+        }
+        .onScrollPhaseChange { _, newPhase in
+            if newPhase == .interacting {
+                // User manually scrolled => disable auto-scroll
+                setAutoScrollEnabled(false)
             }
         }
     }
@@ -253,26 +237,13 @@ struct ChatMessagesView: View {
     // MARK: - Versioned Bottom Sentinel
 
     /// Tracks proximity to bottom. Uses `.onScrollVisibilityChange` on macOS 15+; else fallback.
-    @ViewBuilder
     private var versionedBottomSentinel: some View {
-        if #available(macOS 15.0, *) {
-            Color.clear
-                .frame(height: 1)
-                .id("bottomSentinel")
-                .onScrollVisibilityChange { visible in
-                    isNearBottom = visible
-                }
-        } else {
-            Color.clear
-                .frame(height: 1)
-                .id("bottomSentinel")
-                .onAppear {
-                    isNearBottom = true
-                }
-                .onDisappear {
-                    isNearBottom = false
-                }
-        }
+        Color.clear
+            .frame(height: 1)
+            .id("bottomSentinel")
+            .onScrollVisibilityChange { visible in
+                isNearBottom = visible
+            }
     }
 
     // MARK: - Button Logic

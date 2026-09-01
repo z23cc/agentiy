@@ -3673,19 +3673,8 @@ extension ToolOutputFormatter {
 
     /// Formats token count with thousands separator (fast path avoids NumberFormatter allocation)
     private static func formatTokenCount(_ count: Int) -> String {
-        if #available(macOS 12.0, iOS 15.0, *) {
-            count.formatted(.number.grouping(.automatic))
-        } else {
-            legacyTokenFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
-        }
+        count.formatted(.number.grouping(.automatic))
     }
-
-    private static let legacyTokenFormatter: NumberFormatter = {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        f.groupingSeparator = ","
-        return f
-    }()
 
     /// Returns explanation text for copy preset mode
     private static func copyPresetExplanation(mode: String) -> String {

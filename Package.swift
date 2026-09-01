@@ -96,7 +96,7 @@ let rustFFISwiftSettings = swift6LanguageMode + [
 
 let package = Package(
     name: "Agentry",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     products: [
         .executable(name: "Agentry", targets: ["RepoPrompt"]),
         .executable(name: "agentry-mcp", targets: ["RepoPromptMCP"])

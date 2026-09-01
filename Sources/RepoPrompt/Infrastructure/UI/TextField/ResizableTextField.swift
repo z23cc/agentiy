@@ -310,9 +310,7 @@ struct CustomTextField: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isAutomaticLinkDetectionEnabled = false
-        if #available(macOS 13.0, *) {
-            textView.isAutomaticDataDetectionEnabled = false
-        }
+        textView.isAutomaticDataDetectionEnabled = false
         textView.usesFontPanel = false
         textView.usesRuler = false
 

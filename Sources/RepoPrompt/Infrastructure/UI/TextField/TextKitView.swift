@@ -261,9 +261,7 @@ struct TextKitView: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticLinkDetectionEnabled = false
-        if #available(macOS 13.0, *) {
-            textView.isAutomaticDataDetectionEnabled = false
-        }
+        textView.isAutomaticDataDetectionEnabled = false
 
         // Configure spell-check and autocorrection (kept user-configurable)
         textView.isContinuousSpellCheckingEnabled = isSpellCheckEnabled

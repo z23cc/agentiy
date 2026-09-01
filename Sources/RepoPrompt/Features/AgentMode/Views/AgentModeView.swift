@@ -715,12 +715,10 @@ struct AgentModeChatDetailView: View {
                 )
             }
 
-            if #available(macOS 15.0, *) {
-                assert(
-                    bottomAffordance.isNearBottom == (scrollMetrics.distanceToBottom <= Self.scrollButtonVisibilityThreshold),
-                    "\(caller): modern near-bottom affordance out of sync with raw scroll metrics"
-                )
-            }
+            assert(
+                bottomAffordance.isNearBottom == (scrollMetrics.distanceToBottom <= Self.scrollButtonVisibilityThreshold),
+                "\(caller): modern near-bottom affordance out of sync with raw scroll metrics"
+            )
 
             if pendingBottomScrollOutcome == nil {
                 assert(
@@ -1474,10 +1472,7 @@ struct AgentModeChatDetailView: View {
     }
 
     private var supportsAutoScroll: Bool {
-        if #available(macOS 15.0, *) {
-            return true
-        }
-        return false
+        true
     }
 
     private var baseInputBarHeight: CGFloat {
@@ -1485,10 +1480,7 @@ struct AgentModeChatDetailView: View {
     }
 
     private var isNearBottom: Bool {
-        if #available(macOS 15.0, *) {
-            return bottomAffordance.isNearBottom
-        }
-        return legacyIsNearBottom
+        bottomAffordance.isNearBottom
     }
 
     private var isRehydrateRestoreActive: Bool {
@@ -2271,22 +2263,15 @@ struct AgentModeChatDetailView: View {
         _ = advanceRehydrateRestoreIfNeeded(proxy: proxy)
     }
 
-    @ViewBuilder
     private func versionedScrollableContent(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
-        if #available(macOS 15.0, *) {
-            modernScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
-        } else {
-            legacyScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
-        }
+        modernScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
     }
 
-    @available(macOS 15.0, *)
     private func modernScrollableContent(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
         // Keep the ScrollView identity stable across pinned/detached transitions.
         modernScrollableContentBase(proxy: proxy, viewportHeight: viewportHeight)
     }
 
-    @available(macOS 15.0, *)
     private func modernScrollableContentBase(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
         ScrollView {
             messageListContent(viewportHeight: viewportHeight, proxy: proxy)
@@ -2354,18 +2339,6 @@ struct AgentModeChatDetailView: View {
                     cancelInvalidPendingBottomScrollOutcome(reason: "manualAnimation")
                 }
             }
-        }
-    }
-
-    private func legacyScrollableContent(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
-        ScrollView {
-            messageListContent(viewportHeight: viewportHeight, proxy: proxy)
-        }
-        .id(transcriptScrollResetRevision)
-        .accessibilityIdentifier("agentTranscript.scrollView")
-        .coordinateSpace(name: "AgentTranscriptScrollSpace")
-        .transaction { txn in
-            if didChatChange { txn.disablesAnimations = true }
         }
     }
 
@@ -3931,7 +3904,6 @@ struct AgentModeChatDetailView: View {
         }
     }
 
-    @available(macOS 15.0, *)
     private func scrollMetrics(from geometry: ScrollGeometry) -> AgentTranscriptScrollMetrics {
         AgentTranscriptScrollMetrics(
             distanceToBottom: max(0, geometry.contentSize.height - geometry.visibleRect.maxY),
@@ -4020,18 +3992,16 @@ struct AgentModeChatDetailView: View {
     private func applyScrollMetrics(_ newMetrics: AgentTranscriptScrollMetrics) -> AgentTranscriptScrollMetrics {
         let previousMetrics = scrollEngine.scrollMetrics
         scrollEngine.scrollMetrics = newMetrics
-        if #available(macOS 15.0, *) {
-            // Only write to @State when the thresholded value actually changes.
-            // Reading bottomAffordance is cheap (no invalidation), but calling
-            // the mutating update() through the computed-property setter would
-            // write back to @State on every frame even when the value is unchanged.
-            let nextIsNearBottom = newMetrics.distanceToBottom <= Self.scrollButtonVisibilityThreshold
-            if nextIsNearBottom != bottomAffordance.isNearBottom {
-                bottomAffordance.isNearBottom = nextIsNearBottom
-                #if DEBUG
-                    assertScrollStateInvariants(caller: #function)
-                #endif
-            }
+        // Only write to @State when the thresholded value actually changes.
+        // Reading bottomAffordance is cheap (no invalidation), but calling
+        // the mutating update() through the computed-property setter would
+        // write back to @State on every frame even when the value is unchanged.
+        let nextIsNearBottom = newMetrics.distanceToBottom <= Self.scrollButtonVisibilityThreshold
+        if nextIsNearBottom != bottomAffordance.isNearBottom {
+            bottomAffordance.isNearBottom = nextIsNearBottom
+            #if DEBUG
+                assertScrollStateInvariants(caller: #function)
+            #endif
         }
         return previousMetrics
     }
@@ -4065,7 +4035,6 @@ struct AgentModeChatDetailView: View {
         return newMetrics.distanceToBottom <= Self.repinDistanceThreshold
     }
 
-    @available(macOS 15.0, *)
     private func userScrollPhase(from phase: ScrollPhase) -> AgentTranscriptUserScrollPhase {
         switch phase {
         case .idle:

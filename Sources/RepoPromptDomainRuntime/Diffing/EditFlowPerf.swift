@@ -982,32 +982,16 @@ package enum EditFlowPerf {
         }
 
         private final class DebugCaptureActiveHint {
-            @available(macOS 15.0, *)
-            private final class AtomicStorage {
-                let value = Atomic(false)
-            }
+            private let value = Atomic(false)
 
-            private let storage: AnyObject?
-
-            package init() {
-                if #available(macOS 15.0, *) {
-                    storage = AtomicStorage()
-                } else {
-                    storage = nil
-                }
-            }
+            package init() {}
 
             package func loadIfAvailable() -> Bool? {
-                if #available(macOS 15.0, *), let storage = storage as? AtomicStorage {
-                    return storage.value.load(ordering: .acquiring)
-                }
-                return nil
+                value.load(ordering: .acquiring)
             }
 
             package func store(_ active: Bool) {
-                if #available(macOS 15.0, *), let storage = storage as? AtomicStorage {
-                    storage.value.store(active, ordering: .releasing)
-                }
+                value.store(active, ordering: .releasing)
             }
         }
 

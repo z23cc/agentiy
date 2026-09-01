@@ -9,12 +9,8 @@ struct ContentViewToolbarContent: ToolbarContent {
     @Binding var showMCPServerPopover: Bool
 
     var body: some ToolbarContent {
-        if #available(macOS 26.0, *) {
-            agentChatTitleItem
-                .sharedBackgroundVisibility(.hidden)
-        } else {
-            agentChatTitleItem
-        }
+        agentChatTitleItem
+            .sharedBackgroundVisibility(.hidden)
 
         // Recommendation wizard button
         ToolbarItem(placement: .automatic) {

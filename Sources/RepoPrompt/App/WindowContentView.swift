@@ -79,12 +79,7 @@ struct WindowContentView: View {
 }
 
 private extension View {
-    @ViewBuilder
     func removingSystemToolbarTitle() -> some View {
-        if #available(macOS 15.0, *) {
-            toolbar(removing: .title)
-        } else {
-            self
-        }
+        toolbar(removing: .title)
     }
 }
