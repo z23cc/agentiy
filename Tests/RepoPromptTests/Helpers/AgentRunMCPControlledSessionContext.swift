@@ -37,7 +37,7 @@ final class AgentRunMCPControlledSessionContext {
         do {
             let workspace = window.workspaceManager.createWorkspace(
                 name: "\(workspaceNamePrefix) \(UUID().uuidString.prefix(8))",
-                repoPaths: [FileManager.default.currentDirectoryPath],
+                repoPaths: [MCPTestWorkspaceRoot.makeEmptyRepoRoot()],
                 ephemeral: true
             )
             await window.workspaceManager.switchWorkspace(
