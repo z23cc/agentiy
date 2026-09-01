@@ -9,7 +9,13 @@ final class CodexExecAgentProviderRuntimePreparationTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let executable = directory.appendingPathComponent("codex")
-        try "#!/bin/sh\necho 'codex 0.149.0'\n".write(to: executable, atomically: true, encoding: .utf8)
+        // Derived from the product constant rather than written as a literal. This test asserts
+        // what happens *after* the version gate, so pinning a number here just means the fixture
+        // silently falls behind every runtime rotation and the test starts failing on the gate
+        // instead -- which is exactly what 8133e1fa (0.147.0 -> 0.151.0) did to the previous
+        // hard-coded "0.149.0".
+        let stubVersion = CodexRuntimeAuthority.minimumExternalVersion
+        try "#!/bin/sh\necho 'codex \(stubVersion)'\n".write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         let recorder = PreparedRuntimeRecorder()
         let provider = CodexExecAgentProvider(
