@@ -506,3 +506,65 @@ mod tests {
         assert!(synthetic_two > u64::MAX - 1_000_000);
     }
 }
+
+#[cfg(test)]
+mod perf_probe {
+    //! The cost of `build_tree_projection_shard`, which `open_tree_projection_shard` pays inside
+    //! `with_state`. Recorded as a runnable probe rather than a prose claim, because the tradeoff
+    //! is real but was deliberately left unoptimized:
+    //!
+    //! ```text
+    //! cargo test -p agentry-runtime --lib probe_tree_projection_cost -- --ignored --nocapture
+    //! debug, 2026-09-01: n=1000 -> 2.7ms; n=10000 -> 25.4ms; n=50000 -> 147.9ms
+    //! ```
+    //!
+    //! Why it is acceptable: the projection is opened only when the caller's policy is non-empty,
+    //! i.e. only when the user has a gitignored file explicitly selected. Every other tree read
+    //! stays on the published generation, which is an already-built `Arc` and costs nothing to
+    //! open. If this does become a stall, `RootState::snapshot_for_rebuild` is the existing
+    //! outside-the-lock pattern to copy -- note it trades the sort for a full map clone, so
+    //! measure both before assuming it wins.
+
+    use super::*;
+    use crate::inventory_scope::ids::{RootLifetimeId, UuidMinter};
+    use crate::inventory_scope::state_machine::RootState;
+
+    #[test]
+    #[ignore = "measurement, not an assertion; run explicitly with --ignored --nocapture"]
+    fn probe_tree_projection_cost() {
+        for n in [1_000usize, 10_000, 50_000] {
+            let minter = UuidMinter::seeded(7);
+            let lifetime = RootLifetimeId::mint(&minter);
+            let mut root =
+                RootState::new([1; 16], "root".to_owned(), "/root".to_owned(), lifetime, 8);
+            for i in 0..n {
+                let mut id = [0u8; 16];
+                id[0..8].copy_from_slice(&(i as u64).to_be_bytes());
+                root.maps.upsert_file(InventoryFileRecord {
+                    id,
+                    root_id: [1; 16],
+                    name: format!("File{i}.swift"),
+                    relative_path: format!("src/dir{}/File{i}.swift", i % 100),
+                    standardized_relative_path: format!("src/dir{}/File{i}.swift", i % 100),
+                    full_path: format!("/root/src/dir{}/File{i}.swift", i % 100),
+                    standardized_full_path: format!("/root/src/dir{}/File{i}.swift", i % 100),
+                    parent_folder_id: None,
+                    modification_date: None,
+                });
+            }
+            let mut wanted = [0u8; 16];
+            wanted[0..8].copy_from_slice(&7u64.to_be_bytes());
+            root.maps.set_file_managed_only(wanted, true);
+            let included: HashSet<InventoryUuid> = [wanted].into_iter().collect();
+
+            let start = std::time::Instant::now();
+            let shard = build_tree_projection_shard(&root, &included, 1).expect("builds");
+            let elapsed = start.elapsed();
+            println!(
+                "n={n}: {:?} ({} files projected)",
+                elapsed,
+                shard.files.len()
+            );
+        }
+    }
+}

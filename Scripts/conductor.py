@@ -8551,6 +8551,9 @@ def operation_rust_archive_then_command(repo_root: Path, args: Dict[str, Any]) -
             file=sys.stderr,
         )
         return 2
+    if stale := stale_generated_binding_identity(repo_root, manifest, profile):
+        print(stale, file=sys.stderr)
+        return 2
     code, _stdout, _stderr = run_operation_command(
         "Swift build after verified Rust FFI archive",
         [str(value) for value in command],
@@ -8559,6 +8562,64 @@ def operation_rust_archive_then_command(repo_root: Path, args: Dict[str, Any]) -
         use_pty=bool(args.get("streamPty")),
     )
     return code
+
+
+def stale_generated_binding_identity(
+    repo_root: Path, manifest: Dict[str, Any], profile: str
+) -> Optional[str]:
+    """Catch a stale checked-in binding identity before spending a build on it.
+
+    The archive is rebuilt by the step above whenever any Rust build input changes, which rotates
+    `buildFingerprint`. The checked-in `AgentryCoreBindingIdentity.swift` is only rewritten by
+    `xtask generate`, which no build step runs. Nothing reconciled the two, so any Rust source edit
+    without a following `dev-cargo-codegen` produced a Swift binary whose expected identity did not
+    match its own archive -- and the handshake rejects that as `incompatibleBindings` at *runtime*,
+    so a whole test suite fails one opaque assertion at a time after paying full build and run cost.
+
+    This is a file read against a manifest already in hand, not a second `xtask` invocation, so it
+    is affordable on every build. `make dev-cargo-codegen-check` remains the authoritative
+    regenerate-and-diff check; this only refuses to build on the one mismatch that is certain.
+    """
+    path = repo_root / "Sources" / "AgentryUniFFIRaw" / "Generated" / "AgentryCoreBindingIdentity.swift"
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"generated binding identity is unreadable ({exc}); run `make dev-cargo-codegen`."
+    # `buildFingerprint` is declared once per build flavour behind #if/#elseif; the release archive
+    # branch comes first in the generated file, so anchor on the branch rather than on order.
+    flavour = "AGENTRY_CORE_RELEASE_ARCHIVE" if profile == "release" else "DEBUG"
+    branches = dict(
+        re.findall(
+            r"#(?:if|elseif)\s+(\w+)\s*\n\s*public static let buildFingerprint = \"([0-9a-f]+)\"",
+            source,
+        )
+    )
+    expected_fingerprint = branches.get(flavour)
+    checksum_match = re.search(r'public static let bindingChecksum = "([0-9a-f]+)"', source)
+    if expected_fingerprint is None or checksum_match is None:
+        return (
+            f"cannot read the {flavour} identity out of {path.name}; its generated shape changed. "
+            "Run `make dev-cargo-codegen` and update this check."
+        )
+    mismatches = []
+    if expected_fingerprint != manifest.get("buildFingerprint"):
+        mismatches.append(
+            f"buildFingerprint: generated {expected_fingerprint[:12]}… "
+            f"vs archive {str(manifest.get('buildFingerprint'))[:12]}…"
+        )
+    if checksum_match.group(1) != manifest.get("bindingChecksum"):
+        mismatches.append(
+            f"bindingChecksum: generated {checksum_match.group(1)[:12]}… "
+            f"vs archive {str(manifest.get('bindingChecksum'))[:12]}…"
+        )
+    if not mismatches:
+        return None
+    return (
+        "Checked-in Swift bindings do not match the Rust archive just built "
+        f"({'; '.join(mismatches)}). Every FFI call would fail with `incompatibleBindings`. "
+        "Run `make dev-cargo-codegen`, then retry. Any edit under `rust/` rotates the fingerprint, "
+        "including test-only code and `rust/ffi-contract/` -- regenerate last, after all Rust edits."
+    )
 
 
 def run_operation_runner(payload_json: str) -> int:
