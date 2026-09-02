@@ -1,5 +1,7 @@
 # Rust Inventory Scope Contract v1
 
+> **Validation note:** FILTER names and ticket tables later in this document are historical cutover evidence. Several cited suites (including `AgentRunWorktreeStartTests` and `WorktreeAPISmokeHarnessTests`) were retired in the 2026-09 test-suite slimdown. Current inventory coverage lives in `WorkspaceFileContextStoreTests`, `WorkspaceCatalogShardTests`, and `WorkspaceInventoryScopeAuthorityTests`.
+
 Status: **P4-1 contract freeze.** This document freezes the shape of the workspace inventory
 authority migration (charter Phase 5 slice, tracked as `P4`) before any Rust `InventoryScope`
 candidate exists. It authorizes no cutover by itself; P4-2's de-risking experiments gate P4-3a,

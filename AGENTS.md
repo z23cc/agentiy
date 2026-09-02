@@ -282,7 +282,7 @@ Focused validation commands commonly used for this tree (all daemon-coordinated)
 ```bash
 make dev-format-check
 make dev-lint
-make dev-test FILTER=CodexIntegrationConfigurationTests
+make dev-test FILTER=CodexRuntimeAuthorityTests
 make dev-test FILTER=WorkspaceFileContextStoreTests
 make dev-swift-build PRODUCT=Agentry
 make dev-swift-build PRODUCT=agentry-mcp

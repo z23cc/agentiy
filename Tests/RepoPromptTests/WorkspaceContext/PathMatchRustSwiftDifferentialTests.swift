@@ -23,6 +23,13 @@ import XCTest
 /// `cleaned()` function, then lowercased, exactly matching what `computeWeightedMatchScorePrecleaned`
 /// produces internally for `caseSensitive: false` (the only value any call site ever passes).
 final class PathMatchRustSwiftDifferentialTests: XCTestCase {
+    override func setUpWithError() throws {
+        try MigrationDifferentialGate.requireEnabled(
+            "PathMatch has no production caller; this Swift/Rust differential is opt-in"
+        )
+        try super.setUpWithError()
+    }
+
     // MARK: - Fixture shape
 
     private struct Candidate {

@@ -1,5 +1,7 @@
 # Test Coverage Value Audit Ledger — Items 1–5 Final Audit and Acceptance Record
 
+> **Historical snapshot (2026-05-29).** This ledger is not a current census. Many `retain` rows name suites later deleted in the 2026-09 test-suite slimdown (upstream #908 strategy). Do not use FILTER names below as live commands. For current contributor test commands see [`docs/testing.md`](../testing.md).
+
 > Single authoritative audit artifact through Item 5. This file records the Item 1 census, merged Item 2 retention/consolidation decisions, merged Item 3 candidate-gap confirmation, the Item 4 exact retention freeze with dependency-safe implementation batches, and the reconciled Item 5 landed deltas, review corrections, recount, and acceptance evidence.
 
 ## Scope and status

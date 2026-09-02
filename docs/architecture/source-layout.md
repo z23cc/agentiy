@@ -216,7 +216,7 @@ Run the smallest focused validation that covers your change, then broaden as nee
 ```bash
 make dev-swift-build PRODUCT=Agentry
 make dev-swift-build PRODUCT=agentry-mcp
-make dev-test FILTER=CodexIntegrationConfigurationTests
+make dev-test FILTER=CodexRuntimeAuthorityTests
 make dev-test FILTER=WorkspaceFileContextStoreTests
 make dev-test
 make guardrails
@@ -225,4 +225,4 @@ make dev-build
 make dev-test
 ```
 
-Use `make run` only when it is safe to stop any existing RepoPrompt instance and launch the debug app.
+Use `make run` only when it is safe to stop any existing Agentry instance and launch the debug app.

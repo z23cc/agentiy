@@ -1,5 +1,7 @@
 # Headless MCP domain runtime — M0 contract freeze
 
+> **Historical milestone record.** Named XCTest suites in later sections may have been retired; the catalog/authority freeze itself remains. Current focused coverage includes `HeadlessMCPDomainRuntimeM0ContractTests`.
+
 Date: 2026-07-26
 
 Base: `main` at `664252ebc85e`

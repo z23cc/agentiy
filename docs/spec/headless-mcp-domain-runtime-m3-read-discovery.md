@@ -1,5 +1,8 @@
 # Headless MCP domain runtime — M3 read/discovery evidence
 
+> **Historical milestone record.** Named XCTest FILTER commands in this document may refer to suites retired in the 2026-09 test-suite slimdown. Use remaining focused suites listed in `docs/testing.md` and `AGENTS.md`.
+
+
 Milestone 3 moves the nine read/discovery tool registrations to one Swift 6, AppKit-free owner in `RepoPromptDomainRuntime`. It is stacked on the M2 workspace/context authority and does not add a standalone stdio host.
 
 ## Scope

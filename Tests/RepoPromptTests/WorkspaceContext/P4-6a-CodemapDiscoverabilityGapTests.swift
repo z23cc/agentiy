@@ -16,8 +16,6 @@ import XCTest
 /// pipeline (real syntax parsing / git-blob fingerprinting) is unrelated
 /// infrastructure this step did not touch.
 ///
-/// See the delta table:
-/// Tests/RepoPromptTests/WorkspaceContext/P4-6a-consumer-rewiring-delta-table.md
 final class P4_6a_CodemapDiscoverabilityGapTests: WorkspaceFileContextStoreCodemapSeamTestSupport {
     private func makeManagedOnlyFileFixture(
         name: String

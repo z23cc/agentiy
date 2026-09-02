@@ -2,6 +2,8 @@
 
 Status: draft for P2-2 implementation and differential validation.
 
+> **Evidence update:** P2 step 13 deleted the legacy Swift extractor and `CodeMapRustSwiftDifferentialTests`. The current golden gate is `Tests/RepoPromptTests/CodeMap/CodeMapRustGoldenTests.swift` against `Tests/RepoPromptCodeMapCoreTests/Goldens`. `RepoPromptTests.CodeMapGoldenTests` covers fixture file-tree snapshot rendering only.
+
 ## Purpose and authority boundary
 
 This contract carries path-free CodeMap computation results from `agentry-runtime` through the existing Agentry core bridge. Rust owns decoded-source guards, tree-sitter parse/query execution, capture extraction, normalization, and compact encoding. Swift remains authoritative for workspace and path resolution, source decoding policy and raw digest, scheduling/permits, cancellation orchestration, artifact identity/CAS/locator persistence, selection, MCP, and UI projection.

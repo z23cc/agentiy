@@ -1,5 +1,8 @@
 # Headless MCP domain runtime M6 — host extraction evidence
 
+> **Historical milestone record.** Named XCTest FILTER commands in this document may refer to suites retired in the 2026-09 test-suite slimdown. Use remaining focused suites listed in `docs/testing.md` and `AGENTS.md`.
+
+
 Date: 2026-07-28
 
 Branch: `feature/headless-runtime-m6-direct-backend`

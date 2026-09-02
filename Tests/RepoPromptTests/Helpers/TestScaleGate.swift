@@ -12,3 +12,15 @@ enum TestScaleGate {
         try XCTSkipUnless(isEnabled, "\(description). Set \(environmentKey)=1.")
     }
 }
+
+enum MigrationDifferentialGate {
+    static let environmentKey = "RPCE_RUN_MIGRATION_DIFFERENTIALS"
+
+    static var isEnabled: Bool {
+        ProcessInfo.processInfo.environment[environmentKey] == "1"
+    }
+
+    static func requireEnabled(_ description: String = "Run Swift/Rust migration differentials") throws {
+        try XCTSkipUnless(isEnabled, "\(description). Set \(environmentKey)=1.")
+    }
+}

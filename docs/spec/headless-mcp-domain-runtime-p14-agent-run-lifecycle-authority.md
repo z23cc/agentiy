@@ -1,5 +1,8 @@
 # Headless MCP domain runtime — P14 Agent run lifecycle authority
 
+> **Historical milestone record.** Named XCTest FILTER commands in this document may refer to suites retired in the 2026-09 test-suite slimdown. Use remaining focused suites listed in `docs/testing.md` and `AGENTS.md`.
+
+
 Status: implemented (2026-08-30).
 
 ## Contract

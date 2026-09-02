@@ -1,5 +1,7 @@
 # MCP tool throughput WI-3 baseline — 2026-06-11
 
+> **Historical measurement record (2026-06-11).** Named diagnostic suites in this baseline may have been retired. Do not treat FILTER names below as current commands.
+
 ## Scope and provenance
 
 This is the Phase 0 / WI-3 baseline for the five WI-2 workload matrices. It records the current scheduling topology and deterministic work counts before any Phase 1 optimization.

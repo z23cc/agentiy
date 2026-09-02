@@ -94,6 +94,8 @@ The guardrail tests are:
 - `SettingsJSONOnlyPersistenceTests.testLegacyUnlineagedCeilingIsFrozenAtTwo`
 - `SettingsJSONOnlyPersistenceTests.testUnlineagedHigherSchemaStaysBlockedAfterFutureNumericSchemaCatchup`
 - `SettingsJSONOnlyPersistenceTests.testVersionFourSettingsFileWithAgentModelsKeyIsPreserved`
+- `SettingsJSONOnlyPersistenceTests.testCorruptGlobalSettingsIsBackedUpAndReplacedWithDefaults`
+- `SettingsJSONOnlyPersistenceTests.testFutureGlobalSettingsSchemaIsPreservedAndSaveIsBlocked`
 
 ## Recovery lanes
 

@@ -1,5 +1,7 @@
 # Headless MCP domain runtime — M4 protected mutations
 
+> **Historical milestone record.** Focused FILTER names in the evidence tables below include suites later retired. Current mutation-admission coverage is `DomainProtectedMutationSecurityTests` and `HeadlessMCPDomainRuntimeM0ContractTests`.
+
 Milestone 4 is PR 5/8, stacked on M3 (`feature/headless-runtime-m3-read-discovery`, PR #657). It migrates protected mutation admission into `RepoPromptDomainRuntime` without adding a direct standalone host, AI/Agent execution, credential transport, or M7 cleanup.
 
 ## Gate 4A — selection, prompt, routing, and workspace mutations

@@ -5,6 +5,10 @@ import CryptoKit
 import RepoPromptCodeMapCore
 import XCTest
 
+// Remaining inventory-authority suite after the 2026-09 slimdown. Keep methods in this
+// store-fixture class rather than splitting by file: load/mutation/search share one
+// WorkspaceFileContextStore lifetime and watcher isolation contract.
+
 private enum CodemapInitializationResetBoundary: String, CaseIterable {
     case cancelAll
     case checkoutMutation

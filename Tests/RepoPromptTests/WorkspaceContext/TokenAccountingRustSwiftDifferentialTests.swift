@@ -25,6 +25,13 @@ import XCTest
 /// values (`2` vs `3`) for its own internal-consistency checks. `assertRenderModeParity` below
 /// folds both Rust codemap variants onto Swift's single `.codemap` case.
 final class TokenAccountingRustSwiftDifferentialTests: XCTestCase {
+    override func setUpWithError() throws {
+        try MigrationDifferentialGate.requireEnabled(
+            "Token accounting has no production Rust caller; this Swift/Rust differential is opt-in"
+        )
+        try super.setUpWithError()
+    }
+
     // MARK: - Fixture construction
 
     private struct EntrySpec {

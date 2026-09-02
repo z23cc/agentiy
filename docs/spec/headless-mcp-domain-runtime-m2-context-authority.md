@@ -1,5 +1,8 @@
 # Headless MCP domain runtime — M2 workspace/context authority
 
+> **Historical milestone record.** Named XCTest FILTER commands in this document may refer to suites retired in the 2026-09 test-suite slimdown. Use remaining focused suites listed in `docs/testing.md` and `AGENTS.md`.
+
+
 Date: 2026-07-26
 Stack base: `feature/headless-runtime-m1-foundation` / PR #640
 Frozen baseline: [`headless-mcp-domain-runtime-m0-contracts.md`](headless-mcp-domain-runtime-m0-contracts.md)

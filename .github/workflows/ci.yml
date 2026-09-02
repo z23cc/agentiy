@@ -205,7 +205,7 @@ jobs:
       - name: Test serialized Sentry privacy boundary
         env:
           AGENTRY_ENABLE_SENTRY: "1"
-        run: swift test --filter SentryTelemetryPrivacyTests
+        run: swift test --filter 'SentryTelemetryPrivacyTests|SentryTelemetryBootstrapTests'
 
   rust-ffi:
     name: Rust FFI

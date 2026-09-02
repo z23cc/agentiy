@@ -47,7 +47,7 @@ make dev-test
 make dev-provider-test
 ```
 
-A focused green run is evidence for the named contract, not a substitute for full-suite or CI coverage when the changed boundary is broad. The hosted app-test workflow discovers current methods through `swift test list`, counts methods per suite, assigns suites to four deterministic method-count-weighted LPT shards, and executes each suite in its own XCTest process. That CI mechanism is not a contributor-maintained registry.
+A focused green run is evidence for the named contract, not a substitute for full-suite or CI coverage when the changed boundary is broad. Hosted macOS app tests are `workflow_dispatch` only and run as a single XCTest process; they are not a contributor-maintained registry. The per-change gate is local `preflight.sh pr-ready`.
 
 ## Codemap-sensitive changes
 
@@ -72,7 +72,14 @@ Routine root tests should use lower-cost boundary variants when they still exerc
 RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.FileSystemAcceptedIngressBarrierTests/testSyntheticHundredThousandPathReplayWhenEnabled
 ```
 
-Use direct `swift test` only for these explicit environment-gated scale checks so the gate reaches the XCTest process. Prefer `make dev-test` for lower-cost routine variants and ordinary focused validation.
+Swift/Rust migration differentials for domains without a production caller (PathMatch scoring/resolve, token accounting) are skipped unless:
+
+```bash
+RPCE_RUN_MIGRATION_DIFFERENTIALS=1 swift test --filter PathMatchRustSwiftDifferentialTests
+RPCE_RUN_MIGRATION_DIFFERENTIALS=1 swift test --filter TokenAccountingRustSwiftDifferentialTests
+```
+
+Use direct `swift test` only for these explicit environment-gated scale and differential checks so the gate reaches the XCTest process. Prefer `make dev-test` for lower-cost routine variants and ordinary focused validation.
 
 ## Performance and optimization evidence
 

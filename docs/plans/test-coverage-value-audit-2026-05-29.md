@@ -1,5 +1,7 @@
 # Test Coverage Value Audit: Plan
 
+> **Historical snapshot (2026-05-29).** This plan is not a current map of the test suite. Method counts, FILTER names, and retention ceilings below are frozen evidence from the May 2026 audit. For current contributor test commands see [`docs/testing.md`](../testing.md) and [`AGENTS.md`](../../AGENTS.md).
+
 ## Goal
 Fully rebalance RepoPrompt CE's first-party Swift tests around current contract value: remove tests that do not earn retention, consolidate true overlap, preserve distinct layered protections, and add focused coverage where shipped behavior is materially exposed. Method count is an outcome measure, not the optimization target; use **500 executable XCTest methods as a provisional ceiling**, not a desired quota.
 

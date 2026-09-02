@@ -125,18 +125,16 @@ Start with the focused suite for the boundary being changed:
 
 ```bash
 make dev-test FILTER=AgentContextDrawerUIStoreTests
-make dev-test FILTER=AgentContextExportResolverTests
-make dev-test FILTER=AgentSelectedFilesModelCoordinatorTests
 make dev-test FILTER=AgentContextInspectorColumnSizingTests
 make dev-test FILTER=AgentContextFileBrowseServiceTests
-make dev-test FILTER=AgentContextFileBrowseModelTests
-make dev-test FILTER=AgentContextFileSizeEstimatorTests
+make dev-test FILTER=AgentContextFileBrowseSearchParityTests
 make dev-test FILTER=TokenCalculationServiceByteEstimateTests
 make dev-test FILTER=WorkspaceSelectionPreResolvedMutationTests
-make dev-test FILTER=AgentModeChatSwitchActivationTests
+make dev-test FILTER=AgentContextSelectedFileCardTests
+make dev-test FILTER=GitViewModelSelectionClearTests
 ```
 
-Selection-card presentation, token accounting, Git actions, and chat-switch behavior have additional focused coverage in `AgentContextSelectedFileCardTests`, `TokenCountingViewModelTests`, `GitViewModelSelectionClearTests`, and `AgentModeChatSwitchActivationTests`. Use the contribution matrix in [`../../AGENTS.md`](../../AGENTS.md) for repository-wide lint, build, and PR-ready gates. Because Context Composer is running-app Agent Mode UI, also follow the live CE MCP smoke flow there when behavior changes.
+Selection-card presentation, token accounting, and Git actions have additional focused coverage in `AgentContextSelectedFileCardTests`, `TokenCalculationServiceByteEstimateTests`, and `GitViewModelSelectionClearTests`. Use the contribution matrix in [`../../AGENTS.md`](../../AGENTS.md) for repository-wide lint, build, and PR-ready gates. Because Context Composer is running-app Agent Mode UI, also follow the live CE MCP smoke flow there when behavior changes.
 
 ## References
 

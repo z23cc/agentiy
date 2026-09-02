@@ -24,6 +24,13 @@ import XCTest
 ///     stages where the wire text is Swift-precomputed (canonical keys, cleaned-lower scoring
 ///     components) and are NOT alias/head-trim fixtures, so bit-identical parity holds for them.
 final class PathMatchResolveRustSwiftDifferentialTests: XCTestCase {
+    override func setUpWithError() throws {
+        try MigrationDifferentialGate.requireEnabled(
+            "PathMatch resolve has no production caller; this Swift/Rust differential is opt-in"
+        )
+        try super.setUpWithError()
+    }
+
     // MARK: - Fixture construction (real production types/functions only)
 
     private struct RootFixture {
