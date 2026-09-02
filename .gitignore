@@ -63,3 +63,6 @@ Icon
 .vscode/
 .idea/
 .claude/settings.local.json
+
+# RepoPrompt `prompt` tool context exports: regenerable, never committed.
+prompt-exports/
