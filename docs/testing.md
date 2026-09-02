@@ -62,16 +62,13 @@ make dev-test FILTER=CodeMapArtifactContainerTests
 
 Run these when changes touch CodeMap generation, syntax parsing, artifact storage, or Tree-sitter support. The packaged-app live codemap projection-demand gate is documented later in this guide.
 
-Context Builder inactive-target coverage must stay within one `MCPDomainRuntime`. Windows are presentation scopes over that process-wide authority; a workspace created through one runtime cannot be appended to another window's manager as a supported handoff. Do not recreate that topology in a test with a side-channel authority client: it bypasses the runtime's routing registration and storage lease, and can only produce misleading failures. Use the retained strict-finalization tests for a real inactive target and add a runtime-level handoff contract before introducing cross-runtime coverage.
+Context Builder inactive-target coverage must stay within one `MCPDomainRuntime`. Windows are presentation scopes over that process-wide authority; a workspace created through one runtime cannot be appended to another window's manager as a supported handoff. Do not recreate that topology in a test with a side-channel authority client: it bypasses the runtime's routing registration and storage lease, and can only produce misleading failures. Add a runtime-level handoff contract before introducing cross-runtime coverage.
 
 ## Scale-sensitive contract gates
 
 Routine root tests should use lower-cost boundary variants when they still exercise the same spill, merge, streaming, or retained-reader path. High-cardinality contracts remain explicit opt-ins:
 
 ```bash
-RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.GitLoadedRootAuthorityEvidenceTests/testHundredThousandLogicalCandidatesAndTreeRecordsStayByteBoundedWhenEnabled
-RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.WorkspaceRootTargetSeedPlanManifestTests/testManifestScaleStreamsOneHundredThousandOrMillionWhenEnabled
-RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.WorkspaceRootNamespaceManifestTests/testSyntheticHundredThousandEntriesWhenEnabled
 RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.FileSystemAcceptedIngressBarrierTests/testSyntheticHundredThousandPathReplayWhenEnabled
 ```
 
@@ -794,26 +791,16 @@ correctness evidence yields `incomplete`. Any recorded invalid attempt yields
 from configured route names, untyped text, generic tool failures, or additional
 valid samples.
 
-### 100k and 1M synthetic hooks
+### 100k synthetic hooks
 
-The routine namespace-manifest scale contract uses a lower record count with a
-small batch size so ordinary root-suite timing still exercises exact record/read
-counts, more than 100 initial spill runs, and bounded buffer bytes:
-
-```bash
-make dev-test \
-  FILTER=RepoPromptTests.WorkspaceRootNamespaceManifestTests/testSyntheticEntriesRemainWithinConfiguredBatchBytes
-```
-
-The 100K/configured namespace-manifest version uses the same executable oracle
-and remains separate from ordinary root-suite timing:
+High-cardinality filesystem ingress replay remains an explicit opt-in, separate
+from ordinary root-suite timing:
 
 ```bash
-RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.WorkspaceRootNamespaceManifestTests/testSyntheticHundredThousandEntriesWhenEnabled
-REPOPROMPT_NAMESPACE_MANIFEST_SCALE_ENTRY_COUNT=1000000 swift test --filter RepoPromptTests.WorkspaceRootNamespaceManifestTests/testSyntheticHundredThousandEntriesWhenEnabled
+RPCE_RUN_SCALE_TESTS=1 swift test --filter RepoPromptTests.FileSystemAcceptedIngressBarrierTests/testSyntheticHundredThousandPathReplayWhenEnabled
 ```
 
-These hooks validate spill/streaming scale, not live Agent Mode latency. The
+This hook validates spill/streaming scale, not live Agent Mode latency. The
 live 100k/1M workspace campaign still needs the route, resource, correctness,
 and teardown thresholds above.
 
